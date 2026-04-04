@@ -1,5 +1,4 @@
-import 'dotenv/config'  // loads .env if present; no-op in Docker where env vars are injected
-import Anthropic from '@anthropic-ai/sdk'
+import 'dotenv/config'
 import Redis from 'ioredis'
 import pino from 'pino'
 import { loadSettings } from './config/settings'
@@ -11,14 +10,13 @@ import { createTempoClient } from './clients/tempo'
 import { Dispatcher } from './jobs/dispatcher'
 import { JobRegistry } from './jobs/registry'
 import { RunnerContext } from './jobs/runner'
-import { loadToolDefinitions } from './prompt/tool-loader'
 import { createServer } from './server'
 import { startWatcher } from './watcher'
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // 1. Load and validate settings (throws on missing required fields)
+  // 1. Load and validate settings
   const settings = loadSettings()
 
   // 2. Set up structured logger
@@ -30,7 +28,8 @@ async function main(): Promise<void> {
   })
 
   logger.info('─────────────────────────────────────────')
-  logger.info('  A5 Labs Agent Host  v0.1.0')
+  logger.info('  A5 Labs Agent Host  v0.2.0')
+  logger.info('  Powered by Claude Agent SDK')
   logger.info('─────────────────────────────────────────')
   logger.info({ port: settings.host.port, logLevel: settings.host.logLevel }, 'Configuration loaded')
   logger.info({ model: settings.claude.planningModel }, 'Planning model')
@@ -65,15 +64,10 @@ async function main(): Promise<void> {
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
   const jiraClient = createJiraClient(settings)
-  const anthropic = new Anthropic({ apiKey: settings.claude.apiKey })
 
   logger.info('All clients initialised')
 
-  // 5. Load tool definitions from YAML
-  const toolDefinitions = await loadToolDefinitions(settings.paths.a5aiDir)
-  logger.info({ count: toolDefinitions.length }, 'Tool definitions loaded from YAML')
-
-  // 6. Build the runner context shared across all jobs
+  // 5. Build runner context (MCP server is created per-job by the runner)
   const runnerCtx: RunnerContext = {
     registry,
     settings,
@@ -83,18 +77,16 @@ async function main(): Promise<void> {
     lokiClient,
     tempoClient,
     jiraClient,
-    anthropic,
-    toolDefinitions,
     logger,
   }
 
-  // 7. Create dispatcher (owns the runner loop and concurrency guard)
+  // 6. Create dispatcher
   const dispatcher = new Dispatcher(runnerCtx)
 
-  // 8. Start file watcher (self-improvement loop)
+  // 7. Start file watcher (self-improvement loop)
   const watcher = startWatcher({ settings, gitClient, bbCoder, registry, logger })
 
-  // 9. Start HTTP server
+  // 8. Start HTTP server
   const app = createServer({ registry, dispatcher, settings, logger })
 
   const server = app.listen(settings.host.port, () => {
@@ -105,7 +97,7 @@ async function main(): Promise<void> {
     logger.info('─────────────────────────────────────────')
   })
 
-  // 10. Graceful shutdown
+  // 9. Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Shutdown signal received')
     server.close(() => logger.info('HTTP server closed'))

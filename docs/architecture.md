@@ -2,7 +2,7 @@
 
 **Audience:** Engineers, Stakeholders, Engineering Managers
 **Status:** Implementation in progress
-**Last updated:** 2026-04-02
+**Last updated:** 2026-04-04
 
 ---
 
@@ -10,9 +10,9 @@
 
 A5 Labs is building an internal AI agent platform to automate engineering workflows. The first workflow is the migration of .NET 8 microservices to Go. The platform is designed to grow: a feature implementation workflow (CLI or Jira-triggered) is the next planned addition, followed by further automation without requiring infrastructure changes.
 
-The platform uses Anthropic's Claude as its reasoning engine, orchestrated by a purpose-built **Agent Host Service** that receives events, manages job state, and drives agents through structured workflows defined as Markdown files.
+The platform uses the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) as its reasoning engine, orchestrated by a purpose-built **Agent Host Service** that receives events, manages job state, and drives agents through structured workflows defined as Markdown files.
 
-**Core design principle:** The Markdown files in the `a5-ai` repository are the intelligence. The TypeScript infrastructure is deliberately thin — it runs agents, routes events, and executes tool calls. All workflow logic, decision rules, and accumulated knowledge live in MD files that humans can read, review, and improve via normal pull requests.
+**Core design principle:** The Markdown files in the `a5-ai` repository are the intelligence. The TypeScript infrastructure is deliberately thin — it runs agents, routes events, and exposes domain tools via MCP. All workflow logic, decision rules, subagent definitions, and accumulated knowledge live in MD files that humans can read, review, and improve via normal pull requests.
 
 ---
 
@@ -38,8 +38,8 @@ The platform uses Anthropic's Claude as its reasoning engine, orchestrated by a 
 │                                                                              │
 │  ┌─────────────────┐  ┌──────────────────────┐  ┌─────────────────────────┐ │
 │  │   HTTP Server   │  │   Webhook Receiver   │  │    File Watcher         │ │
-│  │  POST /jobs/*   │  │  HMAC verification   │  │  memory/ + agents/      │ │
-│  │  GET  /jobs/*   │  │  event routing       │  │  → self-update PRs      │ │
+│  │  POST /jobs/*   │  │  HMAC verification   │  │  memory/ + agents/ +   │ │
+│  │  GET  /jobs/*   │  │  event routing       │  │  config/ → self-update │ │
 │  │  SSE  /stream   │  └──────────┬───────────┘  └────────────┬────────────┘ │
 │  └────────┬────────┘             │                           │              │
 │           └──────────────────────▼───────────────────────────▼──────────┐   │
@@ -49,13 +49,14 @@ The platform uses Anthropic's Claude as its reasoning engine, orchestrated by a 
 │           ▼                                                                  │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                        Redis Job Registry                            │    │
-│  │  job:{id} → full Job JSON      pr:{prId}:job → jobId               │    │
-│  │  job:{id}:log → log stream     jira:{ticketId}:job → jobId         │    │
+│  │  job:{id} → Job JSON (metadata only)   pr:{prId}:job → jobId       │    │
+│  │  job:{id}:log → log stream              jira:{ticketId}:job → jobId │    │
 │  └──────────────────────────────────────┬──────────────────────────────┘    │
 │                                         │                                   │
 │  ┌──────────────────────────────────────▼──────────────────────────────┐    │
 │  │                          Job Runners                                 │    │
-│  │  One per active job. Stateful Claude API session loop.              │    │
+│  │  One per active job. Claude Agent SDK query() per phase.            │    │
+│  │  SDK manages the full tool-use loop internally.                     │    │
 │  │  Parks when awaiting external event. Resumes on webhook.            │    │
 │  └──────────────────────────────────────┬──────────────────────────────┘    │
 └─────────────────────────────────────────┼────────────────────────────────────┘
@@ -64,13 +65,31 @@ The platform uses Anthropic's Claude as its reasoning engine, orchestrated by a 
           │                               │                               │
           ▼                               ▼                               ▼
 ┌──────────────────┐       ┌──────────────────────────┐     ┌────────────────────┐
-│   CLAUDE API     │       │       BITBUCKET           │     │  OBSERVABILITY     │
+│  CLAUDE AGENT SDK│       │       BITBUCKET           │     │  OBSERVABILITY     │
 │                  │       │                           │     │                    │
-│ claude-opus-4-6  │       │  Service repos            │     │  Loki (logs)       │
-│ (planning, eval) │       │  a5-ai repo               │     │  Tempo (traces)    │
-│                  │       │  @a5-coder-agent           │     │  Grafana (UI)      │
-│ claude-sonnet-4-6│       │  @a5-reviewer-agent        │     └────────────────────┘
-│ (coding, review) │       └──────────────────────────┘
+│  query() → SDK   │       │  Service repos            │     │  Loki (logs)       │
+│  manages tool    │       │  a5-ai repo               │     │  Tempo (traces)    │
+│  loop, subagents │       │  @a5-coder-agent           │     │  Grafana (UI)      │
+│  built-in tools  │       │  @a5-reviewer-agent        │     └────────────────────┘
+│                  │       └──────────────────────────┘
+│  ┌────────────┐  │
+│  │ Built-ins  │  │
+│  │ Read Write │  │
+│  │ Edit Bash  │  │
+│  │ Glob Grep  │  │
+│  └────────────┘  │
+│  ┌────────────┐  │
+│  │ MCP Server │  │
+│  │ (in-proc)  │  │
+│  │ BB, Loki,  │  │
+│  │ Jira, Test │  │
+│  │ Job Ctrl   │  │
+│  └────────────┘  │
+│  ┌────────────┐  │
+│  │ Subagents  │  │
+│  │ (per-phase │  │
+│  │  from YAML)│  │
+│  └────────────┘  │
 └──────────────────┘
           │
           ▼
@@ -91,16 +110,30 @@ The central orchestration service. Always running. Key responsibilities:
 - **HTTP Server:** Accepts job requests from the `a5` CLI (`POST /jobs/migrate`, `POST /jobs/feature`). Streams log output via SSE (`GET /jobs/:id/stream`).
 - **Webhook Receiver:** Accepts BitBucket and Jira webhook events. Verifies HMAC signatures. Routes each event to the correct parked job via the Redis registry.
 - **Job Dispatcher:** Creates `Job` objects with the correct `type` and `workflowPath`, and starts job runners. Maps trigger sources (CLI, BitBucket, Jira) to job types.
-- **Job Runners:** Each active job runs as a stateful Claude API session loop. The runner pulls the latest `a5-ai` MD files, assembles a system prompt for the current phase, calls Claude, executes tool calls, persists state to Redis, and either advances to the next phase or parks to wait for an external event.
-- **File Watcher:** Monitors `a5-ai/memory/` and `a5-ai/agents/` on the shared volume. When an agent writes to either directory, the watcher automatically creates a branch, commits the changes, and opens a PR on the `a5-ai` repo for human review.
+- **Job Runners:** Each active job runs as a series of Claude Agent SDK `query()` calls — one per workflow phase. The SDK manages the entire tool-use loop, subagent spawning, and conversation flow internally. The runner orchestrates phase transitions, job parking/resumption, and error handling.
+- **MCP Server:** An in-process MCP server exposes all domain-specific tools (BitBucket, observability, Jira, test harness, job control, self-improvement) to the Agent SDK. The SDK's built-in tools handle filesystem, shell, git, and code search.
+- **File Watcher:** Monitors `a5-ai/memory/`, `a5-ai/agents/`, and `a5-ai/config/` on the shared volume. When an agent writes to these directories, the watcher validates changes (TypeScript build, YAML parse, workflow config parse) and opens a PR on the `a5-ai` repo for human review.
+
+#### Claude Agent SDK
+
+The Agent SDK (`@anthropic-ai/claude-agent-sdk`) replaces direct Claude API usage. Key capabilities:
+
+| Feature | How it's used |
+|---------|--------------|
+| `query()` | Single call per phase — SDK handles the full tool-use loop, retries, and message history |
+| Built-in tools | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep` — no custom filesystem/shell tools needed |
+| `createSdkMcpServer()` | In-process MCP server for domain tools (BitBucket, Loki, Jira, etc.) |
+| `tool()` + Zod | Type-safe tool definitions with schema validation |
+| Subagents | Workflow YAML defines per-phase subagents (e.g. code-reviewer, test-runner) that can run in parallel |
+| `permissionMode: 'bypassPermissions'` | Headless operation for automated workflows |
 
 #### Redis Job Registry
 
-Redis is the durable backbone of the system. Key schema:
+Redis stores job metadata (not conversation history — the SDK manages that):
 
 | Key | Type | Contains |
 |-----|------|---------|
-| `job:{jobId}` | String (JSON) | Full `Job` object including conversation history |
+| `job:{jobId}` | String (JSON) | Job metadata: status, phase, params, PR mappings, timestamps |
 | `job:{jobId}:log` | List | Log lines streamed to the CLI |
 | `pr:{prId}:job` | String | Maps BitBucket PR ID → jobId |
 | `jira:{ticketId}:job` | String | Maps Jira ticket ID → jobId |
@@ -145,13 +178,45 @@ workflowPath: string // path to the workflow MD file, e.g. 'workflows/migration/
 
 The job runner and prompt builder use these fields — never hardcoded logic — to load the right workflow and agents. Adding a new workflow type requires:
 
-1. A new `workflows/{type}/workflow.md` file
+1. A new `workflows/{type}/workflow.md` file with YAML front matter defining phases, agents, models, and optional subagents
 2. A new entry in the dispatcher's trigger routing table
 3. A new CLI command (if CLI-triggered)
 
-No changes to the runner, prompt builder, Redis schema, or tool implementations.
+No changes to the runner, prompt builder, Redis schema, or MCP server.
 
-### 3.2 Trigger → Job routing table
+### 3.2 Workflow YAML front matter
+
+Workflows are Markdown files with YAML front matter that configures phase sequences, agent assignments, model selection, and subagent definitions:
+
+```yaml
+---
+initial_phase: planning
+initial_status: queued
+
+phases:
+  - name: coding
+    agent: agents/coder.md
+    model: coding
+    status: coding
+    subagents:
+      - name: code-reviewer
+        agent: agents/pr-reviewer.md
+        model: coding
+        tools: [Read, Glob, Grep, mcp__a5__bb_get_pr_comments]
+      - name: test-runner
+        agent: agents/tester.md
+        model: coding
+        tools: [Bash, Read, mcp__a5__run_go_build]
+
+overrides:
+  jira:
+    initial_phase: spec-writing
+---
+```
+
+The Markdown content below the front matter contains the human-readable workflow documentation and decision rules.
+
+### 3.3 Trigger → Job routing table
 
 | Trigger source | Event | JobType | workflowPath |
 |---------------|-------|---------|-------------|
@@ -160,9 +225,9 @@ No changes to the runner, prompt builder, Redis schema, or tool implementations.
 | Jira webhook | `issue_assigned` | `feature` | `workflows/feature/workflow.md` |
 | File watcher | `memory/*.md` or `agents/*.md` modified | `self-update` | *(inline)* |
 
-### 3.3 Agent reuse across workflows
+### 3.4 Agent reuse across workflows
 
-Agents are workflow-agnostic. The same coder, tester, pr-reviewer, and evaluator run identically regardless of workflow type. The prompt builder selects which agent MD to load based on the current job phase:
+Agents are workflow-agnostic. The same coder, tester, pr-reviewer, and evaluator run identically regardless of workflow type. The prompt builder selects which agent MD to load based on the current job phase (defined in the workflow YAML front matter):
 
 | Job phase | Agent loaded |
 |-----------|-------------|
@@ -216,11 +281,13 @@ Phase 3: Repository Setup
         ▼
 Phase 4: Feature Loop  ◄─────────────────────────────────┐
   │                                                       │
-  ├── 4a. Code (Coder Agent)                             │
+  ├── 4a. Code (Coder Agent + code-reviewer subagent)    │
   │     - Read memory/known-pitfalls.md                  │
   │     - Create feature branch                          │
   │     - Implement endpoints matching contract exactly  │
   │     - Write table-driven tests                       │
+  │     - Spawn code-reviewer subagent for parallel PR   │
+  │       review during implementation                   │
   │     - Open PR as @a5-coder-agent                     │
   │     - Park: await pr:created webhook                 │
   │                                                       │
@@ -232,10 +299,10 @@ Phase 4: Feature Loop  ◄──────────────────
   │     - On human approval + Coder fixes → merge PR     │
   │     - Park: await pr:fulfilled webhook               │
   │                                                       │
-  ├── 4c. Test (Tester Agent)                            │
+  ├── 4c. Test (Tester Agent + test-runner subagent)     │
   │     - Resumed by pr:fulfilled webhook                │
   │     - Build Go service, load staging helm config     │
-  │     - Replay requests against Go + .NET staging      │
+  │     - Spawn test-runner subagent for parallel tests  │
   │     - Diff: status codes, body, headers              │
   │     - Query Loki for errors during test run          │
   │     - Output: test-results/{feature}.json            │
@@ -264,7 +331,7 @@ Phase 5: Migration Report
 Jobs are event-driven. When a job needs to wait for something external, it parks itself in Redis rather than polling:
 
 ```
-Coder opens PR #42 → calls await_event('pr:fulfilled', 42)
+Coder opens PR #42 → calls mcp__a5__await_event('pr:fulfilled', 42)
   → job.status = 'awaiting-pr-merge', job.awaitingPrId = 42
   → Redis: SET pr:42:job → {jobId}
   → Runner exits (zero CPU usage while waiting)
@@ -272,17 +339,15 @@ Coder opens PR #42 → calls await_event('pr:fulfilled', 42)
 PR #42 merged by developer
   → BitBucket fires pr:fulfilled webhook to Agent Host
   → Agent Host: GET pr:42:job → {jobId}
-  → Load job from Redis, append webhook payload as user message
-  → Restart runner from last state
+  → Load job from Redis, resume runner for the next phase
+  → Agent SDK query() continues with fresh context
 ```
 
 This same pattern handles PR comment events, approval events, and (in future) Jira ticket updates.
 
 ---
 
-## 5. Workflow: Feature Implementation (Future)
-
-When `workflows/feature/workflow.md` is created, feature jobs become available. The phases are similar to migration but scoped differently:
+## 5. Workflow: Feature Implementation
 
 ```
 Trigger: a5 feature ... OR Jira ticket assigned to @a5-feature-agent
@@ -303,10 +368,9 @@ Phase 1: Planning (Planner Agent)
         ▼
 Phase 2+: Code → Review → Test → Evaluate (same as migration)
   - Same agents, same self-improvement loop
-  - On complete: transition Jira ticket to Done (via jira_transition_issue tool)
+  - Subagents available for parallel code review and testing
+  - On complete: transition Jira ticket to Done (via mcp__a5__jira_transition_issue)
 ```
-
-The only new component is `agents/spec-writer.md`. All other agents reuse their existing MD files unchanged.
 
 ---
 
@@ -316,19 +380,24 @@ When an agent writes to `memory/` or edits `agents/*.md`, the platform learns fr
 
 ```
 Evaluator: found a new .NET→Go serialization pitfall
-  → Writes to memory/known-pitfalls.md via write_file tool
-  → Edits agents/coder.md to add a rule: "never use X, use Y instead"
+  → Calls mcp__a5__propose_change with multi-file proposal
+  → Writes proposal summary + target files to disk
 
 File Watcher (Agent Host) detects changes
-  → Creates branch: improvement/timespan-serialization-pitfall
-  → Commits changed files
-  → Opens PR on a5-ai as @a5-coder-agent:
-      Title: "[Self-improvement] Add TimeSpan serialization pitfall"
-      Body: "Discovered during my-service migration (job-id: xxx).
-             Go was serializing TimeSpan as HH:mm:ss, .NET expects ISO 8601.
-             Added rule to coder.md and entry to known-pitfalls.md."
-  → Tags human developers + @a5-reviewer-agent
-  → Labels: agent-self-improvement
+  → Validates: TypeScript build, YAML parse, workflow config parse
+  → On success:
+      → Creates branch: improvement/timespan-serialization-pitfall
+      → Commits changed files
+      → Opens PR on a5-ai as @a5-coder-agent
+      → Tags human developers + @a5-reviewer-agent
+      → Labels: agent-self-improvement
+  → On failure:
+      → Writes validation failure report to memory/proposals/
+
+Agents can also call mcp__a5__list_proposals to:
+  → Avoid re-proposing something that was already filed
+  → Learn from rejected proposals (build failures)
+  → Check what improvements are pending review
 
 Human developers review the PR
   → Can accept, modify, or reject
@@ -353,7 +422,7 @@ Developer 1: a5 migrate --repo user-service        Developer 2: a5 migrate --rep
                     │                                                   │
                     ▼                                                   ▼
       working/user-svc-migration-1234/              working/payment-svc-migration-5678/
-      Job Runner A (Claude session)                 Job Runner B (Claude session)
+      Job Runner A (SDK query() per phase)          Job Runner B (SDK query() per phase)
       @a5-coder-agent → PR in user-service-go      @a5-coder-agent → PR in payment-service-go
 ```
 
@@ -372,7 +441,7 @@ The same BitBucket service accounts handle all jobs simultaneously — `@a5-code
 | Accumulated knowledge | `a5-ai/memory/` (git) | Evaluator / PR Reviewer → PR → merge |
 | Conventions | `a5-ai/conventions/` (git) | Human developers |
 | Per-job intermediate state | `working/{job-id}/` (shared volume) | Job runners |
-| Job status and conversation | Redis `job:{jobId}` | Job runners |
+| Job metadata | Redis `job:{jobId}` | Job runners |
 | PR → job mapping | Redis `pr:{prId}:job` | Dispatcher on PR open |
 | Jira → job mapping | Redis `jira:{ticketId}:job` | Dispatcher on Jira trigger |
 | Generated Go code | `{service-name}-go` BitBucket repo | Coder agent |
@@ -402,21 +471,48 @@ working/{job-id}/
 
 ## 9. Tool System
 
-Agents can call 32 tools. The Agent Host executes each tool call and returns the result to Claude:
+### 9.1 Built-in tools (Claude Agent SDK)
+
+The Agent SDK provides these tools out of the box — no custom implementation needed:
+
+| Tool | Purpose |
+|------|---------|
+| `Read` | Read file contents |
+| `Write` | Write/create files |
+| `Edit` | Make targeted edits to existing files |
+| `Bash` | Execute shell commands (including git) |
+| `Glob` | Find files by pattern |
+| `Grep` | Search file contents |
+| `Agent` | Spawn subagents for parallel work |
+
+### 9.2 Domain tools (MCP Server)
+
+Domain-specific tools are exposed via an in-process MCP server (`mcp-server.ts`). All tool schemas are defined using `tool()` + Zod for type-safe validation:
 
 | Category | Tools | Count |
 |----------|-------|-------|
-| File system | `read_file`, `write_file`, `list_directory`, `create_directory` | 4 |
-| Git | `git_clone`, `git_checkout_branch`, `git_commit`, `git_push`, `git_pull`, `git_get_diff` | 6 |
-| BitBucket (coder account) | `bb_create_repo`, `bb_create_pr`, `bb_push_commit` | 3 |
-| BitBucket (reviewer account) | `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_reply_to_comment`, `bb_approve_pr`, `bb_merge_pr` | 5 |
+| BitBucket (coder) | `bb_create_repo`, `bb_create_pr`, `bb_get_pr_status` | 3 |
+| BitBucket (reviewer) | `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_reply_to_comment`, `bb_approve_pr`, `bb_merge_pr` | 5 |
 | Observability | `loki_query`, `tempo_get_trace`, `tempo_search` | 3 |
-| Jira *(stubbed)* | `jira_get_issue`, `jira_post_comment`, `jira_transition_issue` | 3 |
+| Jira | `jira_get_issue`, `jira_post_comment`, `jira_transition_issue` | 3 |
 | Test harness | `run_go_build`, `start_go_service`, `stop_go_service`, `compare_request` | 4 |
 | Job control | `mark_phase_complete`, `await_event`, `escalate`, `log` | 4 |
-| **Total** | | **32** |
+| Self-improvement | `propose_change`, `list_proposals` | 2 |
+| **Total domain** | | **24** |
 
-All file system tools enforce path boundaries — reads and writes are scoped to the shared volume. Loki, Tempo, and Jira tools degrade gracefully if their credentials are not configured.
+### 9.3 Subagents
+
+Subagents are defined per-phase in the workflow YAML front matter. The runner converts them to Agent SDK `AgentDefinition` objects and passes them to `query()`. The main agent can spawn them via the built-in `Agent` tool:
+
+```yaml
+subagents:
+  - name: code-reviewer
+    agent: agents/pr-reviewer.md
+    model: coding
+    tools: [Read, Glob, Grep, mcp__a5__bb_get_pr_comments]
+```
+
+Each subagent gets its own Claude session with access to the MCP server and any specified built-in tools.
 
 ---
 
@@ -459,9 +555,9 @@ All configuration lives in `tools/config/settings.json` with environment variabl
 - **Credentials** are never committed to git. Injected as environment variables (locally via `.env`, in K8s via Secrets).
 - **Webhook payloads** are verified using HMAC-SHA256 before processing. The raw request body is used for verification — the server does not pre-parse webhook JSON.
 - **Service account permissions** are minimum required: Developer on target repos, Reviewer on `a5-ai`.
-- **File system access** in tools is path-restricted to the shared volume. Agents cannot read or write outside `working/` and `a5-ai/`.
-- **Claude API calls** never include credentials. Credentials are used only by the TypeScript tool implementations, not passed to the LLM.
-- **Self-improvement changes** require human PR approval before taking effect. Agents cannot silently modify their own instructions.
+- **File system access** — The Agent SDK operates within the job's working directory (`cwd`). Domain tools are scoped via MCP server context.
+- **Claude API calls** never include credentials. Credentials are used only by the MCP tool implementations, not passed to the LLM.
+- **Self-improvement changes** require human PR approval before taking effect. Agents cannot silently modify their own instructions. The watcher validates all proposals before opening PRs.
 
 ---
 
@@ -469,14 +565,16 @@ All configuration lives in `tools/config/settings.json` with environment variabl
 
 | Term | Definition |
 |------|-----------|
-| Agent | A Claude API session given a specific role via an MD file, with access to a defined set of tools |
+| Agent | A Claude Agent SDK `query()` session given a specific role via an MD file, with access to built-in tools and the MCP server |
 | Job | A unit of work with a `type`, `workflowPath`, and state persisted in Redis and the shared volume |
 | JobType | `migration`, `feature`, or `self-update` — determines which workflow and phases apply |
-| Job Runner | The TypeScript loop that drives a Claude API session for one job |
-| Workflow | An MD file defining the ordered phases and decision logic for one type of job |
-| Phase | A discrete stage within a workflow, each mapped to a specific agent MD file |
+| Job Runner | The TypeScript code that drives Claude Agent SDK sessions for one job across its phases |
+| Workflow | An MD file with YAML front matter defining ordered phases, agent assignments, model selection, and subagent definitions |
+| Phase | A discrete stage within a workflow, each mapped to a specific agent MD file and run as one `query()` call |
+| Subagent | A child agent spawnable within a phase for parallel work (e.g. code-reviewer, test-runner) |
+| MCP Server | In-process Model Context Protocol server exposing domain tools to the Agent SDK |
 | Memory | MD files in `a5-ai/memory/` containing accumulated knowledge, updated via PRs |
-| Self-improvement | When an agent writes to memory or agents/, triggering a PR on a5-ai for human review |
+| Self-improvement | When an agent proposes changes via `propose_change`, triggering validation and a PR on a5-ai for human review |
 | Spec Writer | Agent that translates a Jira ticket into a structured feature spec for the planner |
 | Feature | A logical group of endpoints or changes handled as one branch + PR |
 | Service account | A BitBucket user account operated by the system (`@a5-coder-agent`, `@a5-reviewer-agent`) |

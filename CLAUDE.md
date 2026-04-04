@@ -9,7 +9,7 @@ Agents in this repository do not run directly inside Claude Code sessions. They 
 1. Receives job requests from the `a5` CLI or external event sources (BitBucket webhooks, Jira webhooks)
 2. Creates a typed `Job` object with a `workflowPath` pointing to the correct workflow MD file
 3. Assembles a system prompt by loading that workflow file, the relevant agent MD file, all memory files, and conventions
-4. Calls the Claude API in a stateful loop, executing tool calls (git, BitBucket API, file I/O, test harness) until the job parks or completes
+4. Runs the Claude Agent SDK's `query()` function for each workflow phase — the SDK manages the full tool-use loop, subagent spawning, and conversation history internally
 5. Parks the job in Redis when waiting for an external event (PR merge, review comment, human approval)
 6. Resumes the job when the expected event webhook arrives
 
@@ -39,7 +39,7 @@ When a Jira ticket triggers a job, the **Spec Writer agent** (`agents/spec-write
 ## What lives here
 
 - **agents/** — One MD file per agent. Each defines role, inputs, outputs, and step-by-step procedure. The Agent Host loads the relevant file as the system prompt for each phase.
-- **workflows/** — Lifecycle definitions, one subdirectory per workflow type: `migration/`, `feature/` (future).
+- **workflows/** — Lifecycle definitions, one subdirectory per workflow type. Each `workflow.md` has YAML front matter defining phases, agent assignments, model selection, and optional subagent definitions.
 - **conventions/** — Coding and process rules agents must follow. Go conventions in `golang.md`, git/PR conventions in `git.md`.
 - **config/** — `credentials.md` (gitignored, read by Agent Host at startup) and `repos.md` (service registry).
 - **memory/** — Accumulated knowledge from past jobs. Read at the start of every phase. Never modified directly — updates go through a self-improvement PR (see below).
@@ -87,7 +87,7 @@ a5 migrate \
   --reviewers alice,bob \
   --staging-url https://staging.my-service.a5labs.com
 
-# Implement a feature (future — requires workflows/feature/workflow.md)
+# Implement a feature
 a5 feature \
   --repo my-service-go \
   --description "Add rate limiting to /api/users" \
@@ -119,7 +119,7 @@ These rules apply to every agent in every workflow. The Agent Host injects them 
 
 5. **Never change an API contract without documenting it.** If a Go service must deviate from the .NET contract, document the deviation in the PR description with the reason. Never silently omit an endpoint.
 
-6. **Write to memory when you learn something reusable.** A failure pattern, a .NET→Go translation, a recurring PR review issue — if it will happen again, write it to the appropriate memory file. The Agent Host will detect the change and open a PR on `a5-ai` for human review.
+6. **Write to memory when you learn something reusable.** A failure pattern, a .NET→Go translation, a recurring PR review issue — if it will happen again, propose the change via `propose_change`. The Agent Host will validate it and open a PR on `a5-ai` for human review.
 
 7. **Prefer observed behavior over code analysis.** When a .NET service's behavior is ambiguous, call `loki_query` to check actual production traffic before assuming. Code can lie; logs don't.
 
@@ -131,12 +131,17 @@ These rules apply to every agent in every workflow. The Agent Host injects them 
 
 ## Self-improvement rule
 
-When any agent writes to `memory/` or edits `agents/*.md`, the Agent Host file watcher detects the change and automatically:
+When any agent calls `propose_change`, the Agent Host file watcher detects the written files and automatically:
 
-1. Creates a branch in this repo: `improvement/{short-description}`
-2. Commits the changed MD files
-3. Opens a PR tagged with the human developers and `@a5-reviewer-agent`
-4. Labels the PR `agent-self-improvement`
+1. Validates the proposal (TypeScript build, YAML parse, workflow config parse)
+2. Creates a branch in this repo: `improvement/{short-description}`
+3. Commits the changed files
+4. Opens a PR tagged with the human developers and `@a5-reviewer-agent`
+5. Labels the PR `agent-self-improvement`
+
+If validation fails, a detailed error report is written to `memory/proposals/` so the agent can learn from the failure.
+
+Agents can call `list_proposals` to check past proposals before proposing duplicates, and to learn from rejected proposals.
 
 **Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the Agent Host pulls the latest `a5-ai` and all subsequent job phases use the updated instructions immediately.
 
@@ -160,15 +165,15 @@ a5-ai/
 │   ├── tester.md                         ← Staging comparison tests
 │   ├── evaluator.md                      ← Failure diagnosis, memory updates, loop/complete decision
 │   ├── pr-reviewer.md                    ← PR monitoring, review posting, merge coordination
-│   └── spec-writer.md                    ← Jira ticket → feature spec (future)
+│   └── spec-writer.md                    ← Jira ticket → feature spec
 ├── workflows/
 │   ├── migration/
-│   │   ├── workflow.md                   ← .NET→Go migration lifecycle
+│   │   ├── workflow.md                   ← .NET→Go migration lifecycle (YAML + docs)
 │   │   └── report-template.md            ← Final migration report
-│   └── feature/                          ← Future: feature implementation workflow
-│       └── workflow.md
+│   └── feature/
+│       └── workflow.md                   ← Feature implementation lifecycle (YAML + docs)
 ├── conventions/
-│   ├── golang.md                         ← Go coding conventions (ENHANCE THIS)
+│   ├── golang.md                         ← Go coding conventions
 │   └── git.md                            ← Branch naming, commit format, PR structure
 ├── memory/
 │   ├── MEMORY.md                         ← Index — loaded into every agent prompt
@@ -199,33 +204,29 @@ a5-ai/
     │       ├── resume.ts
     │       └── logs.ts
     └── src/
-        ├── index.ts                      ← Startup: Redis, file watcher, HTTP server
+        ├── index.ts                      ← Startup: Redis, MCP server, HTTP server
         ├── server.ts                     ← HTTP: /jobs/migrate, /jobs/feature, /webhook, SSE
-        ├── watcher.ts                    ← File watcher: memory/ + agents/ → self-update PRs
+        ├── mcp-server.ts                 ← In-process MCP server (all domain tools)
+        ├── watcher.ts                    ← File watcher: memory/ + agents/ + config/ → self-update PRs
+        ├── workflow-parser.ts            ← YAML front matter parser (phases, subagents)
         ├── config/settings.ts
         ├── jobs/
-        │   ├── types.ts                  ← JobType, JobStatus, JobPhase, Job, all input types
+        │   ├── types.ts                  ← JobType, Job, JobInput, status constants
         │   ├── registry.ts               ← Redis CRUD + PR/Jira/repo mappings
-        │   ├── runner.ts                 ← Core Claude API session loop
+        │   ├── runner.ts                 ← Claude Agent SDK query() per phase
         │   └── dispatcher.ts             ← Routes CLI/webhook/Jira triggers to job runners
         ├── clients/
         │   ├── bitbucket.ts              ← BitBucket REST API (two accounts)
-        │   ├── git.ts                    ← Git operations via child_process
+        │   ├── git.ts                    ← Git operations via simple-git
         │   ├── loki.ts                   ← Loki HTTP API (graceful degradation)
         │   ├── tempo.ts                  ← Tempo HTTP API (graceful degradation)
-        │   └── jira.ts                   ← Jira REST API (stubbed; no-op until configured)
+        │   └── jira.ts                   ← Jira REST API (graceful degradation)
         ├── prompt/
-        │   ├── builder.ts                ← Assembles system prompt from MD files per phase
-        │   └── tools.ts                  ← 32 Anthropic tool definitions
+        │   └── builder.ts                ← Assembles system prompt from MD files per phase
         └── tools/
-            ├── filesystem.ts             ← read_file, write_file, list_directory, create_directory
-            ├── git-tools.ts              ← git_clone, git_commit, git_push, etc.
-            ├── bitbucket-tools.ts        ← bb_create_pr, bb_post_pr_comment, bb_approve_pr, etc.
-            ├── observability-tools.ts    ← loki_query, tempo_get_trace, tempo_search
-            ├── jira-tools.ts             ← jira_get_issue, jira_post_comment (stubbed)
-            ├── test-harness.ts           ← run_go_build, start_go_service, compare_request
-            ├── job-control.ts            ← mark_phase_complete, await_event, escalate, log
-            └── index.ts                  ← Tool router: name → implementation
+            ├── types.ts                  ← ToolContext, PhaseSignals
+            └── self-improvement.ts       ← propose_change, list_proposals
+```
 
 ---
 

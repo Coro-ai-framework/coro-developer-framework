@@ -5,18 +5,25 @@ import { Logger } from 'pino'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface SubagentConfig {
+  name: string
+  agent?: string
+  model?: string
+  tools?: string[]
+}
+
 export interface PhaseConfig {
   name: string
   agent: string | null
   model: 'planning' | 'coding'
   status: string
+  subagents?: SubagentConfig[]
 }
 
 export interface WorkflowConfig {
   initialPhase: string
   initialStatus: string
   phases: PhaseConfig[]
-  /** Per-trigger overrides, e.g. { jira: { initialPhase: 'spec-writing' } } */
   overrides: Record<string, { initialPhase?: string }>
 }
 
@@ -24,29 +31,30 @@ export interface WorkflowConfig {
 
 const FRONT_MATTER_RE = /^---\n([\s\S]*?)\n---/
 
-/**
- * Extract YAML front matter from a markdown string.
- * Returns null if no front matter block is found.
- */
 function extractFrontMatter(markdown: string): string | null {
   const match = FRONT_MATTER_RE.exec(markdown)
   return match ? match[1] : null
 }
 
-/**
- * Strip YAML front matter from a markdown string, returning just the content.
- */
 export function stripFrontMatter(markdown: string): string {
   return markdown.replace(FRONT_MATTER_RE, '').trimStart()
 }
 
 // ── Raw YAML shape ────────────────────────────────────────────────────────────
 
+interface RawSubagent {
+  name?: string
+  agent?: string
+  model?: string
+  tools?: string[]
+}
+
 interface RawPhase {
   name?: string
   agent?: string | null
   model?: string
   status?: string
+  subagents?: RawSubagent[]
 }
 
 interface RawConfig {
@@ -58,10 +66,6 @@ interface RawConfig {
 
 // ── Parser ────────────────────────────────────────────────────────────────────
 
-/**
- * Parse a workflow config from a markdown string containing YAML front matter.
- * Returns null if the file has no front matter or the YAML is invalid.
- */
 export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
   const raw = extractFrontMatter(markdown)
   if (!raw) return null
@@ -79,12 +83,27 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
 
   const phases: PhaseConfig[] = parsed.phases
     .filter((p): p is RawPhase & { name: string } => typeof p.name === 'string')
-    .map(p => ({
-      name: p.name,
-      agent: p.agent ?? null,
-      model: p.model === 'coding' ? 'coding' : 'planning',
-      status: p.status ?? p.name,
-    }))
+    .map(p => {
+      const phase: PhaseConfig = {
+        name: p.name,
+        agent: p.agent ?? null,
+        model: p.model === 'coding' ? 'coding' : 'planning',
+        status: p.status ?? p.name,
+      }
+
+      if (Array.isArray(p.subagents) && p.subagents.length > 0) {
+        phase.subagents = p.subagents
+          .filter((sa): sa is RawSubagent & { name: string } => typeof sa.name === 'string')
+          .map(sa => ({
+            name: sa.name,
+            agent: sa.agent,
+            model: sa.model,
+            tools: sa.tools,
+          }))
+      }
+
+      return phase
+    })
 
   if (phases.length === 0) return null
 
@@ -107,10 +126,6 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
 
 // ── File loader ───────────────────────────────────────────────────────────────
 
-/**
- * Load and parse a workflow config from a file path.
- * Returns null if the file doesn't exist or has no valid config.
- */
 export async function loadWorkflowConfig(
   workflowPath: string,
   a5aiDir: string,
@@ -135,22 +150,16 @@ export async function loadWorkflowConfig(
 
 // ── Lookup helpers ────────────────────────────────────────────────────────────
 
-/** Find the next phase after `currentPhase` in the workflow sequence. */
 export function getNextPhase(config: WorkflowConfig, currentPhase: string): string | null {
   const idx = config.phases.findIndex(p => p.name === currentPhase)
   if (idx === -1 || idx === config.phases.length - 1) return null
   return config.phases[idx + 1].name
 }
 
-/** Get the PhaseConfig for a given phase name. */
 export function getPhaseConfig(config: WorkflowConfig, phaseName: string): PhaseConfig | undefined {
   return config.phases.find(p => p.name === phaseName)
 }
 
-/**
- * Resolve the initial phase for a job, accounting for trigger-specific overrides.
- * E.g. a Jira-triggered feature job starts at 'spec-writing' instead of 'planning'.
- */
 export function resolveInitialPhase(config: WorkflowConfig, triggerSource: string): string {
   const override = config.overrides[triggerSource]
   if (override?.initialPhase) return override.initialPhase

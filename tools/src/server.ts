@@ -231,11 +231,7 @@ export function createServer(ctx: ServerContext): Express {
       return
     }
 
-    // Return full job but omit conversation history (use /stream for log output)
-    const { conversationHistory: _conv, _signals, ...safe } = job
-    void _conv
-    void _signals
-    res.json(safe)
+    res.json(job)
   })
 
   // ── GET /jobs/:jobId/stream ────────────────────────────────────────────────

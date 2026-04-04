@@ -18,11 +18,6 @@ export class Dispatcher {
 
   // ── CLI / API triggers ──────────────────────────────────────────────────────
 
-  /**
-   * Create a new job from a CLI or API request and immediately start the runner.
-   * Returns the created job so the HTTP response can return jobId + streamUrl.
-   * The runner continues asynchronously — this method does not wait for it.
-   */
   async dispatch(input: JobInput) {
     const job = await this.ctx.registry.createJob(input)
     this.ctx.logger.info({ jobId: job.id, type: job.type }, 'Job dispatched')
@@ -32,11 +27,6 @@ export class Dispatcher {
 
   // ── Webhook events ──────────────────────────────────────────────────────────
 
-  /**
-   * Handle an incoming BitBucket or Jira webhook event.
-   * Looks up the parked job that is waiting for this event, injects the event
-   * payload into the conversation history, and resumes the runner.
-   */
   async handleWebhookEvent(
     source: 'bitbucket' | 'jira',
     eventKey: string,
@@ -67,7 +57,6 @@ export class Dispatcher {
       return
     }
 
-    // Only resume jobs that are parked waiting for this specific event
     if (!isParkingStatus(job.status)) {
       this.ctx.logger.debug({ jobId: job.id, status: job.status }, 'Job is not parked — skipping')
       return
@@ -106,7 +95,6 @@ export class Dispatcher {
   ): Promise<void> {
     const event: WebhookEvent = { eventKey, payload, receivedAt: new Date().toISOString() }
 
-    // If the job is already running (mid-turn), queue the event
     if (this.activeJobs.has(jobId)) {
       this.ctx.logger.debug({ jobId, eventKey }, 'Job is active — queueing webhook event')
       const queue = this.eventQueue.get(jobId) ?? []
@@ -122,16 +110,12 @@ export class Dispatcher {
     const job = await this.ctx.registry.getJob(jobId)
     if (!job) return
 
-    // Inject the event as a user message and clear the parking state
-    const eventMessage = buildWebhookMessage(event.eventKey, event.payload)
+    // Clear the parking state — the runner will pick up the event context
+    // via the webhook message injected as the prompt for the resumed session.
     await this.ctx.registry.updateJob(jobId, {
-      status: STATUS_CODING, // resume working status — agent will re-park if needed
+      status: STATUS_CODING,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
-      conversationHistory: [
-        ...job.conversationHistory,
-        { role: 'user', content: eventMessage },
-      ],
     })
 
     await this.ctx.registry.appendLog(jobId, `[webhook] Received: ${event.eventKey}`)
@@ -168,7 +152,6 @@ export class Dispatcher {
       .finally(async () => {
         this.activeJobs.delete(jobId)
 
-        // Drain any queued webhook events that arrived while the job was running
         const queued = this.eventQueue.get(jobId) ?? []
         this.eventQueue.delete(jobId)
 
@@ -183,10 +166,9 @@ export class Dispatcher {
 
 // ── Webhook message builder ───────────────────────────────────────────────────
 
-function buildWebhookMessage(eventKey: string, payload: Record<string, unknown>): string {
+export function buildWebhookMessage(eventKey: string, payload: Record<string, unknown>): string {
   const lines = [`[WEBHOOK EVENT: ${eventKey}]`, `Received at: ${new Date().toISOString()}`, '']
 
-  // Extract the most useful fields for common BitBucket PR events
   const pr = payload['pullrequest'] as Record<string, unknown> | undefined
   if (pr) {
     const id = pr['id']
@@ -202,7 +184,6 @@ function buildWebhookMessage(eventKey: string, payload: Record<string, unknown>)
     if (author) lines.push(`Author: ${author}`)
   }
 
-  // For comment events, include the comment text
   const comment = payload['comment'] as Record<string, unknown> | undefined
   if (comment) {
     const content = (comment['content'] as Record<string, unknown> | undefined)?.['raw']
@@ -236,10 +217,6 @@ function extractJiraTicketId(payload: Record<string, unknown>): string | null {
   return typeof key === 'string' ? key : null
 }
 
-/**
- * Check whether a received BitBucket event key matches what the job is waiting for.
- * Handles both exact matches and prefix matches (e.g. "pr:fulfilled" matches "pr:fulfilled").
- */
 function eventMatchesExpected(received: string, expected: string): boolean {
   return received === expected || received.startsWith(expected)
 }

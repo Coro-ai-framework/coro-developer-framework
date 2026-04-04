@@ -17,6 +17,11 @@ phases:
     agent: agents/coder.md
     model: coding
     status: coding
+    subagents:
+      - name: code-reviewer
+        agent: agents/pr-reviewer.md
+        model: coding
+        tools: [Read, Glob, Grep, mcp__a5__bb_get_pr_comments, mcp__a5__bb_post_pr_comment, mcp__a5__log]
 
   - name: review
     agent: agents/pr-reviewer.md
@@ -27,6 +32,11 @@ phases:
     agent: agents/tester.md
     model: coding
     status: testing
+    subagents:
+      - name: test-runner
+        agent: agents/tester.md
+        model: coding
+        tools: [Bash, Read, mcp__a5__run_go_build, mcp__a5__compare_request, mcp__a5__log]
 
   - name: evaluation
     agent: agents/evaluator.md

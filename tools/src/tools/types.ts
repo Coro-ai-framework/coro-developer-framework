@@ -11,9 +11,9 @@ import { Job } from '../jobs/types'
 
 // ── Tool execution context ────────────────────────────────────────────────────
 //
-// Passed to every tool implementation. Tools read job state, call external
-// clients, and mutate job._signals — but never return until their action
-// is complete. The runner reads _signals after each full Claude turn.
+// Shared mutable state passed to every MCP tool handler.
+// The `job` field is swapped between phases by the runner.
+// `runningServices` tracks Go processes started by the test harness.
 
 export interface ToolContext {
   job: Job
@@ -26,17 +26,19 @@ export interface ToolContext {
   tempoClient: TempoClient
   jiraClient: JiraClient
   logger: Logger
-  /** Long-running Go service processes started by the test harness, keyed by a label. */
   runningServices: Map<string, ChildProcess>
 }
 
-// ── Tool result ───────────────────────────────────────────────────────────────
+// ── Job-control signal types ──────────────────────────────────────────────────
 //
-// `output` is serialised to JSON and sent back to Claude as the tool_result
-// content. Keep it concise — large blobs eat context budget.
+// MCP tool handlers for mark_phase_complete / await_event / escalate set these
+// on the shared PhaseSignals object. The runner reads them after each query()
+// completes (or via hooks) to decide what to do next.
 
-export interface ToolResult {
-  success: boolean
-  output?: unknown
-  error?: string
+export interface PhaseSignals {
+  phaseComplete?: boolean
+  awaitingEvent?: string
+  awaitingPrId?: number
+  escalated?: boolean
+  escalationReason?: string
 }

@@ -10,14 +10,6 @@ import {
 import { loadWorkflowConfig, resolveInitialPhase, getPhaseConfig } from '../workflow-parser'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
-//
-//  job:{jobId}              String (JSON)  Full Job object
-//  job:{jobId}:log          List           Log lines (RPUSH / LRANGE)
-//  pr:{prId}:job            String         jobId that owns this PR
-//  jira:{ticketId}:job      String         jobId for this Jira ticket
-//  repo:{repoSlug}:jobs     Set            All job IDs that touched this repo
-//  jobs:all                 Set            All job IDs (for listJobs)
-//  jobs:type:{type}         Set            Job IDs by JobType
 
 function keyJob(jobId: string): string          { return `job:${jobId}` }
 function keyLog(jobId: string): string          { return `job:${jobId}:log` }
@@ -26,25 +18,6 @@ function keyJira(ticketId: string): string      { return `jira:${ticketId}:job` 
 function keyRepo(repoSlug: string): string      { return `repo:${repoSlug}:jobs` }
 function keyAllJobs(): string                   { return 'jobs:all' }
 function keyJobsByType(type: JobType): string   { return `jobs:type:${type}` }
-
-// ── Serialization ─────────────────────────────────────────────────────────────
-
-/**
- * Strip the transient `_signals` field before writing to Redis.
- * It is in-process only and must never be persisted.
- */
-function serialize(job: Job): string {
-  const { _signals, ...persistable } = job
-  void _signals  // intentionally discarded
-  return JSON.stringify(persistable)
-}
-
-function deserialize(raw: string): Job {
-  const job = JSON.parse(raw) as Job
-  // Ensure _signals starts clean on every load
-  job._signals = {}
-  return job
-}
 
 // ── Registry class ────────────────────────────────────────────────────────────
 
@@ -64,7 +37,6 @@ export class JobRegistry {
     const workflowPath = defaultWorkflowPath(jobType)
     const triggerSource = input.triggerSource ?? 'cli'
 
-    // Load the workflow config to determine the initial phase.
     const config = workflowPath && this.a5aiDir
       ? await loadWorkflowConfig(workflowPath, this.a5aiDir, this.logger as Parameters<typeof loadWorkflowConfig>[2])
       : null
@@ -75,13 +47,11 @@ export class JobRegistry {
     const phaseConfig = config ? getPhaseConfig(config, initialPhase) : null
     const initialStatus = phaseConfig?.status ?? config?.initialStatus ?? STATUS_QUEUED
 
-    // Generate a human-readable ID from the params
     const label = (input.params['serviceName'] as string)
       ?? (input.params['jiraTicketId'] as string)
       ?? input.type
     const id = `${label}-${input.type}-${Date.now()}`
 
-    // Build initial PR mappings from params if present (e.g. self-update jobs)
     const prMappings: PrMapping[] = []
     if (input.params['prId'] && input.params['branchName']) {
       prMappings.push({
@@ -102,10 +72,8 @@ export class JobRegistry {
       phase: initialPhase,
       currentFeature: null,
       prMappings,
-      conversationHistory: [],
       createdAt: now,
       updatedAt: now,
-      _signals: {},
     }
 
     await this.persist(job)
@@ -117,7 +85,7 @@ export class JobRegistry {
   async getJob(jobId: string): Promise<Job | null> {
     const raw = await this.redis.get(keyJob(jobId))
     if (!raw) return null
-    return deserialize(raw)
+    return JSON.parse(raw) as Job
   }
 
   async listJobs(): Promise<Job[]> {
@@ -132,28 +100,18 @@ export class JobRegistry {
 
   // ── Update ────────────────────────────────────────────────────────────────
 
-  /**
-   * Shallow-merge `patch` into the existing job and persist.
-   * Always updates `updatedAt`.
-   * `_signals` in the patch is silently dropped — use the in-memory job object
-   * to communicate signals between tools and the runner within a single turn.
-   */
   async updateJob(jobId: string, patch: Partial<Job>): Promise<Job> {
     const existing = await this.getJob(jobId)
     if (!existing) throw new Error(`Job not found: ${jobId}`)
 
-    const { _signals, ...safePatch } = patch
-    void _signals
-
     const updated: Job = {
       ...existing,
-      ...safePatch,
-      id: existing.id,           // immutable
-      type: existing.type,       // immutable
-      workflowPath: existing.workflowPath,  // immutable
-      createdAt: existing.createdAt,        // immutable
+      ...patch,
+      id: existing.id,
+      type: existing.type,
+      workflowPath: existing.workflowPath,
+      createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),
-      _signals: existing._signals ?? {},
     }
 
     await this.persist(updated)
@@ -226,22 +184,15 @@ export class JobRegistry {
 
   // ── Log streaming ─────────────────────────────────────────────────────────
 
-  /** Append a log line to the job's log stream. */
   async appendLog(jobId: string, line: string): Promise<void> {
     const entry = `${new Date().toISOString()} ${line}`
     await this.redis.rpush(keyLog(jobId), entry)
   }
 
-  /**
-   * Read log lines.
-   * @param start 0-based start index (default 0)
-   * @param end   0-based end index inclusive, -1 for all (default -1)
-   */
   async getLog(jobId: string, start = 0, end = -1): Promise<string[]> {
     return this.redis.lrange(keyLog(jobId), start, end)
   }
 
-  /** Returns the total number of log lines for a job. */
   async logLength(jobId: string): Promise<number> {
     return this.redis.llen(keyLog(jobId))
   }
@@ -250,7 +201,7 @@ export class JobRegistry {
 
   private async persist(job: Job): Promise<void> {
     const pipeline = this.redis.pipeline()
-    pipeline.set(keyJob(job.id), serialize(job))
+    pipeline.set(keyJob(job.id), JSON.stringify(job))
     pipeline.sadd(keyAllJobs(), job.id)
     pipeline.sadd(keyJobsByType(job.type), job.id)
 
@@ -278,11 +229,10 @@ export class JobRegistry {
     for (const result of results ?? []) {
       const [err, raw] = result as [Error | null, string | null]
       if (!err && raw) {
-        jobs.push(deserialize(raw))
+        jobs.push(JSON.parse(raw) as Job)
       }
     }
 
-    // Sort newest first
     return jobs.sort((a, b) =>
       new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     )
