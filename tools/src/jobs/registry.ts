@@ -6,10 +6,6 @@ import {
   STATUS_QUEUED,
   PrMapping,
   defaultWorkflowPath,
-  MigrationJobInput,
-  FeatureJobInput,
-  JiraJobInput,
-  SelfUpdateJobInput,
 } from './types'
 import { loadWorkflowConfig, resolveInitialPhase, getPhaseConfig } from '../workflow-parser'
 
@@ -64,113 +60,52 @@ export class JobRegistry {
   async createJob(input: JobInput): Promise<Job> {
     const now = new Date().toISOString()
 
-    // Determine job type and workflow path
     const jobType = inputToJobType(input)
     const workflowPath = defaultWorkflowPath(jobType)
+    const triggerSource = input.triggerSource ?? 'cli'
 
     // Load the workflow config to determine the initial phase.
-    // Falls back to 'init' / 'queued' if the workflow file is missing or has no config.
     const config = workflowPath && this.a5aiDir
       ? await loadWorkflowConfig(workflowPath, this.a5aiDir, this.logger as Parameters<typeof loadWorkflowConfig>[2])
       : null
 
-    const triggerSource = getTriggerSource(input)
     const initialPhase = config
       ? resolveInitialPhase(config, triggerSource)
       : 'init'
     const phaseConfig = config ? getPhaseConfig(config, initialPhase) : null
     const initialStatus = phaseConfig?.status ?? config?.initialStatus ?? STATUS_QUEUED
 
-    let job: Job
+    // Generate a human-readable ID from the params
+    const label = (input.params['serviceName'] as string)
+      ?? (input.params['jiraTicketId'] as string)
+      ?? input.type
+    const id = `${label}-${input.type}-${Date.now()}`
 
-    if (isMigrationInput(input)) {
-      job = {
-        id: `${input.serviceName}-migration-${Date.now()}`,
-        type: jobType,
-        workflowPath,
-        serviceName: input.serviceName,
-        repoSlug: input.repo,
-        projects: input.projects,
-        reviewers: input.reviewers,
-        stagingUrl: input.stagingUrl,
-        triggerSource,
-        status: initialStatus,
-        phase: initialPhase,
-        currentFeature: null,
-        prMappings: [],
-        conversationHistory: [],
-        createdAt: now,
-        updatedAt: now,
-        _signals: {},
-      }
-    } else if (isJiraInput(input)) {
-      job = {
-        id: `jira-${input.jiraTicketId}-feature-${Date.now()}`,
-        type: jobType,
-        workflowPath,
-        serviceName: input.jiraTicketId,
-        repoSlug: '',
-        projects: [],
-        reviewers: [],
-        stagingUrl: '',
-        triggerSource,
-        jiraTicketId: input.jiraTicketId,
-        status: initialStatus,
-        phase: initialPhase,
-        currentFeature: null,
-        prMappings: [],
-        conversationHistory: [],
-        createdAt: now,
-        updatedAt: now,
-        _signals: {},
-      }
-    } else if (isSelfUpdateInput(input)) {
-      const s = input as SelfUpdateJobInput
-      job = {
-        id: `self-update-${s.prId}-${Date.now()}`,
-        type: jobType,
-        workflowPath,
-        serviceName: 'a5-ai',
-        repoSlug: s.repoSlug,
-        projects: [],
-        reviewers: [],
-        stagingUrl: '',
-        triggerSource,
-        status: initialStatus,
-        phase: initialPhase,
-        currentFeature: null,
-        prMappings: [{
-          prId: s.prId,
-          feature: s.branchName,
-          repoSlug: s.repoSlug,
-          openedAt: now,
-        }],
-        conversationHistory: [],
-        createdAt: now,
-        updatedAt: now,
-        _signals: {},
-      }
-    } else {
-      const f = input as FeatureJobInput
-      job = {
-        id: `${f.serviceName}-feature-${Date.now()}`,
-        type: jobType,
-        workflowPath,
-        serviceName: f.serviceName,
-        repoSlug: f.repo,
-        projects: [],
-        reviewers: f.reviewers,
-        stagingUrl: '',
-        triggerSource,
-        status: initialStatus,
-        phase: initialPhase,
-        currentFeature: null,
-        prMappings: [],
-        conversationHistory: [],
-        createdAt: now,
-        updatedAt: now,
-        _signals: {},
-      }
+    // Build initial PR mappings from params if present (e.g. self-update jobs)
+    const prMappings: PrMapping[] = []
+    if (input.params['prId'] && input.params['branchName']) {
+      prMappings.push({
+        prId: input.params['prId'] as number,
+        feature: input.params['branchName'] as string,
+        repoSlug: (input.params['repoSlug'] as string) ?? '',
+        openedAt: now,
+      })
+    }
+
+    const job: Job = {
+      id,
+      type: jobType,
+      workflowPath,
+      params: input.params,
+      triggerSource,
+      status: initialStatus,
+      phase: initialPhase,
+      currentFeature: null,
+      prMappings,
+      conversationHistory: [],
+      createdAt: now,
+      updatedAt: now,
+      _signals: {},
     }
 
     await this.persist(job)
@@ -231,12 +166,14 @@ export class JobRegistry {
     const job = await this.getJob(jobId)
     if (!job) return
 
+    const repoSlug = (job.params['repoSlug'] as string) ?? ''
+
     const pipeline = this.redis.pipeline()
     pipeline.del(keyJob(jobId))
     pipeline.del(keyLog(jobId))
     pipeline.srem(keyAllJobs(), jobId)
     pipeline.srem(keyJobsByType(job.type), jobId)
-    pipeline.srem(keyRepo(job.repoSlug), jobId)
+    if (repoSlug) pipeline.srem(keyRepo(repoSlug), jobId)
     await pipeline.exec()
   }
 
@@ -316,12 +253,17 @@ export class JobRegistry {
     pipeline.set(keyJob(job.id), serialize(job))
     pipeline.sadd(keyAllJobs(), job.id)
     pipeline.sadd(keyJobsByType(job.type), job.id)
-    if (job.repoSlug) {
-      pipeline.sadd(keyRepo(job.repoSlug), job.id)
+
+    const repoSlug = job.params['repoSlug'] as string | undefined
+    if (repoSlug) {
+      pipeline.sadd(keyRepo(repoSlug), job.id)
     }
-    if (job.jiraTicketId) {
-      pipeline.set(keyJira(job.jiraTicketId), job.id)
+
+    const jiraTicketId = job.params['jiraTicketId'] as string | undefined
+    if (jiraTicketId) {
+      pipeline.set(keyJira(jiraTicketId), job.id)
     }
+
     await pipeline.exec()
   }
 
@@ -347,19 +289,7 @@ export class JobRegistry {
   }
 }
 
-// ── Type guards and helpers ────────────────────────────────────────────────────
-
-function isMigrationInput(input: JobInput): input is MigrationJobInput {
-  return input.type === 'migration'
-}
-
-function isJiraInput(input: JobInput): input is JiraJobInput {
-  return input.type === 'feature' && 'jiraTicketId' in input
-}
-
-function isSelfUpdateInput(input: JobInput): input is SelfUpdateJobInput {
-  return input.type === 'self-update'
-}
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function inputToJobType(input: JobInput): JobType {
   switch (input.type) {
@@ -367,12 +297,4 @@ function inputToJobType(input: JobInput): JobType {
     case 'feature':     return JobType.Feature
     case 'self-update': return JobType.SelfUpdate
   }
-}
-
-function getTriggerSource(input: JobInput): 'cli' | 'jira' | 'internal' {
-  if ('triggerSource' in input && input.triggerSource) {
-    return input.triggerSource as 'cli' | 'jira' | 'internal'
-  }
-  if (input.type === 'self-update') return 'internal'
-  return 'cli'
 }

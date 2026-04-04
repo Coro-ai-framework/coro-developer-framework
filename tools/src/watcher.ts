@@ -218,10 +218,14 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
   try {
     const job = await registry.createJob({
       type: 'self-update',
-      prId,
-      repoSlug,
-      branchName: branch,
-      changedFiles: changedFiles.map(f => path.relative(a5aiDir, f)),
+      triggerSource: 'internal',
+      params: {
+        prId,
+        repoSlug,
+        branchName: branch,
+        serviceName: 'a5-ai',
+        changedFiles: changedFiles.map(f => path.relative(a5aiDir, f)),
+      },
     })
     await registry.appendLog(job.id, `Self-improvement PR #${prId} opened: ${branch}`)
     logger.info({ jobId: job.id, prId }, 'SelfUpdate job registered')

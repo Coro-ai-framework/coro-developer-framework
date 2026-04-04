@@ -1,3 +1,4 @@
+import { jobReviewers } from '../jobs/types'
 import { ToolContext } from './types'
 
 // ── Coder account tools ───────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ export async function bbCreatePr(
     description: input.description,
     sourceBranch: input.sourceBranch,
     targetBranch: input.targetBranch ?? 'main',
-    reviewerUsernames: input.reviewerUsernames ?? ctx.job.reviewers,
+    reviewerUsernames: input.reviewerUsernames ?? jobReviewers(ctx.job),
   })
   return { prId: pr.id, url: pr.links.html.href, state: pr.state }
 }

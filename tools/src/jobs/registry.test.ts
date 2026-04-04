@@ -17,15 +17,19 @@ async function run(): Promise<void> {
   console.log('\n[1] Creating migration job...')
   const job = await registry.createJob({
     type: 'migration',
-    repo: 'test-service',
-    projects: ['TestService.API', 'TestService.Models'],
-    reviewers: ['alice', 'bob'],
-    stagingUrl: 'https://staging.test-service.a5labs.com',
-    serviceName: 'test-service',
+    params: {
+      repo: 'test-service',
+      repoSlug: 'test-service',
+      projects: ['TestService.API', 'TestService.Models'],
+      reviewers: ['alice', 'bob'],
+      stagingUrl: 'https://staging.test-service.a5labs.com',
+      serviceName: 'test-service',
+    },
   })
   console.log(`    Created: ${job.id}`)
   console.log(`    Type: ${job.type}, Phase: ${job.phase}, Status: ${job.status}`)
   console.log(`    workflowPath: ${job.workflowPath}`)
+  console.log(`    params.serviceName: ${job.params['serviceName']}`)
   console.log(`    _signals present (transient): ${job._signals !== undefined}`)
 
   // ── 2. Read it back ──────────────────────────────────────────────────────
@@ -84,8 +88,11 @@ async function run(): Promise<void> {
   console.log('\n[8] Creating Jira-triggered feature job...')
   const jiraJob = await registry.createJob({
     type: 'feature',
-    jiraTicketId: 'A5-1234',
     triggerSource: 'jira',
+    params: {
+      jiraTicketId: 'A5-1234',
+      serviceName: 'A5-1234',
+    },
   })
   console.log(`    Created: ${jiraJob.id}`)
   console.log(`    Phase: ${jiraJob.phase} (expected: spec-writing)`)

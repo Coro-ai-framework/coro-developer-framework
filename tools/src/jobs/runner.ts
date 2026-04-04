@@ -16,7 +16,7 @@ import {
   getPhaseConfig,
 } from '../workflow-parser'
 import { JobRegistry } from './registry'
-import { Job, STATUS_COMPLETE, STATUS_ESCALATED, STATUS_FAILED, isTerminalStatus } from './types'
+import { Job, STATUS_COMPLETE, STATUS_ESCALATED, STATUS_FAILED, isTerminalStatus, jobServiceName, jobJiraTicketId } from './types'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -332,7 +332,7 @@ function buildInitialMessage(job: Job): string {
   const lines = [
     `A new ${job.type} job has started.`,
     `Job ID: ${job.id}`,
-    `Service: ${job.serviceName}`,
+    `Service: ${jobServiceName(job)}`,
     `Phase: ${job.phase}`,
     '',
     'Your current job context is in the system prompt. Read your instructions carefully, ' +
@@ -340,8 +340,9 @@ function buildInitialMessage(job: Job): string {
     'Use the `log` tool to report progress as you go.',
   ]
 
-  if (job.jiraTicketId) {
-    lines.push(`\nThis job was triggered by Jira ticket: ${job.jiraTicketId}`)
+  const jiraTicketId = jobJiraTicketId(job)
+  if (jiraTicketId) {
+    lines.push(`\nThis job was triggered by Jira ticket: ${jiraTicketId}`)
   }
 
   return lines.join('\n')
@@ -352,7 +353,7 @@ function buildPhaseTransitionMessage(nextPhase: string, job: Job): string {
     `Phase complete. The job is now advancing to phase: **${nextPhase}**.\n\n` +
     `Your system prompt has been updated with instructions for this phase. ` +
     `Review your new role carefully before proceeding.\n\n` +
-    `Job ID: ${job.id} | Service: ${job.serviceName}`
+    `Job ID: ${job.id} | Service: ${jobServiceName(job)}`
   )
 }
 

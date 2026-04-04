@@ -601,3 +601,42 @@
           For TypeScript files this will be compiled before the PR is opened.
           Include complete, working code — not diffs or partial snippets.
     required: [type, title, rationale, description]
+
+# ── Shell ────────────────────────────────────────────────────────────────────
+
+- name: shell
+  description: |
+    Execute a shell command in the working directory.
+    Git, curl, go build, go test, grep, jq, and all standard Unix tools are available.
+    Credentials are injected as environment variables — do not hardcode them.
+
+    Use this for any ad-hoc command that doesn't have a dedicated tool:
+      - Running tests: `go test ./...`
+      - Searching code: `grep -rn "pattern" .`
+      - Inspecting files: `wc -l *.go`
+      - Building artifacts: `go build -o myservice ./cmd/server`
+      - Calling APIs directly: `curl -s https://api.example.com/endpoint`
+
+    The command runs with a 2-minute timeout by default.
+    Output is truncated at 256KB to avoid flooding context.
+    Non-zero exit codes return stdout + stderr so you can see the error.
+
+    Security: workingDir must be within the job's allowed directories.
+    SelfUpdate jobs may also run commands in the a5-ai directory.
+  input_schema:
+    properties:
+      command:
+        type: string
+        description: Shell command to execute (runs in /bin/bash)
+      workingDir:
+        type: string
+        description: Working directory for the command (default is the job's working directory). Must be within allowed roots.
+      timeoutMs:
+        type: number
+        description: "Timeout in milliseconds (default: 120000 = 2 minutes)"
+      env:
+        type: object
+        additionalProperties:
+          type: string
+        description: Additional environment variables to set for this command
+    required: [command]

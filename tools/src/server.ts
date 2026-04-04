@@ -4,7 +4,7 @@ import swaggerUi from 'swagger-ui-express'
 import { Logger } from 'pino'
 import { Dispatcher } from './jobs/dispatcher'
 import { JobRegistry } from './jobs/registry'
-import { JobType, MigrationJobInput, FeatureJobInput, JiraJobInput } from './jobs/types'
+import { JobInput, JobType } from './jobs/types'
 import { Settings } from './config/settings'
 import { openApiSpec } from './openapi'
 
@@ -104,7 +104,7 @@ export function createServer(ctx: ServerContext): Express {
   // ── POST /jobs/migrate ─────────────────────────────────────────────────────
 
   app.post('/jobs/migrate', async (req: Request, res: Response) => {
-    const { repo, projects, reviewers, stagingUrl, serviceName } = req.body as Partial<MigrationJobInput>
+    const { repo, projects, reviewers, stagingUrl, serviceName } = req.body as Record<string, unknown>
 
     if (!repo || !projects || !reviewers || !stagingUrl || !serviceName) {
       res.status(400).json({
@@ -123,13 +123,9 @@ export function createServer(ctx: ServerContext): Express {
       return
     }
 
-    const input: MigrationJobInput = {
+    const input: JobInput = {
       type: 'migration',
-      repo,
-      projects,
-      reviewers,
-      stagingUrl,
-      serviceName,
+      params: { repo, repoSlug: repo, projects, reviewers, stagingUrl, serviceName },
     }
 
     const job = await dispatcher.dispatch(input)
@@ -146,17 +142,17 @@ export function createServer(ctx: ServerContext): Express {
   // ── POST /jobs/feature ─────────────────────────────────────────────────────
 
   app.post('/jobs/feature', async (req: Request, res: Response) => {
-    const body = req.body as Partial<FeatureJobInput & JiraJobInput>
+    const body = req.body as Record<string, unknown>
 
     // Jira-triggered: only jiraTicketId is required
-    if ('jiraTicketId' in body && body.jiraTicketId) {
-      const input: JiraJobInput = {
+    if (body['jiraTicketId']) {
+      const input: JobInput = {
         type: 'feature',
-        jiraTicketId: body.jiraTicketId,
         triggerSource: 'jira',
+        params: { jiraTicketId: body['jiraTicketId'], serviceName: body['jiraTicketId'] },
       }
       const job = await dispatcher.dispatch(input)
-      logger.info({ jobId: job.id, jiraTicketId: body.jiraTicketId }, 'Feature job dispatched (Jira)')
+      logger.info({ jobId: job.id, jiraTicketId: body['jiraTicketId'] }, 'Feature job dispatched (Jira)')
 
       res.status(201).json({
         jobId: job.id,
@@ -181,12 +177,9 @@ export function createServer(ctx: ServerContext): Express {
       return
     }
 
-    const input: FeatureJobInput = {
+    const input: JobInput = {
       type: 'feature',
-      repo,
-      reviewers,
-      description,
-      serviceName,
+      params: { repo, repoSlug: repo, reviewers, description, serviceName },
     }
 
     const job = await dispatcher.dispatch(input)
@@ -216,7 +209,7 @@ export function createServer(ctx: ServerContext): Express {
     const summary = jobs.map(j => ({
       id: j.id,
       type: j.type,
-      serviceName: j.serviceName,
+      serviceName: j.params['serviceName'] ?? null,
       status: j.status,
       phase: j.phase,
       currentFeature: j.currentFeature,

@@ -71,16 +71,20 @@ export interface Job {
   /** Relative path to the workflow MD file, e.g. 'workflows/migration/workflow.md' */
   workflowPath: string
 
-  // Job parameters (set at creation, read-only after)
-  serviceName: string
-  repoSlug: string
-  projects: string[]        // C# project names to migrate / touch
-  reviewers: string[]       // BitBucket usernames to tag on PRs
-  stagingUrl: string        // Base URL of the .NET staging service
+  /**
+   * All job-specific parameters in a single generic bag.
+   * Populated from the input at creation time. The infrastructure never
+   * interprets these — they're passed through to the agent via the system
+   * prompt's job context block.
+   *
+   * Common keys (by convention, not enforced):
+   *   serviceName, repoSlug, projects, reviewers, stagingUrl, description,
+   *   jiraTicketId, branchName, changedFiles, prId
+   */
+  params: Record<string, unknown>
 
   // Source context
   triggerSource: 'cli' | 'jira' | 'internal'
-  jiraTicketId?: string     // populated for Jira-triggered jobs
 
   // Runtime state (mutated by runner)
   /** Lifecycle status — well-known values in STATUS_* constants, workflow-specific values from config */
@@ -107,54 +111,48 @@ export interface Job {
   escalationMessage?: string
 
   // ── Transient, never persisted ──────────────────────────────────────────────
-  // Populated in-process by job-control tools during a Claude turn.
-  // The runner reads and clears these after processing each turn.
   _signals?: JobSignals
 }
 
-// ── Input types (one per trigger source) ─────────────────────────────────────
+// ── Convenience accessors ─────────────────────────────────────────────────────
+// Type-safe getters for well-known params used by infrastructure code.
 
-export interface MigrationJobInput {
-  type: 'migration'
-  repo: string
-  projects: string[]
-  reviewers: string[]
-  stagingUrl: string
-  serviceName: string
+export function jobParam<T = string>(job: Job, key: string, fallback: T): T {
+  const val = job.params[key]
+  return (val as T) ?? fallback
 }
 
-export interface FeatureJobInput {
-  type: 'feature'
-  repo: string
-  reviewers: string[]
-  description: string
-  serviceName: string
+export function jobReviewers(job: Job): string[] {
+  const r = job.params['reviewers']
+  return Array.isArray(r) ? r as string[] : []
 }
 
-/**
- * Jira-triggered feature job.
- * The spec-writer agent infers repo/reviewers/description from the ticket.
- */
-export interface JiraJobInput {
-  type: 'feature'
-  jiraTicketId: string
-  triggerSource: 'jira'
+export function jobRepoSlug(job: Job): string {
+  return (job.params['repoSlug'] as string) ?? ''
 }
 
-/**
- * File-watcher-triggered self-improvement job.
- * Created automatically when the watcher detects changes to memory/, agents/,
- * or tools/src/ in the a5-ai repo. Tracks the PR that was opened.
- */
-export interface SelfUpdateJobInput {
-  type: 'self-update'
-  prId: number
-  repoSlug: string
-  branchName: string
-  changedFiles: string[]
+export function jobServiceName(job: Job): string {
+  return (job.params['serviceName'] as string) ?? ''
 }
 
-export type JobInput = MigrationJobInput | FeatureJobInput | JiraJobInput | SelfUpdateJobInput
+export function jobJiraTicketId(job: Job): string | undefined {
+  return job.params['jiraTicketId'] as string | undefined
+}
+
+// ── Job input ─────────────────────────────────────────────────────────────────
+//
+// A single generic input type. The `type` determines the workflow, and all
+// other fields go into `params`. The server routes validate shape before
+// calling createJob — the registry itself is type-agnostic.
+
+export interface JobInput {
+  /** Maps to a JobType and therefore a workflowPath. */
+  type: 'migration' | 'feature' | 'self-update'
+  /** Trigger source — defaults to 'cli' if not set. */
+  triggerSource?: 'cli' | 'jira' | 'internal'
+  /** All job-specific parameters. */
+  params: Record<string, unknown>
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

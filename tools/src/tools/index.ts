@@ -10,6 +10,7 @@ import { runGoBuild, startGoService, stopGoService, compareRequest } from './tes
 import { lokiQuery, tempoGetTrace, tempoSearch } from './observability-tools'
 import { jiraGetIssue, jiraPostComment, jiraTransitionIssue } from './jira-tools'
 import { markPhaseComplete, awaitEvent, escalate, log, proposeChange } from './job-control'
+import { shellExec } from './shell'
 
 export type { ToolContext, ToolResult }
 
@@ -66,6 +67,8 @@ const TOOLS: Record<string, ToolHandler> = {
   escalate:            wrap(escalate),
   log:                 wrap(log),
   propose_change:      wrap(proposeChange),
+
+  shell:               wrap(shellExec),
 }
 
 export const TOOL_NAMES = Object.keys(TOOLS) as (keyof typeof TOOLS)[]
