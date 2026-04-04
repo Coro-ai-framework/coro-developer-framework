@@ -1,3 +1,54 @@
+---
+initial_phase: init
+initial_status: queued
+
+phases:
+  - name: init
+    agent: ~
+    model: planning
+    status: initializing
+
+  - name: analysis
+    agent: agents/analyzer.md
+    model: planning
+    status: analyzing
+
+  - name: planning
+    agent: agents/planner.md
+    model: planning
+    status: planning
+
+  - name: repo-setup
+    agent: agents/coder.md
+    model: coding
+    status: repo-setup
+
+  - name: coding
+    agent: agents/coder.md
+    model: coding
+    status: coding
+
+  - name: review
+    agent: agents/pr-reviewer.md
+    model: coding
+    status: coding
+
+  - name: testing
+    agent: agents/tester.md
+    model: coding
+    status: testing
+
+  - name: evaluation
+    agent: agents/evaluator.md
+    model: planning
+    status: evaluating
+
+  - name: reporting
+    agent: agents/planner.md
+    model: planning
+    status: reporting
+---
+
 # Workflow: .NET to Go Migration
 
 ## Purpose

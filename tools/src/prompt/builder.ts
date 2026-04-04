@@ -3,26 +3,8 @@ import path from 'path'
 import { Logger } from 'pino'
 import { GitClient } from '../clients/git'
 import { Settings } from '../config/settings'
-import { Job, JobPhase } from '../jobs/types'
-
-// ── Phase → agent file mapping ────────────────────────────────────────────────
-//
-// Each phase loads a different agent MD file as the active role.
-// Missing files are logged as warnings and skipped — this allows new phases
-// to be added to a workflow before their agent file is written, without
-// crashing the runner.
-
-const PHASE_TO_AGENT: Partial<Record<JobPhase, string>> = {
-  [JobPhase.SpecWriting]: 'agents/spec-writer.md',
-  [JobPhase.Analysis]:    'agents/analyzer.md',
-  [JobPhase.Planning]:    'agents/planner.md',
-  [JobPhase.RepoSetup]:   'agents/coder.md',
-  [JobPhase.Coding]:      'agents/coder.md',
-  [JobPhase.Review]:      'agents/pr-reviewer.md',
-  [JobPhase.Testing]:     'agents/tester.md',
-  [JobPhase.Evaluation]:  'agents/evaluator.md',
-  [JobPhase.Reporting]:   'agents/planner.md',
-}
+import { Job } from '../jobs/types'
+import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
@@ -67,14 +49,19 @@ export async function buildSystemPrompt(
   // 3. Workflow file (dynamic per JobType — not hardcoded)
   const workflowAbsPath = path.join(a5aiDir, job.workflowPath)
   const workflowMd = await readSafe(workflowAbsPath, logger)
+  const workflowConfig = workflowMd ? parseWorkflowConfig(workflowMd) : null
+
   if (workflowMd) {
-    sections.push(banner('Current Workflow', job.workflowPath) + workflowMd)
+    const contentWithoutFrontMatter = stripFrontMatter(workflowMd)
+    sections.push(banner('Current Workflow', job.workflowPath) + contentWithoutFrontMatter)
   } else {
     logger.warn({ workflowPath: job.workflowPath }, 'Workflow file not found — continuing without it')
   }
 
-  // 4. Phase-specific agent instructions
-  const agentRelPath = PHASE_TO_AGENT[job.phase]
+  // 4. Phase-specific agent instructions — resolved from workflow config
+  const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, job.phase) : null
+  const agentRelPath = phaseConf?.agent ?? null
+
   if (agentRelPath) {
     const agentMd = await readSafe(path.join(a5aiDir, agentRelPath), logger)
     if (agentMd) {

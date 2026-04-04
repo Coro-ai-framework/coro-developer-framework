@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   logger.info('Redis ping OK')
 
   // 4. Create registry and external clients
-  const registry = new JobRegistry(redis)
+  const registry = new JobRegistry(redis, settings.paths.a5aiDir, logger)
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
   const gitClient = createGitClient(settings)
   const lokiClient = createLokiClient(settings)

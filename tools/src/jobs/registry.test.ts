@@ -5,7 +5,7 @@
  */
 import Redis from 'ioredis'
 import { JobRegistry } from './registry'
-import { JobType, JobStatus, JobPhase } from './types'
+import { JobType } from './types'
 
 async function run(): Promise<void> {
   const redis = new Redis('redis://localhost:6379')
@@ -37,7 +37,7 @@ async function run(): Promise<void> {
 
   // ── 3. Update status ─────────────────────────────────────────────────────
   console.log('\n[3] Updating job status to Analyzing...')
-  const updated = await registry.updateJob(job.id, { status: JobStatus.Analyzing, phase: JobPhase.Analysis })
+  const updated = await registry.updateJob(job.id, { status: 'analyzing', phase: 'analysis' })
   console.log(`    Status: ${updated.status}, Phase: ${updated.phase}`)
   console.log(`    updatedAt changed: ${updated.updatedAt !== job.createdAt}`)
 

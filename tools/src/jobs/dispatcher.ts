@@ -1,4 +1,4 @@
-import { JobInput, JobStatus, isParkingStatus } from './types'
+import { JobInput, STATUS_CODING, STATUS_FAILED, isParkingStatus } from './types'
 import { runJob, RunnerContext } from './runner'
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ export class Dispatcher {
     // Inject the event as a user message and clear the parking state
     const eventMessage = buildWebhookMessage(event.eventKey, event.payload)
     await this.ctx.registry.updateJob(jobId, {
-      status: JobStatus.Coding, // resume working status — agent will re-park if needed
+      status: STATUS_CODING, // resume working status — agent will re-park if needed
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       conversationHistory: [
@@ -160,7 +160,7 @@ export class Dispatcher {
         this.ctx.logger.error({ err, jobId }, 'Runner crashed unexpectedly')
         return this.ctx.registry
           .updateJob(jobId, {
-            status: JobStatus.Failed,
+            status: STATUS_FAILED,
             escalationMessage: `Runner crashed: ${String(err)}`,
           })
           .catch(() => {})

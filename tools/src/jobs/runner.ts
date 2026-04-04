@@ -10,8 +10,14 @@ import { Settings } from '../config/settings'
 import { buildSystemPrompt } from '../prompt/builder'
 import { TOOL_DEFINITIONS } from '../prompt/tools'
 import { executeTool, ToolContext } from '../tools/index'
+import {
+  WorkflowConfig,
+  loadWorkflowConfig,
+  getNextPhase as wfGetNextPhase,
+  getPhaseConfig,
+} from '../workflow-parser'
 import { JobRegistry } from './registry'
-import { Job, JobPhase, JobStatus, JobType, isTerminalStatus } from './types'
+import { Job, STATUS_COMPLETE, STATUS_ESCALATED, STATUS_FAILED, isTerminalStatus } from './types'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -28,81 +34,16 @@ export interface RunnerContext {
   logger: Logger
 }
 
-// ── Phase sequences ───────────────────────────────────────────────────────────
-//
-// Defines the ordered phases for each workflow type.
-// The runner advances through this list when mark_phase_complete is called.
-// The agent controls when to advance — calling mark_phase_complete signals
-// readiness. Parking (await_event) happens within a phase, not between them.
+// ── Workflow-config–driven helpers ────────────────────────────────────────────
 
-const MIGRATION_PHASES: JobPhase[] = [
-  JobPhase.Init,
-  JobPhase.Analysis,
-  JobPhase.Planning,
-  JobPhase.RepoSetup,
-  JobPhase.Coding,
-  JobPhase.Review,
-  JobPhase.Testing,
-  JobPhase.Evaluation,
-  JobPhase.Reporting,
-]
-
-const FEATURE_PHASES: JobPhase[] = [
-  JobPhase.Planning,
-  JobPhase.Coding,
-  JobPhase.Review,
-  JobPhase.Testing,
-  JobPhase.Evaluation,
-]
-
-const JIRA_FEATURE_PHASES: JobPhase[] = [
-  JobPhase.SpecWriting,
-  ...FEATURE_PHASES,
-]
-
-function getPhaseSequence(job: Job): JobPhase[] {
-  if (job.type === JobType.Migration) return MIGRATION_PHASES
-  if (job.type === JobType.Feature && job.triggerSource === 'jira') return JIRA_FEATURE_PHASES
-  if (job.type === JobType.Feature) return FEATURE_PHASES
-  return []
+function selectModel(phase: string, config: WorkflowConfig | null, settings: Settings): string {
+  const pc = config ? getPhaseConfig(config, phase) : null
+  const model = pc?.model ?? 'planning'
+  return model === 'coding' ? settings.claude.codingModel : settings.claude.planningModel
 }
 
-function getNextPhase(job: Job): JobPhase | null {
-  const sequence = getPhaseSequence(job)
-  const idx = sequence.indexOf(job.phase)
-  if (idx === -1 || idx === sequence.length - 1) return null
-  return sequence[idx + 1]
-}
-
-// ── Phase → status mapping ────────────────────────────────────────────────────
-
-const PHASE_STATUS: Partial<Record<JobPhase, JobStatus>> = {
-  [JobPhase.Init]:        JobStatus.Initializing,
-  [JobPhase.SpecWriting]: JobStatus.SpecWriting,
-  [JobPhase.Analysis]:    JobStatus.Analyzing,
-  [JobPhase.Planning]:    JobStatus.Planning,
-  [JobPhase.RepoSetup]:   JobStatus.RepoSetup,
-  [JobPhase.Coding]:      JobStatus.Coding,
-  [JobPhase.Review]:      JobStatus.Coding,
-  [JobPhase.Testing]:     JobStatus.Testing,
-  [JobPhase.Evaluation]:  JobStatus.Evaluating,
-  [JobPhase.Reporting]:   JobStatus.Reporting,
-}
-
-// ── Model selection ───────────────────────────────────────────────────────────
-
-const PLANNING_PHASES = new Set<JobPhase>([
-  JobPhase.SpecWriting,
-  JobPhase.Analysis,
-  JobPhase.Planning,
-  JobPhase.Evaluation,
-  JobPhase.Reporting,
-])
-
-function selectModel(phase: JobPhase, settings: Settings): string {
-  return PLANNING_PHASES.has(phase)
-    ? settings.claude.planningModel
-    : settings.claude.codingModel
+function phaseStatus(phase: string, config: WorkflowConfig | null): string {
+  return getPhaseConfig(config ?? { initialPhase: '', initialStatus: '', phases: [], overrides: {} }, phase)?.status ?? phase
 }
 
 // ── Runner ────────────────────────────────────────────────────────────────────
@@ -126,13 +67,19 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
   // Per-run state — not shared across concurrent jobs
   const runningServices = new Map<string, ChildProcess>()
 
-  // `liveJob` is the authoritative in-memory state for this run.
-  // We persist to Redis regularly but preserve _signals across updateJob calls
-  // (registry strips _signals on every write, by design).
+  // Load the workflow config once at the start of the run.
+  // Falls back gracefully — the runner still works without a config,
+  // it just can't advance phases automatically.
+  const workflowConfig = job.workflowPath
+    ? await loadWorkflowConfig(job.workflowPath, settings.paths.a5aiDir, logger)
+    : null
+
+  if (!workflowConfig && job.workflowPath) {
+    logger.warn({ jobId: job.id, workflowPath: job.workflowPath }, 'No workflow config found — phase advancement will be limited')
+  }
+
   let liveJob: Job = { ...job, _signals: {} }
 
-  // toolCtx is mutated in-place — we reassign toolCtx.job after each registry
-  // update so tool implementations always see the latest job state.
   const toolCtx: ToolContext = {
     job: liveJob,
     registry,
@@ -162,7 +109,7 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
       if (liveJob.conversationHistory.length === 0) {
         const initMsg = buildInitialMessage(liveJob)
         liveJob = await syncJob(registry, liveJob, {
-          status: PHASE_STATUS[liveJob.phase] ?? JobStatus.Initializing,
+          status: phaseStatus(liveJob.phase, workflowConfig),
           conversationHistory: [{ role: 'user', content: initMsg }],
         })
         toolCtx.job = liveJob
@@ -173,7 +120,7 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
       while (!turnComplete) {
         const response = await callClaude(
           {
-            model: selectModel(liveJob.phase, settings),
+            model: selectModel(liveJob.phase, workflowConfig, settings),
             max_tokens: 8192,
             system: systemPrompt,
             messages: liveJob.conversationHistory as Anthropic.MessageParam[],
@@ -247,10 +194,9 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
           continue
         }
 
-        // Unexpected stop reason — escalate
         logger.error({ stopReason: response.stop_reason, jobId: liveJob.id }, 'Unexpected stop reason')
         liveJob = await syncJob(registry, liveJob, {
-          status: JobStatus.Escalated,
+          status: STATUS_ESCALATED,
           escalationMessage: `Unexpected Claude stop_reason: ${response.stop_reason}`,
         })
         toolCtx.job = liveJob
@@ -265,10 +211,9 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
       liveJob._signals = {}
 
       if (signals.awaitingEvent) {
-        // Park the job until the expected external event arrives
         const awaitStatus = signals.awaitingEvent.includes('plan')
-          ? JobStatus.AwaitingPlanApproval
-          : JobStatus.AwaitingPrMerge
+          ? 'awaiting-plan-approval'
+          : 'awaiting-pr-merge'
 
         liveJob = await syncJob(registry, liveJob, {
           status: awaitStatus,
@@ -285,17 +230,18 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
       }
 
       if (signals.phaseComplete) {
-        const nextPhase = getNextPhase(liveJob)
+        const nextPhase = workflowConfig
+          ? wfGetNextPhase(workflowConfig, liveJob.phase)
+          : null
 
         if (!nextPhase) {
-          // No more phases — job is done
-          liveJob = await syncJob(registry, liveJob, { status: JobStatus.Complete })
+          liveJob = await syncJob(registry, liveJob, { status: STATUS_COMPLETE })
           await registry.appendLog(liveJob.id, 'All phases complete — job finished successfully')
           logger.info({ jobId: liveJob.id }, 'Job completed')
           break
         }
 
-        const nextStatus = PHASE_STATUS[nextPhase] ?? JobStatus.Initializing
+        const nextStatus = phaseStatus(nextPhase, workflowConfig)
         const transitionMsg = buildPhaseTransitionMessage(nextPhase, liveJob)
 
         liveJob = await syncJob(registry, liveJob, {
@@ -313,10 +259,9 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
         continue // start new outer iteration for the new phase
       }
 
-      // Claude stopped without any signals — escalate for human inspection
       logger.warn({ jobId: liveJob.id, phase: liveJob.phase }, 'Claude stopped without signals')
       liveJob = await syncJob(registry, liveJob, {
-        status: JobStatus.Escalated,
+        status: STATUS_ESCALATED,
         escalationMessage:
           `Claude stopped without calling mark_phase_complete or await_event ` +
           `(phase: ${liveJob.phase}). Manual inspection needed.`,
@@ -328,7 +273,7 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
     await registry.appendLog(liveJob.id, `Runner crashed: ${String(err)}`)
     try {
       await registry.updateJob(liveJob.id, {
-        status: JobStatus.Failed,
+        status: STATUS_FAILED,
         escalationMessage: String(err),
       })
     } catch {
@@ -395,14 +340,14 @@ function buildInitialMessage(job: Job): string {
     'Use the `log` tool to report progress as you go.',
   ]
 
-  if (job.type === JobType.Feature && job.jiraTicketId) {
+  if (job.jiraTicketId) {
     lines.push(`\nThis job was triggered by Jira ticket: ${job.jiraTicketId}`)
   }
 
   return lines.join('\n')
 }
 
-function buildPhaseTransitionMessage(nextPhase: JobPhase, job: Job): string {
+function buildPhaseTransitionMessage(nextPhase: string, job: Job): string {
   return (
     `Phase complete. The job is now advancing to phase: **${nextPhase}**.\n\n` +
     `Your system prompt has been updated with instructions for this phase. ` +

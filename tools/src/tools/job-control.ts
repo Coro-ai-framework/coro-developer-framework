@@ -1,6 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
-import { JobStatus } from '../jobs/types'
+import { STATUS_ESCALATED } from '../jobs/types'
 import { ToolContext, ToolResult } from './types'
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ export async function escalate(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   await ctx.registry.updateJob(ctx.job.id, {
-    status: JobStatus.Escalated,
+    status: STATUS_ESCALATED,
     escalationMessage: input.reason,
   })
   ctx.logger.warn({ jobId: ctx.job.id, reason: input.reason }, 'Job escalated')

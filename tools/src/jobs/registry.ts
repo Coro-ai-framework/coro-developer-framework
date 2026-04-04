@@ -3,8 +3,7 @@ import {
   Job,
   JobInput,
   JobType,
-  JobStatus,
-  JobPhase,
+  STATUS_QUEUED,
   PrMapping,
   defaultWorkflowPath,
   MigrationJobInput,
@@ -12,6 +11,7 @@ import {
   JiraJobInput,
   SelfUpdateJobInput,
 } from './types'
+import { loadWorkflowConfig, resolveInitialPhase, getPhaseConfig } from '../workflow-parser'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
 //
@@ -53,29 +53,49 @@ function deserialize(raw: string): Job {
 // ── Registry class ────────────────────────────────────────────────────────────
 
 export class JobRegistry {
-  constructor(private readonly redis: Redis) {}
+  constructor(
+    private readonly redis: Redis,
+    private readonly a5aiDir: string = '',
+    private readonly logger?: { warn: (obj: object, msg: string) => void; debug?: (obj: object, msg: string) => void },
+  ) {}
 
   // ── Create ────────────────────────────────────────────────────────────────
 
   async createJob(input: JobInput): Promise<Job> {
     const now = new Date().toISOString()
-    const jobType = JobType.Migration  // default; overridden per input type below
+
+    // Determine job type and workflow path
+    const jobType = inputToJobType(input)
+    const workflowPath = defaultWorkflowPath(jobType)
+
+    // Load the workflow config to determine the initial phase.
+    // Falls back to 'init' / 'queued' if the workflow file is missing or has no config.
+    const config = workflowPath && this.a5aiDir
+      ? await loadWorkflowConfig(workflowPath, this.a5aiDir, this.logger as Parameters<typeof loadWorkflowConfig>[2])
+      : null
+
+    const triggerSource = getTriggerSource(input)
+    const initialPhase = config
+      ? resolveInitialPhase(config, triggerSource)
+      : 'init'
+    const phaseConfig = config ? getPhaseConfig(config, initialPhase) : null
+    const initialStatus = phaseConfig?.status ?? config?.initialStatus ?? STATUS_QUEUED
 
     let job: Job
 
     if (isMigrationInput(input)) {
       job = {
         id: `${input.serviceName}-migration-${Date.now()}`,
-        type: JobType.Migration,
-        workflowPath: defaultWorkflowPath(JobType.Migration),
+        type: jobType,
+        workflowPath,
         serviceName: input.serviceName,
         repoSlug: input.repo,
         projects: input.projects,
         reviewers: input.reviewers,
         stagingUrl: input.stagingUrl,
-        triggerSource: 'cli',
-        status: JobStatus.Queued,
-        phase: JobPhase.Init,
+        triggerSource,
+        status: initialStatus,
+        phase: initialPhase,
         currentFeature: null,
         prMappings: [],
         conversationHistory: [],
@@ -86,17 +106,17 @@ export class JobRegistry {
     } else if (isJiraInput(input)) {
       job = {
         id: `jira-${input.jiraTicketId}-feature-${Date.now()}`,
-        type: JobType.Feature,
-        workflowPath: defaultWorkflowPath(JobType.Feature),
-        serviceName: input.jiraTicketId,  // overwritten by spec-writer agent
-        repoSlug: '',                      // inferred by spec-writer agent
+        type: jobType,
+        workflowPath,
+        serviceName: input.jiraTicketId,
+        repoSlug: '',
         projects: [],
         reviewers: [],
         stagingUrl: '',
-        triggerSource: 'jira',
+        triggerSource,
         jiraTicketId: input.jiraTicketId,
-        status: JobStatus.Queued,
-        phase: JobPhase.SpecWriting,
+        status: initialStatus,
+        phase: initialPhase,
         currentFeature: null,
         prMappings: [],
         conversationHistory: [],
@@ -108,16 +128,16 @@ export class JobRegistry {
       const s = input as SelfUpdateJobInput
       job = {
         id: `self-update-${s.prId}-${Date.now()}`,
-        type: JobType.SelfUpdate,
-        workflowPath: defaultWorkflowPath(JobType.SelfUpdate),
+        type: jobType,
+        workflowPath,
         serviceName: 'a5-ai',
         repoSlug: s.repoSlug,
         projects: [],
         reviewers: [],
         stagingUrl: '',
-        triggerSource: 'internal',
-        status: JobStatus.Queued,
-        phase: JobPhase.Init,
+        triggerSource,
+        status: initialStatus,
+        phase: initialPhase,
         currentFeature: null,
         prMappings: [{
           prId: s.prId,
@@ -131,20 +151,19 @@ export class JobRegistry {
         _signals: {},
       }
     } else {
-      // CLI-triggered feature job
       const f = input as FeatureJobInput
       job = {
         id: `${f.serviceName}-feature-${Date.now()}`,
-        type: JobType.Feature,
-        workflowPath: defaultWorkflowPath(JobType.Feature),
+        type: jobType,
+        workflowPath,
         serviceName: f.serviceName,
         repoSlug: f.repo,
         projects: [],
         reviewers: f.reviewers,
         stagingUrl: '',
-        triggerSource: 'cli',
-        status: JobStatus.Queued,
-        phase: JobPhase.Planning,
+        triggerSource,
+        status: initialStatus,
+        phase: initialPhase,
         currentFeature: null,
         prMappings: [],
         conversationHistory: [],
@@ -153,8 +172,6 @@ export class JobRegistry {
         _signals: {},
       }
     }
-
-    void jobType  // suppress unused variable (jobType used implicitly via job.type)
 
     await this.persist(job)
     return job
@@ -330,7 +347,7 @@ export class JobRegistry {
   }
 }
 
-// ── Type guards ───────────────────────────────────────────────────────────────
+// ── Type guards and helpers ────────────────────────────────────────────────────
 
 function isMigrationInput(input: JobInput): input is MigrationJobInput {
   return input.type === 'migration'
@@ -342,4 +359,20 @@ function isJiraInput(input: JobInput): input is JiraJobInput {
 
 function isSelfUpdateInput(input: JobInput): input is SelfUpdateJobInput {
   return input.type === 'self-update'
+}
+
+function inputToJobType(input: JobInput): JobType {
+  switch (input.type) {
+    case 'migration':   return JobType.Migration
+    case 'feature':     return JobType.Feature
+    case 'self-update': return JobType.SelfUpdate
+  }
+}
+
+function getTriggerSource(input: JobInput): 'cli' | 'jira' | 'internal' {
+  if ('triggerSource' in input && input.triggerSource) {
+    return input.triggerSource as 'cli' | 'jira' | 'internal'
+  }
+  if (input.type === 'self-update') return 'internal'
+  return 'cli'
 }

@@ -13,44 +13,19 @@ export enum JobType {
   SelfUpdate = 'self-update', // Agent self-improvement PR (file-watcher-triggered)
 }
 
-/**
- * Lifecycle status of a job.
- * Updated by the runner and dispatcher as the job progresses.
- */
-export enum JobStatus {
-  Queued               = 'queued',
-  Initializing         = 'initializing',
-  SpecWriting          = 'spec-writing',         // feature (Jira) only
-  Analyzing            = 'analyzing',            // migration only
-  Planning             = 'planning',
-  AwaitingPlanApproval = 'awaiting-plan-approval',
-  RepoSetup            = 'repo-setup',           // migration only
-  Coding               = 'coding',
-  AwaitingPrMerge      = 'awaiting-pr-merge',
-  Testing              = 'testing',
-  Evaluating           = 'evaluating',
-  Reporting            = 'reporting',
-  Complete             = 'complete',
-  Escalated            = 'escalated',
-  Failed               = 'failed',
-}
+// ── Well-known statuses ──────────────────────────────────────────────────────
+//
+// Job statuses are strings — workflow configs define phase-specific statuses.
+// These constants cover infrastructure-level statuses the runner, dispatcher,
+// and tools need to reference regardless of workflow type.
 
-/**
- * The current phase within a workflow.
- * Each phase maps to a specific agent MD file loaded by the prompt builder.
- */
-export enum JobPhase {
-  Init        = 'init',
-  SpecWriting = 'spec-writing',  // agents/spec-writer.md
-  Analysis    = 'analysis',      // agents/analyzer.md
-  Planning    = 'planning',      // agents/planner.md
-  RepoSetup   = 'repo-setup',    // agents/coder.md
-  Coding      = 'coding',        // agents/coder.md
-  Review      = 'review',        // agents/pr-reviewer.md
-  Testing     = 'testing',       // agents/tester.md
-  Evaluation  = 'evaluation',    // agents/evaluator.md
-  Reporting   = 'reporting',     // agents/planner.md (summary role)
-}
+export const STATUS_QUEUED                = 'queued'
+export const STATUS_COMPLETE              = 'complete'
+export const STATUS_ESCALATED             = 'escalated'
+export const STATUS_FAILED                = 'failed'
+export const STATUS_AWAITING_PLAN_APPROVAL = 'awaiting-plan-approval'
+export const STATUS_AWAITING_PR_MERGE     = 'awaiting-pr-merge'
+export const STATUS_CODING                = 'coding'
 
 // ── Conversation history ──────────────────────────────────────────────────────
 
@@ -108,8 +83,10 @@ export interface Job {
   jiraTicketId?: string     // populated for Jira-triggered jobs
 
   // Runtime state (mutated by runner)
-  status: JobStatus
-  phase: JobPhase
+  /** Lifecycle status — well-known values in STATUS_* constants, workflow-specific values from config */
+  status: string
+  /** Current phase within the workflow — defined by the workflow config front matter */
+  phase: string
   currentFeature: string | null
 
   // PR tracking
@@ -182,19 +159,19 @@ export type JobInput = MigrationJobInput | FeatureJobInput | JiraJobInput | Self
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Returns true if the job is in a state where the runner loop should stop. */
-export function isTerminalStatus(status: JobStatus): boolean {
+export function isTerminalStatus(status: string): boolean {
   return (
-    status === JobStatus.Complete ||
-    status === JobStatus.Escalated ||
-    status === JobStatus.Failed
+    status === STATUS_COMPLETE ||
+    status === STATUS_ESCALATED ||
+    status === STATUS_FAILED
   )
 }
 
 /** Returns true if the job is currently parked waiting for an external event. */
-export function isParkingStatus(status: JobStatus): boolean {
+export function isParkingStatus(status: string): boolean {
   return (
-    status === JobStatus.AwaitingPlanApproval ||
-    status === JobStatus.AwaitingPrMerge
+    status === STATUS_AWAITING_PLAN_APPROVAL ||
+    status === STATUS_AWAITING_PR_MERGE
   )
 }
 
