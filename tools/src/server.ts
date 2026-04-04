@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import express, { Express, Request, Response, NextFunction } from 'express'
 import swaggerUi from 'swagger-ui-express'
 import { Logger } from 'pino'
+import { Dispatcher } from './jobs/dispatcher'
 import { JobRegistry } from './jobs/registry'
 import { JobType, MigrationJobInput, FeatureJobInput, JiraJobInput } from './jobs/types'
 import { Settings } from './config/settings'
@@ -11,6 +12,7 @@ import { openApiSpec } from './openapi'
 
 export interface ServerContext {
   registry: JobRegistry
+  dispatcher: Dispatcher
   settings: Settings
   logger: Logger
 }
@@ -59,7 +61,7 @@ function sseHeartbeat(res: Response): void {
 // ── Server factory ────────────────────────────────────────────────────────────
 
 export function createServer(ctx: ServerContext): Express {
-  const { registry, settings, logger } = ctx
+  const { registry, dispatcher, settings, logger } = ctx
   const app = express()
 
   // ── Global middleware ──────────────────────────────────────────────────────
@@ -130,8 +132,8 @@ export function createServer(ctx: ServerContext): Express {
       serviceName,
     }
 
-    const job = await registry.createJob(input)
-    logger.info({ jobId: job.id, repo, serviceName }, 'Migration job created')
+    const job = await dispatcher.dispatch(input)
+    logger.info({ jobId: job.id, repo, serviceName }, 'Migration job dispatched')
 
     res.status(201).json({
       jobId: job.id,
@@ -153,8 +155,8 @@ export function createServer(ctx: ServerContext): Express {
         jiraTicketId: body.jiraTicketId,
         triggerSource: 'jira',
       }
-      const job = await registry.createJob(input)
-      logger.info({ jobId: job.id, jiraTicketId: body.jiraTicketId }, 'Feature job created (Jira)')
+      const job = await dispatcher.dispatch(input)
+      logger.info({ jobId: job.id, jiraTicketId: body.jiraTicketId }, 'Feature job dispatched (Jira)')
 
       res.status(201).json({
         jobId: job.id,
@@ -187,8 +189,8 @@ export function createServer(ctx: ServerContext): Express {
       serviceName,
     }
 
-    const job = await registry.createJob(input)
-    logger.info({ jobId: job.id, repo, serviceName }, 'Feature job created (CLI)')
+    const job = await dispatcher.dispatch(input)
+    logger.info({ jobId: job.id, repo, serviceName }, 'Feature job dispatched (CLI)')
 
     res.status(201).json({
       jobId: job.id,
@@ -357,14 +359,14 @@ export function createServer(ctx: ServerContext): Express {
 
     if (bbEventKey) {
       logger.info({ eventKey: bbEventKey }, 'BitBucket webhook received')
-      // Phase 7: dispatcher.handleBitBucketEvent(bbEventKey, payload) goes here
+      void dispatcher.handleWebhookEvent('bitbucket', bbEventKey, payload)
       res.json({ received: true, source: 'bitbucket', eventKey: bbEventKey })
       return
     }
 
     if (atlassianToken !== undefined) {
       logger.info({ payload }, 'Jira webhook received')
-      // Future: dispatcher.handleJiraEvent(payload) goes here
+      void dispatcher.handleWebhookEvent('jira', 'jira:event', payload)
       res.json({ received: true, source: 'jira' })
       return
     }

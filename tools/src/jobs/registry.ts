@@ -10,6 +10,7 @@ import {
   MigrationJobInput,
   FeatureJobInput,
   JiraJobInput,
+  SelfUpdateJobInput,
 } from './types'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
@@ -98,6 +99,32 @@ export class JobRegistry {
         phase: JobPhase.SpecWriting,
         currentFeature: null,
         prMappings: [],
+        conversationHistory: [],
+        createdAt: now,
+        updatedAt: now,
+        _signals: {},
+      }
+    } else if (isSelfUpdateInput(input)) {
+      const s = input as SelfUpdateJobInput
+      job = {
+        id: `self-update-${s.prId}-${Date.now()}`,
+        type: JobType.SelfUpdate,
+        workflowPath: defaultWorkflowPath(JobType.SelfUpdate),
+        serviceName: 'a5-ai',
+        repoSlug: s.repoSlug,
+        projects: [],
+        reviewers: [],
+        stagingUrl: '',
+        triggerSource: 'internal',
+        status: JobStatus.Queued,
+        phase: JobPhase.Init,
+        currentFeature: null,
+        prMappings: [{
+          prId: s.prId,
+          feature: s.branchName,
+          repoSlug: s.repoSlug,
+          openedAt: now,
+        }],
         conversationHistory: [],
         createdAt: now,
         updatedAt: now,
@@ -311,4 +338,8 @@ function isMigrationInput(input: JobInput): input is MigrationJobInput {
 
 function isJiraInput(input: JobInput): input is JiraJobInput {
   return input.type === 'feature' && 'jiraTicketId' in input
+}
+
+function isSelfUpdateInput(input: JobInput): input is SelfUpdateJobInput {
+  return input.type === 'self-update'
 }

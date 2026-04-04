@@ -164,7 +164,20 @@ export interface JiraJobInput {
   triggerSource: 'jira'
 }
 
-export type JobInput = MigrationJobInput | FeatureJobInput | JiraJobInput
+/**
+ * File-watcher-triggered self-improvement job.
+ * Created automatically when the watcher detects changes to memory/, agents/,
+ * or tools/src/ in the a5-ai repo. Tracks the PR that was opened.
+ */
+export interface SelfUpdateJobInput {
+  type: 'self-update'
+  prId: number
+  repoSlug: string
+  branchName: string
+  changedFiles: string[]
+}
+
+export type JobInput = MigrationJobInput | FeatureJobInput | JiraJobInput | SelfUpdateJobInput
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
