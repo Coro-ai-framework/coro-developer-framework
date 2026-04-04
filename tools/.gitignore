@@ -1,0 +1,18 @@
+# Credentials and local config — never commit these
+.env
+config/settings.json
+
+# Local job state and a5-ai checkout on the shared volume
+data/
+
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# macOS
+.DS_Store

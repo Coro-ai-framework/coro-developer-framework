@@ -1,0 +1,6 @@
+config/credentials.md
+working/
+node_modules/
+tools/dist/
+*.env
+.env.*

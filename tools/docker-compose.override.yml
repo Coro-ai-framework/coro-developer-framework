@@ -1,0 +1,17 @@
+# Local development override — automatically loaded by docker compose.
+#
+# Removes the agent-host service from the compose stack so you can run it
+# directly with `npm run dev` (ts-node + nodemon) for instant hot-reload.
+# ngrok tunnels to host.docker.internal:3000 (your local agent-host).
+#
+# Usage:
+#   docker compose up          # starts Redis + ngrok only
+#   npm run dev                # starts agent-host with hot-reload
+#
+# To test the full Docker build:
+#   docker compose --file docker-compose.yml up --build
+
+services:
+  agent-host:
+    profiles:
+      - docker   # only included when: docker compose --profile docker up
