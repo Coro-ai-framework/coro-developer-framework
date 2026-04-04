@@ -561,23 +561,33 @@
 
 - name: propose_change
   description: |
-    Propose an improvement to the Agent Host: a new tool, a change to an existing tool,
-    an update to an agent's instructions, or any other source code change.
+    Propose an improvement to the Agent Host: new tools, workflow changes, agent instruction
+    updates, convention edits, memory updates, or any source code change.
 
-    This is the feedback loop. When you encounter a limitation — a tool that does not exist,
-    a tool that behaves incorrectly, an agent instruction that is ambiguous — do not just
-    escalate. File a proposal. The file watcher will detect it, validate it (running
-    `npm run build` for TypeScript files), and open a PR for human review.
-    Once merged, the Agent Host restarts with the improvement and the next job benefits from it.
+    This is the self-improvement feedback loop. When you encounter a limitation — a tool that
+    does not exist, a workflow that is missing a phase, an agent instruction that is ambiguous,
+    a convention that is incomplete — file a proposal. The file watcher validates the changes
+    (TypeScript build, YAML parse, workflow config parse) and opens a PR for human review.
+    Nothing takes effect until the PR is merged.
 
-    If you can write the implementation yourself, include it in proposedContent.
-    A TypeScript file that does not compile will be rejected before it reaches a PR —
-    you will get the build error back so you can fix it.
+    Multi-file proposals are supported via the `files` array. Use this when related changes
+    must ship together, e.g. a new tool requires:
+      1. A YAML schema entry in config/tool-definitions.yaml
+      2. A TypeScript implementation in tools/src/tools/
+      3. Registration in tools/src/tools/index.ts
+
+    For backward compatibility, you can also use targetFile + proposedContent for single-file changes.
+
+    Files are validated before the PR is opened:
+      - .ts files → `npm run build` must pass
+      - .yaml/.yml files → must parse as valid YAML, tool-definitions must be an array
+      - workflow .md files → front matter must parse with valid phases
+    A validation failure is written to memory/proposals/ so you can read the error and fix it.
   input_schema:
     properties:
       type:
         type: string
-        enum: [new-tool, modify-tool, new-agent, modify-agent, workflow-change, source-change]
+        enum: [new-tool, modify-tool, new-workflow, modify-workflow, new-agent, modify-agent, convention-change, memory-update, source-change]
         description: Category of change being proposed
       title:
         type: string
@@ -588,19 +598,49 @@
       description:
         type: string
         description: Full description of the proposed change
+      files:
+        type: array
+        description: |
+          Array of files to create or modify. Each entry writes full content to the specified path.
+          Paths are relative to the a5-ai repo root.
+          Preferred over targetFile/proposedContent for multi-file proposals.
+        items:
+          type: object
+          properties:
+            path:
+              type: string
+              description: "Relative path in a5-ai repo, e.g. \"tools/src/tools/my-tool.ts\""
+            content:
+              type: string
+              description: Full file content to write. Include complete, working code — not diffs.
+          required: [path, content]
       targetFile:
         type: string
-        description: |
-          Relative path in the a5-ai repo to create or modify,
-          e.g. "tools/src/tools/test-harness.ts" or "agents/coder.md".
-          Required when providing proposedContent.
+        description: "(Legacy, single-file) Relative path in a5-ai repo. Use 'files' array instead for multi-file proposals."
       proposedContent:
         type: string
-        description: |
-          Full file content to write to targetFile.
-          For TypeScript files this will be compiled before the PR is opened.
-          Include complete, working code — not diffs or partial snippets.
+        description: "(Legacy, single-file) Full file content for targetFile. Use 'files' array instead."
     required: [type, title, rationale, description]
+
+- name: list_proposals
+  description: |
+    List past proposals filed by agents. Use this to:
+      - Check if a similar proposal was already filed (avoid duplicates)
+      - Learn from rejected proposals (build/validation failures contain error details)
+      - See what improvements are pending human review
+      - Review successful patterns from past proposals
+
+    Returns proposal metadata (title, type, date, who proposed it) and a content preview.
+    Build-failure files are flagged so you can read the full error and fix the issue.
+  input_schema:
+    properties:
+      limit:
+        type: number
+        description: "Max proposals to return (default: 20, newest first)"
+      type:
+        type: string
+        description: "Filter by substring in filename, e.g. \"build-failure\" or \"new-tool\""
+    required: []
 
 # ── Shell ────────────────────────────────────────────────────────────────────
 

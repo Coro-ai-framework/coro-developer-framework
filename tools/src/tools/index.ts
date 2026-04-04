@@ -9,7 +9,8 @@ import {
 import { runGoBuild, startGoService, stopGoService, compareRequest } from './test-harness'
 import { lokiQuery, tempoGetTrace, tempoSearch } from './observability-tools'
 import { jiraGetIssue, jiraPostComment, jiraTransitionIssue } from './jira-tools'
-import { markPhaseComplete, awaitEvent, escalate, log, proposeChange } from './job-control'
+import { markPhaseComplete, awaitEvent, escalate, log } from './job-control'
+import { proposeChange, listProposals } from './self-improvement'
 import { shellExec } from './shell'
 
 export type { ToolContext, ToolResult }
@@ -67,6 +68,7 @@ const TOOLS: Record<string, ToolHandler> = {
   escalate:            wrap(escalate),
   log:                 wrap(log),
   propose_change:      wrap(proposeChange),
+  list_proposals:      wrap(listProposals),
 
   shell:               wrap(shellExec),
 }

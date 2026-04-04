@@ -3,10 +3,13 @@ import chokidar, { FSWatcher } from 'chokidar'
 import { Logger } from 'pino'
 import { promisify } from 'util'
 import path from 'path'
+import yaml from 'js-yaml'
+import fs from 'fs/promises'
 import { BitBucketClient } from './clients/bitbucket'
 import { GitClient } from './clients/git'
 import { Settings } from './config/settings'
 import { JobRegistry } from './jobs/registry'
+import { parseWorkflowConfig } from './workflow-parser'
 
 const execAsync = promisify(exec)
 
@@ -22,7 +25,7 @@ export interface WatcherContext {
 
 // ── File categories ───────────────────────────────────────────────────────────
 
-type ChangeCategory = 'agent' | 'memory' | 'workflow' | 'convention' | 'source'
+type ChangeCategory = 'agent' | 'memory' | 'workflow' | 'convention' | 'config' | 'source'
 
 function categorise(filePath: string, a5aiDir: string): ChangeCategory {
   const rel = path.relative(a5aiDir, filePath)
@@ -30,6 +33,7 @@ function categorise(filePath: string, a5aiDir: string): ChangeCategory {
   if (rel.startsWith('memory/'))      return 'memory'
   if (rel.startsWith('workflows/'))   return 'workflow'
   if (rel.startsWith('conventions/')) return 'convention'
+  if (rel.startsWith('config/'))      return 'config'
   return 'source'
 }
 
@@ -64,6 +68,7 @@ export function startWatcher(ctx: WatcherContext): FSWatcher {
     path.join(a5aiDir, 'agents'),
     path.join(a5aiDir, 'workflows'),
     path.join(a5aiDir, 'conventions'),
+    path.join(a5aiDir, 'config'),
     path.join(a5aiDir, 'tools', 'src'),
   ]
 
@@ -125,11 +130,36 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
     return
   }
 
-  // Separate TypeScript source files from MD files
-  const tsFiles = changedFiles.filter(f => f.endsWith('.ts'))
-  const mdFiles = changedFiles.filter(f => f.endsWith('.md'))
+  // Categorise files for targeted validation
+  const tsFiles     = changedFiles.filter(f => f.endsWith('.ts'))
+  const mdFiles     = changedFiles.filter(f => f.endsWith('.md'))
+  const yamlFiles   = changedFiles.filter(f => f.endsWith('.yaml') || f.endsWith('.yml'))
+  const workflowMds = changedFiles.filter(f => {
+    const rel = path.relative(a5aiDir, f)
+    return rel.startsWith('workflows/') && f.endsWith('.md')
+  })
 
-  // Validate TypeScript build before opening a PR for broken code
+  // ─── Validation gates ──────────────────────────────────────────────────────
+  // Each gate validates a class of changed files. If any gate fails, we write
+  // a failure report to memory/proposals/ so the agent can learn and retry,
+  // then abort (no broken PR).
+
+  if (yamlFiles.length > 0) {
+    const result = await validateYamlFiles(yamlFiles, a5aiDir, logger)
+    if (!result.ok) {
+      await writeValidationFailure(a5aiDir, 'yaml-parse', yamlFiles, result.detail, logger)
+      return
+    }
+  }
+
+  if (workflowMds.length > 0) {
+    const result = await validateWorkflowMds(workflowMds, logger)
+    if (!result.ok) {
+      await writeValidationFailure(a5aiDir, 'workflow-config', workflowMds, result.detail, logger)
+      return
+    }
+  }
+
   if (tsFiles.length > 0) {
     const toolsDir = path.join(a5aiDir, 'tools')
     logger.info({ tsFiles }, 'TypeScript changes detected — running build validation')
@@ -140,37 +170,7 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
     } catch (err: unknown) {
       const e = err as { stderr?: string; stdout?: string; message?: string }
       const output = e.stderr ?? e.stdout ?? String(err)
-      logger.error({ output }, 'Build validation FAILED — aborting PR creation')
-
-      // Write the build failure to a proposals file so an agent can read it
-      // and propose a fix in the next turn
-      try {
-        const failurePath = path.join(
-          a5aiDir, 'memory', 'proposals',
-          `build-failure-${Date.now()}.md`,
-        )
-        const content = [
-          '# Build Failure — TypeScript Proposal Rejected',
-          '',
-          `**Date:** ${new Date().toISOString()}`,
-          `**Files:** ${tsFiles.map(f => path.relative(a5aiDir, f)).join(', ')}`,
-          '',
-          '## Compiler output',
-          '',
-          '```',
-          output.slice(0, 3000),
-          '```',
-          '',
-          '_Fix the TypeScript errors and save the file again to retry._',
-        ].join('\n')
-
-        const fs = await import('fs/promises')
-        await fs.mkdir(path.dirname(failurePath), { recursive: true })
-        await fs.writeFile(failurePath, content, 'utf-8')
-        logger.info({ failurePath }, 'Build failure written to proposals — agent can read and fix')
-      } catch {
-        // Best-effort
-      }
+      await writeValidationFailure(a5aiDir, 'typescript-build', tsFiles, output, logger)
       return
     }
   }
@@ -264,6 +264,138 @@ function buildCommitMessage(
   return `agent: ${summary}`
 }
 
+// ── Validation helpers ────────────────────────────────────────────────────────
+
+interface ValidationResult {
+  ok: boolean
+  detail: string
+}
+
+async function validateYamlFiles(
+  files: string[],
+  a5aiDir: string,
+  logger: Logger,
+): Promise<ValidationResult> {
+  logger.info({ files }, 'YAML changes detected — validating parse')
+  const errors: string[] = []
+
+  for (const filePath of files) {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8')
+      yaml.load(content)
+
+      // Extra validation for tool-definitions.yaml: must be an array
+      const rel = path.relative(a5aiDir, filePath)
+      if (rel === 'config/tool-definitions.yaml') {
+        const parsed = yaml.load(content)
+        if (!Array.isArray(parsed)) {
+          errors.push(`${rel}: must be a YAML array, got ${typeof parsed}`)
+          continue
+        }
+        for (let i = 0; i < (parsed as unknown[]).length; i++) {
+          const entry = (parsed as Record<string, unknown>[])[i]
+          if (!entry.name || !entry.description || !entry.input_schema) {
+            errors.push(`${rel}[${i}]: missing required fields (name, description, input_schema)`)
+          }
+        }
+      }
+    } catch (err) {
+      errors.push(`${path.relative(a5aiDir, filePath)}: ${String(err)}`)
+    }
+  }
+
+  if (errors.length > 0) {
+    const detail = errors.join('\n')
+    logger.error({ errors }, 'YAML validation FAILED')
+    return { ok: false, detail }
+  }
+
+  logger.info('YAML validation passed')
+  return { ok: true, detail: '' }
+}
+
+async function validateWorkflowMds(
+  files: string[],
+  logger: Logger,
+): Promise<ValidationResult> {
+  logger.info({ files }, 'Workflow MD changes detected — validating front matter config')
+  const errors: string[] = []
+
+  for (const filePath of files) {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8')
+      const config = parseWorkflowConfig(content)
+
+      if (!config) {
+        errors.push(`${filePath}: no YAML front matter found`)
+        continue
+      }
+      if (!config.initialPhase) {
+        errors.push(`${filePath}: missing initial_phase in front matter`)
+      }
+      if (!config.phases || config.phases.length === 0) {
+        errors.push(`${filePath}: no phases defined in front matter`)
+      }
+      for (const phase of config.phases) {
+        if (!phase.name) {
+          errors.push(`${filePath}: phase missing 'name' field`)
+        }
+      }
+    } catch (err) {
+      errors.push(`${filePath}: ${String(err)}`)
+    }
+  }
+
+  if (errors.length > 0) {
+    const detail = errors.join('\n')
+    logger.error({ errors }, 'Workflow config validation FAILED')
+    return { ok: false, detail }
+  }
+
+  logger.info('Workflow config validation passed')
+  return { ok: true, detail: '' }
+}
+
+async function writeValidationFailure(
+  a5aiDir: string,
+  validationType: string,
+  files: string[],
+  output: string,
+  logger: Logger,
+): Promise<void> {
+  logger.error({ validationType, files }, `${validationType} validation FAILED — aborting PR creation`)
+
+  try {
+    const failurePath = path.join(
+      a5aiDir, 'memory', 'proposals',
+      `${validationType}-failure-${Date.now()}.md`,
+    )
+    const content = [
+      `# Validation Failure — ${validationType}`,
+      '',
+      `**Date:** ${new Date().toISOString()}`,
+      `**Validation:** ${validationType}`,
+      `**Files:** ${files.map(f => path.relative(a5aiDir, f)).join(', ')}`,
+      '',
+      '## Error output',
+      '',
+      '```',
+      String(output).slice(0, 3000),
+      '```',
+      '',
+      '_Fix the errors in the files above and save again to retry._',
+    ].join('\n')
+
+    await fs.mkdir(path.dirname(failurePath), { recursive: true })
+    await fs.writeFile(failurePath, content, 'utf-8')
+    logger.info({ failurePath }, `${validationType} failure written to proposals`)
+  } catch {
+    // Best-effort
+  }
+}
+
+// ── PR helpers ────────────────────────────────────────────────────────────────
+
 function buildPrDescription(
   categories: ChangeCategory[],
   changedFiles: string[],
@@ -296,6 +428,7 @@ function buildPrDescription(
     memory:     '### Memory',
     workflow:   '### Workflows',
     convention: '### Conventions',
+    config:     '### Configuration (YAML)',
     source:     '### Source code (TypeScript)',
   }
 
@@ -305,9 +438,14 @@ function buildPrDescription(
     lines.push('')
   }
 
-  if (categories.includes('source')) {
+  const validationNotes: string[] = []
+  if (categories.includes('source'))   validationNotes.push('TypeScript build (`npm run build`)')
+  if (categories.includes('config'))   validationNotes.push('YAML parse validation')
+  if (categories.includes('workflow')) validationNotes.push('Workflow config front-matter validation')
+
+  if (validationNotes.length > 0) {
     lines.push(
-      '> **Note:** TypeScript files were validated with `npm run build` before this PR was opened.',
+      `> **Validation passed:** ${validationNotes.join(', ')}`,
       '',
     )
   }
