@@ -18,7 +18,9 @@
   },
   "include": [
     "src/**/*",
-    "cli/**/*"
+    "cli/**/*",
+    "tests/**/*",
+    "vitest.config.ts"
   ],
   "exclude": [
     "node_modules",

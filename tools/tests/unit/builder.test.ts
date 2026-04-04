@@ -53,14 +53,9 @@ const noopLogger = {
   error: vi.fn(),
 } as unknown as import('pino').Logger
 
-const mockGitClient: GitClient = {
+const mockGitClient = {
   pull: vi.fn().mockResolvedValue(undefined),
-  clone: vi.fn(),
-  checkout: vi.fn(),
-  commit: vi.fn(),
-  push: vi.fn(),
-  getDiff: vi.fn(),
-}
+} as unknown as GitClient
 
 // ── File system fixture helper ────────────────────────────────────────────────
 

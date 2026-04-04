@@ -17,6 +17,7 @@
     "dev:cli": "ts-node cli/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run tests/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },

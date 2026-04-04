@@ -5,7 +5,6 @@ import {
   getNextPhase,
   getPhaseConfig,
   resolveInitialPhase,
-  type WorkflowConfig,
 } from '../../src/workflow-parser'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
