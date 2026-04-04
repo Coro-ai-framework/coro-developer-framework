@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run tests/integration",
+    "test:mcp": "vitest run tests/mcp",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },

@@ -16,6 +16,7 @@ import {
   getNextPhase as wfGetNextPhase,
   getPhaseConfig,
   SubagentConfig,
+  type WorkflowConfig,
 } from '../workflow-parser'
 import { JobRegistry } from './registry'
 import {
@@ -40,6 +41,29 @@ export interface RunnerContext {
   tempoClient: TempoClient
   jiraClient: JiraClient
   logger: Logger
+}
+
+/** Arguments passed to a test/injected `query` implementation. */
+export interface QueryInvocation {
+  prompt: string
+  options: Record<string, unknown>
+  signals: PhaseSignals
+}
+
+/**
+ * Optional hooks for tests and future instrumentation.
+ * Production code should omit this (defaults apply).
+ */
+export interface RunJobOptions {
+  /**
+   * Replace the Claude Agent SDK `query()` stream. Tests use this to simulate
+   * model turns and set {@link PhaseSignals} without calling Anthropic.
+   */
+  queryImpl?: (inv: QueryInvocation) => AsyncIterable<unknown>
+  /**
+   * When set, skips `loadWorkflowConfig` from disk. Pass `null` for jobs with no workflow file.
+   */
+  workflowConfigOverride?: WorkflowConfig | null
 }
 
 // ── Runner ────────────────────────────────────────────────────────────────────
