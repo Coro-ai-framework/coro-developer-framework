@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:integration": "vitest run tests/integration",
     "test:mcp": "vitest run tests/mcp",
+    "test:runner": "vitest run tests/runner",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },

@@ -48,6 +48,8 @@ export interface QueryInvocation {
   prompt: string
   options: Record<string, unknown>
   signals: PhaseSignals
+  /** Shared with MCP tools — same reference as the runner’s live job state. */
+  toolCtx: ToolContext
 }
 
 /**
@@ -76,14 +78,17 @@ export interface RunJobOptions {
  * After each query completes, the runner checks the shared PhaseSignals to
  * decide whether to advance, park, or terminate.
  */
-export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
+export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptions): Promise<void> {
   const { registry, settings, logger } = ctx
 
   const runningServices = new Map<string, ChildProcess>()
 
-  const workflowConfig = job.workflowPath
-    ? await loadWorkflowConfig(job.workflowPath, settings.paths.a5aiDir, logger)
-    : null
+  const workflowConfig: WorkflowConfig | null =
+    options?.workflowConfigOverride !== undefined
+      ? options.workflowConfigOverride
+      : job.workflowPath
+        ? await loadWorkflowConfig(job.workflowPath, settings.paths.a5aiDir, logger)
+        : null
 
   if (!workflowConfig && job.workflowPath) {
     logger.warn({ jobId: job.id, workflowPath: job.workflowPath }, 'No workflow config found')
@@ -173,31 +178,32 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
       // Run the Agent SDK query — this handles the entire tool-use loop
       let sessionId: string | undefined
 
-      for await (const message of query({
-        prompt,
-        options: queryOptions as Parameters<typeof query>[0]['options'],
-      })) {
+      const queryStream = options?.queryImpl
+        ? options.queryImpl({ prompt, options: queryOptions, signals, toolCtx })
+        : query({
+            prompt,
+            options: queryOptions as Parameters<typeof query>[0]['options'],
+          })
+
+      for await (const raw of queryStream) {
+        const message = raw as Record<string, unknown>
         // Capture the session ID for potential resumption
-        if (message.type === 'system') {
-          const sysMsg = message as Record<string, unknown>
-          if (sysMsg.session_id) {
-            sessionId = sysMsg.session_id as string
-          }
+        if (message['type'] === 'system') {
+          const sessionIdRaw = message['session_id']
+          if (typeof sessionIdRaw === 'string') sessionId = sessionIdRaw
         }
 
         // Stream assistant text to the job log
-        if (message.type === 'assistant') {
-          const msg = message as Record<string, unknown>
-          const content = msg.content
+        if (message['type'] === 'assistant') {
+          const content = message['content']
           if (typeof content === 'string' && content.trim()) {
             await registry.appendLog(liveJob.id, content.slice(0, 500))
           }
         }
 
         // Log tool usage
-        if (message.type === 'tool_use_summary') {
-          const msg = message as Record<string, unknown>
-          const toolName = msg.tool_name ?? msg.name ?? 'unknown'
+        if (message['type'] === 'tool_use_summary') {
+          const toolName = message['tool_name'] ?? message['name'] ?? 'unknown'
           await registry.appendLog(liveJob.id, `→ ${String(toolName)}`)
         }
 
