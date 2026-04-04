@@ -105,8 +105,8 @@ export function loadSettings(): Settings {
       url: env('REDIS_URL') ?? file.redis?.url ?? 'redis://localhost:6379',
     },
     paths: {
-      workingDir: env('WORKING_DIR') ?? file.paths?.workingDir ?? '/data/working',
-      a5aiDir: env('A5AI_DIR') ?? file.paths?.a5aiDir ?? '/data/a5-ai',
+      workingDir: resolveWorkingDir(env('WORKING_DIR'), file.paths?.workingDir),
+      a5aiDir: resolveA5aiDir(env('A5AI_DIR'), file.paths?.a5aiDir),
     },
     loki: {
       baseUrl: env('LOKI_BASE_URL') ?? file.loki?.baseUrl ?? '',
@@ -167,4 +167,26 @@ function num(envVal: string | undefined, fileVal: number | undefined, defaultVal
     if (!isNaN(parsed)) return parsed
   }
   return fileVal ?? defaultVal
+}
+
+/** Docker-compose uses /data/...; on a dev machine that path is usually missing or unwritable. */
+const DOCKER_WORKING = '/data/working'
+const DOCKER_A5AI = '/data/a5-ai'
+
+function resolveWorkingDir(envOverride: string | undefined, fromFile: string | undefined): string {
+  if (envOverride) return path.resolve(envOverride)
+  const raw = fromFile ?? DOCKER_WORKING
+  if (raw === DOCKER_WORKING && !fs.existsSync('/data')) {
+    return path.join(process.cwd(), '.working')
+  }
+  return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw)
+}
+
+function resolveA5aiDir(envOverride: string | undefined, fromFile: string | undefined): string {
+  if (envOverride) return path.resolve(envOverride)
+  const raw = fromFile ?? DOCKER_A5AI
+  if (raw === DOCKER_A5AI && !fs.existsSync('/data')) {
+    return path.resolve(process.cwd(), '..')
+  }
+  return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw)
 }

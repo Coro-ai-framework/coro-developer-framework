@@ -25,8 +25,8 @@
     "url": "redis://redis:6379"
   },
   "paths": {
-    "workingDir": "/data/working",
-    "a5aiDir": "/data/a5-ai"
+    "workingDir": ".working",
+    "a5aiDir": ".."
   },
   "loki": {
     "baseUrl": "",

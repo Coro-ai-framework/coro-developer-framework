@@ -1,4 +1,5 @@
 import { query, type McpSdkServerConfig } from '@anthropic-ai/claude-agent-sdk'
+import { mkdirSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
 import path from 'path'
@@ -28,6 +29,7 @@ import {
   jobServiceName,
   jobJiraTicketId,
 } from './types'
+import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -116,6 +118,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
   logger.info({ jobId: liveJob.id, type: liveJob.type, phase: liveJob.phase }, 'Job runner started')
 
+  /** Bundled Claude Code entrypoint; npm ships it as non-executable — we chmod if needed. */
+  const claudeCodeCliPath = resolveClaudeCodeCliPath(process.cwd())
+  ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
+
   try {
     await registry.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
@@ -132,6 +138,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const model = selectModel(phaseConf, settings)
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
+      /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as “cli.js not found”. */
+      mkdirSync(workingDir, { recursive: true })
 
       // Build subagent definitions from workflow config
       const agents = phaseConf?.subagents
@@ -149,6 +157,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       )
 
       const queryOptions: Record<string, unknown> = {
+        pathToClaudeCodeExecutable: claudeCodeCliPath,
         systemPrompt,
         model,
         cwd: workingDir,
@@ -162,8 +171,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         allowDangerouslySkipPermissions: true,
         maxTurns: 200,
         thinking: { type: 'adaptive' },
-        persistSession: false,
-        env: { ANTHROPIC_API_KEY: settings.claude.apiKey },
+        persistSession: true,
+        // Must inherit process.env (PATH, HOME, …). A bare object replaces the SDK default and breaks spawn('node', …).
+        env: { ...process.env, ANTHROPIC_API_KEY: settings.claude.apiKey },
       }
 
       if (agents) {
@@ -268,11 +278,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       // Claude stopped without calling any job-control tool
       logger.warn({ jobId: liveJob.id, phase: liveJob.phase }, 'Agent SDK query ended without signals')
+      const noSignalMsg =
+        `Escalated: Claude finished this phase without calling mark_phase_complete or await_event ` +
+        `(phase: ${liveJob.phase}). Manual inspection needed.`
+      await registry.appendLog(liveJob.id, noSignalMsg)
       liveJob = await syncJob(registry, liveJob, {
         status: STATUS_ESCALATED,
-        escalationMessage:
-          `Claude stopped without calling mark_phase_complete or await_event ` +
-          `(phase: ${liveJob.phase}). Manual inspection needed.`,
+        escalationMessage: noSignalMsg,
       })
       break
     }
