@@ -1,0 +1,603 @@
+# ── Tool Definitions ─────────────────────────────────────────────────────────
+#
+# Every tool the Agent Host exposes to Claude is defined here.
+# The Agent Host loads this file at startup and passes the definitions to every
+# Claude API call. Descriptions are what Claude reasons from — write them to
+# be honest about limitations and side effects.
+#
+# Adding a new tool:
+#   1. Add an entry here (name, description, input_schema)
+#   2. Implement it in tools/src/tools/<file>.ts
+#   3. Register it in tools/src/tools/index.ts
+#   Done — the runner picks it up automatically.
+#
+# Schema notes:
+#   - The loader wraps each input_schema in { type: "object", ... } automatically
+#   - Use `required: [field1, field2]` for mandatory fields
+#   - YAML multiline strings: use `|` for literal blocks
+
+# ── Filesystem ───────────────────────────────────────────────────────────────
+
+- name: read_file
+  description: |
+    Read the full contents of a file. Always call this before modifying an existing file —
+    never overwrite code you have not read.
+    Paths may be absolute or relative to the working directory.
+    You can read files in both the working directory (cloned repos) and the a5-ai directory
+    (your own instructions, memory, conventions).
+  input_schema:
+    properties:
+      path:
+        type: string
+        description: File path (absolute or relative to working directory)
+    required: [path]
+
+- name: write_file
+  description: |
+    Write content to a file, creating it and any missing parent directories.
+    Overwrites the file if it already exists — read it first if you want to preserve content.
+    In migration and feature jobs, writes are restricted to the working directory.
+    In self-update jobs, you may also write to the a5-ai directory to propose changes to
+    tools, agent instructions, and workflow files (these go through PR review before taking effect).
+  input_schema:
+    properties:
+      path:
+        type: string
+        description: File path to write
+      content:
+        type: string
+        description: Full file content
+    required: [path, content]
+
+- name: list_directory
+  description: |
+    List the contents of a directory. Returns each entry with its name and type (file or directory).
+    Use this to explore a repository structure before reading individual files.
+  input_schema:
+    properties:
+      path:
+        type: string
+        description: Directory path to list
+    required: [path]
+
+- name: create_directory
+  description: Create a directory, including any missing parent directories.
+  input_schema:
+    properties:
+      path:
+        type: string
+        description: Directory path to create
+    required: [path]
+
+# ── Git ──────────────────────────────────────────────────────────────────────
+
+- name: git_clone
+  description: |
+    Clone a BitBucket repository into the working directory.
+    Credentials are injected automatically — do not include them in the repo slug.
+    targetDir may be relative to workingDir or absolute.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: "Repository slug (just the name, e.g. \"my-service\" not the full URL)"
+      targetDir:
+        type: string
+        description: "Directory to clone into, e.g. \"my-service-dotnet\""
+    required: [repoSlug, targetDir]
+
+- name: git_checkout_branch
+  description: |
+    Checkout an existing branch, or create and checkout a new one.
+    Always create feature branches before making any commits — never commit directly to main.
+  input_schema:
+    properties:
+      repoDir:
+        type: string
+        description: Path to the local repository
+      branch:
+        type: string
+        description: Branch name
+      create:
+        type: boolean
+        description: Set to true to create the branch (equivalent to git checkout -b)
+    required: [repoDir, branch]
+
+- name: git_commit
+  description: |
+    Stage all changes (git add .) and create a commit.
+    Follow the commit message conventions in conventions/git.md.
+    Returns the short commit hash.
+  input_schema:
+    properties:
+      repoDir:
+        type: string
+        description: Path to the local repository
+      message:
+        type: string
+        description: Commit message
+    required: [repoDir, message]
+
+- name: git_push
+  description: |
+    Push a branch to origin, setting the upstream tracking reference on the first push.
+    Call this after committing to make the branch visible in BitBucket so you can open a PR.
+  input_schema:
+    properties:
+      repoDir:
+        type: string
+        description: Path to the local repository
+      branch:
+        type: string
+        description: Branch name to push
+    required: [repoDir, branch]
+
+- name: git_diff
+  description: |
+    Get the diff of current changes.
+    Without a base ref, shows unstaged changes.
+    With a base ref (e.g. "main"), shows all commits between base and HEAD.
+    Use this to verify what will be included in a commit before committing.
+  input_schema:
+    properties:
+      repoDir:
+        type: string
+        description: Path to the local repository
+      base:
+        type: string
+        description: Optional base ref (branch or commit hash) to diff against HEAD
+    required: [repoDir]
+
+- name: git_status
+  description: |
+    Get the working tree status — lists modified, added, and deleted files.
+    Returns "nothing to commit, working tree clean" if there are no changes.
+  input_schema:
+    properties:
+      repoDir:
+        type: string
+        description: Path to the local repository
+    required: [repoDir]
+
+# ── BitBucket — coder account ────────────────────────────────────────────────
+
+- name: bb_create_repo
+  description: |
+    Create a new private BitBucket repository in the configured workspace.
+    Use this at the start of a migration to create the Go service repo before cloning it.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: "Repository slug (lowercase, hyphens only, e.g. \"my-service-go\")"
+      description:
+        type: string
+        description: Optional repository description
+    required: [repoSlug]
+
+- name: bb_create_pr
+  description: |
+    Open a pull request from a feature branch to main.
+    The job reviewers are added automatically if reviewerUsernames is omitted.
+    Always write a detailed description that explains what changed and why —
+    this is what human reviewers read. See conventions/git.md for PR format.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: Repository slug
+      title:
+        type: string
+        description: PR title (concise, imperative mood)
+      description:
+        type: string
+        description: "PR description (markdown). Include: what changed, why, any deviations from the .NET contract, and test results."
+      sourceBranch:
+        type: string
+        description: The feature branch to merge from
+      targetBranch:
+        type: string
+        description: "Branch to merge into (default: main)"
+      reviewerUsernames:
+        type: array
+        items:
+          type: string
+        description: BitBucket usernames to add as reviewers (defaults to job.reviewers)
+    required: [repoSlug, title, sourceBranch]
+
+- name: bb_get_pr_status
+  description: |
+    Get the current state and approval count of a pull request.
+    State is one of: OPEN, MERGED, DECLINED, SUPERSEDED.
+    Use this to check whether a PR has been approved before calling bb_merge_pr.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: Repository slug
+      prId:
+        type: number
+        description: Pull request ID
+    required: [repoSlug, prId]
+
+# ── BitBucket — reviewer account ─────────────────────────────────────────────
+
+- name: bb_get_pr_comments
+  description: |
+    Get all comments on a pull request. Returns comment ID, content, parent ID
+    (for threaded replies), and inline location (file + line if applicable).
+    Call this regularly during the review phase to check for new feedback from human reviewers.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: Repository slug
+      prId:
+        type: number
+        description: Pull request ID
+    required: [repoSlug, prId]
+
+- name: bb_post_pr_comment
+  description: |
+    Post a new top-level comment on a pull request (reviewer account).
+    Use this to share your analysis, ask clarifying questions, or summarise the review.
+    For inline code comments, see bb_reply_to_comment.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: Repository slug
+      prId:
+        type: number
+        description: Pull request ID
+      content:
+        type: string
+        description: Comment body (markdown supported)
+    required: [repoSlug, prId, content]
+
+- name: bb_reply_to_comment
+  description: |
+    Reply to an existing comment thread on a pull request (reviewer account).
+    Use parentId from bb_get_pr_comments to continue an existing thread.
+    Use this to respond to human developer feedback or resolve review comments.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: Repository slug
+      prId:
+        type: number
+        description: Pull request ID
+      parentId:
+        type: number
+        description: ID of the comment to reply to
+      content:
+        type: string
+        description: Reply body (markdown supported)
+    required: [repoSlug, prId, parentId, content]
+
+- name: bb_approve_pr
+  description: |
+    Approve a pull request using the reviewer account.
+    Only call this after you have read all the code, verified it meets the conventions,
+    and confirmed all review comments have been addressed.
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: Repository slug
+      prId:
+        type: number
+        description: Pull request ID
+    required: [repoSlug, prId]
+
+- name: bb_merge_pr
+  description: |
+    Merge a pull request. Only call this when:
+    (1) the PR is approved, (2) all review comments are resolved,
+    (3) you have confirmed the PR state is OPEN via bb_get_pr_status.
+    Returns the new PR state (should be MERGED on success).
+  input_schema:
+    properties:
+      repoSlug:
+        type: string
+        description: Repository slug
+      prId:
+        type: number
+        description: Pull request ID
+      message:
+        type: string
+        description: Optional merge commit message
+    required: [repoSlug, prId]
+
+# ── Test harness ─────────────────────────────────────────────────────────────
+
+- name: run_go_build
+  description: |
+    Build the Go service by running `go build ./...` in the repository directory.
+    Always build before starting the service.
+    If the build fails, read the error output carefully — it usually points to a specific file and line.
+  input_schema:
+    properties:
+      repoDir:
+        type: string
+        description: Path to the Go repository
+    required: [repoDir]
+
+- name: start_go_service
+  description: |
+    Start the compiled Go binary in the background on a specified port.
+    The service is tracked by a label so you can stop it later.
+    Returns the process PID. Waits 1.5 seconds for the port to bind before returning.
+  input_schema:
+    properties:
+      label:
+        type: string
+        description: "Unique label to identify this service (e.g. \"go-my-service\")"
+      repoDir:
+        type: string
+        description: Path to the Go repository
+      binaryName:
+        type: string
+        description: "Name of the compiled binary (e.g. \"my-service\")"
+      port:
+        type: number
+        description: Port to listen on
+      env:
+        type: object
+        additionalProperties:
+          type: string
+        description: Environment variables to pass to the service (e.g. database connection strings)
+    required: [label, repoDir, binaryName, port]
+
+- name: stop_go_service
+  description: |
+    Stop a running Go service by its label.
+    Always call this when you are done testing to free the port.
+  input_schema:
+    properties:
+      label:
+        type: string
+        description: Label used when starting the service
+    required: [label]
+
+- name: compare_request
+  description: |
+    Send the same HTTP request to both the Go service and the .NET staging service,
+    then diff the responses. Returns status codes, response bodies, and a structured diff
+    that highlights field-level mismatches.
+    This is the primary validation tool — use it for every endpoint you migrate.
+    A mismatch is not necessarily a failure: document deviations in the PR description
+    with the reason (e.g. intentional contract improvement, legacy bug not worth preserving).
+  input_schema:
+    properties:
+      goBaseUrl:
+        type: string
+        description: "Base URL of the running Go service, e.g. \"http://localhost:8080\""
+      dotnetBaseUrl:
+        type: string
+        description: Base URL of the .NET staging service from job context (stagingUrl)
+      method:
+        type: string
+        description: HTTP method (GET, POST, PUT, DELETE, etc.)
+      path:
+        type: string
+        description: "Request path including query string, e.g. \"/api/users?page=1\""
+      headers:
+        type: object
+        additionalProperties:
+          type: string
+        description: Request headers (e.g. Authorization, Content-Type)
+      body:
+        type: string
+        description: Request body as a JSON string (for POST/PUT)
+    required: [goBaseUrl, dotnetBaseUrl, method, path]
+
+# ── Observability ────────────────────────────────────────────────────────────
+
+- name: loki_query
+  description: |
+    Query Loki for log lines using LogQL.
+    Use this to observe real production traffic patterns before writing the Go implementation —
+    code can lie, logs do not.
+    Returns { available: false } when Loki is not configured (local dev without observability).
+    Example queries:
+      `{service="my-service"} |= "POST /api/users"` — find POST requests to an endpoint.
+      `{service="my-service"} | json | status >= 500` — find server errors.
+  input_schema:
+    properties:
+      logQL:
+        type: string
+        description: LogQL query string
+      start:
+        type: string
+        description: "Start time — Unix nanoseconds, ISO-8601, or relative like \"now-24h\""
+      end:
+        type: string
+        description: "End time (default: \"now\")"
+      limit:
+        type: number
+        description: "Maximum log lines to return (default: 500, max: 5000)"
+    required: [logQL, start]
+
+- name: tempo_get_trace
+  description: |
+    Fetch a full distributed trace by trace ID from Tempo.
+    Use this to understand the call chain for a specific request —
+    helpful when an endpoint calls downstream services that also need to be migrated.
+    Returns { available: false } when Tempo is not configured.
+  input_schema:
+    properties:
+      traceId:
+        type: string
+        description: Trace ID (hex string)
+    required: [traceId]
+
+- name: tempo_search
+  description: |
+    Search for traces matching a TraceQL query.
+    Use this to find traces for a specific service, error status, or latency range.
+    Returns { available: false } when Tempo is not configured.
+    Example queries:
+      `{ .service.name = "my-service" && status = error }` — all error traces.
+      `{ .service.name = "my-service" && duration > 2s }` — slow requests.
+  input_schema:
+    properties:
+      query:
+        type: string
+        description: TraceQL query string
+      start:
+        type: string
+        description: Start time (Unix seconds or RFC3339)
+      end:
+        type: string
+        description: End time (optional)
+      limit:
+        type: number
+        description: "Max traces to return (default: 20)"
+    required: [query, start]
+
+# ── Jira ─────────────────────────────────────────────────────────────────────
+
+- name: jira_get_issue
+  description: |
+    Fetch a Jira issue including summary, description, acceptance criteria, status,
+    components, and labels.
+    Used by the spec-writer agent to read the ticket before producing a feature spec.
+    Returns { available: false } when Jira is not configured.
+  input_schema:
+    properties:
+      ticketId:
+        type: string
+        description: "Jira ticket ID, e.g. \"A5-1234\""
+    required: [ticketId]
+
+- name: jira_post_comment
+  description: |
+    Post a comment on a Jira issue.
+    Use this to report job progress, ask clarifying questions, or link to the PR when opened.
+    Returns { available: false } when Jira is not configured.
+  input_schema:
+    properties:
+      ticketId:
+        type: string
+        description: Jira ticket ID
+      body:
+        type: string
+        description: Comment text (plain text, not ADF)
+    required: [ticketId, body]
+
+- name: jira_transition_issue
+  description: |
+    Move a Jira issue to a new status (e.g. "In Progress" → "Done").
+    Use jira_get_issue first to find the current status and available transitions.
+    Returns { available: false } when Jira is not configured.
+  input_schema:
+    properties:
+      ticketId:
+        type: string
+        description: Jira ticket ID
+      transitionId:
+        type: string
+        description: Transition ID (numeric string from the Jira transitions API)
+    required: [ticketId, transitionId]
+
+# ── Job control ──────────────────────────────────────────────────────────────
+
+- name: mark_phase_complete
+  description: |
+    Signal to the runner that you have finished the current phase.
+    The runner will advance the job to the next phase in the workflow.
+    Call this only when you have fully completed every step of the current phase —
+    not when you are partway through.
+    This tool takes no inputs.
+  input_schema:
+    properties: {}
+    required: []
+
+- name: await_event
+  description: |
+    Park the job and wait for an external BitBucket webhook event.
+    The runner will stop the loop and persist the job in Redis until the event arrives.
+    Common events: "pr:approved" (PR has been approved), "pr:fulfilled" (PR has been merged).
+    When the event fires, the runner will resume this job with the event payload in the next message.
+  input_schema:
+    properties:
+      eventName:
+        type: string
+        description: "Event to wait for, e.g. \"pr:approved\" or \"pr:fulfilled\""
+      prId:
+        type: number
+        description: PR ID to associate with this wait (used to route the webhook to this job)
+    required: [eventName]
+
+- name: escalate
+  description: |
+    Escalate the job to a human. Sets the job status to Escalated and stops the runner.
+    Use this when you encounter a blocker that you cannot resolve:
+    ambiguous requirements, a .NET pattern with no clear Go equivalent,
+    a test that cannot be made to pass, or anything that requires a human decision.
+    Be specific — the reason is what the developer reads to understand what needs attention.
+    Do not escalate for transient errors (network timeouts, build failures) — retry those first.
+  input_schema:
+    properties:
+      reason:
+        type: string
+        description: Clear, specific description of the blocker and what human action is needed
+    required: [reason]
+
+- name: log
+  description: |
+    Append a log line to the job stream. Developers watch this via `a5 logs --job <id>`.
+    Call this constantly — for every significant action, decision, and result.
+    Be specific: "Extracted 14 endpoints from UserController.cs" not "Analysed code".
+    Errors, decisions, and test results are especially important to log.
+  input_schema:
+    properties:
+      message:
+        type: string
+        description: Log message
+    required: [message]
+
+- name: propose_change
+  description: |
+    Propose an improvement to the Agent Host: a new tool, a change to an existing tool,
+    an update to an agent's instructions, or any other source code change.
+
+    This is the feedback loop. When you encounter a limitation — a tool that does not exist,
+    a tool that behaves incorrectly, an agent instruction that is ambiguous — do not just
+    escalate. File a proposal. The file watcher will detect it, validate it (running
+    `npm run build` for TypeScript files), and open a PR for human review.
+    Once merged, the Agent Host restarts with the improvement and the next job benefits from it.
+
+    If you can write the implementation yourself, include it in proposedContent.
+    A TypeScript file that does not compile will be rejected before it reaches a PR —
+    you will get the build error back so you can fix it.
+  input_schema:
+    properties:
+      type:
+        type: string
+        enum: [new-tool, modify-tool, new-agent, modify-agent, workflow-change, source-change]
+        description: Category of change being proposed
+      title:
+        type: string
+        description: "Short title for the proposal (becomes the filename), e.g. \"add run_go_test tool\""
+      rationale:
+        type: string
+        description: Why this change is needed — what problem were you trying to solve when you hit this limitation?
+      description:
+        type: string
+        description: Full description of the proposed change
+      targetFile:
+        type: string
+        description: |
+          Relative path in the a5-ai repo to create or modify,
+          e.g. "tools/src/tools/test-harness.ts" or "agents/coder.md".
+          Required when providing proposedContent.
+      proposedContent:
+        type: string
+        description: |
+          Full file content to write to targetFile.
+          For TypeScript files this will be compiled before the PR is opened.
+          Include complete, working code — not diffs or partial snippets.
+    required: [type, title, rationale, description]

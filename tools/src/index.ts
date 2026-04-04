@@ -11,6 +11,7 @@ import { createTempoClient } from './clients/tempo'
 import { Dispatcher } from './jobs/dispatcher'
 import { JobRegistry } from './jobs/registry'
 import { RunnerContext } from './jobs/runner'
+import { loadToolDefinitions } from './prompt/tool-loader'
 import { createServer } from './server'
 import { startWatcher } from './watcher'
 
@@ -68,7 +69,11 @@ async function main(): Promise<void> {
 
   logger.info('All clients initialised')
 
-  // 5. Build the runner context shared across all jobs
+  // 5. Load tool definitions from YAML
+  const toolDefinitions = await loadToolDefinitions(settings.paths.a5aiDir)
+  logger.info({ count: toolDefinitions.length }, 'Tool definitions loaded from YAML')
+
+  // 6. Build the runner context shared across all jobs
   const runnerCtx: RunnerContext = {
     registry,
     settings,
@@ -79,16 +84,17 @@ async function main(): Promise<void> {
     tempoClient,
     jiraClient,
     anthropic,
+    toolDefinitions,
     logger,
   }
 
-  // 6. Create dispatcher (owns the runner loop and concurrency guard)
+  // 7. Create dispatcher (owns the runner loop and concurrency guard)
   const dispatcher = new Dispatcher(runnerCtx)
 
-  // 7. Start file watcher (self-improvement loop)
+  // 8. Start file watcher (self-improvement loop)
   const watcher = startWatcher({ settings, gitClient, bbCoder, registry, logger })
 
-  // 8. Start HTTP server
+  // 9. Start HTTP server
   const app = createServer({ registry, dispatcher, settings, logger })
 
   const server = app.listen(settings.host.port, () => {
@@ -99,7 +105,7 @@ async function main(): Promise<void> {
     logger.info('─────────────────────────────────────────')
   })
 
-  // 8. Graceful shutdown
+  // 10. Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Shutdown signal received')
     server.close(() => logger.info('HTTP server closed'))

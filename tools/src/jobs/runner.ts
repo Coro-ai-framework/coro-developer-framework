@@ -8,7 +8,6 @@ import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import { Settings } from '../config/settings'
 import { buildSystemPrompt } from '../prompt/builder'
-import { TOOL_DEFINITIONS } from '../prompt/tools'
 import { executeTool, ToolContext } from '../tools/index'
 import {
   WorkflowConfig,
@@ -31,6 +30,7 @@ export interface RunnerContext {
   tempoClient: TempoClient
   jiraClient: JiraClient
   anthropic: Anthropic
+  toolDefinitions: Anthropic.Tool[]
   logger: Logger
 }
 
@@ -124,7 +124,7 @@ export async function runJob(job: Job, ctx: RunnerContext): Promise<void> {
             max_tokens: 8192,
             system: systemPrompt,
             messages: liveJob.conversationHistory as Anthropic.MessageParam[],
-            tools: TOOL_DEFINITIONS,
+            tools: ctx.toolDefinitions,
           },
           ctx.anthropic,
           logger,
