@@ -26,7 +26,7 @@ Read the implementation plan, memory, and conventions before writing a single li
 The repo slug comes from the job context (`params.repo`). Clone it using the BitBucket credentials from your environment:
 
 ```bash
-git clone "https://$BB_CODER_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/$REPO_SLUG.git"
+git clone "https://$BB_GIT_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/$REPO_SLUG.git"
 ```
 
 Replace `$REPO_SLUG` with the value from `params.repo` in the job context.
