@@ -199,10 +199,12 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(registry.current.status).toBe(STATUS_AWAITING_PLAN_APPROVAL)
   })
 
-  it('escalates when query ends without job-control signals', async () => {
+  it('auto-advances when query ends without any signal (no escalation)', async () => {
+    let call = 0
     const queryImpl = () =>
       (async function* () {
-        yield { type: 'system', session_id: 'orphan' }
+        call += 1
+        yield { type: 'system', session_id: `auto-${call}` }
       })()
 
     await runJob(makeJob({ phase: 'alpha' }), ctx, {
@@ -210,8 +212,9 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowTwoPhase,
     })
 
-    expect(registry.current.status).toBe(STATUS_ESCALATED)
-    expect(registry.current.escalationMessage).toContain('mark_phase_complete')
+    expect(call).toBe(2)
+    expect(registry.current.status).toBe(STATUS_COMPLETE)
+    expect(registry.current.phase).toBe('beta')
   })
 
   it('persists sessionId from system messages', async () => {
@@ -295,6 +298,27 @@ describe('runJob (mocked Agent SDK query)', () => {
 
     expect(registry.current.status).toBe(STATUS_ESCALATED)
     expect(registry.current.escalationMessage).toBe('Human needed')
+  })
+
+  it('goto_phase overrides the next phase via nextPhase signal', async () => {
+    let call = 0
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        call += 1
+        if (call === 1) {
+          inv.signals.nextPhase = 'beta'
+        }
+        yield { type: 'system', session_id: `goto-${call}` }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    expect(call).toBe(2)
+    expect(registry.current.phase).toBe('beta')
+    expect(registry.current.status).toBe(STATUS_COMPLETE)
   })
 
   it('uses phase transition prompt when sessionId exists on second phase', async () => {

@@ -23,7 +23,6 @@ import { JobRegistry } from './registry'
 import {
   Job,
   STATUS_COMPLETE,
-  STATUS_ESCALATED,
   STATUS_FAILED,
   isTerminalStatus,
   jobServiceName,
@@ -275,8 +274,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           }
         }
 
-        // If signals were set (job control tools were called), we can stop early
-        if (signals.phaseComplete || signals.awaitingEvent || signals.escalated) {
+        // If an exception signal was set, stop processing the stream early.
+        // phaseComplete is an optional hint — the runner auto-advances anyway.
+        if (signals.phaseComplete || signals.nextPhase || signals.awaitingEvent || signals.escalated) {
           break
         }
       }
@@ -288,6 +288,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       // ── Post-query signal processing ───────────────────────────────────────
+      //
+      // Priority order:
+      //   1. Terminal status (already completed by another mechanism) → stop
+      //   2. Escalated (agent explicitly asked for human help) → stop
+      //   3. Awaiting event (agent needs to wait for external input) → park
+      //   4. Default: auto-advance to the next phase (or complete if none)
+      //
+      // The agent does NOT need to call mark_phase_complete. Finishing the
+      // query is sufficient — the runner treats "no exception signal" as
+      // "phase done, move on." This eliminates the most common failure mode
+      // where the LLM forgets to call a job-control tool.
 
       if (isTerminalStatus(liveJob.status)) break
 
@@ -306,7 +317,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           awaitingPrId: signals.awaitingPrId,
         })
 
-        // Ensure the pr→job reverse-lookup key exists so webhooks can find this job.
         if (signals.awaitingPrId) {
           await registry.mapPrToJob(signals.awaitingPrId, liveJob.id)
         }
@@ -319,37 +329,24 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
-      if (signals.phaseComplete) {
-        const nextPhase = signals.nextPhase
-          ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
+      // Default: auto-advance to the next phase.
+      // goto_phase overrides the next phase; otherwise use the workflow sequence.
+      const nextPhase = signals.nextPhase
+        ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
 
-        if (!nextPhase) {
-          liveJob = await syncJob(registry, liveJob, { status: STATUS_COMPLETE })
-          await registry.appendLog(liveJob.id, 'All phases complete — job finished successfully')
-          logger.info({ jobId: liveJob.id }, 'Job completed')
-          break
-        }
-
-        liveJob = await syncJob(registry, liveJob, { phase: nextPhase })
-        toolCtx.job = liveJob
-
-        logger.info({ jobId: liveJob.id, phase: nextPhase }, 'Phase advanced')
-        await registry.appendLog(liveJob.id, `Phase advanced → ${nextPhase}`)
-        continue
+      if (!nextPhase) {
+        liveJob = await syncJob(registry, liveJob, { status: STATUS_COMPLETE })
+        await registry.appendLog(liveJob.id, 'All phases complete — job finished successfully')
+        logger.info({ jobId: liveJob.id }, 'Job completed')
+        break
       }
 
-      // Claude stopped without calling any job-control tool. Always escalate —
-      // the agent must explicitly call mark_phase_complete, await_event, or escalate.
-      logger.warn({ jobId: liveJob.id, phase: liveJob.phase }, 'Agent SDK query ended without signals')
-      const noSignalMsg =
-        `Escalated: Claude finished this phase without calling mark_phase_complete or await_event ` +
-        `(phase: ${liveJob.phase}). Manual inspection needed.`
-      await registry.appendLog(liveJob.id, noSignalMsg)
-      liveJob = await syncJob(registry, liveJob, {
-        status: STATUS_ESCALATED,
-        escalationMessage: noSignalMsg,
-      })
-      break
+      liveJob = await syncJob(registry, liveJob, { phase: nextPhase })
+      toolCtx.job = liveJob
+
+      logger.info({ jobId: liveJob.id, phase: nextPhase }, 'Phase advanced')
+      await registry.appendLog(liveJob.id, `Phase advanced → ${nextPhase}`)
+      continue
     }
   } catch (err) {
     logger.error({ err, jobId: liveJob.id }, 'Runner crashed — marking job failed')

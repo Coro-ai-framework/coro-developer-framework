@@ -43,20 +43,12 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
       })
 
-      // Record the PR mapping so webhooks can find this job by PR id.
       await ctx.registry.addPrMapping(ctx.job.id, {
         prId: pr.id,
         feature: ctx.job.currentFeature ?? ctx.job.phase,
         repoSlug: repoSlug,
         openedAt: new Date().toISOString(),
       })
-
-      // Creating a PR is the natural end of the coding phase — auto-signal
-      // phase completion so the job advances to review even if the agent
-      // forgets to call mark_phase_complete. If the agent needs to park
-      // instead (e.g. wait for merge), it can call await_event after this
-      // tool, which takes priority in the runner's signal processing.
-      signals.phaseComplete = true
 
       return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
     },
@@ -213,11 +205,10 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     // Job control
     mark_phase_complete: async () => {
       signals.phaseComplete = true
-      return text({ phaseComplete: true })
+      return text({ acknowledged: true })
     },
 
     goto_phase: async ({ phase }: { phase: string }) => {
-      signals.phaseComplete = true
       signals.nextPhase = phase
       return text({ goingToPhase: phase })
     },

@@ -191,21 +191,21 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'mark_phase_complete',
-        'Signal that the current phase is done. The runner will advance to the next phase or complete the job.',
+        'Optional hint that you are done. The runner auto-advances to the next phase when you finish regardless, so this is not required. Calling it ends the current turn early.',
         {},
         h.mark_phase_complete,
       ),
 
       tool(
         'goto_phase',
-        'Skip to a specific phase by name (e.g. go back to coding after review comments). Sets phaseComplete + nextPhase override.',
+        'Override which phase runs next (e.g. go back to "coding" after posting review comments). Ends the current turn.',
         { phase: z.string() },
         h.goto_phase,
       ),
 
       tool(
         'await_event',
-        'Park the job and wait for an external event (e.g. PR merge, comment). The runner stops until the webhook arrives.',
+        'Park the job and wait for an external event (e.g. PR merge, Jira comment). The runner stops until the webhook arrives. Only call this when you genuinely need to wait — otherwise just finish and the runner auto-advances.',
         { eventName: z.string(), prId: z.number().optional() },
         h.await_event,
       ),

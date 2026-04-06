@@ -8,14 +8,14 @@
 
 ## Job control — how to end your turn
 
-You must always end your turn by calling one of these MCP tools. Writing text does nothing.
+The runner **auto-advances** to the next phase when you finish. You only need to call a tool when the default (advance) is wrong:
 
-| Situation | Call this tool |
-|-----------|---------------|
-| Found issues the **coder** must fix | `mcp__a5__goto_phase` with argument `"coding"` |
-| Waiting for a **human** reviewer to approve | `mcp__a5__await_event` with `eventName: "pr:approved"` and the prId — then when you resume, merge the PR and call `mcp__a5__mark_phase_complete` |
-| PR is merged (fulfilled) | `mcp__a5__mark_phase_complete` |
-| Something is broken you cannot resolve | `mcp__a5__escalate` with reason |
+| Situation | What to do |
+|-----------|------------|
+| Found issues the **coder** must fix | Call `mcp__a5__goto_phase("coding")` — sends the job back to the coder |
+| Waiting for a **human** reviewer to approve | Call `mcp__a5__await_event` with `eventName: "pr:approved"` and the prId |
+| PR is approved — merge it | Call `mcp__a5__bb_merge_pr`, then stop. The runner auto-advances to testing. |
+| Something is broken you cannot resolve | Call `mcp__a5__escalate` with reason |
 
 **Procedure when the coder must fix something:**
 1. Post a PR comment listing every blocking issue clearly

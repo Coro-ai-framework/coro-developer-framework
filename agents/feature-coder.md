@@ -74,9 +74,9 @@ git push origin <feature-branch-name>
 
 ### 8. Open the pull request
 
-**You MUST use `mcp__a5__bb_create_pr` to open the PR — not `curl`, not `gh`, not any other method.** Calling this tool registers the PR with the job system so webhooks can route events back to this job. If you use any other method, the job will lose track of the PR.
+**Use `mcp__a5__bb_create_pr` to open the PR** — this registers the PR with the job system so webhooks can route events back to this job. If you use `curl` or another method, the webhooks won't find this job.
 
-Use `mcp__a5__bb_create_pr` to open the PR:
+Use `mcp__a5__bb_create_pr` with:
 - `repoSlug`: from `params.repo`
 - `sourceBranch`: your feature branch
 - `targetBranch`: the base branch from the implementation plan (e.g., `k8s-staging`)
@@ -84,15 +84,9 @@ Use `mcp__a5__bb_create_pr` to open the PR:
 - `description`: include what changed, why, how to verify, and any acceptance criteria from the plan
 - `reviewerUsernames`: from `params.reviewers`
 
-### 9. Advance to review — MANDATORY
+Once the PR is created, you are done. The runner automatically advances the job to the review phase — you do not need to call any job-control tool.
 
-**Immediately after `bb_create_pr` succeeds**, you MUST call `mcp__a5__mark_phase_complete`. This hands the job to the PR Reviewer agent, which will review your code, post comments if needed, and send the job back to you for fixes via `goto_phase("coding")`.
-
-**Do not call `mcp__a5__await_event`.** Do not write a summary and stop. The runner will escalate the job if you finish without calling a job control tool. The only valid endings for this phase are:
-- `mcp__a5__mark_phase_complete` — PR created, advancing to review
-- `mcp__a5__escalate` — something is broken and you cannot continue
-
-### 10. Responding to PR feedback
+### 9. Responding to PR feedback
 
 When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 1. Read the PR comments via `mcp__a5__bb_get_pr_comments` to understand what needs fixing
@@ -100,7 +94,7 @@ When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 3. Commit with `fix: address review feedback — <brief description>`
 4. Push to origin (the PR updates automatically)
 5. Post a reply comment via `mcp__a5__bb_post_pr_comment` confirming what was changed
-6. Call `mcp__a5__mark_phase_complete` to hand the job back to the reviewer
+6. You are done — the runner automatically advances back to review
 
 ## Critical rules
 
@@ -110,6 +104,7 @@ When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 - **Build must pass** before opening the PR.
 - **Always target the branch specified in the plan** — not `main` unless the plan says `main`.
 - **Use `mcp__a5__log` frequently** so developers watching `a5 logs` can follow your progress.
-- **Always end by calling a job control tool** — writing "done" or "complete" in text does nothing. The runner only recognises `mcp__a5__mark_phase_complete` or `mcp__a5__escalate`. After opening the PR, call `mark_phase_complete` to hand off to the reviewer. If you finish without calling one of these tools, the runner will escalate the job as if you failed.
+- **Use `mcp__a5__bb_create_pr` to open PRs** — this registers the PR with the job system. PRs created via `curl` or other methods won't be tracked by webhooks.
+- **The runner auto-advances** when you finish. You do not need to call `mark_phase_complete`. Just do your work and stop.
 - **Call `mcp__a5__escalate`** if anything blocks you that you cannot resolve — never guess or invent a workaround.
-- **On persistent auth failures (401/403 from BitBucket or git):** immediately call `mcp__a5__escalate` with the exact error message and what you tried. Do not retry more than twice. The credentials are managed externally and cannot be fixed from inside the session.
+- **On persistent auth failures (401/403 from BitBucket or git):** immediately call `mcp__a5__escalate` with the exact error message and what you tried. Do not retry more than twice.

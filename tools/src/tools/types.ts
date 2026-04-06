@@ -31,13 +31,20 @@ export interface ToolContext {
 
 // ── Job-control signal types ──────────────────────────────────────────────────
 //
-// MCP tool handlers for mark_phase_complete / await_event / escalate set these
-// on the shared PhaseSignals object. The runner reads them after each query()
-// completes (or via hooks) to decide what to do next.
+// MCP tool handlers set these on the shared PhaseSignals object. The runner
+// reads them after each query() completes to decide what to do next.
+//
+// Default behavior (no signals set): auto-advance to the next workflow phase.
+// Signals are only needed for EXCEPTIONS to the normal flow:
+//   await_event  → park the job, waiting for an external event
+//   escalate     → stop the job, human intervention needed
+//   goto_phase   → override which phase comes next (e.g. loop back to coding)
+//   phaseComplete → optional early-break hint (not required — the runner
+//                   auto-advances regardless when the query stream ends)
 
 export interface PhaseSignals {
   phaseComplete?: boolean
-  /** When set alongside phaseComplete, overrides the default next-phase lookup. */
+  /** When set, overrides the default next-phase lookup. Used by goto_phase. */
   nextPhase?: string
   awaitingEvent?: string
   awaitingPrId?: number
