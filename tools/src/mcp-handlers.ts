@@ -43,11 +43,8 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
       })
 
-      // Auto-park: calling this tool is sufficient — no need to call await_event separately.
-      signals.awaitingEvent = 'pr:fulfilled'
-      signals.awaitingPrId = pr.id
-
-      // Record the PR mapping both in the job's prMappings array and in the Redis reverse-lookup key.
+      // Record the PR mapping so webhooks can find this job by PR id.
+      // The agent must explicitly call await_event to park the job.
       await ctx.registry.addPrMapping(ctx.job.id, {
         prId: pr.id,
         feature: ctx.job.currentFeature ?? ctx.job.phase,

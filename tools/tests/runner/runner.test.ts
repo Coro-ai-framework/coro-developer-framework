@@ -75,6 +75,8 @@ function createMockRegistry(initial: Job) {
     get current(): Job {
       return current
     },
+    getJob: vi.fn(async () => ({ ...current })),
+    mapPrToJob: vi.fn().mockResolvedValue(undefined),
     updateJob: vi.fn(async (_id: string, patch: Partial<Job>) => {
       current = {
         ...current,
