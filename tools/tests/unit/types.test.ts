@@ -43,14 +43,14 @@ function makeJob(overrides: Partial<Job> = {}): Job {
 describe('isTerminalStatus', () => {
   it.each([
     [STATUS_COMPLETE, true],
-    [STATUS_ESCALATED, true],
-    [STATUS_FAILED, true],
   ])('returns true for terminal status "%s"', (status, expected) => {
     expect(isTerminalStatus(status)).toBe(expected)
   })
 
   it.each([
     STATUS_QUEUED,
+    STATUS_ESCALATED,
+    STATUS_FAILED,
     STATUS_AWAITING_PLAN_APPROVAL,
     STATUS_AWAITING_PR_MERGE,
     STATUS_CODING,
@@ -67,6 +67,8 @@ describe('isParkingStatus', () => {
   it.each([
     [STATUS_AWAITING_PLAN_APPROVAL, true],
     [STATUS_AWAITING_PR_MERGE, true],
+    [STATUS_ESCALATED, true],
+    [STATUS_FAILED, true],
   ])('returns true for parking status "%s"', (status, expected) => {
     expect(isParkingStatus(status)).toBe(expected)
   })
@@ -74,8 +76,6 @@ describe('isParkingStatus', () => {
   it.each([
     STATUS_QUEUED,
     STATUS_COMPLETE,
-    STATUS_ESCALATED,
-    STATUS_FAILED,
     STATUS_CODING,
     'awaiting-something-else',
     '',

@@ -107,17 +107,22 @@ export interface JobInput {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function isTerminalStatus(status: string): boolean {
-  return (
-    status === STATUS_COMPLETE ||
-    status === STATUS_ESCALATED ||
-    status === STATUS_FAILED
-  )
+  return status === STATUS_COMPLETE
 }
 
+/**
+ * Can this job be woken up by an external event?
+ * Includes explicit parking states AND escalated/failed — because a webhook
+ * event (comment, approval, merge) may provide exactly the context the agent
+ * needs to continue. The AI decides whether to proceed or re-escalate.
+ * Only `complete` is truly unreachable.
+ */
 export function isParkingStatus(status: string): boolean {
   return (
     status === STATUS_AWAITING_PLAN_APPROVAL ||
-    status === STATUS_AWAITING_PR_MERGE
+    status === STATUS_AWAITING_PR_MERGE ||
+    status === STATUS_ESCALATED ||
+    status === STATUS_FAILED
   )
 }
 

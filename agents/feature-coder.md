@@ -94,12 +94,13 @@ Use `mcp__a5__bb_create_pr` to open the PR:
 
 ### 10. Responding to PR feedback
 
-When the review phase injects a webhook event with review comments:
-1. Read the comments carefully
+When the review phase sends you back to fix issues (via `goto_phase("coding")`):
+1. Read the PR comments via `mcp__a5__bb_get_pr_comments` to understand what needs fixing
 2. Apply fixes to the same branch
 3. Commit with `fix: address review feedback — <brief description>`
 4. Push to origin (the PR updates automatically)
 5. Post a reply comment via `mcp__a5__bb_post_pr_comment` confirming what was changed
+6. Call `mcp__a5__mark_phase_complete` to hand the job back to the reviewer
 
 ## Critical rules
 
