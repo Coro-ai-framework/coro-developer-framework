@@ -269,6 +269,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             const result = message['result']
             if (typeof result === 'string') {
               await registry.appendLog(liveJob.id, `[result] ${result}`)
+              // Auto-detect PR creation: if the result text mentions a BitBucket PR URL,
+              // park the job automatically. This catches cases where the agent created
+              // a PR via curl or any method other than mcp__a5__bb_create_pr.
+              if (!signals.awaitingEvent && !signals.phaseComplete && !signals.escalated) {
+                const prMatch = result.match(/bitbucket\.org\/[^/\s]+\/[^/\s]+\/pull-requests?\/(\d+)/i)
+                if (prMatch) {
+                  const detectedPrId = parseInt(prMatch[1], 10)
+                  signals.awaitingEvent = 'pr:fulfilled'
+                  signals.awaitingPrId = detectedPrId
+                  await registry.mapPrToJob(detectedPrId, liveJob.id)
+                  await registry.appendLog(liveJob.id, `[auto-park] Detected PR #${detectedPrId} in result — parking job`)
+                }
+              }
             } else {
               await registry.appendLog(liveJob.id, `[event:result] ${JSON.stringify(message)}`)
             }

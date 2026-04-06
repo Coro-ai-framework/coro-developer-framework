@@ -43,13 +43,17 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
       })
 
-      // Auto-park the job waiting for this PR to be merged.
-      // The agent does not need to call await_event separately after creating a PR.
+      // Auto-park: calling this tool is sufficient — no need to call await_event separately.
       signals.awaitingEvent = 'pr:fulfilled'
       signals.awaitingPrId = pr.id
 
-      // Record the PR mapping so the runner can look up the job from a webhook
-      await ctx.registry.mapPrToJob(pr.id, ctx.job.id)
+      // Record the PR mapping both in the job's prMappings array and in the Redis reverse-lookup key.
+      await ctx.registry.addPrMapping(ctx.job.id, {
+        prId: pr.id,
+        feature: ctx.job.currentFeature ?? ctx.job.phase,
+        repoSlug: repoSlug,
+        openedAt: new Date().toISOString(),
+      })
 
       return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
     },

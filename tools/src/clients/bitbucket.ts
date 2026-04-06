@@ -101,15 +101,33 @@ export class BitBucketClient {
   // ── Pull requests ────────────────────────────────────────────────────────────
 
   async createPr(opts: CreatePrOptions): Promise<PullRequest> {
-    const reviewers = (opts.reviewerUsernames ?? []).map(u => ({ username: u }))
-    return this.request('POST', `/repositories/${this.workspace}/${opts.repoSlug}/pullrequests`, {
+    const body = {
       title: opts.title,
       description: opts.description ?? '',
       source: { branch: { name: opts.sourceBranch } },
       destination: { branch: { name: opts.targetBranch ?? 'main' } },
-      reviewers,
       close_source_branch: true,
-    })
+    }
+
+    // Try with reviewers first. The new BitBucket API requires account_id or uuid,
+    // not username — if reviewers cause a 400, fall back to creating without them.
+    if (opts.reviewerUsernames && opts.reviewerUsernames.length > 0) {
+      try {
+        const reviewers = opts.reviewerUsernames.map(u => ({ username: u }))
+        return await this.request('POST', `/repositories/${this.workspace}/${opts.repoSlug}/pullrequests`, {
+          ...body,
+          reviewers,
+        })
+      } catch (err) {
+        if (err instanceof BitBucketError && err.statusCode === 400) {
+          // Reviewer format rejected — create PR without reviewers
+        } else {
+          throw err
+        }
+      }
+    }
+
+    return this.request('POST', `/repositories/${this.workspace}/${opts.repoSlug}/pullrequests`, body)
   }
 
   async getPr(repoSlug: string, prId: number): Promise<PullRequest> {
