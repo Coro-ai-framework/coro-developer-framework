@@ -1,4 +1,4 @@
-import { JobInput, STATUS_CODING, STATUS_FAILED, isParkingStatus } from './types'
+import { JobInput, STATUS_CODING, STATUS_FAILED, isParkingStatus, isTerminalStatus } from './types'
 import { runJob, RunnerContext } from './runner'
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -23,6 +23,51 @@ export class Dispatcher {
     this.ctx.logger.info({ jobId: job.id, type: job.type }, 'Job dispatched')
     this.fireAndForget(job.id)
     return job
+  }
+
+  // ── Manual resume ───────────────────────────────────────────────────────────
+
+  /**
+   * Resume an escalated or failed job from its current phase (or a specific phase).
+   *
+   * If `fromPhase` matches the job's current phase, the existing Agent SDK session
+   * is reused (`resume: sessionId`) so the conversation continues exactly where it
+   * stopped — previously completed phases are NOT re-run.
+   *
+   * If `fromPhase` differs from the current phase, the job is moved to that phase
+   * and the session is reset (Claude starts fresh for that phase).
+   */
+  async resumeJob(jobId: string, fromPhase?: string): Promise<void> {
+    const job = await this.ctx.registry.getJob(jobId)
+    if (!job) throw new Error(`Job not found: ${jobId}`)
+
+    if (!isTerminalStatus(job.status) && !isParkingStatus(job.status)) {
+      throw new Error(`Job ${jobId} is not in a resumable state (status: ${job.status})`)
+    }
+
+    if (this.activeJobs.has(jobId)) {
+      throw new Error(`Job ${jobId} is already running`)
+    }
+
+    const phaseChanged = fromPhase && fromPhase !== job.phase
+
+    await this.ctx.registry.updateJob(jobId, {
+      status: STATUS_CODING,
+      escalationMessage: undefined,
+      awaitingEvent: undefined,
+      awaitingPrId: undefined,
+      ...(phaseChanged ? { phase: fromPhase, sessionId: undefined } : {}),
+    })
+
+    await this.ctx.registry.appendLog(
+      jobId,
+      phaseChanged
+        ? `[manual-resume] Restarting from phase: ${fromPhase}`
+        : `[manual-resume] Continuing phase: ${job.phase}${job.sessionId ? ' (resuming session)' : ''}`,
+    )
+
+    this.ctx.logger.info({ jobId, phase: phaseChanged ? fromPhase : job.phase, phaseChanged }, 'Manual job resume')
+    this.fireAndForget(jobId)
   }
 
   // ── Webhook events ──────────────────────────────────────────────────────────

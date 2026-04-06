@@ -173,7 +173,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         thinking: { type: 'adaptive' },
         persistSession: true,
         // Must inherit process.env (PATH, HOME, …). A bare object replaces the SDK default and breaks spawn('node', …).
-        env: { ...process.env, ANTHROPIC_API_KEY: settings.claude.apiKey },
+        // BB_* vars give the agent everything it needs to construct authenticated clone URLs without
+        // embedding credentials in the system prompt itself.
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: settings.claude.apiKey,
+          BB_WORKSPACE: settings.bitbucket.workspace,
+          BB_CODER_USERNAME: settings.bitbucket.coderAccount.username,
+          BB_CODER_APP_PASSWORD: settings.bitbucket.coderAccount.appPassword,
+          BB_BASE_URL: 'https://bitbucket.org',
+        },
       }
 
       if (agents) {
@@ -207,14 +216,40 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         if (message['type'] === 'assistant') {
           const content = message['content']
           if (typeof content === 'string' && content.trim()) {
-            await registry.appendLog(liveJob.id, content.slice(0, 500))
+            await registry.appendLog(liveJob.id, content)
+          } else if (Array.isArray(content)) {
+            for (const block of content as Array<Record<string, unknown>>) {
+              if (block['type'] === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
+                await registry.appendLog(liveJob.id, block['text'] as string)
+              } else if (block['type'] === 'thinking' && typeof block['thinking'] === 'string') {
+                await registry.appendLog(liveJob.id, `[thinking] ${(block['thinking'] as string).slice(0, 300)}`)
+              }
+            }
           }
         }
 
-        // Log tool usage
-        if (message['type'] === 'tool_use_summary') {
+        // Log tool use with inputs
+        if (message['type'] === 'tool_use' || message['type'] === 'tool_use_summary') {
           const toolName = message['tool_name'] ?? message['name'] ?? 'unknown'
-          await registry.appendLog(liveJob.id, `→ ${String(toolName)}`)
+          const input = message['input'] ?? message['params']
+          const inputStr = input ? ` ${JSON.stringify(input).slice(0, 300)}` : ''
+          await registry.appendLog(liveJob.id, `→ ${String(toolName)}${inputStr}`)
+        }
+
+        // Log tool results
+        if (message['type'] === 'tool_result') {
+          const toolName = message['tool_name'] ?? message['name'] ?? 'unknown'
+          const isError = message['is_error'] ?? false
+          const content = message['content']
+          const resultStr = typeof content === 'string' ? content.slice(0, 300) : JSON.stringify(content).slice(0, 300)
+          const prefix = isError ? '✗' : '✓'
+          await registry.appendLog(liveJob.id, `${prefix} ${String(toolName)}: ${resultStr}`)
+        }
+
+        // Log any other event types for debugging
+        const knownTypes = new Set(['system', 'assistant', 'tool_use', 'tool_use_summary', 'tool_result', 'user'])
+        if (!knownTypes.has(String(message['type'] ?? ''))) {
+          await registry.appendLog(liveJob.id, `[event:${String(message['type'])}] ${JSON.stringify(message).slice(0, 200)}`)
         }
 
         // If signals were set (job control tools were called), we can stop early
