@@ -59,6 +59,10 @@ async function main(): Promise<void> {
 
   // 4. Create registry and external clients
   const registry = new JobRegistry(redis, settings.paths.a5aiDir, logger)
+
+  // Rebuild PR→job reverse-lookup keys so webhooks can find parked jobs after restart
+  const rebuilt = await registry.rebuildPrMappings()
+  if (rebuilt > 0) logger.info({ rebuilt }, 'PR mappings rebuilt from job state')
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
   const gitClient = createGitClient(settings)
   const lokiClient = createLokiClient(settings)
