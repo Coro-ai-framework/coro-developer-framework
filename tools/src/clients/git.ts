@@ -125,5 +125,5 @@ function gitEnv(): Partial<SimpleGitOptions> {
   }
 }
 
-/** Injected into every simple-git spawn via the factory below. */
+/** Injected into every simple-git spawn so git never prompts for credentials. */
 const GIT_SPAWN_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' }
