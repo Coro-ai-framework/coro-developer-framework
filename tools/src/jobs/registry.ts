@@ -273,5 +273,7 @@ function inputToJobType(input: JobInput): JobType {
     case 'migration':   return JobType.Migration
     case 'feature':     return JobType.Feature
     case 'self-update': return JobType.SelfUpdate
+    default:
+      throw new Error(`Unknown job type: ${String((input as unknown as Record<string, unknown>).type)}`)
   }
 }

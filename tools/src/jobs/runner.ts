@@ -1,5 +1,5 @@
 import { query, type McpSdkServerConfig } from '@anthropic-ai/claude-agent-sdk'
-import { mkdirSync } from 'fs'
+import { mkdirSync, readFileSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
 import path from 'path'
@@ -22,7 +22,6 @@ import {
 import { JobRegistry } from './registry'
 import {
   Job,
-  STATUS_AWAITING_PR_MERGE,
   STATUS_COMPLETE,
   STATUS_ESCALATED,
   STATUS_FAILED,
@@ -269,19 +268,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             const result = message['result']
             if (typeof result === 'string') {
               await registry.appendLog(liveJob.id, `[result] ${result}`)
-              // Auto-detect PR creation: if the result text mentions a BitBucket PR URL,
-              // park the job automatically. This catches cases where the agent created
-              // a PR via curl or any method other than mcp__a5__bb_create_pr.
-              if (!signals.awaitingEvent && !signals.phaseComplete && !signals.escalated) {
-                const prMatch = result.match(/bitbucket\.org\/[^/\s]+\/[^/\s]+\/pull-requests?\/(\d+)/i)
-                if (prMatch) {
-                  const detectedPrId = parseInt(prMatch[1], 10)
-                  signals.awaitingEvent = 'pr:fulfilled'
-                  signals.awaitingPrId = detectedPrId
-                  await registry.mapPrToJob(detectedPrId, liveJob.id)
-                  await registry.appendLog(liveJob.id, `[auto-park] Detected PR #${detectedPrId} in result — parking job`)
-                }
-              }
             } else {
               await registry.appendLog(liveJob.id, `[event:result] ${JSON.stringify(message)}`)
             }
@@ -354,28 +340,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         continue
       }
 
-      // Claude stopped without calling any job-control tool.
-      // Safety net: if a PR was mapped to this job during the current turn
-      // (e.g. agent used curl instead of mcp__a5__bb_create_pr), auto-park it.
-      const freshJob = await registry.getJob(liveJob.id)
-      const latestPrMapping = freshJob?.prMappings.at(-1)
-      if (latestPrMapping) {
-        logger.warn(
-          { jobId: liveJob.id, prId: latestPrMapping.prId },
-          'No signal but PR mapping exists — auto-parking job waiting for PR merge',
-        )
-        await registry.appendLog(
-          liveJob.id,
-          `[auto-park] PR #${latestPrMapping.prId} detected. Agent did not call await_event — parking automatically.`,
-        )
-        liveJob = await syncJob(registry, liveJob, {
-          status: STATUS_AWAITING_PR_MERGE,
-          awaitingEvent: 'pr:fulfilled',
-          awaitingPrId: latestPrMapping.prId,
-        })
-        break
-      }
-
+      // Claude stopped without calling any job-control tool. Always escalate —
+      // the agent must explicitly call mark_phase_complete, await_event, or escalate.
       logger.warn({ jobId: liveJob.id, phase: liveJob.phase }, 'Agent SDK query ended without signals')
       const noSignalMsg =
         `Escalated: Claude finished this phase without calling mark_phase_complete or await_event ` +
@@ -391,10 +357,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     logger.error({ err, jobId: liveJob.id }, 'Runner crashed — marking job failed')
     await registry.appendLog(liveJob.id, `Runner crashed: ${String(err)}`)
     try {
-      await registry.updateJob(liveJob.id, {
-        status: STATUS_FAILED,
-        escalationMessage: String(err),
-      })
+      const current = await registry.getJob(liveJob.id)
+      if (!current || !isTerminalStatus(current.status)) {
+        await registry.updateJob(liveJob.id, {
+          status: STATUS_FAILED,
+          escalationMessage: String(err),
+        })
+      }
     } catch {
       // Best-effort
     }
@@ -440,11 +409,22 @@ function buildSubagentDefinitions(
 ) {
   const defs: Record<string, unknown> = {}
   for (const sa of subagents) {
+    let agentPrompt = `You are a helper subagent named ${sa.name}.`
+    if (sa.agent) {
+      try {
+        const agentMd = readFileSync(
+          path.join(settings.paths.a5aiDir, sa.agent),
+          'utf-8',
+        )
+        agentPrompt = agentMd
+      } catch {
+        agentPrompt = `You are the ${sa.name} subagent. Follow your instructions carefully.`
+      }
+    }
+
     defs[sa.name] = {
       description: `Subagent: ${sa.name}`,
-      prompt: sa.agent
-        ? `You are the ${sa.name} subagent. Follow your instructions carefully.`
-        : `You are a helper subagent named ${sa.name}.`,
+      prompt: agentPrompt,
       tools: sa.tools ?? ['Read', 'Glob', 'Grep', 'Bash', 'mcp__a5__*'],
       model: sa.model === 'coding'
         ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')

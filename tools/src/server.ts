@@ -87,7 +87,7 @@ export function createServer(ctx: ServerContext): Express {
   // ── Health ─────────────────────────────────────────────────────────────────
 
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', version: '0.1.0' })
+    res.json({ status: 'ok', version: '0.2.0' })
   })
 
   // ── OpenAPI / Swagger UI ───────────────────────────────────────────────────

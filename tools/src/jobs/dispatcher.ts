@@ -142,6 +142,14 @@ export class Dispatcher {
     const job = await this.ctx.registry.getJobByJiraTicket(ticketId)
     if (!job || !isParkingStatus(job.status)) return
 
+    if (job.awaitingEvent && !eventMatchesExpected(eventKey, job.awaitingEvent)) {
+      this.ctx.logger.debug(
+        { jobId: job.id, received: eventKey, awaiting: job.awaitingEvent },
+        'Jira event does not match what job is waiting for — skipping',
+      )
+      return
+    }
+
     await this.resumeWithEvent(job.id, eventKey, payload)
   }
 
@@ -212,14 +220,24 @@ export class Dispatcher {
       .finally(async () => {
         this.activeJobs.delete(jobId)
 
-        const queued = this.eventQueue.get(jobId) ?? []
-        this.eventQueue.delete(jobId)
-
-        for (const event of queued) {
-          const job = await this.ctx.registry.getJob(jobId)
-          if (!job || !isParkingStatus(job.status)) break
-          await this.injectAndResume(jobId, event)
+        // Process at most ONE queued event. injectAndResume calls fireAndForget
+        // which will eventually hit this finally block again for the next event.
+        const queued = this.eventQueue.get(jobId)
+        if (!queued || queued.length === 0) {
+          this.eventQueue.delete(jobId)
+          return
         }
+
+        const next = queued.shift()!
+        if (queued.length === 0) this.eventQueue.delete(jobId)
+
+        const job = await this.ctx.registry.getJob(jobId)
+        if (!job || !isParkingStatus(job.status)) {
+          this.eventQueue.delete(jobId)
+          return
+        }
+
+        await this.injectAndResume(jobId, next)
       })
   }
 }
