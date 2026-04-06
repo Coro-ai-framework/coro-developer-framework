@@ -14,7 +14,7 @@ phases:
     status: planning
 
   - name: coding
-    agent: agents/coder.md
+    agent: agents/feature-coder.md
     model: coding
     status: coding
     subagents:

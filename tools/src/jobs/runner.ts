@@ -132,9 +132,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const systemPrompt = await buildSystemPrompt(liveJob, settings, ctx.gitClient, logger)
       const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, liveJob.phase) : null
 
-      const prompt = liveJob.sessionId
-        ? buildPhaseTransitionMessage(liveJob.phase, liveJob)
-        : buildInitialMessage(liveJob)
+      // pendingPrompt is set by the dispatcher when a webhook event resumes the job.
+      // It carries the event content the agent needs to act on.
+      const prompt = liveJob.pendingPrompt
+        ? liveJob.pendingPrompt
+        : liveJob.sessionId
+          ? buildPhaseTransitionMessage(liveJob.phase, liveJob)
+          : buildInitialMessage(liveJob)
+
+      // Clear pendingPrompt immediately so it isn't replayed on the next turn.
+      if (liveJob.pendingPrompt) {
+        liveJob = await syncJob(registry, liveJob, { pendingPrompt: undefined })
+        toolCtx.job = liveJob
+      }
 
       const model = selectModel(phaseConf, settings)
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
@@ -173,7 +183,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         thinking: { type: 'adaptive' },
         persistSession: true,
         // Must inherit process.env (PATH, HOME, …). A bare object replaces the SDK default and breaks spawn('node', …).
-        env: { ...process.env, ANTHROPIC_API_KEY: settings.claude.apiKey },
+        // BB_* vars give the agent everything it needs to construct authenticated clone URLs without
+        // embedding credentials in the system prompt itself.
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: settings.claude.apiKey,
+          BB_WORKSPACE: settings.bitbucket.workspace,
+          BB_CODER_USERNAME: settings.bitbucket.coderAccount.username,
+          BB_CODER_APP_PASSWORD: settings.bitbucket.coderAccount.appPassword,
+          BB_BASE_URL: 'https://bitbucket.org',
+        },
       }
 
       if (agents) {
@@ -207,14 +226,51 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         if (message['type'] === 'assistant') {
           const content = message['content']
           if (typeof content === 'string' && content.trim()) {
-            await registry.appendLog(liveJob.id, content.slice(0, 500))
+            await registry.appendLog(liveJob.id, content)
+          } else if (Array.isArray(content)) {
+            for (const block of content as Array<Record<string, unknown>>) {
+              if (block['type'] === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
+                await registry.appendLog(liveJob.id, block['text'] as string)
+              } else if (block['type'] === 'thinking' && typeof block['thinking'] === 'string') {
+                await registry.appendLog(liveJob.id, `[thinking] ${(block['thinking'] as string).slice(0, 300)}`)
+              }
+            }
           }
         }
 
-        // Log tool usage
-        if (message['type'] === 'tool_use_summary') {
+        // Log tool use with inputs
+        if (message['type'] === 'tool_use' || message['type'] === 'tool_use_summary') {
           const toolName = message['tool_name'] ?? message['name'] ?? 'unknown'
-          await registry.appendLog(liveJob.id, `→ ${String(toolName)}`)
+          const input = message['input'] ?? message['params']
+          const inputStr = input ? ` ${JSON.stringify(input).slice(0, 300)}` : ''
+          await registry.appendLog(liveJob.id, `→ ${String(toolName)}${inputStr}`)
+        }
+
+        // Log tool results
+        if (message['type'] === 'tool_result') {
+          const toolName = message['tool_name'] ?? message['name'] ?? 'unknown'
+          const isError = message['is_error'] ?? false
+          const content = message['content']
+          const resultStr = typeof content === 'string' ? content.slice(0, 300) : JSON.stringify(content).slice(0, 300)
+          const prefix = isError ? '✗' : '✓'
+          await registry.appendLog(liveJob.id, `${prefix} ${String(toolName)}: ${resultStr}`)
+        }
+
+        // Log any other event types for debugging (result event carries Claude's final summary)
+        const knownTypes = new Set(['system', 'assistant', 'tool_use', 'tool_use_summary', 'tool_result', 'user'])
+        if (!knownTypes.has(String(message['type'] ?? ''))) {
+          const eventType = String(message['type'])
+          // For the final result event, log the full result text rather than truncated JSON
+          if (eventType === 'result') {
+            const result = message['result']
+            if (typeof result === 'string') {
+              await registry.appendLog(liveJob.id, `[result] ${result}`)
+            } else {
+              await registry.appendLog(liveJob.id, `[event:result] ${JSON.stringify(message)}`)
+            }
+          } else {
+            await registry.appendLog(liveJob.id, `[event:${eventType}] ${JSON.stringify(message).slice(0, 500)}`)
+          }
         }
 
         // If signals were set (job control tools were called), we can stop early
@@ -257,9 +313,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       if (signals.phaseComplete) {
-        const nextPhase = workflowConfig
-          ? wfGetNextPhase(workflowConfig, liveJob.phase)
-          : null
+        const nextPhase = signals.nextPhase
+          ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
 
         if (!nextPhase) {
           liveJob = await syncJob(registry, liveJob, { status: STATUS_COMPLETE })
@@ -319,6 +374,7 @@ async function syncJob(
 
 function resetSignals(s: PhaseSignals): void {
   s.phaseComplete = undefined
+  s.nextPhase = undefined
   s.awaitingEvent = undefined
   s.awaitingPrId = undefined
   s.escalated = undefined

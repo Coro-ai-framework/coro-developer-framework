@@ -308,18 +308,26 @@ export function createServer(ctx: ServerContext): Express {
   // Stub — wired to the dispatcher in Phase 6.
 
   app.post('/jobs/:jobId/resume', async (req: Request, res: Response) => {
-    const job = await registry.getJob(req.params['jobId'] as string)
+    const jobId = req.params['jobId'] as string
+    const job = await registry.getJob(jobId)
     if (!job) {
-      res.status(404).json({ error: `Job not found: ${req.params['jobId']}` })
+      res.status(404).json({ error: `Job not found: ${jobId}` })
       return
     }
 
-    // Phase 6: dispatcher.resumeJob(job) will be called here
-    res.status(501).json({
-      error: 'Resume not yet implemented — available in Phase 6',
-      jobId: job.id,
-      status: job.status,
-    })
+    const body = req.body as Record<string, unknown>
+    const fromPhase = body['fromPhase'] as string | undefined
+    const clearSession = body['clearSession'] === true
+
+    try {
+      await dispatcher.resumeJob(jobId, fromPhase, clearSession)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.status(409).json({ error: msg, jobId, status: job.status })
+      return
+    }
+
+    res.json({ jobId, status: 'resuming', phase: fromPhase ?? job.phase, clearSession, streamUrl: `/jobs/${jobId}/stream` })
   })
 
   // ── POST /webhook ──────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { promisify } from 'util'
 import path from 'path'
 import yaml from 'js-yaml'
 import fs from 'fs/promises'
+import { simpleGit } from 'simple-git'
 import { BitBucketClient } from './clients/bitbucket'
 import { GitClient } from './clients/git'
 import { Settings } from './config/settings'
@@ -181,20 +182,41 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
   const branch = `improvement/${new Date().toISOString().slice(0, 10)}-${slug}`
   const commitMsg = buildCommitMessage(categories, mdFiles, tsFiles, a5aiDir)
 
+  // Determine which branch we're currently on so we can return to it afterwards
+  const g = simpleGit({ baseDir: a5aiDir })
+  const currentBranch = (await g.revparse(['--abbrev-ref', 'HEAD'])).trim()
+
+  // Determine push remote — prefer 'bitbucket' if configured, fall back to 'origin'
+  const g2 = simpleGit({ baseDir: a5aiDir })
+  const allRemotes = await g2.getRemotes(false)
+  const pushRemote = allRemotes.find(r => r.name === 'bitbucket') ? 'bitbucket' : 'origin'
+
   try {
     // Create branch, commit, push
     await gitClient.checkoutBranch(a5aiDir, branch, true)
     await gitClient.commitAll(a5aiDir, commitMsg)
-    await gitClient.push(a5aiDir, branch)
+    await gitClient.pushToRemote(a5aiDir, pushRemote, branch)
 
     logger.info({ branch }, 'Pushed improvement branch')
   } catch (err) {
     logger.error({ err, branch }, 'Failed to commit/push improvement branch')
+    // Return to original branch even if push failed
+    try { await gitClient.checkoutBranch(a5aiDir, currentBranch) } catch { /* best effort */ }
     return
   }
 
+  // Always return to the original branch so the repo isn't left on the improvement branch
+  try {
+    await gitClient.checkoutBranch(a5aiDir, currentBranch)
+    logger.debug({ branch: currentBranch }, 'Returned to original branch after push')
+  } catch (err) {
+    logger.warn({ err, currentBranch }, 'Could not return to original branch after push')
+  }
+
   // Open PR via coder account
-  const repoSlug = path.basename(a5aiDir)  // e.g. "a5-ai"
+  // Derive repo slug from git remote URL (more reliable than directory name)
+  const remoteUrl = await getRemoteRepoSlug(a5aiDir, logger)
+  const repoSlug = remoteUrl ?? path.basename(a5aiDir)
   const prDescription = buildPrDescription(categories, changedFiles, a5aiDir)
 
   let prId: number
@@ -391,6 +413,34 @@ async function writeValidationFailure(
     logger.info({ failurePath }, `${validationType} failure written to proposals`)
   } catch {
     // Best-effort
+  }
+}
+
+// ── Git helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Extract the repo slug from the git remote URL.
+ * Handles both SSH (git@bitbucket.org:workspace/repo.git) and
+ * HTTPS (https://bitbucket.org/workspace/repo.git) formats.
+ */
+async function getRemoteRepoSlug(repoDir: string, logger: Logger): Promise<string | null> {
+  try {
+    const g = simpleGit({ baseDir: repoDir })
+    const remotes = await g.getRemotes(true)
+    const origin = remotes.find(r => r.name === 'origin')
+    if (!origin) return null
+
+    const url = origin.refs.fetch
+    // HTTPS: https://...@bitbucket.org/workspace/repo.git
+    // SSH:   git@bitbucket.org:workspace/repo.git
+    const match = url.match(/[/:]([^/:]+\/[^/.]+)(?:\.git)?$/)
+    if (!match) return null
+
+    const [, workspaceAndRepo] = match
+    return workspaceAndRepo.split('/')[1] ?? null
+  } catch (err) {
+    logger.debug({ err }, 'Could not determine repo slug from remote URL')
+    return null
   }
 }
 

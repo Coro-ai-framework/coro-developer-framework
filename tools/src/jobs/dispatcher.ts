@@ -1,4 +1,4 @@
-import { JobInput, STATUS_CODING, STATUS_FAILED, isParkingStatus } from './types'
+import { JobInput, STATUS_CODING, STATUS_COMPLETE, STATUS_FAILED, isParkingStatus } from './types'
 import { runJob, RunnerContext } from './runner'
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -23,6 +23,54 @@ export class Dispatcher {
     this.ctx.logger.info({ jobId: job.id, type: job.type }, 'Job dispatched')
     this.fireAndForget(job.id)
     return job
+  }
+
+  // ── Manual resume ───────────────────────────────────────────────────────────
+
+  /**
+   * Resume an escalated or failed job from its current phase (or a specific phase).
+   *
+   * If `fromPhase` matches the job's current phase, the existing Agent SDK session
+   * is reused (`resume: sessionId`) so the conversation continues exactly where it
+   * stopped — previously completed phases are NOT re-run.
+   *
+   * If `fromPhase` differs from the current phase, the job is moved to that phase
+   * and the session is reset (Claude starts fresh for that phase).
+   */
+  async resumeJob(jobId: string, fromPhase?: string, clearSession = false): Promise<void> {
+    const job = await this.ctx.registry.getJob(jobId)
+    if (!job) throw new Error(`Job not found: ${jobId}`)
+
+    if (this.activeJobs.has(jobId)) {
+      throw new Error(`Job ${jobId} is already running`)
+    }
+
+    if (job.status === STATUS_COMPLETE) {
+      throw new Error(`Job ${jobId} is already complete`)
+    }
+
+    const phaseChanged = fromPhase && fromPhase !== job.phase
+    const resetSession = clearSession || phaseChanged
+
+    await this.ctx.registry.updateJob(jobId, {
+      status: STATUS_CODING,
+      escalationMessage: undefined,
+      awaitingEvent: undefined,
+      awaitingPrId: undefined,
+      ...(phaseChanged ? { phase: fromPhase } : {}),
+      ...(resetSession ? { sessionId: undefined } : {}),
+    })
+
+    const sessionNote = resetSession ? ' (fresh session)' : job.sessionId ? ' (resuming session)' : ''
+    await this.ctx.registry.appendLog(
+      jobId,
+      phaseChanged
+        ? `[manual-resume] Restarting from phase: ${fromPhase}${sessionNote}`
+        : `[manual-resume] Continuing phase: ${job.phase}${sessionNote}`,
+    )
+
+    this.ctx.logger.info({ jobId, phase: phaseChanged ? fromPhase : job.phase, phaseChanged, resetSession }, 'Manual job resume')
+    this.fireAndForget(jobId)
   }
 
   // ── Webhook events ──────────────────────────────────────────────────────────
@@ -54,6 +102,17 @@ export class Dispatcher {
     const job = await this.ctx.registry.getJobByPr(prId)
     if (!job) {
       this.ctx.logger.debug({ eventKey, prId }, 'No job found for PR — skipping')
+      return
+    }
+
+    // If the job is actively running, queue the event immediately — don't wait for it to park.
+    // The runner's finally() handler will replay queued events once the phase completes.
+    // This prevents the race where a webhook arrives just before await_event is called.
+    if (this.activeJobs.has(job.id)) {
+      this.ctx.logger.debug({ jobId: job.id, eventKey }, 'Job is active — queueing webhook event for after park')
+      const queue = this.eventQueue.get(job.id) ?? []
+      queue.push({ eventKey, payload, receivedAt: new Date().toISOString() })
+      this.eventQueue.set(job.id, queue)
       return
     }
 
@@ -110,12 +169,13 @@ export class Dispatcher {
     const job = await this.ctx.registry.getJob(jobId)
     if (!job) return
 
-    // Clear the parking state — the runner will pick up the event context
-    // via the webhook message injected as the prompt for the resumed session.
+    const pendingPrompt = buildWebhookMessage(event.eventKey, event.payload)
+
     await this.ctx.registry.updateJob(jobId, {
       status: STATUS_CODING,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
+      pendingPrompt,
     })
 
     await this.ctx.registry.appendLog(jobId, `[webhook] Received: ${event.eventKey}`)
@@ -218,7 +278,15 @@ function extractJiraTicketId(payload: Record<string, unknown>): string | null {
 }
 
 function eventMatchesExpected(received: string, expected: string): boolean {
-  return received === expected || received.startsWith(expected)
+  if (received === expected) return true
+  if (received.startsWith(expected)) return true
+
+  // BitBucket sends "pullrequest:X" but agents often await "pr:X".
+  // Normalize both sides to just the action suffix for comparison.
+  const normalize = (s: string) =>
+    s.replace(/^pullrequest:/, '').replace(/^pr:/, '').replace(/^pull_request:/, '')
+
+  return normalize(received) === normalize(expected)
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
