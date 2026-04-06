@@ -149,6 +149,7 @@ function buildInfrastructureContext(workspace: string, coderUsername: string): s
     'These environment variables are already set in your shell:\n' +
     '```\n' +
     'BB_WORKSPACE          — BitBucket workspace slug\n' +
+    'BB_GIT_USERNAME       — git username (x-token-auth for API tokens, or encoded username)\n' +
     'BB_CODER_APP_PASSWORD — API token for git operations\n' +
     'BB_BASE_URL           — https://bitbucket.org\n' +
     '```\n\n' +
