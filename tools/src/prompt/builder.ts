@@ -193,8 +193,13 @@ function buildJobContext(job: Job): string {
 async function readSafe(filePath: string, logger: Logger): Promise<string | null> {
   try {
     return await fs.readFile(filePath, 'utf-8')
-  } catch {
-    logger.debug({ filePath }, 'File not found — skipping')
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') {
+      logger.debug({ filePath }, 'File not found — skipping')
+    } else {
+      logger.warn({ filePath, code }, 'Could not read file — skipping')
+    }
     return null
   }
 }
@@ -205,7 +210,8 @@ function extractMarkdownLinkTargets(markdown: string): string[] {
   const regex = /\[[^\]]*\]\(([^)]+)\)/g
   let match: RegExpExecArray | null
   while ((match = regex.exec(markdown)) !== null) {
-    targets.push(match[1])
+    const href = match[1].split(/[?#]/)[0]
+    if (href) targets.push(href)
   }
   return targets
 }

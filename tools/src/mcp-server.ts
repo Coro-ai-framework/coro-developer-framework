@@ -197,6 +197,13 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
       ),
 
       tool(
+        'goto_phase',
+        'Skip to a specific phase by name (e.g. go back to coding after review comments). Sets phaseComplete + nextPhase override.',
+        { phase: z.string() },
+        h.goto_phase,
+      ),
+
+      tool(
         'await_event',
         'Park the job and wait for an external event (e.g. PR merge, comment). The runner stops until the webhook arrives.',
         { eventName: z.string(), prId: z.number().optional() },

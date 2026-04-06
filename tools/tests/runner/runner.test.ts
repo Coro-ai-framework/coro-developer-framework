@@ -87,6 +87,8 @@ function createMockRegistry(initial: Job) {
       return current
     }),
     appendLog: vi.fn().mockResolvedValue(undefined),
+    getJob: vi.fn(async () => current),
+    mapPrToJob: vi.fn().mockResolvedValue(undefined),
   }
 }
 

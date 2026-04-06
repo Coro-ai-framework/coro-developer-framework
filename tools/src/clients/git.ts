@@ -23,7 +23,7 @@ export class GitClient {
   async clone(repoSlug: string, targetDir: string): Promise<string> {
     const url = this.repoUrl(repoSlug)
     const dest = path.isAbsolute(targetDir) ? targetDir : path.join(this.workingDir, targetDir)
-    await simpleGit({ baseDir: this.workingDir, ...gitEnv() }).clone(url, dest)
+    await this.git(this.workingDir).clone(url, dest)
     return dest
   }
 
@@ -100,17 +100,24 @@ export class GitClient {
   }
 
   private git(dir: string) {
-    return simpleGit({ baseDir: dir, ...gitEnv() })
+    return simpleGit({ baseDir: dir, ...gitEnv() }).env(GIT_SPAWN_ENV)
   }
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export function createGitClient(settings: Settings): GitClient {
+  const { coderAccount } = settings.bitbucket
+  // Atlassian API tokens (ATATT...) require x-token-auth as the git username.
+  // Classic app passwords use the account email.
+  const gitUsername = coderAccount.appPassword.startsWith('ATATT')
+    ? 'x-token-auth'
+    : coderAccount.username
+
   return new GitClient(
     settings.paths.workingDir,
-    settings.bitbucket.coderAccount.username,
-    settings.bitbucket.coderAccount.appPassword,
+    gitUsername,
+    coderAccount.appPassword,
     settings.bitbucket.workspace,
   )
 }
@@ -120,7 +127,10 @@ export function createGitClient(settings: Settings): GitClient {
 /** Disable interactive prompts so git never hangs in a subprocess. */
 function gitEnv(): Partial<SimpleGitOptions> {
   return {
-    config: [],
+    config: ['core.askpass='],
     trimmed: false,
   }
 }
+
+/** Injected into every simple-git spawn so git never prompts for credentials. */
+const GIT_SPAWN_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' }
