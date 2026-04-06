@@ -64,6 +64,12 @@ export interface Job {
   awaitingEvent?: string
   awaitingPrId?: number
   escalationMessage?: string
+
+  /**
+   * Injected by the dispatcher when a webhook event resumes the job.
+   * The runner uses this as the prompt for the resumed turn, then clears it.
+   */
+  pendingPrompt?: string
 }
 
 // ── Convenience accessors ─────────────────────────────────────────────────────

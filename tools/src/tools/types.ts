@@ -37,6 +37,8 @@ export interface ToolContext {
 
 export interface PhaseSignals {
   phaseComplete?: boolean
+  /** When set alongside phaseComplete, overrides the default next-phase lookup. */
+  nextPhase?: string
   awaitingEvent?: string
   awaitingPrId?: number
   escalated?: boolean

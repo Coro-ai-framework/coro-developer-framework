@@ -54,6 +54,11 @@ export class GitClient {
     await this.git(repoDir).push('origin', branch, ['--set-upstream'])
   }
 
+  /** Push a branch to a specific remote. */
+  async pushToRemote(repoDir: string, remote: string, branch: string): Promise<void> {
+    await this.git(repoDir).push(remote, branch, ['--set-upstream'])
+  }
+
   /**
    * Get the diff of working tree changes, or between two refs.
    * @param base  If provided, diffs `base..HEAD`. Otherwise diffs unstaged changes.

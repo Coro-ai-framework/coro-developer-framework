@@ -132,9 +132,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const systemPrompt = await buildSystemPrompt(liveJob, settings, ctx.gitClient, logger)
       const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, liveJob.phase) : null
 
-      const prompt = liveJob.sessionId
-        ? buildPhaseTransitionMessage(liveJob.phase, liveJob)
-        : buildInitialMessage(liveJob)
+      // pendingPrompt is set by the dispatcher when a webhook event resumes the job.
+      // It carries the event content the agent needs to act on.
+      const prompt = liveJob.pendingPrompt
+        ? liveJob.pendingPrompt
+        : liveJob.sessionId
+          ? buildPhaseTransitionMessage(liveJob.phase, liveJob)
+          : buildInitialMessage(liveJob)
+
+      // Clear pendingPrompt immediately so it isn't replayed on the next turn.
+      if (liveJob.pendingPrompt) {
+        liveJob = await syncJob(registry, liveJob, { pendingPrompt: undefined })
+        toolCtx.job = liveJob
+      }
 
       const model = selectModel(phaseConf, settings)
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
@@ -303,9 +313,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       if (signals.phaseComplete) {
-        const nextPhase = workflowConfig
-          ? wfGetNextPhase(workflowConfig, liveJob.phase)
-          : null
+        const nextPhase = signals.nextPhase
+          ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
 
         if (!nextPhase) {
           liveJob = await syncJob(registry, liveJob, { status: STATUS_COMPLETE })
@@ -365,6 +374,7 @@ async function syncJob(
 
 function resetSignals(s: PhaseSignals): void {
   s.phaseComplete = undefined
+  s.nextPhase = undefined
   s.awaitingEvent = undefined
   s.awaitingPrId = undefined
   s.escalated = undefined

@@ -105,6 +105,17 @@ export class Dispatcher {
       return
     }
 
+    // If the job is actively running, queue the event immediately — don't wait for it to park.
+    // The runner's finally() handler will replay queued events once the phase completes.
+    // This prevents the race where a webhook arrives just before await_event is called.
+    if (this.activeJobs.has(job.id)) {
+      this.ctx.logger.debug({ jobId: job.id, eventKey }, 'Job is active — queueing webhook event for after park')
+      const queue = this.eventQueue.get(job.id) ?? []
+      queue.push({ eventKey, payload, receivedAt: new Date().toISOString() })
+      this.eventQueue.set(job.id, queue)
+      return
+    }
+
     if (!isParkingStatus(job.status)) {
       this.ctx.logger.debug({ jobId: job.id, status: job.status }, 'Job is not parked — skipping')
       return
@@ -158,12 +169,13 @@ export class Dispatcher {
     const job = await this.ctx.registry.getJob(jobId)
     if (!job) return
 
-    // Clear the parking state — the runner will pick up the event context
-    // via the webhook message injected as the prompt for the resumed session.
+    const pendingPrompt = buildWebhookMessage(event.eventKey, event.payload)
+
     await this.ctx.registry.updateJob(jobId, {
       status: STATUS_CODING,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
+      pendingPrompt,
     })
 
     await this.ctx.registry.appendLog(jobId, `[webhook] Received: ${event.eventKey}`)

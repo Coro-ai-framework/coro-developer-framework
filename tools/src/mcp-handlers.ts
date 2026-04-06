@@ -42,6 +42,15 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         targetBranch: targetBranch ?? 'main',
         reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
       })
+
+      // Auto-park the job waiting for this PR to be merged.
+      // The agent does not need to call await_event separately after creating a PR.
+      signals.awaitingEvent = 'pr:fulfilled'
+      signals.awaitingPrId = pr.id
+
+      // Record the PR mapping so the runner can look up the job from a webhook
+      await ctx.registry.mapPrToJob(pr.id, ctx.job.id)
+
       return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
     },
 
@@ -198,6 +207,12 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     mark_phase_complete: async () => {
       signals.phaseComplete = true
       return text({ phaseComplete: true })
+    },
+
+    goto_phase: async ({ phase }: { phase: string }) => {
+      signals.phaseComplete = true
+      signals.nextPhase = phase
+      return text({ goingToPhase: phase })
     },
 
     await_event: async ({ eventName, prId }: { eventName: string; prId?: number }) => {
