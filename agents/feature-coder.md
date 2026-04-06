@@ -113,6 +113,6 @@ When the review phase injects a webhook event with review comments:
 - **Build must pass** before opening the PR.
 - **Always target the branch specified in the plan** — not `main` unless the plan says `main`.
 - **Use `mcp__a5__log` frequently** so developers watching `a5 logs` can follow your progress.
-- **Always end by calling a job control tool** — writing "done" or "complete" in text does nothing. The runner only recognises `mcp__a5__await_event`, `mcp__a5__mark_phase_complete`, or `mcp__a5__escalate`. If you finish without one of these, the runner will escalate the job as if you failed.
+- **Always end by calling a job control tool** — writing "done" or "complete" in text does nothing. The runner only recognises `mcp__a5__mark_phase_complete` or `mcp__a5__escalate`. After opening the PR, call `mark_phase_complete` to hand off to the reviewer. If you finish without calling one of these tools, the runner will escalate the job as if you failed.
 - **Call `mcp__a5__escalate`** if anything blocks you that you cannot resolve — never guess or invent a workaround.
 - **On persistent auth failures (401/403 from BitBucket or git):** immediately call `mcp__a5__escalate` with the exact error message and what you tried. Do not retry more than twice. The credentials are managed externally and cannot be fixed from inside the session.
