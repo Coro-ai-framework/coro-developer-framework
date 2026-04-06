@@ -246,10 +246,21 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           await registry.appendLog(liveJob.id, `${prefix} ${String(toolName)}: ${resultStr}`)
         }
 
-        // Log any other event types for debugging
+        // Log any other event types for debugging (result event carries Claude's final summary)
         const knownTypes = new Set(['system', 'assistant', 'tool_use', 'tool_use_summary', 'tool_result', 'user'])
         if (!knownTypes.has(String(message['type'] ?? ''))) {
-          await registry.appendLog(liveJob.id, `[event:${String(message['type'])}] ${JSON.stringify(message).slice(0, 200)}`)
+          const eventType = String(message['type'])
+          // For the final result event, log the full result text rather than truncated JSON
+          if (eventType === 'result') {
+            const result = message['result']
+            if (typeof result === 'string') {
+              await registry.appendLog(liveJob.id, `[result] ${result}`)
+            } else {
+              await registry.appendLog(liveJob.id, `[event:result] ${JSON.stringify(message)}`)
+            }
+          } else {
+            await registry.appendLog(liveJob.id, `[event:${eventType}] ${JSON.stringify(message).slice(0, 500)}`)
+          }
         }
 
         // If signals were set (job control tools were called), we can stop early

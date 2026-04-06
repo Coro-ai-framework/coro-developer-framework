@@ -315,17 +315,19 @@ export function createServer(ctx: ServerContext): Express {
       return
     }
 
-    const fromPhase = (req.body as Record<string, unknown>)['fromPhase'] as string | undefined
+    const body = req.body as Record<string, unknown>
+    const fromPhase = body['fromPhase'] as string | undefined
+    const clearSession = body['clearSession'] === true
 
     try {
-      await dispatcher.resumeJob(jobId, fromPhase)
+      await dispatcher.resumeJob(jobId, fromPhase, clearSession)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       res.status(409).json({ error: msg, jobId, status: job.status })
       return
     }
 
-    res.json({ jobId, status: 'resuming', phase: fromPhase ?? job.phase, streamUrl: `/jobs/${jobId}/stream` })
+    res.json({ jobId, status: 'resuming', phase: fromPhase ?? job.phase, clearSession, streamUrl: `/jobs/${jobId}/stream` })
   })
 
   // ── POST /webhook ──────────────────────────────────────────────────────────

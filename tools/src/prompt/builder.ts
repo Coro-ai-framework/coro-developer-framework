@@ -141,22 +141,25 @@ async function loadMemory(a5aiDir: string, logger: Logger): Promise<string[]> {
 // ── Infrastructure context ────────────────────────────────────────────────────
 
 function buildInfrastructureContext(workspace: string, coderUsername: string): string {
+  // URL-encode the username so emails (containing @) don't break git clone URLs.
+  // e.g. "user@company.co" → "user%40company.co"
+  const encodedUsername = encodeURIComponent(coderUsername)
+
   return (
     '# Infrastructure\n\n' +
     'All source repositories live on **BitBucket**, not GitHub.\n\n' +
     `- **Workspace:** \`${workspace}\`\n` +
     `- **Coder account:** \`${coderUsername}\`\n` +
-    '- **Clone URL format:** `https://$BB_CODER_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/<repo-slug>.git`\n\n' +
+    '- **IMPORTANT:** The username is pre-encoded below. Use it exactly as shown — do NOT re-encode or modify it.\n\n' +
     'These environment variables are already set in your shell:\n' +
     '```\n' +
     'BB_WORKSPACE          — BitBucket workspace slug\n' +
-    'BB_CODER_USERNAME     — app username for git operations\n' +
     'BB_CODER_APP_PASSWORD — app password for git operations\n' +
     'BB_BASE_URL           — https://bitbucket.org\n' +
     '```\n\n' +
-    'To clone a repo:\n' +
+    'To clone a repo, use this exact format (username is already URL-encoded for you):\n' +
     '```bash\n' +
-    'git clone "https://$BB_CODER_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/<repo-slug>.git"\n' +
+    `git clone "https://${encodedUsername}:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/<repo-slug>.git"\n` +
     '```\n\n' +
     '**Never use `gh`, `hub`, or GitHub CLI commands. Always use `git` directly with the BitBucket URL above.**'
   )

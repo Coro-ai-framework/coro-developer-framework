@@ -1,4 +1,4 @@
-import { JobInput, STATUS_CODING, STATUS_FAILED, isParkingStatus, isTerminalStatus } from './types'
+import { JobInput, STATUS_CODING, STATUS_COMPLETE, STATUS_FAILED, isParkingStatus } from './types'
 import { runJob, RunnerContext } from './runner'
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -37,36 +37,39 @@ export class Dispatcher {
    * If `fromPhase` differs from the current phase, the job is moved to that phase
    * and the session is reset (Claude starts fresh for that phase).
    */
-  async resumeJob(jobId: string, fromPhase?: string): Promise<void> {
+  async resumeJob(jobId: string, fromPhase?: string, clearSession = false): Promise<void> {
     const job = await this.ctx.registry.getJob(jobId)
     if (!job) throw new Error(`Job not found: ${jobId}`)
-
-    if (!isTerminalStatus(job.status) && !isParkingStatus(job.status)) {
-      throw new Error(`Job ${jobId} is not in a resumable state (status: ${job.status})`)
-    }
 
     if (this.activeJobs.has(jobId)) {
       throw new Error(`Job ${jobId} is already running`)
     }
 
+    if (job.status === STATUS_COMPLETE) {
+      throw new Error(`Job ${jobId} is already complete`)
+    }
+
     const phaseChanged = fromPhase && fromPhase !== job.phase
+    const resetSession = clearSession || phaseChanged
 
     await this.ctx.registry.updateJob(jobId, {
       status: STATUS_CODING,
       escalationMessage: undefined,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
-      ...(phaseChanged ? { phase: fromPhase, sessionId: undefined } : {}),
+      ...(phaseChanged ? { phase: fromPhase } : {}),
+      ...(resetSession ? { sessionId: undefined } : {}),
     })
 
+    const sessionNote = resetSession ? ' (fresh session)' : job.sessionId ? ' (resuming session)' : ''
     await this.ctx.registry.appendLog(
       jobId,
       phaseChanged
-        ? `[manual-resume] Restarting from phase: ${fromPhase}`
-        : `[manual-resume] Continuing phase: ${job.phase}${job.sessionId ? ' (resuming session)' : ''}`,
+        ? `[manual-resume] Restarting from phase: ${fromPhase}${sessionNote}`
+        : `[manual-resume] Continuing phase: ${job.phase}${sessionNote}`,
     )
 
-    this.ctx.logger.info({ jobId, phase: phaseChanged ? fromPhase : job.phase, phaseChanged }, 'Manual job resume')
+    this.ctx.logger.info({ jobId, phase: phaseChanged ? fromPhase : job.phase, phaseChanged, resetSession }, 'Manual job resume')
     this.fireAndForget(jobId)
   }
 
@@ -263,7 +266,15 @@ function extractJiraTicketId(payload: Record<string, unknown>): string | null {
 }
 
 function eventMatchesExpected(received: string, expected: string): boolean {
-  return received === expected || received.startsWith(expected)
+  if (received === expected) return true
+  if (received.startsWith(expected)) return true
+
+  // BitBucket sends "pullrequest:X" but agents often await "pr:X".
+  // Normalize both sides to just the action suffix for comparison.
+  const normalize = (s: string) =>
+    s.replace(/^pullrequest:/, '').replace(/^pr:/, '').replace(/^pull_request:/, '')
+
+  return normalize(received) === normalize(expected)
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
