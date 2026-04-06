@@ -121,14 +121,9 @@ export class Dispatcher {
       return
     }
 
-    if (job.awaitingEvent && !eventMatchesExpected(eventKey, job.awaitingEvent)) {
-      this.ctx.logger.debug(
-        { jobId: job.id, received: eventKey, awaiting: job.awaitingEvent },
-        'Event does not match what job is waiting for — skipping',
-      )
-      return
-    }
-
+    // Any PR event on a mapped job wakes the agent — the AI decides what to do.
+    // Comments, approvals, merges, updates — all are relevant context the agent
+    // should see and react to. No rigid event matching.
     await this.resumeWithEvent(job.id, eventKey, payload)
   }
 
@@ -141,14 +136,6 @@ export class Dispatcher {
 
     const job = await this.ctx.registry.getJobByJiraTicket(ticketId)
     if (!job || !isParkingStatus(job.status)) return
-
-    if (job.awaitingEvent && !eventMatchesExpected(eventKey, job.awaitingEvent)) {
-      this.ctx.logger.debug(
-        { jobId: job.id, received: eventKey, awaiting: job.awaitingEvent },
-        'Jira event does not match what job is waiting for — skipping',
-      )
-      return
-    }
 
     await this.resumeWithEvent(job.id, eventKey, payload)
   }
@@ -293,18 +280,6 @@ function extractJiraTicketId(payload: Record<string, unknown>): string | null {
   const issue = payload['issue'] as Record<string, unknown> | undefined
   const key = issue?.['key']
   return typeof key === 'string' ? key : null
-}
-
-function eventMatchesExpected(received: string, expected: string): boolean {
-  if (received === expected) return true
-  if (received.startsWith(expected)) return true
-
-  // BitBucket sends "pullrequest:X" but agents often await "pr:X".
-  // Normalize both sides to just the action suffix for comparison.
-  const normalize = (s: string) =>
-    s.replace(/^pullrequest:/, '').replace(/^pr:/, '').replace(/^pull_request:/, '')
-
-  return normalize(received) === normalize(expected)
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
