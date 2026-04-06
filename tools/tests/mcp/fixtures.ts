@@ -58,6 +58,11 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
       ...patch,
     })),
     appendLog: vi.fn().mockResolvedValue(undefined),
+    addPrMapping: vi.fn().mockImplementation(async (_id: string, mapping: Record<string, unknown>) => ({
+      ...makeMockJob(),
+      prMappings: [mapping],
+    })),
+    mapPrToJob: vi.fn().mockResolvedValue(undefined),
   } as unknown as JobRegistry
 
   const lokiClient = {
