@@ -64,14 +64,9 @@ export class BitBucketClient {
     appPassword: string,
     baseUrl = 'https://api.bitbucket.org/2.0',
   ) {
-    // BitBucket API tokens (ATATT3x...) are Bearer tokens — Basic Auth with these
-    // returns "not supported for this endpoint" on many write operations.
-    // Old-style App Passwords use Basic Auth with username:password.
-    if (appPassword.startsWith('ATATT')) {
-      this.authHeader = `Bearer ${appPassword}`
-    } else {
-      this.authHeader = `Basic ${Buffer.from(`${username}:${appPassword}`).toString('base64')}`
-    }
+    // BitBucket Repository Access Tokens (ATATT3x...) and App Passwords both
+    // use Basic Auth with username:token. Bearer auth returns 401 for these tokens.
+    this.authHeader = `Basic ${Buffer.from(`${username}:${appPassword}`).toString('base64')}`
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 
