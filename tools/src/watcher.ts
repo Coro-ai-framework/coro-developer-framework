@@ -179,7 +179,11 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
   // Build branch name and commit message from the changed files
   const categories = [...new Set(changedFiles.map(f => categorise(f, a5aiDir)))]
   const slug = buildSlug(changedFiles, a5aiDir)
-  const branch = `improvement/${new Date().toISOString().slice(0, 10)}-${slug}`
+  // Include time (HHmm) so multiple same-day changes don't collide on the branch name
+  const now = new Date()
+  const datePart = now.toISOString().slice(0, 10)
+  const timePart = now.toISOString().slice(11, 16).replace(':', '')
+  const branch = `improvement/${datePart}-${timePart}-${slug}`
   const commitMsg = buildCommitMessage(categories, mdFiles, tsFiles, a5aiDir)
 
   // Determine which branch we're currently on so we can return to it afterwards

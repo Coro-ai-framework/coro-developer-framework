@@ -308,6 +308,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           awaitingPrId: signals.awaitingPrId,
         })
 
+        // Ensure the pr→job reverse-lookup key exists so webhooks can find this job.
+        // This covers cases where the PR was created outside bb_create_pr (e.g. curl).
+        if (signals.awaitingPrId) {
+          await registry.mapPrToJob(signals.awaitingPrId, liveJob.id)
+        }
+
         logger.info(
           { jobId: liveJob.id, awaiting: signals.awaitingEvent, prId: signals.awaitingPrId },
           'Job parked — awaiting external event',

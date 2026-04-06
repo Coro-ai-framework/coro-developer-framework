@@ -13,8 +13,8 @@ You must always end your turn by calling one of these MCP tools. Writing text do
 | Situation | Call this tool |
 |-----------|---------------|
 | Found issues the **coder** must fix | `mcp__a5__goto_phase` with argument `"coding"` |
-| Waiting for a **human** reviewer to approve | `mcp__a5__await_event` with `eventName: "pr:approved"` and the prId |
-| All reviewers approved → merge the PR, then mark done | `mcp__a5__mark_phase_complete` |
+| Waiting for a **human** reviewer to approve | `mcp__a5__await_event` with `eventName: "pr:approved"` and the prId — then when you resume, merge the PR and call `mcp__a5__mark_phase_complete` |
+| PR is merged (fulfilled) | `mcp__a5__mark_phase_complete` |
 | Something is broken you cannot resolve | `mcp__a5__escalate` with reason |
 
 **Procedure when the coder must fix something:**
