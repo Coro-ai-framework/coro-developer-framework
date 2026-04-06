@@ -74,6 +74,8 @@ git push origin <feature-branch-name>
 
 ### 8. Open the pull request
 
+**You MUST use `mcp__a5__bb_create_pr` to open the PR — not `curl`, not `gh`, not any other method.** Calling this tool is what registers the PR with the job system and parks the job automatically. If you use any other method, the job will escalate even though the PR exists.
+
 Use `mcp__a5__bb_create_pr` to open the PR:
 - `repoSlug`: from `params.repo`
 - `sourceBranch`: your feature branch

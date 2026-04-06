@@ -22,6 +22,7 @@ import {
 import { JobRegistry } from './registry'
 import {
   Job,
+  STATUS_AWAITING_PR_MERGE,
   STATUS_COMPLETE,
   STATUS_ESCALATED,
   STATUS_FAILED,
@@ -189,9 +190,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           ...process.env,
           ANTHROPIC_API_KEY: settings.claude.apiKey,
           BB_WORKSPACE: settings.bitbucket.workspace,
-          BB_CODER_USERNAME: settings.bitbucket.coderAccount.username,
           BB_CODER_APP_PASSWORD: settings.bitbucket.coderAccount.appPassword,
           BB_BASE_URL: 'https://bitbucket.org',
+          // x-token-auth is the correct git username for BitBucket API tokens (ATATT3x...)
+          BB_GIT_USERNAME: settings.bitbucket.coderAccount.appPassword.startsWith('ATATT')
+            ? 'x-token-auth'
+            : encodeURIComponent(settings.bitbucket.coderAccount.username),
         },
       }
 
@@ -331,7 +335,28 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         continue
       }
 
-      // Claude stopped without calling any job-control tool
+      // Claude stopped without calling any job-control tool.
+      // Safety net: if a PR was mapped to this job during the current turn
+      // (e.g. agent used curl instead of mcp__a5__bb_create_pr), auto-park it.
+      const freshJob = await registry.getJob(liveJob.id)
+      const latestPrMapping = freshJob?.prMappings.at(-1)
+      if (latestPrMapping) {
+        logger.warn(
+          { jobId: liveJob.id, prId: latestPrMapping.prId },
+          'No signal but PR mapping exists — auto-parking job waiting for PR merge',
+        )
+        await registry.appendLog(
+          liveJob.id,
+          `[auto-park] PR #${latestPrMapping.prId} detected. Agent did not call await_event — parking automatically.`,
+        )
+        liveJob = await syncJob(registry, liveJob, {
+          status: STATUS_AWAITING_PR_MERGE,
+          awaitingEvent: 'pr:fulfilled',
+          awaitingPrId: latestPrMapping.prId,
+        })
+        break
+      }
+
       logger.warn({ jobId: liveJob.id, phase: liveJob.phase }, 'Agent SDK query ended without signals')
       const noSignalMsg =
         `Escalated: Claude finished this phase without calling mark_phase_complete or await_event ` +
