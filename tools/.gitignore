@@ -7,9 +7,11 @@ data/
 
 # Build output
 dist/
+dashboard/dist/
 
 # Dependencies
 node_modules/
+dashboard/node_modules/
 
 # TypeScript cache
 *.tsbuildinfo

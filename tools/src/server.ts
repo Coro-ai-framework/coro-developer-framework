@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import path from 'path'
 import express, { Express, Request, Response, NextFunction } from 'express'
 import swaggerUi from 'swagger-ui-express'
 import { Logger } from 'pino'
@@ -51,7 +52,8 @@ function verifyHmac(rawBody: Buffer, signatureHeader: string | undefined, secret
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 
 function sseWrite(res: Response, data: string): void {
-  res.write(`data: ${data}\n\n`)
+  const encoded = data.split('\n').map(line => `data: ${line}`).join('\n')
+  res.write(`${encoded}\n\n`)
 }
 
 function sseHeartbeat(res: Response): void {
@@ -379,9 +381,19 @@ export function createServer(ctx: ServerContext): Express {
     res.status(400).json({ error: 'Unknown webhook source' })
   })
 
-  // ── 404 fallthrough ────────────────────────────────────────────────────────
+  // ── Dashboard (production) ──────────────────────────────────────────────────
+  // In production, serve the built Vite dashboard as static files.
+  // In development, use `npm run dev` in dashboard/ with its Vite proxy instead.
 
-  app.use((_req: Request, res: Response) => {
+  const dashboardDir = path.join(__dirname, '../../dashboard/dist')
+  app.use(express.static(dashboardDir))
+  app.get('*', (req: Request, res: Response) => {
+    if (req.accepts('html')) {
+      res.sendFile(path.join(dashboardDir, 'index.html'), err => {
+        if (err) res.status(404).json({ error: 'Not found' })
+      })
+      return
+    }
     res.status(404).json({ error: 'Not found' })
   })
 
