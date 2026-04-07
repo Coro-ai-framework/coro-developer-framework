@@ -31,6 +31,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     status: STATUS_QUEUED,
     phase: 'init',
     currentFeature: null,
+    features: [],
+    featureLoopCount: 0,
     prMappings: [],
     createdAt: '2026-04-04T00:00:00Z',
     updatedAt: '2026-04-04T00:00:00Z',

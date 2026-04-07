@@ -18,6 +18,7 @@ type ProposalType =
   | 'modify-agent'
   | 'convention-change'
   | 'memory-update'
+  | 'knowledge-update'
   | 'source-change'
 
 // ── propose_change ────────────────────────────────────────────────────────────

@@ -30,6 +30,14 @@ export interface PrMapping {
   mergedAt?: string
 }
 
+// ── Feature tracking ──────────────────────────────────────────────────────────
+
+export interface FeatureItem {
+  name: string
+  status: 'pending' | 'in-progress' | 'complete' | 'escalated'
+  loopCount: number
+}
+
 // ── Core Job type ─────────────────────────────────────────────────────────────
 
 export interface Job {
@@ -40,7 +48,7 @@ export interface Job {
   /**
    * All job-specific parameters in a single generic bag.
    * Common keys: serviceName, repoSlug, projects, reviewers, stagingUrl,
-   * description, jiraTicketId, branchName, changedFiles, prId
+   * description, jiraTicketId, branchName, changedFiles, prId, language
    */
   params: Record<string, unknown>
 
@@ -49,6 +57,11 @@ export interface Job {
   status: string
   phase: string
   currentFeature: string | null
+
+  /** Populated by planner via set_features tool. The runner does not act on these. */
+  features: FeatureItem[]
+  /** Current feature's loop count — denormalized from features[] for quick access. */
+  featureLoopCount: number
 
   prMappings: PrMapping[]
 

@@ -187,6 +187,48 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         h.jira_transition_issue,
       ),
 
+      // ── Feature tracking ─────────────────────────────────────────────────
+
+      tool(
+        'set_features',
+        'Register the ordered feature list for this job. Called by the planner after producing the implementation plan.',
+        { features: z.array(z.string()) },
+        h.set_features,
+      ),
+
+      tool(
+        'update_feature',
+        'Update a feature\'s status or increment its loop count. Called by evaluator/coder.',
+        {
+          name: z.string(),
+          status: z.enum(['pending', 'in-progress', 'complete', 'escalated']).optional(),
+          incrementLoop: z.boolean().optional(),
+        },
+        h.update_feature,
+      ),
+
+      tool(
+        'get_features',
+        'Read the current feature list with statuses and loop counts.',
+        {},
+        h.get_features,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'request_new_session',
+        'Clear the session ID so the next phase starts a fresh conversation. Call when switching to a new feature or when context is stale.',
+        { reason: z.string() },
+        h.request_new_session,
+      ),
+
+      tool(
+        'set_job_params',
+        'Merge key-value pairs into job.params. Use to set language, build commands, or other dynamic context for downstream phases.',
+        { params: z.record(z.string(), z.unknown()) },
+        h.set_job_params,
+      ),
+
       // ── Job control ───────────────────────────────────────────────────────
 
       tool(
@@ -232,7 +274,8 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         {
           type: z.enum([
             'new-tool', 'modify-tool', 'new-workflow', 'modify-workflow',
-            'new-agent', 'modify-agent', 'convention-change', 'memory-update', 'source-change',
+            'new-agent', 'modify-agent', 'convention-change', 'memory-update',
+            'knowledge-update', 'source-change',
           ]),
           title: z.string(),
           rationale: z.string(),

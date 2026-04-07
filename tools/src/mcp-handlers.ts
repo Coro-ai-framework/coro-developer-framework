@@ -1,4 +1,5 @@
 import { ToolContext, PhaseSignals } from './tools/types'
+import { FeatureItem, Job } from './jobs/types'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -202,6 +203,58 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text(result ?? { transitioned: true })
     },
 
+    // Feature tracking — pure state CRUD, zero orchestration logic
+    set_features: async ({ features }: { features: string[] }) => {
+      const items: FeatureItem[] = features.map(name => ({
+        name, status: 'pending', loopCount: 0,
+      }))
+      await ctx.registry.updateJob(ctx.job.id, { features: items })
+      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      return text({ registered: features.length })
+    },
+
+    update_feature: async ({ name, status, incrementLoop }: {
+      name: string; status?: string; incrementLoop?: boolean
+    }) => {
+      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const features = job.features.map(f => {
+        if (f.name !== name) return f
+        return {
+          ...f,
+          ...(status ? { status: status as FeatureItem['status'] } : {}),
+          loopCount: incrementLoop ? f.loopCount + 1 : f.loopCount,
+        }
+      })
+      const current = features.find(f => f.name === name)
+      await ctx.registry.updateJob(ctx.job.id, {
+        features,
+        currentFeature: status === 'in-progress' ? name : ctx.job.currentFeature,
+        featureLoopCount: current?.loopCount ?? ctx.job.featureLoopCount,
+      })
+      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      return text({ updated: name, status: current?.status, loopCount: current?.loopCount })
+    },
+
+    get_features: async () => {
+      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      return text({ features: job.features, currentFeature: job.currentFeature })
+    },
+
+    request_new_session: async ({ reason }: { reason: string }) => {
+      await ctx.registry.updateJob(ctx.job.id, { sessionId: undefined })
+      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      await ctx.registry.appendLog(ctx.job.id, `[session-reset] ${reason}`)
+      return text({ newSession: true, reason })
+    },
+
+    set_job_params: async ({ params }: { params: Record<string, unknown> }) => {
+      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const merged = { ...job.params, ...params }
+      await ctx.registry.updateJob(ctx.job.id, { params: merged })
+      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      return text({ updated: Object.keys(params) })
+    },
+
     // Job control
     mark_phase_complete: async () => {
       signals.phaseComplete = true
@@ -240,7 +293,8 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     propose_change: async (args: {
       type:
         | 'new-tool' | 'modify-tool' | 'new-workflow' | 'modify-workflow'
-        | 'new-agent' | 'modify-agent' | 'convention-change' | 'memory-update' | 'source-change'
+        | 'new-agent' | 'modify-agent' | 'convention-change' | 'memory-update'
+        | 'knowledge-update' | 'source-change'
       title: string
       rationale: string
       description: string

@@ -12,11 +12,13 @@ phases:
     agent: agents/planner.md
     model: planning
     status: planning
+    knowledge: [knowledge/feature/planning-guide.md]
 
   - name: coding
-    agent: agents/feature-coder.md
+    agent: agents/coder.md
     model: coding
     status: coding
+    conventions: [auto]
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -26,22 +28,21 @@ phases:
   - name: review
     agent: agents/pr-reviewer.md
     model: coding
-    status: coding
+    status: reviewing
+    conventions: [auto]
 
   - name: testing
     agent: agents/tester.md
     model: coding
     status: testing
-    subagents:
-      - name: test-runner
-        agent: agents/tester.md
-        model: coding
-        tools: [Bash, Read, mcp__a5__run_go_build, mcp__a5__compare_request, mcp__a5__log]
+    conventions: [auto]
+    knowledge: [knowledge/feature/testing-guide.md]
 
   - name: evaluation
     agent: agents/evaluator.md
     model: planning
     status: evaluating
+    conventions: [auto]
 
 overrides:
   jira:
@@ -52,7 +53,7 @@ overrides:
 
 ## Purpose
 
-Implement a new feature in an existing Go service. Can be triggered by the `a5 feature` CLI command or by a Jira ticket assignment.
+Implement a new feature in an existing service. The service can be written in any language — Go, .NET, TypeScript, or any other supported language. The workflow is fully language-agnostic; the correct conventions and coding standards are loaded dynamically based on the repository's language.
 
 ## How this workflow runs
 
@@ -67,6 +68,14 @@ This workflow is executed by the **Agent Host Service**. The Agent Host:
 **CLI path:** The user provides repo, description, reviewers, and service name.
 
 **Jira path:** A Jira ticket is assigned to the agent. The spec-writer agent reads the ticket and infers repo, reviewers, description, and test plan.
+
+## Language handling
+
+The Planner agent detects the repository's language (from `go.mod`, `package.json`, `*.csproj`, etc.) and calls `set_job_params({ language: "<detected-language>" })`. All downstream phases with `conventions: [auto]` then load the correct language conventions automatically. A .NET feature job gets `conventions/dotnet.md`, a Go feature gets `conventions/golang.md`, a TypeScript feature gets `conventions/typescript.md`. The workflow itself is completely language-neutral.
+
+## Feature tracking
+
+Feature state is tracked in Redis via the `features[]` array on the Job object. The Planner calls `set_features` to register the feature list. The Evaluator manages the feature loop — if multiple features exist, it uses `goto_phase("coding")` and `request_new_session` to cycle through them.
 
 ## Phases
 
@@ -88,30 +97,37 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 1: Planning
 
 **Agent:** Planner (`agents/planner.md`)
+**Knowledge:** `knowledge/feature/planning-guide.md`
 
 1. Read the feature spec (or CLI description)
-2. Understand the existing Go codebase
-3. Produce an implementation plan with feature branches
+2. Analyze the existing codebase to understand language, structure, and patterns
+3. Call `set_job_params({ language: "<detected-language>" })` to set the language
+4. Produce an implementation plan with features and acceptance criteria
+5. Call `set_features` to register the feature list
 
 ---
 
 ### Phase 2: Coding
 
 **Agent:** Coder (`agents/coder.md`)
+**Conventions:** Auto-loaded from `job.params.language`
 
-1. Read the implementation plan
-2. Create a feature branch
-3. Implement the changes following `conventions/golang.md`
-4. Write tests
-5. Open a PR with a detailed description
+1. Call `get_features` to find the current feature
+2. Call `update_feature` to mark it `in-progress`
+3. Read the implementation plan
+4. Create a feature branch
+5. Implement the changes following the injected conventions
+6. Write tests
+7. Open a PR with a detailed description
 
 ---
 
 ### Phase 3: Review
 
 **Agent:** PR Reviewer (`agents/pr-reviewer.md`)
+**Conventions:** Auto-loaded from `job.params.language`
 
-1. Post a structured code review
+1. Post a structured code review against conventions and plan
 2. Monitor for human reviewer comments
 3. Coordinate fixes with the coder agent
 4. Wait for human approval and merge
@@ -121,20 +137,27 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 4: Testing
 
 **Agent:** Tester (`agents/tester.md`)
+**Conventions:** Auto-loaded from `job.params.language`
+**Knowledge:** `knowledge/feature/testing-guide.md`
 
 1. Build the service
-2. Run comparison tests if a staging URL is available
-3. Output test results
+2. Run the test suite
+3. Verify acceptance criteria
+4. Output test results
 
 ---
 
 ### Phase 5: Evaluation
 
 **Agent:** Evaluator (`agents/evaluator.md`)
+**Conventions:** Auto-loaded from `job.params.language`
 
 1. Classify any failures
 2. Write new knowledge to memory
-3. Decision: complete, loop back to coding, or escalate
+3. Decision:
+   - **Feature complete:** call `update_feature(name, status: "complete")`. If more features remain, call `request_new_session` then `goto_phase("coding")`. Otherwise finish.
+   - **Fix needed:** call `update_feature(name, incrementLoop: true)`, check loop count, and `goto_phase("coding")` with fix brief.
+   - **Escalate:** if loop count >= 5 or blocker found.
 
 ---
 

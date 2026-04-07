@@ -26,7 +26,7 @@ export interface WatcherContext {
 
 // ── File categories ───────────────────────────────────────────────────────────
 
-type ChangeCategory = 'agent' | 'memory' | 'workflow' | 'convention' | 'config' | 'source'
+type ChangeCategory = 'agent' | 'memory' | 'workflow' | 'convention' | 'knowledge' | 'config' | 'source'
 
 function categorise(filePath: string, a5aiDir: string): ChangeCategory {
   const rel = path.relative(a5aiDir, filePath)
@@ -34,6 +34,7 @@ function categorise(filePath: string, a5aiDir: string): ChangeCategory {
   if (rel.startsWith('memory/'))      return 'memory'
   if (rel.startsWith('workflows/'))   return 'workflow'
   if (rel.startsWith('conventions/')) return 'convention'
+  if (rel.startsWith('knowledge/'))   return 'knowledge'
   if (rel.startsWith('config/'))      return 'config'
   return 'source'
 }
@@ -46,6 +47,7 @@ function categorise(filePath: string, a5aiDir: string): ChangeCategory {
  *   - agents/**\/*.md        — agent role definitions
  *   - workflows/**\/*.md     — workflow lifecycle files
  *   - conventions/**\/*.md   — coding / git conventions
+ *   - knowledge/**\/*.md     — domain-specific workflow guides
  *   - tools/src/**\/*.ts     — Agent Host source code (tool proposals, etc.)
  *
  * On change:
@@ -69,6 +71,7 @@ export function startWatcher(ctx: WatcherContext): FSWatcher {
     path.join(a5aiDir, 'agents'),
     path.join(a5aiDir, 'workflows'),
     path.join(a5aiDir, 'conventions'),
+    path.join(a5aiDir, 'knowledge'),
     path.join(a5aiDir, 'config'),
     path.join(a5aiDir, 'tools', 'src'),
   ]
@@ -482,6 +485,7 @@ function buildPrDescription(
     memory:     '### Memory',
     workflow:   '### Workflows',
     convention: '### Conventions',
+    knowledge:  '### Knowledge modules',
     config:     '### Configuration (YAML)',
     source:     '### Source code (TypeScript)',
   }

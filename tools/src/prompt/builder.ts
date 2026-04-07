@@ -4,7 +4,7 @@ import { Logger } from 'pino'
 import { GitClient } from '../clients/git'
 import { Settings } from '../config/settings'
 import { Job } from '../jobs/types'
-import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
+import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig, PhaseConfig } from '../workflow-parser'
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
@@ -76,17 +76,25 @@ export async function buildSystemPrompt(
   const memorySections = await loadMemory(a5aiDir, logger)
   sections.push(...memorySections)
 
-  // 6. Conventions
-  const conventionFiles = ['conventions/golang.md', 'conventions/git.md']
-  for (const relPath of conventionFiles) {
+  // 6. Conventions — loaded from workflow YAML metadata, never hardcoded by language
+  const conventionPaths = resolveConventions(phaseConf ?? null, job)
+  for (const relPath of conventionPaths) {
     const content = await readSafe(path.join(a5aiDir, relPath), logger)
     if (content) sections.push(banner('Conventions', relPath) + content)
   }
 
-  // 7. Infrastructure context — how to reach BitBucket, clone repos, etc.
+  // 7. Knowledge modules — domain-specific guides injected per phase
+  if (phaseConf?.knowledge) {
+    for (const relPath of phaseConf.knowledge) {
+      const content = await readSafe(path.join(a5aiDir, relPath), logger)
+      if (content) sections.push(banner('Domain Knowledge', relPath) + content)
+    }
+  }
+
+  // 8. Infrastructure context — how to reach BitBucket, clone repos, etc.
   sections.push(buildInfrastructureContext(bitbucket.workspace, bitbucket.coderAccount.username))
 
-  // 8. Job context — always last so it is never overridden by generic instructions
+  // 9. Job context — always last so it is never overridden by generic instructions
   sections.push(buildJobContext(job))
 
   return sections.join('\n\n---\n\n')
@@ -138,6 +146,27 @@ async function loadMemory(a5aiDir: string, logger: Logger): Promise<string[]> {
   return sections
 }
 
+// ── Convention resolver ───────────────────────────────────────────────────────
+
+function resolveConventions(phaseConf: PhaseConfig | null, job: Job): string[] {
+  const files = ['conventions/git.md']
+
+  if (!phaseConf?.conventions) {
+    return files
+  }
+
+  for (const entry of phaseConf.conventions) {
+    if (entry === 'auto') {
+      const lang = job.params['language'] as string | undefined
+      if (lang) files.push(`conventions/${lang}.md`)
+    } else {
+      files.push(entry)
+    }
+  }
+
+  return [...new Set(files)]
+}
+
 // ── Infrastructure context ────────────────────────────────────────────────────
 
 function buildInfrastructureContext(workspace: string, coderUsername: string): string {
@@ -173,6 +202,8 @@ function buildJobContext(job: Job): string {
     status: job.status,
     phase: job.phase,
     currentFeature: job.currentFeature,
+    features: job.features,
+    featureLoopCount: job.featureLoopCount,
     prMappings: job.prMappings,
     awaitingEvent: job.awaitingEvent ?? null,
     awaitingPrId: job.awaitingPrId ?? null,

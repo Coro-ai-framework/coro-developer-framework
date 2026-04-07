@@ -12,21 +12,27 @@ phases:
     agent: agents/analyzer.md
     model: planning
     status: analyzing
+    knowledge: [knowledge/migration/analysis-guide.md]
+    conventions: [auto]
 
   - name: planning
     agent: agents/planner.md
     model: planning
     status: planning
+    knowledge: [knowledge/migration/planning-guide.md]
 
   - name: repo-setup
     agent: agents/coder.md
     model: coding
     status: repo-setup
+    conventions: [auto]
 
   - name: coding
     agent: agents/coder.md
     model: coding
     status: coding
+    knowledge: [knowledge/migration/coding-guide.md]
+    conventions: [auto]
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -36,12 +42,16 @@ phases:
   - name: review
     agent: agents/pr-reviewer.md
     model: coding
-    status: coding
+    status: reviewing
+    knowledge: [knowledge/migration/review-guide.md]
+    conventions: [auto]
 
   - name: testing
     agent: agents/tester.md
     model: coding
     status: testing
+    knowledge: [knowledge/migration/testing-guide.md]
+    conventions: [auto]
     subagents:
       - name: test-runner
         agent: agents/tester.md
@@ -52,6 +62,8 @@ phases:
     agent: agents/evaluator.md
     model: planning
     status: evaluating
+    knowledge: [knowledge/migration/evaluation-guide.md]
+    conventions: [auto]
 
   - name: reporting
     agent: agents/planner.md
@@ -86,9 +98,15 @@ The user provides via the CLI:
 - `Staging base URL` (the .NET service's staging URL)
 - `Service name` (used for file paths, repo naming, helm config lookup)
 
+## Language handling
+
+This workflow uses two languages: the **source** language (.NET/C#) for analysis, and the **target** language (Go) for coding. The init phase sets `job.params.language` to the source language so the analyzer gets the right conventions. The planner then updates it to the target language (via `set_job_params`) after producing the plan, so all downstream coding phases load the correct target conventions via `conventions: [auto]`. The knowledge modules (`knowledge/migration/*.md`) provide the migration-specific translation guidance between the two languages.
+
 ## State
 
 All intermediate state is written to `working/{service-name}/`. This directory persists across sessions so work can be resumed if interrupted.
+
+Feature state is tracked in Redis via the `features[]` array on the Job object. Agents use `get_features`, `update_feature`, and `set_features` to manage feature progress.
 
 ## Phases
 
@@ -102,12 +120,15 @@ All intermediate state is written to `working/{service-name}/`. This directory p
 4. Create `working/{service-name}/` directory
 5. Write `working/{service-name}/job.md` with the job parameters and start timestamp
 6. Clone the .NET repo locally for analysis
+7. Set `job.params.language` to the source language (e.g., `dotnet`) via `set_job_params` so the analyzer gets the right conventions
 
 ---
 
 ### Phase 1: Analysis
 
 **Agent:** Analyzer (`agents/analyzer.md`)
+**Knowledge:** `knowledge/migration/analysis-guide.md`
+**Conventions:** Auto-loaded from `job.params.language` (source language)
 
 Run the Analyzer agent with the cloned repo and job parameters.
 
@@ -122,73 +143,50 @@ Run the Analyzer agent with the cloned repo and job parameters.
 ### Phase 2: Planning
 
 **Agent:** Planner (`agents/planner.md`)
+**Knowledge:** `knowledge/migration/planning-guide.md`
 
 Run the Planner agent with the Analyzer outputs.
 
-**Completion check:** `working/{service-name}/migration-plan.md` exists and contains at least 1 feature.
+The Planner must:
+1. Produce `working/{service-name}/migration-plan.md` with at least 1 feature
+2. Call `set_features` to register the feature list with the job
+3. Call `set_job_params({ language: "golang" })` to switch to the target language for all downstream phases
 
-**Human checkpoint (optional):** Present the migration plan to the user for review before proceeding. Ask: "Does this plan look right? Should any features be reordered, split, or merged?"
+**Human checkpoint (optional):** Present the migration plan to the user for review before proceeding.
 
 ---
 
-### Phase 3: Go Repository Setup
+### Phase 3: Repository Setup
+
+**Agent:** Coder (`agents/coder.md`)
+**Conventions:** Auto-loaded from `job.params.language` (now the target language)
 
 Before beginning feature implementation:
 
-1. Create the Go repository on BitBucket: `{service-name}-go`
-2. Initialize with the Go project template from `tools/src/` scaffolding
+1. Create the target repository on BitBucket: `{service-name}-go`
+2. Initialize with the target language project template
 3. Push the initial commit to `main`
-4. Update `config/repos.md` with the new Go repo slug
+4. Update `config/repos.md` with the new repo slug
 
 ---
 
-### Phase 4: Feature Implementation Loop
+### Phase 4-7: Feature Implementation Loop
 
-For each feature in `working/{service-name}/migration-plan.md` (in order):
+The coding → review → testing → evaluation cycle repeats for each feature in the migration plan. This loop is driven by the **Evaluator agent** — not by the runner infrastructure. The runner simply advances linearly through phases; the Evaluator uses `goto_phase` to loop back when needed.
 
-#### 4a. Code
+#### How the loop works:
 
-**Agent:** Coder (`agents/coder.md`)
-
-- Check that all dependency features are in `merged` status before starting
-- Run the Coder agent for this feature
-- Coder creates the branch and opens the PR
-
-#### 4b. Review
-
-**Agent:** PR Reviewer (`agents/pr-reviewer.md`)
-
-- Activate the PR Reviewer agent with the PR URL
-- PR Reviewer monitors the PR, coordinates with Coder on feedback, and waits for human approval
-- This phase completes when the PR is merged
-
-#### 4c. Test
-
-**Agent:** Tester (`agents/tester.md`)
-
-- Run the Tester agent after merge
-- Tester builds the service, runs comparison tests against staging
-- Outputs `working/{service-name}/test-results/{feature-name}.json`
-
-#### 4d. Evaluate
-
-**Agent:** Evaluator (`agents/evaluator.md`)
-
-- Run the Evaluator on the test results
-- Evaluator updates memory and writes `working/{service-name}/evaluations/{feature-name}.md`
-- **Decision:**
-  - If `complete`: mark feature as complete in migration plan, proceed to next feature
-  - If `loop-back`: run Coder again with the fix brief, then Tester, then Evaluator (max 5 loops)
-  - If `escalate` (5 loops exceeded): pause workflow and present diagnosis to user
-
-#### 4e. Feature status tracking
-
-Update the feature status in `working/{service-name}/migration-plan.md`:
-- `pending` → `in-progress` → `merged` → `tested` → `complete` | `escalated`
+1. **Coder** calls `get_features`, finds the next `pending` feature, calls `update_feature` to mark it `in-progress`, implements it, opens the PR
+2. **PR Reviewer** reviews, coordinates fixes, waits for approval, merges
+3. **Tester** builds and runs comparison tests, writes results
+4. **Evaluator** reads results and decides:
+   - **Feature complete:** call `update_feature(name, status: "complete")`. Then call `get_features` — if more features remain, call `request_new_session` (fresh context for the next feature) then `goto_phase("coding")`. If no features remain, finish (runner auto-advances to reporting).
+   - **Fix needed:** call `update_feature(name, incrementLoop: true)`. Check `loopCount` — if >= 5, call `escalate`. Otherwise call `goto_phase("coding")` with a fix brief.
+   - **Blocked:** call `escalate` with diagnosis.
 
 ---
 
-### Phase 5: Migration Report
+### Phase 8: Migration Report
 
 When all features are `complete` (or `escalated` with user acknowledgment):
 
@@ -198,7 +196,7 @@ The report must include:
 - Every endpoint: migrated / with-deviation / escalated
 - Test coverage summary per endpoint
 - All memory entries created during this migration
-- Known deviations from the .NET contract (with justifications)
+- Known deviations from the source contract (with justifications)
 - How to validate the service before cutover
 - Recommended smoke test suite for the load balancer cutover
 
@@ -206,10 +204,10 @@ The report must include:
 
 ## Resuming interrupted workflows
 
-If a workflow was interrupted, read `working/{service-name}/job.md` and `working/{service-name}/migration-plan.md` to determine which phase and feature to resume from. Do not re-run completed phases.
+If a workflow was interrupted, read `working/{service-name}/job.md` and call `get_features` to determine which phase and feature to resume from. Do not re-run completed phases or features.
 
 ## Error handling
 
-- If any agent produces an error it cannot self-resolve, it writes the error to `working/{service-name}/errors.md` and surfaces it to the user
+- If any agent produces an error it cannot self-resolve, it calls `escalate` with a specific description
 - Network failures (BitBucket API, Loki, Tempo) are retried up to 3 times before surfacing
 - If staging is unreachable, the Tester skips comparison tests and notes all tests as `skipped` with reason

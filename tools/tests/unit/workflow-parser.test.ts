@@ -243,6 +243,80 @@ phases:
     })
   })
 
+  describe('knowledge and conventions metadata', () => {
+    it('parses knowledge array from phase', () => {
+      const yaml = `
+phases:
+  - name: analysis
+    agent: agents/analyzer.md
+    model: planning
+    knowledge: [knowledge/migration/analysis-guide.md]
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].knowledge).toEqual(['knowledge/migration/analysis-guide.md'])
+    })
+
+    it('parses conventions array from phase', () => {
+      const yaml = `
+phases:
+  - name: coding
+    agent: agents/coder.md
+    model: coding
+    conventions: [auto]
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].conventions).toEqual(['auto'])
+    })
+
+    it('parses multiple knowledge and convention entries', () => {
+      const yaml = `
+phases:
+  - name: coding
+    agent: agents/coder.md
+    model: coding
+    knowledge: [knowledge/migration/coding-guide.md, knowledge/migration/review-guide.md]
+    conventions: [auto, conventions/extra.md]
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].knowledge).toEqual([
+        'knowledge/migration/coding-guide.md',
+        'knowledge/migration/review-guide.md',
+      ])
+      expect(config.phases[0].conventions).toEqual(['auto', 'conventions/extra.md'])
+    })
+
+    it('omits knowledge and conventions when not specified', () => {
+      const config = parseWorkflowConfig(md(MINIMAL_YAML))!
+      expect(config.phases[0].knowledge).toBeUndefined()
+      expect(config.phases[0].conventions).toBeUndefined()
+    })
+
+    it('omits knowledge and conventions when arrays are empty', () => {
+      const yaml = `
+phases:
+  - name: work
+    model: coding
+    knowledge: []
+    conventions: []
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].knowledge).toBeUndefined()
+      expect(config.phases[0].conventions).toBeUndefined()
+    })
+
+    it('ignores unknown fields (backwards compat)', () => {
+      const yaml = `
+phases:
+  - name: work
+    model: coding
+    some_future_field: [a, b]
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].name).toBe('work')
+      expect((config.phases[0] as unknown as Record<string, unknown>)['some_future_field']).toBeUndefined()
+    })
+  })
+
   describe('filtering and robustness', () => {
     it('skips phases without a name and keeps valid ones', () => {
       const yaml = `

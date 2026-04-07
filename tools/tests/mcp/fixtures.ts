@@ -18,6 +18,8 @@ export function makeMockJob(overrides: Record<string, unknown> = {}) {
     status: STATUS_QUEUED,
     phase: 'coding',
     currentFeature: null,
+    features: [],
+    featureLoopCount: 0,
     prMappings: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
@@ -53,6 +55,7 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
   } as unknown as BitBucketClient
 
   const registry = {
+    getJob: vi.fn().mockImplementation(async () => makeMockJob()),
     updateJob: vi.fn().mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeMockJob(),
       ...patch,

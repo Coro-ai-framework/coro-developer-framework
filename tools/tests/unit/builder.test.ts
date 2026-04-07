@@ -21,6 +21,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     status: 'analyzing',
     phase: 'analysis',
     currentFeature: null,
+    features: [],
+    featureLoopCount: 0,
     prMappings: [],
     createdAt: '2026-04-04T00:00:00Z',
     updatedAt: '2026-04-04T00:00:00Z',
@@ -131,17 +133,77 @@ describe('buildSystemPrompt', () => {
       expect(prompt).toContain('Your Role This Phase')
     })
 
-    it('includes convention files when present', async () => {
+    it('includes git conventions by default (no language hardcoded)', async () => {
       setupFs({
         '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': '',
-        '/data/a5-ai/conventions/golang.md': '# Go Conventions\n\nUse chi router.',
         '/data/a5-ai/conventions/git.md': '# Git Conventions\n\nUse conventional commits.',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('Use chi router.')
       expect(prompt).toContain('Use conventional commits.')
+    })
+
+    it('loads language conventions via auto when job.params.language is set', async () => {
+      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    conventions: [auto]\n---\n\n# Workflow'
+      setupFs({
+        '/data/a5-ai/CLAUDE.md': '# Root',
+        '/data/a5-ai/workflows/migration/workflow.md': workflow,
+        '/data/a5-ai/agents/analyzer.md': '# Analyzer',
+        '/data/a5-ai/conventions/git.md': '# Git Conv',
+        '/data/a5-ai/conventions/golang.md': '# Go Conventions\n\nUse chi router.',
+      })
+
+      const job = makeJob({ params: { serviceName: 'my-svc', language: 'golang' } })
+      const prompt = await buildSystemPrompt(job, makeSettings(), mockGitClient, noopLogger)
+      expect(prompt).toContain('Use chi router.')
+      expect(prompt).toContain('# Git Conv')
+    })
+
+    it('does not load language conventions when conventions field is absent', async () => {
+      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Workflow'
+      setupFs({
+        '/data/a5-ai/CLAUDE.md': '# Root',
+        '/data/a5-ai/workflows/migration/workflow.md': workflow,
+        '/data/a5-ai/agents/analyzer.md': '# Analyzer',
+        '/data/a5-ai/conventions/git.md': '# Git Conv',
+        '/data/a5-ai/conventions/golang.md': '# Go Conventions\n\nUse chi router.',
+      })
+
+      const job = makeJob({ params: { serviceName: 'my-svc', language: 'golang' } })
+      const prompt = await buildSystemPrompt(job, makeSettings(), mockGitClient, noopLogger)
+      expect(prompt).not.toContain('Use chi router.')
+      expect(prompt).toContain('# Git Conv')
+    })
+
+    it('loads explicit convention paths from workflow YAML', async () => {
+      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    conventions: [conventions/dotnet.md]\n---\n\n# Workflow'
+      setupFs({
+        '/data/a5-ai/CLAUDE.md': '# Root',
+        '/data/a5-ai/workflows/migration/workflow.md': workflow,
+        '/data/a5-ai/agents/analyzer.md': '# Analyzer',
+        '/data/a5-ai/conventions/git.md': '# Git Conv',
+        '/data/a5-ai/conventions/dotnet.md': '# .NET Conventions\n\nUse PascalCase.',
+      })
+
+      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
+      expect(prompt).toContain('Use PascalCase.')
+      expect(prompt).toContain('# Git Conv')
+    })
+
+    it('loads knowledge modules when specified in workflow YAML', async () => {
+      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    knowledge: [knowledge/migration/analysis-guide.md]\n---\n\n# Workflow'
+      setupFs({
+        '/data/a5-ai/CLAUDE.md': '# Root',
+        '/data/a5-ai/workflows/migration/workflow.md': workflow,
+        '/data/a5-ai/agents/analyzer.md': '# Analyzer',
+        '/data/a5-ai/conventions/git.md': '# Git Conv',
+        '/data/a5-ai/knowledge/migration/analysis-guide.md': '# Analysis Guide\n\nExtract controllers.',
+      })
+
+      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
+      expect(prompt).toContain('Extract controllers.')
+      expect(prompt).toContain('Domain Knowledge')
     })
 
     it('always includes job context as the last section', async () => {
@@ -200,6 +262,34 @@ describe('buildSystemPrompt', () => {
       expect(ctx['awaitingEvent']).toBeNull()
       expect(ctx['awaitingPrId']).toBeNull()
       expect(ctx['escalationMessage']).toBeNull()
+    })
+
+    it('includes features and featureLoopCount in job context', async () => {
+      setupFs({
+        '/data/a5-ai/CLAUDE.md': '',
+        '/data/a5-ai/workflows/migration/workflow.md': '',
+      })
+
+      const job = makeJob({
+        features: [
+          { name: 'scaffold', status: 'complete', loopCount: 1 },
+          { name: 'users-api', status: 'in-progress', loopCount: 0 },
+        ],
+        featureLoopCount: 0,
+        currentFeature: 'users-api',
+      })
+
+      const prompt = await buildSystemPrompt(job, makeSettings(), mockGitClient, noopLogger)
+      const jsonStart = prompt.indexOf('```json\n') + 8
+      const jsonEnd = prompt.indexOf('\n```', jsonStart)
+      const ctx = JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
+
+      expect(ctx['features']).toEqual([
+        { name: 'scaffold', status: 'complete', loopCount: 1 },
+        { name: 'users-api', status: 'in-progress', loopCount: 0 },
+      ])
+      expect(ctx['featureLoopCount']).toBe(0)
+      expect(ctx['currentFeature']).toBe('users-api')
     })
   })
 
@@ -343,32 +433,36 @@ describe('buildSystemPrompt', () => {
 
   describe('section ordering', () => {
     it('places sections in correct order: root, workflow, agent, memory, conventions, job', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Workflow Content'
+      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    conventions: [auto]\n    knowledge: [knowledge/migration/analysis-guide.md]\n---\n\n# Workflow Content'
       setupFs({
         '/data/a5-ai/CLAUDE.md': '# CLAUDE Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
         '/data/a5-ai/agents/analyzer.md': '# Analyzer Agent',
         '/data/a5-ai/memory/MEMORY.md': '# Memory Index',
-        '/data/a5-ai/conventions/golang.md': '# Go Conv',
         '/data/a5-ai/conventions/git.md': '# Git Conv',
+        '/data/a5-ai/conventions/golang.md': '# Go Conv',
+        '/data/a5-ai/knowledge/migration/analysis-guide.md': '# Analysis Knowledge',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
+      const job = makeJob({ params: { serviceName: 'my-svc', language: 'golang' } })
+      const prompt = await buildSystemPrompt(job, makeSettings(), mockGitClient, noopLogger)
 
       const rootIdx = prompt.indexOf('# CLAUDE Root')
       const workflowIdx = prompt.indexOf('# Workflow Content')
       const agentIdx = prompt.indexOf('# Analyzer Agent')
       const memoryIdx = prompt.indexOf('# Memory Index')
-      const goIdx = prompt.indexOf('# Go Conv')
       const gitIdx = prompt.indexOf('# Git Conv')
+      const goIdx = prompt.indexOf('# Go Conv')
+      const knowledgeIdx = prompt.indexOf('# Analysis Knowledge')
       const jobIdx = prompt.indexOf('# Current Job')
 
       expect(rootIdx).toBeLessThan(workflowIdx)
       expect(workflowIdx).toBeLessThan(agentIdx)
       expect(agentIdx).toBeLessThan(memoryIdx)
-      expect(memoryIdx).toBeLessThan(goIdx)
-      expect(goIdx).toBeLessThan(gitIdx)
-      expect(gitIdx).toBeLessThan(jobIdx)
+      expect(memoryIdx).toBeLessThan(gitIdx)
+      expect(gitIdx).toBeLessThan(goIdx)
+      expect(goIdx).toBeLessThan(knowledgeIdx)
+      expect(knowledgeIdx).toBeLessThan(jobIdx)
     })
   })
 

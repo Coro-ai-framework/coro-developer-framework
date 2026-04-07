@@ -71,6 +71,8 @@ export class JobRegistry {
       status: initialStatus,
       phase: initialPhase,
       currentFeature: null,
+      features: [],
+      featureLoopCount: 0,
       prMappings,
       createdAt: now,
       updatedAt: now,

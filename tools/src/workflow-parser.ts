@@ -18,6 +18,8 @@ export interface PhaseConfig {
   model: 'planning' | 'coding'
   status: string
   subagents?: SubagentConfig[]
+  knowledge?: string[]
+  conventions?: string[]
 }
 
 export interface WorkflowConfig {
@@ -55,6 +57,8 @@ interface RawPhase {
   model?: string
   status?: string
   subagents?: RawSubagent[]
+  knowledge?: string[]
+  conventions?: string[]
 }
 
 interface RawConfig {
@@ -100,6 +104,14 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
             model: sa.model,
             tools: sa.tools,
           }))
+      }
+
+      if (Array.isArray(p.knowledge) && p.knowledge.length > 0) {
+        phase.knowledge = p.knowledge
+      }
+
+      if (Array.isArray(p.conventions) && p.conventions.length > 0) {
+        phase.conventions = p.conventions
       }
 
       return phase
