@@ -34,6 +34,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    insights: [],
     createdAt: '2026-04-04T00:00:00Z',
     updatedAt: '2026-04-04T00:00:00Z',
     ...overrides,

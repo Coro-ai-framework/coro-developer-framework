@@ -48,6 +48,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    insights: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -234,11 +235,15 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(registry.current.sessionId).toBe('persist-me')
   })
 
-  it('logs assistant string content (truncated)', async () => {
+  it('logs assistant text from BetaMessage content blocks', async () => {
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         inv.signals.phaseComplete = true
-        yield { type: 'assistant', content: 'Hello from the assistant' }
+        yield {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'Hello from the assistant' }] },
+          session_id: 'x',
+        }
         yield { type: 'system', session_id: 'x' }
       })()
 
@@ -250,11 +255,17 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(registry.appendLog).toHaveBeenCalledWith('runner-job-1', 'Hello from the assistant')
   })
 
-  it('logs tool_use_summary tool name', async () => {
+  it('logs tool_use blocks from assistant message', async () => {
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         inv.signals.phaseComplete = true
-        yield { type: 'tool_use_summary', tool_name: 'Read' }
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'tool_use', name: 'Read', input: { path: '/tmp/foo' } }],
+          },
+          session_id: 'x',
+        }
         yield { type: 'system', session_id: 'x' }
       })()
 
@@ -263,7 +274,29 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.appendLog).toHaveBeenCalledWith('runner-job-1', '→ Read')
+    expect(registry.appendLog).toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.stringContaining('→ Read'),
+    )
+  })
+
+  it('logs tool_use_summary with summary text', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.phaseComplete = true
+        yield { type: 'tool_use_summary', summary: 'Read 3 files in src/' }
+        yield { type: 'system', session_id: 'x' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    expect(registry.appendLog).toHaveBeenCalledWith(
+      'runner-job-1',
+      '[tool_summary] Read 3 files in src/',
+    )
   })
 
   it('marks job failed when query throws', async () => {

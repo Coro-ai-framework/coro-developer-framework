@@ -106,6 +106,8 @@ Write findings to `memory/pr-feedback.md`:
 - **Discovered:** {date} in PR {PR-ID}
 ```
 
+For single-job observations, call `mcp__a5__add_insight` so the Evaluator can incorporate them.
+
 If a pattern is systemic (seen in 2+ PRs), call `mcp__a5__propose_change` to suggest edits to the relevant agent instructions or conventions. Check `mcp__a5__list_proposals` first to avoid duplicates.
 
 ### 5. Approve and merge when ready

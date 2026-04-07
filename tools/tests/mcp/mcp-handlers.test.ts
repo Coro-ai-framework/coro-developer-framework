@@ -435,6 +435,56 @@ describe('createMcpToolHandlers — feature tracking', () => {
   })
 })
 
+describe('createMcpToolHandlers — add_insight', () => {
+  let ctx: ReturnType<typeof makeMockToolContext>
+
+  beforeEach(() => {
+    ctx = makeMockToolContext()
+  })
+
+  it('appends insight to job and logs it', async () => {
+    const jobWithInsights = makeMockJob({ insights: [{ phase: 'planning', category: 'old', summary: 'x', detail: 'y' }] })
+    ;(ctx.registry.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithInsights)
+
+    const h = createMcpToolHandlers(ctx, {})
+    const data = parseJson(await h.add_insight({
+      category: 'auth',
+      summary: 'x-token-auth returns 401',
+      detail: 'Used Basic auth with encoded username instead',
+      suggestion: 'Update memory with working auth pattern',
+    })) as Record<string, unknown>
+
+    expect(data['recorded']).toBe(true)
+    expect(data['totalInsights']).toBe(2)
+
+    expect(ctx.registry.updateJob).toHaveBeenCalledWith(
+      'job-mcp-test',
+      expect.objectContaining({
+        insights: expect.arrayContaining([
+          expect.objectContaining({ category: 'auth', summary: 'x-token-auth returns 401', phase: 'coding' }),
+        ]),
+      }),
+    )
+
+    expect(ctx.registry.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[insight] auth: x-token-auth returns 401',
+    )
+  })
+
+  it('works with empty initial insights', async () => {
+    const h = createMcpToolHandlers(ctx, {})
+    const data = parseJson(await h.add_insight({
+      category: 'tooling',
+      summary: 'npm ci faster than npm install',
+      detail: 'Saves 30s on restore',
+    })) as Record<string, unknown>
+
+    expect(data['recorded']).toBe(true)
+    expect(data['totalInsights']).toBe(1)
+  })
+})
+
 describe('createMcpToolHandlers — propose_change / list_proposals', () => {
   let ctx: ReturnType<typeof makeMockToolContext>
 

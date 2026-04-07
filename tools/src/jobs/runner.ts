@@ -218,60 +218,76 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       for await (const raw of queryStream) {
         const message = raw as Record<string, unknown>
-        // Capture the session ID for potential resumption
-        if (message['type'] === 'system') {
-          const sessionIdRaw = message['session_id']
-          if (typeof sessionIdRaw === 'string') sessionId = sessionIdRaw
+        const eventType = String(message['type'] ?? '')
+
+        // Capture the session ID from any event that carries it
+        if (eventType === 'system') {
+          const sid = message['session_id']
+          if (typeof sid === 'string') sessionId = sid
         }
 
-        // Stream assistant text to the job log
-        if (message['type'] === 'assistant') {
-          const content = message['content']
-          if (typeof content === 'string' && content.trim()) {
-            await registry.appendLog(liveJob.id, content)
-          } else if (Array.isArray(content)) {
+        // SDKAssistantMessage: wraps a BetaMessage at message.message with content blocks.
+        // Content blocks include text, thinking, tool_use, and mcp_tool_use.
+        if (eventType === 'assistant') {
+          const betaMsg = message['message'] as Record<string, unknown> | undefined
+          const content = betaMsg?.['content']
+          if (Array.isArray(content)) {
             for (const block of content as Array<Record<string, unknown>>) {
-              if (block['type'] === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
+              const bt = String(block['type'] ?? '')
+              if (bt === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
                 await registry.appendLog(liveJob.id, block['text'] as string)
-              } else if (block['type'] === 'thinking' && typeof block['thinking'] === 'string') {
+              } else if (bt === 'thinking' && typeof block['thinking'] === 'string') {
                 await registry.appendLog(liveJob.id, `[thinking] ${(block['thinking'] as string).slice(0, 300)}`)
+              } else if (bt === 'tool_use' || bt === 'mcp_tool_use') {
+                const toolName = String(block['name'] ?? 'unknown')
+                const input = block['input']
+                const inputStr = input ? ` ${JSON.stringify(input).slice(0, 300)}` : ''
+                await registry.appendLog(liveJob.id, `→ ${toolName}${inputStr}`)
               }
             }
           }
         }
 
-        // Log tool use with inputs
-        if (message['type'] === 'tool_use' || message['type'] === 'tool_use_summary') {
-          const toolName = message['tool_name'] ?? message['name'] ?? 'unknown'
-          const input = message['input'] ?? message['params']
-          const inputStr = input ? ` ${JSON.stringify(input).slice(0, 300)}` : ''
-          await registry.appendLog(liveJob.id, `→ ${String(toolName)}${inputStr}`)
-        }
-
-        // Log tool results
-        if (message['type'] === 'tool_result') {
-          const toolName = message['tool_name'] ?? message['name'] ?? 'unknown'
-          const isError = message['is_error'] ?? false
-          const content = message['content']
-          const resultStr = typeof content === 'string' ? content.slice(0, 300) : JSON.stringify(content).slice(0, 300)
-          const prefix = isError ? '✗' : '✓'
-          await registry.appendLog(liveJob.id, `${prefix} ${String(toolName)}: ${resultStr}`)
-        }
-
-        // Log any other event types for debugging (result event carries Claude's final summary)
-        const knownTypes = new Set(['system', 'assistant', 'tool_use', 'tool_use_summary', 'tool_result', 'user'])
-        if (!knownTypes.has(String(message['type'] ?? ''))) {
-          const eventType = String(message['type'])
-          if (eventType === 'result') {
-            const result = message['result']
-            if (typeof result === 'string') {
-              await registry.appendLog(liveJob.id, `[result] ${result}`)
-            } else {
-              await registry.appendLog(liveJob.id, `[event:result] ${JSON.stringify(message)}`)
-            }
-          } else {
-            await registry.appendLog(liveJob.id, `[event:${eventType}] ${JSON.stringify(message).slice(0, 500)}`)
+        // SDKToolUseSummaryMessage: human-readable summary of preceding tool uses
+        if (eventType === 'tool_use_summary') {
+          const summary = message['summary']
+          if (typeof summary === 'string' && summary.trim()) {
+            await registry.appendLog(liveJob.id, `[tool_summary] ${summary.slice(0, 500)}`)
           }
+        }
+
+        // SDKToolProgressMessage: heartbeat for long-running tools
+        if (eventType === 'tool_progress') {
+          const toolName = message['tool_name']
+          const elapsed = message['elapsed_time_seconds']
+          if (typeof toolName === 'string' && typeof elapsed === 'number' && elapsed >= 10) {
+            await registry.appendLog(liveJob.id, `⏳ ${toolName} running (${Math.round(elapsed)}s)`)
+          }
+        }
+
+        // SDKResultMessage: final result when query() completes
+        if (eventType === 'result') {
+          const isError = message['is_error']
+          if (isError) {
+            const errors = message['errors']
+            const errStr = Array.isArray(errors) ? (errors as string[]).join('; ') : 'unknown error'
+            await registry.appendLog(liveJob.id, `[error] ${errStr.slice(0, 500)}`)
+          } else {
+            const result = message['result']
+            if (typeof result === 'string' && result.trim()) {
+              await registry.appendLog(liveJob.id, `[result] ${result}`)
+            }
+          }
+        }
+
+        // Silently ignore: user messages, stream_event (partial deltas — too noisy),
+        // auth_status, and other internal system subtypes. Log truly unexpected types.
+        const handledTypes = new Set([
+          'system', 'assistant', 'tool_use_summary', 'tool_progress', 'result',
+          'user', 'stream_event', 'auth_status',
+        ])
+        if (!handledTypes.has(eventType)) {
+          await registry.appendLog(liveJob.id, `[event:${eventType}] ${JSON.stringify(message).slice(0, 500)}`)
         }
 
         // If an exception signal was set, stop processing the stream early.

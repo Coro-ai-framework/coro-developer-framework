@@ -21,6 +21,7 @@ export function makeMockJob(overrides: Record<string, unknown> = {}) {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    insights: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     ...overrides,

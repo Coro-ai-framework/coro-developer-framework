@@ -72,7 +72,11 @@ After running tests, query Loki for any errors logged during the test run. Error
 
 Write the full test results JSON. Be precise about diffs — the Evaluator needs enough information to diagnose root causes without re-running tests.
 
-### 7. Log progress
+### 7. Record insights
+
+If you encounter unexpected build errors, flaky tests, environment issues, or workarounds that future runs should know about, call `mcp__a5__add_insight` with the category, summary, and detail.
+
+### 8. Log progress
 
 Use `mcp__a5__log` to report: total tests, pass/fail counts, any critical findings.
 

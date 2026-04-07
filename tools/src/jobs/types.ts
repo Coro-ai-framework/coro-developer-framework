@@ -38,6 +38,17 @@ export interface FeatureItem {
   loopCount: number
 }
 
+// ── Insight tracking ─────────────────────────────────────────────────────────
+
+/** A learning or workaround discovered by any agent during execution. */
+export interface Insight {
+  phase: string
+  category: string
+  summary: string
+  detail: string
+  suggestion?: string
+}
+
 // ── Core Job type ─────────────────────────────────────────────────────────────
 
 export interface Job {
@@ -64,6 +75,9 @@ export interface Job {
   featureLoopCount: number
 
   prMappings: PrMapping[]
+
+  /** Accumulated learnings from all agents. The evaluator reviews these and decides what to propose. */
+  insights: Insight[]
 
   /**
    * Agent SDK session ID for this job. Used to resume conversations

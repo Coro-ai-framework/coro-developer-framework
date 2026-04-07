@@ -172,7 +172,7 @@ Redis stores job metadata (not conversation history — the SDK manages that):
 
 | Key | Type | Contains |
 |-----|------|---------|
-| `job:{jobId}` | String (JSON) | Job metadata: status, phase, params, features[], featureLoopCount, PR mappings, timestamps |
+| `job:{jobId}` | String (JSON) | Job metadata: status, phase, params, features[], insights[], featureLoopCount, PR mappings, timestamps |
 | `job:{jobId}:log` | List | Log lines streamed to the CLI |
 | `pr:{prId}:job` | String | Maps BitBucket PR ID → jobId |
 | `jira:{ticketId}:job` | String | Maps Jira ticket ID → jobId |
@@ -470,12 +470,65 @@ The system has three layers of accumulated intelligence, each with a different v
 
 All three layers are watched by the file watcher. All changes go through a PR for human review.
 
+### 6.1 Centralized insights model
+
+Self-improvement uses a **centralized insights model**. Rather than having every agent call `propose_change` directly, agents record observations as lightweight **insights** on the job. The evaluator — which runs last and has full context — reviews all insights and decides which ones warrant a self-improvement proposal.
+
+This design avoids duplicate proposals, eliminates noise from agents that lack perspective on whether a finding is systemic, and lets the evaluator synthesize observations from multiple phases (e.g., "the planner struggled with auth, and the coder hit the same issue").
+
 ```
-Agent discovers a reusable finding
-  → Writes to memory/ (direct file write) or
-  → Calls mcp__a5__propose_change with type:
-      'memory-update', 'knowledge-update', 'convention-change',
-      'modify-agent', 'new-tool', etc.
+Phase 1: Planning
+  Planner discovers x-token-auth returns 401, finds Basic auth workaround
+  → Calls mcp__a5__add_insight({ category: "auth", summary: "...", detail: "..." })
+  → Insight stored on Job.insights[] in Redis
+
+Phase 2: Coding
+  Coder hits the same auth issue cloning the repo
+  → Calls mcp__a5__add_insight with similar details
+
+Phase 3-4: Review, Testing
+  (agents may record their own insights — build quirks, flaky tests, etc.)
+
+Phase 5: Evaluation
+  Evaluator receives all insights in system prompt (auto-injected by prompt builder)
+  → Reviews each insight, checks mcp__a5__list_proposals for duplicates
+  → Calls mcp__a5__propose_change to create a memory-update PR
+  → Also acts on its own test-result analysis as before
+```
+
+### 6.2 Insight tracking
+
+Insights are stored as structured data on the Job object in Redis:
+
+```typescript
+interface Insight {
+  phase: string       // auto-populated from the current job phase
+  category: string    // "auth", "tooling", "convention-gap", "api-quirk", etc.
+  summary: string     // one-line description
+  detail: string      // full context: what was tried, what worked, why
+  suggestion?: string // optional: what should be updated
+}
+
+// On the Job object:
+insights: Insight[]   // accumulated across all phases
+```
+
+The prompt builder includes `job.insights` in the "Insights from Upstream Agents" section of the job context when the array is non-empty. This ensures the evaluator sees every insight without needing an explicit tool call.
+
+### 6.3 Who proposes what
+
+| Agent | Records insights via `add_insight` | Calls `propose_change` directly |
+|-------|------------------------------------|---------------------------------|
+| Planner | Yes — auth workarounds, repo quirks, environment issues | No |
+| Coder | Yes — build quirks, dependency issues, workarounds | No |
+| Tester | Yes — flaky tests, pre-existing errors, environment gaps | No |
+| PR Reviewer | Yes — single-job observations | Yes — systemic patterns seen across 2+ PRs |
+| Evaluator | No (runs last) | Yes — acts on upstream insights + own analysis |
+
+### 6.4 Proposal pipeline
+
+```
+Evaluator calls mcp__a5__propose_change
   → Writes proposal summary + target files to disk
 
 File Watcher (Agent Host) detects changes
@@ -537,9 +590,9 @@ The same BitBucket service accounts handle all jobs simultaneously — `@a5-code
 | Workflow definitions | `a5-ai/workflows/` (git) | Human developers |
 | Knowledge modules | `a5-ai/knowledge/` (git) | Agents → propose_change → PR → merge |
 | Conventions | `a5-ai/conventions/` (git) | Human developers, agents → PR |
-| Accumulated memory | `a5-ai/memory/` (git) | Evaluator / PR Reviewer → watcher PR → merge |
+| Accumulated memory | `a5-ai/memory/` (git) | Evaluator (informed by job insights) / PR Reviewer → watcher PR → merge |
 | Per-job intermediate state | `working/{job-id}/` (shared volume) | Job runners |
-| Job metadata + features | Redis `job:{jobId}` | Job runners, MCP tools |
+| Job metadata + features + insights | Redis `job:{jobId}` | Job runners, MCP tools |
 | PR → job mapping | Redis `pr:{prId}:job` | Dispatcher on PR open |
 | Jira → job mapping | Redis `jira:{ticketId}:job` | Dispatcher on Jira trigger |
 | Generated code | Service repos on BitBucket | Coder agent |
@@ -597,8 +650,8 @@ Domain-specific tools are exposed via an in-process MCP server (`mcp-server.ts`)
 | Test harness | `run_go_build`, `start_go_service`, `stop_go_service`, `compare_request` | 4 |
 | Feature tracking | `set_features`, `update_feature`, `get_features`, `request_new_session`, `set_job_params` | 5 |
 | Job control | `mark_phase_complete`, `goto_phase`, `await_event`, `escalate`, `log` | 5 |
-| Self-improvement | `propose_change`, `list_proposals` | 2 |
-| **Total domain** | | **30** |
+| Self-improvement | `add_insight`, `propose_change`, `list_proposals` | 3 |
+| **Total domain** | | **31** |
 
 #### Feature tracking tools
 
@@ -716,7 +769,8 @@ All configuration lives in `tools/config/settings.json` with environment variabl
 | Convention | A coding standards file for a specific language (`conventions/{lang}.md`), loaded dynamically based on `job.params.language` |
 | Feature | A logical group of endpoints or changes handled as one branch + PR, tracked via `FeatureItem` in the job state |
 | FeatureItem | A structured record tracking a feature's name, status (pending/in-progress/complete/escalated), and loop count |
-| Job | A unit of work with a `type`, `workflowPath`, features list, and state persisted in Redis and the shared volume |
+| Insight | A structured learning or workaround recorded by any agent via `add_insight`, stored on `Job.insights[]`, and reviewed by the evaluator at the end of the workflow |
+| Job | A unit of work with a `type`, `workflowPath`, features list, insights list, and state persisted in Redis and the shared volume |
 | JobType | `migration`, `feature`, or `self-update` — determines which workflow and phases apply |
 | Job Runner | The TypeScript code that drives Claude Agent SDK sessions for one job across its phases. Has zero orchestration intelligence. |
 | Knowledge module | A domain-specific guide in `knowledge/` that supplements agent instructions with workflow-specific expertise, loaded per-phase |
@@ -726,7 +780,7 @@ All configuration lives in `tools/config/settings.json` with environment variabl
 | Phase | A discrete stage within a workflow, each mapped to a specific agent MD file and run as one `query()` call |
 | Prompt Builder | Assembles the system prompt per phase from CLAUDE.md, workflow, agent, memory, conventions, knowledge, and job context |
 | Resume | When an incoming webhook event restores a parked job and continues its runner loop |
-| Self-improvement | When an agent proposes changes via `propose_change`, triggering validation and a PR on a5-ai for human review |
+| Self-improvement | The centralized learning loop: agents record insights via `add_insight`, the evaluator reviews them and calls `propose_change`, triggering validation and a PR on a5-ai for human review |
 | Service account | A BitBucket user account operated by the system (`@a5-coder-agent`, `@a5-reviewer-agent`) |
 | Spec Writer | Agent that translates a Jira ticket into a structured feature spec for the planner |
 | Subagent | A child agent spawnable within a phase for parallel work (e.g. code-reviewer, test-runner) |

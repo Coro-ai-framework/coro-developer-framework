@@ -158,7 +158,7 @@ These rules apply to every agent in every workflow. The Agent Host injects them 
 
 5. **Never change an API contract without documenting it.** If a service must deviate from the source contract, document the deviation in the PR description with the reason. Never silently omit an endpoint.
 
-6. **Write to memory when you learn something reusable.** A failure pattern, a translation rule, a recurring PR review issue — if it will happen again, propose the change via `propose_change`. The Agent Host will validate it and open a PR on `a5-ai` for human review.
+6. **Record insights when you learn something reusable.** A failure pattern, a workaround, a translation rule, an auth quirk — if it will help future runs, call `add_insight` with the category, a one-line summary, and full context. The Evaluator reviews all insights at the end and decides what to propose via `propose_change`. Do not call `propose_change` directly unless you are the Evaluator or PR Reviewer agent.
 
 7. **Prefer observed behavior over code analysis.** When a service's behavior is ambiguous, call `loki_query` to check actual production traffic before assuming. Code can lie; logs don't.
 
@@ -190,7 +190,8 @@ These rules apply to every agent in every workflow. The Agent Host injects them 
 See `tools/src/mcp-server.ts` for the full tool inventory.
 
 ### Self-improvement
-- `propose_change` — Propose changes to agents, conventions, knowledge, or code
+- `add_insight` — Record a learning, workaround, or pattern for the Evaluator to review (all agents)
+- `propose_change` — Propose changes to agents, conventions, knowledge, or code (Evaluator / PR Reviewer only)
 - `list_proposals` — Check past proposals before proposing duplicates
 
 ---

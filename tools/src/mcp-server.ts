@@ -269,6 +269,18 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
       // ── Self-improvement ──────────────────────────────────────────────────
 
       tool(
+        'add_insight',
+        'Record a learning, workaround, or pattern discovery for the evaluator to review. Call this whenever you discover something through trial-and-error that future runs should know.',
+        {
+          category: z.string().describe('e.g. "auth", "tooling", "convention-gap", "api-quirk", "dependency"'),
+          summary: z.string().describe('One-line summary of the insight'),
+          detail: z.string().describe('Full context: what was tried, what worked, why'),
+          suggestion: z.string().optional().describe('Optional: what should be updated (memory, convention, agent instructions)'),
+        },
+        h.add_insight,
+      ),
+
+      tool(
         'propose_change',
         'Propose an improvement to the Agent Host. Supports multi-file proposals. The watcher validates and opens a PR.',
         {

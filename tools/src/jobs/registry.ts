@@ -74,6 +74,7 @@ export class JobRegistry {
       features: [],
       featureLoopCount: 0,
       prMappings,
+      insights: [],
       createdAt: now,
       updatedAt: now,
     }

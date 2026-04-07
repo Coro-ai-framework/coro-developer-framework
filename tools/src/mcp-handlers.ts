@@ -1,5 +1,5 @@
 import { ToolContext, PhaseSignals } from './tools/types'
-import { FeatureItem, Job } from './jobs/types'
+import { FeatureItem, Insight, Job } from './jobs/types'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -282,6 +282,24 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       signals.escalationReason = reason
       ctx.logger.warn({ jobId: ctx.job.id, reason }, 'Job escalated')
       return text({ escalated: true, reason })
+    },
+
+    add_insight: async ({ category, summary, detail, suggestion }: {
+      category: string; summary: string; detail: string; suggestion?: string
+    }) => {
+      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const insight: Insight = {
+        phase: job.phase,
+        category,
+        summary,
+        detail,
+        ...(suggestion ? { suggestion } : {}),
+      }
+      const insights = [...(job.insights ?? []), insight]
+      await ctx.registry.updateJob(ctx.job.id, { insights })
+      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      await ctx.registry.appendLog(ctx.job.id, `[insight] ${category}: ${summary}`)
+      return text({ recorded: true, totalInsights: insights.length })
     },
 
     log: async ({ message }: { message: string }) => {

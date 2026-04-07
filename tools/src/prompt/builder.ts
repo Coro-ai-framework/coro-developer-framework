@@ -210,14 +210,32 @@ function buildJobContext(job: Job): string {
     escalationMessage: job.escalationMessage ?? null,
   }
 
-  return (
+  const parts = [
     '# Current Job\n\n' +
     'This is the job you are currently executing. ' +
     'All your actions must stay within the scope of this job.\n\n' +
     '```json\n' +
     JSON.stringify(context, null, 2) +
-    '\n```'
-  )
+    '\n```',
+  ]
+
+  if (job.insights && job.insights.length > 0) {
+    const insightLines = job.insights.map((ins, i) =>
+      `### ${i + 1}. [${ins.phase}] ${ins.category}\n` +
+      `**Summary:** ${ins.summary}\n` +
+      `**Detail:** ${ins.detail}` +
+      (ins.suggestion ? `\n**Suggestion:** ${ins.suggestion}` : ''),
+    )
+    parts.push(
+      '\n\n## Insights from Upstream Agents\n\n' +
+      'The following learnings were recorded by agents during earlier phases. ' +
+      'Review these carefully — each represents a discovery, workaround, or pattern ' +
+      'that may warrant a self-improvement proposal via `propose_change`.\n\n' +
+      insightLines.join('\n\n'),
+    )
+  }
+
+  return parts.join('')
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

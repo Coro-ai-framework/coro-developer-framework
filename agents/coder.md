@@ -104,3 +104,4 @@ When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 - **The runner auto-advances** when you finish. You do not need to call `mark_phase_complete`.
 - **Call `mcp__a5__escalate`** if anything blocks you that you cannot resolve.
 - **On persistent auth failures (401/403):** immediately escalate with the exact error. Do not retry more than twice.
+- **Call `mcp__a5__add_insight`** when you discover a workaround, hit an unexpected error, or learn something that future runs should know (e.g., auth patterns, build quirks, dependency issues).

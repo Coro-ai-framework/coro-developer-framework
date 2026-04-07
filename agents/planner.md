@@ -56,7 +56,11 @@ Include for each feature:
 
 After writing the plan, call `mcp__a5__set_features` with the ordered list of feature names. This registers the features with the job system so all downstream agents can call `get_features` to track progress.
 
-### 6. Log progress
+### 6. Record insights
+
+If you discovered anything through trial-and-error — authentication workarounds, repo slug mismatches, environment quirks, API behavior that differs from documentation — call `mcp__a5__add_insight` with the category, a one-line summary, and full context. The Evaluator will review these and decide whether to create a self-improvement proposal.
+
+### 7. Log progress
 
 Use `mcp__a5__log` to report: how many features were identified, risk distribution, any significant gaps or concerns.
 

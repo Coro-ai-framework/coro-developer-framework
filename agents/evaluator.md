@@ -43,12 +43,16 @@ For each failed test case:
 - Update `memory/MEMORY.md` index if new entries were added
 - Never overwrite existing memory — append or create new entries
 
-### 3. Propose improvements to knowledge/agents/conventions
+### 3. Review upstream insights and propose improvements
 
-If the root cause reveals a systemic gap:
-- A knowledge guide missing a translation pattern → call `mcp__a5__propose_change` with type `knowledge-update`
-- Agent instructions that consistently lead to the same failure type → call `mcp__a5__propose_change` with type `modify-agent`
-- Convention file missing a relevant rule → call `mcp__a5__propose_change` with type `convention-change`
+The job context includes an **Insights from Upstream Agents** section — learnings, workarounds, and discoveries recorded by the planner, coder, tester, and reviewer during earlier phases. Review every insight carefully:
+
+- Insights about auth workarounds, environment quirks, or tooling issues → call `mcp__a5__propose_change` with type `memory-update` to add the knowledge to `memory/known-pitfalls.md` or `memory/successful-patterns.md`
+- Insights revealing a gap in a knowledge guide → call `mcp__a5__propose_change` with type `knowledge-update`
+- Insights showing agent instructions that consistently lead to the same failure → call `mcp__a5__propose_change` with type `modify-agent`
+- Insights about missing convention rules → call `mcp__a5__propose_change` with type `convention-change`
+
+Also check your own test-result analysis for systemic gaps (same as before).
 
 Check `mcp__a5__list_proposals` first to avoid duplicates.
 
