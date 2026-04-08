@@ -1,15 +1,16 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import type { IncomingMessage } from 'http'
 
-const apiProxy = {
+const apiProxy: ProxyOptions = {
   target: 'http://localhost:3000',
   changeOrigin: true,
-  bypass(req: { headers: Record<string, string | undefined> }) {
-    // Let browser navigations (HTML requests) fall through to the SPA.
-    // Only proxy fetch/XHR calls (Accept: application/json) and SSE (text/event-stream).
+  bypass(req: IncomingMessage) {
     const accept = req.headers['accept'] ?? ''
-    if (accept.includes('text/html')) return req.url
+    if (typeof accept === 'string' && accept.includes('text/html')) {
+      return req.url
+    }
   },
 }
 

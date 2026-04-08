@@ -73,10 +73,38 @@ function CollapsibleJson({ label, data, defaultOpen = false }: { label: string; 
   )
 }
 
+const RESUMABLE_STATUSES = new Set([
+  'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge',
+])
+
 export default function JobDetail() {
   const { jobId } = useParams<{ jobId: string }>()
   const { job, loading, error, refetch } = useJob(jobId)
   const { lines, status: connStatus, lastHeartbeat } = useJobStream(jobId)
+  const [resuming, setResuming] = useState(false)
+  const [resumeError, setResumeError] = useState<string | null>(null)
+
+  const handleResume = async () => {
+    if (!jobId) return
+    setResuming(true)
+    setResumeError(null)
+    try {
+      const res = await fetch(`/jobs/${jobId}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      if (!res.ok) {
+        const data = await res.json() as { error?: string }
+        throw new Error(data.error ?? `HTTP ${res.status}`)
+      }
+      await refetch()
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : 'Resume failed')
+    } finally {
+      setResuming(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -121,14 +149,33 @@ export default function JobDetail() {
             <p className="text-xs text-zinc-500 mt-1 font-mono">{job.id}</p>
           </div>
 
-          <button
-            onClick={() => void refetch()}
-            className="px-3 py-1.5 rounded-md text-xs font-medium text-zinc-400 bg-zinc-800 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
-          >
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            {RESUMABLE_STATUSES.has(job.status) && (
+              <button
+                onClick={() => void handleResume()}
+                disabled={resuming}
+                className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {resuming ? 'Resuming...' : '▶ Resume'}
+              </button>
+            )}
+            <button
+              onClick={() => void refetch()}
+              className="px-3 py-1.5 rounded-md text-xs font-medium text-zinc-400 bg-zinc-800 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Resume error */}
+      {resumeError && (
+        <div className="mb-4 p-3 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-sm flex items-center justify-between">
+          <span>Resume failed: {resumeError}</span>
+          <button onClick={() => setResumeError(null)} className="text-rose-400 hover:text-rose-200 text-xs">dismiss</button>
+        </div>
+      )}
 
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">

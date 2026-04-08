@@ -113,7 +113,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   }
 
   const signals: PhaseSignals = {}
-  const mcpServer = createA5McpServer(toolCtx, signals)
 
   logger.info({ jobId: liveJob.id, type: liveJob.type, phase: liveJob.phase }, 'Job runner started')
 
@@ -125,8 +124,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     await registry.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
     while (!isTerminalStatus(liveJob.status)) {
-      // Reset signals for this phase
+      // Reset signals and create a fresh MCP server for each phase.
+      // Reusing the MCP server across phases can leave the transport in a
+      // broken state if the previous Claude Code subprocess exited uncleanly.
       resetSignals(signals)
+      const mcpServer = createA5McpServer(toolCtx, signals)
 
       const systemPrompt = await buildSystemPrompt(liveJob, settings, ctx.gitClient, logger)
       const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, liveJob.phase) : null
@@ -194,6 +196,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           BB_GIT_USERNAME: settings.bitbucket.coderAccount.appPassword.startsWith('ATATT')
             ? 'x-token-auth'
             : encodeURIComponent(settings.bitbucket.coderAccount.username),
+          // SDK default is 60s — agent phases run for minutes to hours. Without
+          // this, the Claude Code subprocess closes the MCP transport mid-phase,
+          // leaving all mcp__a5__* tools disconnected while built-in tools still work.
+          CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000',
         },
       }
 
@@ -370,9 +376,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     try {
       const current = await registry.getJob(liveJob.id)
       if (!current || !isTerminalStatus(current.status)) {
+        // Clear sessionId so the next resume starts a fresh Claude Code subprocess.
+        // A crash (529 overload, network error, SDK bug) leaves the MCP transport in
+        // a broken state — resuming the old session would give the agent working
+        // built-in tools but broken mcp__a5__* tools. A fresh session costs
+        // conversation context but restores full MCP connectivity.
         await registry.updateJob(liveJob.id, {
           status: STATUS_FAILED,
           escalationMessage: String(err),
+          sessionId: undefined,
         })
       }
     } catch {

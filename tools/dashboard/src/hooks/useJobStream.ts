@@ -55,8 +55,10 @@ export function useJobStream(jobId: string | undefined) {
   const [status, setStatus] = useState<ConnectionStatus>('connecting')
   const [lastHeartbeat, setLastHeartbeat] = useState<number>(Date.now())
   const eventSourceRef = useRef<EventSource | null>(null)
+  const streamEndedRef = useRef(false)
 
   const disconnect = useCallback(() => {
+    streamEndedRef.current = true
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
       eventSourceRef.current = null
@@ -68,6 +70,7 @@ export function useJobStream(jobId: string | undefined) {
 
     setLines([])
     setStatus('connecting')
+    streamEndedRef.current = false
 
     const source = new EventSource(`/jobs/${jobId}/stream`)
     eventSourceRef.current = source
@@ -90,11 +93,14 @@ export function useJobStream(jobId: string | undefined) {
     }
 
     source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) {
-        setStatus('disconnected')
-      } else {
-        setStatus('error')
-      }
+      // EventSource auto-reconnects on error. When the server closes
+      // the stream (job completed), readyState transitions to CLOSED.
+      // We must close explicitly to prevent the browser from reconnecting
+      // and replaying all log lines in a loop.
+      source.close()
+      eventSourceRef.current = null
+      streamEndedRef.current = true
+      setStatus('disconnected')
     }
 
     return () => {
