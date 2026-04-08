@@ -199,7 +199,9 @@ export class Dispatcher {
       `The developer watching this job has sent you a message:\n\n` +
       `"${message}"\n\n` +
       `Consider this guidance in your current work. If it changes your approach, ` +
-      `acknowledge it and adjust accordingly. Continue with your current phase instructions.`
+      `acknowledge it and adjust accordingly. Continue with your current phase instructions.\n\n` +
+      `If this guidance represents a reusable pattern or convention that should apply to future jobs, ` +
+      `record it via the \`add_insight\` tool so the Evaluator can review it.`
 
     const userMsg: SDKUserMessage = {
       type: 'user',
