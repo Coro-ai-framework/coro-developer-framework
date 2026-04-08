@@ -332,6 +332,29 @@ export function createServer(ctx: ServerContext): Express {
     res.json({ jobId, status: 'resuming', phase: fromPhase ?? job.phase, clearSession, streamUrl: `/jobs/${jobId}/stream` })
   })
 
+  // ── POST /jobs/:jobId/message ──────────────────────────────────────────────
+  // Send a developer message to a running agent. The dispatcher injects it
+  // into the active SDK Query via streamInput().
+
+  app.post('/jobs/:jobId/message', async (req: Request, res: Response) => {
+    const jobId = req.params['jobId'] as string
+    const body = req.body as Record<string, unknown>
+    const message = body['message']
+
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ error: 'message is required (non-empty string)' })
+      return
+    }
+
+    try {
+      await dispatcher.sendMessage(jobId, message.trim())
+      res.json({ sent: true, jobId })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.status(409).json({ error: msg, jobId })
+    }
+  })
+
   // ── POST /webhook ──────────────────────────────────────────────────────────
   // Receives BitBucket webhook events.
   //

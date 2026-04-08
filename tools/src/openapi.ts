@@ -207,6 +207,46 @@ export const openApiSpec = {
       },
     },
 
+    '/jobs/{jobId}/message': {
+      post: {
+        tags: ['jobs'],
+        summary: 'Send a message to a running agent',
+        description:
+          'Injects a developer message into the active Agent SDK query via streamInput(). ' +
+          'The message is framed as developer guidance so the agent treats it as a hint, not a new task. ' +
+          'Returns 409 if the job is not actively running (parked, failed, or complete).',
+        operationId: 'sendMessage',
+        parameters: [{ $ref: '#/components/parameters/jobId' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SendMessageInput' },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Message sent to agent',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SendMessageResponse' },
+              },
+            },
+          },
+          400: { $ref: '#/components/responses/BadRequest' },
+          409: {
+            description: 'Job is not actively running',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+
     '/webhook': {
       post: {
         tags: ['webhooks'],
@@ -492,6 +532,27 @@ export const openApiSpec = {
           received: { type: 'boolean', enum: [true] },
           source: { type: 'string', enum: ['bitbucket', 'jira'] },
           eventKey: { type: 'string', nullable: true, example: 'pullrequest:fulfilled' },
+        },
+      },
+
+      SendMessageInput: {
+        type: 'object',
+        required: ['message'],
+        properties: {
+          message: {
+            type: 'string',
+            description: 'Message text to send to the running agent',
+            example: 'Use the existing auth middleware instead of creating a new one',
+          },
+        },
+      },
+
+      SendMessageResponse: {
+        type: 'object',
+        required: ['sent', 'jobId'],
+        properties: {
+          sent: { type: 'boolean', enum: [true] },
+          jobId: { type: 'string' },
         },
       },
 

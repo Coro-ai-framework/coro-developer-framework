@@ -1,4 +1,4 @@
-import { query, type McpSdkServerConfig } from '@anthropic-ai/claude-agent-sdk'
+import { query, type McpSdkServerConfig, type Query } from '@anthropic-ai/claude-agent-sdk'
 import { mkdirSync, readFileSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
@@ -67,6 +67,16 @@ export interface RunJobOptions {
    * When set, skips `loadWorkflowConfig` from disk. Pass `null` for jobs with no workflow file.
    */
   workflowConfigOverride?: WorkflowConfig | null
+  /**
+   * Called when a real SDK Query is created. The dispatcher uses this to store
+   * a reference for human message injection via Query.streamInput().
+   */
+  onQueryStart?: (jobId: string, query: Query) => void
+  /**
+   * Called when the SDK Query's for-await loop exits (phase done, signal, or error).
+   * The dispatcher uses this to remove the Query reference.
+   */
+  onQueryEnd?: (jobId: string) => void
 }
 
 // ── Runner ────────────────────────────────────────────────────────────────────
@@ -222,6 +232,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             options: queryOptions as Parameters<typeof query>[0]['options'],
           })
 
+      // Register the Query reference so the dispatcher can inject human
+      // messages via streamInput(). Only real SDK Query objects (not test
+      // mocks) have the streamInput method.
+      const isRealQuery = !options?.queryImpl && typeof (queryStream as Query).streamInput === 'function'
+      if (isRealQuery) {
+        options?.onQueryStart?.(liveJob.id, queryStream as Query)
+      }
+
+      try {
       for await (const raw of queryStream) {
         const message = raw as Record<string, unknown>
         const eventType = String(message['type'] ?? '')
@@ -300,6 +319,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         // phaseComplete is an optional hint — the runner auto-advances anyway.
         if (signals.phaseComplete || signals.nextPhase || signals.awaitingEvent || signals.escalated) {
           break
+        }
+      }
+      } finally {
+        if (isRealQuery) {
+          options?.onQueryEnd?.(liveJob.id)
         }
       }
 

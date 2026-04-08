@@ -1,3 +1,4 @@
+import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { JobInput, STATUS_CODING, STATUS_COMPLETE, STATUS_FAILED, isParkingStatus } from './types'
 import { runJob, RunnerContext } from './runner'
 
@@ -13,6 +14,7 @@ import { runJob, RunnerContext } from './runner'
 export class Dispatcher {
   private readonly activeJobs = new Set<string>()
   private readonly eventQueue = new Map<string, WebhookEvent[]>()
+  private readonly activeQueries = new Map<string, Query>()
 
   constructor(private readonly ctx: RunnerContext) {}
 
@@ -179,6 +181,43 @@ export class Dispatcher {
     this.fireAndForget(jobId)
   }
 
+  // ── Human message injection ─────────────────────────────────────────────────
+
+  /**
+   * Send a developer message to a running agent via Query.streamInput().
+   * The message is framed so the agent treats it as guidance, not a new task.
+   * Throws if the job is not actively running (parked, failed, complete).
+   */
+  async sendMessage(jobId: string, message: string): Promise<void> {
+    const q = this.activeQueries.get(jobId)
+    if (!q) {
+      throw new Error('Job is not actively running — cannot send message')
+    }
+
+    const framedText =
+      `[DEVELOPER MESSAGE]\n` +
+      `The developer watching this job has sent you a message:\n\n` +
+      `"${message}"\n\n` +
+      `Consider this guidance in your current work. If it changes your approach, ` +
+      `acknowledge it and adjust accordingly. Continue with your current phase instructions.`
+
+    const userMsg: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: framedText }] },
+      parent_tool_use_id: null,
+    }
+
+    try {
+      await q.streamInput((async function* () { yield userMsg })())
+    } catch (err) {
+      this.ctx.logger.warn({ jobId, err }, 'streamInput failed — query may have ended')
+      throw new Error('Failed to inject message — the agent query may have just finished')
+    }
+
+    await this.ctx.registry.appendLog(jobId, `[human] ${message}`)
+    this.ctx.logger.info({ jobId }, 'Developer message injected into running agent')
+  }
+
   // ── Fire-and-forget runner ──────────────────────────────────────────────────
 
   private fireAndForget(jobId: string): void {
@@ -193,7 +232,10 @@ export class Dispatcher {
       .getJob(jobId)
       .then(job => {
         if (!job) throw new Error(`Job not found: ${jobId}`)
-        return runJob(job, this.ctx)
+        return runJob(job, this.ctx, {
+          onQueryStart: (id, q) => this.activeQueries.set(id, q),
+          onQueryEnd: (id) => this.activeQueries.delete(id),
+        })
       })
       .catch(err => {
         this.ctx.logger.error({ err, jobId }, 'Runner crashed unexpectedly')

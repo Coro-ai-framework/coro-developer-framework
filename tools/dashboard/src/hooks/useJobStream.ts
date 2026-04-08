@@ -19,6 +19,7 @@ export type LogLineType =
   | 'insight'
   | 'session_reset'
   | 'webhook'
+  | 'human'
   | 'system'
 
 const TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+/
@@ -35,6 +36,7 @@ export function classifyLine(raw: string): { content: string; lineType: LogLineT
   if (content.startsWith('[insight]'))      return { content, lineType: 'insight' }
   if (content.startsWith('[session-reset]'))return { content, lineType: 'session_reset' }
   if (content.startsWith('[webhook]'))      return { content, lineType: 'webhook' }
+  if (content.startsWith('[human]'))        return { content, lineType: 'human' }
   if (content.startsWith('[event:'))        return { content, lineType: 'system' }
   if (content.startsWith('Phase advanced')) return { content, lineType: 'phase' }
   if (content.startsWith('Runner started')) return { content, lineType: 'phase' }

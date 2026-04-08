@@ -18,6 +18,7 @@ const LINE_STYLES: Record<LogLineType, { textClass: string; icon: string; dimmed
   insight:        { textClass: 'text-violet-300', icon: '' },
   session_reset:  { textClass: 'text-amber-400', icon: '' },
   webhook:        { textClass: 'text-amber-400', icon: '' },
+  human:          { textClass: 'text-sky-300', icon: '' },
   system:         { textClass: 'text-zinc-600', icon: '', dimmed: true },
 }
 
@@ -63,6 +64,16 @@ function LineContent({ line }: { line: LogLine }) {
     )
   }
 
+  if (line.lineType === 'human') {
+    const msg = content.replace(/^\[human\]\s*/, '')
+    return (
+      <div className="bg-sky-950/20 border-l-2 border-sky-500 pl-3 py-1 my-0.5 rounded-r">
+        <span className="text-sky-400 text-xs font-medium mr-2">Developer</span>
+        <span className={style.textClass}>{msg}</span>
+      </div>
+    )
+  }
+
   if (line.lineType === 'tool_use') {
     const match = content.match(/^→ (\S+)(.*)/)
     if (match) {
@@ -103,7 +114,7 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
   }
 
   const TOOL_TYPES: LogLineType[] = ['tool_use', 'tool_summary', 'tool_progress', 'thinking', 'system']
-  const MAIN_TYPES: LogLineType[] = ['text', 'phase', 'error', 'result', 'insight', 'session_reset', 'webhook']
+  const MAIN_TYPES: LogLineType[] = ['text', 'phase', 'error', 'result', 'insight', 'session_reset', 'webhook', 'human']
 
   const filteredLines = lines.filter(line => {
     if (filter === 'all') return true

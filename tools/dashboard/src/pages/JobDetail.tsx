@@ -77,12 +77,19 @@ const RESUMABLE_STATUSES = new Set([
   'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge',
 ])
 
+const NON_RUNNING_STATUSES = new Set([
+  'complete', 'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge', 'queued',
+])
+
 export default function JobDetail() {
   const { jobId } = useParams<{ jobId: string }>()
   const { job, loading, error, refetch } = useJob(jobId)
   const { lines, status: connStatus, lastHeartbeat } = useJobStream(jobId)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
+  const [messageText, setMessageText] = useState('')
+  const [sendingMessage, setSendingMessage] = useState(false)
+  const [messageError, setMessageError] = useState<string | null>(null)
 
   const handleResume = async () => {
     if (!jobId) return
@@ -105,6 +112,30 @@ export default function JobDetail() {
       setResuming(false)
     }
   }
+
+  const handleSendMessage = async () => {
+    if (!jobId || !messageText.trim()) return
+    setSendingMessage(true)
+    setMessageError(null)
+    try {
+      const res = await fetch(`/jobs/${jobId}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: messageText.trim() }),
+      })
+      if (!res.ok) {
+        const data = await res.json() as { error?: string }
+        throw new Error(data.error ?? `HTTP ${res.status}`)
+      }
+      setMessageText('')
+    } catch (err) {
+      setMessageError(err instanceof Error ? err.message : 'Failed to send')
+    } finally {
+      setSendingMessage(false)
+    }
+  }
+
+  const canSendMessage = job && !NON_RUNNING_STATUSES.has(job.status)
 
   if (loading) {
     return (
@@ -229,6 +260,38 @@ export default function JobDetail() {
         </div>
         <LogViewer lines={lines} />
       </div>
+
+      {/* Message input */}
+      {canSendMessage && (
+        <div className="mb-5">
+          {messageError && (
+            <div className="mb-2 p-2 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-xs flex items-center justify-between">
+              <span>{messageError}</span>
+              <button onClick={() => setMessageError(null)} className="text-rose-400 hover:text-rose-200 text-xs ml-2">dismiss</button>
+            </div>
+          )}
+          <form
+            onSubmit={(e) => { e.preventDefault(); void handleSendMessage() }}
+            className="flex gap-2"
+          >
+            <input
+              type="text"
+              value={messageText}
+              onChange={(e) => setMessageText(e.target.value)}
+              placeholder="Send a message to the agent..."
+              disabled={sendingMessage}
+              className="flex-1 px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 disabled:opacity-50 transition-colors"
+            />
+            <button
+              type="submit"
+              disabled={sendingMessage || !messageText.trim()}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+            >
+              {sendingMessage ? 'Sending...' : 'Send'}
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* Collapsible sections */}
       <div className="space-y-3">
