@@ -138,6 +138,21 @@ export function isTerminalStatus(status: string): boolean {
 }
 
 /**
+ * Has the runner stopped processing this job?
+ * Includes terminal (complete) and stopped-with-reason (failed, escalated).
+ * Used by SSE to close the log stream — no more logs will be produced until
+ * a manual resume. Distinct from isParkingStatus (which covers awaiting-*
+ * states where the stream may stay open for webhook-driven resume).
+ */
+export function isStoppedStatus(status: string): boolean {
+  return (
+    status === STATUS_COMPLETE ||
+    status === STATUS_FAILED ||
+    status === STATUS_ESCALATED
+  )
+}
+
+/**
  * Can this job be woken up by an external event?
  * Includes explicit parking states AND escalated/failed — because a webhook
  * event (comment, approval, merge) may provide exactly the context the agent

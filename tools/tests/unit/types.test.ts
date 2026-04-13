@@ -9,6 +9,7 @@ import {
   STATUS_AWAITING_PR_MERGE,
   STATUS_CODING,
   isTerminalStatus,
+  isStoppedStatus,
   isParkingStatus,
   defaultWorkflowPath,
   jobParam,
@@ -61,6 +62,41 @@ describe('isTerminalStatus', () => {
     '',
   ])('returns false for non-terminal status "%s"', (status) => {
     expect(isTerminalStatus(status)).toBe(false)
+  })
+})
+
+// ── isStoppedStatus ──────────────────────────────────────────────────────────
+
+describe('isStoppedStatus', () => {
+  it.each([
+    [STATUS_COMPLETE, true],
+    [STATUS_FAILED, true],
+    [STATUS_ESCALATED, true],
+  ])('returns true for stopped status "%s"', (status, expected) => {
+    expect(isStoppedStatus(status)).toBe(expected)
+  })
+
+  it.each([
+    STATUS_QUEUED,
+    STATUS_AWAITING_PLAN_APPROVAL,
+    STATUS_AWAITING_PR_MERGE,
+    STATUS_CODING,
+    'custom-status',
+    '',
+  ])('returns false for non-stopped status "%s"', (status) => {
+    expect(isStoppedStatus(status)).toBe(false)
+  })
+
+  it('is a superset of isTerminalStatus', () => {
+    const all = [
+      STATUS_QUEUED, STATUS_COMPLETE, STATUS_ESCALATED, STATUS_FAILED,
+      STATUS_AWAITING_PLAN_APPROVAL, STATUS_AWAITING_PR_MERGE, STATUS_CODING,
+    ]
+    for (const s of all) {
+      if (isTerminalStatus(s)) {
+        expect(isStoppedStatus(s)).toBe(true)
+      }
+    }
   })
 })
 

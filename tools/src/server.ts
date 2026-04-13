@@ -5,7 +5,7 @@ import swaggerUi from 'swagger-ui-express'
 import { Logger } from 'pino'
 import { Dispatcher } from './jobs/dispatcher'
 import { JobRegistry } from './jobs/registry'
-import { JobInput, JobType, isTerminalStatus } from './jobs/types'
+import { JobInput, JobType, isStoppedStatus } from './jobs/types'
 import { Settings } from './config/settings'
 import { openApiSpec } from './openapi'
 
@@ -282,7 +282,7 @@ export function createServer(ctx: ServerContext): Express {
           res.end()
           return
         }
-        if (isTerminalStatus(current.status)) {
+        if (isStoppedStatus(current.status)) {
           clearInterval(pollInterval)
           clearInterval(heartbeatInterval)
           res.end()
