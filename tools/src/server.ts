@@ -217,6 +217,7 @@ export function createServer(ctx: ServerContext): Express {
       currentFeature: j.currentFeature,
       triggerSource: j.triggerSource,
       prCount: j.prMappings.length,
+      totalCostUsd: j.tokenUsage?.totalCostUsd ?? null,
       createdAt: j.createdAt,
       updatedAt: j.updatedAt,
     }))

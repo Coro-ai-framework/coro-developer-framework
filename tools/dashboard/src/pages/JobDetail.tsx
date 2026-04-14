@@ -5,6 +5,7 @@ import { useJobStream } from '../hooks/useJobStream'
 import LogViewer from '../components/LogViewer'
 import ConnectionIndicator from '../components/ConnectionIndicator'
 import StatusBadge from '../components/StatusBadge'
+import type { TokenUsage, PhaseUsage } from '../types'
 
 function timeAgo(iso: string): string {
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
@@ -69,6 +70,105 @@ function CollapsibleJson({ label, data, defaultOpen = false }: { label: string; 
           {JSON.stringify(data, null, 2)}
         </pre>
       )}
+    </div>
+  )
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return n.toLocaleString()
+}
+
+function formatCost(usd: number): string {
+  if (usd === 0) return '$0.00'
+  if (usd < 0.01) return `$${usd.toFixed(4)}`
+  return `$${usd.toFixed(2)}`
+}
+
+function formatDuration(ms: number): string {
+  if (ms === 0) return '—'
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return `${hours}h ${remainingMinutes}m`
+}
+
+function TokenUsageCard({ usage }: { usage: TokenUsage }) {
+  const totalTokens = usage.inputTokens + usage.outputTokens
+  const cacheHitRate = usage.inputTokens > 0
+    ? ((usage.cacheReadInputTokens / (usage.inputTokens + usage.cacheCreationInputTokens)) * 100)
+    : 0
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+      <h3 className="text-xs font-medium text-zinc-400 uppercase tracking-wider mb-3">Token Usage</h3>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div>
+          <div className="text-xs text-zinc-500">Total Tokens</div>
+          <div className="text-lg font-semibold text-zinc-100">{formatTokens(totalTokens)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-zinc-500">Cost</div>
+          <div className="text-lg font-semibold text-emerald-400">{formatCost(usage.totalCostUsd)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-zinc-500">Input / Output</div>
+          <div className="text-sm font-medium text-zinc-200">
+            {formatTokens(usage.inputTokens)} <span className="text-zinc-600">/</span> {formatTokens(usage.outputTokens)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-zinc-500">Cache Hit Rate</div>
+          <div className="text-sm font-medium text-zinc-200">
+            {cacheHitRate > 0 ? `${cacheHitRate.toFixed(0)}%` : '—'}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
+  if (phases.length === 0) return null
+
+  return (
+    <div className="rounded-lg border border-zinc-800 overflow-hidden">
+      <div className="px-3 py-2 bg-zinc-900">
+        <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Usage by Phase</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-zinc-800 text-zinc-500">
+              <th className="text-left px-3 py-2 font-medium">Phase</th>
+              <th className="text-right px-3 py-2 font-medium">Input</th>
+              <th className="text-right px-3 py-2 font-medium">Output</th>
+              <th className="text-right px-3 py-2 font-medium">Cost</th>
+              <th className="text-right px-3 py-2 font-medium">Duration</th>
+              <th className="text-right px-3 py-2 font-medium">Turns</th>
+              <th className="text-left px-3 py-2 font-medium">Model</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-800/50">
+            {phases.map((p, i) => (
+              <tr key={`${p.phase}-${i}`} className="text-zinc-300 hover:bg-zinc-800/30 transition-colors">
+                <td className="px-3 py-2 font-medium text-zinc-200">{p.phase}</td>
+                <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.inputTokens)}</td>
+                <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.outputTokens)}</td>
+                <td className="text-right px-3 py-2 tabular-nums text-emerald-400">{formatCost(p.costUsd)}</td>
+                <td className="text-right px-3 py-2 tabular-nums">{formatDuration(p.durationMs)}</td>
+                <td className="text-right px-3 py-2 tabular-nums">{p.numTurns}</td>
+                <td className="px-3 py-2 text-zinc-400 truncate max-w-[140px]">{p.model}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -228,6 +328,13 @@ export default function JobDetail() {
         </div>
       </div>
 
+      {/* Token usage */}
+      {job.tokenUsage && (job.tokenUsage.inputTokens > 0 || job.tokenUsage.outputTokens > 0) && (
+        <div className="mb-5">
+          <TokenUsageCard usage={job.tokenUsage} />
+        </div>
+      )}
+
       {/* Features */}
       {job.features?.length > 0 && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-5">
@@ -290,6 +397,13 @@ export default function JobDetail() {
               {sendingMessage ? 'Sending...' : 'Send'}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Phase usage breakdown */}
+      {job.phaseUsage && job.phaseUsage.length > 0 && (
+        <div className="mb-5">
+          <PhaseUsageTable phases={job.phaseUsage} />
         </div>
       )}
 

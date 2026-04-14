@@ -17,6 +17,7 @@ import {
   jobRepoSlug,
   jobServiceName,
   jobJiraTicketId,
+  emptyTokenUsage,
   type Job,
 } from '../../src/jobs/types'
 
@@ -36,6 +37,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     featureLoopCount: 0,
     prMappings: [],
     insights: [],
+    tokenUsage: emptyTokenUsage(),
+    phaseUsage: [],
     createdAt: '2026-04-04T00:00:00Z',
     updatedAt: '2026-04-04T00:00:00Z',
     ...overrides,

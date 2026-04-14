@@ -85,6 +85,9 @@ export default function JobList() {
                 <div className="flex flex-col items-end gap-1.5 shrink-0">
                   <StatusBadge status={job.status} />
                   <div className="flex items-center gap-2 text-xs text-zinc-500">
+                    {typeof job.totalCostUsd === 'number' && job.totalCostUsd > 0 && (
+                      <span className="text-emerald-500">${job.totalCostUsd < 0.01 ? job.totalCostUsd.toFixed(4) : job.totalCostUsd.toFixed(2)}</span>
+                    )}
                     {job.prCount > 0 && (
                       <span>{job.prCount} PR{job.prCount !== 1 ? 's' : ''}</span>
                     )}

@@ -311,8 +311,8 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     propose_change: async (args: {
       type:
         | 'new-tool' | 'modify-tool' | 'new-workflow' | 'modify-workflow'
-        | 'new-agent' | 'modify-agent' | 'convention-change' | 'memory-update'
-        | 'knowledge-update' | 'source-change'
+        | 'new-agent' | 'modify-agent' | 'memory-update' | 'source-change'
+        | 'skill-create' | 'skill-update' | 'claude-md-update'
       title: string
       rationale: string
       description: string

@@ -7,6 +7,7 @@ import {
   STATUS_FAILED,
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_PLAN_APPROVAL,
+  emptyTokenUsage,
 } from '../../src/jobs/types'
 import type { Job } from '../../src/jobs/types'
 import type { WorkflowConfig } from '../../src/workflow-parser'
@@ -49,6 +50,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     featureLoopCount: 0,
     prMappings: [],
     insights: [],
+    tokenUsage: emptyTokenUsage(),
+    phaseUsage: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     ...overrides,

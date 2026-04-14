@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
 import { buildSystemPrompt } from '../../src/prompt/builder'
-import { JobType, type Job } from '../../src/jobs/types'
+import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
 import type { GitClient } from '../../src/clients/git'
 import type { Settings } from '../../src/config/settings'
 
@@ -25,6 +25,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     featureLoopCount: 0,
     prMappings: [],
     insights: [],
+    tokenUsage: emptyTokenUsage(),
+    phaseUsage: [],
     createdAt: '2026-04-04T00:00:00Z',
     updatedAt: '2026-04-04T00:00:00Z',
     ...overrides,

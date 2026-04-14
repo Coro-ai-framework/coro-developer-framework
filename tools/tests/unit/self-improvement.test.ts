@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
 import path from 'path'
 import { proposeChange, listProposals } from '../../src/tools/self-improvement'
-import { JobType, type Job } from '../../src/jobs/types'
+import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -27,6 +27,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     featureLoopCount: 0,
     prMappings: [],
     insights: [],
+    tokenUsage: emptyTokenUsage(),
+    phaseUsage: [],
     createdAt: '2026-04-04T00:00:00Z',
     updatedAt: '2026-04-04T00:00:00Z',
     ...overrides,

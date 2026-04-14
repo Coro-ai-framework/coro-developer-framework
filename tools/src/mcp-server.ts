@@ -286,8 +286,8 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         {
           type: z.enum([
             'new-tool', 'modify-tool', 'new-workflow', 'modify-workflow',
-            'new-agent', 'modify-agent', 'convention-change', 'memory-update',
-            'knowledge-update', 'source-change',
+            'new-agent', 'modify-agent', 'memory-update', 'source-change',
+            'skill-create', 'skill-update', 'claude-md-update',
           ]),
           title: z.string(),
           rationale: z.string(),

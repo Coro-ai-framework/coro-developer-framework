@@ -38,6 +38,33 @@ export interface FeatureItem {
   loopCount: number
 }
 
+// ── Token usage tracking ─────────────────────────────────────────────────────
+
+/** Accumulated API token usage for a job, updated live during execution. */
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  totalCostUsd: number
+}
+
+/** Snapshot of usage for a single completed phase. */
+export interface PhaseUsage {
+  phase: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUsd: number
+  durationMs: number
+  durationApiMs: number
+  numTurns: number
+  model: string
+  /** Per-model breakdown when multiple models were used (e.g. subagents). */
+  modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>
+}
+
 // ── Insight tracking ─────────────────────────────────────────────────────────
 
 /** A learning or workaround discovered by any agent during execution. */
@@ -78,6 +105,11 @@ export interface Job {
 
   /** Accumulated learnings from all agents. The evaluator reviews these and decides what to propose. */
   insights: Insight[]
+
+  /** Running token usage totals — updated incrementally during execution. */
+  tokenUsage: TokenUsage
+  /** Per-phase usage snapshots — appended when each phase completes. */
+  phaseUsage: PhaseUsage[]
 
   /**
    * Agent SDK session ID for this job. Used to resume conversations
@@ -129,6 +161,18 @@ export interface JobInput {
   type: 'migration' | 'feature' | 'self-update'
   triggerSource?: 'cli' | 'jira' | 'internal'
   params: Record<string, unknown>
+}
+
+// ── Token usage helpers ───────────────────────────────────────────────────────
+
+export function emptyTokenUsage(): TokenUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    totalCostUsd: 0,
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

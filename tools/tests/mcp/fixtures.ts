@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 import type { ChildProcess } from 'child_process'
-import { JobType, STATUS_QUEUED } from '../../src/jobs/types'
+import { JobType, STATUS_QUEUED, emptyTokenUsage } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
 import type { BitBucketClient } from '../../src/clients/bitbucket'
 import type { LokiClient } from '../../src/clients/loki'
@@ -22,6 +22,8 @@ export function makeMockJob(overrides: Record<string, unknown> = {}) {
     featureLoopCount: 0,
     prMappings: [],
     insights: [],
+    tokenUsage: emptyTokenUsage(),
+    phaseUsage: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     ...overrides,

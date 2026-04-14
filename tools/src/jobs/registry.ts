@@ -6,6 +6,7 @@ import {
   STATUS_QUEUED,
   PrMapping,
   defaultWorkflowPath,
+  emptyTokenUsage,
 } from './types'
 import { loadWorkflowConfig, resolveInitialPhase, getPhaseConfig } from '../workflow-parser'
 
@@ -75,6 +76,8 @@ export class JobRegistry {
       featureLoopCount: 0,
       prMappings,
       insights: [],
+      tokenUsage: emptyTokenUsage(),
+      phaseUsage: [],
       createdAt: now,
       updatedAt: now,
     }

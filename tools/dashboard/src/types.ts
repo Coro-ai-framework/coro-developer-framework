@@ -1,3 +1,25 @@
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  totalCostUsd: number
+}
+
+export interface PhaseUsage {
+  phase: string
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  costUsd: number
+  durationMs: number
+  durationApiMs: number
+  numTurns: number
+  model: string
+  modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>
+}
+
 export interface JobSummary {
   id: string
   type: string
@@ -7,6 +29,7 @@ export interface JobSummary {
   currentFeature: string | null
   triggerSource: string
   prCount: number
+  totalCostUsd: number | null
   createdAt: string
   updatedAt: string
 }
@@ -46,6 +69,8 @@ export interface Job {
   featureLoopCount: number
   prMappings: PrMapping[]
   insights: Insight[]
+  tokenUsage?: TokenUsage
+  phaseUsage?: PhaseUsage[]
   sessionId?: string
   createdAt: string
   updatedAt: string
