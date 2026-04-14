@@ -1,0 +1,128 @@
+# AI Agent Platform: High-Level Overview
+
+**Audience:** Anyone who wants to understand how the system works  
+**Last updated:** 2026-04-14
+
+---
+
+## What is this?
+
+An internal AI agent platform that automates engineering workflows — currently **.NET-to-Go service migration** and **feature implementation** in any language. New workflows and languages can be added without infrastructure changes.
+
+The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven by a lightweight **Agent Host Service** that manages jobs and tools. The key design principle:
+
+> **Markdown files are the intelligence. TypeScript is just the plumbing.**  
+> All workflow logic, decision-making, and accumulated knowledge live in Markdown files. The infrastructure simply runs phases, provides tools, and stores state.
+
+---
+
+## How it works
+
+```
+  Developer runs CLI command          Jira ticket assigned          BitBucket webhook
+  (a5 migrate ... / a5 feature ...)   to AI agent                   (PR merged, comment, etc.)
+              │                              │                              │
+              └──────────────────────────────┼──────────────────────────────┘
+                                             ▼
+                                    ┌─────────────────┐
+                                    │   Agent Host     │  TypeScript service (always running)
+                                    │   Service        │  Receives triggers, manages jobs
+                                    └────────┬────────┘
+                                             │
+                          ┌──────────────────┼──────────────────┐
+                          ▼                  ▼                  ▼
+                   ┌────────────┐    ┌─────────────┐    ┌─────────────────┐
+                   │   Redis    │    │  Claude SDK  │    │  Markdown Files │
+                   │ Job state  │    │  Runs agents │    │  (the brains)   │
+                   └────────────┘    └─────────────┘    └─────────────────┘
+```
+
+1. A **trigger** starts a job — CLI command, Jira ticket, or webhook event.
+2. The Agent Host creates a **Job** and looks up the matching **Workflow** (a Markdown file with YAML config defining the sequence of phases).
+3. For each phase, the Host assembles a prompt from the relevant Markdown files — agent instructions, coding conventions, domain knowledge, and accumulated memory — then hands it to Claude.
+4. Claude executes the phase: reading code, writing code, calling tools (BitBucket, Loki, Jira, etc.), and making decisions.
+5. When a job needs to wait for something external (e.g. a PR review), it **parks** in Redis and resumes automatically when the webhook arrives.
+
+---
+
+## The intelligence layer
+
+All agent behavior is defined in Markdown files, organized into five layers:
+
+| Layer | What it contains | How it changes |
+|-------|-----------------|----------------|
+| **Agents** (`agents/`) | Step-by-step procedures for each role (coder, tester, reviewer, etc.) | Agents can propose updates via PR |
+| **Workflows** (`workflows/`) | Phase sequences, agent assignments, which knowledge/conventions to load | Humans edit directly |
+| **Knowledge** (`knowledge/`) | Domain-specific guides (e.g. migration coding patterns, testing methodology) | Agents can propose updates via PR |
+| **Conventions** (`conventions/`) | Language-specific coding standards (Go, .NET, etc.) | Humans edit, agents can propose |
+| **Memory** (`memory/`) | Lessons learned from past jobs — pitfalls, successful patterns, PR feedback | Grows automatically, reviewed via PR |
+
+Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript. It becomes specialized through the knowledge and conventions injected into its context at runtime.
+
+---
+
+## Workflows
+
+### Migration (.NET → Go)
+
+```
+Analysis → Planning → Repo Setup → [Code → Review → Test → Evaluate] → Report
+                                     └──── repeats per feature ────┘
+```
+
+- **Analyzer** extracts endpoints, models, and dependencies from the .NET codebase
+- **Planner** groups work into features, orders by risk and dependencies
+- **Coder** implements each feature in Go, opens a PR
+- **Reviewer** posts a structured code review (AI agent + human approval required)
+- **Tester** runs comparison tests against the staging .NET service
+- **Evaluator** decides: fix needed? next feature? all done?
+
+### Feature implementation
+
+```
+[Spec Writing] → Planning → [Code → Review → Test → Evaluate]
+```
+
+Same agents, different knowledge modules. Triggered by CLI or Jira ticket. Automatically detects the repo's language and loads the right conventions.
+
+---
+
+## Key concepts
+
+**Jobs park, not poll.** When a job waits for a PR merge or human review, it saves state to Redis and shuts down. When the webhook arrives, it resumes exactly where it left off. Zero CPU while waiting.
+
+**Self-improvement.** Agents record insights during their work. The Evaluator reviews all insights at the end and can propose changes to the Markdown files (memory, knowledge, conventions). Every proposal goes through a PR — humans always approve before changes take effect.
+
+**Language-agnostic.** Supporting a new language means adding one convention file. No infrastructure changes.
+
+**Two BitBucket accounts.** `@a5-coder-agent` (writes code, opens PRs) and `@a5-reviewer-agent` (reviews, approves, merges). They show up in PRs like normal team members.
+
+**Concurrent jobs.** Multiple developers can run workflows simultaneously. Each job has isolated working directories and state.
+
+---
+
+## Tools available to agents
+
+Agents have access to ~30 domain-specific tools plus standard file/shell operations:
+
+- **BitBucket** — create repos, open PRs, post reviews, merge
+- **Observability** — query Loki logs and Tempo traces
+- **Jira** — read tickets, post comments, transition issues
+- **Testing** — build services, run comparison tests
+- **Job control** — manage phases, park/resume, escalate to humans
+- **Self-improvement** — record insights, propose changes to agent knowledge
+
+---
+
+## Deployment
+
+- **Local dev:** Docker Compose (Agent Host + Redis + ngrok for webhooks)
+- **Production:** Kubernetes with managed Redis, stable ingress URL for webhooks
+
+Moving between environments only requires updating webhook URLs and providing credentials — no code changes.
+
+---
+
+## In one sentence
+
+AI agents — defined entirely in Markdown — autonomously plan, code, test, review, and ship features through structured workflows, learning and improving from every job they run, with humans always in the approval loop.

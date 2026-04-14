@@ -1,4 +1,4 @@
-# A5 Labs — AI Agent Platform: Architecture Overview
+# AI Agent Platform: Architecture Overview
 
 **Audience:** Engineers, Stakeholders, Engineering Managers
 **Status:** Implementation in progress
@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-A5 Labs is building an internal AI agent platform to automate engineering workflows. Two workflows are currently defined: .NET-to-Go service migration and feature implementation in any language. The platform is designed to grow: new workflows, new languages, and new agents drop in without requiring infrastructure changes.
+We are building an internal AI agent platform to automate engineering workflows. Two workflows are currently defined: .NET-to-Go service migration and feature implementation in any language. The platform is designed to grow: new workflows, new languages, and new agents drop in without requiring infrastructure changes.
 
 The platform uses the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) as its reasoning engine, orchestrated by a purpose-built **Agent Host Service** that receives events, manages job state, and drives agents through structured workflows defined as Markdown files.
 
@@ -142,14 +142,16 @@ The central service. Always running. Key responsibilities:
 
 The intelligence layer is the collection of Markdown files that define how agents think and act. It is organized into five tiers with different volatility and update paths:
 
-| Layer | Directory | Volatility | Updated by |
-|-------|-----------|------------|-----------|
-| Root instructions | `CLAUDE.md` | Rarely | Human developers |
-| Workflows | `workflows/` | Rarely | Human developers |
-| Agents | `agents/` | Occasionally | Evaluator/PR Reviewer → propose_change → PR |
-| Knowledge modules | `knowledge/` | Occasionally | Agents → propose_change → PR |
-| Conventions | `conventions/` | Rarely | Human developers, agents → PR |
-| Memory | `memory/` | Frequently | Agents → direct write → watcher PR |
+
+| Layer             | Directory      | Volatility   | Updated by                                  |
+| ----------------- | -------------- | ------------ | ------------------------------------------- |
+| Root instructions | `CLAUDE.md`    | Rarely       | Human developers                            |
+| Workflows         | `workflows/`   | Rarely       | Human developers                            |
+| Agents            | `agents/`      | Occasionally | Evaluator/PR Reviewer → propose_change → PR |
+| Knowledge modules | `knowledge/`   | Occasionally | Agents → propose_change → PR                |
+| Conventions       | `conventions/` | Rarely       | Human developers, agents → PR               |
+| Memory            | `memory/`      | Frequently   | Agents → direct write → watcher PR          |
+
 
 All changes to the intelligence layer go through a PR for human review. No agent can silently modify how other agents behave.
 
@@ -157,26 +159,30 @@ All changes to the intelligence layer go through a PR for human review. No agent
 
 The Agent SDK (`@anthropic-ai/claude-agent-sdk`) replaces direct Claude API usage. Key capabilities:
 
-| Feature | How it's used |
-|---------|--------------|
-| `query()` | Single call per phase — SDK handles the full tool-use loop, retries, and message history |
-| Built-in tools | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep` — no custom filesystem/shell tools needed |
-| `createSdkMcpServer()` | In-process MCP server for domain tools (BitBucket, Loki, Jira, etc.) |
-| `tool()` + Zod | Type-safe tool definitions with schema validation |
-| Subagents | Workflow YAML defines per-phase subagents (e.g. code-reviewer, test-runner) that can run in parallel |
-| `permissionMode: 'bypassPermissions'` | Headless operation for automated workflows |
+
+| Feature                               | How it's used                                                                                        |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `query()`                             | Single call per phase — SDK handles the full tool-use loop, retries, and message history             |
+| Built-in tools                        | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep` — no custom filesystem/shell tools needed            |
+| `createSdkMcpServer()`                | In-process MCP server for domain tools (BitBucket, Loki, Jira, etc.)                                 |
+| `tool()` + Zod                        | Type-safe tool definitions with schema validation                                                    |
+| Subagents                             | Workflow YAML defines per-phase subagents (e.g. code-reviewer, test-runner) that can run in parallel |
+| `permissionMode: 'bypassPermissions'` | Headless operation for automated workflows                                                           |
+
 
 #### Redis Job Registry
 
 Redis stores job metadata (not conversation history — the SDK manages that):
 
-| Key | Type | Contains |
-|-----|------|---------|
-| `job:{jobId}` | String (JSON) | Job metadata: status, phase, params, features[], insights[], featureLoopCount, PR mappings, timestamps |
-| `job:{jobId}:log` | List | Log lines streamed to the CLI |
-| `pr:{prId}:job` | String | Maps BitBucket PR ID → jobId |
-| `jira:{ticketId}:job` | String | Maps Jira ticket ID → jobId |
-| `repo:{repoSlug}:jobs` | Set | All job IDs associated with a repo |
+
+| Key                    | Type          | Contains                                                                                               |
+| ---------------------- | ------------- | ------------------------------------------------------------------------------------------------------ |
+| `job:{jobId}`          | String (JSON) | Job metadata: status, phase, params, features[], insights[], featureLoopCount, PR mappings, timestamps |
+| `job:{jobId}:log`      | List          | Log lines streamed to the CLI                                                                          |
+| `pr:{prId}:job`        | String        | Maps BitBucket PR ID → jobId                                                                           |
+| `jira:{ticketId}:job`  | String        | Maps Jira ticket ID → jobId                                                                            |
+| `repo:{repoSlug}:jobs` | Set           | All job IDs associated with a repo                                                                     |
+
 
 Jobs survive Agent Host restarts because all state is in Redis and the shared volume.
 
@@ -191,10 +197,12 @@ Two directories on the shared volume:
 
 Two dedicated accounts give agents real BitBucket identities:
 
-| Account | BitBucket role | Used for |
-|---------|---------------|---------|
-| `@a5-coder-agent` | Developer | Creating repos, branches, commits; opening PRs; responding to review comments |
+
+| Account              | BitBucket role        | Used for                                                                           |
+| -------------------- | --------------------- | ---------------------------------------------------------------------------------- |
+| `@a5-coder-agent`    | Developer             | Creating repos, branches, commits; opening PRs; responding to review comments      |
 | `@a5-reviewer-agent` | Reviewer / Maintainer | Posting code reviews; approving PRs; triggering merges; monitoring comment threads |
+
 
 Human developers see these accounts in PRs and can interact with them normally.
 
@@ -253,11 +261,13 @@ overrides:
 
 Key metadata fields on each phase:
 
-| Field | Purpose |
-|-------|---------|
-| `knowledge` | Array of knowledge module paths to inject into the agent's context for this phase |
-| `conventions` | Array of convention file paths or `"auto"` to resolve from `job.params.language` |
-| `subagents` | Array of subagent definitions for parallel work within this phase |
+
+| Field         | Purpose                                                                           |
+| ------------- | --------------------------------------------------------------------------------- |
+| `knowledge`   | Array of knowledge module paths to inject into the agent's context for this phase |
+| `conventions` | Array of convention file paths or `"auto"` to resolve from `job.params.language`  |
+| `subagents`   | Array of subagent definitions for parallel work within this phase                 |
+
 
 The Markdown content below the front matter contains the human-readable workflow documentation, phase descriptions, and orchestration logic (e.g., how the evaluator manages the multi-feature loop).
 
@@ -265,7 +275,7 @@ The Markdown content below the front matter contains the human-readable workflow
 
 The prompt builder assembles the system prompt for each phase using metadata from the workflow YAML:
 
-1. **`conventions/git.md`** is always loaded (universal process conventions)
+1. `**conventions/git.md**` is always loaded (universal process conventions)
 2. If the phase declares `conventions: [auto]`, the builder looks up `job.params.language` and loads `conventions/{language}.md`
 3. If the phase declares `conventions: ["conventions/dotnet.md"]`, that explicit file is loaded
 4. If the phase declares `knowledge: [...]`, those files are loaded as "Domain Knowledge" sections
@@ -274,26 +284,30 @@ The builder never hardcodes any language. The `conventions/` directory can hold 
 
 ### 3.4 Trigger → Job routing table
 
-| Trigger source | Event | JobType | workflowPath |
-|---------------|-------|---------|-------------|
-| CLI: `a5 migrate` | — | `migration` | `workflows/migration/workflow.md` |
-| CLI: `a5 feature` | — | `feature` | `workflows/feature/workflow.md` |
-| Jira webhook | `issue_assigned` | `feature` | `workflows/feature/workflow.md` |
-| File watcher | `memory/*.md`, `agents/*.md`, `knowledge/*.md` modified | `self-update` | *(inline)* |
+
+| Trigger source    | Event                                                   | JobType       | workflowPath                      |
+| ----------------- | ------------------------------------------------------- | ------------- | --------------------------------- |
+| CLI: `a5 migrate` | —                                                       | `migration`   | `workflows/migration/workflow.md` |
+| CLI: `a5 feature` | —                                                       | `feature`     | `workflows/feature/workflow.md`   |
+| Jira webhook      | `issue_assigned`                                        | `feature`     | `workflows/feature/workflow.md`   |
+| File watcher      | `memory/*.md`, `agents/*.md`, `knowledge/*.md` modified | `self-update` | *(inline)*                        |
+
 
 ### 3.5 Agent reuse across workflows
 
 Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise through injected knowledge modules and conventions. The same coder agent works for Go migrations, .NET features, and TypeScript projects — the injected context changes, not the agent:
 
-| Job phase | Agent loaded |
-|-----------|-------------|
-| `spec-writing` | `agents/spec-writer.md` |
-| `analysis` | `agents/analyzer.md` |
-| `planning`, `reporting` | `agents/planner.md` |
-| `repo-setup`, `coding` | `agents/coder.md` |
-| `review` | `agents/pr-reviewer.md` |
-| `testing` | `agents/tester.md` |
-| `evaluation` | `agents/evaluator.md` |
+
+| Job phase               | Agent loaded            |
+| ----------------------- | ----------------------- |
+| `spec-writing`          | `agents/spec-writer.md` |
+| `analysis`              | `agents/analyzer.md`    |
+| `planning`, `reporting` | `agents/planner.md`     |
+| `repo-setup`, `coding`  | `agents/coder.md`       |
+| `review`                | `agents/pr-reviewer.md` |
+| `testing`               | `agents/tester.md`      |
+| `evaluation`            | `agents/evaluator.md`   |
+
 
 ---
 
@@ -462,11 +476,13 @@ The feature workflow is completely language-neutral. A .NET feature job gets `co
 
 The system has three layers of accumulated intelligence, each with a different volatility and update path:
 
-| Layer | Location | Volatility | Example |
-|-------|----------|------------|---------|
-| Memory | `memory/*.md` | High — grows with every job | New pitfall discovered during migration |
-| Knowledge | `knowledge/**/*.md` | Medium — updated for systemic gaps | Missing translation pattern in coding guide |
-| Conventions | `conventions/*.md` | Low — updated for standards gaps | Human feedback reveals a missing naming rule |
+
+| Layer       | Location            | Volatility                         | Example                                      |
+| ----------- | ------------------- | ---------------------------------- | -------------------------------------------- |
+| Memory      | `memory/*.md`       | High — grows with every job        | New pitfall discovered during migration      |
+| Knowledge   | `knowledge/**/*.md` | Medium — updated for systemic gaps | Missing translation pattern in coding guide  |
+| Conventions | `conventions/*.md`  | Low — updated for standards gaps   | Human feedback reveals a missing naming rule |
+
 
 All three layers are watched by the file watcher. All changes go through a PR for human review.
 
@@ -517,13 +533,15 @@ The prompt builder includes `job.insights` in the "Insights from Upstream Agents
 
 ### 6.3 Who proposes what
 
-| Agent | Records insights via `add_insight` | Calls `propose_change` directly |
-|-------|------------------------------------|---------------------------------|
-| Planner | Yes — auth workarounds, repo quirks, environment issues | No |
-| Coder | Yes — build quirks, dependency issues, workarounds | No |
-| Tester | Yes — flaky tests, pre-existing errors, environment gaps | No |
-| PR Reviewer | Yes — single-job observations | Yes — systemic patterns seen across 2+ PRs |
-| Evaluator | No (runs last) | Yes — acts on upstream insights + own analysis |
+
+| Agent       | Records insights via `add_insight`                       | Calls `propose_change` directly                |
+| ----------- | -------------------------------------------------------- | ---------------------------------------------- |
+| Planner     | Yes — auth workarounds, repo quirks, environment issues  | No                                             |
+| Coder       | Yes — build quirks, dependency issues, workarounds       | No                                             |
+| Tester      | Yes — flaky tests, pre-existing errors, environment gaps | No                                             |
+| PR Reviewer | Yes — single-job observations                            | Yes — systemic patterns seen across 2+ PRs     |
+| Evaluator   | No (runs last)                                           | Yes — acts on upstream insights + own analysis |
+
 
 ### 6.4 Proposal pipeline
 
@@ -583,20 +601,22 @@ The same BitBucket service accounts handle all jobs simultaneously — `@a5-code
 
 ### What lives where
 
-| Data | Location | Updated by |
-|------|----------|-----------|
-| Root instructions | `a5-ai/CLAUDE.md` (git) | Human developers |
-| Agent instructions | `a5-ai/agents/` (git) | Agents → propose_change → PR → merge |
-| Workflow definitions | `a5-ai/workflows/` (git) | Human developers |
-| Knowledge modules | `a5-ai/knowledge/` (git) | Agents → propose_change → PR → merge |
-| Conventions | `a5-ai/conventions/` (git) | Human developers, agents → PR |
-| Accumulated memory | `a5-ai/memory/` (git) | Evaluator (informed by job insights) / PR Reviewer → watcher PR → merge |
-| Per-job intermediate state | `working/{job-id}/` (shared volume) | Job runners |
-| Job metadata + features + insights | Redis `job:{jobId}` | Job runners, MCP tools |
-| PR → job mapping | Redis `pr:{prId}:job` | Dispatcher on PR open |
-| Jira → job mapping | Redis `jira:{ticketId}:job` | Dispatcher on Jira trigger |
-| Generated code | Service repos on BitBucket | Coder agent |
-| Credentials | `config/credentials.md` (gitignored) | Developer (manual) |
+
+| Data                               | Location                             | Updated by                                                              |
+| ---------------------------------- | ------------------------------------ | ----------------------------------------------------------------------- |
+| Root instructions                  | `a5-ai/CLAUDE.md` (git)              | Human developers                                                        |
+| Agent instructions                 | `a5-ai/agents/` (git)                | Agents → propose_change → PR → merge                                    |
+| Workflow definitions               | `a5-ai/workflows/` (git)             | Human developers                                                        |
+| Knowledge modules                  | `a5-ai/knowledge/` (git)             | Agents → propose_change → PR → merge                                    |
+| Conventions                        | `a5-ai/conventions/` (git)           | Human developers, agents → PR                                           |
+| Accumulated memory                 | `a5-ai/memory/` (git)                | Evaluator (informed by job insights) / PR Reviewer → watcher PR → merge |
+| Per-job intermediate state         | `working/{job-id}/` (shared volume)  | Job runners                                                             |
+| Job metadata + features + insights | Redis `job:{jobId}`                  | Job runners, MCP tools                                                  |
+| PR → job mapping                   | Redis `pr:{prId}:job`                | Dispatcher on PR open                                                   |
+| Jira → job mapping                 | Redis `jira:{ticketId}:job`          | Dispatcher on Jira trigger                                              |
+| Generated code                     | Service repos on BitBucket           | Coder agent                                                             |
+| Credentials                        | `config/credentials.md` (gitignored) | Developer (manual)                                                      |
+
 
 ### Per-job working directory
 
@@ -627,43 +647,49 @@ working/{job-id}/
 
 The Agent SDK provides these tools out of the box — no custom implementation needed:
 
-| Tool | Purpose |
-|------|---------|
-| `Read` | Read file contents |
-| `Write` | Write/create files |
-| `Edit` | Make targeted edits to existing files |
-| `Bash` | Execute shell commands (including git) |
-| `Glob` | Find files by pattern |
-| `Grep` | Search file contents |
-| `Agent` | Spawn subagents for parallel work |
+
+| Tool    | Purpose                                |
+| ------- | -------------------------------------- |
+| `Read`  | Read file contents                     |
+| `Write` | Write/create files                     |
+| `Edit`  | Make targeted edits to existing files  |
+| `Bash`  | Execute shell commands (including git) |
+| `Glob`  | Find files by pattern                  |
+| `Grep`  | Search file contents                   |
+| `Agent` | Spawn subagents for parallel work      |
+
 
 ### 9.2 Domain tools (MCP Server)
 
 Domain-specific tools are exposed via an in-process MCP server (`mcp-server.ts`). All tool schemas are defined using `tool()` + Zod for type-safe validation:
 
-| Category | Tools | Count |
-|----------|-------|-------|
-| BitBucket (coder) | `bb_create_repo`, `bb_create_pr`, `bb_get_pr_status` | 3 |
-| BitBucket (reviewer) | `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_reply_to_comment`, `bb_approve_pr`, `bb_merge_pr` | 5 |
-| Observability | `loki_query`, `tempo_get_trace`, `tempo_search` | 3 |
-| Jira | `jira_get_issue`, `jira_post_comment`, `jira_transition_issue` | 3 |
-| Test harness | `run_go_build`, `start_go_service`, `stop_go_service`, `compare_request` | 4 |
-| Feature tracking | `set_features`, `update_feature`, `get_features`, `request_new_session`, `set_job_params` | 5 |
-| Job control | `mark_phase_complete`, `goto_phase`, `await_event`, `escalate`, `log` | 5 |
-| Self-improvement | `add_insight`, `propose_change`, `list_proposals` | 3 |
-| **Total domain** | | **31** |
+
+| Category             | Tools                                                                                             | Count  |
+| -------------------- | ------------------------------------------------------------------------------------------------- | ------ |
+| BitBucket (coder)    | `bb_create_repo`, `bb_create_pr`, `bb_get_pr_status`                                              | 3      |
+| BitBucket (reviewer) | `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_reply_to_comment`, `bb_approve_pr`, `bb_merge_pr` | 5      |
+| Observability        | `loki_query`, `tempo_get_trace`, `tempo_search`                                                   | 3      |
+| Jira                 | `jira_get_issue`, `jira_post_comment`, `jira_transition_issue`                                    | 3      |
+| Test harness         | `run_go_build`, `start_go_service`, `stop_go_service`, `compare_request`                          | 4      |
+| Feature tracking     | `set_features`, `update_feature`, `get_features`, `request_new_session`, `set_job_params`         | 5      |
+| Job control          | `mark_phase_complete`, `goto_phase`, `await_event`, `escalate`, `log`                             | 5      |
+| Self-improvement     | `add_insight`, `propose_change`, `list_proposals`                                                 | 3      |
+| **Total domain**     |                                                                                                   | **31** |
+
 
 #### Feature tracking tools
 
 These tools enable LLM-driven multi-feature orchestration without any logic in the runner:
 
-| Tool | Purpose | Called by |
-|------|---------|----------|
-| `set_features` | Register the ordered feature list for the job | Planner |
-| `update_feature` | Update a feature's status or increment its loop count | Evaluator, Coder |
-| `get_features` | Read the current feature list with statuses and loop counts | All agents |
-| `request_new_session` | Clear session ID for fresh context (e.g., starting a new feature) | Evaluator, Coder |
-| `set_job_params` | Merge key-value pairs into job.params (e.g., set language) | Planner, Analyzer |
+
+| Tool                  | Purpose                                                           | Called by         |
+| --------------------- | ----------------------------------------------------------------- | ----------------- |
+| `set_features`        | Register the ordered feature list for the job                     | Planner           |
+| `update_feature`      | Update a feature's status or increment its loop count             | Evaluator, Coder  |
+| `get_features`        | Read the current feature list with statuses and loop counts       | All agents        |
+| `request_new_session` | Clear session ID for fresh context (e.g., starting a new feature) | Evaluator, Coder  |
+| `set_job_params`      | Merge key-value pairs into job.params (e.g., set language)        | Planner, Analyzer |
+
 
 ### 9.3 Subagents
 
@@ -710,6 +736,7 @@ The intelligence layer separates **procedure** from **domain expertise**:
 - **Convention files** define coding standards: how to write correct code in a specific language. They are loaded via the `auto` mechanism based on `job.params.language`.
 
 This separation means:
+
 - The same coder agent handles Go migrations and .NET features — different knowledge/conventions are injected
 - Adding a new workflow type (e.g., security audit) means creating new knowledge modules and a workflow file, not new agents
 - Adding a new language means creating one convention file — no infrastructure changes
@@ -763,26 +790,29 @@ All configuration lives in `tools/config/settings.json` with environment variabl
 
 ## 13. Glossary
 
-| Term | Definition |
-|------|-----------|
-| Agent | A Claude Agent SDK `query()` session given a specific role via an MD file, with access to built-in tools and the MCP server |
-| Convention | A coding standards file for a specific language (`conventions/{lang}.md`), loaded dynamically based on `job.params.language` |
-| Feature | A logical group of endpoints or changes handled as one branch + PR, tracked via `FeatureItem` in the job state |
-| FeatureItem | A structured record tracking a feature's name, status (pending/in-progress/complete/escalated), and loop count |
-| Insight | A structured learning or workaround recorded by any agent via `add_insight`, stored on `Job.insights[]`, and reviewed by the evaluator at the end of the workflow |
-| Job | A unit of work with a `type`, `workflowPath`, features list, insights list, and state persisted in Redis and the shared volume |
-| JobType | `migration`, `feature`, or `self-update` — determines which workflow and phases apply |
-| Job Runner | The TypeScript code that drives Claude Agent SDK sessions for one job across its phases. Has zero orchestration intelligence. |
-| Knowledge module | A domain-specific guide in `knowledge/` that supplements agent instructions with workflow-specific expertise, loaded per-phase |
-| Memory | MD files in `a5-ai/memory/` containing accumulated knowledge from past jobs, updated via PRs |
-| MCP Server | In-process Model Context Protocol server exposing domain tools to the Agent SDK |
-| Park | When a job pauses to wait for an external event (PR merge, comment, approval) without consuming CPU |
-| Phase | A discrete stage within a workflow, each mapped to a specific agent MD file and run as one `query()` call |
-| Prompt Builder | Assembles the system prompt per phase from CLAUDE.md, workflow, agent, memory, conventions, knowledge, and job context |
-| Resume | When an incoming webhook event restores a parked job and continues its runner loop |
+
+| Term             | Definition                                                                                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent            | A Claude Agent SDK `query()` session given a specific role via an MD file, with access to built-in tools and the MCP server                                                              |
+| Convention       | A coding standards file for a specific language (`conventions/{lang}.md`), loaded dynamically based on `job.params.language`                                                             |
+| Feature          | A logical group of endpoints or changes handled as one branch + PR, tracked via `FeatureItem` in the job state                                                                           |
+| FeatureItem      | A structured record tracking a feature's name, status (pending/in-progress/complete/escalated), and loop count                                                                           |
+| Insight          | A structured learning or workaround recorded by any agent via `add_insight`, stored on `Job.insights[]`, and reviewed by the evaluator at the end of the workflow                        |
+| Job              | A unit of work with a `type`, `workflowPath`, features list, insights list, and state persisted in Redis and the shared volume                                                           |
+| JobType          | `migration`, `feature`, or `self-update` — determines which workflow and phases apply                                                                                                    |
+| Job Runner       | The TypeScript code that drives Claude Agent SDK sessions for one job across its phases. Has zero orchestration intelligence.                                                            |
+| Knowledge module | A domain-specific guide in `knowledge/` that supplements agent instructions with workflow-specific expertise, loaded per-phase                                                           |
+| Memory           | MD files in `a5-ai/memory/` containing accumulated knowledge from past jobs, updated via PRs                                                                                             |
+| MCP Server       | In-process Model Context Protocol server exposing domain tools to the Agent SDK                                                                                                          |
+| Park             | When a job pauses to wait for an external event (PR merge, comment, approval) without consuming CPU                                                                                      |
+| Phase            | A discrete stage within a workflow, each mapped to a specific agent MD file and run as one `query()` call                                                                                |
+| Prompt Builder   | Assembles the system prompt per phase from CLAUDE.md, workflow, agent, memory, conventions, knowledge, and job context                                                                   |
+| Resume           | When an incoming webhook event restores a parked job and continues its runner loop                                                                                                       |
 | Self-improvement | The centralized learning loop: agents record insights via `add_insight`, the evaluator reviews them and calls `propose_change`, triggering validation and a PR on a5-ai for human review |
-| Service account | A BitBucket user account operated by the system (`@a5-coder-agent`, `@a5-reviewer-agent`) |
-| Spec Writer | Agent that translates a Jira ticket into a structured feature spec for the planner |
-| Subagent | A child agent spawnable within a phase for parallel work (e.g. code-reviewer, test-runner) |
-| Workflow | An MD file with YAML front matter defining ordered phases, agent assignments, model selection, knowledge/convention routing, and subagent definitions |
-| workflowPath | The relative path to the workflow MD file for a job, e.g. `workflows/migration/workflow.md` |
+| Service account  | A BitBucket user account operated by the system (`@a5-coder-agent`, `@a5-reviewer-agent`)                                                                                                |
+| Spec Writer      | Agent that translates a Jira ticket into a structured feature spec for the planner                                                                                                       |
+| Subagent         | A child agent spawnable within a phase for parallel work (e.g. code-reviewer, test-runner)                                                                                               |
+| Workflow         | An MD file with YAML front matter defining ordered phases, agent assignments, model selection, knowledge/convention routing, and subagent definitions                                    |
+| workflowPath     | The relative path to the workflow MD file for a job, e.g. `workflows/migration/workflow.md`                                                                                              |
+
+
