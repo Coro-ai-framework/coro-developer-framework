@@ -463,6 +463,18 @@ function buildSubagentDefinitions(
   settings: Settings,
   mcpServer: McpSdkServerConfig,
 ) {
+  // Load .claude/CLAUDE.md once — subagents need behavior rules, company context,
+  // git conventions, and infrastructure context that the main agent receives
+  // natively via settingSources. Subagents get their own prompt (not the parent's
+  // system prompt), so we prepend this to ensure they have the foundational context.
+  let claudeMdContent = ''
+  try {
+    claudeMdContent = readFileSync(
+      path.join(settings.paths.a5aiDir, '.claude', 'CLAUDE.md'),
+      'utf-8',
+    )
+  } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
+
   const defs: Record<string, unknown> = {}
   for (const sa of subagents) {
     let agentPrompt = `You are a helper subagent named ${sa.name}.`
@@ -478,10 +490,18 @@ function buildSubagentDefinitions(
       }
     }
 
+    if (claudeMdContent) {
+      agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
+    }
+
+    const tools = sa.tools
+      ? ensureSkillTool(sa.tools)
+      : ['Read', 'Glob', 'Grep', 'Bash', 'Skill', 'mcp__a5__*']
+
     defs[sa.name] = {
       description: `Subagent: ${sa.name}`,
       prompt: agentPrompt,
-      tools: sa.tools ?? ['Read', 'Glob', 'Grep', 'Bash', 'mcp__a5__*'],
+      tools,
       model: sa.model === 'coding'
         ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
         : (sa.model ?? 'inherit'),
@@ -489,6 +509,12 @@ function buildSubagentDefinitions(
     }
   }
   return defs
+}
+
+/** Ensure 'Skill' is in the tool list so subagents can invoke on-demand skills. */
+function ensureSkillTool(tools: string[]): string[] {
+  if (tools.includes('Skill')) return tools
+  return [...tools, 'Skill']
 }
 
 /**

@@ -273,7 +273,6 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function buildSlug(files: string[], a5aiDir: string): string {
-  // Use the most specific changed directory as the slug
   const dirs = files
     .map(f => path.relative(a5aiDir, path.dirname(f)))
     .map(d => d.split(path.sep)[0] ?? 'misc')
@@ -283,7 +282,9 @@ function buildSlug(files: string[], a5aiDir: string): string {
     .join('-')
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '-')
-    .slice(0, 40)
+    .replace(/^-+/, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 40) || 'misc'
 }
 
 function buildCommitMessage(
@@ -551,6 +552,7 @@ function buildPrDescription(
   if (categories.includes('source'))   validationNotes.push('TypeScript build (`npm run build`)')
   if (categories.includes('config'))   validationNotes.push('YAML parse validation')
   if (categories.includes('workflow')) validationNotes.push('Workflow config front-matter validation')
+  if (categories.includes('skill'))    validationNotes.push('Skill frontmatter validation')
 
   if (validationNotes.length > 0) {
     lines.push(
