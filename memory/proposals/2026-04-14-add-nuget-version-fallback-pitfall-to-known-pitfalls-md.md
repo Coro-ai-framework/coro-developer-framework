@@ -1,3 +1,23 @@
+# Proposal: Add NuGet version fallback pitfall to known-pitfalls.md
+
+**Type:** memory-update
+**Proposed by job:** a5labs.exchangerates-feature-1776149193895 (feature, phase: evaluation)
+**Date:** 2026-04-14T07:06:00.035Z
+**Files:** 1
+
+## Rationale
+
+During the ExchangeRates build fix job, the coder agent in a prior run referenced A5Labs.Core.* version 1.0.0-ci0275 which doesn't exist in the Nexus NuGet feed. NuGet silently fell back to 1.0.0-main0239 via NU1603, which lacked the A5Labs.Core.Build namespace and broke the build. This is a subtle failure mode that should be documented so future agents always verify package versions exist before referencing them.
+
+## Description
+
+Adds a new entry to memory/known-pitfalls.md documenting the NuGet version fallback trap with A5Labs.Core.* packages on the Nexus feed.
+
+## Files
+
+### `memory/known-pitfalls.md`
+
+```md
 # Known Pitfalls
 
 Patterns that have caused failures in past migrations and feature jobs. Read before writing any code.
@@ -21,3 +41,8 @@ When upgrading A5Labs.Core.* packages, always verify the target version exists i
 ```bash
 curl -s -u "user:pass" "https://nexus.a5-labs-cloud.com/repository/dev.artifactory-nuget.afr/FindPackagesById()?id='A5Labs.Core'&\$filter=Version%20ge%20'1.0.0-ci0270'" | grep -o "Version='[^']*'" | sort -V -u
 ```
+
+```
+
+---
+_This proposal was generated automatically by an agent. Review and merge to apply._
