@@ -180,5 +180,5 @@ Rules:
 ### Branch lifecycle
 
 - Branches are deleted after merge
-- Never commit directly to `main`
-- `main` always represents the latest merged, tested state
+- Never commit directly to `main` or `master`
+- `main` and `master` always represents the latest merged, tested state

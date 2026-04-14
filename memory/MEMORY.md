@@ -5,7 +5,7 @@ Keep entries under 150 characters. Lines beyond 200 will be truncated.
 
 ## Active memories
 
-- [Known Pitfalls](known-pitfalls.md) — Translation mistakes, serialization traps, and language-specific behaviors [migration]
+- [Known Pitfalls](known-pitfalls.md) — Translation mistakes, serialization traps, and language-specific behaviors [general]
 - [Successful Patterns](successful-patterns.md) — Validated approaches that worked well in past jobs [general]
 - [PR Feedback Patterns](pr-feedback.md) — Recurring developer feedback from code reviews [general]
 - [.NET to Go Mappings](dotnet-to-go-mappings.md) — Discovered translation patterns for specific .NET constructs [migration]
