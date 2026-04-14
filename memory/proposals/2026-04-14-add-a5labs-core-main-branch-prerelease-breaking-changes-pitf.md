@@ -1,3 +1,23 @@
+# Proposal: Add A5Labs.Core main-branch prerelease breaking changes pitfall
+
+**Type:** memory-update
+**Proposed by job:** a5labs.buyinbuyout-feature-1776153461092 (feature, phase: evaluation)
+**Date:** 2026-04-14T08:22:08.213Z
+**Files:** 1
+
+## Rationale
+
+During the BuyInBuyOut build fix job, we discovered that A5Labs.Core main-branch prerelease versions (1.0.0-main0XXX) have breaking API changes compared to CI builds (1.0.0-ci0XXX). Specifically, main0241 removed A5Labs.Core.Cache and ErrorCodes.PAYMENTS_FAILED_TO_RETRIEVE_ORDER, while ci0274 still has both. This is a distinct pitfall from the NuGet version fallback issue already documented — agents need to know that main-branch and CI-branch prereleases are NOT API-compatible.
+
+## Description
+
+Adds a new entry to memory/known-pitfalls.md documenting that A5Labs.Core main-branch prereleases (main0XXX) may have breaking API changes vs CI builds (ci0XXX), and agents should always prefer ci0XXX versions.
+
+## Files
+
+### `memory/known-pitfalls.md`
+
+```md
 # Known Pitfalls
 
 Patterns that have caused failures in past migrations and feature jobs. Read before writing any code.
@@ -45,3 +65,8 @@ A5Labs.Core packages have two prerelease version streams: `1.0.0-ci0XXX` (CI pip
 1. Always prefer `ci0XXX` versions over `main0XXX` for A5Labs.Core packages
 2. Before upgrading, query the Nexus feed for ALL sub-packages used to find the highest common CI version
 3. If a sub-package doesn't have the target CI version, pin it to the highest available CI version (e.g., `ci0273` instead of `ci0274`)
+
+```
+
+---
+_This proposal was generated automatically by an agent. Review and merge to apply._
