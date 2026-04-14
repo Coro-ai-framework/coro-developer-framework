@@ -18,7 +18,9 @@ export interface PhaseConfig {
   model: 'planning' | 'coding'
   status: string
   subagents?: SubagentConfig[]
+  /** @deprecated No longer consumed by the builder — knowledge is now loaded on-demand via skills. Kept for parser backward compatibility. */
   knowledge?: string[]
+  /** @deprecated No longer consumed by the builder — conventions are now loaded on-demand via skills. Kept for parser backward compatibility. */
   conventions?: string[]
 }
 

@@ -1,3 +1,11 @@
+---
+name: migration-review
+description: >-
+  Migration PR review checklist: contract compliance, route/method/shape
+  verification, auth checks, convention verification, plan cross-reference.
+  Use when reviewing migration PRs.
+---
+
 # Migration PR Review Guide
 
 Domain-specific guidance for reviewing migration PRs. Supplements the generic PR Reviewer agent instructions with migration-specific contract checking and compliance verification.
@@ -36,7 +44,7 @@ When reviewing a migration PR, verify against `service-contract.json`:
 
 ## Convention verification
 
-Verify the code follows the language conventions injected into your context. Common checks:
+Verify the code follows the language conventions. Invoke the relevant language conventions skill if you haven't already. Common checks:
 - Project/module layout follows conventions
 - Naming follows language idioms
 - Error handling follows conventions
@@ -46,7 +54,7 @@ Verify the code follows the language conventions injected into your context. Com
 
 - Verify the PR implements exactly the endpoints listed for this feature in the migration plan
 - Check that dependency ordering is respected (don't merge Feature 3 before Feature 2 if there's a dependency)
-- Verify branch naming follows the plan's conventions
+- Verify branch naming follows the git conventions
 
 ## Common migration review issues
 

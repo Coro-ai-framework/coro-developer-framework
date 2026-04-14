@@ -1,3 +1,11 @@
+---
+name: golang-conventions
+description: >-
+  Go coding standards for A5 Labs services: project layout, dependencies
+  (chi, zerolog, pgx), naming, error handling, config, testing, HTTP patterns.
+  Use when writing or reviewing Go code.
+---
+
 # Go Coding Conventions
 
 > **Note to developer (Emre):** This is a starter file. Please enhance it with your team's specific preferences.

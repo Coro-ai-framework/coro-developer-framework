@@ -1,3 +1,10 @@
+---
+name: migration-coding
+description: >-
+  Migration coding patterns: contract parity, .NET-to-Go translation, status
+  codes, auth, validation, PR requirements. Use when implementing migration code.
+---
+
 # Migration Coding Guide
 
 Domain-specific guidance for implementing migration features. Supplements the generic Coder agent instructions with migration-specific contract parity rules and translation patterns.

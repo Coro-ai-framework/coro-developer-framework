@@ -1,3 +1,11 @@
+---
+name: migration-evaluation
+description: >-
+  Migration failure taxonomy and diagnosis: root cause classification,
+  known pitfall detection, serialization/validation/auth failures, loop-back
+  decision criteria. Use when evaluating migration test results.
+---
+
 # Migration Evaluation Guide
 
 Domain-specific guidance for evaluating migration test results. Supplements the generic Evaluator agent instructions with migration-specific failure taxonomy and diagnosis techniques.

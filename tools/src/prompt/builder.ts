@@ -4,21 +4,22 @@ import { Logger } from 'pino'
 import { GitClient } from '../clients/git'
 import { Settings } from '../config/settings'
 import { Job } from '../jobs/types'
-import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig, PhaseConfig } from '../workflow-parser'
+import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
 /**
  * Assembles the system prompt for a Claude API call.
  *
- * Section order (each separated by ---):
- *   1. CLAUDE.md          — root instructions, agent behaviour rules
- *   2. Workflow file      — lifecycle definition for this job type
- *   3. Agent instructions — role-specific steps for the current phase
- *   4. Memory             — accumulated knowledge from past jobs
- *   5. Pending proposals  — tool/agent changes awaiting review (so agent knows what's in flight)
- *   6. Conventions        — Go coding + git/PR conventions
- *   7. Job context        — current job state as JSON (always last, most specific)
+ * Static content (behavior rules, company context, git conventions, infrastructure)
+ * is loaded natively by the SDK via settingSources: ['project'] from .claude/CLAUDE.md.
+ * Domain knowledge and language conventions are on-demand skills agents invoke themselves.
+ *
+ * This builder handles only dynamic, phase-conditioned content:
+ *   1. Workflow file      — lifecycle definition for this job type
+ *   2. Agent instructions — role-specific steps for the current phase
+ *   3. Memory             — accumulated knowledge from past jobs
+ *   4. Job context        — current job state as JSON (always last, most specific)
  *
  * The a5-ai repo is pulled before assembly so agents always run against
  * the latest instructions and memory. Pull failures are non-fatal — the
@@ -30,7 +31,6 @@ export async function buildSystemPrompt(
   gitClient: GitClient,
   logger: Logger,
 ): Promise<string> {
-  const { bitbucket } = settings
   const a5aiDir = settings.paths.a5aiDir
 
   // 1. Pull latest a5-ai — non-fatal if it fails (network issue, not a git repo locally)
@@ -43,11 +43,11 @@ export async function buildSystemPrompt(
 
   const sections: string[] = []
 
-  // 2. Root instructions
-  const claudeMd = await readSafe(path.join(a5aiDir, 'CLAUDE.md'), logger)
-  if (claudeMd) sections.push(claudeMd)
+  // Root instructions (.claude/CLAUDE.md) and git/infrastructure context are now
+  // loaded natively by the SDK via settingSources: ['project']. The builder only
+  // handles dynamic, phase-conditioned content below.
 
-  // 3. Workflow file (dynamic per JobType — not hardcoded)
+  // 2. Workflow file (dynamic per JobType — not hardcoded)
   const workflowAbsPath = path.join(a5aiDir, job.workflowPath)
   const workflowMd = await readSafe(workflowAbsPath, logger)
   const workflowConfig = workflowMd ? parseWorkflowConfig(workflowMd) : null
@@ -76,25 +76,11 @@ export async function buildSystemPrompt(
   const memorySections = await loadMemory(a5aiDir, logger)
   sections.push(...memorySections)
 
-  // 6. Conventions — loaded from workflow YAML metadata, never hardcoded by language
-  const conventionPaths = resolveConventions(phaseConf ?? null, job)
-  for (const relPath of conventionPaths) {
-    const content = await readSafe(path.join(a5aiDir, relPath), logger)
-    if (content) sections.push(banner('Conventions', relPath) + content)
-  }
+  // Conventions, knowledge modules, and infrastructure context have been migrated
+  // to .claude/CLAUDE.md (always-loaded) and .claude/skills/ (on-demand).
+  // Agents invoke skills themselves when they need domain knowledge or language conventions.
 
-  // 7. Knowledge modules — domain-specific guides injected per phase
-  if (phaseConf?.knowledge) {
-    for (const relPath of phaseConf.knowledge) {
-      const content = await readSafe(path.join(a5aiDir, relPath), logger)
-      if (content) sections.push(banner('Domain Knowledge', relPath) + content)
-    }
-  }
-
-  // 8. Infrastructure context — how to reach BitBucket, clone repos, etc.
-  sections.push(buildInfrastructureContext(bitbucket.workspace, bitbucket.coderAccount.username))
-
-  // 9. Job context — always last so it is never overridden by generic instructions
+  // 8. Job context — always last so it is never overridden by generic instructions
   sections.push(buildJobContext(job))
 
   return sections.join('\n\n---\n\n')
@@ -144,50 +130,6 @@ async function loadMemory(a5aiDir: string, logger: Logger): Promise<string[]> {
   }
 
   return sections
-}
-
-// ── Convention resolver ───────────────────────────────────────────────────────
-
-function resolveConventions(phaseConf: PhaseConfig | null, job: Job): string[] {
-  const files = ['conventions/git.md']
-
-  if (!phaseConf?.conventions) {
-    return files
-  }
-
-  for (const entry of phaseConf.conventions) {
-    if (entry === 'auto') {
-      const lang = job.params['language'] as string | undefined
-      if (lang) files.push(`conventions/${lang}.md`)
-    } else {
-      files.push(entry)
-    }
-  }
-
-  return [...new Set(files)]
-}
-
-// ── Infrastructure context ────────────────────────────────────────────────────
-
-function buildInfrastructureContext(workspace: string, coderUsername: string): string {
-  return (
-    '# Infrastructure\n\n' +
-    'All source repositories live on **BitBucket**, not GitHub.\n\n' +
-    `- **Workspace:** \`${workspace}\`\n` +
-    `- **Coder account:** \`${coderUsername}\`\n\n` +
-    'These environment variables are already set in your shell:\n' +
-    '```\n' +
-    'BB_WORKSPACE          — BitBucket workspace slug\n' +
-    'BB_GIT_USERNAME       — git username (x-token-auth for API tokens, or encoded username)\n' +
-    'BB_CODER_APP_PASSWORD — API token for git operations\n' +
-    'BB_BASE_URL           — https://bitbucket.org\n' +
-    '```\n\n' +
-    'To clone a repo:\n' +
-    '```bash\n' +
-    'git clone "https://$BB_GIT_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/<repo-slug>.git"\n' +
-    '```\n\n' +
-    '**Never use `gh`, `hub`, or GitHub CLI commands. Always use `git` directly with the BitBucket URL above.**'
-  )
 }
 
 // ── Job context ───────────────────────────────────────────────────────────────

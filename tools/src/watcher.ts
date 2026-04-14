@@ -26,16 +26,16 @@ export interface WatcherContext {
 
 // ── File categories ───────────────────────────────────────────────────────────
 
-type ChangeCategory = 'agent' | 'memory' | 'workflow' | 'convention' | 'knowledge' | 'config' | 'source'
+type ChangeCategory = 'agent' | 'memory' | 'workflow' | 'skill' | 'intelligence' | 'config' | 'source'
 
 function categorise(filePath: string, a5aiDir: string): ChangeCategory {
   const rel = path.relative(a5aiDir, filePath)
-  if (rel.startsWith('agents/'))      return 'agent'
-  if (rel.startsWith('memory/'))      return 'memory'
-  if (rel.startsWith('workflows/'))   return 'workflow'
-  if (rel.startsWith('conventions/')) return 'convention'
-  if (rel.startsWith('knowledge/'))   return 'knowledge'
-  if (rel.startsWith('config/'))      return 'config'
+  if (rel.startsWith('agents/'))              return 'agent'
+  if (rel.startsWith('memory/'))              return 'memory'
+  if (rel.startsWith('workflows/'))           return 'workflow'
+  if (rel.startsWith('.claude/skills/'))       return 'skill'
+  if (rel.startsWith('.claude/'))              return 'intelligence'
+  if (rel.startsWith('config/'))              return 'config'
   return 'source'
 }
 
@@ -46,8 +46,7 @@ function categorise(filePath: string, a5aiDir: string): ChangeCategory {
  *   - memory/**\/*.md        — accumulated agent knowledge
  *   - agents/**\/*.md        — agent role definitions
  *   - workflows/**\/*.md     — workflow lifecycle files
- *   - conventions/**\/*.md   — coding / git conventions
- *   - knowledge/**\/*.md     — domain-specific workflow guides
+ *   - .claude/**             — CLAUDE.md (behavior rules) and skills (domain knowledge, conventions)
  *   - tools/src/**\/*.ts     — Agent Host source code (tool proposals, etc.)
  *
  * On change:
@@ -70,8 +69,7 @@ export function startWatcher(ctx: WatcherContext): FSWatcher {
     path.join(a5aiDir, 'memory'),
     path.join(a5aiDir, 'agents'),
     path.join(a5aiDir, 'workflows'),
-    path.join(a5aiDir, 'conventions'),
-    path.join(a5aiDir, 'knowledge'),
+    path.join(a5aiDir, '.claude'),
     path.join(a5aiDir, 'config'),
     path.join(a5aiDir, 'tools', 'src'),
   ]
@@ -160,6 +158,15 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
     const result = await validateWorkflowMds(workflowMds, logger)
     if (!result.ok) {
       await writeValidationFailure(a5aiDir, 'workflow-config', workflowMds, result.detail, logger)
+      return
+    }
+  }
+
+  const skillFiles = changedFiles.filter(f => f.endsWith('SKILL.md'))
+  if (skillFiles.length > 0) {
+    const result = await validateSkillFiles(skillFiles, logger)
+    if (!result.ok) {
+      await writeValidationFailure(a5aiDir, 'skill-frontmatter', skillFiles, result.detail, logger)
       return
     }
   }
@@ -385,6 +392,50 @@ async function validateWorkflowMds(
   return { ok: true, detail: '' }
 }
 
+async function validateSkillFiles(
+  files: string[],
+  logger: Logger,
+): Promise<ValidationResult> {
+  logger.info({ files }, 'Skill files detected — validating frontmatter')
+  const errors: string[] = []
+  const namePattern = /^[a-z0-9-]{1,64}$/
+
+  for (const filePath of files) {
+    try {
+      const content = await fs.readFile(filePath, 'utf-8')
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+      if (!fmMatch) {
+        errors.push(`${filePath}: missing YAML frontmatter (must start with ---)`)
+        continue
+      }
+      const frontmatter = yaml.load(fmMatch[1]) as Record<string, unknown> | null
+      if (!frontmatter || typeof frontmatter !== 'object') {
+        errors.push(`${filePath}: frontmatter is not a valid YAML object`)
+        continue
+      }
+      const name = frontmatter['name']
+      if (typeof name !== 'string' || !namePattern.test(name)) {
+        errors.push(`${filePath}: 'name' must be 1-64 chars, lowercase letters/numbers/hyphens only (got: ${JSON.stringify(name)})`)
+      }
+      const desc = frontmatter['description']
+      if (typeof desc !== 'string' || desc.trim().length === 0) {
+        errors.push(`${filePath}: 'description' must be a non-empty string`)
+      }
+    } catch (err) {
+      errors.push(`${filePath}: ${String(err)}`)
+    }
+  }
+
+  if (errors.length > 0) {
+    const detail = errors.join('\n')
+    logger.error({ errors }, 'Skill frontmatter validation FAILED')
+    return { ok: false, detail }
+  }
+
+  logger.info('Skill frontmatter validation passed')
+  return { ok: true, detail: '' }
+}
+
 async function writeValidationFailure(
   a5aiDir: string,
   validationType: string,
@@ -481,13 +532,13 @@ function buildPrDescription(
   ]
 
   const catLabels: Record<ChangeCategory, string> = {
-    agent:      '### Agent instructions',
-    memory:     '### Memory',
-    workflow:   '### Workflows',
-    convention: '### Conventions',
-    knowledge:  '### Knowledge modules',
-    config:     '### Configuration (YAML)',
-    source:     '### Source code (TypeScript)',
+    agent:        '### Agent instructions',
+    memory:       '### Memory',
+    workflow:     '### Workflows',
+    skill:        '### Skills',
+    intelligence: '### Intelligence (.claude/)',
+    config:       '### Configuration (YAML)',
+    source:       '### Source code (TypeScript)',
   }
 
   for (const [cat, files] of Object.entries(byCategory) as [ChangeCategory, string[]][]) {

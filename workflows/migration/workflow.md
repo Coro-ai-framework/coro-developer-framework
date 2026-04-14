@@ -12,27 +12,21 @@ phases:
     agent: agents/analyzer.md
     model: planning
     status: analyzing
-    knowledge: [knowledge/migration/analysis-guide.md]
-    conventions: [auto]
 
   - name: planning
     agent: agents/planner.md
     model: planning
     status: planning
-    knowledge: [knowledge/migration/planning-guide.md]
 
   - name: repo-setup
     agent: agents/coder.md
     model: coding
     status: repo-setup
-    conventions: [auto]
 
   - name: coding
     agent: agents/coder.md
     model: coding
     status: coding
-    knowledge: [knowledge/migration/coding-guide.md]
-    conventions: [auto]
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -43,15 +37,11 @@ phases:
     agent: agents/pr-reviewer.md
     model: coding
     status: reviewing
-    knowledge: [knowledge/migration/review-guide.md]
-    conventions: [auto]
 
   - name: testing
     agent: agents/tester.md
     model: coding
     status: testing
-    knowledge: [knowledge/migration/testing-guide.md]
-    conventions: [auto]
     subagents:
       - name: test-runner
         agent: agents/tester.md
@@ -62,8 +52,6 @@ phases:
     agent: agents/evaluator.md
     model: planning
     status: evaluating
-    knowledge: [knowledge/migration/evaluation-guide.md]
-    conventions: [auto]
 
   - name: reporting
     agent: agents/planner.md
@@ -100,7 +88,7 @@ The user provides via the CLI:
 
 ## Language handling
 
-This workflow uses two languages: the **source** language (.NET/C#) for analysis, and the **target** language (Go) for coding. The init phase sets `job.params.language` to the source language so the analyzer gets the right conventions. The planner then updates it to the target language (via `set_job_params`) after producing the plan, so all downstream coding phases load the correct target conventions via `conventions: [auto]`. The knowledge modules (`knowledge/migration/*.md`) provide the migration-specific translation guidance between the two languages.
+This workflow uses two languages: the **source** language (.NET/C#) for analysis, and the **target** language (Go) for coding. The init phase sets `job.params.language` to the source language. The planner then updates it to the target language (via `set_job_params`) after producing the plan. Agents invoke the relevant language conventions skill (e.g., `golang-conventions`) and domain knowledge skills (e.g., `migration-coding`) on-demand during their phases.
 
 ## State
 
@@ -127,8 +115,7 @@ Feature state is tracked in Redis via the `features[]` array on the Job object. 
 ### Phase 1: Analysis
 
 **Agent:** Analyzer (`agents/analyzer.md`)
-**Knowledge:** `knowledge/migration/analysis-guide.md`
-**Conventions:** Auto-loaded from `job.params.language` (source language)
+**Skills:** Agent invokes `migration-analysis` for domain knowledge
 
 Run the Analyzer agent with the cloned repo and job parameters.
 
@@ -143,7 +130,7 @@ Run the Analyzer agent with the cloned repo and job parameters.
 ### Phase 2: Planning
 
 **Agent:** Planner (`agents/planner.md`)
-**Knowledge:** `knowledge/migration/planning-guide.md`
+**Skills:** Agent invokes `migration-planning` for domain knowledge
 
 Run the Planner agent with the Analyzer outputs.
 
@@ -159,7 +146,7 @@ The Planner must:
 ### Phase 3: Repository Setup
 
 **Agent:** Coder (`agents/coder.md`)
-**Conventions:** Auto-loaded from `job.params.language` (now the target language)
+**Skills:** Agent invokes language conventions skill (e.g., `golang-conventions`) for the target language
 
 Before beginning feature implementation:
 

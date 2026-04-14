@@ -96,20 +96,19 @@ beforeEach(() => {
 
 describe('buildSystemPrompt', () => {
   describe('section assembly', () => {
-    it('includes CLAUDE.md when present', async () => {
+    it('does not load CLAUDE.md (natively loaded by SDK via settingSources)', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root instructions',
+        '/data/a5-ai/CLAUDE.md': '# Root instructions — should NOT appear',
         '/data/a5-ai/workflows/migration/workflow.md': '',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('# Root instructions')
+      expect(prompt).not.toContain('# Root instructions — should NOT appear')
     })
 
     it('includes workflow content with front matter stripped', async () => {
       const workflow = '---\ninitial_phase: analysis\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Migration Workflow\n\nThis is the workflow.'
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
         '/data/a5-ai/agents/analyzer.md': '# Analyzer Agent\n\nAnalyze things.',
       })
@@ -123,7 +122,6 @@ describe('buildSystemPrompt', () => {
     it('includes agent instructions for the current phase', async () => {
       const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
         '/data/a5-ai/agents/analyzer.md': '# Analyzer\n\nStep 1: Analyze endpoints.',
       })
@@ -134,83 +132,43 @@ describe('buildSystemPrompt', () => {
       expect(prompt).toContain('Your Role This Phase')
     })
 
-    it('includes git conventions by default (no language hardcoded)', async () => {
-      setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
-        '/data/a5-ai/workflows/migration/workflow.md': '',
-        '/data/a5-ai/conventions/git.md': '# Git Conventions\n\nUse conventional commits.',
-      })
-
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('Use conventional commits.')
-    })
-
-    it('loads language conventions via auto when job.params.language is set', async () => {
+    it('does not inject conventions (now on-demand via skills)', async () => {
       const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    conventions: [auto]\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
         '/data/a5-ai/agents/analyzer.md': '# Analyzer',
-        '/data/a5-ai/conventions/git.md': '# Git Conv',
-        '/data/a5-ai/conventions/golang.md': '# Go Conventions\n\nUse chi router.',
       })
 
       const job = makeJob({ params: { serviceName: 'my-svc', language: 'golang' } })
       const prompt = await buildSystemPrompt(job, makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('Use chi router.')
-      expect(prompt).toContain('# Git Conv')
+      expect(prompt).not.toContain('Conventions')
     })
 
-    it('does not load language conventions when conventions field is absent', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Workflow'
-      setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
-        '/data/a5-ai/workflows/migration/workflow.md': workflow,
-        '/data/a5-ai/agents/analyzer.md': '# Analyzer',
-        '/data/a5-ai/conventions/git.md': '# Git Conv',
-        '/data/a5-ai/conventions/golang.md': '# Go Conventions\n\nUse chi router.',
-      })
-
-      const job = makeJob({ params: { serviceName: 'my-svc', language: 'golang' } })
-      const prompt = await buildSystemPrompt(job, makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).not.toContain('Use chi router.')
-      expect(prompt).toContain('# Git Conv')
-    })
-
-    it('loads explicit convention paths from workflow YAML', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    conventions: [conventions/dotnet.md]\n---\n\n# Workflow'
-      setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
-        '/data/a5-ai/workflows/migration/workflow.md': workflow,
-        '/data/a5-ai/agents/analyzer.md': '# Analyzer',
-        '/data/a5-ai/conventions/git.md': '# Git Conv',
-        '/data/a5-ai/conventions/dotnet.md': '# .NET Conventions\n\nUse PascalCase.',
-      })
-
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('Use PascalCase.')
-      expect(prompt).toContain('# Git Conv')
-    })
-
-    it('loads knowledge modules when specified in workflow YAML', async () => {
+    it('does not inject knowledge modules (now on-demand via skills)', async () => {
       const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    knowledge: [knowledge/migration/analysis-guide.md]\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
         '/data/a5-ai/agents/analyzer.md': '# Analyzer',
-        '/data/a5-ai/conventions/git.md': '# Git Conv',
-        '/data/a5-ai/knowledge/migration/analysis-guide.md': '# Analysis Guide\n\nExtract controllers.',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('Extract controllers.')
-      expect(prompt).toContain('Domain Knowledge')
+      expect(prompt).not.toContain('Domain Knowledge')
+    })
+
+    it('does not inject infrastructure context (now in .claude/CLAUDE.md)', async () => {
+      setupFs({
+        '/data/a5-ai/workflows/migration/workflow.md': '',
+      })
+
+      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
+      expect(prompt).not.toContain('# Infrastructure')
+      expect(prompt).not.toContain('BB_WORKSPACE')
     })
 
     it('always includes job context as the last section', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
-        '/data/a5-ai/workflows/migration/workflow.md': '',
+        '/data/a5-ai/workflows/migration/workflow.md': '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Migration Workflow',
+        '/data/a5-ai/agents/analyzer.md': '# Analyzer Agent',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
@@ -223,7 +181,6 @@ describe('buildSystemPrompt', () => {
   describe('job context', () => {
     it('includes all key job fields in JSON', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
       })
 
@@ -251,7 +208,6 @@ describe('buildSystemPrompt', () => {
 
     it('nulls out optional fields when not set', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
       })
 
@@ -267,7 +223,6 @@ describe('buildSystemPrompt', () => {
 
     it('includes features and featureLoopCount in job context', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
       })
 
@@ -297,7 +252,6 @@ describe('buildSystemPrompt', () => {
   describe('memory loading', () => {
     it('loads memory index and linked files', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
         '/data/a5-ai/memory/MEMORY.md': '# Memory\n\n- [Known pitfalls](known-pitfalls.md)\n- [Patterns](successful-patterns.md)',
         '/data/a5-ai/memory/known-pitfalls.md': '# Pitfalls\n\nDo not use X.',
@@ -313,7 +267,6 @@ describe('buildSystemPrompt', () => {
 
     it('skips external URLs in memory index links', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
         '/data/a5-ai/memory/MEMORY.md': '- [Docs](https://example.com)\n- [Local](local.md)',
         '/data/a5-ai/memory/local.md': 'Local content',
@@ -321,26 +274,22 @@ describe('buildSystemPrompt', () => {
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
       expect(prompt).toContain('Local content')
-      // Should not have tried to read https://example.com as a file
       const readCalls = mockFs.readFile.mock.calls.map(c => String(c[0]))
       expect(readCalls.every(c => !c.includes('https://'))).toBe(true)
     })
 
     it('skips anchor links in memory index', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
         '/data/a5-ai/memory/MEMORY.md': '- [Section](#pitfalls)',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      // Should not crash on anchor links
       expect(prompt).toContain('# Current Job')
     })
 
     it('includes pending proposals when proposals directory exists', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
         '/data/a5-ai/memory/MEMORY.md': '# Memory Index',
         '/data/a5-ai/memory/proposals/2026-04-01-add-tool.md': '# Proposal: Add tool\n\nRationale here.',
@@ -353,7 +302,6 @@ describe('buildSystemPrompt', () => {
 
     it('handles missing proposals directory gracefully', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
         '/data/a5-ai/memory/MEMORY.md': '# Memory Index',
       })
@@ -365,29 +313,16 @@ describe('buildSystemPrompt', () => {
   })
 
   describe('resilience', () => {
-    it('continues when CLAUDE.md is missing', async () => {
-      setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '',
-      })
-
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('# Current Job')
-    })
-
     it('continues when workflow file is missing', async () => {
-      setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
-      })
+      setupFs({})
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('# Root')
       expect(prompt).toContain('# Current Job')
     })
 
     it('continues when agent file is missing', async () => {
       const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/missing.md\n    model: planning\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
       })
 
@@ -401,18 +336,16 @@ describe('buildSystemPrompt', () => {
         new Error('Network error'),
       )
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': '',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
-      expect(prompt).toContain('# Root')
+      expect(prompt).toContain('# Current Job')
       expect(noopLogger.warn).toHaveBeenCalled()
     })
 
     it('does not load agent when workflow has no front matter', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': '# Just a plain markdown file\n\nNo YAML here.',
       })
 
@@ -423,7 +356,6 @@ describe('buildSystemPrompt', () => {
     it('does not load agent when current phase has no agent', async () => {
       const workflow = '---\nphases:\n  - name: analysis\n    agent: ~\n    model: planning\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
       })
 
@@ -433,44 +365,30 @@ describe('buildSystemPrompt', () => {
   })
 
   describe('section ordering', () => {
-    it('places sections in correct order: root, workflow, agent, memory, conventions, job', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n    conventions: [auto]\n    knowledge: [knowledge/migration/analysis-guide.md]\n---\n\n# Workflow Content'
+    it('places sections in correct order: workflow, agent, memory, job', async () => {
+      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Workflow Content'
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '# CLAUDE Root',
         '/data/a5-ai/workflows/migration/workflow.md': workflow,
         '/data/a5-ai/agents/analyzer.md': '# Analyzer Agent',
         '/data/a5-ai/memory/MEMORY.md': '# Memory Index',
-        '/data/a5-ai/conventions/git.md': '# Git Conv',
-        '/data/a5-ai/conventions/golang.md': '# Go Conv',
-        '/data/a5-ai/knowledge/migration/analysis-guide.md': '# Analysis Knowledge',
       })
 
-      const job = makeJob({ params: { serviceName: 'my-svc', language: 'golang' } })
-      const prompt = await buildSystemPrompt(job, makeSettings(), mockGitClient, noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), mockGitClient, noopLogger)
 
-      const rootIdx = prompt.indexOf('# CLAUDE Root')
       const workflowIdx = prompt.indexOf('# Workflow Content')
       const agentIdx = prompt.indexOf('# Analyzer Agent')
       const memoryIdx = prompt.indexOf('# Memory Index')
-      const gitIdx = prompt.indexOf('# Git Conv')
-      const goIdx = prompt.indexOf('# Go Conv')
-      const knowledgeIdx = prompt.indexOf('# Analysis Knowledge')
       const jobIdx = prompt.indexOf('# Current Job')
 
-      expect(rootIdx).toBeLessThan(workflowIdx)
       expect(workflowIdx).toBeLessThan(agentIdx)
       expect(agentIdx).toBeLessThan(memoryIdx)
-      expect(memoryIdx).toBeLessThan(gitIdx)
-      expect(gitIdx).toBeLessThan(goIdx)
-      expect(goIdx).toBeLessThan(knowledgeIdx)
-      expect(knowledgeIdx).toBeLessThan(jobIdx)
+      expect(memoryIdx).toBeLessThan(jobIdx)
     })
   })
 
   describe('git pull', () => {
     it('pulls the a5-ai repo before building the prompt', async () => {
       setupFs({
-        '/data/a5-ai/CLAUDE.md': '',
         '/data/a5-ai/workflows/migration/workflow.md': '',
       })
 

@@ -16,13 +16,12 @@ The platform uses the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) as
 
 ### Language-agnostic architecture
 
-The system is fully language-agnostic. No language-specific defaults are hardcoded in infrastructure. Language support works through three intelligence layers:
+The system is fully language-agnostic. No language-specific defaults are hardcoded in infrastructure. Language support works through two intelligence layers:
 
-1. **Convention files** (`conventions/{language}.md`) — one file per language
-2. **Workflow YAML metadata** — phases declare `conventions: [auto]` to load conventions matching `job.params.language`
-3. **Planner agent** — detects the target language from the repository and calls `set_job_params` so all downstream phases load the correct conventions
+1. **Convention skills** (`.claude/skills/{language}-conventions/SKILL.md`) — one skill per language, invoked on-demand by agents
+2. **Planner agent** — detects the target language from the repository and calls `set_job_params` so downstream agents know which conventions skill to invoke
 
-Adding support for a new language requires writing one convention file and referencing it in the workflow YAML. Zero infrastructure changes.
+Adding support for a new language requires writing one skill file. Zero infrastructure changes.
 
 ---
 
@@ -49,7 +48,7 @@ Adding support for a new language requires writing one convention file and refer
 │  ┌─────────────────┐  ┌──────────────────────┐  ┌─────────────────────────┐ │
 │  │   HTTP Server   │  │   Webhook Receiver   │  │    File Watcher         │ │
 │  │  POST /jobs/*   │  │  HMAC verification   │  │  memory/ + agents/ +   │ │
-│  │  GET  /jobs/*   │  │  event routing       │  │  knowledge/ + config/  │ │
+│  │  GET  /jobs/*   │  │  event routing       │  │  .claude/ + config/    │ │
 │  │  SSE  /stream   │  └──────────┬───────────┘  │  → self-update PRs     │ │
 │  └────────┬────────┘             │              └────────────┬────────────┘ │
 │           └──────────────────────▼───────────────────────────▼──────────┐   │
@@ -74,10 +73,9 @@ Adding support for a new language requires writing one convention file and refer
 │  ┌──────────────────────────────────────▼──────────────────────────────┐    │
 │  │                        Prompt Builder                                │    │
 │  │  Assembles system prompt per phase:                                 │    │
-│  │  CLAUDE.md + workflow + agent + memory + conventions + knowledge    │    │
-│  │  + infrastructure context + job context (JSON)                      │    │
-│  │  Conventions: metadata-driven from workflow YAML (never hardcoded) │    │
-│  │  Knowledge: domain-specific guides loaded per phase                │    │
+│  │  workflow + agent + memory + job context (JSON)                     │    │
+│  │  Static content: natively loaded from .claude/CLAUDE.md by SDK     │    │
+│  │  Domain knowledge + conventions: on-demand skills invoked by agents│    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────┼────────────────────────────────────┘
                                           │
@@ -134,23 +132,22 @@ The central service. Always running. Key responsibilities:
 - **Webhook Receiver:** Accepts BitBucket and Jira webhook events. Verifies HMAC signatures. Routes each event to the correct parked job via the Redis registry.
 - **Job Dispatcher:** Creates `Job` objects with the correct `type` and `workflowPath`, and starts job runners. Maps trigger sources (CLI, BitBucket, Jira) to job types.
 - **Job Runners:** Each active job runs as a series of Claude Agent SDK `query()` calls — one per workflow phase. The SDK manages the entire tool-use loop, subagent spawning, and conversation flow internally. The runner handles linear phase advancement, `goto_phase` overrides, `await_event` parking, and error handling. The runner has **zero orchestration intelligence** — all multi-feature loops, session resets, and completion decisions are made by the LLM via agent instructions.
-- **Prompt Builder:** Assembles the system prompt for each phase by loading CLAUDE.md, the workflow file, the agent instructions, memory files, conventions (resolved from workflow YAML metadata), knowledge modules (loaded per-phase), infrastructure context, and the job context JSON. Convention loading is purely metadata-driven — the builder has no knowledge of any programming language.
+- **Prompt Builder:** Assembles the system prompt for each phase by loading the workflow file, agent instructions, memory files, and job context JSON. Static content (behavior rules, company context, git conventions, infrastructure) is loaded natively by the SDK from `.claude/CLAUDE.md`. Domain knowledge and language conventions are loaded on-demand by agents via skills.
 - **MCP Server:** An in-process MCP server exposes all domain-specific tools (BitBucket, observability, Jira, test harness, feature tracking, job control, self-improvement) to the Agent SDK. The SDK's built-in tools handle filesystem, shell, git, and code search.
-- **File Watcher:** Monitors `a5-ai/memory/`, `a5-ai/agents/`, `a5-ai/knowledge/`, `a5-ai/conventions/`, and `a5-ai/tools/src/` on the shared volume. When an agent writes to these directories, the watcher validates changes (TypeScript build, YAML parse, workflow config parse) and opens a PR on the `a5-ai` repo for human review.
+- **File Watcher:** Monitors `a5-ai/memory/`, `a5-ai/agents/`, `a5-ai/.claude/`, and `a5-ai/tools/src/` on the shared volume. When an agent writes to these directories, the watcher validates changes (TypeScript build, YAML parse, workflow config parse, skill frontmatter) and opens a PR on the `a5-ai` repo for human review.
 
 #### Intelligence Layer
 
 The intelligence layer is the collection of Markdown files that define how agents think and act. It is organized into five tiers with different volatility and update paths:
 
 
-| Layer             | Directory      | Volatility   | Updated by                                  |
-| ----------------- | -------------- | ------------ | ------------------------------------------- |
-| Root instructions | `CLAUDE.md`    | Rarely       | Human developers                            |
-| Workflows         | `workflows/`   | Rarely       | Human developers                            |
-| Agents            | `agents/`      | Occasionally | Evaluator/PR Reviewer → propose_change → PR |
-| Knowledge modules | `knowledge/`   | Occasionally | Agents → propose_change → PR                |
-| Conventions       | `conventions/` | Rarely       | Human developers, agents → PR               |
-| Memory            | `memory/`      | Frequently   | Agents → direct write → watcher PR          |
+| Layer             | Directory                  | Volatility   | Updated by                                  |
+| ----------------- | -------------------------- | ------------ | ------------------------------------------- |
+| Root instructions | `.claude/CLAUDE.md`        | Rarely       | Human developers                            |
+| Workflows         | `workflows/`               | Rarely       | Human developers                            |
+| Agents            | `agents/`                  | Occasionally | Evaluator/PR Reviewer → propose_change → PR |
+| Skills            | `.claude/skills/`          | Occasionally | Agents → propose_change → PR                |
+| Memory            | `memory/`                  | Frequently   | Agents → direct write → watcher PR          |
 
 
 All changes to the intelligence layer go through a PR for human review. No agent can silently modify how other agents behave.
@@ -245,8 +242,6 @@ phases:
     agent: agents/coder.md
     model: coding
     status: coding
-    knowledge: [knowledge/migration/coding-guide.md]
-    conventions: [auto]
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -262,25 +257,18 @@ overrides:
 Key metadata fields on each phase:
 
 
-| Field         | Purpose                                                                           |
-| ------------- | --------------------------------------------------------------------------------- |
-| `knowledge`   | Array of knowledge module paths to inject into the agent's context for this phase |
-| `conventions` | Array of convention file paths or `"auto"` to resolve from `job.params.language`  |
-| `subagents`   | Array of subagent definitions for parallel work within this phase                 |
+| Field       | Purpose                                                              |
+| ----------- | -------------------------------------------------------------------- |
+| `subagents` | Array of subagent definitions for parallel work within this phase    |
 
 
 The Markdown content below the front matter contains the human-readable workflow documentation, phase descriptions, and orchestration logic (e.g., how the evaluator manages the multi-feature loop).
 
-### 3.3 Convention and knowledge routing
+### 3.3 Domain knowledge and conventions (skills)
 
-The prompt builder assembles the system prompt for each phase using metadata from the workflow YAML:
+Domain knowledge and language conventions are provided as **skills** in `.claude/skills/`. Agents invoke them on-demand via the `Skill` tool rather than having them pre-injected into the system prompt. This reduces per-phase token costs by only loading knowledge when an agent actually needs it.
 
-1. `**conventions/git.md**` is always loaded (universal process conventions)
-2. If the phase declares `conventions: [auto]`, the builder looks up `job.params.language` and loads `conventions/{language}.md`
-3. If the phase declares `conventions: ["conventions/dotnet.md"]`, that explicit file is loaded
-4. If the phase declares `knowledge: [...]`, those files are loaded as "Domain Knowledge" sections
-
-The builder never hardcodes any language. The `conventions/` directory can hold files for any language. Adding language support is a pure intelligence-layer task.
+The SDK discovers skills via the `.claude/` directory (symlinked into the job working directory). The builder never handles knowledge or convention loading — agents invoke skills themselves based on their instructions.
 
 ### 3.4 Trigger → Job routing table
 
@@ -290,12 +278,12 @@ The builder never hardcodes any language. The `conventions/` directory can hold 
 | CLI: `a5 migrate` | —                                                       | `migration`   | `workflows/migration/workflow.md` |
 | CLI: `a5 feature` | —                                                       | `feature`     | `workflows/feature/workflow.md`   |
 | Jira webhook      | `issue_assigned`                                        | `feature`     | `workflows/feature/workflow.md`   |
-| File watcher      | `memory/*.md`, `agents/*.md`, `knowledge/*.md` modified | `self-update` | *(inline)*                        |
+| File watcher      | `memory/*.md`, `agents/*.md`, `.claude/**` modified      | `self-update` | *(inline)*                        |
 
 
 ### 3.5 Agent reuse across workflows
 
-Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise through injected knowledge modules and conventions. The same coder agent works for Go migrations, .NET features, and TypeScript projects — the injected context changes, not the agent:
+Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go migrations, .NET features, and TypeScript projects — the invoked skills change, not the agent:
 
 
 | Job phase               | Agent loaded            |
@@ -330,15 +318,14 @@ Phase 0: Initialization
   - Set job.params.language = "dotnet" (source language for analyzer)
 
         ▼
-Phase 1: Analysis (Analyzer Agent + analysis-guide.md knowledge)
+Phase 1: Analysis (Analyzer Agent + migration-analysis skill)
   - Parse C# code: extract all endpoints, DTOs, middleware, auth, EF models
   - Query Loki: real traffic patterns per endpoint (30 days)
   - Query Tempo: downstream dependency traces
   - Output: service-contract.json, dependencies.json, traffic-baseline.json, analysis-notes.md
-  - Conventions loaded: dotnet.md (source language), git.md
 
         ▼
-Phase 2: Planning (Planner Agent + planning-guide.md knowledge)
+Phase 2: Planning (Planner Agent + migration-planning skill)
   - Group endpoints into features (domain-based)
   - Order by: dependencies first, then traffic volume, then complexity
   - Annotate with risk level (high/medium/low)
@@ -351,29 +338,28 @@ Phase 2: Planning (Planner Agent + planning-guide.md knowledge)
 Phase 3: Repository Setup (Coder Agent)
   - Create {service-name}-go repo on BitBucket as @a5-coder-agent
   - Push initial Go project scaffold to main
-  - Conventions loaded: golang.md (target language), git.md
 
         ▼
 Phase 4-7: Feature Implementation Loop  ◄──────────────────────┐
   │  Driven by the Evaluator agent, NOT the runner             │
   │                                                             │
-  ├── Coding (Coder Agent + coding-guide.md knowledge)         │
+  ├── Coding (Coder Agent + migration-coding skill)            │
   │     - Call get_features → find next pending feature         │
   │     - Call update_feature → mark it in-progress            │
   │     - If new feature: call request_new_session             │
   │     - Create feature branch, implement, open PR            │
   │                                                             │
-  ├── Review (PR Reviewer Agent + review-guide.md knowledge)   │
+  ├── Review (PR Reviewer Agent + migration-review skill)      │
   │     - Post structured review as @a5-reviewer-agent         │
   │     - Coordinate fixes with coder via goto_phase           │
   │     - Wait for human approval → merge PR                   │
   │                                                             │
-  ├── Testing (Tester Agent + testing-guide.md knowledge)      │
+  ├── Testing (Tester Agent + migration-testing skill)         │
   │     - Build service, run comparison tests vs staging .NET  │
   │     - Diff: status codes, body, headers                    │
   │     - Output: test-results/{feature}.json                  │
   │                                                             │
-  └── Evaluation (Evaluator Agent + evaluation-guide.md)       │
+  └── Evaluation (Evaluator Agent + migration-evaluation skill) │
         - Classify failures, write to memory                   │
         - Call update_feature to set status                    │
         - Decision:                                            │
@@ -398,7 +384,7 @@ Migration workflows involve two languages:
 1. **Source language** (e.g., .NET/C#) — used by the analyzer phase. The init phase sets `job.params.language` to the source language so the analyzer gets the right conventions.
 2. **Target language** (e.g., Go) — used by coding, review, testing, and evaluation phases. The planner updates `job.params.language` to the target language via `set_job_params` after producing the plan.
 
-The knowledge modules in `knowledge/migration/` provide the cross-language translation guidance.
+The migration skills (e.g., `migration-coding`, `migration-analysis`) provide the cross-language translation guidance.
 
 ### 4.3 Job parking and resumption
 
@@ -453,7 +439,7 @@ Trigger: a5 feature ... OR Jira ticket assigned to @a5-feature-agent
   - Post comment on Jira ticket confirming ticket was received
 
         ▼
-Phase 1: Planning (Planner Agent + feature planning-guide.md)
+Phase 1: Planning (Planner Agent + feature-planning skill)
   - Read feature-spec.md (or CLI description)
   - Detect target language from repo (go.mod → golang, *.csproj → dotnet, etc.)
   - Call set_job_params({ language: "<detected>" })
@@ -462,13 +448,13 @@ Phase 1: Planning (Planner Agent + feature planning-guide.md)
 
         ▼
 Phase 2+: Code → Review → Test → Evaluate
-  - Same agents as migration, with conventions loaded from job.params.language
-  - Feature-specific knowledge modules (knowledge/feature/*.md) injected
+  - Same agents as migration, invoking language conventions skills on-demand
+  - Feature-specific skills (feature-planning, feature-testing) invoked by agents
   - Same evaluator-driven loop for multi-feature jobs
   - On complete: transition Jira ticket to Done (via mcp__a5__jira_transition_issue)
 ```
 
-The feature workflow is completely language-neutral. A .NET feature job gets `conventions/dotnet.md` injected. A Go feature gets `conventions/golang.md`. A TypeScript feature gets `conventions/typescript.md`. The planner detects the language and all downstream phases load the correct conventions automatically.
+The feature workflow is completely language-neutral. Agents invoke the relevant language conventions skill on-demand (e.g., `golang-conventions`, `dotnet-conventions`). The planner detects the language and downstream agents invoke the correct conventions skill.
 
 ---
 
@@ -477,14 +463,13 @@ The feature workflow is completely language-neutral. A .NET feature job gets `co
 The system has three layers of accumulated intelligence, each with a different volatility and update path:
 
 
-| Layer       | Location            | Volatility                         | Example                                      |
-| ----------- | ------------------- | ---------------------------------- | -------------------------------------------- |
-| Memory      | `memory/*.md`       | High — grows with every job        | New pitfall discovered during migration      |
-| Knowledge   | `knowledge/**/*.md` | Medium — updated for systemic gaps | Missing translation pattern in coding guide  |
-| Conventions | `conventions/*.md`  | Low — updated for standards gaps   | Human feedback reveals a missing naming rule |
+| Layer       | Location                     | Volatility                         | Example                                      |
+| ----------- | ---------------------------- | ---------------------------------- | -------------------------------------------- |
+| Memory      | `memory/*.md`                | High — grows with every job        | New pitfall discovered during migration      |
+| Skills      | `.claude/skills/*/SKILL.md`  | Medium — updated for systemic gaps | Missing translation pattern in coding skill  |
 
 
-All three layers are watched by the file watcher. All changes go through a PR for human review.
+Both layers are watched by the file watcher. All changes go through a PR for human review.
 
 ### 6.1 Centralized insights model
 
@@ -589,8 +574,8 @@ Developer 1: a5 migrate --repo user-service        Developer 2: a5 feature --rep
       working/user-svc-migration-1234/              working/payments-feature-5678/
       Job Runner A (SDK query() per phase)          Job Runner B (SDK query() per phase)
       language: golang (target)                     language: typescript (detected)
-      conventions/golang.md loaded                  conventions/typescript.md loaded
-      knowledge/migration/*.md injected             knowledge/feature/*.md injected
+      golang-conventions skill invoked              typescript-conventions skill invoked
+      migration-* skills invoked on-demand          feature-* skills invoked on-demand
 ```
 
 The same BitBucket service accounts handle all jobs simultaneously — `@a5-coder-agent` can have open PRs across multiple repos. The Redis registry ensures each webhook event routes to the correct job via `pr:{prId}:job`.
@@ -604,11 +589,10 @@ The same BitBucket service accounts handle all jobs simultaneously — `@a5-code
 
 | Data                               | Location                             | Updated by                                                              |
 | ---------------------------------- | ------------------------------------ | ----------------------------------------------------------------------- |
-| Root instructions                  | `a5-ai/CLAUDE.md` (git)              | Human developers                                                        |
+| Root instructions                  | `a5-ai/.claude/CLAUDE.md` (git)      | Human developers                                                        |
 | Agent instructions                 | `a5-ai/agents/` (git)                | Agents → propose_change → PR → merge                                    |
 | Workflow definitions               | `a5-ai/workflows/` (git)             | Human developers                                                        |
-| Knowledge modules                  | `a5-ai/knowledge/` (git)             | Agents → propose_change → PR → merge                                    |
-| Conventions                        | `a5-ai/conventions/` (git)           | Human developers, agents → PR                                           |
+| Skills (knowledge + conventions)   | `a5-ai/.claude/skills/` (git)        | Agents → propose_change → PR → merge                                    |
 | Accumulated memory                 | `a5-ai/memory/` (git)                | Evaluator (informed by job insights) / PR Reviewer → watcher PR → merge |
 | Per-job intermediate state         | `working/{job-id}/` (shared volume)  | Job runners                                                             |
 | Job metadata + features + insights | Redis `job:{jobId}`                  | Job runners, MCP tools                                                  |
@@ -709,37 +693,40 @@ Each subagent gets its own Claude session with access to the MCP server and any 
 
 ## 10. Knowledge Architecture
 
-### 10.1 Knowledge modules
+### 10.1 Skills
 
-Knowledge modules live in `knowledge/` and contain domain-specific expertise for each workflow type. They are injected into agent prompts based on the `knowledge` field in workflow YAML:
+Domain knowledge and language conventions live in `.claude/skills/` as on-demand skills. Agents invoke them via the `Skill` tool when they need specialized guidance:
 
 ```
-knowledge/
-  migration/
-    analysis-guide.md      ← .NET codebase analysis patterns
-    planning-guide.md      ← Migration planning heuristics
-    coding-guide.md        ← Contract parity and translation patterns
-    testing-guide.md       ← Comparison testing methodology
-    evaluation-guide.md    ← Migration failure taxonomy
-    review-guide.md        ← Migration PR review checklist
-  feature/
-    planning-guide.md      ← Feature scoping and planning
-    testing-guide.md       ← Feature testing methodology
+.claude/skills/
+  migration-analysis/SKILL.md      ← .NET codebase analysis patterns
+  migration-planning/SKILL.md      ← Migration planning heuristics
+  migration-coding/SKILL.md        ← Contract parity and translation patterns
+  migration-testing/SKILL.md       ← Comparison testing methodology
+  migration-evaluation/SKILL.md    ← Migration failure taxonomy
+  migration-review/SKILL.md        ← Migration PR review checklist
+  feature-planning/SKILL.md        ← Feature scoping and planning
+  feature-testing/SKILL.md         ← Feature testing methodology
+  golang-conventions/SKILL.md      ← Go coding standards
+  dotnet-conventions/SKILL.md      ← .NET/C# coding standards
+  self-improvement-guide/SKILL.md  ← Proposal types and file structure guide
 ```
+
+Skills are loaded on-demand rather than pre-injected, reducing per-phase token costs.
 
 ### 10.2 Separation of concerns
 
 The intelligence layer separates **procedure** from **domain expertise**:
 
 - **Agent files** define procedure: what to do, in what order, which tools to call. They are generic and language-agnostic.
-- **Knowledge modules** define domain expertise: how to do it for a specific technology or workflow. They are loaded per-phase based on workflow YAML metadata.
-- **Convention files** define coding standards: how to write correct code in a specific language. They are loaded via the `auto` mechanism based on `job.params.language`.
+- **Skills** define domain expertise: how to do it for a specific technology or workflow. Agents invoke them on-demand when they need specialized guidance.
+- **`.claude/CLAUDE.md`** defines always-loaded context: behavior rules, company context, git conventions, infrastructure.
 
 This separation means:
 
-- The same coder agent handles Go migrations and .NET features — different knowledge/conventions are injected
-- Adding a new workflow type (e.g., security audit) means creating new knowledge modules and a workflow file, not new agents
-- Adding a new language means creating one convention file — no infrastructure changes
+- The same coder agent handles Go migrations and .NET features — different skills are invoked
+- Adding a new workflow type (e.g., security audit) means creating new skills and a workflow file, not new agents
+- Adding a new language means creating one convention skill — no infrastructure changes
 
 ---
 
@@ -794,25 +781,25 @@ All configuration lives in `tools/config/settings.json` with environment variabl
 | Term             | Definition                                                                                                                                                                               |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent            | A Claude Agent SDK `query()` session given a specific role via an MD file, with access to built-in tools and the MCP server                                                              |
-| Convention       | A coding standards file for a specific language (`conventions/{lang}.md`), loaded dynamically based on `job.params.language`                                                             |
+| Convention skill | A coding standards skill (`.claude/skills/{lang}-conventions/SKILL.md`), invoked on-demand by agents based on `job.params.language`                                                      |
 | Feature          | A logical group of endpoints or changes handled as one branch + PR, tracked via `FeatureItem` in the job state                                                                           |
 | FeatureItem      | A structured record tracking a feature's name, status (pending/in-progress/complete/escalated), and loop count                                                                           |
 | Insight          | A structured learning or workaround recorded by any agent via `add_insight`, stored on `Job.insights[]`, and reviewed by the evaluator at the end of the workflow                        |
 | Job              | A unit of work with a `type`, `workflowPath`, features list, insights list, and state persisted in Redis and the shared volume                                                           |
 | JobType          | `migration`, `feature`, or `self-update` — determines which workflow and phases apply                                                                                                    |
 | Job Runner       | The TypeScript code that drives Claude Agent SDK sessions for one job across its phases. Has zero orchestration intelligence.                                                            |
-| Knowledge module | A domain-specific guide in `knowledge/` that supplements agent instructions with workflow-specific expertise, loaded per-phase                                                           |
+| Knowledge skill  | A domain-specific skill in `.claude/skills/` that supplements agent instructions with workflow-specific expertise, invoked on-demand                                                     |
 | Memory           | MD files in `a5-ai/memory/` containing accumulated knowledge from past jobs, updated via PRs                                                                                             |
 | MCP Server       | In-process Model Context Protocol server exposing domain tools to the Agent SDK                                                                                                          |
 | Park             | When a job pauses to wait for an external event (PR merge, comment, approval) without consuming CPU                                                                                      |
 | Phase            | A discrete stage within a workflow, each mapped to a specific agent MD file and run as one `query()` call                                                                                |
-| Prompt Builder   | Assembles the system prompt per phase from CLAUDE.md, workflow, agent, memory, conventions, knowledge, and job context                                                                   |
+| Prompt Builder   | Assembles the system prompt per phase from workflow, agent, memory, and job context (static intelligence loaded natively via `.claude/CLAUDE.md`)                                        |
 | Resume           | When an incoming webhook event restores a parked job and continues its runner loop                                                                                                       |
 | Self-improvement | The centralized learning loop: agents record insights via `add_insight`, the evaluator reviews them and calls `propose_change`, triggering validation and a PR on a5-ai for human review |
 | Service account  | A BitBucket user account operated by the system (`@a5-coder-agent`, `@a5-reviewer-agent`)                                                                                                |
 | Spec Writer      | Agent that translates a Jira ticket into a structured feature spec for the planner                                                                                                       |
 | Subagent         | A child agent spawnable within a phase for parallel work (e.g. code-reviewer, test-runner)                                                                                               |
-| Workflow         | An MD file with YAML front matter defining ordered phases, agent assignments, model selection, knowledge/convention routing, and subagent definitions                                    |
+| Workflow         | An MD file with YAML front matter defining ordered phases, agent assignments, model selection, and subagent definitions                                                                  |
 | workflowPath     | The relative path to the workflow MD file for a job, e.g. `workflows/migration/workflow.md`                                                                                              |
 
 

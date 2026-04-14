@@ -1,3 +1,11 @@
+---
+name: feature-planning
+description: >-
+  Feature scoping and planning: spec analysis, feature breakdown, implementation
+  plan format, language detection, branch strategy. Use when planning feature
+  implementations in existing services.
+---
+
 # Feature Planning Guide
 
 Domain-specific guidance for planning feature implementations in existing services. Supplements the generic Planner agent instructions with feature-specific scoping and planning conventions.
@@ -48,10 +56,8 @@ After analyzing the repository structure, the planner must call `set_job_params(
 - `Cargo.toml` → `rust`
 - `requirements.txt` or `pyproject.toml` → `python`
 
-All downstream coding phases with `conventions: [auto]` will then load the correct language conventions automatically.
-
 ## Branch strategy
 
-- Use `conventions/git.md` for branch naming
+- Use the git conventions (from your always-loaded context) for branch naming
 - Target the branch specified in job params, defaulting to `main`
 - For multi-feature plans, each feature gets its own branch and PR

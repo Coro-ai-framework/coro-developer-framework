@@ -1,3 +1,11 @@
+---
+name: migration-testing
+description: >-
+  Migration comparison testing methodology: parallel testing against source
+  staging service, severity classification, non-deterministic field exclusion,
+  post-test Loki checks. Use when testing migrated services.
+---
+
 # Migration Testing Guide
 
 Domain-specific guidance for testing migrated services against the source implementation. Supplements the generic Tester agent instructions with comparison testing methodology.

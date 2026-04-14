@@ -12,13 +12,11 @@ phases:
     agent: agents/planner.md
     model: planning
     status: planning
-    knowledge: [knowledge/feature/planning-guide.md]
 
   - name: coding
     agent: agents/coder.md
     model: coding
     status: coding
-    conventions: [auto]
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -29,20 +27,16 @@ phases:
     agent: agents/pr-reviewer.md
     model: coding
     status: reviewing
-    conventions: [auto]
 
   - name: testing
     agent: agents/tester.md
     model: coding
     status: testing
-    conventions: [auto]
-    knowledge: [knowledge/feature/testing-guide.md]
 
   - name: evaluation
     agent: agents/evaluator.md
     model: planning
     status: evaluating
-    conventions: [auto]
 
 overrides:
   jira:
@@ -71,7 +65,7 @@ This workflow is executed by the **Agent Host Service**. The Agent Host:
 
 ## Language handling
 
-The Planner agent detects the repository's language (from `go.mod`, `package.json`, `*.csproj`, etc.) and calls `set_job_params({ language: "<detected-language>" })`. All downstream phases with `conventions: [auto]` then load the correct language conventions automatically. A .NET feature job gets `conventions/dotnet.md`, a Go feature gets `conventions/golang.md`, a TypeScript feature gets `conventions/typescript.md`. The workflow itself is completely language-neutral.
+The Planner agent detects the repository's language (from `go.mod`, `package.json`, `*.csproj`, etc.) and calls `set_job_params({ language: "<detected-language>" })`. Downstream agents invoke the relevant language conventions skill (e.g., `golang-conventions`, `dotnet-conventions`) on-demand when writing or reviewing code. The workflow itself is completely language-neutral.
 
 ## Feature tracking
 
@@ -97,7 +91,7 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 1: Planning
 
 **Agent:** Planner (`agents/planner.md`)
-**Knowledge:** `knowledge/feature/planning-guide.md`
+**Skills:** Agent invokes `feature-planning` for domain knowledge
 
 1. Read the feature spec (or CLI description)
 2. Analyze the existing codebase to understand language, structure, and patterns
@@ -110,7 +104,7 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 2: Coding
 
 **Agent:** Coder (`agents/coder.md`)
-**Conventions:** Auto-loaded from `job.params.language`
+**Skills:** Agent invokes language conventions skill for the target language
 
 1. Call `get_features` to find the current feature
 2. Call `update_feature` to mark it `in-progress`
@@ -125,7 +119,7 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 3: Review
 
 **Agent:** PR Reviewer (`agents/pr-reviewer.md`)
-**Conventions:** Auto-loaded from `job.params.language`
+**Skills:** Agent invokes language conventions skill for code review
 
 1. Post a structured code review against conventions and plan
 2. Monitor for human reviewer comments
@@ -137,8 +131,7 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 4: Testing
 
 **Agent:** Tester (`agents/tester.md`)
-**Conventions:** Auto-loaded from `job.params.language`
-**Knowledge:** `knowledge/feature/testing-guide.md`
+**Skills:** Agent invokes `feature-testing` for domain knowledge
 
 1. Build the service
 2. Run the test suite
@@ -150,7 +143,6 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 5: Evaluation
 
 **Agent:** Evaluator (`agents/evaluator.md`)
-**Conventions:** Auto-loaded from `job.params.language`
 
 1. Classify any failures
 2. Write new knowledge to memory

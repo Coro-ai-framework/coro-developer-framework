@@ -256,24 +256,24 @@ These are the tools the Claude API can call during a job. Each is a TypeScript f
 
 ## Prompt Assembly
 
-The `promptBuilder` loads MD files from `a5-ai/` on the shared volume and assembles them into a Claude system prompt. It always pulls the latest git state before building, so merged improvements are immediately reflected.
+The prompt has two layers:
+
+1. **Natively loaded by the SDK** — The Agent Host passes `settingSources: ['project']` and symlinks `.claude/` into each job's working directory. The SDK discovers `.claude/CLAUDE.md` (always-loaded behavior rules, company context, git conventions, infrastructure) and `.claude/skills/` (on-demand knowledge and conventions) automatically.
+
+2. **Custom system prompt** — The `promptBuilder` assembles a lightweight system prompt from a5-ai MD files. It always pulls the latest git state before building, so merged improvements are immediately reflected.
 
 ```typescript
 // Example: building the system prompt for the Coder phase
 const systemPrompt = [
-  readFile('a5-ai/CLAUDE.md'),
   readFile('a5-ai/workflows/migration/workflow.md'),
   readFile('a5-ai/agents/coder.md'),
-  readFile('a5-ai/conventions/golang.md'),
-  readFile('a5-ai/conventions/git.md'),
   readFile('a5-ai/memory/MEMORY.md'),
   ...loadAllMemoryFiles('a5-ai/memory/'),
-  // Inject current job context
   `## Current job context\n${JSON.stringify(job.context, null, 2)}`
 ].join('\n\n---\n\n')
 ```
 
-Each phase loads only the agent files relevant to that phase. This keeps prompts focused and within token budgets.
+Domain knowledge (e.g. migration coding patterns) and language conventions (e.g. Go standards) are no longer injected into the system prompt. Agents invoke them on-demand via the `Skill` tool, significantly reducing per-phase token costs.
 
 ---
 
@@ -302,7 +302,7 @@ pr:fulfilled        (on a5-ai repo)
 
 ## Self-Update Flow
 
-When an agent writes to `a5-ai/memory/` or `a5-ai/agents/` on the shared volume, the Agent Host detects the change (file watcher) and triggers a self-update job:
+When an agent writes to `a5-ai/memory/`, `a5-ai/agents/`, or `a5-ai/.claude/` on the shared volume, the Agent Host detects the change (file watcher) and triggers a self-update job:
 
 1. Branch `a5-ai`: `improvement/{description}`
 2. Commit the changed files with a structured message

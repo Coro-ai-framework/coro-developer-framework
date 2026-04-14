@@ -1,3 +1,11 @@
+---
+name: dotnet-conventions
+description: >-
+  .NET/C# coding standards: project layout, naming, controller conventions,
+  DI, serialization, error handling, EF Core, testing, configuration.
+  Use when reading, writing, or reviewing .NET code.
+---
+
 # .NET Coding Conventions
 
 Coding standards for .NET/C# services. Agents reading or writing .NET code must follow these conventions.

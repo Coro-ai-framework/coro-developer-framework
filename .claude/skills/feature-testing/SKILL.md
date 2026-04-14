@@ -1,3 +1,11 @@
+---
+name: feature-testing
+description: >-
+  Feature testing methodology: build verification, acceptance criteria
+  verification, test result format, existing test regression checks.
+  Use when testing feature implementations.
+---
+
 # Feature Testing Guide
 
 Domain-specific guidance for testing feature implementations. Supplements the generic Tester agent instructions with feature-specific verification methodology.

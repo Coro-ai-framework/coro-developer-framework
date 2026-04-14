@@ -1,3 +1,11 @@
+---
+name: migration-analysis
+description: >-
+  .NET codebase analysis patterns for migration: controller extraction, dependency
+  mapping, serialization quirks, DI patterns, and ambiguity flags. Use when
+  analyzing a .NET service prior to migration.
+---
+
 # Migration Analysis Guide
 
 Domain-specific guidance for analyzing .NET services prior to migration. Supplements the generic Analyzer agent instructions with .NET-specific extraction patterns.

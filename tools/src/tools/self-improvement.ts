@@ -16,10 +16,11 @@ type ProposalType =
   | 'modify-workflow'
   | 'new-agent'
   | 'modify-agent'
-  | 'convention-change'
   | 'memory-update'
-  | 'knowledge-update'
   | 'source-change'
+  | 'skill-create'
+  | 'skill-update'
+  | 'claude-md-update'
 
 // ── propose_change ────────────────────────────────────────────────────────────
 

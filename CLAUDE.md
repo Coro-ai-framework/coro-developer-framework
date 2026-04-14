@@ -1,6 +1,8 @@
 # A5 Labs — AI Agent Workspace
 
-This repository contains all AI agent definitions, workflows, conventions, knowledge modules, memory, and tooling for A5 Labs engineering automation.
+> **Agent runtime instructions are in `.claude/CLAUDE.md`.** This file is for developers working on this repository.
+
+This repository contains all AI agent definitions, workflows, skills, memory, and tooling for A5 Labs engineering automation.
 
 ## How this system works
 
@@ -8,7 +10,7 @@ Agents in this repository do not run directly inside Claude Code sessions. They 
 
 1. Receives job requests from the `a5` CLI or external event sources (BitBucket webhooks, Jira webhooks)
 2. Creates a typed `Job` object with a `workflowPath` pointing to the correct workflow MD file
-3. Assembles a system prompt by loading that workflow file, the relevant agent MD file, memory, conventions, and knowledge modules
+3. Assembles a system prompt from the workflow file, agent instructions, and memory — static content (behavior rules, company context, git conventions) is loaded natively by the SDK from `.claude/CLAUDE.md`
 4. Runs the Claude Agent SDK's `query()` function for each workflow phase — the SDK manages the full tool-use loop, subagent spawning, and conversation history internally
 5. Parks the job in Redis when waiting for an external event (PR merge, review comment, human approval)
 6. Resumes the job when the expected event webhook arrives
@@ -36,18 +38,17 @@ Every job carries a `type` and a `workflowPath`. The Agent Host uses these — n
 | `a5 migrate ...` (CLI) | `migration` | `workflows/migration/workflow.md` |
 | `a5 feature ...` (CLI) | `feature` | `workflows/feature/workflow.md` |
 | Jira ticket assigned to agent | `feature` | `workflows/feature/workflow.md` |
-| Agent writes to `memory/`, `agents/`, or `knowledge/` | `self-update` | *(inline, no workflow file)* |
-
-When a Jira ticket triggers a job, the **Spec Writer agent** (`agents/spec-writer.md`) runs first. It reads the ticket — title, description, acceptance criteria, components — and infers the repo, affected projects, PR reviewers, and a structured feature spec. The rest of the pipeline (planner → coder → tester → evaluator → pr-reviewer) is identical to a CLI-triggered feature job.
+| Agent writes to `memory/`, `agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
 
 ---
 
 ## What lives here
 
 - **agents/** — One MD file per agent. Each defines role, inputs, outputs, and step-by-step procedure. Agents are language-agnostic generic process definitions.
-- **workflows/** — Lifecycle definitions, one subdirectory per workflow type. Each `workflow.md` has YAML front matter defining phases, agent assignments, model selection, knowledge modules, and convention routing.
-- **knowledge/** — Domain-specific guides for each workflow type. Injected into agent prompts based on workflow YAML metadata. Contains migration-specific and feature-specific expertise.
-- **conventions/** — Coding and process rules agents must follow. One file per language (`golang.md`, `dotnet.md`) plus universal process conventions (`git.md`). Loaded dynamically based on `job.params.language`.
+- **workflows/** — Lifecycle definitions, one subdirectory per workflow type. Each `workflow.md` has YAML front matter defining phases, agent assignments, model selection, and subagent definitions.
+- **.claude/** — Intelligence loaded by the Agent SDK natively:
+  - `.claude/CLAUDE.md` — Always-loaded runtime instructions: behavior rules, company context, git conventions, infrastructure context.
+  - `.claude/skills/` — On-demand domain knowledge and language conventions. Agents invoke skills when they need specialized guidance (e.g., `migration-coding`, `golang-conventions`).
 - **config/** — `credentials.md` (gitignored, read by Agent Host at startup) and `repos.md` (service registry).
 - **memory/** — Accumulated knowledge from past jobs. Read at the start of every phase. Never modified directly — updates go through a self-improvement PR.
 - **docs/** — Architecture documentation for engineers and stakeholders.
@@ -57,11 +58,10 @@ When a Jira ticket triggers a job, the **Spec Writer agent** (`agents/spec-write
 
 ## Language-agnostic architecture
 
-The system is fully language-agnostic. No language-specific defaults are hardcoded in the infrastructure. Language support works through three layers:
+The system is fully language-agnostic. No language-specific defaults are hardcoded in the infrastructure. Language support works through two layers:
 
-1. **Convention files** (`conventions/{language}.md`) — coding standards per language. Adding a new language means writing one convention file.
-2. **Workflow YAML** — phases declare `conventions: [auto]` to load the convention file matching `job.params.language`, or `conventions: ["conventions/golang.md"]` for explicit loading.
-3. **Planner agent** — detects the target language from the repository (e.g., `go.mod` → `golang`, `*.csproj` → `dotnet`) and calls `set_job_params({ language: "..." })` so all downstream phases load the correct conventions.
+1. **Convention skills** (`.claude/skills/{language}-conventions/SKILL.md`) — coding standards per language. Adding a new language means writing one skill file.
+2. **Planner agent** — detects the target language from the repository (e.g., `go.mod` → `golang`, `*.csproj` → `dotnet`) and calls `set_job_params({ language: "..." })` so downstream agents know which conventions skill to invoke.
 
 ---
 
@@ -77,42 +77,30 @@ The system is fully language-agnostic. No language-specific defaults are hardcod
 | `agents/pr-reviewer.md` | review | migration, feature |
 | `agents/spec-writer.md` | spec-writing | feature (Jira-triggered) |
 
-Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise through injected knowledge modules and conventions. The same coder agent works for Go migrations, .NET features, and TypeScript projects — the injected context changes, not the agent.
+Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go migrations, .NET features, and TypeScript projects — the invoked skills change, not the agent.
 
 ---
 
-## Knowledge modules
+## Skills
 
-Domain-specific guides that supplement the generic agent instructions:
+On-demand domain knowledge and language conventions that agents invoke via the `Skill` tool:
 
 ```
-knowledge/
-  migration/
-    analysis-guide.md      — .NET codebase analysis patterns
-    planning-guide.md      — Migration planning heuristics
-    coding-guide.md        — Contract parity and translation patterns
-    testing-guide.md       — Comparison testing methodology
-    evaluation-guide.md    — Migration failure taxonomy
-    review-guide.md        — Migration PR review checklist
-  feature/
-    planning-guide.md      — Feature scoping and planning
-    testing-guide.md       — Feature testing methodology
+.claude/skills/
+  migration-analysis/SKILL.md       — .NET codebase analysis patterns
+  migration-planning/SKILL.md       — Migration planning heuristics
+  migration-coding/SKILL.md         — Contract parity and translation patterns
+  migration-testing/SKILL.md        — Comparison testing methodology
+  migration-evaluation/SKILL.md     — Migration failure taxonomy
+  migration-review/SKILL.md         — Migration PR review checklist
+  feature-planning/SKILL.md         — Feature scoping and planning
+  feature-testing/SKILL.md          — Feature testing methodology
+  golang-conventions/SKILL.md       — Go coding standards
+  dotnet-conventions/SKILL.md       — .NET/C# coding standards
+  self-improvement-guide/SKILL.md   — Proposal types and file structure guide
 ```
 
-Knowledge modules are loaded per phase via the `knowledge` field in workflow YAML. They are more stable than memory but less stable than conventions — updated when agents discover systemic gaps via `propose_change(type: "knowledge-update")`.
-
----
-
-## BitBucket service accounts
-
-Agents interact with BitBucket using two dedicated service accounts. These must exist in your BitBucket workspace with app passwords stored in `config/credentials.md`.
-
-| Account | BB role | Used for |
-|---------|---------|---------|
-| `@a5-coder-agent` | Developer on all service repos and `a5-ai` | Creating repos, branches, commits, opening PRs, responding to review comments |
-| `@a5-reviewer-agent` | Reviewer/Maintainer on all service repos and `a5-ai` | Posting code reviews, approving PRs, triggering merges, monitoring comment threads |
-
-Human developers interact with these accounts exactly as they would with a human colleague — comments appear in PRs, review requests arrive normally.
+Skills are invoked on-demand by agents, reducing per-phase token costs compared to always-injected knowledge modules.
 
 ---
 
@@ -144,78 +132,22 @@ a5 jobs
 
 ---
 
-## Agent behavior rules
-
-These rules apply to every agent in every workflow. The Agent Host injects them via this CLAUDE.md into every system prompt.
-
-1. **Read memory before doing anything.** Read `memory/MEMORY.md` and every file it references. Memory contains hard-won knowledge from past runs. Do not repeat known mistakes.
-
-2. **Read conventions before writing code or opening PRs.** Follow the conventions injected into your context. All git operations must follow `conventions/git.md`.
-
-3. **Use the `log` tool constantly.** Developers watch job progress via `a5 logs`. Log every significant action, decision, and result — not just errors. Be specific: `"Extracted 14 endpoints from UserController"` not `"Analyzed code"`.
-
-4. **Never skip a workflow step silently.** If a step cannot be completed, call `escalate` with a precise description of the blocker. Do not invent a workaround that deviates from the workflow.
-
-5. **Never change an API contract without documenting it.** If a service must deviate from the source contract, document the deviation in the PR description with the reason. Never silently omit an endpoint.
-
-6. **Record insights when you learn something reusable.** A failure pattern, a workaround, a translation rule, an auth quirk — if it will help future runs, call `add_insight` with the category, a one-line summary, and full context. The Evaluator reviews all insights at the end and decides what to propose via `propose_change`. Do not call `propose_change` directly unless you are the Evaluator or PR Reviewer agent.
-
-7. **Prefer observed behavior over code analysis.** When a service's behavior is ambiguous, call `loki_query` to check actual production traffic before assuming. Code can lie; logs don't.
-
-8. **Scope is strict.** Only work on the repos, projects, and features specified in the job context. Do not analyze or touch anything outside scope, even if it looks related.
-
-9. **Credentials are never read from files.** They are injected by the Agent Host as environment variables and available in the job context. Never ask for or log credentials.
-
-10. **Use feature tracking tools for multi-feature jobs.** Call `get_features` to check progress, `update_feature` to update status, `set_features` to register the feature list, and `request_new_session` when starting a new feature.
-
----
-
-## MCP tools available to agents
-
-### Feature tracking
-- `set_features` — Register the ordered feature list (called by planner)
-- `update_feature` — Update a feature's status or increment its loop count
-- `get_features` — Read the current feature list with statuses
-- `request_new_session` — Clear session for fresh context (e.g., new feature)
-- `set_job_params` — Set dynamic job parameters (e.g., language)
-
-### Job control
-- `mark_phase_complete` — Optional early turn end
-- `goto_phase` — Override next phase (e.g., loop back to coding)
-- `await_event` — Park job waiting for external event
-- `escalate` — Escalate to human
-- `log` — Append to job log stream
-
-### BitBucket, Observability, Jira, Test harness
-See `tools/src/mcp-server.ts` for the full tool inventory.
-
-### Self-improvement
-- `add_insight` — Record a learning, workaround, or pattern for the Evaluator to review (all agents)
-- `propose_change` — Propose changes to agents, conventions, knowledge, or code (Evaluator / PR Reviewer only)
-- `list_proposals` — Check past proposals before proposing duplicates
-
----
-
 ## Self-improvement rule
 
 When any agent calls `propose_change`, the Agent Host file watcher detects the written files and automatically:
 
-1. Validates the proposal (TypeScript build, YAML parse, workflow config parse)
+1. Validates the proposal (TypeScript build, YAML parse, workflow config parse, skill frontmatter)
 2. Creates a branch in this repo: `improvement/{short-description}`
 3. Commits the changed files
 4. Opens a PR tagged with the human developers and `@a5-reviewer-agent`
 5. Labels the PR `agent-self-improvement`
 
-If validation fails, a detailed error report is written to `memory/proposals/` so the agent can learn from the failure.
-
-Agents can call `list_proposals` to check past proposals before proposing duplicates, and to learn from rejected proposals.
-
 **Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the Agent Host pulls the latest `a5-ai` and all subsequent job phases use the updated instructions immediately.
 
 The self-improvement pipeline covers three layers of intelligence:
 - **Memory** (`memory/*.md`) — high volatility, grows with every job
-- **Knowledge** (`knowledge/**/*.md`) — medium volatility, updated when systemic gaps are found
-- **Conventions** (`conventions/*.md`) — low volatility, updated when human feedback reveals standards gaps
+- **Skills** (`.claude/skills/*/SKILL.md`) — medium volatility, updated when agents discover systemic gaps
+- **Agent instructions** (`agents/*.md`) — lower volatility, updated when procedures need fixing
 
 ---
 
@@ -223,10 +155,22 @@ The self-improvement pipeline covers three layers of intelligence:
 
 ```
 a5-ai/
-├── CLAUDE.md                             ← You are here. Loaded into every agent prompt.
+├── CLAUDE.md                             ← You are here. Developer-facing guide.
 ├── .claude/
-│   ├── settings.json                     ← Claude Code hook configurations
-│   └── skills/                           ← Invocable Claude Code skills
+│   ├── CLAUDE.md                         ← Agent runtime instructions (loaded by SDK)
+│   ├── settings.json                     ← Claude Code settings
+│   └── skills/                           ← On-demand skills (domain knowledge + conventions)
+│       ├── migration-analysis/SKILL.md
+│       ├── migration-planning/SKILL.md
+│       ├── migration-coding/SKILL.md
+│       ├── migration-testing/SKILL.md
+│       ├── migration-evaluation/SKILL.md
+│       ├── migration-review/SKILL.md
+│       ├── feature-planning/SKILL.md
+│       ├── feature-testing/SKILL.md
+│       ├── golang-conventions/SKILL.md
+│       ├── dotnet-conventions/SKILL.md
+│       └── self-improvement-guide/SKILL.md
 ├── config/
 │   ├── credentials.md                    ← API keys and tokens (gitignored)
 │   └── repos.md                          ← Service registry (add services here before migrating)
@@ -244,21 +188,6 @@ a5-ai/
 │   │   └── report-template.md           ← Final migration report
 │   └── feature/
 │       └── workflow.md                   ← Feature implementation lifecycle (YAML + docs)
-├── knowledge/
-│   ├── migration/
-│   │   ├── analysis-guide.md            ← .NET analysis patterns and extraction rules
-│   │   ├── planning-guide.md            ← Migration planning heuristics
-│   │   ├── coding-guide.md              ← Contract parity and translation patterns
-│   │   ├── testing-guide.md             ← Comparison testing methodology
-│   │   ├── evaluation-guide.md          ← Migration failure taxonomy
-│   │   └── review-guide.md              ← Migration PR review checklist
-│   └── feature/
-│       ├── planning-guide.md            ← Feature scoping and planning
-│       └── testing-guide.md             ← Feature testing methodology
-├── conventions/
-│   ├── git.md                           ← Branch naming, commit format, PR structure
-│   ├── golang.md                        ← Go coding conventions
-│   └── dotnet.md                        ← .NET/C# coding conventions
 ├── memory/
 │   ├── MEMORY.md                        ← Index — loaded into every agent prompt
 │   ├── known-pitfalls.md                ← Translation mistakes and failure patterns
@@ -267,6 +196,7 @@ a5-ai/
 │   └── dotnet-to-go-mappings.md         ← .NET→Go translation patterns (pre-seeded)
 ├── docs/
 │   ├── architecture.md                  ← Full system architecture
+│   ├── architecture-overview.md         ← High-level overview
 │   ├── local-setup.md                   ← Docker Compose + ngrok local dev guide
 │   └── agent-host-spec.md               ← Agent Host technical specification
 └── tools/                               ← Agent Host Service (TypeScript/Node.js)
@@ -292,7 +222,7 @@ a5-ai/
         ├── server.ts                    ← HTTP: /jobs/migrate, /jobs/feature, /webhook, SSE
         ├── mcp-server.ts                ← In-process MCP server (all domain tools)
         ├── mcp-handlers.ts              ← MCP tool implementations
-        ├── watcher.ts                   ← File watcher: memory/ + agents/ + knowledge/ → self-update PRs
+        ├── watcher.ts                   ← File watcher: memory/ + agents/ + .claude/ → self-update PRs
         ├── workflow-parser.ts           ← YAML front matter parser (phases, knowledge, conventions)
         ├── config/settings.ts
         ├── jobs/
@@ -312,15 +242,3 @@ a5-ai/
             ├── types.ts                 ← ToolContext, PhaseSignals
             └── self-improvement.ts      ← propose_change, list_proposals
 ```
-
----
-
-## Company context
-
-- **Company:** A5 Labs
-- **Primary stack:** .NET 8 microservices (C#), migrating to Go
-- **Source control:** BitBucket (workspace slug in `config/credentials.md`)
-- **Observability:** Grafana — Loki (logs) + Tempo (distributed traces)
-- **Deployment:** Kubernetes via Helm. Per-service config in `helm-app-config` repo (see `config/repos.md`)
-- **Environments:** staging and production. Staging is the benchmark for all migration testing.
-- **Issue tracking:** Jira (future integration — Jira-triggered feature jobs)

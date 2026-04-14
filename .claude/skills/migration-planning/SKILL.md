@@ -1,3 +1,11 @@
+---
+name: migration-planning
+description: >-
+  Migration planning heuristics: feature grouping, ordering by dependency and
+  risk, infrastructure-first rule, risk assessment, plan format. Use when
+  producing a migration implementation plan.
+---
+
 # Migration Planning Guide
 
 Domain-specific guidance for producing migration plans. Supplements the generic Planner agent instructions with migration-specific ordering heuristics and conventions.
@@ -77,4 +85,4 @@ At the end of the plan, include:
 
 ## Setting the target language
 
-After producing the plan, the planner must call `set_job_params({ language: "<target-language>" })` to set the target language for downstream phases. For migration jobs, this is the language being migrated TO (not the source language). All downstream coding phases with `conventions: [auto]` will then load the correct conventions automatically.
+After producing the plan, the planner must call `set_job_params({ language: "<target-language>" })` to set the target language for downstream phases. For migration jobs, this is the language being migrated TO (not the source language). All downstream coding phases will then load the correct language conventions skill automatically.

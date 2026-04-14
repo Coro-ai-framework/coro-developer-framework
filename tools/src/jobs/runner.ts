@@ -1,5 +1,5 @@
 import { query, type McpSdkServerConfig, type Query } from '@anthropic-ai/claude-agent-sdk'
-import { mkdirSync, readFileSync } from 'fs'
+import { lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
 import path from 'path'
@@ -141,6 +141,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const mcpServer = createA5McpServer(toolCtx, signals)
 
       const systemPrompt = await buildSystemPrompt(liveJob, settings, ctx.gitClient, logger)
+      const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
+      logger.info(
+        { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
+        `System prompt assembled: ${promptSizeKb} KB`,
+      )
+      await registry.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
       const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, liveJob.phase) : null
 
       // pendingPrompt is set by the dispatcher when a webhook event resumes the job.
@@ -161,6 +167,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
       /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as "cli.js not found". */
       mkdirSync(workingDir, { recursive: true })
+      ensureClaudeConfigSymlink(workingDir, settings.paths.a5aiDir, logger)
 
       // Build subagent definitions from workflow config
       const agents = phaseConf?.subagents
@@ -182,9 +189,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         systemPrompt,
         model,
         cwd: workingDir,
+        settingSources: ['project'],
         mcpServers: { a5: mcpServer },
         allowedTools: [
           'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
+          'Skill',
           'mcp__a5__*',
           ...(agents ? ['Agent'] : []),
         ],
@@ -480,6 +489,27 @@ function buildSubagentDefinitions(
     }
   }
   return defs
+}
+
+/**
+ * Symlink {a5aiDir}/.claude into the job working directory so the Agent SDK's
+ * native settingSources: ['project'] discovers .claude/CLAUDE.md and skills.
+ * Uses a symlink (not copy) so propose_change writes to the real a5-ai repo
+ * and the file watcher picks up changes as usual.
+ */
+function ensureClaudeConfigSymlink(workingDir: string, a5aiDir: string, logger: Logger): void {
+  const target = path.join(a5aiDir, '.claude')
+  const link = path.join(workingDir, '.claude')
+  try {
+    const stat = lstatSync(link)
+    if (stat.isSymbolicLink()) return
+    rmSync(link, { recursive: true })
+  } catch { /* doesn't exist yet — expected */ }
+  try {
+    symlinkSync(target, link, 'dir')
+  } catch (err) {
+    logger.warn({ err, target, link }, 'Could not create .claude symlink')
+  }
 }
 
 function buildInitialMessage(job: Job): string {

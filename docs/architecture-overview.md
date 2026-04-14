@@ -39,7 +39,7 @@ The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven b
 
 1. A **trigger** starts a job — CLI command, Jira ticket, or webhook event.
 2. The Agent Host creates a **Job** and looks up the matching **Workflow** (a Markdown file with YAML config defining the sequence of phases).
-3. For each phase, the Host assembles a prompt from the relevant Markdown files — agent instructions, coding conventions, domain knowledge, and accumulated memory — then hands it to Claude.
+3. For each phase, the Host assembles a lightweight prompt from the workflow, agent instructions, and accumulated memory, then hands it to Claude. Static intelligence (behavior rules, company context, git conventions) is loaded natively by the SDK via `.claude/CLAUDE.md`, and domain knowledge and coding conventions are available as on-demand skills.
 4. Claude executes the phase: reading code, writing code, calling tools (BitBucket, Loki, Jira, etc.), and making decisions.
 5. When a job needs to wait for something external (e.g. a PR review), it **parks** in Redis and resumes automatically when the webhook arrives.
 
@@ -47,17 +47,17 @@ The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven b
 
 ## The intelligence layer
 
-All agent behavior is defined in Markdown files, organized into five layers:
+All agent behavior is defined in Markdown files, organized into four layers:
 
 | Layer | What it contains | How it changes |
 |-------|-----------------|----------------|
+| **Always-loaded context** (`.claude/CLAUDE.md`) | Behavior rules, company context, git conventions, infrastructure | Humans edit directly |
 | **Agents** (`agents/`) | Step-by-step procedures for each role (coder, tester, reviewer, etc.) | Agents can propose updates via PR |
-| **Workflows** (`workflows/`) | Phase sequences, agent assignments, which knowledge/conventions to load | Humans edit directly |
-| **Knowledge** (`knowledge/`) | Domain-specific guides (e.g. migration coding patterns, testing methodology) | Agents can propose updates via PR |
-| **Conventions** (`conventions/`) | Language-specific coding standards (Go, .NET, etc.) | Humans edit, agents can propose |
+| **Workflows** (`workflows/`) | Phase sequences, agent assignments, model selection | Humans edit directly |
+| **Skills** (`.claude/skills/`) | Domain knowledge (migration patterns, testing methodology) and language conventions (Go, .NET) — invoked on-demand | Agents can propose updates via PR |
 | **Memory** (`memory/`) | Lessons learned from past jobs — pitfalls, successful patterns, PR feedback | Grows automatically, reviewed via PR |
 
-Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript. It becomes specialized through the knowledge and conventions injected into its context at runtime.
+Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript. It becomes specialized by invoking the relevant skills on-demand during execution.
 
 ---
 
@@ -83,7 +83,7 @@ Analysis → Planning → Repo Setup → [Code → Review → Test → Evaluate]
 [Spec Writing] → Planning → [Code → Review → Test → Evaluate]
 ```
 
-Same agents, different knowledge modules. Triggered by CLI or Jira ticket. Automatically detects the repo's language and loads the right conventions.
+Same agents, different skills invoked. Triggered by CLI or Jira ticket. Automatically detects the repo's language and invokes the right conventions skill.
 
 ---
 
@@ -91,9 +91,9 @@ Same agents, different knowledge modules. Triggered by CLI or Jira ticket. Autom
 
 **Jobs park, not poll.** When a job waits for a PR merge or human review, it saves state to Redis and shuts down. When the webhook arrives, it resumes exactly where it left off. Zero CPU while waiting.
 
-**Self-improvement.** Agents record insights during their work. The Evaluator reviews all insights at the end and can propose changes to the Markdown files (memory, knowledge, conventions). Every proposal goes through a PR — humans always approve before changes take effect.
+**Self-improvement.** Agents record insights during their work. The Evaluator reviews all insights at the end and can propose changes to the Markdown files (memory, skills, agents). Every proposal goes through a PR — humans always approve before changes take effect.
 
-**Language-agnostic.** Supporting a new language means adding one convention file. No infrastructure changes.
+**Language-agnostic.** Supporting a new language means adding one convention skill. No infrastructure changes.
 
 **Two BitBucket accounts.** `@a5-coder-agent` (writes code, opens PRs) and `@a5-reviewer-agent` (reviews, approves, merges). They show up in PRs like normal team members.
 
