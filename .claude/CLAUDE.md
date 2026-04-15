@@ -51,6 +51,8 @@ Human developers interact with these accounts exactly as they would with a human
 
 ## MCP tools available to agents
 
+All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__log`, `mcp__a5__bb_create_pr`). **Do NOT use `ToolSearch` to discover these tools — the complete list is below.** If a tool call fails, check the name and parameters rather than searching for it.
+
 ### Feature tracking
 - `set_features` — Register the ordered feature list (called by planner)
 - `update_feature` — Update a feature's status or increment its loop count
@@ -65,13 +67,43 @@ Human developers interact with these accounts exactly as they would with a human
 - `escalate` — Escalate to human
 - `log` — Append to job log stream
 
-### BitBucket, Observability, Jira, Test harness
-See `tools/src/mcp-server.ts` for the full tool inventory.
+### BitBucket — coder account
+- `bb_create_repo` — Create a new private BitBucket repository
+- `bb_create_pr` — Open a pull request from a feature branch (registers with job system for webhook routing)
+
+### BitBucket — reviewer account
+- `bb_get_pr_status` — Get the current state and approval count of a PR
+- `bb_get_pr_comments` — List all comments on a pull request
+- `bb_post_pr_comment` — Post a new top-level comment on a PR
+- `bb_reply_to_comment` — Reply to an existing comment thread on a PR
+- `bb_approve_pr` — Approve a pull request
+- `bb_merge_pr` — Merge a pull request (only when approved and all comments resolved)
+
+### Test harness
+- `run_go_build` — Compile a Go project in a directory
+- `start_go_service` — Start a compiled Go binary in the background on a given port
+- `stop_go_service` — Stop a running Go service by label
+- `compare_request` — Send the same HTTP request to both Go and .NET services, then diff responses
+
+### Observability
+- `loki_query` — Run a LogQL query against Loki
+- `tempo_get_trace` — Fetch a full distributed trace by trace ID from Tempo
+- `tempo_search` — Search for traces matching a TraceQL query
+
+### Jira
+- `jira_get_issue` — Fetch a Jira issue by ticket ID
+- `jira_post_comment` — Post a comment on a Jira issue
+- `jira_transition_issue` — Move a Jira issue to a new status
 
 ### Self-improvement
 - `add_insight` — Record a learning, workaround, or pattern for the Evaluator to review (all agents)
-- `propose_change` — Propose changes to agents, skills, memory, or code (Evaluator / PR Reviewer only)
+- `propose_change` — Propose an improvement to agents, skills, memory, or code (Evaluator / PR Reviewer only)
 - `list_proposals` — Check past proposals before proposing duplicates
+
+## Banned tools — do NOT use
+
+- **`TodoWrite` / `TodoRead`** — Do NOT use the built-in todo tool. Use `mcp__a5__log` to report progress instead. The todo tool is a local scratch pad that no one monitors. Developers follow your work via `a5 logs`, which reads from `mcp__a5__log`.
+- **`ToolSearch`** — Do NOT use ToolSearch to discover MCP tools. The complete tool list is documented above. If a tool call fails, verify the tool name and parameters.
 
 ## Self-improvement rule
 
@@ -85,6 +117,17 @@ When any agent calls `propose_change`, the Agent Host file watcher detects the w
 
 **Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the Agent Host pulls the latest `a5-ai` and all subsequent job phases use the updated instructions immediately.
 
+## Working directory
+
+The Agent Host sets your current working directory (`cwd`) to `working/{job-id}/` before each phase starts. **This is your sandbox. All file operations must happen inside this directory.**
+
+Rules:
+- **Never `cd` above your working directory.** Do not navigate to parent directories, the user's home directory, or any path outside `$PWD`.
+- **Clone repos into the current directory**, not into a subdirectory like `working/{job-id}/`. You are already inside that directory. Example: `git clone "$CLONE_URL" repo-slug` creates `./repo-slug/` in your cwd.
+- **Use relative paths** for all file operations. Do not construct absolute paths unless using `$PWD` as the base.
+- **Write all output files** (plans, contracts, test results, evaluation reports) inside the current working directory.
+- This constraint exists because the Agent Host may run inside Docker where paths outside the working directory do not exist.
+
 ## Infrastructure
 
 All source repositories live on **BitBucket**, not GitHub.
@@ -97,10 +140,12 @@ BB_CODER_APP_PASSWORD — API token for git operations
 BB_BASE_URL           — https://bitbucket.org
 ```
 
-To clone a repo:
+To clone a repo into the current working directory:
 ```bash
 git clone "https://$BB_GIT_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/<repo-slug>.git"
 ```
+
+This creates `./<repo-slug>/` in your current directory. Do NOT specify a different target path.
 
 **Never use `gh`, `hub`, or GitHub CLI commands. Always use `git` directly with the BitBucket URL above.**
 

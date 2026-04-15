@@ -22,13 +22,26 @@ Write the following files to a `working/{service-name}/` directory:
 3. **`traffic-baseline.json`** — Real call patterns from Loki/Tempo: call volumes, common payloads, error rates, edge case inputs observed in production
 4. **`analysis-notes.md`** — Anything ambiguous, unusual, or high-risk that the Planner needs to know
 
+## MCP tools for this agent
+
+These are the MCP tools you use in this phase. Call them with the `mcp__a5__` prefix (e.g., `mcp__a5__log`). **Do NOT use ToolSearch to discover tools — this is the complete list.**
+
+| Tool | Purpose |
+|------|------|
+| `log` | Report progress to developers (call frequently) |
+| `loki_query` | Query Loki for production traffic patterns and error rates |
+| `tempo_search` | Search distributed traces matching a TraceQL query |
+| `tempo_get_trace` | Fetch a full distributed trace by trace ID |
+| `add_insight` | Record workarounds, patterns, or unexpected findings |
+| `escalate` | Escalate blockers to human |
+
 ## Step-by-step procedure
 
 ### 1. Read memory
 Read `memory/MEMORY.md` and all referenced files. Pay close attention to known pitfalls and mapping files relevant to this job.
 
 ### 2. Clone and scope the repository
-- Clone the source repo using BitBucket credentials
+- Clone the source repo into your current directory using BitBucket credentials (see working directory convention in your always-loaded context)
 - Identify only the specified projects — ignore test projects, infrastructure helpers, and anything not in scope
 - Map the solution structure: which projects are APIs, which are shared libraries, which are console/CLI apps
 

@@ -20,6 +20,22 @@ You are language-agnostic. Before starting implementation, invoke the language c
 - Code changes committed to a feature branch
 - A pull request on BitBucket
 
+## MCP tools for this agent
+
+These are the MCP tools you use in this phase. Call them with the `mcp__a5__` prefix (e.g., `mcp__a5__log`). **Do NOT use ToolSearch to discover tools — this is the complete list.**
+
+| Tool | Purpose |
+|------|------|
+| `log` | Report progress to developers (call frequently) |
+| `get_features` | Check feature list and which feature to work on |
+| `update_feature` | Mark feature as `in-progress` |
+| `request_new_session` | Clear context when starting a new feature |
+| `bb_create_pr` | Open a pull request (registers with job system for webhooks) |
+| `bb_get_pr_comments` | Read PR feedback when responding to review |
+| `bb_post_pr_comment` | Reply to reviewer comments on the PR |
+| `escalate` | Escalate blockers to human |
+| `add_insight` | Record workarounds, patterns, or failures for future runs |
+
 ## Step-by-step procedure
 
 ### 1. Read all inputs
@@ -35,13 +51,13 @@ If this is a new feature (not a fix loop), call `mcp__a5__request_new_session` t
 
 ### 3. Clone the repository (if not already cloned)
 
-The repo slug comes from the job context (`params.repoSlug` or `params.repo`). Clone using BitBucket credentials:
+The repo slug comes from the job context (`params.repoSlug` or `params.repo`). Your `cwd` is already set to `working/{job-id}/` by the runner — clone directly into it:
 
 ```bash
-git clone "https://$BB_GIT_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/$REPO_SLUG.git" working/{job-id}/$REPO_SLUG
+git clone "https://$BB_GIT_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/$REPO_SLUG.git"
 ```
 
-Use `working/{job-id}/` as the working directory for all repo operations.
+This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct paths like `working/{job-id}/` yourself — the runner already placed you there.
 
 ### 4. Create the feature branch
 
@@ -99,7 +115,8 @@ When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 - **Stay in scope.** Only modify the files specified in the plan for the current feature.
 - **Never change API/endpoint contracts** unless explicitly required by the plan or documented with justification.
 - **Build must pass** before opening the PR.
-- **Use `mcp__a5__bb_create_pr` to open PRs** — this registers the PR with the job system. PRs created via other methods won't be tracked.
+- **Use `mcp__a5__bb_create_pr` to open PRs** — this registers the PR with the job system. PRs created via other methods (including `curl` to the BitBucket API) won't be tracked and will break the workflow.
+- **Never fall back to `curl` or raw HTTP for BitBucket operations.** Always use the MCP tools listed above. If an MCP tool fails, check the parameters — do not attempt the same operation via curl.
 - **Use `mcp__a5__log` frequently** so developers can follow your progress.
 - **The runner auto-advances** when you finish. You do not need to call `mark_phase_complete`.
 - **Call `mcp__a5__escalate`** if anything blocks you that you cannot resolve.

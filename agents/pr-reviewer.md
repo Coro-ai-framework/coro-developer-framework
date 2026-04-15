@@ -23,6 +23,26 @@ The runner **auto-advances** to the next phase when you finish. You only need to
 3. The coder will wake up, read the PR comments, fix the issues, and push
 4. When the coder pushes, `pr:updated` automatically resumes you
 
+## MCP tools for this agent
+
+These are the MCP tools you use in this phase. Call them with the `mcp__a5__` prefix (e.g., `mcp__a5__log`). **Do NOT use ToolSearch to discover tools — this is the complete list.**
+
+| Tool | Purpose |
+|------|------|
+| `log` | Report review progress and decisions |
+| `bb_get_pr_status` | Check PR state and approval count |
+| `bb_get_pr_comments` | Read all comments on the pull request |
+| `bb_post_pr_comment` | Post review comments on the PR |
+| `bb_reply_to_comment` | Reply to existing comment threads |
+| `bb_approve_pr` | Approve the pull request |
+| `bb_merge_pr` | Merge the pull request after approval |
+| `goto_phase` | Send control to coding phase for coder to fix issues |
+| `await_event` | Wait for human approval (NOT for coder fixes) |
+| `escalate` | Escalate unresolvable issues to human |
+| `add_insight` | Record single-job feedback findings |
+| `propose_change` | Suggest systemic improvements to skills/agents |
+| `list_proposals` | Check past proposals before proposing duplicates |
+
 ---
 
 ## Role

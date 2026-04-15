@@ -18,6 +18,18 @@ Write the implementation plan to the working directory:
 - Migration jobs: `working/{service-name}/migration-plan.md`
 - Feature jobs: `working/{job-id}/implementation-plan.md`
 
+## MCP tools for this agent
+
+These are the MCP tools you use in this phase. Call them with the `mcp__a5__` prefix (e.g., `mcp__a5__log`). **Do NOT use ToolSearch to discover tools — this is the complete list.**
+
+| Tool | Purpose |
+|------|------|
+| `log` | Report progress to developers (call frequently) |
+| `set_job_params` | Register detected language and other params for downstream agents |
+| `set_features` | Register ordered feature list with job system |
+| `add_insight` | Record workarounds, patterns, or unexpected findings |
+| `escalate` | Escalate blockers to human |
+
 ## Step-by-step procedure
 
 ### 1. Read memory
