@@ -240,6 +240,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const prePhaseUsage: TokenUsage = { ...(liveJob.tokenUsage ?? emptyTokenUsage()) }
       let phaseTurns = 0
       let lastUsageSyncTurn = 0
+      const phaseStartMs = Date.now()
+      let phaseSnapshotRecorded = false
 
       const queryStream = options?.queryImpl
         ? options.queryImpl({ prompt, options: queryOptions, signals, toolCtx })
@@ -340,11 +342,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             }
           }
 
+          phaseSnapshotRecorded = true
+
           // Extract precise per-phase usage from the result event.
           // The SDK provides authoritative totals here — use them over the
           // accumulated per-turn values when available.
           const resultUsage = message['usage'] as Record<string, number> | undefined
-          const resultCostUsd = typeof message['total_cost_usd'] === 'number' ? message['total_cost_usd'] as number : 0
           const resultModelUsage = message['modelUsage'] as Record<string, Record<string, unknown>> | undefined
 
           if (resultUsage) {
@@ -352,8 +355,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             phaseTokens.outputTokens = Number(resultUsage['output_tokens'] ?? phaseTokens.outputTokens)
             phaseTokens.cacheReadInputTokens = Number(resultUsage['cache_read_input_tokens'] ?? phaseTokens.cacheReadInputTokens)
             phaseTokens.cacheCreationInputTokens = Number(resultUsage['cache_creation_input_tokens'] ?? phaseTokens.cacheCreationInputTokens)
-            phaseTokens.totalCostUsd = resultCostUsd
           }
+
+          // Pass through SDK-provided cost when available; otherwise 0.
+          // Token counts are the authoritative usage metric — cost is
+          // informational only and only present when the SDK reports it.
+          const phaseCostUsd = typeof message['total_cost_usd'] === 'number' ? message['total_cost_usd'] as number : 0
+          phaseTokens.totalCostUsd = phaseCostUsd
 
           const phaseSnapshot: PhaseUsage = {
             phase: liveJob.phase,
@@ -361,8 +369,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             outputTokens: phaseTokens.outputTokens,
             cacheReadInputTokens: phaseTokens.cacheReadInputTokens,
             cacheCreationInputTokens: phaseTokens.cacheCreationInputTokens,
-            costUsd: resultCostUsd,
-            durationMs: typeof message['duration_ms'] === 'number' ? message['duration_ms'] as number : 0,
+            costUsd: phaseCostUsd,
+            durationMs: typeof message['duration_ms'] === 'number' ? message['duration_ms'] as number : (Date.now() - phaseStartMs),
             durationApiMs: typeof message['duration_api_ms'] === 'number' ? message['duration_api_ms'] as number : 0,
             numTurns: typeof message['num_turns'] === 'number' ? message['num_turns'] as number : phaseTurns,
             model,
@@ -386,10 +394,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           })
           toolCtx.job = liveJob
 
-          const costStr = resultCostUsd > 0 ? ` ($${resultCostUsd.toFixed(4)})` : ''
           await registry.appendLog(
             liveJob.id,
-            `[usage] Phase ${liveJob.phase}: ${phaseTokens.inputTokens.toLocaleString()} in / ${phaseTokens.outputTokens.toLocaleString()} out${costStr}`,
+            `[usage] Phase ${liveJob.phase}: ${phaseTokens.inputTokens.toLocaleString()} in / ${phaseTokens.outputTokens.toLocaleString()} out`,
           )
         }
 
@@ -415,9 +422,38 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
       }
 
-      // Flush any remaining accumulated tokens not yet synced (handles
-      // stream interruptions where the result event never fired).
-      if (phaseTurns > lastUsageSyncTurn) {
+      // Ensure every phase gets a PhaseUsage snapshot, even when a signal
+      // (goto_phase, await_event, escalate, mark_phase_complete) broke the
+      // stream before the SDK's result event was consumed.
+      if (!phaseSnapshotRecorded) {
+        const phaseSnapshot: PhaseUsage = {
+          phase: liveJob.phase,
+          inputTokens: phaseTokens.inputTokens,
+          outputTokens: phaseTokens.outputTokens,
+          cacheReadInputTokens: phaseTokens.cacheReadInputTokens,
+          cacheCreationInputTokens: phaseTokens.cacheCreationInputTokens,
+          costUsd: 0,
+          durationMs: Date.now() - phaseStartMs,
+          durationApiMs: 0,
+          numTurns: phaseTurns,
+          model,
+        }
+
+        const existingPhaseUsage = liveJob.phaseUsage ?? []
+        const jobTotals = mergeTokenUsage(prePhaseUsage, phaseTokens)
+
+        liveJob = await syncJob(registry, liveJob, {
+          tokenUsage: jobTotals,
+          phaseUsage: [...existingPhaseUsage, phaseSnapshot],
+        })
+        toolCtx.job = liveJob
+
+        await registry.appendLog(
+          liveJob.id,
+          `[usage] Phase ${liveJob.phase}: ${phaseTokens.inputTokens.toLocaleString()} in / ${phaseTokens.outputTokens.toLocaleString()} out`,
+        )
+      } else if (phaseTurns > lastUsageSyncTurn) {
+        // Result event was consumed but flush any residual unsynced turn data.
         const merged = mergeTokenUsage(prePhaseUsage, phaseTokens)
         liveJob = await syncJob(registry, liveJob, { tokenUsage: merged })
         toolCtx.job = liveJob

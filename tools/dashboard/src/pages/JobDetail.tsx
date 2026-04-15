@@ -80,12 +80,6 @@ function formatTokens(n: number): string {
   return n.toLocaleString()
 }
 
-function formatCost(usd: number): string {
-  if (usd === 0) return '$0.00'
-  if (usd < 0.01) return `$${usd.toFixed(4)}`
-  return `$${usd.toFixed(2)}`
-}
-
 function formatDuration(ms: number): string {
   if (ms === 0) return '—'
   const seconds = Math.floor(ms / 1000)
@@ -113,13 +107,15 @@ function TokenUsageCard({ usage }: { usage: TokenUsage }) {
           <div className="text-lg font-semibold text-zinc-100">{formatTokens(totalTokens)}</div>
         </div>
         <div>
-          <div className="text-xs text-zinc-500">Cost</div>
-          <div className="text-lg font-semibold text-emerald-400">{formatCost(usage.totalCostUsd)}</div>
-        </div>
-        <div>
           <div className="text-xs text-zinc-500">Input / Output</div>
           <div className="text-sm font-medium text-zinc-200">
             {formatTokens(usage.inputTokens)} <span className="text-zinc-600">/</span> {formatTokens(usage.outputTokens)}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-zinc-500">Cache Read / Write</div>
+          <div className="text-sm font-medium text-zinc-200">
+            {formatTokens(usage.cacheReadInputTokens)} <span className="text-zinc-600">/</span> {formatTokens(usage.cacheCreationInputTokens)}
           </div>
         </div>
         <div>
@@ -148,7 +144,7 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
               <th className="text-left px-3 py-2 font-medium">Phase</th>
               <th className="text-right px-3 py-2 font-medium">Input</th>
               <th className="text-right px-3 py-2 font-medium">Output</th>
-              <th className="text-right px-3 py-2 font-medium">Cost</th>
+              <th className="text-right px-3 py-2 font-medium">Cache Read</th>
               <th className="text-right px-3 py-2 font-medium">Duration</th>
               <th className="text-right px-3 py-2 font-medium">Turns</th>
               <th className="text-left px-3 py-2 font-medium">Model</th>
@@ -160,7 +156,7 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
                 <td className="px-3 py-2 font-medium text-zinc-200">{p.phase}</td>
                 <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.inputTokens)}</td>
                 <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.outputTokens)}</td>
-                <td className="text-right px-3 py-2 tabular-nums text-emerald-400">{formatCost(p.costUsd)}</td>
+                <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.cacheReadInputTokens)}</td>
                 <td className="text-right px-3 py-2 tabular-nums">{formatDuration(p.durationMs)}</td>
                 <td className="text-right px-3 py-2 tabular-nums">{p.numTurns}</td>
                 <td className="px-3 py-2 text-zinc-400 truncate max-w-[140px]">{p.model}</td>

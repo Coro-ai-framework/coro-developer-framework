@@ -380,4 +380,147 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(prompts[1]).toContain('advancing to phase')
     expect(prompts[1]).toContain('beta')
   })
+
+  // ── Token usage & cost tracking ───────────────────────────────────────────
+
+  it('creates PhaseUsage with computed cost when signal breaks stream before result event', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        // Simulate an assistant turn with token usage, then a signal break
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'Working...' }],
+            usage: {
+              input_tokens: 1000,
+              output_tokens: 200,
+              cache_read_input_tokens: 500,
+              cache_creation_input_tokens: 100,
+            },
+          },
+        }
+        // Agent calls goto_phase — sets signal, stream breaks before result event
+        inv.signals.nextPhase = 'beta'
+        yield { type: 'system', session_id: 'sig-break' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    // Phase alpha should have a PhaseUsage entry despite no result event
+    const alphaUsage = registry.current.phaseUsage.find(
+      (p: { phase: string }) => p.phase === 'alpha',
+    )
+    expect(alphaUsage).toBeDefined()
+    expect(alphaUsage!.inputTokens).toBe(1000)
+    expect(alphaUsage!.outputTokens).toBe(200)
+    expect(alphaUsage!.cacheReadInputTokens).toBe(500)
+    expect(alphaUsage!.numTurns).toBe(1)
+    // No SDK result event → cost is 0 (token counts are the authoritative metric)
+    expect(alphaUsage!.costUsd).toBe(0)
+    expect(alphaUsage!.durationMs).toBeGreaterThan(0)
+  })
+
+  it('creates PhaseUsage from result event and uses SDK cost when provided', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'Done' }],
+            usage: { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          },
+        }
+        // Result event with authoritative totals
+        yield {
+          type: 'result',
+          result: 'Phase complete',
+          usage: { input_tokens: 2000, output_tokens: 500 },
+          total_cost_usd: 1.2345,
+          duration_ms: 45000,
+          duration_api_ms: 30000,
+          num_turns: 5,
+        }
+        inv.signals.phaseComplete = true
+        yield { type: 'system', session_id: 'res-ok' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    const onlyUsage = registry.current.phaseUsage.find(
+      (p: { phase: string }) => p.phase === 'only',
+    )
+    expect(onlyUsage).toBeDefined()
+    // Should use result event's authoritative totals, not per-turn accumulation
+    expect(onlyUsage!.inputTokens).toBe(2000)
+    expect(onlyUsage!.outputTokens).toBe(500)
+    // SDK-provided cost
+    expect(onlyUsage!.costUsd).toBe(1.2345)
+    expect(onlyUsage!.durationMs).toBe(45000)
+    expect(onlyUsage!.durationApiMs).toBe(30000)
+    expect(onlyUsage!.numTurns).toBe(5)
+    // Job total should include phase cost
+    expect(registry.current.tokenUsage.totalCostUsd).toBe(1.2345)
+  })
+
+  it('accumulates PhaseUsage entries across multiple phases', async () => {
+    let call = 0
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        call++
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: `Phase ${call}` }],
+            usage: {
+              input_tokens: call * 1000,
+              output_tokens: call * 200,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        }
+        inv.signals.phaseComplete = true
+        yield { type: 'system', session_id: `multi-${call}` }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    // Both phases should have entries
+    expect(registry.current.phaseUsage).toHaveLength(2)
+    expect(registry.current.phaseUsage[0].phase).toBe('alpha')
+    expect(registry.current.phaseUsage[0].inputTokens).toBe(1000)
+    expect(registry.current.phaseUsage[1].phase).toBe('beta')
+    expect(registry.current.phaseUsage[1].inputTokens).toBe(2000)
+    // Job totals should sum across both phases
+    expect(registry.current.tokenUsage.inputTokens).toBe(3000)
+    expect(registry.current.tokenUsage.outputTokens).toBe(600)
+  })
+
+  it('creates zero-cost PhaseUsage when phase has no assistant turns', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.phaseComplete = true
+        yield { type: 'system', session_id: 'no-turns' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    expect(registry.current.phaseUsage).toHaveLength(1)
+    expect(registry.current.phaseUsage[0].phase).toBe('only')
+    expect(registry.current.phaseUsage[0].inputTokens).toBe(0)
+    expect(registry.current.phaseUsage[0].costUsd).toBe(0)
+    expect(registry.current.phaseUsage[0].numTurns).toBe(0)
+  })
 })
