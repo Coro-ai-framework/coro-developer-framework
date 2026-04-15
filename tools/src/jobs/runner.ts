@@ -204,6 +204,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         allowDangerouslySkipPermissions: true,
         maxTurns: 200,
         thinking: { type: 'adaptive' },
+        systemPromptCacheControl: 'ephemeral',
         persistSession: true,
         // Must inherit process.env (PATH, HOME, …). A bare object replaces the SDK default and breaks spawn('node', …).
         // BB_* vars give the agent everything it needs to construct authenticated clone URLs without

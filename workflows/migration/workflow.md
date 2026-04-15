@@ -5,7 +5,7 @@ initial_status: queued
 phases:
   - name: init
     agent: ~
-    model: planning
+    model: coding
     status: initializing
 
   - name: analysis
@@ -55,7 +55,7 @@ phases:
 
   - name: reporting
     agent: agents/planner.md
-    model: planning
+    model: coding
     status: reporting
 ---
 
