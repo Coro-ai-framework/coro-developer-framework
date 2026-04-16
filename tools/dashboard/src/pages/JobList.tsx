@@ -31,6 +31,12 @@ export default function JobList() {
             {jobs.length} job{jobs.length !== 1 ? 's' : ''} tracked
           </p>
         </div>
+        <Link
+          to="/jobs/new"
+          className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
+        >
+          + New Job
+        </Link>
       </div>
 
       {error && (

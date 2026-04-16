@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import Home from './pages/Home'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
+import CreateJob from './pages/CreateJob'
 
 export default function App() {
   return (
@@ -10,6 +11,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<Home />} />
         <Route path="/jobs" element={<JobList />} />
+        <Route path="/jobs/new" element={<CreateJob />} />
         <Route path="/jobs/:jobId" element={<JobDetail />} />
       </Route>
     </Routes>

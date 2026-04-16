@@ -187,28 +187,91 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 
 ---
 
-### Phase 5: Per-Tenant File Watcher (self-improvement isolation)
+### Phase 5: Self-Improvement Proposals (dashboard-native review)
 
-**5.1 Watcher multiplexing**
+The single-tenant self-improvement flow (file watcher → git branch → BitBucket PR) does not work for tenants:
+- Tenants have no access to the host's source repo
+- Tenants may not use BitBucket at all
+- Per-tenant file watchers are fragile and a service restart for one tenant's change is unacceptable
+- Host source code watching is removed entirely — only managed by us
+
+Instead, proposals become **first-class objects in Redis** that tenants review through the dashboard. Intelligence files are read fresh at each phase start, so applying a change = writing a file to the tenant's intelligence dir — no restart needed.
+
+**Flow:**
+```
+Agent calls propose_change
+        ↓
+MCP handler writes proposal to Redis: t:{tenantId}:proposal:{id}
+        ↓
+Dashboard "Proposals" page shows pending changes per tenant
+        ↓
+Tenant reviews diff → Approve / Edit+Approve / Reject
+        ↓
+On approve: Host writes file to tenant's intelligence dir on disk
+            (optionally commits+pushes if tenant has a git-backed intelligence repo)
+        ↓
+Next job phase reads updated intelligence from disk — no restart
+```
+
+**5.1 Proposal data model**
+- File: `tools/src/proposals/types.ts` (new)
+  ```typescript
+  interface Proposal {
+    id: string                    // ulid or nanoid
+    tenantId: string
+    status: 'pending' | 'approved' | 'rejected' | 'applied'
+    type: 'memory' | 'skill' | 'agent' | 'workflow'
+    filePath: string              // relative to intelligence dir
+    oldContent: string | null     // null for new files
+    newContent: string
+    reason: string                // why the agent proposed this
+    sourceJobId: string
+    sourceAgent: string           // which agent proposed it
+    createdAt: string
+    reviewedBy?: string           // who approved/rejected
+    reviewedAt?: string
+    reviewNote?: string           // optional reviewer comment
+  }
+  ```
+
+**5.2 Proposal registry (Redis-backed)**
+- File: `tools/src/proposals/registry.ts` (new)
+  - `createProposal(tenantId, data): Proposal` — write to `t:{tenantId}:proposal:{id}` + add to `t:{tenantId}:proposals` set
+  - `listProposals(tenantId, status?): Proposal[]` — list proposals, optionally filtered by status
+  - `getProposal(tenantId, id): Proposal` — fetch single proposal
+  - `updateProposal(tenantId, id, updates): Proposal` — update status, reviewer info, edited content
+  - `applyProposal(tenantId, id, intelligenceDir): void` — write `newContent` to `{intelligenceDir}/{filePath}`, set status to `'applied'`; if tenant config has `intelligenceRepoSlug`, also `git add + commit + push`
+
+**5.3 Update `propose_change` MCP handler**
+- File: `tools/src/mcp-handlers.ts`
+  - Change `propose_change` handler: instead of writing files to disk (for watcher to detect), call `proposalRegistry.createProposal(job.tenantId, ...)` to write to Redis
+  - The agent still calls `propose_change` exactly the same way — the behavior changes under the hood
+  - Log the proposal creation via `registry.appendLog()`
+
+**5.4 Proposal API endpoints**
+- File: `tools/src/server.ts`
+  - `GET /tenants/:tenantId/proposals` — list proposals (query param `?status=pending`)
+  - `GET /tenants/:tenantId/proposals/:id` — get proposal with full diff
+  - `POST /tenants/:tenantId/proposals/:id/approve` — approve and apply (writes file to disk, optionally git commit+push)
+  - `POST /tenants/:tenantId/proposals/:id/reject` — reject with optional reason in body
+  - `PATCH /tenants/:tenantId/proposals/:id` — edit proposed `newContent` before approving
+
+**5.5 Simplify watcher**
 - File: `tools/src/watcher.ts`
-  - Replace single `a5aiDir` watch with loop over `settings.tenants`
-  - For each tenant: create a chokidar instance watching their `intelligenceDir`
-  - `processChanges()` receives `tenantConfig` so it knows which repo to branch/commit/push in
-  - Use the tenant's BB coder account for the self-improvement PR
-  - Tag the PR with the tenant's reviewers (from tenant config or a `reviewers` field in TenantConfig)
-  - Self-update jobs also carry `tenantId`
+  - Remove source code directory watching (`tools/src`) entirely — host code changes are managed by us directly
+  - Keep watching only the host tenant's (default/a5labs) intelligence dir for the team's own PR-based flow
+  - No per-tenant watchers — tenant self-improvement goes through the proposals system
 
-**5.2 Tenant config for self-improvement**
-- File: `tools/src/config/settings.ts`
-  - Add `intelligenceRepoSlug: string` to `TenantConfig` — the BitBucket repo slug for the tenant's intelligence repo (needed for PR creation)
-  - Add `defaultReviewers?: string[]` to `TenantConfig` — who reviews self-improvement PRs
-
-*Depends on: Phase 1 (TenantConfig), Phase 2 (tenant-aware runner)*
+*Depends on: Phase 1 (tenantId, TenantConfig), Phase 3 (tenant API routing)*
 
 **Verification:**
-- Modify a file in tenant A's intelligence dir → PR created in tenant A's repo with tenant A's BB credentials
-- Modify a file in tenant B's intelligence dir → separate PR in tenant B's repo
-- Tenant A's proposal doesn't appear in tenant B's PR
+- Agent calls `propose_change` → proposal appears in Redis under `t:{tenantId}:proposals`
+- `GET /tenants/acme/proposals` returns only acme's proposals
+- Approving a proposal writes the file to acme's intelligence dir on disk
+- Next job phase for acme reads the updated intelligence file
+- Rejecting a proposal does NOT write any file
+- Editing a proposal's content before approving writes the edited version
+- Host tenant (a5labs) still uses the existing watcher → PR flow
 
 ---
 
@@ -225,17 +288,36 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 
 - File: `tools/dashboard/src/types.ts`
   - Add `tenantId: string` to Job type
+  - Add `Proposal` type matching the backend model
 
 **6.2 Admin tenant list endpoint**
 - File: `tools/src/server.ts`
   - Add `GET /tenants` endpoint returning list of configured tenant IDs (no credentials)
 
-*Depends on: Phase 3 (API supports tenant filtering)*
+**6.3 Proposals review UI**
+- File: `tools/dashboard/src/pages/Proposals.tsx` (new)
+  - List proposals for the selected tenant, filterable by status (pending / approved / rejected / applied)
+  - Notification badge on nav when pending proposals exist
+  - Click a proposal → inline diff viewer (old content vs. new content, side-by-side or unified)
+  - Approve button: calls `POST /tenants/:tenantId/proposals/:id/approve`
+  - Reject button: prompts for optional reason, calls `POST /tenants/:tenantId/proposals/:id/reject`
+  - Edit button: opens editable textarea for `newContent`, then approve with edited version via `PATCH` + approve
+  - Show metadata: source job, source agent, proposal type, file path, creation date
+
+- File: `tools/dashboard/src/hooks/useProposals.ts` (new)
+  - `useProposals(tenantId, status?)` — fetch proposals list, auto-refresh
+  - `useProposal(tenantId, id)` — fetch single proposal with full content
+  - Mutation hooks for approve/reject/edit actions
+
+*Depends on: Phase 3 (API supports tenant filtering), Phase 5 (proposals API endpoints)*
 
 **Verification:**
 - Dashboard shows tenant filter
 - Selecting a tenant shows only that tenant's jobs
 - "All tenants" shows everything (admin view)
+- Proposals page shows pending proposals with diff view
+- Approve/reject/edit actions work and update status in real-time
+- Notification badge clears when no pending proposals remain
 
 ---
 
@@ -247,17 +329,22 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 - `tools/src/jobs/runner.ts` — Resolve `intelligenceDir` and `workingDir` from tenant config, create per-tenant clients, pass tenant-specific env vars
 - `tools/src/prompt/builder.ts` — Accept `intelligenceDir` parameter instead of reading from global settings
 - `tools/src/jobs/dispatcher.ts` — Pass `tenantId` through job creation; no structural change
-- `tools/src/server.ts` — Extract `X-Tenant-Id` header, per-tenant webhook HMAC, `GET /tenants`
-- `tools/src/watcher.ts` — Per-tenant chokidar instances, per-tenant self-improvement PRs
+- `tools/src/server.ts` — Extract `X-Tenant-Id` header, per-tenant webhook HMAC, `GET /tenants`, proposal CRUD endpoints
+- `tools/src/proposals/types.ts` — (new) `Proposal` interface
+- `tools/src/proposals/registry.ts` — (new) Redis-backed proposal CRUD + apply logic
+- `tools/src/mcp-handlers.ts` — Change `propose_change` to write to Redis instead of disk
+- `tools/src/watcher.ts` — Simplify: remove source code watching, keep only host tenant intelligence watching
 - `tools/src/tools/types.ts` — `ToolContext` gets tenant-specific clients (created by runner)
-- `tools/src/index.ts` — Create watcher per tenant at startup
+- `tools/src/index.ts` — Simplified watcher setup (host tenant only)
 - `tools/cli/index.ts` — Global `--tenant` option
 - `tools/cli/commands/*.ts` — Pass tenant header in API calls
 - `tools/cli/http.ts` — Default `X-Tenant-Id` header
 - `tools/config/settings.example.json` — Add `tenants` array example
-- `tools/dashboard/src/types.ts` — Add `tenantId` to Job type
+- `tools/dashboard/src/types.ts` — Add `tenantId` to Job type, add `Proposal` type
 - `tools/dashboard/src/pages/JobList.tsx` — Tenant filter dropdown
 - `tools/dashboard/src/pages/JobDetail.tsx` — Show tenant in header
+- `tools/dashboard/src/pages/Proposals.tsx` — (new) Proposal review with diff viewer
+- `tools/dashboard/src/hooks/useProposals.ts` — (new) Proposal data fetching hooks
 
 ## Verification
 
@@ -268,8 +355,9 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 5. **Integration**: Start two-tenant setup, dispatch jobs for each, verify working dir isolation (`{base}/{tenantId}/{jobId}/`), verify `.claude` symlinks point to correct tenant intelligence dirs
 6. **Integration**: Verify webhook routes to correct job and validates against correct tenant's HMAC secret
 7. **E2E**: Run a full feature job for tenant A, verify agents load tenant A's agents/workflows/memory
-8. **E2E**: Verify self-improvement PR from tenant A goes to tenant A's intelligence repo
+8. **E2E**: Agent calls `propose_change` → proposal in Redis → approve via dashboard → file written to tenant intelligence dir → next phase reads updated file
 9. **Dashboard**: Verify tenant filter works, job detail shows tenant
+10. **Dashboard**: Proposals page shows pending proposals, approve/reject/edit work, diff viewer renders correctly
 
 ## Decisions
 
@@ -279,13 +367,14 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 - **Default tenant fallback** — zero breaking changes; existing single-tenant deployments keep working
 - **Per-job client creation** — simple and safe; BB/Loki/Tempo clients are stateless HTTP wrappers, cheap to create
 - **Intelligence dir = git repo** — each tenant's intelligence is a separate git repo, enabling independent versioning and self-improvement PRs
+- **Dashboard-native proposals** — tenants review self-improvement proposals through the dashboard, not BitBucket PRs. No source code access needed, no service restarts, no per-tenant file watchers. Host tenant keeps the existing watcher → PR flow.
 
 ## Scope boundaries
 
 **Included:**
 - Tenant isolation for intelligence, working dirs, credentials, Redis, webhooks, CLI, dashboard
 - Backward-compatible default tenant
-- Per-tenant self-improvement PRs
+- Dashboard-native proposal review (diff viewer, approve/reject/edit) for tenant self-improvement
 
 **Excluded (future):**
 - Per-tenant billing/usage tracking
@@ -298,9 +387,9 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 ## Dependency Graph
 
 ```
-Phase 1 (data model) ──┬── Phase 2 (runner + builder)  ── Phase 5 (watcher)
-                        ├── Phase 3 (HTTP API)          ── Phase 6 (dashboard)
-                        └── Phase 4 (CLI)
+Phase 1 (data model) ──┬── Phase 2 (runner + builder)
+                        ├── Phase 3 (HTTP API) ──┬── Phase 5 (proposals)
+                        └── Phase 4 (CLI)        └── Phase 6 (dashboard + proposals UI)
 ```
 
-Phases 2, 3, and 4 can proceed in parallel once Phase 1 lands.
+Phases 2, 3, and 4 can proceed in parallel once Phase 1 lands. Phase 5 (proposals) depends on Phase 1 + 3. Phase 6 depends on Phase 3 + 5.
