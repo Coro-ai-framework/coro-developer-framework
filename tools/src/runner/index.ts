@@ -81,8 +81,10 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       },
     },
     github: {
-      owner: process.env.GITHUB_OWNER ?? '',
-      token: process.env.GITHUB_TOKEN ?? '',
+      owner: config.git?.workspace ?? process.env.GITHUB_OWNER ?? '',
+      token: config.git?.provider === 'github'
+        ? (config.git?.token ?? process.env.GITHUB_TOKEN ?? '')
+        : (process.env.GITHUB_TOKEN ?? ''),
       baseUrl: process.env.GITHUB_API_BASE_URL ?? 'https://api.github.com',
     },
     redis: {
@@ -128,12 +130,10 @@ export async function startLocalRunner(
   fs.mkdirSync(settings.paths.workingDir, { recursive: true })
   fs.mkdirSync(settings.paths.a5aiDir, { recursive: true })
 
-  // Create SQLite state backend
+  // Create SQLite state backend — DB lives next to config in ~/.a5/
   const path = await import('path')
   const os = await import('os')
-  const configDir = effectiveConfig.paths?.workingDir?.replace('~', os.homedir())
-    ? path.dirname(effectiveConfig.paths.workingDir.replace('~', os.homedir()))
-    : path.join(os.homedir(), '.a5')
+  const configDir = path.join(os.homedir(), '.a5')
   const dbPath = path.join(configDir, 'state.db')
   fs.mkdirSync(configDir, { recursive: true })
 
@@ -190,6 +190,7 @@ export async function startLocalRunner(
     dispatcher,
     stateBackend,
     logger,
+    mode: 'local',
   })
 
   const shutdown = async () => {
@@ -340,7 +341,7 @@ export async function startRunner(options: RunnerOptions = {}): Promise<void> {
       const { dispatcher, shutdown } = await startLocalRunner(config, logger, localPort)
 
       logger.info('Local runner ready — waiting for job commands')
-      logger.info(`Dashboard: http://localhost:${localPort}`)
+      logger.info(`Dashboard: http://localhost:${localPort}/dashboard/`)
 
       // Expose dispatcher for CLI job dispatch
       ;(globalThis as Record<string, unknown>).__a5_dispatcher = dispatcher

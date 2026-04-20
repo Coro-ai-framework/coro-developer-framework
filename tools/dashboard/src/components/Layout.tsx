@@ -40,6 +40,16 @@ export default function Layout() {
               >
                 New Job
               </Link>
+              <Link
+                to="/settings"
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  location.pathname === '/settings'
+                    ? 'bg-zinc-800 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
+                }`}
+              >
+                Settings
+              </Link>
             </nav>
           </div>
         </div>

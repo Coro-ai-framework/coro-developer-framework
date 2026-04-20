@@ -11,12 +11,21 @@ import path from 'path'
 import { Logger } from 'pino'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { StateBackend } from '../state/backend'
+import {
+  loadLocalConfig,
+  saveLocalConfig,
+  defaultConfigPath,
+  detectMode,
+  resolveIntelligenceDir,
+  resolveWorkingDir as resolveLocalWorkingDir,
+} from '../config/local-config'
 
 export interface RunnerServerOptions {
   port: number
   dispatcher: Dispatcher
   stateBackend: StateBackend
   logger: Logger
+  mode?: 'hybrid' | 'local'
 }
 
 /**
@@ -24,14 +33,14 @@ export interface RunnerServerOptions {
  * CLI commands (`a5 migrate`, `a5 status`, etc.) talk to this.
  */
 export function createRunnerServer(opts: RunnerServerOptions): http.Server {
-  const { port, dispatcher, stateBackend, logger } = opts
+  const { port, dispatcher, stateBackend, logger, mode = 'hybrid' } = opts
   const app = express()
   app.use(express.json())
 
   // ── Health ──────────────────────────────────────────────────────────────
 
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', mode: 'hybrid', version: '0.1.0' })
+    res.json({ status: 'ok', mode, version: '0.1.0' })
   })
 
   // ── Job dispatch ────────────────────────────────────────────────────────
@@ -178,18 +187,107 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
-  // ── Dashboard (local mode) ─────────────────────────────────────────────
+  // ── Configuration ────────────────────────────────────────────────────────
+
+  app.get('/config', (_req: Request, res: Response) => {
+    try {
+      const config = loadLocalConfig()
+      const configPath = defaultConfigPath()
+      const detected = detectMode(config)
+
+      // Redact sensitive fields for display
+      const safeConfig = config ? {
+        ...config,
+        anthropic: {
+          apiKey: config.anthropic?.apiKey
+            ? `${config.anthropic.apiKey.slice(0, 12)}...${config.anthropic.apiKey.slice(-4)}`
+            : '',
+        },
+        git: config.git ? {
+          ...config.git,
+          token: config.git.token
+            ? `${config.git.token.slice(0, 6)}...${config.git.token.slice(-4)}`
+            : '',
+        } : undefined,
+      } : null
+
+      res.json({
+        config: safeConfig,
+        configPath,
+        mode: detected,
+        resolved: config ? {
+          intelligenceDir: resolveIntelligenceDir(config),
+          workingDir: resolveLocalWorkingDir(config),
+        } : null,
+      })
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  app.put('/config', (req: Request, res: Response) => {
+    try {
+      const updates = req.body
+      if (!updates || typeof updates !== 'object') {
+        res.status(400).json({ error: 'Request body must be a config object' })
+        return
+      }
+
+      // Load existing, merge, save
+      const existing = loadLocalConfig() ?? { anthropic: { apiKey: '' } }
+      const merged = { ...existing }
+
+      // Update anthropic API key (only if provided and not redacted)
+      if (updates.anthropic?.apiKey && !updates.anthropic.apiKey.includes('...')) {
+        merged.anthropic = { apiKey: updates.anthropic.apiKey }
+      }
+
+      // Update intelligence
+      if (updates.intelligence) {
+        merged.intelligence = { ...existing.intelligence, ...updates.intelligence }
+      }
+
+      // Update paths
+      if (updates.paths) {
+        merged.paths = { ...existing.paths, ...updates.paths }
+      }
+
+      // Update git
+      if (updates.git) {
+        merged.git = {
+          ...existing.git,
+          ...updates.git,
+          // Don't overwrite token with redacted value
+          token: updates.git.token?.includes('...') ? existing.git?.token ?? '' : updates.git.token ?? existing.git?.token ?? '',
+        }
+      }
+
+      // Respect local mode — strip cloud if not explicitly set
+      if (!updates.cloud) {
+        delete (merged as Record<string, unknown>).cloud
+      }
+
+      saveLocalConfig(merged)
+      logger.info('Configuration updated via dashboard')
+      res.json({ saved: true, configPath: defaultConfigPath() })
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // ── Dashboard (served under /dashboard/) ───────────────────────────────
 
   const dashboardDir = path.join(__dirname, '../../dashboard/dist')
-  app.use(express.static(dashboardDir))
-  app.get('*', (req: Request, res: Response) => {
-    if (req.accepts('html')) {
-      res.sendFile(path.join(dashboardDir, 'index.html'), err => {
-        if (err) res.status(404).json({ error: 'Not found' })
-      })
-      return
-    }
-    res.status(404).json({ error: 'Not found' })
+  app.use('/dashboard', express.static(dashboardDir))
+  app.get('/dashboard/*', (_req: Request, res: Response) => {
+    res.sendFile(path.join(dashboardDir, 'index.html'), err => {
+      if (err) res.status(404).json({ error: 'Not found' })
+    })
+  })
+
+  // Redirect root to dashboard for convenience
+  app.get('/', (_req: Request, res: Response) => {
+    res.redirect('/dashboard/')
   })
 
   // ── Start server ────────────────────────────────────────────────────────
