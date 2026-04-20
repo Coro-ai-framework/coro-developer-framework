@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 import { loadLocalConfig, defaultConfigPath, saveLocalConfig, type LocalConfig } from '../../src/config/local-config'
-import { baseUrl, die } from '../http'
+import { die } from '../http'
 
 interface LoginResponse {
   user: { id: string; email: string; name: string }

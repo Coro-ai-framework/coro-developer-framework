@@ -1,6 +1,5 @@
 import { Command } from 'commander'
 import os from 'os'
-import path from 'path'
 import {
   loadLocalConfig,
   saveLocalConfig,

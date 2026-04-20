@@ -17,16 +17,13 @@
 
 import 'dotenv/config'
 import pino from 'pino'
-import path from 'path'
 import fs from 'fs'
-import os from 'os'
 import {
   loadLocalConfig,
   detectMode,
   resolveIntelligenceDir,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
-  type DeploymentMode,
 } from '../config/local-config'
 import { Settings } from '../config/settings'
 import { CloudStateBackend } from '../state/cloud-backend'

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import type { CloudDb } from '../db/connection'
 import type { CloudConfig } from '../config'
+import type { WsGateway } from '../ws/gateway'
 import { PostgresStateBackend } from '../db/postgres-backend'
 import { requireAuth, requireTeamMember } from '../auth/middleware'
 import { JobInput, isStoppedStatus, ProposalStatus } from '../../jobs/types'
@@ -19,7 +20,7 @@ function backendFor(db: CloudDb, teamId: string): PostgresStateBackend {
 
 // ── Job routes ────────────────────────────────────────────────────────────────
 
-export function jobRoutes(db: CloudDb, config: CloudConfig): Router {
+export function jobRoutes(db: CloudDb, config: CloudConfig, gateway?: WsGateway): Router {
   const router = Router({ mergeParams: true })
   const auth = requireAuth(config)
   const member = requireTeamMember()
@@ -27,7 +28,8 @@ export function jobRoutes(db: CloudDb, config: CloudConfig): Router {
   // ── Create job ────────────────────────────────────────────────────────────
 
   router.post('/', auth, member, async (req: Request, res: Response) => {
-    const backend = backendFor(db, p(req, 'teamId'))
+    const teamId = p(req, 'teamId')
+    const backend = backendFor(db, teamId)
     const input: JobInput = req.body
 
     if (!input?.type || !input?.params) {
@@ -36,6 +38,19 @@ export function jobRoutes(db: CloudDb, config: CloudConfig): Router {
     }
 
     const job = await backend.createJob(input)
+
+    // Dispatch to a connected runner via WebSocket
+    if (gateway) {
+      const dispatched = gateway.sendToTeam(teamId, {
+        type: 'event:dispatch',
+        jobId: job.id,
+      })
+      if (!dispatched) {
+        res.status(201).json({ ...job, warning: 'No runner connected — job queued' })
+        return
+      }
+    }
+
     res.status(201).json(job)
   })
 
@@ -80,6 +95,56 @@ export function jobRoutes(db: CloudDb, config: CloudConfig): Router {
     const backend = backendFor(db, p(req, 'teamId'))
     await backend.deleteJob(p(req, 'jobId'))
     res.status(204).end()
+  })
+
+  // ── Dispatch job to runner ────────────────────────────────────────────────
+
+  router.post('/:jobId/dispatch', auth, member, async (req: Request, res: Response) => {
+    const teamId = p(req, 'teamId')
+    const jobId = p(req, 'jobId')
+
+    if (!gateway) {
+      res.status(503).json({ error: 'WebSocket gateway not available' })
+      return
+    }
+
+    const dispatched = gateway.sendToTeam(teamId, {
+      type: 'event:dispatch',
+      jobId,
+    })
+
+    if (!dispatched) {
+      res.status(503).json({ error: 'No runner connected for this team' })
+      return
+    }
+
+    res.json({ dispatched: true, jobId })
+  })
+
+  // ── Resume job on runner ──────────────────────────────────────────────────
+
+  router.post('/:jobId/resume', auth, member, async (req: Request, res: Response) => {
+    const teamId = p(req, 'teamId')
+    const jobId = p(req, 'jobId')
+    const { prompt } = req.body ?? {}
+
+    if (!gateway) {
+      res.status(503).json({ error: 'WebSocket gateway not available' })
+      return
+    }
+
+    const sent = gateway.sendToTeam(teamId, {
+      type: 'event:resume',
+      jobId,
+      prompt,
+    })
+
+    if (!sent) {
+      res.status(503).json({ error: 'No runner connected for this team' })
+      return
+    }
+
+    res.json({ resumed: true, jobId })
   })
 
   // ── Append log ────────────────────────────────────────────────────────────
@@ -147,7 +212,7 @@ export function jobRoutes(db: CloudDb, config: CloudConfig): Router {
 
 // ── Proposal routes ─────────────────────────────────────────────────────────
 
-export function proposalRoutes(db: CloudDb, config: CloudConfig): Router {
+export function proposalRoutes(db: CloudDb, config: CloudConfig, gateway?: WsGateway): Router {
   const router = Router({ mergeParams: true })
   const auth = requireAuth(config)
   const member = requireTeamMember()
@@ -178,12 +243,13 @@ export function proposalRoutes(db: CloudDb, config: CloudConfig): Router {
   // ── Approve proposal ──────────────────────────────────────────────────────
 
   router.post('/:proposalId/approve', auth, member, async (req: Request, res: Response) => {
-    const backend = backendFor(db, p(req, 'teamId'))
+    const teamId = p(req, 'teamId')
+    const backend = backendFor(db, teamId)
     const { note } = req.body ?? {}
 
     try {
       const proposal = await backend.updateProposal(
-        p(req, 'teamId'),
+        teamId,
         p(req, 'proposalId'),
         {
           status: 'approved',
@@ -191,7 +257,16 @@ export function proposalRoutes(db: CloudDb, config: CloudConfig): Router {
           reviewNote: note,
         },
       )
-      // TODO Phase 3: send proposal:apply command to runner via WebSocket
+
+      // Send proposal:apply command to runner via WebSocket
+      if (gateway && proposal) {
+        gateway.sendToTeam(teamId, {
+          type: 'proposal:apply',
+          proposalId: p(req, 'proposalId'),
+          files: (proposal as unknown as Record<string, unknown>).files as Array<{ path: string; content: string }> ?? [],
+        })
+      }
+
       res.json(proposal)
     } catch (err) {
       res.status(404).json({ error: (err as Error).message })

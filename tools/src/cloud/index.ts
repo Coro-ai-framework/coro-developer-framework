@@ -49,8 +49,8 @@ async function main(): Promise<void> {
   app.use('/teams', teamRoutes(db, config))
 
   // Team-scoped job + proposal routes
-  app.use('/teams/:teamId/jobs', jobRoutes(db, config))
-  app.use('/teams/:teamId/proposals', proposalRoutes(db, config))
+  app.use('/teams/:teamId/jobs', jobRoutes(db, config, gateway))
+  app.use('/teams/:teamId/proposals', proposalRoutes(db, config, gateway))
 
   // Webhook routes (per-team, HMAC-verified)
   app.use('/webhook', webhookRoutes({ db, gateway, logger }))
