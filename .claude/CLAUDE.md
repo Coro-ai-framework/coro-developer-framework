@@ -34,18 +34,24 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 - **Company:** A5 Labs
 - **Primary stack:** .NET 8 microservices (C#), migrating to Go
-- **Source control:** BitBucket (workspace slug in `config/credentials.md`)
+- **Source control:** BitBucket or GitHub — the job's `params.gitProvider` field specifies which provider hosts the target repository. Default: `bitbucket`. BitBucket workspace slug is in `config/credentials.md`.
 - **Observability:** Grafana — Loki (logs) + Tempo (distributed traces)
 - **Deployment:** Kubernetes via Helm. Per-service config in `helm-app-config` repo (see `config/repos.md`)
 - **Environments:** staging and production. Staging is the benchmark for all migration testing.
 - **Issue tracking:** Jira (future integration — Jira-triggered feature jobs)
 
-## BitBucket service accounts
+## Service accounts
+
+### BitBucket
 
 | Account | BB role | Used for |
 |---------|---------|---------|
 | `@a5-coder-agent` | Developer on all service repos and `a5-ai` | Creating repos, branches, commits, opening PRs, responding to review comments |
 | `@a5-reviewer-agent` | Reviewer/Maintainer on all service repos and `a5-ai` | Posting code reviews, approving PRs, triggering merges, monitoring comment threads |
+
+### GitHub
+
+GitHub operations use a Personal Access Token (PAT) configured via `GH_TOKEN`. The token must have **Contents** (read/write), **Pull requests** (read/write), and **Metadata** (read) permissions on the target repos.
 
 Human developers interact with these accounts exactly as they would with a human colleague — comments appear in PRs, review requests arrive normally.
 
@@ -67,17 +73,25 @@ All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__l
 - `escalate` — Escalate to human
 - `log` — Append to job log stream
 
-### BitBucket — coder account
+### BitBucket (use when `params.gitProvider` is `bitbucket` or unset)
 - `bb_create_repo` — Create a new private BitBucket repository
 - `bb_create_pr` — Open a pull request from a feature branch (registers with job system for webhook routing)
-
-### BitBucket — reviewer account
 - `bb_get_pr_status` — Get the current state and approval count of a PR
 - `bb_get_pr_comments` — List all comments on a pull request
 - `bb_post_pr_comment` — Post a new top-level comment on a PR
 - `bb_reply_to_comment` — Reply to an existing comment thread on a PR
 - `bb_approve_pr` — Approve a pull request
 - `bb_merge_pr` — Merge a pull request (only when approved and all comments resolved)
+
+### GitHub (use when `params.gitProvider` is `github`)
+- `gh_create_repo` — Create a new private GitHub repository
+- `gh_create_pr` — Open a pull request from a feature branch (registers with job system)
+- `gh_get_pr_status` — Get the current state and approval count of a PR
+- `gh_get_pr_comments` — List all comments on a pull request
+- `gh_post_pr_comment` — Post a new top-level comment on a PR
+- `gh_reply_to_comment` — Reply to an existing review comment on a PR
+- `gh_approve_pr` — Approve a pull request
+- `gh_merge_pr` — Merge a pull request (squash merge)
 
 ### Test harness
 - `run_go_build` — Compile a Go project in a directory
@@ -130,9 +144,9 @@ Rules:
 
 ## Infrastructure
 
-All source repositories live on **BitBucket**, not GitHub.
+Repositories may live on **BitBucket** or **GitHub**. Check `params.gitProvider` in the job context to determine which provider hosts the target repo.
 
-These environment variables are already set in your shell:
+### BitBucket environment variables (available when BitBucket is configured)
 ```
 BB_WORKSPACE          — BitBucket workspace slug
 BB_GIT_USERNAME       — git username (x-token-auth for API tokens, or encoded username)
@@ -140,14 +154,29 @@ BB_CODER_APP_PASSWORD — API token for git operations
 BB_BASE_URL           — https://bitbucket.org
 ```
 
-To clone a repo into the current working directory:
+To clone a **BitBucket** repo:
 ```bash
 git clone "https://$BB_GIT_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/<repo-slug>.git"
 ```
 
-This creates `./<repo-slug>/` in your current directory. Do NOT specify a different target path.
+### GitHub environment variables (available when GitHub is configured)
+```
+GH_OWNER              — GitHub user or organization that owns the repo
+GH_TOKEN              — GitHub Personal Access Token
+```
 
-**Never use `gh`, `hub`, or GitHub CLI commands. Always use `git` directly with the BitBucket URL above.**
+To clone a **GitHub** repo:
+```bash
+git clone "https://x-access-token:$GH_TOKEN@github.com/$GH_OWNER/<repo-slug>.git"
+```
+
+### Choosing the right tools
+
+**Check `params.gitProvider`** in your job context before cloning or using PR tools:
+- If `gitProvider` is `github` → use `git clone` with the GitHub URL and `gh_*` MCP tools (`gh_create_pr`, `gh_get_pr_comments`, etc.)
+- If `gitProvider` is `bitbucket` or not set → use `git clone` with the BitBucket URL and `bb_*` MCP tools (`bb_create_pr`, `bb_get_pr_comments`, etc.)
+
+**Never use `gh` CLI commands.** Always use `git` directly with the appropriate URL and MCP tools for PR operations.
 
 ## Git and PR conventions
 

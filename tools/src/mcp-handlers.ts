@@ -94,6 +94,87 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text({ state: pr.state })
     },
 
+    // GitHub — uses a single token for both coder and reviewer operations
+    gh_create_repo: async ({ repoSlug, description }: { repoSlug: string; description?: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
+      const repo = await ctx.ghClient.createRepo({ repoSlug, description, isPrivate: true })
+      return text({ fullName: repo.full_name })
+    },
+
+    gh_create_pr: async ({
+      repoSlug, title, description, sourceBranch, targetBranch, reviewerUsernames,
+    }: {
+      repoSlug: string
+      title: string
+      description?: string
+      sourceBranch: string
+      targetBranch?: string
+      reviewerUsernames?: string[]
+    }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
+      const { jobReviewers } = await import('./jobs/types')
+      const pr = await ctx.ghClient.createPr({
+        repoSlug, title, description,
+        sourceBranch,
+        targetBranch: targetBranch ?? 'main',
+        reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
+      })
+
+      await ctx.stateBackend.addPrMapping(ctx.job.id, {
+        prId: pr.id,
+        feature: ctx.job.currentFeature ?? ctx.job.phase,
+        repoSlug: repoSlug,
+        openedAt: new Date().toISOString(),
+      })
+
+      return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
+    },
+
+    gh_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const status = await ctx.ghClient.getPrStatus(repoSlug, prId)
+      return text(status)
+    },
+
+    gh_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const comments = await ctx.ghClient.getComments(repoSlug, prId)
+      const mapped = comments.map(c => ({
+        id: c.id,
+        content: c.content.raw,
+        parentId: c.parent?.id ?? null,
+        createdOn: c.created_on,
+        inline: c.inline ?? null,
+      }))
+      return text(mapped)
+    },
+
+    gh_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const comment = await ctx.ghClient.postComment(repoSlug, prId, content)
+      return text({ commentId: comment.id })
+    },
+
+    gh_reply_to_comment: async ({
+      repoSlug, prId, parentId, content,
+    }: { repoSlug: string; prId: number; parentId: number; content: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const comment = await ctx.ghClient.replyToComment(repoSlug, prId, parentId, content)
+      return text({ commentId: comment.id })
+    },
+
+    gh_approve_pr: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      await ctx.ghClient.approvePr(repoSlug, prId)
+      return text({ approved: true })
+    },
+
+    gh_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const pr = await ctx.ghClient.mergePr(repoSlug, prId, message)
+      return text({ state: pr.state })
+    },
+
     // Test harness
     run_go_build: async ({ repoDir }: { repoDir: string }) => {
       const { exec: execCb } = await import('child_process')

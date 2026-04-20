@@ -41,7 +41,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 Read `memory/MEMORY.md` and all referenced files. Pay close attention to known pitfalls and mapping files relevant to this job.
 
 ### 2. Clone and scope the repository
-- Clone the source repo into your current directory using BitBucket credentials (see working directory convention in your always-loaded context)
+- Clone the source repo into your current directory using git credentials (see working directory and infrastructure conventions in your always-loaded context)
 - Identify only the specified projects — ignore test projects, infrastructure helpers, and anything not in scope
 - Map the solution structure: which projects are APIs, which are shared libraries, which are console/CLI apps
 

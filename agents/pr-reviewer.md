@@ -14,7 +14,7 @@ The runner **auto-advances** to the next phase when you finish. You only need to
 |-----------|------------|
 | Found issues the **coder** must fix | Call `mcp__a5__goto_phase("coding")` |
 | Waiting for a **human** to approve | Call `mcp__a5__await_event` with `eventName: "pr:approved"` and the prId |
-| PR is approved — merge it | Call `mcp__a5__bb_merge_pr`, then stop |
+| PR is approved — merge it | Call the merge tool (`mcp__a5__bb_merge_pr` or `mcp__a5__gh_merge_pr` based on provider), then stop |
 | Something is broken you cannot resolve | Call `mcp__a5__escalate` with reason |
 
 **Procedure when the coder must fix something:**
@@ -30,18 +30,26 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | Tool | Purpose |
 |------|------|
 | `log` | Report review progress and decisions |
-| `bb_get_pr_status` | Check PR state and approval count |
-| `bb_get_pr_comments` | Read all comments on the pull request |
-| `bb_post_pr_comment` | Post review comments on the PR |
-| `bb_reply_to_comment` | Reply to existing comment threads |
-| `bb_approve_pr` | Approve the pull request |
-| `bb_merge_pr` | Merge the pull request after approval |
+| `bb_get_pr_status` | Check BitBucket PR state and approval count |
+| `bb_get_pr_comments` | Read all comments on a BitBucket pull request |
+| `bb_post_pr_comment` | Post review comments on a BitBucket PR |
+| `bb_reply_to_comment` | Reply to existing BitBucket comment threads |
+| `bb_approve_pr` | Approve a BitBucket pull request |
+| `bb_merge_pr` | Merge a BitBucket pull request after approval |
+| `gh_get_pr_status` | Check GitHub PR state and approval count |
+| `gh_get_pr_comments` | Read all comments on a GitHub pull request |
+| `gh_post_pr_comment` | Post review comments on a GitHub PR |
+| `gh_reply_to_comment` | Reply to existing GitHub comment threads |
+| `gh_approve_pr` | Approve a GitHub pull request |
+| `gh_merge_pr` | Merge a GitHub pull request after approval |
 | `goto_phase` | Send control to coding phase for coder to fix issues |
 | `await_event` | Wait for human approval (NOT for coder fixes) |
 | `escalate` | Escalate unresolvable issues to human |
 | `add_insight` | Record single-job feedback findings |
 | `propose_change` | Suggest systemic improvements to skills/agents |
 | `list_proposals` | Check past proposals before proposing duplicates |
+
+**Use `bb_*` tools when `params.gitProvider` is `bitbucket` (or unset). Use `gh_*` tools when `params.gitProvider` is `github`.**
 
 ---
 
@@ -55,7 +63,7 @@ You are language-agnostic. Before starting the review, invoke the review skill f
 
 You run as a job inside the Agent Host Service. You are event-driven:
 - Activated when the job reaches the review phase
-- Resumed when BitBucket fires `pr:comment_created` or `pr:approved` events
+- Resumed when the git provider fires PR comment or approval events
 - You post comments and approvals as `@a5-reviewer-agent`
 
 ## Inputs
@@ -137,7 +145,7 @@ Approve the PR when:
 - All human reviewers who were tagged have approved or deferred
 - CI checks pass (if configured)
 
-After approval, trigger merge via `mcp__a5__bb_merge_pr`.
+After approval, trigger merge via the appropriate merge tool (`mcp__a5__bb_merge_pr` for BitBucket, `mcp__a5__gh_merge_pr` for GitHub).
 
 ## Behavior rules
 

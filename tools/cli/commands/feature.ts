@@ -12,10 +12,11 @@ interface FeatureResponse {
 
 export const featureCommand = new Command('feature')
   .description('Start a feature implementation job')
-  .option('--repo <slug>', 'BitBucket repository slug')
+  .option('--repo <slug>', 'Repository slug')
   .option('--reviewers <list>', 'PR reviewers (comma-separated usernames)')
   .option('--description <text>', 'Feature description')
   .option('--service-name <name>', 'Service name (defaults to repo slug)')
+  .option('--git-provider <provider>', 'Git provider: github or bitbucket (default: bitbucket)', 'bitbucket')
   .option('--jira-ticket <id>', 'Jira ticket ID (triggers Jira-driven workflow)')
   .option('--no-stream', 'Do not stream logs after dispatch')
   .action(async (opts: {
@@ -23,6 +24,7 @@ export const featureCommand = new Command('feature')
     reviewers?: string
     description?: string
     serviceName?: string
+    gitProvider: string
     jiraTicket?: string
     stream: boolean
   }) => {
@@ -41,6 +43,7 @@ export const featureCommand = new Command('feature')
 
       console.log(`\x1b[36m▸\x1b[0m Starting feature: ${serviceName}`)
       console.log(`  Repo:        ${opts.repo}`)
+      console.log(`  Provider:    ${opts.gitProvider}`)
       console.log(`  Reviewers:   ${reviewers.join(', ')}`)
       console.log(`  Description: ${opts.description!.slice(0, 80)}`)
       console.log()
@@ -50,6 +53,7 @@ export const featureCommand = new Command('feature')
         reviewers,
         description: opts.description,
         serviceName,
+        gitProvider: opts.gitProvider,
       }
     }
 

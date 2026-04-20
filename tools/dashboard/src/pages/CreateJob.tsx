@@ -11,12 +11,15 @@ interface MigrateForm {
   stagingUrl: string
 }
 
+type GitProvider = 'bitbucket' | 'github'
+
 interface FeatureForm {
   repo: string
   serviceName: string
   description: string
   reviewers: string       // comma-separated
   jiraTicketId: string    // optional Jira trigger (mutually exclusive with above)
+  gitProvider: GitProvider
 }
 
 const EMPTY_MIGRATE: MigrateForm = {
@@ -33,6 +36,7 @@ const EMPTY_FEATURE: FeatureForm = {
   description: '',
   reviewers: '',
   jiraTicketId: '',
+  gitProvider: 'bitbucket',
 }
 
 function labelClass() {
@@ -59,7 +63,7 @@ export default function CreateJob() {
     setMigrate(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
-  function handleFeatureChange(e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) {
+  function handleFeatureChange(e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) {
     setFeature(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
@@ -96,6 +100,7 @@ export default function CreateJob() {
             serviceName: feature.serviceName.trim(),
             description: feature.description.trim(),
             reviewers: splitCsv(feature.reviewers),
+            gitProvider: feature.gitProvider,
           }
         }
       }
@@ -245,6 +250,20 @@ export default function CreateJob() {
             <div className={`space-y-5 transition-opacity ${isJiraMode ? 'opacity-30 pointer-events-none' : ''}`}>
               <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider -mb-2">Option B — Manual</p>
 
+              <div>
+                <label className={labelClass()}>Git provider</label>
+                <select
+                  name="gitProvider"
+                  value={feature.gitProvider}
+                  onChange={handleFeatureChange}
+                  className={inputClass()}
+                >
+                  <option value="bitbucket">BitBucket</option>
+                  <option value="github">GitHub</option>
+                </select>
+                <FieldHint>Where the repository is hosted</FieldHint>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={labelClass()}>Repository slug {!isJiraMode && <span className="text-rose-400">*</span>}</label>
@@ -256,7 +275,7 @@ export default function CreateJob() {
                     placeholder="my-service-go"
                     className={inputClass()}
                   />
-                  <FieldHint>BitBucket repo slug</FieldHint>
+                  <FieldHint>{feature.gitProvider === 'github' ? 'GitHub repo name' : 'BitBucket repo slug'}</FieldHint>
                 </div>
                 <div>
                   <label className={labelClass()}>Service name {!isJiraMode && <span className="text-rose-400">*</span>}</label>
@@ -294,7 +313,7 @@ export default function CreateJob() {
                   placeholder="alice, bob"
                   className={inputClass()}
                 />
-                <FieldHint>Comma-separated BitBucket usernames</FieldHint>
+                <FieldHint>{feature.gitProvider === 'github' ? 'Comma-separated GitHub usernames' : 'Comma-separated BitBucket usernames'}</FieldHint>
               </div>
             </div>
           </>

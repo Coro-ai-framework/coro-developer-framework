@@ -28,10 +28,13 @@ import {
 import { Settings } from '../config/settings'
 import { CloudStateBackend } from '../state/cloud-backend'
 import { WebSocketTransport } from '../state/ws-transport'
+import { SqliteStateBackend } from '../state/sqlite-backend'
+import { PollingTransport } from '../state/polling-transport'
 import { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
 import { createBitBucketClients } from '../clients/bitbucket'
-import { createGitClient } from '../clients/git'
+import { createGitClient, createGitHubGitClient } from '../clients/git'
+import { createGitHubClient } from '../clients/github'
 import { createJiraClient } from '../clients/jira'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
@@ -77,6 +80,11 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
         appPassword: process.env.BITBUCKET_REVIEWER_APP_PASSWORD ?? config.git?.token ?? '',
       },
     },
+    github: {
+      owner: process.env.GITHUB_OWNER ?? '',
+      token: process.env.GITHUB_TOKEN ?? '',
+      baseUrl: process.env.GITHUB_API_BASE_URL ?? 'https://api.github.com',
+    },
     redis: {
       url: '',  // Not used in hybrid mode
     },
@@ -104,6 +112,94 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       staticDomain: '',
     },
   }
+}
+
+// ── Local Mode Bootstrap (SQLite + Polling) ──────────────────────────────────
+
+export async function startLocalRunner(
+  config: LocalConfig | null,
+  logger: pino.Logger,
+  localPort: number,
+): Promise<{ dispatcher: Dispatcher; shutdown: () => Promise<void> }> {
+  const effectiveConfig: LocalConfig = config ?? { anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? '' } }
+  const settings = buildSettingsFromLocal(effectiveConfig)
+
+  // Ensure working + intelligence dirs exist
+  fs.mkdirSync(settings.paths.workingDir, { recursive: true })
+  fs.mkdirSync(settings.paths.a5aiDir, { recursive: true })
+
+  // Create SQLite state backend
+  const path = await import('path')
+  const os = await import('os')
+  const configDir = effectiveConfig.paths?.workingDir?.replace('~', os.homedir())
+    ? path.dirname(effectiveConfig.paths.workingDir.replace('~', os.homedir()))
+    : path.join(os.homedir(), '.a5')
+  const dbPath = path.join(configDir, 'state.db')
+  fs.mkdirSync(configDir, { recursive: true })
+
+  logger.info({ dbPath }, 'Opening SQLite database')
+  const stateBackend = new SqliteStateBackend(dbPath, settings.paths.a5aiDir, logger)
+  await stateBackend.initialize()
+
+  // Build external API clients (run locally on dev machine)
+  const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
+  const gitClient = createGitClient(settings)
+  const ghClient = createGitHubClient(settings)
+  const ghGitClient = createGitHubGitClient(settings)
+  const lokiClient = createLokiClient(settings)
+  const tempoClient = createTempoClient(settings)
+  const jiraClient = createJiraClient(settings)
+
+  // Determine which PR poller to use based on git provider
+  const gitProvider = effectiveConfig.git?.provider ?? 'github'
+  const prPoller = gitProvider === 'bitbucket'
+    ? bbCoder
+    : (ghClient ?? bbCoder)  // Fall back to bbCoder if GitHub not configured
+
+  // Create polling transport for PR event detection
+  const transport = new PollingTransport({
+    stateBackend,
+    prPoller,
+    defaultRepoSlug: '',
+    intervalMs: 60_000,
+    logger,
+  })
+  await transport.connect()
+
+  // Build runner context
+  const runnerCtx: RunnerContext = {
+    stateBackend,
+    settings,
+    gitClient,
+    bbCoder,
+    bbReviewer,
+    ghClient,
+    ghGitClient,
+    lokiClient,
+    tempoClient,
+    jiraClient,
+    logger,
+  }
+
+  // Create dispatcher with polling transport for event delivery
+  const dispatcher = new Dispatcher(runnerCtx, transport)
+
+  // Start local HTTP server (same as hybrid but serves dashboard too)
+  const server = createRunnerServer({
+    port: localPort,
+    dispatcher,
+    stateBackend,
+    logger,
+  })
+
+  const shutdown = async () => {
+    logger.info('Shutting down local runner...')
+    server.close()
+    await transport.disconnect()
+    stateBackend.close()
+  }
+
+  return { dispatcher, shutdown }
 }
 
 // ── Hybrid Mode Bootstrap ────────────────────────────────────────────────────
@@ -144,6 +240,8 @@ export async function startHybridRunner(
   // Build external API clients (run locally on dev machine)
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
   const gitClient = createGitClient(settings)
+  const ghClient = createGitHubClient(settings)
+  const ghGitClient = createGitHubGitClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
   const jiraClient = createJiraClient(settings)
@@ -155,6 +253,8 @@ export async function startHybridRunner(
     gitClient,
     bbCoder,
     bbReviewer,
+    ghClient,
+    ghGitClient,
     lokiClient,
     tempoClient,
     jiraClient,
@@ -230,10 +330,30 @@ export async function startRunner(options: RunnerOptions = {}): Promise<void> {
     }
 
     case 'local': {
-      // Phase 5: SQLite + polling mode
-      logger.error('Local mode (SQLite + polling) is not yet implemented (Phase 5)')
-      logger.info('To use hybrid mode, run: a5 login && a5 init')
-      process.exit(1)
+      if (!config) {
+        // No config at all — create minimal config to get started
+        logger.info('No config found — using defaults for local mode')
+        logger.info('Run `a5 init --local` to customise settings')
+      }
+
+      const localPort = options.port ?? 3000
+      const { dispatcher, shutdown } = await startLocalRunner(config, logger, localPort)
+
+      logger.info('Local runner ready — waiting for job commands')
+      logger.info(`Dashboard: http://localhost:${localPort}`)
+
+      // Expose dispatcher for CLI job dispatch
+      ;(globalThis as Record<string, unknown>).__a5_dispatcher = dispatcher
+
+      const handleShutdown = async () => {
+        await shutdown()
+        process.exit(0)
+      }
+      process.on('SIGINT', handleShutdown)
+      process.on('SIGTERM', handleShutdown)
+
+      // Keep process alive
+      await new Promise(() => {})
       break
     }
 

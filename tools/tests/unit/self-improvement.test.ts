@@ -53,6 +53,8 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     gitClient: {} as ToolContext['gitClient'],
     bbCoder: {} as ToolContext['bbCoder'],
     bbReviewer: {} as ToolContext['bbReviewer'],
+    ghClient: null,
+    ghGitClient: null,
     lokiClient: {} as ToolContext['lokiClient'],
     tempoClient: {} as ToolContext['tempoClient'],
     jiraClient: {} as ToolContext['jiraClient'],

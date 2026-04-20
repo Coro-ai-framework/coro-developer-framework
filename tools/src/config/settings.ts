@@ -8,6 +8,12 @@ export interface BitBucketAccountConfig {
   appPassword: string
 }
 
+export interface GitHubConfig {
+  owner: string
+  token: string
+  baseUrl: string
+}
+
 export interface Settings {
   host: {
     port: number
@@ -25,6 +31,7 @@ export interface Settings {
     coderAccount: BitBucketAccountConfig
     reviewerAccount: BitBucketAccountConfig
   }
+  github: GitHubConfig
   redis: {
     url: string
   }
@@ -101,6 +108,11 @@ export function loadSettings(): Settings {
         appPassword: env('BITBUCKET_REVIEWER_APP_PASSWORD') ?? file.bitbucket?.reviewerAccount?.appPassword ?? '',
       },
     },
+    github: {
+      owner: env('GITHUB_OWNER') ?? file.github?.owner ?? '',
+      token: env('GITHUB_TOKEN') ?? file.github?.token ?? '',
+      baseUrl: env('GITHUB_API_BASE_URL') ?? file.github?.baseUrl ?? 'https://api.github.com',
+    },
     redis: {
       url: env('REDIS_URL') ?? file.redis?.url ?? 'redis://localhost:6379',
     },
@@ -139,11 +151,26 @@ function validate(s: Settings): void {
   const missing: string[] = []
 
   if (!s.claude.apiKey) missing.push('ANTHROPIC_API_KEY (or claude.apiKey in settings.json)')
-  if (!s.host.webhookSecret) missing.push('BITBUCKET_WEBHOOK_SECRET (or host.webhookSecret in settings.json)')
-  if (!s.bitbucket.workspace) missing.push('BITBUCKET_WORKSPACE (or bitbucket.workspace in settings.json)')
-  if (!s.bitbucket.coderAccount.appPassword) missing.push('BITBUCKET_CODER_APP_PASSWORD (or bitbucket.coderAccount.appPassword in settings.json)')
-  if (!s.bitbucket.reviewerAccount.appPassword) missing.push('BITBUCKET_REVIEWER_APP_PASSWORD (or bitbucket.reviewerAccount.appPassword in settings.json)')
   if (!s.redis.url) missing.push('REDIS_URL (or redis.url in settings.json)')
+
+  // At least one git provider must be configured
+  const hasBitbucket = !!s.bitbucket.coderAccount.appPassword
+  const hasGithub = !!s.github.token
+
+  if (!hasBitbucket && !hasGithub) {
+    missing.push('At least one git provider must be configured: BITBUCKET_CODER_APP_PASSWORD or GITHUB_TOKEN')
+  }
+
+  // If BitBucket is configured, require workspace + both accounts
+  if (hasBitbucket) {
+    if (!s.bitbucket.workspace) missing.push('BITBUCKET_WORKSPACE (or bitbucket.workspace in settings.json)')
+    if (!s.bitbucket.reviewerAccount.appPassword) missing.push('BITBUCKET_REVIEWER_APP_PASSWORD (or bitbucket.reviewerAccount.appPassword in settings.json)')
+  }
+
+  // If GitHub is configured, require owner
+  if (hasGithub) {
+    if (!s.github.owner) missing.push('GITHUB_OWNER (or github.owner in settings.json)')
+  }
 
   if (missing.length > 0) {
     throw new Error(

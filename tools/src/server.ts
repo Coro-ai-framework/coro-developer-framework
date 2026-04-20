@@ -166,7 +166,7 @@ export function createServer(ctx: ServerContext): Express {
     }
 
     // CLI-triggered: repo, reviewers, description, serviceName required
-    const { repo, reviewers, description, serviceName } = body
+    const { repo, reviewers, description, serviceName, gitProvider } = body
     if (!repo || !reviewers || !description || !serviceName) {
       res.status(400).json({
         error: 'Missing required fields: repo, reviewers, description, serviceName (or provide jiraTicketId)',
@@ -179,9 +179,11 @@ export function createServer(ctx: ServerContext): Express {
       return
     }
 
+    const provider = gitProvider === 'github' ? 'github' : 'bitbucket'
+
     const input: JobInput = {
       type: 'feature',
-      params: { repo, repoSlug: repo, reviewers, description, serviceName },
+      params: { repo, repoSlug: repo, reviewers, description, serviceName, gitProvider: provider },
     }
 
     const job = await dispatcher.dispatch(input)

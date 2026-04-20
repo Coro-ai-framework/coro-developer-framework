@@ -1,6 +1,7 @@
 import { ChildProcess } from 'child_process'
 import { Logger } from 'pino'
 import { BitBucketClient } from '../clients/bitbucket'
+import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
 import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
@@ -22,6 +23,8 @@ export interface ToolContext {
   gitClient: GitClient
   bbCoder: BitBucketClient
   bbReviewer: BitBucketClient
+  ghClient: GitHubClient | null
+  ghGitClient: GitClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
   jiraClient: JiraClient

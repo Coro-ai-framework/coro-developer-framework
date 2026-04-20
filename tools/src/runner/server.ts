@@ -7,6 +7,7 @@
 
 import express, { Request, Response } from 'express'
 import http from 'http'
+import path from 'path'
 import { Logger } from 'pino'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { StateBackend } from '../state/backend'
@@ -175,6 +176,20 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     } catch (err) {
       res.status(400).json({ error: (err as Error).message })
     }
+  })
+
+  // ── Dashboard (local mode) ─────────────────────────────────────────────
+
+  const dashboardDir = path.join(__dirname, '../../dashboard/dist')
+  app.use(express.static(dashboardDir))
+  app.get('*', (req: Request, res: Response) => {
+    if (req.accepts('html')) {
+      res.sendFile(path.join(dashboardDir, 'index.html'), err => {
+        if (err) res.status(404).json({ error: 'Not found' })
+      })
+      return
+    }
+    res.status(404).json({ error: 'Not found' })
   })
 
   // ── Start server ────────────────────────────────────────────────────────

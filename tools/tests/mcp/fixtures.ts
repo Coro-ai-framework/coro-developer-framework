@@ -95,6 +95,8 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
     gitClient: {} as ToolContext['gitClient'],
     bbCoder,
     bbReviewer,
+    ghClient: null,
+    ghGitClient: null,
     lokiClient,
     tempoClient,
     jiraClient,

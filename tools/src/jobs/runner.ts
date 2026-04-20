@@ -4,6 +4,7 @@ import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
 import path from 'path'
 import { BitBucketClient } from '../clients/bitbucket'
+import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
 import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
@@ -41,6 +42,8 @@ export interface RunnerContext {
   gitClient: GitClient
   bbCoder: BitBucketClient
   bbReviewer: BitBucketClient
+  ghClient: GitHubClient | null
+  ghGitClient: GitClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
   jiraClient: JiraClient
@@ -118,6 +121,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     gitClient: ctx.gitClient,
     bbCoder: ctx.bbCoder,
     bbReviewer: ctx.bbReviewer,
+    ghClient: ctx.ghClient,
+    ghGitClient: ctx.ghGitClient,
     lokiClient: ctx.lokiClient,
     tempoClient: ctx.tempoClient,
     jiraClient: ctx.jiraClient,
@@ -219,6 +224,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           BB_GIT_USERNAME: settings.bitbucket.coderAccount.appPassword.startsWith('ATATT')
             ? 'x-token-auth'
             : encodeURIComponent(settings.bitbucket.coderAccount.username),
+          // GitHub credentials (empty strings if not configured — agents check params.gitProvider)
+          GH_OWNER: settings.github?.owner ?? '',
+          GH_TOKEN: settings.github?.token ?? '',
           // SDK default is 60s — agent phases run for minutes to hours. Without
           // this, the Claude Code subprocess closes the MCP transport mid-phase,
           // leaving all mcp__a5__* tools disconnected while built-in tools still work.

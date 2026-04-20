@@ -42,6 +42,7 @@ function makeSettings(a5aiDir = '/data/a5-ai'): Settings {
       coderAccount: { username: 'coder', appPassword: 'pass' },
       reviewerAccount: { username: 'reviewer', appPassword: 'pass' },
     },
+    github: { owner: '', token: '', baseUrl: 'https://api.github.com' },
     redis: { url: 'redis://localhost' },
     paths: { workingDir: '/data/working', a5aiDir },
     loki: { baseUrl: '', apiKey: '', username: '' },
