@@ -1,6 +1,7 @@
 import fs from 'fs/promises'
 import path from 'path'
 import { ToolContext } from './types'
+import type { ProposalType } from '../jobs/types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -8,19 +9,6 @@ interface FileEntry {
   path: string
   content: string
 }
-
-type ProposalType =
-  | 'new-tool'
-  | 'modify-tool'
-  | 'new-workflow'
-  | 'modify-workflow'
-  | 'new-agent'
-  | 'modify-agent'
-  | 'memory-update'
-  | 'source-change'
-  | 'skill-create'
-  | 'skill-update'
-  | 'claude-md-update'
 
 // ── propose_change ────────────────────────────────────────────────────────────
 

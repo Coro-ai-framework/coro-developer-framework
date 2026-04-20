@@ -1,4 +1,4 @@
-import { Job, JobInput, JobType, PrMapping } from '../jobs/types'
+import { Job, JobInput, JobType, PrMapping, Proposal, ProposalStatus } from '../jobs/types'
 
 // ── State backend interface ───────────────────────────────────────────────────
 //
@@ -53,4 +53,11 @@ export interface StateBackend {
   // ── Repo mappings ──────────────────────────────────────────────────────────
 
   mapRepoToJob(repoSlug: string, jobId: string): Promise<void>
+
+  // ── Proposals ──────────────────────────────────────────────────────────────
+
+  createProposal(proposal: Omit<Proposal, 'id'>): Promise<Proposal>
+  listProposals(tenantId: string, status?: ProposalStatus): Promise<Proposal[]>
+  getProposal(tenantId: string, id: string): Promise<Proposal | null>
+  updateProposal(tenantId: string, id: string, updates: Partial<Proposal>): Promise<Proposal>
 }

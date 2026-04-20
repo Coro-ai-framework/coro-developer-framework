@@ -5,6 +5,8 @@ import {
   JobType,
   STATUS_QUEUED,
   PrMapping,
+  Proposal,
+  ProposalStatus,
   defaultWorkflowPath,
   emptyTokenUsage,
 } from '../jobs/types'
@@ -235,6 +237,37 @@ export class RedisStateBackend implements StateBackend {
 
   async logLength(jobId: string): Promise<number> {
     return this.redis.llen(keyLog(jobId))
+  }
+
+  // ── Proposals (Redis stubs — full implementation in PostgresStateBackend) ──
+
+  private readonly proposals = new Map<string, Proposal>()
+
+  async createProposal(proposal: Omit<Proposal, 'id'>): Promise<Proposal> {
+    const id = `proposal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const full: Proposal = { ...proposal, id }
+    this.proposals.set(id, full)
+    return full
+  }
+
+  async listProposals(tenantId: string, status?: ProposalStatus): Promise<Proposal[]> {
+    const all = Array.from(this.proposals.values())
+      .filter(p => p.tenantId === tenantId)
+    return status ? all.filter(p => p.status === status) : all
+  }
+
+  async getProposal(tenantId: string, id: string): Promise<Proposal | null> {
+    const p = this.proposals.get(id)
+    if (!p || p.tenantId !== tenantId) return null
+    return p
+  }
+
+  async updateProposal(tenantId: string, id: string, updates: Partial<Proposal>): Promise<Proposal> {
+    const existing = await this.getProposal(tenantId, id)
+    if (!existing) throw new Error(`Proposal not found: ${id}`)
+    const updated = { ...existing, ...updates, id: existing.id, tenantId: existing.tenantId, updatedAt: new Date().toISOString() }
+    this.proposals.set(id, updated)
+    return updated
   }
 
   // ── Internal helpers ──────────────────────────────────────────────────────
