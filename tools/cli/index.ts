@@ -8,6 +8,9 @@ import { jobsCommand } from './commands/jobs'
 import { logsCommand } from './commands/logs'
 import { resumeCommand } from './commands/resume'
 import { messageCommand } from './commands/message'
+import { loginCommand } from './commands/login'
+import { initCommand } from './commands/init'
+import { runnerCommand } from './commands/runner'
 
 const program = new Command()
 
@@ -23,5 +26,8 @@ program.addCommand(jobsCommand)
 program.addCommand(logsCommand)
 program.addCommand(resumeCommand)
 program.addCommand(messageCommand)
+program.addCommand(loginCommand)
+program.addCommand(initCommand)
+program.addCommand(runnerCommand)
 
 program.parse()

@@ -91,6 +91,12 @@ export class GitClient {
     return result.all
   }
 
+  /** Get the name of the currently checked-out branch. */
+  async currentBranch(repoDir: string): Promise<string> {
+    const result = await this.git(repoDir).branchLocal()
+    return result.current
+  }
+
   // ── Private helpers ─────────────────────────────────────────────────────────
 
   private repoUrl(repoSlug: string): string {
