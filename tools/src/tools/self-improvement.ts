@@ -85,7 +85,7 @@ export async function proposeChange(
   }
 
   // 3. Log
-  await ctx.registry.appendLog(
+  await ctx.stateBackend.appendLog(
     ctx.job.id,
     `[propose_change] Filed "${input.type}" proposal: ${input.title} (${files.length} file(s))`,
   )

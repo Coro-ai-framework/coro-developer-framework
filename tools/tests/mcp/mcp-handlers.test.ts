@@ -70,7 +70,7 @@ describe('createMcpToolHandlers — job control & signals', () => {
     const h = createMcpToolHandlers(ctx, signals)
     const out = parseJson(await h.escalate({ reason: 'Blocked on auth' })) as Record<string, unknown>
 
-    expect(ctx.registry.updateJob).toHaveBeenCalledWith('job-mcp-test', {
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith('job-mcp-test', {
       status: STATUS_ESCALATED,
       escalationMessage: 'Blocked on auth',
     })
@@ -83,7 +83,7 @@ describe('createMcpToolHandlers — job control & signals', () => {
   it('log appends to registry', async () => {
     const h = createMcpToolHandlers(ctx, signals)
     await h.log({ message: 'Step done' })
-    expect(ctx.registry.appendLog).toHaveBeenCalledWith('job-mcp-test', 'Step done')
+    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith('job-mcp-test', 'Step done')
   })
 })
 
@@ -358,7 +358,7 @@ describe('createMcpToolHandlers — feature tracking', () => {
     const data = parseJson(await h.set_features({ features: ['scaffold', 'users-api'] })) as Record<string, unknown>
 
     expect(data['registered']).toBe(2)
-    expect(ctx.registry.updateJob).toHaveBeenCalledWith('job-mcp-test', {
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith('job-mcp-test', {
       features: [
         { name: 'scaffold', status: 'pending', loopCount: 0 },
         { name: 'users-api', status: 'pending', loopCount: 0 },
@@ -371,7 +371,7 @@ describe('createMcpToolHandlers — feature tracking', () => {
       features: [{ name: 'f1', status: 'complete', loopCount: 1 }],
       currentFeature: 'f1',
     })
-    ;(ctx.registry.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
 
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.get_features()) as Record<string, unknown>
@@ -386,14 +386,14 @@ describe('createMcpToolHandlers — feature tracking', () => {
         { name: 'f2', status: 'pending', loopCount: 0 },
       ],
     })
-    ;(ctx.registry.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
 
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.update_feature({ name: 'f1', status: 'in-progress' })) as Record<string, unknown>
 
     expect(data['updated']).toBe('f1')
     expect(data['status']).toBe('in-progress')
-    expect(ctx.registry.updateJob).toHaveBeenCalledWith(
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith(
       'job-mcp-test',
       expect.objectContaining({ currentFeature: 'f1' }),
     )
@@ -403,7 +403,7 @@ describe('createMcpToolHandlers — feature tracking', () => {
     const jobWithFeatures = makeMockJob({
       features: [{ name: 'f1', status: 'in-progress', loopCount: 2 }],
     })
-    ;(ctx.registry.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
 
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.update_feature({ name: 'f1', incrementLoop: true })) as Record<string, unknown>
@@ -416,19 +416,19 @@ describe('createMcpToolHandlers — feature tracking', () => {
     const data = parseJson(await h.request_new_session({ reason: 'Starting next feature' })) as Record<string, unknown>
 
     expect(data['newSession']).toBe(true)
-    expect(ctx.registry.updateJob).toHaveBeenCalledWith('job-mcp-test', { sessionId: undefined })
-    expect(ctx.registry.appendLog).toHaveBeenCalledWith('job-mcp-test', '[session-reset] Starting next feature')
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith('job-mcp-test', { sessionId: undefined })
+    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith('job-mcp-test', '[session-reset] Starting next feature')
   })
 
   it('set_job_params merges params into job', async () => {
     const jobWithParams = makeMockJob({ params: { repoSlug: 'svc', reviewers: ['r'] } })
-    ;(ctx.registry.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithParams)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithParams)
 
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.set_job_params({ params: { language: 'golang' } })) as Record<string, unknown>
 
     expect(data['updated']).toEqual(['language'])
-    expect(ctx.registry.updateJob).toHaveBeenCalledWith(
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith(
       'job-mcp-test',
       expect.objectContaining({ params: { repoSlug: 'svc', reviewers: ['r'], language: 'golang' } }),
     )
@@ -444,7 +444,7 @@ describe('createMcpToolHandlers — add_insight', () => {
 
   it('appends insight to job and logs it', async () => {
     const jobWithInsights = makeMockJob({ insights: [{ phase: 'planning', category: 'old', summary: 'x', detail: 'y' }] })
-    ;(ctx.registry.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithInsights)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithInsights)
 
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.add_insight({
@@ -457,7 +457,7 @@ describe('createMcpToolHandlers — add_insight', () => {
     expect(data['recorded']).toBe(true)
     expect(data['totalInsights']).toBe(2)
 
-    expect(ctx.registry.updateJob).toHaveBeenCalledWith(
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith(
       'job-mcp-test',
       expect.objectContaining({
         insights: expect.arrayContaining([
@@ -466,7 +466,7 @@ describe('createMcpToolHandlers — add_insight', () => {
       }),
     )
 
-    expect(ctx.registry.appendLog).toHaveBeenCalledWith(
+    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith(
       'job-mcp-test',
       '[insight] auth: x-token-auth returns 401',
     )

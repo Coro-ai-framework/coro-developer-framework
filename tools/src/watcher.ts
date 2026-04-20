@@ -9,7 +9,7 @@ import { simpleGit } from 'simple-git'
 import { BitBucketClient } from './clients/bitbucket'
 import { GitClient } from './clients/git'
 import { Settings } from './config/settings'
-import { JobRegistry } from './jobs/registry'
+import type { StateBackend } from './state/backend'
 import { parseWorkflowConfig } from './workflow-parser'
 
 const execAsync = promisify(exec)
@@ -20,7 +20,7 @@ export interface WatcherContext {
   settings: Settings
   gitClient: GitClient
   bbCoder: BitBucketClient
-  registry: JobRegistry
+  stateBackend: StateBackend
   logger: Logger
 }
 
@@ -120,7 +120,7 @@ export function startWatcher(ctx: WatcherContext): FSWatcher {
 // ── Change processor ──────────────────────────────────────────────────────────
 
 async function processChanges(changedFiles: string[], ctx: WatcherContext): Promise<void> {
-  const { settings, gitClient, bbCoder, registry, logger } = ctx
+  const { settings, gitClient, bbCoder, stateBackend, logger } = ctx
   const a5aiDir = settings.paths.a5aiDir
 
   logger.info({ count: changedFiles.length, files: changedFiles }, 'Processing file watcher changes')
@@ -252,7 +252,7 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
 
   // Register a SelfUpdate job in Redis to track the PR
   try {
-    const job = await registry.createJob({
+    const job = await stateBackend.createJob({
       type: 'self-update',
       triggerSource: 'internal',
       params: {
@@ -263,7 +263,7 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
         changedFiles: changedFiles.map(f => path.relative(a5aiDir, f)),
       },
     })
-    await registry.appendLog(job.id, `Self-improvement PR #${prId} opened: ${branch}`)
+    await stateBackend.appendLog(job.id, `Self-improvement PR #${prId} opened: ${branch}`)
     logger.info({ jobId: job.id, prId }, 'SelfUpdate job registered')
   } catch (err) {
     logger.error({ err }, 'Failed to register SelfUpdate job')

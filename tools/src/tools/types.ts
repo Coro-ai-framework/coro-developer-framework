@@ -6,7 +6,7 @@ import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import { Settings } from '../config/settings'
-import { JobRegistry } from '../jobs/registry'
+import type { StateBackend } from '../state/backend'
 import { Job } from '../jobs/types'
 
 // ── Tool execution context ────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ import { Job } from '../jobs/types'
 
 export interface ToolContext {
   job: Job
-  registry: JobRegistry
+  stateBackend: StateBackend
   settings: Settings
   gitClient: GitClient
   bbCoder: BitBucketClient

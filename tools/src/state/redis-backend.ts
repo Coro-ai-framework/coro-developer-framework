@@ -7,8 +7,9 @@ import {
   PrMapping,
   defaultWorkflowPath,
   emptyTokenUsage,
-} from './types'
+} from '../jobs/types'
 import { loadWorkflowConfig, resolveInitialPhase, getPhaseConfig } from '../workflow-parser'
+import type { StateBackend } from './backend'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
 
@@ -20,14 +21,47 @@ function keyRepo(repoSlug: string): string      { return `repo:${repoSlug}:jobs`
 function keyAllJobs(): string                   { return 'jobs:all' }
 function keyJobsByType(type: JobType): string   { return `jobs:type:${type}` }
 
-// ── Registry class ────────────────────────────────────────────────────────────
+// ── Redis state backend ───────────────────────────────────────────────────────
 
-export class JobRegistry {
+export class RedisStateBackend implements StateBackend {
   constructor(
     private readonly redis: Redis,
     private readonly a5aiDir: string = '',
     private readonly logger?: { warn: (obj: object, msg: string) => void; debug?: (obj: object, msg: string) => void },
   ) {}
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+  async initialize(): Promise<void> {
+    await this.rebuildPrMappings()
+  }
+
+  /**
+   * Rebuild all pr:{prId}:job reverse-lookup keys from job state in Redis.
+   * Called on startup so webhooks can always find parked jobs even after a restart.
+   */
+  async rebuildPrMappings(): Promise<number> {
+    const jobs = await this.listJobs()
+    let rebuilt = 0
+
+    for (const job of jobs) {
+      // Re-map from prMappings array (the authoritative list)
+      for (const mapping of job.prMappings) {
+        await this.mapPrToJob(mapping.prId, job.id)
+        rebuilt++
+      }
+      // Also cover jobs parked with awaitingPrId that predate the prMappings approach
+      if (job.awaitingPrId) {
+        const existing = await this.redis.get(keyPr(job.awaitingPrId))
+        if (!existing) {
+          await this.mapPrToJob(job.awaitingPrId, job.id)
+          rebuilt++
+        }
+      }
+    }
+
+    return rebuilt
+  }
 
   // ── Create ────────────────────────────────────────────────────────────────
 
@@ -145,33 +179,6 @@ export class JobRegistry {
 
   async mapPrToJob(prId: number, jobId: string): Promise<void> {
     await this.redis.set(keyPr(prId), jobId)
-  }
-
-  /**
-   * Rebuild all pr:{prId}:job reverse-lookup keys from job state in Redis.
-   * Called on startup so webhooks can always find parked jobs even after a restart.
-   */
-  async rebuildPrMappings(): Promise<number> {
-    const jobs = await this.listJobs()
-    let rebuilt = 0
-
-    for (const job of jobs) {
-      // Re-map from prMappings array (the authoritative list)
-      for (const mapping of job.prMappings) {
-        await this.mapPrToJob(mapping.prId, job.id)
-        rebuilt++
-      }
-      // Also cover jobs parked with awaitingPrId that predate the prMappings approach
-      if (job.awaitingPrId) {
-        const existing = await this.redis.get(keyPr(job.awaitingPrId))
-        if (!existing) {
-          await this.mapPrToJob(job.awaitingPrId, job.id)
-          rebuilt++
-        }
-      }
-    }
-
-    return rebuilt
   }
 
   async getJobByPr(prId: number): Promise<Job | null> {

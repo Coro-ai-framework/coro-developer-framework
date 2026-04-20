@@ -75,7 +75,7 @@ const workflowSingle: WorkflowConfig = {
   overrides: {},
 }
 
-function createMockRegistry(initial: Job) {
+function createMockStateBackend(initial: Job) {
   let current: Job = { ...initial }
   return {
     get current(): Job {
@@ -98,11 +98,11 @@ function createMockRegistry(initial: Job) {
   }
 }
 
-type MockRegistry = ReturnType<typeof createMockRegistry>
+type MockStateBackend = ReturnType<typeof createMockStateBackend>
 
-function makeRunnerContext(registry: MockRegistry): RunnerContext {
+function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
   return {
-    registry: registry as unknown as RunnerContext['registry'],
+    stateBackend: stateBackend as unknown as RunnerContext['stateBackend'],
     settings: makeSettings(),
     gitClient: {} as RunnerContext['gitClient'],
     bbCoder: {} as RunnerContext['bbCoder'],
@@ -120,12 +120,12 @@ function makeRunnerContext(registry: MockRegistry): RunnerContext {
 }
 
 describe('runJob (mocked Agent SDK query)', () => {
-  let registry: MockRegistry
+  let stateBackend: MockStateBackend
   let ctx: RunnerContext
 
   beforeEach(() => {
-    registry = createMockRegistry(makeJob({ phase: 'alpha', status: 'queued' }))
-    ctx = makeRunnerContext(registry)
+    stateBackend = createMockStateBackend(makeJob({ phase: 'alpha', status: 'queued' }))
+    ctx = makeRunnerContext(stateBackend)
   })
 
   it('completes a single-phase workflow when phaseComplete is signalled', async () => {
@@ -140,8 +140,8 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.current.status).toBe(STATUS_COMPLETE)
-    expect(registry.updateJob).toHaveBeenCalledWith(
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.updateJob).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ sessionId: 'sess-single' }),
     )
@@ -162,11 +162,11 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(call).toBe(2)
-    expect(registry.current.status).toBe(STATUS_COMPLETE)
-    expect(registry.current.phase).toBe('beta')
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
     // After first phase advance, phase is beta; job completes when no next phase after second complete
     // Actually: first call completes alpha -> advance to beta. Second call completes beta -> no next -> COMPLETE
-    expect(registry.appendLog).toHaveBeenCalledWith(
+    expect(stateBackend.appendLog).toHaveBeenCalledWith(
       'runner-job-1',
       expect.stringContaining('Phase advanced → beta'),
     )
@@ -185,9 +185,9 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowTwoPhase,
     })
 
-    expect(registry.current.status).toBe(STATUS_AWAITING_PR_MERGE)
-    expect(registry.current.awaitingEvent).toBe('pr:merged')
-    expect(registry.current.awaitingPrId).toBe(99)
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_PR_MERGE)
+    expect(stateBackend.current.awaitingEvent).toBe('pr:merged')
+    expect(stateBackend.current.awaitingPrId).toBe(99)
   })
 
   it('parks with awaiting-plan-approval when event name includes "plan"', async () => {
@@ -202,7 +202,7 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowTwoPhase,
     })
 
-    expect(registry.current.status).toBe(STATUS_AWAITING_PLAN_APPROVAL)
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_PLAN_APPROVAL)
   })
 
   it('auto-advances when query ends without any signal (no escalation)', async () => {
@@ -219,8 +219,8 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(call).toBe(2)
-    expect(registry.current.status).toBe(STATUS_COMPLETE)
-    expect(registry.current.phase).toBe('beta')
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
   })
 
   it('persists sessionId from system messages', async () => {
@@ -235,7 +235,7 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.current.sessionId).toBe('persist-me')
+    expect(stateBackend.current.sessionId).toBe('persist-me')
   })
 
   it('logs assistant text from BetaMessage content blocks', async () => {
@@ -255,7 +255,7 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.appendLog).toHaveBeenCalledWith('runner-job-1', 'Hello from the assistant')
+    expect(stateBackend.appendLog).toHaveBeenCalledWith('runner-job-1', 'Hello from the assistant')
   })
 
   it('logs tool_use blocks from assistant message', async () => {
@@ -277,7 +277,7 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.appendLog).toHaveBeenCalledWith(
+    expect(stateBackend.appendLog).toHaveBeenCalledWith(
       'runner-job-1',
       expect.stringContaining('→ Read'),
     )
@@ -296,7 +296,7 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.appendLog).toHaveBeenCalledWith(
+    expect(stateBackend.appendLog).toHaveBeenCalledWith(
       'runner-job-1',
       '[tool_summary] Read 3 files in src/',
     )
@@ -314,14 +314,14 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.current.status).toBe(STATUS_FAILED)
-    expect(registry.current.escalationMessage).toContain('SDK exploded')
+    expect(stateBackend.current.status).toBe(STATUS_FAILED)
+    expect(stateBackend.current.escalationMessage).toContain('SDK exploded')
     expect(ctx.logger.error).toHaveBeenCalled()
   })
 
-  it('stops when escalated signal is set (after registry update)', async () => {
+  it('stops when escalated signal is set (after stateBackend update)', async () => {
     const queryImpl = async function* (inv: QueryInvocation) {
-      await inv.toolCtx.registry.updateJob(inv.toolCtx.job.id, {
+      await inv.toolCtx.stateBackend.updateJob(inv.toolCtx.job.id, {
         status: STATUS_ESCALATED,
         escalationMessage: 'Human needed',
       })
@@ -334,8 +334,8 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowTwoPhase,
     })
 
-    expect(registry.current.status).toBe(STATUS_ESCALATED)
-    expect(registry.current.escalationMessage).toBe('Human needed')
+    expect(stateBackend.current.status).toBe(STATUS_ESCALATED)
+    expect(stateBackend.current.escalationMessage).toBe('Human needed')
   })
 
   it('goto_phase overrides the next phase via nextPhase signal', async () => {
@@ -355,8 +355,8 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(call).toBe(2)
-    expect(registry.current.phase).toBe('beta')
-    expect(registry.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
   })
 
   it('uses phase transition prompt when sessionId exists on second phase', async () => {
@@ -410,7 +410,7 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     // Phase alpha should have a PhaseUsage entry despite no result event
-    const alphaUsage = registry.current.phaseUsage.find(
+    const alphaUsage = stateBackend.current.phaseUsage.find(
       (p: { phase: string }) => p.phase === 'alpha',
     )
     expect(alphaUsage).toBeDefined()
@@ -452,7 +452,7 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    const onlyUsage = registry.current.phaseUsage.find(
+    const onlyUsage = stateBackend.current.phaseUsage.find(
       (p: { phase: string }) => p.phase === 'only',
     )
     expect(onlyUsage).toBeDefined()
@@ -465,7 +465,7 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(onlyUsage!.durationApiMs).toBe(30000)
     expect(onlyUsage!.numTurns).toBe(5)
     // Job total should include phase cost
-    expect(registry.current.tokenUsage.totalCostUsd).toBe(1.2345)
+    expect(stateBackend.current.tokenUsage.totalCostUsd).toBe(1.2345)
   })
 
   it('accumulates PhaseUsage entries across multiple phases', async () => {
@@ -495,14 +495,14 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     // Both phases should have entries
-    expect(registry.current.phaseUsage).toHaveLength(2)
-    expect(registry.current.phaseUsage[0].phase).toBe('alpha')
-    expect(registry.current.phaseUsage[0].inputTokens).toBe(1000)
-    expect(registry.current.phaseUsage[1].phase).toBe('beta')
-    expect(registry.current.phaseUsage[1].inputTokens).toBe(2000)
+    expect(stateBackend.current.phaseUsage).toHaveLength(2)
+    expect(stateBackend.current.phaseUsage[0].phase).toBe('alpha')
+    expect(stateBackend.current.phaseUsage[0].inputTokens).toBe(1000)
+    expect(stateBackend.current.phaseUsage[1].phase).toBe('beta')
+    expect(stateBackend.current.phaseUsage[1].inputTokens).toBe(2000)
     // Job totals should sum across both phases
-    expect(registry.current.tokenUsage.inputTokens).toBe(3000)
-    expect(registry.current.tokenUsage.outputTokens).toBe(600)
+    expect(stateBackend.current.tokenUsage.inputTokens).toBe(3000)
+    expect(stateBackend.current.tokenUsage.outputTokens).toBe(600)
   })
 
   it('creates zero-cost PhaseUsage when phase has no assistant turns', async () => {
@@ -517,10 +517,10 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowSingle,
     })
 
-    expect(registry.current.phaseUsage).toHaveLength(1)
-    expect(registry.current.phaseUsage[0].phase).toBe('only')
-    expect(registry.current.phaseUsage[0].inputTokens).toBe(0)
-    expect(registry.current.phaseUsage[0].costUsd).toBe(0)
-    expect(registry.current.phaseUsage[0].numTurns).toBe(0)
+    expect(stateBackend.current.phaseUsage).toHaveLength(1)
+    expect(stateBackend.current.phaseUsage[0].phase).toBe('only')
+    expect(stateBackend.current.phaseUsage[0].inputTokens).toBe(0)
+    expect(stateBackend.current.phaseUsage[0].costUsd).toBe(0)
+    expect(stateBackend.current.phaseUsage[0].numTurns).toBe(0)
   })
 })

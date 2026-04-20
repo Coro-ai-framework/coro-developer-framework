@@ -44,7 +44,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
       })
 
-      await ctx.registry.addPrMapping(ctx.job.id, {
+      await ctx.stateBackend.addPrMapping(ctx.job.id, {
         prId: pr.id,
         feature: ctx.job.currentFeature ?? ctx.job.phase,
         repoSlug: repoSlug,
@@ -208,15 +208,15 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       const items: FeatureItem[] = features.map(name => ({
         name, status: 'pending', loopCount: 0,
       }))
-      await ctx.registry.updateJob(ctx.job.id, { features: items })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.updateJob(ctx.job.id, { features: items })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ registered: features.length })
     },
 
     update_feature: async ({ name, status, incrementLoop }: {
       name: string; status?: string; incrementLoop?: boolean
     }) => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const features = job.features.map(f => {
         if (f.name !== name) return f
         return {
@@ -226,32 +226,32 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         }
       })
       const current = features.find(f => f.name === name)
-      await ctx.registry.updateJob(ctx.job.id, {
+      await ctx.stateBackend.updateJob(ctx.job.id, {
         features,
         currentFeature: status === 'in-progress' ? name : ctx.job.currentFeature,
         featureLoopCount: current?.loopCount ?? ctx.job.featureLoopCount,
       })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ updated: name, status: current?.status, loopCount: current?.loopCount })
     },
 
     get_features: async () => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ features: job.features, currentFeature: job.currentFeature })
     },
 
     request_new_session: async ({ reason }: { reason: string }) => {
-      await ctx.registry.updateJob(ctx.job.id, { sessionId: undefined })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
-      await ctx.registry.appendLog(ctx.job.id, `[session-reset] ${reason}`)
+      await ctx.stateBackend.updateJob(ctx.job.id, { sessionId: undefined })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.appendLog(ctx.job.id, `[session-reset] ${reason}`)
       return text({ newSession: true, reason })
     },
 
     set_job_params: async ({ params }: { params: Record<string, unknown> }) => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const merged = { ...job.params, ...params }
-      await ctx.registry.updateJob(ctx.job.id, { params: merged })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.updateJob(ctx.job.id, { params: merged })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ updated: Object.keys(params) })
     },
 
@@ -274,7 +274,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
     escalate: async ({ reason }: { reason: string }) => {
       const { STATUS_ESCALATED } = await import('./jobs/types')
-      await ctx.registry.updateJob(ctx.job.id, {
+      await ctx.stateBackend.updateJob(ctx.job.id, {
         status: STATUS_ESCALATED,
         escalationMessage: reason,
       })
@@ -287,7 +287,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     add_insight: async ({ category, summary, detail, suggestion }: {
       category: string; summary: string; detail: string; suggestion?: string
     }) => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const insight: Insight = {
         phase: job.phase,
         category,
@@ -296,14 +296,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         ...(suggestion ? { suggestion } : {}),
       }
       const insights = [...(job.insights ?? []), insight]
-      await ctx.registry.updateJob(ctx.job.id, { insights })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
-      await ctx.registry.appendLog(ctx.job.id, `[insight] ${category}: ${summary}`)
+      await ctx.stateBackend.updateJob(ctx.job.id, { insights })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.appendLog(ctx.job.id, `[insight] ${category}: ${summary}`)
       return text({ recorded: true, totalInsights: insights.length })
     },
 
     log: async ({ message }: { message: string }) => {
-      await ctx.registry.appendLog(ctx.job.id, message)
+      await ctx.stateBackend.appendLog(ctx.job.id, message)
       return text(null)
     },
 
