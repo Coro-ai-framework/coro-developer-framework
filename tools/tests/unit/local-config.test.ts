@@ -26,7 +26,7 @@ describe('local-config', () => {
   })
 
   const validConfig: LocalConfig = {
-    anthropic: { apiKey: 'sk-test-123' },
+    anthropic: { method: 'apiKey', apiKey: 'sk-test-123' },
     cloud: { url: 'https://cloud.a5labs.com', token: 'tok-abc' },
     intelligence: { dir: '/tmp/intel', gitRemote: 'https://example.com/repo.git' },
     paths: { workingDir: '/tmp/work' },
@@ -60,7 +60,7 @@ describe('local-config', () => {
 
   describe('mergeLocalConfig', () => {
     it('merges cloud into existing config', () => {
-      saveLocalConfig({ anthropic: { apiKey: 'sk-old' } }, configPath)
+      saveLocalConfig({ anthropic: { method: 'apiKey', apiKey: 'sk-old' } }, configPath)
       const merged = mergeLocalConfig(
         { cloud: { url: 'https://cloud.example.com', token: 'new-tok' } },
         configPath,
@@ -71,7 +71,7 @@ describe('local-config', () => {
 
     it('creates config if none exists', () => {
       const merged = mergeLocalConfig(
-        { anthropic: { apiKey: 'sk-new' }, cloud: { url: 'https://c.com', token: 't' } },
+        { anthropic: { method: 'apiKey', apiKey: 'sk-new' }, cloud: { url: 'https://c.com', token: 't' } },
         configPath,
       )
       expect(merged.anthropic.apiKey).toBe('sk-new')
@@ -85,7 +85,7 @@ describe('local-config', () => {
     })
 
     it('returns local when no cloud config', () => {
-      expect(detectMode({ anthropic: { apiKey: 'sk-test' } })).toBe('local')
+      expect(detectMode({ anthropic: { method: 'apiKey', apiKey: 'sk-test' } })).toBe('local')
     })
 
     it('returns local when config is null and no env vars', () => {
@@ -120,7 +120,7 @@ describe('local-config', () => {
 
     it('expands tilde', () => {
       const config: LocalConfig = {
-        anthropic: { apiKey: 'k' },
+        anthropic: { method: 'apiKey', apiKey: 'k' },
         intelligence: { dir: '~/.a5/intel' },
       }
       expect(resolveIntelligenceDir(config)).toBe(path.join(os.homedir(), '.a5/intel'))
@@ -138,6 +138,57 @@ describe('local-config', () => {
 
     it('falls back to default', () => {
       expect(resolveWorkingDir(null)).toContain('.a5')
+    })
+  })
+
+  // ── Anthropic auth schema ──────────────────────────────────────────────
+  //
+  // The schema must accept (a) legacy `{ apiKey }` configs written by older
+  // versions and (b) the new discriminated shape, but reject any variant
+  // missing the credential for the chosen method.
+  describe('anthropic auth schema', () => {
+    it('accepts legacy { apiKey } config (method defaults to apiKey)', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ anthropic: { apiKey: 'sk-legacy-123' } }),
+      )
+      const loaded = loadLocalConfig(configPath)
+      expect(loaded?.anthropic.method).toBe('apiKey')
+      expect(loaded?.anthropic.apiKey).toBe('sk-legacy-123')
+    })
+
+    it('accepts { method: "oauth", oauthToken }', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ anthropic: { method: 'oauth', oauthToken: 'sk-ant-oat01-abc' } }),
+      )
+      const loaded = loadLocalConfig(configPath)
+      expect(loaded?.anthropic.method).toBe('oauth')
+      expect(loaded?.anthropic.oauthToken).toBe('sk-ant-oat01-abc')
+    })
+
+    it('rejects { method: "oauth" } without a token', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ anthropic: { method: 'oauth' } }),
+      )
+      expect(() => loadLocalConfig(configPath)).toThrow()
+    })
+
+    it('rejects { method: "apiKey" } without a key', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ anthropic: { method: 'apiKey' } }),
+      )
+      expect(() => loadLocalConfig(configPath)).toThrow()
+    })
+
+    it('rejects legacy { apiKey: "" } (empty string is not a credential)', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ anthropic: { apiKey: '' } }),
+      )
+      expect(() => loadLocalConfig(configPath)).toThrow()
     })
   })
 })

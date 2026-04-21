@@ -73,6 +73,9 @@ export class PollingTransport implements EventTransport {
     }, this.intervalMs)
 
     this.logger.info({ intervalMs: this.intervalMs }, 'Polling transport started')
+
+    // Run an immediate poll so any already-merged PRs are detected on startup
+    void this.poll()
   }
 
   async disconnect(): Promise<void> {
@@ -110,12 +113,12 @@ export class PollingTransport implements EventTransport {
     try {
       const jobs = await this.stateBackend.listJobs()
       const parkedJobs = jobs.filter(j =>
-        isParkingStatus(j.status) && j.awaitingPrId && j.prMappings.length > 0
+        isParkingStatus(j.status) && j.awaitingPrId != null
       )
 
-      if (parkedJobs.length === 0) return
+      this.logger.info({ parkedCount: parkedJobs.length }, 'Poll cycle running')
 
-      this.logger.debug({ count: parkedJobs.length }, 'Polling parked jobs for PR changes')
+      if (parkedJobs.length === 0) return
 
       for (const job of parkedJobs) {
         const prId = job.awaitingPrId!
@@ -154,9 +157,19 @@ export class PollingTransport implements EventTransport {
     const previous = this.snapshots.get(prId)
     this.snapshots.set(prId, current)
 
-    // First poll — just cache, don't fire events
+    // First poll — if the PR is already in a terminal or actionable state,
+    // fire events immediately instead of silently caching. This handles the
+    // cold-start case where the runner starts after a PR was already merged/approved.
     if (!previous) {
       this.logger.debug({ prId, state: current.state }, 'Initial PR snapshot cached')
+
+      if (current.state === 'MERGED') {
+        await this.deliver(jobId, 'pullrequest:fulfilled', { prId, state: 'MERGED' })
+      } else if (current.state === 'DECLINED') {
+        await this.deliver(jobId, 'pullrequest:rejected', { prId, state: 'DECLINED' })
+      } else if (current.approvalCount > 0) {
+        await this.deliver(jobId, 'pullrequest:approved', { prId, approvalCount: current.approvalCount })
+      }
       return
     }
 

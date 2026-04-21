@@ -1,8 +1,14 @@
 import { useState, useEffect, type FormEvent, type ChangeEvent } from 'react'
 
+type AnthropicMethod = 'apiKey' | 'oauth'
+
 interface ConfigResponse {
   config: {
-    anthropic?: { apiKey: string }
+    anthropic?: {
+      method?: AnthropicMethod
+      apiKey?: string
+      oauthToken?: string
+    }
     intelligence?: { dir: string; gitRemote?: string }
     paths?: { workingDir: string }
     git?: {
@@ -22,7 +28,9 @@ interface ConfigResponse {
 }
 
 interface SettingsForm {
+  anthropicMethod: AnthropicMethod
   apiKey: string
+  oauthToken: string
   intelligenceDir: string
   intelligenceRemote: string
   workingDir: string
@@ -33,7 +41,9 @@ interface SettingsForm {
 }
 
 const EMPTY_FORM: SettingsForm = {
+  anthropicMethod: 'apiKey',
   apiKey: '',
+  oauthToken: '',
   intelligenceDir: '',
   intelligenceRemote: '',
   workingDir: '',
@@ -62,6 +72,10 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [meta, setMeta] = useState<{ configPath: string; mode: string; resolved: ConfigResponse['resolved'] } | null>(null)
+  const [oauthGenerating, setOauthGenerating] = useState(false)
+  const [oauthCliMissing, setOauthCliMissing] = useState(false)
+  const [oauthStatus, setOauthStatus] = useState<string | null>(null)
+  const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null)
 
   useEffect(() => {
     loadConfig()
@@ -78,7 +92,9 @@ export default function Settings() {
 
       if (data.config) {
         setForm({
+          anthropicMethod: data.config.anthropic?.method ?? 'apiKey',
           apiKey: data.config.anthropic?.apiKey ?? '',
+          oauthToken: data.config.anthropic?.oauthToken ?? '',
           intelligenceDir: data.config.intelligence?.dir ?? '',
           intelligenceRemote: data.config.intelligence?.gitRemote ?? '',
           workingDir: data.config.paths?.workingDir ?? '',
@@ -100,6 +116,66 @@ export default function Settings() {
     setSuccess(null)
   }
 
+  function setAnthropicMethod(method: AnthropicMethod) {
+    setForm(prev => ({ ...prev, anthropicMethod: method }))
+    setSuccess(null)
+    setOauthStatus(null)
+    setOauthAuthUrl(null)
+  }
+
+  async function handleGenerateOauthToken() {
+    setOauthGenerating(true)
+    setOauthStatus('Launching Claude Code login — a browser window should open on this machine. Complete the sign-in there; the token will be filled in automatically.')
+    setOauthAuthUrl(null)
+    setError(null)
+
+    try {
+      const res = await fetch('/config/anthropic/generate-oauth-token', { method: 'POST' })
+      const data = await res.json().catch(() => ({})) as {
+        token?: string
+        error?: string
+        message?: string
+        stderr?: string
+        authUrl?: string | null
+      }
+
+      if (data.authUrl) setOauthAuthUrl(data.authUrl)
+
+      if (!res.ok) {
+        if (data.error === 'CLI_NOT_FOUND') {
+          setOauthCliMissing(true)
+          setError(data.message ?? 'Could not find a Claude Code CLI on the runner host. Reinstall the runner or paste a token generated elsewhere.')
+        } else if (data.error === 'IN_PROGRESS') {
+          setError('Another token setup is already running on this runner.')
+        } else if (data.error === 'TIMEOUT') {
+          setError(
+            data.authUrl
+              ? 'Token setup timed out. If a browser did not open automatically, use the sign-in link below and try again.'
+              : 'Token setup timed out after 120 seconds. Try again.',
+          )
+        } else {
+          setError(data.message ?? data.stderr ?? data.error ?? `HTTP ${res.status}`)
+        }
+        setOauthStatus(null)
+        return
+      }
+
+      if (data.token) {
+        setForm(prev => ({ ...prev, oauthToken: data.token!, anthropicMethod: 'oauth' }))
+        setOauthStatus('Token generated. Click Save to persist it.')
+        setOauthAuthUrl(null)
+      } else {
+        setError('Token generation returned no token.')
+        setOauthStatus(null)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setOauthStatus(null)
+    } finally {
+      setOauthGenerating(false)
+    }
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
@@ -107,8 +183,15 @@ export default function Settings() {
     setSaving(true)
 
     try {
+      // Send only the field matching the chosen method so the server can
+      // wipe the other credential and not accumulate stale secrets.
+      const anthropic =
+        form.anthropicMethod === 'oauth'
+          ? { method: 'oauth' as const, oauthToken: form.oauthToken }
+          : { method: 'apiKey' as const, apiKey: form.apiKey }
+
       const body: Record<string, unknown> = {
-        anthropic: { apiKey: form.apiKey },
+        anthropic,
         intelligence: {
           dir: form.intelligenceDir || undefined,
           gitRemote: form.intelligenceRemote || undefined,
@@ -205,18 +288,99 @@ export default function Settings() {
         {/* ── Anthropic ── */}
         <section>
           <h2 className="text-sm font-semibold text-zinc-300 mb-4 pb-2 border-b border-zinc-800">Anthropic</h2>
-          <div>
-            <label className={labelClass()}>API Key <span className="text-rose-400">*</span></label>
-            <input
-              name="apiKey"
-              type="password"
-              value={form.apiKey}
-              onChange={handleChange}
-              placeholder="sk-ant-..."
-              className={inputClass()}
-            />
-            <FieldHint>Your Anthropic API key for running agent phases</FieldHint>
+
+          {/* Method selector */}
+          <div className="mb-5 flex gap-2" role="radiogroup" aria-label="Anthropic auth method">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={form.anthropicMethod === 'apiKey'}
+              onClick={() => setAnthropicMethod('apiKey')}
+              className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
+                form.anthropicMethod === 'apiKey'
+                  ? 'bg-indigo-950/50 border-indigo-600 text-indigo-200'
+                  : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              API key
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={form.anthropicMethod === 'oauth'}
+              onClick={() => setAnthropicMethod('oauth')}
+              className={`flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
+                form.anthropicMethod === 'oauth'
+                  ? 'bg-indigo-950/50 border-indigo-600 text-indigo-200'
+                  : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              Claude Code OAuth token
+            </button>
           </div>
+
+          {form.anthropicMethod === 'apiKey' ? (
+            <div>
+              <label className={labelClass()}>API Key <span className="text-rose-400">*</span></label>
+              <input
+                name="apiKey"
+                type="password"
+                value={form.apiKey}
+                onChange={handleChange}
+                placeholder="sk-ant-..."
+                className={inputClass()}
+              />
+              <FieldHint>Anthropic API key from console.anthropic.com — billed per token.</FieldHint>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label className={labelClass()}>OAuth Token <span className="text-rose-400">*</span></label>
+                <input
+                  name="oauthToken"
+                  type="password"
+                  value={form.oauthToken}
+                  onChange={handleChange}
+                  placeholder="sk-ant-oat01-..."
+                  className={inputClass()}
+                />
+                <FieldHint>
+                  Long-lived token from <code className="text-zinc-400">claude setup-token</code>. OAuth tokens are for personal use per Anthropic&apos;s ToS — use an API key for production.
+                </FieldHint>
+              </div>
+
+              {!oauthCliMissing && (
+                <button
+                  type="button"
+                  onClick={handleGenerateOauthToken}
+                  disabled={oauthGenerating}
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {oauthGenerating ? 'Waiting for browser login…' : 'Generate token via claude setup-token'}
+                </button>
+              )}
+
+              {oauthStatus && (
+                <div className="p-2 rounded bg-zinc-900 border border-zinc-800 text-xs text-zinc-400">
+                  {oauthStatus}
+                </div>
+              )}
+
+              {oauthAuthUrl && (
+                <div className="p-2 rounded bg-zinc-900 border border-zinc-800 text-xs text-zinc-400 space-y-1">
+                  <div>If the browser did not open automatically, sign in here:</div>
+                  <a
+                    href={oauthAuthUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="break-all text-indigo-400 hover:text-indigo-300 underline"
+                  >
+                    {oauthAuthUrl}
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         {/* ── Git Provider ── */}

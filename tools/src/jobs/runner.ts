@@ -216,7 +216,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         // embedding credentials in the system prompt itself.
         env: {
           ...process.env,
-          ANTHROPIC_API_KEY: settings.claude.apiKey,
+          // Anthropic auth: pick exactly one of ANTHROPIC_API_KEY or
+          // CLAUDE_CODE_OAUTH_TOKEN. If both are present the Claude Code CLI
+          // silently prefers ANTHROPIC_API_KEY, which would override the
+          // user's chosen OAuth flow — so we explicitly wipe the one we
+          // aren't using (including any stale value inherited from process.env).
+          ...buildAnthropicAuthEnv(settings.claude.auth),
           BB_WORKSPACE: settings.bitbucket.workspace,
           BB_CODER_APP_PASSWORD: settings.bitbucket.coderAccount.appPassword,
           BB_BASE_URL: 'https://bitbucket.org',
@@ -603,6 +608,24 @@ function selectModel(
 ): string {
   const model = phaseConf?.model ?? 'planning'
   return model === 'coding' ? settings.claude.codingModel : settings.claude.planningModel
+}
+
+/**
+ * Build the subset of env vars Claude Code uses for authentication. Returns
+ * both keys, with the unused one set to `undefined` so it is stripped from the
+ * final env map (Node spawn treats `undefined` as "don't pass this key").
+ */
+export function buildAnthropicAuthEnv(auth: Settings['claude']['auth']): Record<string, string | undefined> {
+  if (auth.method === 'oauth') {
+    return {
+      ANTHROPIC_API_KEY: undefined,
+      CLAUDE_CODE_OAUTH_TOKEN: auth.oauthToken ?? '',
+    }
+  }
+  return {
+    ANTHROPIC_API_KEY: auth.apiKey ?? '',
+    CLAUDE_CODE_OAUTH_TOKEN: undefined,
+  }
 }
 
 function buildSubagentDefinitions(

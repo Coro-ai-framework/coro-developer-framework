@@ -64,7 +64,11 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       logLevel: process.env.LOG_LEVEL ?? 'info',
     },
     claude: {
-      apiKey: config.anthropic.apiKey,
+      auth: {
+        method: config.anthropic.method,
+        apiKey: config.anthropic.apiKey,
+        oauthToken: config.anthropic.oauthToken,
+      },
       planningModel: process.env.CLAUDE_PLANNING_MODEL ?? 'claude-opus-4-6',
       codingModel: process.env.CLAUDE_CODING_MODEL ?? 'claude-sonnet-4-6',
     },
@@ -123,7 +127,15 @@ export async function startLocalRunner(
   logger: pino.Logger,
   localPort: number,
 ): Promise<{ dispatcher: Dispatcher; shutdown: () => Promise<void> }> {
-  const effectiveConfig: LocalConfig = config ?? { anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? '' } }
+  // Fallback when no config.json exists: honour either Anthropic env var so
+  // developers can bootstrap local mode with just `ANTHROPIC_API_KEY=... a5 runner start`.
+  const envOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  const envApiKey = process.env.ANTHROPIC_API_KEY
+  const effectiveConfig: LocalConfig = config ?? {
+    anthropic: envOauth
+      ? { method: 'oauth', oauthToken: envOauth }
+      : { method: 'apiKey', apiKey: envApiKey ?? '' },
+  }
   const settings = buildSettingsFromLocal(effectiveConfig)
 
   // Ensure working + intelligence dirs exist

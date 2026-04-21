@@ -151,7 +151,7 @@ describe('PollingTransport', () => {
       expect(poller.getPrStatus).not.toHaveBeenCalled()
     })
 
-    it('caches initial snapshot without delivering events', async () => {
+    it('caches initial snapshot without delivering events for OPEN PRs', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
       const poller = makeMockPoller('OPEN', 0, [])
@@ -168,6 +168,48 @@ describe('PollingTransport', () => {
       // First poll — snapshot only, no events
       expect(events).toHaveLength(0)
       expect(poller.getPrStatus).toHaveBeenCalledWith('my-repo', 42)
+    })
+
+    it('fires pullrequest:fulfilled immediately when PR is already merged on first poll', async () => {
+      const job = makeJob()
+      const backend = makeMockBackend([job])
+      const poller = makeMockPoller('MERGED', 1, [])
+      const events: InboundEvent[] = []
+      transport = new PollingTransport({ stateBackend: backend, prPoller: poller, logger })
+      transport.onEvent(async (e) => { events.push(e) })
+
+      await transport.poll()
+
+      expect(events).toHaveLength(1)
+      expect(events[0].eventKey).toBe('pullrequest:fulfilled')
+    })
+
+    it('fires pullrequest:rejected immediately when PR is already declined on first poll', async () => {
+      const job = makeJob()
+      const backend = makeMockBackend([job])
+      const poller = makeMockPoller('DECLINED', 0, [])
+      const events: InboundEvent[] = []
+      transport = new PollingTransport({ stateBackend: backend, prPoller: poller, logger })
+      transport.onEvent(async (e) => { events.push(e) })
+
+      await transport.poll()
+
+      expect(events).toHaveLength(1)
+      expect(events[0].eventKey).toBe('pullrequest:rejected')
+    })
+
+    it('fires pullrequest:approved immediately when PR already has approvals on first poll', async () => {
+      const job = makeJob()
+      const backend = makeMockBackend([job])
+      const poller = makeMockPoller('OPEN', 2, [])
+      const events: InboundEvent[] = []
+      transport = new PollingTransport({ stateBackend: backend, prPoller: poller, logger })
+      transport.onEvent(async (e) => { events.push(e) })
+
+      await transport.poll()
+
+      expect(events).toHaveLength(1)
+      expect(events[0].eventKey).toBe('pullrequest:approved')
     })
 
     it('detects PR merge and delivers event', async () => {
@@ -286,6 +328,23 @@ describe('PollingTransport', () => {
 
       await transport.poll()
       expect(poller.getPrStatus).toHaveBeenCalledWith('mapped-repo', 42)
+    })
+
+    it('polls parked jobs with empty prMappings when repo is in params', async () => {
+      const job = makeJob({
+        params: { repo: 'ai-test-repository' },
+        prMappings: [],
+      })
+      const backend = makeMockBackend([job])
+      const poller = makeMockPoller('OPEN', 0, [])
+      transport = new PollingTransport({
+        stateBackend: backend,
+        prPoller: poller,
+        logger,
+      })
+
+      await transport.poll()
+      expect(poller.getPrStatus).toHaveBeenCalledWith('ai-test-repository', 42)
     })
   })
 })

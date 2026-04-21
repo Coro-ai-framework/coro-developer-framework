@@ -8,6 +8,7 @@
 import express, { Request, Response } from 'express'
 import http from 'http'
 import path from 'path'
+import { spawn } from 'child_process'
 import { Logger } from 'pino'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { StateBackend } from '../state/backend'
@@ -19,6 +20,7 @@ import {
   resolveIntelligenceDir,
   resolveWorkingDir as resolveLocalWorkingDir,
 } from '../config/local-config'
+import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
 
 export interface RunnerServerOptions {
   port: number
@@ -26,6 +28,46 @@ export interface RunnerServerOptions {
   stateBackend: StateBackend
   logger: Logger
   mode?: 'hybrid' | 'local'
+}
+
+/** Mask a secret for display: show enough prefix/suffix to recognise it, hide the middle. */
+function redactSecret(value: string | undefined | null): string {
+  if (!value) return ''
+  if (value.length <= 16) return `${value.slice(0, 2)}...${value.slice(-2)}`
+  return `${value.slice(0, 12)}...${value.slice(-4)}`
+}
+
+/** The dashboard echoes redacted values back on submit; treat `...` as "unchanged". */
+function isRedacted(value: unknown): boolean {
+  return typeof value === 'string' && value.includes('...')
+}
+
+/**
+ * Parse the stdout of `claude setup-token` and return the OAuth token, if any.
+ * The CLI may print instructional text around the token; we prefer lines
+ * starting with the known token prefix and fall back to the last non-empty line.
+ */
+function extractOauthToken(stdout: string): string | null {
+  const lines = stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  const tokenLike = lines.reverse().find(l => /^sk-ant-[A-Za-z0-9_-]+/.test(l))
+  if (tokenLike) {
+    // In case the CLI appends punctuation or extra words after the token.
+    const match = tokenLike.match(/^(sk-ant-[A-Za-z0-9_-]+)/)
+    if (match) return match[1]
+  }
+  const last = lines[0]  // reversed above, so [0] is the real last line
+  return last && last.length >= 16 ? last : null
+}
+
+/**
+ * Pull the first Anthropic OAuth URL out of CLI output (stdout or stderr).
+ * We return it to the dashboard so the user can click through if the CLI
+ * failed to open a browser automatically (common on headless machines or
+ * when the runner was started from a GUI/service launcher with no $BROWSER).
+ */
+function extractOauthUrl(text: string): string | null {
+  const match = text.match(/https:\/\/(?:[\w.-]*\.)?anthropic\.com\/[^\s"')<>]+/i)
+  return match ? match[0] : null
 }
 
 /**
@@ -195,13 +237,15 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const configPath = defaultConfigPath()
       const detected = detectMode(config)
 
-      // Redact sensitive fields for display
+      // Redact sensitive fields for display. Both apiKey and oauthToken need
+      // masking; we always send back the full `method` tag so the UI renders
+      // the correct field regardless of which one currently has a value.
       const safeConfig = config ? {
         ...config,
         anthropic: {
-          apiKey: config.anthropic?.apiKey
-            ? `${config.anthropic.apiKey.slice(0, 12)}...${config.anthropic.apiKey.slice(-4)}`
-            : '',
+          method: config.anthropic?.method ?? 'apiKey',
+          apiKey: redactSecret(config.anthropic?.apiKey),
+          oauthToken: redactSecret(config.anthropic?.oauthToken),
         },
         git: config.git ? {
           ...config.git,
@@ -233,13 +277,32 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
 
-      // Load existing, merge, save
-      const existing = loadLocalConfig() ?? { anthropic: { apiKey: '' } }
+      // Load existing, merge, save. The placeholder apiKey keeps zod's refine
+      // happy when no real credential has been written yet; real writes below
+      // overwrite it before save.
+      const existing = loadLocalConfig() ?? { anthropic: { method: 'apiKey' as const, apiKey: '' } }
       const merged = { ...existing }
 
-      // Update anthropic API key (only if provided and not redacted)
-      if (updates.anthropic?.apiKey && !updates.anthropic.apiKey.includes('...')) {
-        merged.anthropic = { apiKey: updates.anthropic.apiKey }
+      // Update anthropic auth. The UI sends a discriminated object with
+      // `method` plus whichever field belongs to that method. We never trust
+      // a redacted value ("...") — if the user hasn't changed the secret,
+      // keep whatever is already on disk. When the method flips we wipe the
+      // other credential so the config doesn't accumulate stale secrets.
+      if (updates.anthropic) {
+        const incomingMethod: 'apiKey' | 'oauth' =
+          updates.anthropic.method === 'oauth' ? 'oauth' : 'apiKey'
+
+        if (incomingMethod === 'apiKey') {
+          const nextKey = isRedacted(updates.anthropic.apiKey)
+            ? existing.anthropic?.apiKey ?? ''
+            : updates.anthropic.apiKey ?? existing.anthropic?.apiKey ?? ''
+          merged.anthropic = { method: 'apiKey', apiKey: nextKey }
+        } else {
+          const nextToken = isRedacted(updates.anthropic.oauthToken)
+            ? existing.anthropic?.oauthToken ?? ''
+            : updates.anthropic.oauthToken ?? existing.anthropic?.oauthToken ?? ''
+          merged.anthropic = { method: 'oauth', oauthToken: nextToken }
+        }
       }
 
       // Update intelligence
@@ -273,6 +336,130 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
     }
+  })
+
+  // ── Generate Claude Code OAuth token ────────────────────────────────────
+  //
+  // Runs `claude setup-token` on the runner host. That command opens a
+  // browser on the runner machine (which in local mode is the developer's
+  // own laptop) and prints a long-lived token to stdout on success. We
+  // prefer the Claude Code CLI that ships bundled with
+  // `@anthropic-ai/claude-agent-sdk` (always present) so this works even
+  // when the standalone `claude` binary isn't on PATH — which is common
+  // when the runner is launched from a GUI/service launcher rather than
+  // a login shell. If the bundled CLI can't be resolved for some reason
+  // we fall back to spawning `claude` from PATH.
+  //
+  // Serialised via a simple in-flight flag so two dashboard tabs can't race.
+
+  let setupTokenRunning = false
+
+  app.post('/config/anthropic/generate-oauth-token', (_req: Request, res: Response) => {
+    if (setupTokenRunning) {
+      res.status(409).json({ error: 'IN_PROGRESS', message: 'Another token setup is already running' })
+      return
+    }
+    setupTokenRunning = true
+
+    // Resolve which CLI to spawn. Prefer the bundled one so we don't depend
+    // on the user having a global `claude` on PATH.
+    let cmd: string
+    let args: string[]
+    let usingBundled = false
+    try {
+      const cliPath = resolveClaudeCodeCliPath(process.cwd())
+      ensureClaudeCodeCliExecutable(cliPath, logger)
+      cmd = process.execPath // same node that's running the runner
+      args = [cliPath, 'setup-token']
+      usingBundled = true
+    } catch (err) {
+      logger.warn({ err }, 'Could not resolve bundled Claude Code CLI; falling back to `claude` on PATH')
+      cmd = 'claude'
+      args = ['setup-token']
+    }
+
+    let child
+    try {
+      child = spawn(cmd, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      })
+    } catch (err) {
+      setupTokenRunning = false
+      res.status(500).json({ error: 'SPAWN_FAILED', message: (err as Error).message })
+      return
+    }
+
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+
+    // Bound the wait so a hung browser flow doesn't leak the subprocess forever.
+    const TIMEOUT_MS = 120_000
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      child.kill('SIGTERM')
+      setupTokenRunning = false
+      res.status(504).json({
+        error: 'TIMEOUT',
+        message: 'claude setup-token did not complete within 120s',
+        authUrl: extractOauthUrl(stderr) ?? extractOauthUrl(stdout),
+        stderr: stderr.trim().slice(0, 2000),
+      })
+    }, TIMEOUT_MS)
+
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      setupTokenRunning = false
+      if (err.code === 'ENOENT') {
+        res.status(404).json({
+          error: 'CLI_NOT_FOUND',
+          message: usingBundled
+            ? 'Could not spawn the bundled Claude Code CLI. Reinstall `@anthropic-ai/claude-agent-sdk` in the runner.'
+            : 'The `claude` CLI is not on PATH. Install Claude Code and try again.',
+        })
+        return
+      }
+      res.status(500).json({ error: 'SPAWN_FAILED', message: err.message })
+    })
+
+    child.on('close', (code: number | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      setupTokenRunning = false
+
+      if (code !== 0) {
+        res.status(500).json({
+          error: 'SETUP_FAILED',
+          exitCode: code,
+          stderr: stderr.trim().slice(0, 2000),
+          authUrl: extractOauthUrl(stderr) ?? extractOauthUrl(stdout),
+        })
+        return
+      }
+
+      // `claude setup-token` prints status/UX to stderr and the bare token
+      // (often prefixed with `sk-ant-oat01-`) to stdout. We pick the last
+      // non-empty line that looks like a token.
+      const token = extractOauthToken(stdout)
+      if (!token) {
+        res.status(500).json({
+          error: 'NO_TOKEN_IN_OUTPUT',
+          stdout: stdout.trim().slice(0, 2000),
+          stderr: stderr.trim().slice(0, 2000),
+          authUrl: extractOauthUrl(stderr) ?? extractOauthUrl(stdout),
+        })
+        return
+      }
+      res.json({ token })
+    })
   })
 
   // ── Dashboard (served under /dashboard/) ───────────────────────────────

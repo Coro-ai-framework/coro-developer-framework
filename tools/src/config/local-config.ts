@@ -17,9 +17,28 @@ const cloudConfigSchema = z.object({
   token: z.string().min(1),
 }).optional()
 
-const anthropicConfigSchema = z.object({
-  apiKey: z.string().min(1),
-})
+// Anthropic auth supports two methods today:
+//   - apiKey: direct Anthropic API key (production, billed per token)
+//   - oauth: long-lived Claude Code OAuth token from `claude setup-token`
+//            (Pro/Max subscription; Anthropic ToS restricts this to personal use)
+// The method field is optional/defaulted so that legacy configs containing only
+// `{ apiKey: "..." }` continue to load. The refine() guarantees that the chosen
+// method has a matching non-empty credential.
+const anthropicConfigSchema = z
+  .object({
+    method: z.enum(['apiKey', 'oauth']).default('apiKey'),
+    apiKey: z.string().optional(),
+    oauthToken: z.string().optional(),
+  })
+  .refine(
+    v =>
+      (v.method === 'apiKey' && typeof v.apiKey === 'string' && v.apiKey.length > 0) ||
+      (v.method === 'oauth' && typeof v.oauthToken === 'string' && v.oauthToken.length > 0),
+    {
+      message:
+        'Anthropic config requires apiKey when method="apiKey", or oauthToken when method="oauth"',
+    },
+  )
 
 const intelligenceConfigSchema = z.object({
   dir: z.string().min(1),
@@ -114,7 +133,10 @@ export function saveLocalConfig(config: LocalConfig, configPath?: string): void 
  * Merge partial config into existing. Useful for `a5 login` which only sets cloud fields.
  */
 export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: string): LocalConfig {
-  const existing = loadLocalConfig(configPath) ?? { anthropic: { apiKey: '' } }
+  // Fallback seeds `method: 'apiKey'` so the zod refine doesn't reject the
+  // intermediate value; callers are expected to patch in the real credentials.
+  const existing: LocalConfig =
+    loadLocalConfig(configPath) ?? { anthropic: { method: 'apiKey', apiKey: '__placeholder__' } }
   const merged: LocalConfig = {
     ...existing,
     ...patch,

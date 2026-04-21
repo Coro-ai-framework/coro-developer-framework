@@ -20,7 +20,11 @@ vi.mock('../../src/prompt/builder', () => ({
 function makeSettings(): Settings {
   return {
     host: { port: 3000, webhookSecret: 's', logLevel: 'silent' },
-    claude: { apiKey: 'k', planningModel: 'plan-model', codingModel: 'code-model' },
+    claude: {
+      auth: { method: 'apiKey', apiKey: 'k' },
+      planningModel: 'plan-model',
+      codingModel: 'code-model',
+    },
     bitbucket: {
       workspace: 'ws',
       baseUrl: 'https://api.bitbucket.org/2.0',

@@ -39,11 +39,13 @@ export const initCommand = new Command('init')
 
     console.log('\x1b[36m▸\x1b[0m A5 Runner Configuration\n')
 
-    const existing = loadLocalConfig() ?? { anthropic: { apiKey: '' } }
+    const existing = loadLocalConfig() ?? { anthropic: { method: 'apiKey' as const, apiKey: '' } }
 
-    // Anthropic API key
+    // Anthropic API key — `a5 init` only supports the API-key method today;
+    // users can switch to OAuth from the dashboard Settings page after init.
+    const existingApiKey = existing.anthropic?.method === 'apiKey' ? existing.anthropic.apiKey : ''
     const apiKey = opts.apiKey
-      ?? await ask('Anthropic API key', existing.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY || '')
+      ?? await ask('Anthropic API key', existingApiKey || process.env.ANTHROPIC_API_KEY || '')
     if (!apiKey) die('Anthropic API key is required')
 
     // Git provider
@@ -71,7 +73,7 @@ export const initCommand = new Command('init')
     // Build config
     const config: LocalConfig = {
       ...existing,
-      anthropic: { apiKey },
+      anthropic: { method: 'apiKey', apiKey },
       intelligence: {
         dir: intelligenceDir,
         ...(intelligenceRemote ? { gitRemote: intelligenceRemote } : {}),

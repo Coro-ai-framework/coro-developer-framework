@@ -21,7 +21,17 @@ export interface Settings {
     logLevel: string
   }
   claude: {
-    apiKey: string
+    /**
+     * Runtime-selected Anthropic auth. The runner maps this to exactly one of
+     * ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN when spawning Claude Code —
+     * setting both leaves ANTHROPIC_API_KEY winning, which silently ignores
+     * the user's choice.
+     */
+    auth: {
+      method: 'apiKey' | 'oauth'
+      apiKey?: string
+      oauthToken?: string
+    }
     planningModel: string
     codingModel: string
   }
@@ -92,7 +102,7 @@ export function loadSettings(): Settings {
       logLevel: env('LOG_LEVEL') ?? file.host?.logLevel ?? 'info',
     },
     claude: {
-      apiKey: env('ANTHROPIC_API_KEY') ?? file.claude?.apiKey ?? '',
+      auth: resolveClaudeAuth(file),
       planningModel: env('CLAUDE_PLANNING_MODEL') ?? file.claude?.planningModel ?? 'claude-opus-4-6',
       codingModel: env('CLAUDE_CODING_MODEL') ?? file.claude?.codingModel ?? 'claude-sonnet-4-6',
     },
@@ -150,7 +160,12 @@ export function loadSettings(): Settings {
 function validate(s: Settings): void {
   const missing: string[] = []
 
-  if (!s.claude.apiKey) missing.push('ANTHROPIC_API_KEY (or claude.apiKey in settings.json)')
+  if (!hasClaudeCredential(s.claude.auth)) {
+    missing.push(
+      'Anthropic credentials: set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, ' +
+      'or claude.auth in settings.json',
+    )
+  }
   if (!s.redis.url) missing.push('REDIS_URL (or redis.url in settings.json)')
 
   // At least one git provider must be configured
@@ -186,6 +201,42 @@ function validate(s: Settings): void {
 function env(key: string): string | undefined {
   const v = process.env[key]
   return v !== undefined && v !== '' ? v : undefined
+}
+
+/**
+ * Resolve Claude auth from env vars and settings.json with this precedence:
+ *   1. ANTHROPIC_API_KEY env → apiKey method
+ *   2. CLAUDE_CODE_OAUTH_TOKEN env → oauth method
+ *   3. settings.json `claude.auth` object (new shape)
+ *   4. settings.json `claude.apiKey` string (legacy shape)
+ * Returns an empty apiKey-method object when nothing is configured so the
+ * validator can produce a friendly error.
+ */
+function resolveClaudeAuth(file: Settings): Settings['claude']['auth'] {
+  const envKey = env('ANTHROPIC_API_KEY')
+  if (envKey) return { method: 'apiKey', apiKey: envKey }
+
+  const envOauth = env('CLAUDE_CODE_OAUTH_TOKEN')
+  if (envOauth) return { method: 'oauth', oauthToken: envOauth }
+
+  const fileAuth = (file.claude as Partial<Settings['claude']> | undefined)?.auth
+  if (fileAuth?.method === 'oauth' && fileAuth.oauthToken) {
+    return { method: 'oauth', oauthToken: fileAuth.oauthToken }
+  }
+  if (fileAuth?.method === 'apiKey' && fileAuth.apiKey) {
+    return { method: 'apiKey', apiKey: fileAuth.apiKey }
+  }
+
+  // Legacy shape: settings.json used to carry `claude.apiKey` directly.
+  const legacy = (file.claude as { apiKey?: string } | undefined)?.apiKey
+  if (legacy) return { method: 'apiKey', apiKey: legacy }
+
+  return { method: 'apiKey', apiKey: '' }
+}
+
+function hasClaudeCredential(auth: Settings['claude']['auth']): boolean {
+  if (auth.method === 'apiKey') return !!auth.apiKey
+  return !!auth.oauthToken
 }
 
 function num(envVal: string | undefined, fileVal: number | undefined, defaultVal: number): number {
