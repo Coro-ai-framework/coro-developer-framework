@@ -153,6 +153,11 @@ export default function Settings() {
               ? 'Token setup timed out. If a browser did not open automatically, use the sign-in link below and try again.'
               : 'Token setup timed out after 120 seconds. Try again.',
           )
+        } else if (data.error === 'NO_CONTROLLING_TTY') {
+          setError(data.message ?? 'The runner has no controlling terminal. Start the runner from a terminal and retry, or paste a token manually.')
+        } else if (data.error === 'PLATFORM_UNSUPPORTED') {
+          setOauthCliMissing(true)
+          setError(data.message ?? 'Automatic token generation is only supported on macOS and Linux. Run `claude setup-token` in a terminal and paste the token below.')
         } else {
           setError(data.message ?? data.stderr ?? data.error ?? `HTTP ${res.status}`)
         }
@@ -161,8 +166,14 @@ export default function Settings() {
       }
 
       if (data.token) {
-        setForm(prev => ({ ...prev, oauthToken: data.token!, anthropicMethod: 'oauth' }))
-        setOauthStatus('Token generated. Click Save to persist it.')
+        const tok = data.token
+        const looksValid = /^sk-ant-oat\d+-/.test(tok) || /^sk-ant-/.test(tok)
+        setForm(prev => ({ ...prev, oauthToken: tok, anthropicMethod: 'oauth' }))
+        setOauthStatus(
+          looksValid
+            ? `Token generated (${tok.slice(0, 16)}…). Click Save to persist it.`
+            : `Captured value does not look like an Anthropic OAuth token (got "${tok.slice(0, 24)}…"). Regenerate or paste a token manually.`,
+        )
         setOauthAuthUrl(null)
       } else {
         setError('Token generation returned no token.')
