@@ -25,6 +25,9 @@ import {
   Job,
   STATUS_COMPLETE,
   STATUS_FAILED,
+  STATUS_AWAITING_PLAN_APPROVAL,
+  STATUS_AWAITING_PR_MERGE,
+  STATUS_AWAITING_DEVELOPER_INPUT,
   isTerminalStatus,
   jobServiceName,
   jobJiraTicketId,
@@ -499,13 +502,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       if (signals.awaitingEvent) {
-        const awaitStatus = signals.awaitingEvent.includes('plan')
-          ? 'awaiting-plan-approval'
-          : 'awaiting-pr-merge'
+        const evt = signals.awaitingEvent
+        // `developer-input: <reason>` is the convention for interactive pauses
+        // (agent-requested mid-phase). Phase-boundary checkpoints use the same
+        // status via the auto-checkpoint branch below.
+        const awaitStatus = evt.startsWith('developer-input')
+          ? STATUS_AWAITING_DEVELOPER_INPUT
+          : evt.includes('plan')
+            ? STATUS_AWAITING_PLAN_APPROVAL
+            : STATUS_AWAITING_PR_MERGE
 
         liveJob = await syncJob(stateBackend, liveJob, {
           status: awaitStatus,
-          awaitingEvent: signals.awaitingEvent,
+          awaitingEvent: evt,
           awaitingPrId: signals.awaitingPrId,
         })
 
@@ -514,10 +523,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
 
         logger.info(
-          { jobId: liveJob.id, awaiting: signals.awaitingEvent, prId: signals.awaitingPrId },
+          { jobId: liveJob.id, awaiting: evt, prId: signals.awaitingPrId, status: awaitStatus },
           'Job parked — awaiting external event',
         )
-        await stateBackend.appendLog(liveJob.id, `Job parked — waiting for: ${signals.awaitingEvent}`)
+        await stateBackend.appendLog(liveJob.id, `Job parked — waiting for: ${evt}`)
         break
       }
 
@@ -525,6 +534,27 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // goto_phase overrides the next phase; otherwise use the workflow sequence.
       const nextPhase = signals.nextPhase
         ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
+
+      // Interactive-mode phase-boundary checkpoint: park for developer
+      // approval BEFORE advancing. We synthesize an awaitingEvent so the
+      // same dispatcher resume path handles both this and mid-phase pauses.
+      if (liveJob.interactive && phaseConf?.interactiveCheckpoint && nextPhase) {
+        liveJob = await syncJob(stateBackend, liveJob, {
+          status: STATUS_AWAITING_DEVELOPER_INPUT,
+          awaitingEvent: `developer-input: approval after ${liveJob.phase}`,
+          awaitingNextPhase: nextPhase,
+        })
+        toolCtx.job = liveJob
+        logger.info(
+          { jobId: liveJob.id, phase: liveJob.phase, nextPhase },
+          'Job parked — interactive checkpoint, awaiting developer approval',
+        )
+        await stateBackend.appendLog(
+          liveJob.id,
+          `Job parked — waiting for developer approval after phase ${liveJob.phase}`,
+        )
+        break
+      }
 
       if (!nextPhase) {
         liveJob = await syncJob(stateBackend, liveJob, { status: STATUS_COMPLETE })

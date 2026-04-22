@@ -1,5 +1,13 @@
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import { JobInput, STATUS_CODING, STATUS_COMPLETE, STATUS_FAILED, isParkingStatus } from './types'
+import {
+  Artifact,
+  JobInput,
+  STATUS_AWAITING_DEVELOPER_INPUT,
+  STATUS_CODING,
+  STATUS_COMPLETE,
+  STATUS_FAILED,
+  isParkingStatus,
+} from './types'
 import { runJob, RunnerContext } from './runner'
 import type { EventTransport } from '../state/transport'
 
@@ -195,40 +203,83 @@ export class Dispatcher {
   // ── Human message injection ─────────────────────────────────────────────────
 
   /**
-   * Send a developer message to a running agent via Query.streamInput().
-   * The message is framed so the agent treats it as guidance, not a new task.
-   * Throws if the job is not actively running (parked, failed, complete).
+   * Send a developer message to an agent.
+   *
+   * Two paths:
+   *   1. Job is actively running — inject via Query.streamInput() so the live
+   *      agent sees the message mid-turn (zero session rebuild).
+   *   2. Job is parked waiting for developer input — build a framed prompt,
+   *      clear the awaiting* fields, and resume the job. Session continuity is
+   *      preserved via `resume: sessionId` in the runner.
+   *
+   * Any other status (complete, failed, queued without a live query) throws.
    */
   async sendMessage(jobId: string, message: string): Promise<void> {
     const q = this.activeQueries.get(jobId)
-    if (!q) {
-      throw new Error('Job is not actively running — cannot send message')
+
+    if (q) {
+      const framedText =
+        `[DEVELOPER MESSAGE]\n` +
+        `The developer watching this job has sent you a message:\n\n` +
+        `"${message}"\n\n` +
+        `Consider this guidance in your current work. If it changes your approach, ` +
+        `acknowledge it and adjust accordingly. Continue with your current phase instructions.\n\n` +
+        `If this guidance represents a reusable pattern or convention that should apply to future jobs, ` +
+        `record it via the \`add_insight\` tool so the Evaluator can review it.`
+
+      const userMsg: SDKUserMessage = {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: framedText }] },
+        parent_tool_use_id: null,
+      }
+
+      try {
+        await q.streamInput((async function* () { yield userMsg })())
+      } catch (err) {
+        this.ctx.logger.warn({ jobId, err }, 'streamInput failed — query may have ended')
+        throw new Error('Failed to inject message — the agent query may have just finished')
+      }
+
+      await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
+      this.ctx.logger.info({ jobId }, 'Developer message injected into running agent')
+      return
     }
 
-    const framedText =
-      `[DEVELOPER MESSAGE]\n` +
-      `The developer watching this job has sent you a message:\n\n` +
-      `"${message}"\n\n` +
-      `Consider this guidance in your current work. If it changes your approach, ` +
-      `acknowledge it and adjust accordingly. Continue with your current phase instructions.\n\n` +
-      `If this guidance represents a reusable pattern or convention that should apply to future jobs, ` +
-      `record it via the \`add_insight\` tool so the Evaluator can review it.`
+    // No live query — check if the job is parked waiting for developer input.
+    const job = await this.ctx.stateBackend.getJob(jobId)
+    if (!job) throw new Error(`Job not found: ${jobId}`)
 
-    const userMsg: SDKUserMessage = {
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text: framedText }] },
-      parent_tool_use_id: null,
+    if (job.status !== STATUS_AWAITING_DEVELOPER_INPUT) {
+      throw new Error(
+        `Cannot send message to job with status "${job.status}" — ` +
+        `only running jobs and jobs awaiting developer input accept messages.`,
+      )
     }
 
-    try {
-      await q.streamInput((async function* () { yield userMsg })())
-    } catch (err) {
-      this.ctx.logger.warn({ jobId, err }, 'streamInput failed — query may have ended')
-      throw new Error('Failed to inject message — the agent query may have just finished')
+    if (this.activeJobs.has(jobId)) {
+      throw new Error('Job is transitioning — try again in a moment')
     }
+
+    const pendingPrompt = buildDeveloperInputMessage(
+      message,
+      job.phase,
+      job.awaitingEvent,
+      job.awaitingNextPhase,
+      (job.artifacts ?? []).filter(a => a.phase === job.phase),
+    )
+
+    await this.ctx.stateBackend.updateJob(jobId, {
+      status: STATUS_CODING,
+      awaitingEvent: undefined,
+      awaitingPrId: undefined,
+      awaitingNextPhase: undefined,
+      pendingPrompt,
+    })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
-    this.ctx.logger.info({ jobId }, 'Developer message injected into running agent')
+    this.ctx.logger.info({ jobId, phase: job.phase }, 'Resuming parked job with developer message')
+
+    this.fireAndForget(jobId)
   }
 
   // ── Fire-and-forget runner ──────────────────────────────────────────────────
@@ -282,6 +333,86 @@ export class Dispatcher {
         await this.injectAndResume(jobId, next)
       })
   }
+}
+
+// ── Developer input message builder ───────────────────────────────────────────
+
+/**
+ * Build the framed prompt the runner will send to the agent when a developer
+ * responds to an interactive checkpoint or mid-phase pause.
+ *
+ * The agent is expected to:
+ *   - Treat a "continue" / "approved" message as permission to advance (call
+ *     `goto_phase` to `awaitingNextPhase` when present).
+ *   - Treat any substantive feedback as rework instructions for the CURRENT
+ *     phase. When done, finish the turn — the runner will re-park for
+ *     re-approval if the phase still has interactiveCheckpoint.
+ */
+export function buildDeveloperInputMessage(
+  message: string,
+  phase: string,
+  awaitingEvent: string | undefined,
+  awaitingNextPhase: string | undefined,
+  currentPhaseArtifacts: Artifact[],
+): string {
+  const midPhase = !awaitingNextPhase // mid-phase pause via await_event
+  const reason = awaitingEvent?.startsWith('developer-input:')
+    ? awaitingEvent.slice('developer-input:'.length).trim()
+    : ''
+
+  const lines = [
+    '[DEVELOPER RESPONSE — INTERACTIVE CHECKPOINT]',
+    '',
+  ]
+
+  if (midPhase) {
+    lines.push(
+      `You paused mid-phase during: ${phase}.`,
+      reason ? `You were waiting for input on: "${reason}".` : '',
+    )
+  } else {
+    lines.push(
+      `You are parked waiting for developer approval after phase: ${phase}.`,
+      `Next phase (if approved): ${awaitingNextPhase}`,
+    )
+  }
+
+  if (currentPhaseArtifacts.length > 0) {
+    lines.push('', 'Artefacts you posted this phase:')
+    for (const a of currentPhaseArtifacts.slice(-10)) {
+      lines.push(`  - ${a.kind}: ${a.title}`)
+    }
+  }
+
+  lines.push(
+    '',
+    'Developer said:',
+    `"${message}"`,
+    '',
+  )
+
+  if (midPhase) {
+    lines.push(
+      'Use the developer\'s answer to continue your current phase. When you\'re done, ' +
+      'just finish your turn — the runner will advance (or re-park for approval if your ' +
+      'phase has a checkpoint).',
+    )
+  } else {
+    lines.push(
+      `If this is approval to proceed, call \`mcp__a5__goto_phase\` with phase "${awaitingNextPhase}".`,
+      `If they want changes, do the requested work in the CURRENT phase (${phase}) and:`,
+      `  - when done, finish your turn and you will park again for re-approval, OR`,
+      `  - if they explicitly asked you to advance after you finish, call goto_phase to "${awaitingNextPhase}".`,
+    )
+  }
+
+  lines.push(
+    '',
+    'If this guidance represents a reusable pattern or convention that should apply to ' +
+    'future jobs, record it via the `add_insight` tool so the Evaluator can review it.',
+  )
+
+  return lines.filter(l => l !== undefined).join('\n')
 }
 
 // ── Webhook message builder ───────────────────────────────────────────────────

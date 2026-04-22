@@ -17,6 +17,7 @@ phases:
     agent: agents/planner.md
     model: planning
     status: planning
+    interactive_checkpoint: true
 
   - name: repo-setup
     agent: agents/coder.md
@@ -27,6 +28,7 @@ phases:
     agent: agents/coder.md
     model: coding
     status: coding
+    interactive_checkpoint: true
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -37,11 +39,13 @@ phases:
     agent: agents/pr-reviewer.md
     model: coding
     status: reviewing
+    interactive_checkpoint: true
 
   - name: testing
     agent: agents/tester.md
     model: coding
     status: testing
+    interactive_checkpoint: true
     subagents:
       - name: test-runner
         agent: agents/tester.md
@@ -52,11 +56,13 @@ phases:
     agent: agents/evaluator.md
     model: planning
     status: evaluating
+    interactive_checkpoint: true
 
   - name: reporting
     agent: agents/planner.md
     model: coding
     status: reporting
+    interactive_checkpoint: true
 ---
 
 # Workflow: .NET to Go Migration

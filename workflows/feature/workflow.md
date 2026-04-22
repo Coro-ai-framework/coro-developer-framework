@@ -12,11 +12,13 @@ phases:
     agent: agents/planner.md
     model: planning
     status: planning
+    interactive_checkpoint: true
 
   - name: coding
     agent: agents/coder.md
     model: coding
     status: coding
+    interactive_checkpoint: true
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -27,16 +29,19 @@ phases:
     agent: agents/pr-reviewer.md
     model: coding
     status: reviewing
+    interactive_checkpoint: true
 
   - name: testing
     agent: agents/tester.md
     model: coding
     status: testing
+    interactive_checkpoint: true
 
   - name: evaluation
     agent: agents/evaluator.md
     model: planning
     status: evaluating
+    interactive_checkpoint: true
 
 overrides:
   jira:

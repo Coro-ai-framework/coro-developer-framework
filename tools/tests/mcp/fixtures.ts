@@ -21,6 +21,8 @@ export function makeMockJob(overrides: Record<string, unknown> = {}) {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    interactive: false,
+    artifacts: [],
     insights: [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],

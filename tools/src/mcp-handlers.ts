@@ -1,5 +1,5 @@
 import { ToolContext, PhaseSignals } from './tools/types'
-import { FeatureItem, Insight, Job } from './jobs/types'
+import { Artifact, FeatureItem, Insight, Job } from './jobs/types'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -386,6 +386,36 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     log: async ({ message }: { message: string }) => {
       await ctx.stateBackend.appendLog(ctx.job.id, message)
       return text(null)
+    },
+
+    // Artefacts — generic per-phase outputs that the dashboard knows how to render
+    post_artifact: async ({ phase, kind, title, data }: {
+      phase?: string; kind: string; title: string; data?: Record<string, unknown>
+    }) => {
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      const now = new Date()
+      const rand = Math.random().toString(36).slice(2, 8)
+      const artifact: Artifact = {
+        id: `art-${now.getTime()}-${rand}`,
+        phase: phase ?? job.phase,
+        kind,
+        title,
+        data: data ?? {},
+        createdBy: job.currentFeature ? `${job.phase}:${job.currentFeature}` : job.phase,
+        createdAt: now.toISOString(),
+      }
+      const artifacts = [...(job.artifacts ?? []), artifact]
+      await ctx.stateBackend.updateJob(ctx.job.id, { artifacts })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.appendLog(ctx.job.id, `[artifact] ${artifact.phase}/${kind}: ${title}`)
+      return text({ id: artifact.id, phase: artifact.phase, kind, title })
+    },
+
+    get_artifacts: async ({ phase }: { phase?: string }) => {
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      const all = job.artifacts ?? []
+      const filtered = phase ? all.filter(a => a.phase === phase) : all
+      return text({ artifacts: filtered, total: filtered.length })
     },
 
     // Self-improvement

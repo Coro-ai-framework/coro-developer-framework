@@ -36,6 +36,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | `gh_create_pr` | Open a PR on GitHub (registers with job system) |
 | `gh_get_pr_comments` | Read GitHub PR feedback when responding to review |
 | `gh_post_pr_comment` | Reply to reviewer comments on a GitHub PR |
+| `post_artifact` | Record the PR link (and any other outputs) as job artefacts |
 | `escalate` | Escalate blockers to human |
 | `add_insight` | Record workarounds, patterns, or failures for future runs |
 
@@ -107,7 +108,21 @@ Include in the PR description:
 - Known gaps or follow-up items
 - Acceptance criteria
 
-### 9. Responding to PR feedback
+### 9. Post the PR artefact
+
+Immediately after the PR is created (both on BitBucket and GitHub paths), call `mcp__a5__post_artifact` so the PR link appears on the dashboard:
+
+```
+post_artifact({
+  kind: "pr-link",
+  title: "PR #{prId}: {feature-name}",
+  data: { url: "{pr-url}", prId: {prId}, repoSlug: "{repo-slug}", title: "{pr-title}" }
+})
+```
+
+When responding to review feedback (step 10), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link.
+
+### 10. Responding to PR feedback
 
 When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 1. Read the PR comments via the appropriate tool (`mcp__a5__bb_get_pr_comments` for BitBucket, `mcp__a5__gh_get_pr_comments` for GitHub)

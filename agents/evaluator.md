@@ -18,6 +18,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | `request_new_session` | Clear context for next feature |
 | `goto_phase` | Loop back to coding phase with fix instructions |
 | `escalate` | Escalate unresolvable blockers to human |
+| `post_artifact` | Record the evaluation markdown as a job artefact |
 | `add_insight` | Record test-result analysis findings |
 | `propose_change` | Propose improvements to agents, skills, memory, or code |
 | `list_proposals` | Check past proposals before proposing duplicates |
@@ -96,6 +97,16 @@ Write to `working/{service-name}/evaluations/{feature-name}.md`:
 
 ## Fix brief for Coder (if looping back)
 {Numbered list of specific changes}
+```
+
+After writing the file, call `mcp__a5__post_artifact`:
+
+```
+post_artifact({
+  kind: "evaluation-md",
+  title: "Evaluation — {feature-name}",
+  data: { path: "{service-name}/evaluations/{feature-name}.md" }
+})
 ```
 
 ### 5. Manage the feature loop

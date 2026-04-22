@@ -149,6 +149,8 @@ export class SqliteStateBackend implements StateBackend {
       features: [],
       featureLoopCount: 0,
       prMappings,
+      interactive: input.params['interactive'] === true,
+      artifacts: [],
       insights: [],
       tokenUsage: emptyTokenUsage(),
       phaseUsage: [],

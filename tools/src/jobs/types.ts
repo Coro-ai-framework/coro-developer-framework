@@ -12,13 +12,14 @@ export enum JobType {
 
 // ── Well-known statuses ──────────────────────────────────────────────────────
 
-export const STATUS_QUEUED                = 'queued'
-export const STATUS_COMPLETE              = 'complete'
-export const STATUS_ESCALATED             = 'escalated'
-export const STATUS_FAILED                = 'failed'
-export const STATUS_AWAITING_PLAN_APPROVAL = 'awaiting-plan-approval'
-export const STATUS_AWAITING_PR_MERGE     = 'awaiting-pr-merge'
-export const STATUS_CODING                = 'coding'
+export const STATUS_QUEUED                      = 'queued'
+export const STATUS_COMPLETE                    = 'complete'
+export const STATUS_ESCALATED                   = 'escalated'
+export const STATUS_FAILED                      = 'failed'
+export const STATUS_AWAITING_PLAN_APPROVAL      = 'awaiting-plan-approval'
+export const STATUS_AWAITING_PR_MERGE           = 'awaiting-pr-merge'
+export const STATUS_AWAITING_DEVELOPER_INPUT    = 'awaiting-developer-input'
+export const STATUS_CODING                      = 'coding'
 
 // ── PR tracking ───────────────────────────────────────────────────────────────
 
@@ -65,6 +66,24 @@ export interface PhaseUsage {
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>
 }
 
+// ── Artefact tracking ────────────────────────────────────────────────────────
+
+/**
+ * A phase output recorded by an agent for developer visibility.
+ * The code layer treats `data` as opaque — only the dashboard knows how to
+ * render each `kind`. Agents use `post_artifact` to append these; the
+ * dashboard reads `job.artifacts` and dispatches per kind.
+ */
+export interface Artifact {
+  id: string
+  phase: string
+  kind: string
+  title: string
+  data: Record<string, unknown>
+  createdBy: string
+  createdAt: string
+}
+
 // ── Insight tracking ─────────────────────────────────────────────────────────
 
 /** A learning or workaround discovered by any agent during execution. */
@@ -102,6 +121,27 @@ export interface Job {
   featureLoopCount: number
 
   prMappings: PrMapping[]
+
+  /**
+   * Interactive mode — when true, the runner parks at phase boundaries that
+   * have `interactive_checkpoint: true` in the workflow YAML, waiting for
+   * developer approval before advancing.
+   */
+  interactive: boolean
+
+  /**
+   * Artefacts posted by agents during execution (plan files, PR links, test
+   * results, etc.). The code layer stores these as opaque JSON; the dashboard
+   * renders them per `kind`.
+   */
+  artifacts: Artifact[]
+
+  /**
+   * When parked waiting for developer input at a phase boundary, this records
+   * the phase the job will advance to on approval. Unset for agent-requested
+   * mid-phase pauses (where the job stays on the current phase).
+   */
+  awaitingNextPhase?: string
 
   /** Accumulated learnings from all agents. The evaluator reviews these and decides what to propose. */
   insights: Insight[]
@@ -245,6 +285,7 @@ export function isParkingStatus(status: string): boolean {
   return (
     status === STATUS_AWAITING_PLAN_APPROVAL ||
     status === STATUS_AWAITING_PR_MERGE ||
+    status === STATUS_AWAITING_DEVELOPER_INPUT ||
     status === STATUS_ESCALATED ||
     status === STATUS_FAILED
   )

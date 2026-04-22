@@ -22,6 +22,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     features: [],
     featureLoopCount: 0,
     prMappings: [{ prId: 42, feature: 'feat/x', repoSlug: 'my-repo', openedAt: '2026-01-01T00:00:00Z' }],
+    interactive: false,
+    artifacts: [],
     insights: [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],

@@ -45,6 +45,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | `goto_phase` | Send control to coding phase for coder to fix issues |
 | `await_event` | Wait for human approval (NOT for coder fixes) |
 | `escalate` | Escalate unresolvable issues to human |
+| `post_artifact` | Record a review-summary artefact so developers can read your verdict from the dashboard |
 | `add_insight` | Record single-job feedback findings |
 | `propose_change` | Suggest systemic improvements to skills/agents |
 | `list_proposals` | Check past proposals before proposing duplicates |
@@ -146,6 +147,26 @@ Approve the PR when:
 - CI checks pass (if configured)
 
 After approval, trigger merge via the appropriate merge tool (`mcp__a5__bb_merge_pr` for BitBucket, `mcp__a5__gh_merge_pr` for GitHub).
+
+### 6. Post a review-summary artefact
+
+After finishing your review cycle (either when you post blocking comments or when you approve), call `mcp__a5__post_artifact` so developers can see the verdict on the dashboard without opening every PR comment:
+
+```
+post_artifact({
+  kind: "review-summary",
+  title: "Review of PR #{prId}",
+  data: {
+    prId: {prId},
+    repoSlug: "{repo-slug}",
+    verdict: "blocking" | "approved" | "awaiting-human",
+    summary: "One or two sentence overview of the review result.",
+    issueCount: {number of blocking issues, if any}
+  }
+})
+```
+
+Post a new review-summary artefact each time you complete a review cycle — the dashboard will show the latest with older versions available.
 
 ## Behavior rules
 

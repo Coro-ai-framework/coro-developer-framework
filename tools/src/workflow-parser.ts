@@ -18,6 +18,11 @@ export interface PhaseConfig {
   model: 'planning' | 'coding'
   status: string
   subagents?: SubagentConfig[]
+  /**
+   * When true AND the job is in interactive mode, the runner parks at the end
+   * of this phase waiting for developer approval before advancing.
+   */
+  interactiveCheckpoint?: boolean
   /** @deprecated No longer consumed by the builder — knowledge is now loaded on-demand via skills. Kept for parser backward compatibility. */
   knowledge?: string[]
   /** @deprecated No longer consumed by the builder — conventions are now loaded on-demand via skills. Kept for parser backward compatibility. */
@@ -59,6 +64,7 @@ interface RawPhase {
   model?: string
   status?: string
   subagents?: RawSubagent[]
+  interactive_checkpoint?: boolean
   knowledge?: string[]
   conventions?: string[]
 }
@@ -95,6 +101,10 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
         agent: p.agent ?? null,
         model: p.model === 'coding' ? 'coding' : 'planning',
         status: p.status ?? p.name,
+      }
+
+      if (p.interactive_checkpoint === true) {
+        phase.interactiveCheckpoint = true
       }
 
       if (Array.isArray(p.subagents) && p.subagents.length > 0) {

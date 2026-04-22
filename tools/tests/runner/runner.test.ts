@@ -7,6 +7,7 @@ import {
   STATUS_FAILED,
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_PLAN_APPROVAL,
+  STATUS_AWAITING_DEVELOPER_INPUT,
   emptyTokenUsage,
 } from '../../src/jobs/types'
 import type { Job } from '../../src/jobs/types'
@@ -54,6 +55,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    interactive: false,
+    artifacts: [],
     insights: [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],
@@ -195,6 +198,112 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.status).toBe(STATUS_AWAITING_PR_MERGE)
     expect(stateBackend.current.awaitingEvent).toBe('pr:merged')
     expect(stateBackend.current.awaitingPrId).toBe(99)
+  })
+
+  it('parks with awaiting-developer-input when event name starts with "developer-input"', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.awaitingEvent = 'developer-input: unclear if X should be idempotent'
+        yield { type: 'system' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
+    expect(stateBackend.current.awaitingEvent).toBe(
+      'developer-input: unclear if X should be idempotent',
+    )
+    // Mid-phase pause: next phase is NOT recorded
+    expect(stateBackend.current.awaitingNextPhase).toBeUndefined()
+    // Phase stays the same
+    expect(stateBackend.current.phase).toBe('alpha')
+  })
+
+  it('auto-parks at phase boundary when interactive + interactiveCheckpoint', async () => {
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+
+    // Seed state backend with interactive=true so syncJob patches preserve it.
+    stateBackend = createMockStateBackend(
+      makeJob({ phase: 'alpha', status: 'queued', interactive: true }),
+    )
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.phaseComplete = true
+        yield { type: 'system', session_id: 'sess-cp' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha', interactive: true }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowCheckpoint,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
+    expect(stateBackend.current.awaitingEvent).toContain('developer-input')
+    expect(stateBackend.current.awaitingNextPhase).toBe('beta')
+    // Phase stays on alpha — developer is approving into beta
+    expect(stateBackend.current.phase).toBe('alpha')
+  })
+
+  it('does NOT auto-park when interactive is false even if checkpoint flag is set', async () => {
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.phaseComplete = true
+        yield { type: 'system', session_id: 'sess' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha', interactive: false }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowCheckpoint,
+    })
+
+    // Advances to beta and completes normally
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
+  })
+
+  it('does NOT auto-park on non-checkpoint phase even when interactive is true', async () => {
+    stateBackend = createMockStateBackend(
+      makeJob({ phase: 'alpha', status: 'queued', interactive: true }),
+    )
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.phaseComplete = true
+        yield { type: 'system', session_id: 'sess' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha', interactive: true }), ctx, {
+      queryImpl,
+      // workflowTwoPhase has no interactiveCheckpoint flags set
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
   })
 
   it('parks with awaiting-plan-approval when event name includes "plan"', async () => {

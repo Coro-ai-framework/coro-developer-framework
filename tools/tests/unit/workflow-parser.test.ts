@@ -304,6 +304,25 @@ phases:
       expect(config.phases[0].conventions).toBeUndefined()
     })
 
+    it('parses interactive_checkpoint: true', () => {
+      const yaml = `
+phases:
+  - name: planning
+    model: planning
+    interactive_checkpoint: true
+  - name: coding
+    model: coding
+    interactive_checkpoint: false
+  - name: init
+    model: planning
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].interactiveCheckpoint).toBe(true)
+      // false and undefined both parse to undefined — the runner only checks `=== true`
+      expect(config.phases[1].interactiveCheckpoint).toBeUndefined()
+      expect(config.phases[2].interactiveCheckpoint).toBeUndefined()
+    })
+
     it('ignores unknown fields (backwards compat)', () => {
       const yaml = `
 phases:

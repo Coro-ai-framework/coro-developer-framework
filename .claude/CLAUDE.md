@@ -114,6 +114,76 @@ All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__l
 - `propose_change` — Propose an improvement to agents, skills, memory, or code (Evaluator / PR Reviewer only)
 - `list_proposals` — Check past proposals before proposing duplicates
 
+### Artefacts
+- `post_artifact` — Record an artefact produced by your phase so developers can view it from the dashboard. Arguments: `{ kind, title, data, phase? }`. `phase` defaults to your current phase. See "Artefacts" section below for kinds and data shapes.
+- `get_artifacts` — List artefacts already posted on the job, optionally filtered by phase.
+
+## Artefacts — what to record for each phase
+
+After you produce output that is useful to a developer (plan, PR, report, test results, contract file), call `post_artifact` with a `kind` and the minimum data needed for the dashboard to render it. Artefacts are free-form JSON objects — the dashboard decides how to display each `kind`.
+
+Rules:
+- **Post artefacts as you create them**, not at the end of the phase. If you open a PR mid-phase, post the `pr-link` artefact immediately so developers can see it.
+- **Paths must be relative to the working directory** (`working/{job-id}/...`). Never post absolute paths — they won't be readable by the dashboard.
+- **One artefact per output**. If you produce a plan file AND a contract file, post two separate artefacts.
+- **Pick an existing `kind` when one fits**. Only invent a new kind if nothing below matches — the dashboard falls back to a JSON viewer for unknown kinds.
+
+Common kinds:
+
+| kind | When | Data shape |
+|---|---|---|
+| `plan-md` | Planner writes a migration or feature plan | `{ path: "…/migration-plan.md" }` |
+| `implementation-plan-md` | Planner writes an implementation plan for a feature | `{ path: "…/implementation-plan.md" }` |
+| `analysis-contract` | Analyzer writes the service contract JSON | `{ path: "…/service-contract.json" }` |
+| `pr-link` | Coder opens a PR (both bb and gh paths) | `{ url, prId, repoSlug, title }` |
+| `review-summary` | PR Reviewer posts a review summary | `{ prId, repoSlug, verdict, summary }` |
+| `test-results` | Tester finishes running the comparison suite | `{ path, passed, failed, skipped }` |
+| `evaluation-md` | Evaluator writes an evaluation report | `{ path: "…/evaluation.md" }` |
+| `report-md` | Any agent writes a human-readable report | `{ path: "…/report.md" }` |
+| `url` | Any external link that doesn't fit above | `{ url, label }` |
+
+Example:
+```
+post_artifact({
+  kind: "plan-md",
+  title: "Migration plan for user-service",
+  data: { path: "user-service/migration-plan.md" }
+})
+```
+
+## Interactive mode — parking and developer messages
+
+Some jobs run with `interactive: true`. For these, the runtime parks the job **after** your turn ends at any phase marked `interactive_checkpoint: true` in the workflow MD (currently: planning, coding, review, testing, evaluation, reporting). You do not need to do anything special — just finish your work, post artefacts, and end your turn. The runner sets the status to `awaiting-developer-input` and waits.
+
+When the developer sends a message, you will be resumed with a framed prompt starting with:
+
+```
+[DEVELOPER RESPONSE — INTERACTIVE CHECKPOINT]
+```
+
+The prompt tells you:
+- The phase you were parked after.
+- The artefacts you posted that phase.
+- The next phase (if you are approved to proceed).
+- The developer's verbatim message.
+
+Based on the message:
+- **Approval** ("go ahead", "looks good", "continue") → call `goto_phase("{next-phase}")` to advance.
+- **Rework** ("add X", "rename Y", "fix Z before moving on") → do the requested work in the **current** phase, post any updated artefacts, then end your turn. The runner will park again for re-approval.
+- **Ambiguous** → make your best interpretation and explain in `log` what you're about to do. Do not ask another question — the developer has already spoken.
+
+### Mid-phase pause (asking for developer input yourself)
+
+If you genuinely need developer input **mid-phase** (e.g., a critical design decision that the spec does not answer), call:
+
+```
+await_event({ eventName: "developer-input: <short reason>" })
+```
+
+The `developer-input:` prefix is recognised by the runner and parks the job with status `awaiting-developer-input`. When the developer replies, you are resumed with the same `[DEVELOPER RESPONSE …]` prompt pattern. Because this is mid-phase, there is no `next-phase` — continue on the current phase with the guidance the developer gave you.
+
+**Reserve `escalate` for actual blockers** — things you genuinely cannot resolve (build broken after 5 attempts, auth credentials invalid, external API down). "Asking for approval" or "wanting a design decision" is not an escalation; use the interactive-checkpoint auto-park or `await_event('developer-input: …')` instead.
+
 ## Banned tools — do NOT use
 
 - **`TodoWrite` / `TodoRead`** — Do NOT use the built-in todo tool. Use `mcp__a5__log` to report progress instead. The todo tool is a local scratch pad that no one monitors. Developers follow your work via `a5 logs`, which reads from `mcp__a5__log`.

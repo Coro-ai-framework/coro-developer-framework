@@ -111,6 +111,8 @@ export class RedisStateBackend implements StateBackend {
       features: [],
       featureLoopCount: 0,
       prMappings,
+      interactive: input.params['interactive'] === true,
+      artifacts: [],
       insights: [],
       tokenUsage: emptyTokenUsage(),
       phaseUsage: [],
@@ -127,7 +129,7 @@ export class RedisStateBackend implements StateBackend {
   async getJob(jobId: string): Promise<Job | null> {
     const raw = await this.redis.get(keyJob(jobId))
     if (!raw) return null
-    return JSON.parse(raw) as Job
+    return normalizeJob(JSON.parse(raw) as Job)
   }
 
   async listJobs(): Promise<Job[]> {
@@ -302,7 +304,7 @@ export class RedisStateBackend implements StateBackend {
     for (const result of results ?? []) {
       const [err, raw] = result as [Error | null, string | null]
       if (!err && raw) {
-        jobs.push(JSON.parse(raw) as Job)
+        jobs.push(normalizeJob(JSON.parse(raw) as Job))
       }
     }
 
@@ -313,6 +315,23 @@ export class RedisStateBackend implements StateBackend {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/**
+ * Fill in defaults for fields added after jobs may have been persisted.
+ * Keeps reads tolerant of old records that lack the new `interactive` /
+ * `artifacts` / `insights` fields.
+ */
+function normalizeJob(job: Job): Job {
+  return {
+    ...job,
+    interactive: job.interactive ?? false,
+    artifacts: Array.isArray(job.artifacts) ? job.artifacts : [],
+    insights: Array.isArray(job.insights) ? job.insights : [],
+    prMappings: Array.isArray(job.prMappings) ? job.prMappings : [],
+    features: Array.isArray(job.features) ? job.features : [],
+    phaseUsage: Array.isArray(job.phaseUsage) ? job.phaseUsage : [],
+  }
+}
 
 function inputToJobType(input: JobInput): JobType {
   switch (input.type) {

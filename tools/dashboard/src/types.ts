@@ -28,6 +28,8 @@ export interface JobSummary {
   phase: string
   currentFeature: string | null
   triggerSource: string
+  interactive?: boolean
+  artifactCount?: number
   prCount: number
   totalCostUsd: number | null
   createdAt: string
@@ -56,6 +58,22 @@ export interface Insight {
   suggestion?: string
 }
 
+export interface Artifact {
+  id: string
+  phase: string
+  kind: string
+  title: string
+  data: Record<string, unknown>
+  createdBy: string
+  createdAt: string
+}
+
+export interface WorkflowPhase {
+  name: string
+  status: string
+  interactiveCheckpoint?: boolean
+}
+
 export interface Job {
   id: string
   type: string
@@ -68,6 +86,9 @@ export interface Job {
   features: FeatureItem[]
   featureLoopCount: number
   prMappings: PrMapping[]
+  interactive: boolean
+  artifacts: Artifact[]
+  awaitingNextPhase?: string
   insights: Insight[]
   tokenUsage?: TokenUsage
   phaseUsage?: PhaseUsage[]
@@ -77,6 +98,8 @@ export interface Job {
   awaitingEvent?: string
   awaitingPrId?: number
   escalationMessage?: string
+  /** Attached by the server when fetched via GET /jobs/:jobId. */
+  workflowPhases?: WorkflowPhase[] | null
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'

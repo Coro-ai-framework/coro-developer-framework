@@ -24,6 +24,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    interactive: false,
+    artifacts: [],
     insights: [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],

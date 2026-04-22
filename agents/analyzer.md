@@ -32,6 +32,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | `loki_query` | Query Loki for production traffic patterns and error rates |
 | `tempo_search` | Search distributed traces matching a TraceQL query |
 | `tempo_get_trace` | Fetch a full distributed trace by trace ID |
+| `post_artifact` | Record the service contract and analysis notes as job artefacts |
 | `add_insight` | Record workarounds, patterns, or unexpected findings |
 | `escalate` | Escalate blockers to human |
 
@@ -85,6 +86,24 @@ Use `mcp__a5__tempo_search` and `mcp__a5__tempo_get_trace`:
 ### 7. Write outputs
 
 Produce the four output files. Be thorough — downstream agents cannot ask follow-up questions. Everything they need must be in these files.
+
+After writing each file, post it as an artefact so developers can open them from the dashboard:
+
+```
+post_artifact({
+  kind: "analysis-contract",
+  title: "Service contract — {service-name}",
+  data: { path: "{service-name}/service-contract.json" }
+})
+
+post_artifact({
+  kind: "report-md",
+  title: "Analysis notes — {service-name}",
+  data: { path: "{service-name}/analysis-notes.md" }
+})
+```
+
+(Posting `dependencies.json` and `traffic-baseline.json` is optional — they're primarily consumed by the Planner, not directly by developers.)
 
 ### 8. Flag ambiguities
 
