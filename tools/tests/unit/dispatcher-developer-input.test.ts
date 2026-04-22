@@ -15,7 +15,7 @@ function art(partial: Partial<Artifact> = {}): Artifact {
   }
 }
 
-describe('buildDeveloperInputMessage (agent-driven checkpoints)', () => {
+describe('buildDeveloperInputMessage (developer-input resumes)', () => {
   it('includes the pause reason when awaitingEvent has developer-input: prefix', () => {
     const prompt = buildDeveloperInputMessage(
       'Yes, make it idempotent',

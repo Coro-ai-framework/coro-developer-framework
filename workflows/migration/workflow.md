@@ -104,7 +104,7 @@ Feature state is tracked in Redis via the `features[]` array on the Job object. 
 
 ## Phases
 
-> **Checkpoint reminder:** Phases flagged `interactive_checkpoint: true` expect you — the agent — to call `await_event({ eventName: "developer-input: <reason>" })` at the end of the phase when `job.interactive` is `true`. The runner does not auto-park. See `.claude/CLAUDE.md` → "Interactive mode — agent-driven checkpoints".
+> **Checkpoint reminder:** Phases flagged `interactive_checkpoint: true` are enforced by the runner when `job.interactive` is `true`. Finish the phase normally; the runner will park for developer approval before advancing. Use `await_event({ eventName: "developer-input: <reason>" })` only for an additional mid-phase question or clarification.
 
 ---
 
@@ -147,7 +147,7 @@ The Planner must:
 2. Call `set_features` to register the feature list with the job
 3. Call `set_job_params({ language: "golang" })` to switch to the target language for all downstream phases
 
-**Human checkpoint:** This phase is flagged `interactive_checkpoint: true`. If `job.interactive` is `true`, post the plan artefact and then call `await_event({ eventName: "developer-input: approval of migration plan" })` before ending your turn. The runner does NOT auto-park — you must park explicitly. If `job.interactive` is `false`, skip the park and let the runner advance to repo-setup.
+**Human checkpoint:** This phase is flagged `interactive_checkpoint: true`. If `job.interactive` is `true`, post the plan artefact and then finish the phase normally. The runner will park for developer approval before advancing to repo-setup. If you need clarification before the phase ends, call `await_event({ eventName: "developer-input: <reason>" })` explicitly. If `job.interactive` is `false`, skip the pause and let the runner advance to repo-setup.
 
 ---
 

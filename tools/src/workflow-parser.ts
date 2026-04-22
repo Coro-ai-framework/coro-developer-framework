@@ -20,9 +20,9 @@ export interface PhaseConfig {
   subagents?: SubagentConfig[]
   /**
    * Metadata flag surfaced to the dashboard to mark a phase as
-   * "developer should approve before advancing". The runner no longer
-   * auto-parks based on this; agents are expected to call `await_event`
-   * explicitly when they need approval (see `.claude/CLAUDE.md`).
+    * "developer should approve before advancing". The runner uses this
+    * for interactive jobs to park before phase advancement; agents may still
+    * call `await_event` explicitly for additional mid-phase questions.
    */
   interactiveCheckpoint?: boolean
   /**

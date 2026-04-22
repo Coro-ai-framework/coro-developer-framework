@@ -18,6 +18,11 @@ vi.mock('../../src/prompt/builder', () => ({
   buildSystemPrompt: vi.fn().mockResolvedValue('# Mock system prompt for runner tests'),
 }))
 
+vi.mock('../../src/claude-code-path', () => ({
+  resolveClaudeCodeCliPath: vi.fn().mockReturnValue('/tmp/mock-claude-cli.js'),
+  ensureClaudeCodeCliExecutable: vi.fn(),
+}))
+
 function makeSettings(): Settings {
   return {
     host: { port: 3000, webhookSecret: 's', logLevel: 'silent' },
@@ -214,16 +219,11 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.awaitingEvent).toBe(
       'developer-input: unclear if X should be idempotent',
     )
-    // The runner no longer auto-parks at phase boundaries, so awaitingNextPhase
-    // is never set by it. Agents drive developer approval via await_event.
     expect(stateBackend.current.awaitingNextPhase).toBeUndefined()
     expect(stateBackend.current.phase).toBe('alpha')
   })
 
-  it('runner does NOT auto-park even when phase has interactiveCheckpoint metadata', async () => {
-    // interactiveCheckpoint is now dashboard-only metadata. The runner does
-    // not inspect it — agents are responsible for calling await_event when
-    // human approval is needed.
+  it('parks at interactive checkpoints for interactive jobs before advancing', async () => {
     const workflowCheckpoint: WorkflowConfig = {
       initialPhase: 'alpha',
       initialStatus: 'queued',
@@ -249,9 +249,49 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowCheckpoint,
     })
 
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
+    expect(stateBackend.current.phase).toBe('alpha')
+    expect(stateBackend.current.awaitingNextPhase).toBe('beta')
+    expect(stateBackend.current.awaitingEvent).toBe('developer-input: approval after alpha')
+  })
+
+  it('advances past an interactive checkpoint after developer approval', async () => {
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+
+    stateBackend = createMockStateBackend(
+      makeJob({
+        phase: 'alpha',
+        status: STATUS_AWAITING_DEVELOPER_INPUT,
+        interactive: true,
+        approvedAdvanceFromPhase: 'alpha',
+      }),
+    )
+    ctx = makeRunnerContext(stateBackend)
+
+    let call = 0
+    const queryImpl = () =>
+      (async function* () {
+        call += 1
+        yield { type: 'system', session_id: `sess-approved-${call}` }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha', interactive: true, approvedAdvanceFromPhase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowCheckpoint,
+    })
+
+    expect(call).toBe(2)
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
     expect(stateBackend.current.phase).toBe('beta')
-    expect(stateBackend.current.awaitingNextPhase).toBeUndefined()
+    expect(stateBackend.current.approvedAdvanceFromPhase).toBeUndefined()
   })
 
   it('parks with awaiting-plan-approval when event name includes "plan"', async () => {
@@ -377,6 +417,28 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.status).toBe(STATUS_FAILED)
     expect(stateBackend.current.escalationMessage).toContain('SDK exploded')
     expect(ctx.logger.error).toHaveBeenCalled()
+  })
+
+  it('fails instead of auto-advancing when built-in tools ran but no A5 MCP tool was used', async () => {
+    const queryImpl = () =>
+      (async function* () {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'tool_use', name: 'Bash', input: { command: 'git status' } }],
+          },
+        }
+        yield { type: 'system', session_id: 'missing-mcp' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_FAILED)
+    expect(stateBackend.current.phase).toBe('alpha')
+    expect(stateBackend.current.escalationMessage).toContain('without any mcp__a5__* tool calls')
   })
 
   it('stops when escalated signal is set (after stateBackend update)', async () => {

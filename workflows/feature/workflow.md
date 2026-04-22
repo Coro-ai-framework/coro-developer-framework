@@ -78,7 +78,7 @@ Feature state is tracked in Redis via the `features[]` array on the Job object. 
 
 ## Phases
 
-> **Checkpoint reminder:** Phases flagged `interactive_checkpoint: true` expect you — the agent — to call `await_event({ eventName: "developer-input: <reason>" })` at the end of the phase when `job.interactive` is `true`. The runner does not auto-park. See `.claude/CLAUDE.md` → "Interactive mode — agent-driven checkpoints".
+> **Checkpoint reminder:** Phases flagged `interactive_checkpoint: true` are enforced by the runner when `job.interactive` is `true`. Finish the phase normally; the runner will park for developer approval before advancing. Use `await_event({ eventName: "developer-input: <reason>" })` only for an additional mid-phase question or clarification.
 
 ---
 

@@ -67,6 +67,7 @@ function buildJobContext(job: Job): string {
     jobId: job.id,
     type: job.type,
     workflowPath: job.workflowPath,
+    interactive: job.interactive,
     params: job.params,
     triggerSource: job.triggerSource,
     status: job.status,
@@ -77,6 +78,8 @@ function buildJobContext(job: Job): string {
     prMappings: job.prMappings,
     awaitingEvent: job.awaitingEvent ?? null,
     awaitingPrId: job.awaitingPrId ?? null,
+    awaitingNextPhase: job.awaitingNextPhase ?? null,
+    approvedAdvanceFromPhase: job.approvedAdvanceFromPhase ?? null,
     escalationMessage: job.escalationMessage ?? null,
   }
 

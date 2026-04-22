@@ -259,6 +259,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const allowedTools = agents && !baseTools.includes('Agent')
         ? [...baseTools, 'Agent']
         : [...baseTools]
+      const expectsA5McpTools = allowedTools.some(
+        tool => tool === 'mcp__a5__*' || tool.startsWith('mcp__a5__'),
+      )
 
       // SDK hooks replace the "prose guard rails" that used to live in agent
       // MDs (e.g. "only the evaluator may call propose_change"). The hook
@@ -593,6 +596,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           `See runner stderr for "[Query.connectSdkMcpServer]" or "Transport write failed" lines.`,
         )
       }
+      const missingRequiredMcpTools = expectsA5McpTools && mcpToolUseCount === 0 && builtinToolUseCount > 0
 
       // Ensure every phase gets a PhaseUsage snapshot, even when a signal
       // (goto_phase, await_event, escalate) broke the stream before the
@@ -643,11 +647,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       //   3. Awaiting event (agent needs to wait for external input) → park
       //   4. goto_phase or default: advance to the next workflow phase
       //
-      // Interactive checkpoints are now driven by the agent: the workflow
-      // prose / agent MD instructs agents at relevant phase boundaries to
-      // call `await_event` with `developer-input: approval after <phase>`.
-      // The runner stays out of it — no `phaseConf.interactiveCheckpoint`
-      // branch, no `approvedAdvanceFromPhase` bookkeeping.
+      // Interactive checkpoints are enforced here for interactive jobs.
+      // Phases marked with `interactiveCheckpoint` park before advancing,
+      // unless the dispatcher has already recorded a one-time approval for
+      // the current phase via `approvedAdvanceFromPhase`.
 
       if (isTerminalStatus(liveJob.status)) break
 
@@ -681,6 +684,23 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
+      if (missingRequiredMcpTools) {
+        const reason =
+          'Phase ended without any mcp__a5__* tool calls even though A5 MCP tools were allowed. ' +
+          'Refusing to auto-advance because the phase output is not trustworthy.'
+
+        liveJob = await syncJob(stateBackend, liveJob, {
+          status: STATUS_FAILED,
+          escalationMessage: reason,
+          sessionId: undefined,
+        })
+        toolCtx.job = liveJob
+
+        logger.error({ jobId: liveJob.id, phase: liveJob.phase }, reason)
+        await stateBackend.appendLog(liveJob.id, `[error] ${reason}`)
+        break
+      }
+
       // Default: auto-advance to the next phase. goto_phase overrides the
       // workflow-defined order (e.g. evaluator loops back to coding).
       const nextPhase = signals.nextPhase
@@ -693,7 +713,34 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
-      liveJob = await syncJob(stateBackend, liveJob, { phase: nextPhase })
+      const checkpointApproved = liveJob.approvedAdvanceFromPhase === liveJob.phase
+      if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved) {
+        const waitingFor = `developer-input: approval after ${liveJob.phase}`
+
+        liveJob = await syncJob(stateBackend, liveJob, {
+          status: STATUS_AWAITING_DEVELOPER_INPUT,
+          awaitingEvent: waitingFor,
+          awaitingNextPhase: nextPhase,
+          approvedAdvanceFromPhase: undefined,
+        })
+        toolCtx.job = liveJob
+
+        logger.info(
+          { jobId: liveJob.id, phase: liveJob.phase, nextPhase },
+          'Interactive checkpoint reached — awaiting developer approval',
+        )
+        await stateBackend.appendLog(
+          liveJob.id,
+          `Interactive checkpoint reached — waiting for developer approval before ${nextPhase}`,
+        )
+        break
+      }
+
+      liveJob = await syncJob(stateBackend, liveJob, {
+        phase: nextPhase,
+        awaitingNextPhase: undefined,
+        approvedAdvanceFromPhase: checkpointApproved ? undefined : liveJob.approvedAdvanceFromPhase,
+      })
       toolCtx.job = liveJob
 
       logger.info({ jobId: liveJob.id, phase: nextPhase }, 'Phase advanced')

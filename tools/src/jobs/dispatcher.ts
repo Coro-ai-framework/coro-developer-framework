@@ -279,6 +279,7 @@ export class Dispatcher {
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
+      approvedAdvanceFromPhase: job.awaitingNextPhase ? job.phase : undefined,
       pendingPrompt,
     })
 
@@ -347,10 +348,10 @@ export class Dispatcher {
  * Build the framed prompt the runner will send to the agent when a developer
  * responds to a paused-for-developer-input park.
  *
- * The runner no longer auto-parks at phase boundaries — agents explicitly
- * call `await_event('developer-input: <reason>')` when they need human input
- * (approval, clarification, design choice). This builder therefore just
- * relays the developer's reply and reminds the agent to:
+ * The runner now enforces workflow interactive checkpoints at phase
+ * boundaries. Agents can still call `await_event('developer-input: <reason>')`
+ * for additional mid-phase questions (approval, clarification, design choice).
+ * This builder relays the developer's reply and reminds the agent to:
  *
  *   1. Apply the guidance and finish the phase as normal (the runner will
  *      auto-advance — or the agent can call `goto_phase` to loop back).
