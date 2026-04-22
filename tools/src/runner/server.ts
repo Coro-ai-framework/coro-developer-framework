@@ -108,6 +108,35 @@ function extractOauthUrl(text: string): string | null {
 }
 
 /**
+ * Resolve the git provider for a new job. Explicit per-job values win, then
+ * we fall back to the local config's configured provider, then BitBucket
+ * (the historical default). This prevents jobs dispatched from the CLI or
+ * dashboard without a `gitProvider` field from silently defaulting to the
+ * wrong provider and making the planner guess.
+ */
+function resolveGitProvider(explicit: unknown): 'github' | 'bitbucket' {
+  if (explicit === 'github' || explicit === 'bitbucket') return explicit
+  const cfg = loadLocalConfig()
+  const configured = cfg?.git?.provider
+  if (configured === 'github') return 'github'
+  return 'bitbucket'
+}
+
+/** Best-effort MIME type inference for the artefact-content endpoint. */
+function mimeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase()
+  switch (ext) {
+    case '.md':   return 'text/markdown; charset=utf-8'
+    case '.json': return 'application/json; charset=utf-8'
+    case '.txt':  return 'text/plain; charset=utf-8'
+    case '.html': return 'text/html; charset=utf-8'
+    case '.yml':
+    case '.yaml': return 'text/yaml; charset=utf-8'
+    default:      return 'text/plain; charset=utf-8'
+  }
+}
+
+/**
  * Create and start the runner's local HTTP server.
  * CLI commands (`a5 migrate`, `a5 status`, etc.) talk to this.
  */
@@ -126,12 +155,23 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   app.post('/jobs/migrate', async (req: Request, res: Response) => {
     try {
-      const { repo, projects, reviewers, stagingUrl, serviceName } = req.body ?? {}
+      const { repo, projects, reviewers, stagingUrl, serviceName, gitProvider, interactive } = req.body ?? {}
       if (!repo) { res.status(400).json({ error: 'repo is required' }); return }
+
+      const provider = resolveGitProvider(gitProvider)
 
       const job = await dispatcher.dispatch({
         type: 'migration',
-        params: { repo, projects, reviewers, stagingUrl, serviceName },
+        params: {
+          repo,
+          repoSlug: repo,
+          projects,
+          reviewers,
+          stagingUrl,
+          serviceName: serviceName ?? repo,
+          gitProvider: provider,
+          interactive: interactive === true,
+        },
       })
       res.status(201).json({
         jobId: job.id,
@@ -147,12 +187,37 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   app.post('/jobs/feature', async (req: Request, res: Response) => {
     try {
-      const { repo, description, reviewers, jiraTicket } = req.body ?? {}
-      if (!repo) { res.status(400).json({ error: 'repo is required' }); return }
+      const {
+        repo,
+        description,
+        reviewers,
+        jiraTicket,
+        jiraTicketId,
+        serviceName,
+        gitProvider,
+        interactive,
+      } = req.body ?? {}
+
+      const isJira = Boolean(jiraTicket ?? jiraTicketId)
+      if (!repo && !isJira) {
+        res.status(400).json({ error: 'repo is required (or provide jiraTicketId)' })
+        return
+      }
+
+      const provider = resolveGitProvider(gitProvider)
 
       const job = await dispatcher.dispatch({
         type: 'feature',
-        params: { repo, description, reviewers, jiraTicket },
+        params: {
+          repo,
+          repoSlug: repo,
+          description,
+          reviewers,
+          jiraTicket: jiraTicket ?? jiraTicketId,
+          serviceName: serviceName ?? repo,
+          gitProvider: provider,
+          interactive: interactive === true,
+        },
       })
       res.status(201).json({
         jobId: job.id,
@@ -185,6 +250,57 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json(job)
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // ── Artefact content ────────────────────────────────────────────────────
+  // Read-only endpoint that returns the text content of an artefact whose
+  // `data.path` points at a file inside the job's working directory. Used by
+  // the dashboard to render `plan-md`, `report-md`, `implementation-plan-md`,
+  // `analysis-contract`, etc. in a modal.
+  //
+  // Security: the resolved path MUST stay inside `{workingDir}/{jobId}/`.
+
+  app.get('/jobs/:jobId/artifacts/:artifactId/content', async (req: Request, res: Response) => {
+    const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+    const artifactId = Array.isArray(req.params.artifactId) ? req.params.artifactId[0] : req.params.artifactId
+
+    try {
+      const job = await stateBackend.getJob(jobId)
+      if (!job) {
+        res.status(404).json({ error: `Job not found: ${jobId}` })
+        return
+      }
+
+      const artifact = (job.artifacts ?? []).find(a => a.id === artifactId)
+      if (!artifact) {
+        res.status(404).json({ error: `Artifact not found: ${artifactId}` })
+        return
+      }
+
+      const rawPath = (artifact.data as Record<string, unknown> | undefined)?.['path']
+      if (typeof rawPath !== 'string' || !rawPath.trim()) {
+        res.status(400).json({ error: 'Artifact has no `data.path` to read' })
+        return
+      }
+
+      const config = loadLocalConfig()
+      const workingDir = resolveLocalWorkingDir(config)
+      const jobWorkingDir = path.resolve(workingDir, jobId)
+      const resolved = path.resolve(jobWorkingDir, rawPath)
+
+      if (!resolved.startsWith(jobWorkingDir + path.sep) && resolved !== jobWorkingDir) {
+        logger.warn({ jobId, artifactId, rawPath, resolved }, 'Artifact path escape attempt blocked')
+        res.status(400).json({ error: 'Artifact path is outside the job working directory' })
+        return
+      }
+
+      const content = await fs.promises.readFile(resolved, 'utf-8')
+      res.setHeader('Content-Type', mimeForPath(resolved))
+      res.send(content)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.status(404).json({ error: `Could not read artifact content: ${msg}` })
     }
   })
 

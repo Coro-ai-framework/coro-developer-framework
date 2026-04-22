@@ -42,11 +42,8 @@ export interface ToolContext {
 //   await_event  → park the job, waiting for an external event
 //   escalate     → stop the job, human intervention needed
 //   goto_phase   → override which phase comes next (e.g. loop back to coding)
-//   phaseComplete → optional early-break hint (not required — the runner
-//                   auto-advances regardless when the query stream ends)
 
 export interface PhaseSignals {
-  phaseComplete?: boolean
   /** When set, overrides the default next-phase lookup. Used by goto_phase. */
   nextPhase?: string
   awaitingEvent?: string

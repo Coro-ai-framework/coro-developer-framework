@@ -299,13 +299,6 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
       // ── Job control ───────────────────────────────────────────────────────
 
       tool(
-        'mark_phase_complete',
-        'Optional hint that you are done. The runner auto-advances to the next phase when you finish regardless, so this is not required. Calling it ends the current turn early.',
-        {},
-        h.mark_phase_complete,
-      ),
-
-      tool(
         'goto_phase',
         'Override which phase runs next (e.g. go back to "coding" after posting review comments). Ends the current turn.',
         { phase: z.string() },
@@ -314,7 +307,7 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'await_event',
-        'Park the job and wait for an external event (e.g. PR merge, Jira comment). The runner stops until the webhook arrives. Only call this when you genuinely need to wait — otherwise just finish and the runner auto-advances.',
+        'Park the job and wait for an external event (e.g. PR merge, Jira comment). The runner stops until the webhook arrives. Only call this when you genuinely need to wait — otherwise just finish and the runner auto-advances. To pause mid-phase for developer input (interactive mode), pass eventName "developer-input: <short reason>"; the job will park with status `awaiting-developer-input` and resume when the developer replies.',
         { eventName: z.string(), prId: z.number().optional() },
         h.await_event,
       ),
@@ -331,6 +324,28 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         'Append a log line to the job stream. Developers watch this via `a5 logs --job <id>`. Call constantly.',
         { message: z.string() },
         h.log,
+      ),
+
+      // ── Artefacts ─────────────────────────────────────────────────────────
+
+      tool(
+        'post_artifact',
+        'Record a per-phase artefact that the developer dashboard can display (e.g. a plan markdown file, a PR link, a test report). The `data` object is opaque to the runner — only the dashboard knows how to render each `kind`. Call this after you produce any output that a developer should see in the UI. Common kinds: plan-md, implementation-plan-md, pr-link, report-md, test-results, evaluation-md, analysis-contract, url.',
+        {
+          phase: z.string().optional().describe('Defaults to the current phase'),
+          kind: z.string().describe('Render hint for the dashboard, e.g. plan-md | pr-link | url | report-md | test-results | json'),
+          title: z.string().describe('Short human label shown on the phase node'),
+          data: z.record(z.string(), z.unknown()).optional().describe('Arbitrary JSON, typically { path } or { url, ... }'),
+        },
+        h.post_artifact,
+      ),
+
+      tool(
+        'get_artifacts',
+        'Read back the artefacts posted for this job (optionally filtered by phase).',
+        { phase: z.string().optional() },
+        h.get_artifacts,
+        { annotations: { readOnlyHint: true } },
       ),
 
       // ── Self-improvement ──────────────────────────────────────────────────
@@ -371,6 +386,16 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         'List past proposals filed by agents. Check before proposing duplicates.',
         { limit: z.number().optional(), type: z.string().optional() },
         h.list_proposals,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      // ── On-demand context ─────────────────────────────────────────────────
+
+      tool(
+        'read_memory',
+        'Load accumulated memory (known pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: returns the memory index + every linked file + pending proposals. Pass `file` (relative to memory/) to fetch a single file. Call this when you start a job OR when you need to check prior learnings before making decisions — the system prompt no longer carries memory by default.',
+        { file: z.string().optional().describe('Optional path relative to memory/, e.g. "known-pitfalls.md"') },
+        h.read_memory,
         { annotations: { readOnlyHint: true } },
       ),
 

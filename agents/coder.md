@@ -36,6 +36,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | `gh_create_pr` | Open a PR on GitHub (registers with job system) |
 | `gh_get_pr_comments` | Read GitHub PR feedback when responding to review |
 | `gh_post_pr_comment` | Reply to reviewer comments on a GitHub PR |
+| `post_artifact` | Record the PR link (and any other outputs) as job artefacts |
 | `escalate` | Escalate blockers to human |
 | `add_insight` | Record workarounds, patterns, or failures for future runs |
 
@@ -107,7 +108,21 @@ Include in the PR description:
 - Known gaps or follow-up items
 - Acceptance criteria
 
-### 9. Responding to PR feedback
+### 9. Post the PR artefact
+
+Immediately after the PR is created (both on BitBucket and GitHub paths), call `mcp__a5__post_artifact` so the PR link appears on the dashboard:
+
+```
+post_artifact({
+  kind: "pr-link",
+  title: "PR #{prId}: {feature-name}",
+  data: { url: "{pr-url}", prId: {prId}, repoSlug: "{repo-slug}", title: "{pr-title}" }
+})
+```
+
+When responding to review feedback (step 10), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link.
+
+### 10. Responding to PR feedback
 
 When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 1. Read the PR comments via the appropriate tool (`mcp__a5__bb_get_pr_comments` for BitBucket, `mcp__a5__gh_get_pr_comments` for GitHub)
@@ -126,7 +141,7 @@ When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 - **Use the appropriate `create_pr` MCP tool to open PRs** — this registers the PR with the job system. PRs created via other methods (including `curl` to the API) won't be tracked and will break the workflow.
 - **Never fall back to `curl` or raw HTTP for git provider operations.** Always use the MCP tools listed above. If an MCP tool fails, check the parameters — do not attempt the same operation via curl.
 - **Use `mcp__a5__log` frequently** so developers can follow your progress.
-- **The runner auto-advances** when you finish. You do not need to call `mark_phase_complete`.
+- **The runner auto-advances** when you finish the phase — just end your turn. There is no "complete this phase" tool. If you need to re-enter the same phase or jump to a different one, call `goto_phase`. If you need a human in the loop before proceeding, call `await_event({ eventName: "developer-input: <reason>" })`.
 - **Call `mcp__a5__escalate`** if anything blocks you that you cannot resolve.
 - **On persistent auth failures (401/403):** immediately escalate with the exact error. Do not retry more than twice.
 - **Call `mcp__a5__add_insight`** when you discover a workaround, hit an unexpected error, or learn something that future runs should know (e.g., auth patterns, build quirks, dependency issues).

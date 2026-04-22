@@ -48,13 +48,6 @@ describe('createMcpToolHandlers — job control & signals', () => {
     signals = {}
   })
 
-  it('mark_phase_complete sets phaseComplete hint', async () => {
-    const h = createMcpToolHandlers(ctx, signals)
-    const out = parseJson(await h.mark_phase_complete()) as Record<string, unknown>
-    expect(signals.phaseComplete).toBe(true)
-    expect(out).toEqual({ acknowledged: true })
-  })
-
   it('await_event sets awaitingEvent and optional awaitingPrId', async () => {
     const h = createMcpToolHandlers(ctx, signals)
     await h.await_event({ eventName: 'pr:merged', prId: 7 })
@@ -482,6 +475,123 @@ describe('createMcpToolHandlers — add_insight', () => {
 
     expect(data['recorded']).toBe(true)
     expect(data['totalInsights']).toBe(1)
+  })
+})
+
+describe('createMcpToolHandlers — artifacts', () => {
+  let ctx: ReturnType<typeof makeMockToolContext>
+
+  beforeEach(() => {
+    ctx = makeMockToolContext()
+  })
+
+  it('post_artifact appends an artifact with defaults and logs it', async () => {
+    const h = createMcpToolHandlers(ctx, {})
+    const data = parseJson(await h.post_artifact({
+      kind: 'plan-md',
+      title: 'Migration plan',
+      data: { path: 'svc/migration-plan.md' },
+    })) as Record<string, unknown>
+
+    expect(data['kind']).toBe('plan-md')
+    expect(data['title']).toBe('Migration plan')
+    expect(data['phase']).toBe('coding') // defaulted from ctx.job.phase
+    expect(typeof data['id']).toBe('string')
+    expect((data['id'] as string).startsWith('art-')).toBe(true)
+
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith(
+      'job-mcp-test',
+      expect.objectContaining({
+        artifacts: expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'plan-md',
+            title: 'Migration plan',
+            phase: 'coding',
+            data: { path: 'svc/migration-plan.md' },
+          }),
+        ]),
+      }),
+    )
+
+    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[artifact] coding/plan-md: Migration plan',
+    )
+  })
+
+  it('post_artifact accepts an explicit phase override', async () => {
+    const h = createMcpToolHandlers(ctx, {})
+    const data = parseJson(await h.post_artifact({
+      phase: 'planning',
+      kind: 'plan-md',
+      title: 'Plan',
+      data: {},
+    })) as Record<string, unknown>
+
+    expect(data['phase']).toBe('planning')
+  })
+
+  it('post_artifact preserves existing artifacts', async () => {
+    const existing = {
+      id: 'art-1',
+      phase: 'planning',
+      kind: 'plan-md',
+      title: 'Earlier plan',
+      data: {},
+      createdBy: 'planning',
+      createdAt: '2026-01-01T00:00:00Z',
+    }
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeMockJob({ artifacts: [existing] }),
+    )
+
+    const h = createMcpToolHandlers(ctx, {})
+    await h.post_artifact({ kind: 'pr-link', title: 'PR #1', data: {} })
+
+    const patchArg = (ctx.stateBackend.updateJob as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    expect(patchArg.artifacts).toHaveLength(2)
+    expect(patchArg.artifacts[0]).toEqual(existing)
+    expect(patchArg.artifacts[1].kind).toBe('pr-link')
+  })
+
+  it('get_artifacts returns all artifacts when no phase given', async () => {
+    const artifacts = [
+      { id: 'a1', phase: 'planning', kind: 'plan-md', title: 'p', data: {}, createdBy: 'planning', createdAt: 't' },
+      { id: 'a2', phase: 'coding', kind: 'pr-link', title: 'pr', data: {}, createdBy: 'coding', createdAt: 't' },
+    ]
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeMockJob({ artifacts }),
+    )
+
+    const h = createMcpToolHandlers(ctx, {})
+    const data = parseJson(await h.get_artifacts({})) as Record<string, unknown>
+    expect(data['total']).toBe(2)
+    expect((data['artifacts'] as unknown[]).length).toBe(2)
+  })
+
+  it('get_artifacts filters by phase', async () => {
+    const artifacts = [
+      { id: 'a1', phase: 'planning', kind: 'plan-md', title: 'p', data: {}, createdBy: 'planning', createdAt: 't' },
+      { id: 'a2', phase: 'coding', kind: 'pr-link', title: 'pr', data: {}, createdBy: 'coding', createdAt: 't' },
+    ]
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeMockJob({ artifacts }),
+    )
+
+    const h = createMcpToolHandlers(ctx, {})
+    const data = parseJson(await h.get_artifacts({ phase: 'coding' })) as Record<string, unknown>
+    expect(data['total']).toBe(1)
+    expect((data['artifacts'] as unknown[])[0]).toMatchObject({ kind: 'pr-link' })
+  })
+
+  it('get_artifacts returns empty list when job has no artifacts field', async () => {
+    const jobNoArtifacts = makeMockJob()
+    delete (jobNoArtifacts as Record<string, unknown>)['artifacts']
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobNoArtifacts)
+
+    const h = createMcpToolHandlers(ctx, {})
+    const data = parseJson(await h.get_artifacts({})) as Record<string, unknown>
+    expect(data['total']).toBe(0)
   })
 })
 

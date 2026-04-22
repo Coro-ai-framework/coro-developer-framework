@@ -19,6 +19,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | `start_go_service` | Start a Go service for comparison testing |
 | `stop_go_service` | Stop a running Go service |
 | `compare_request` | Compare Go vs .NET responses (migration testing) |
+| `post_artifact` | Record the test-results file as a job artefact |
 | `escalate` | Escalate blockers to human |
 
 ## Inputs
@@ -87,11 +88,30 @@ After running tests, query Loki for any errors logged during the test run. Error
 
 Write the full test results JSON. Be precise about diffs — the Evaluator needs enough information to diagnose root causes without re-running tests.
 
-### 7. Record insights
+### 7. Post the test-results artefact
+
+After writing the JSON, call `mcp__a5__post_artifact`:
+
+```
+post_artifact({
+  kind: "test-results",
+  title: "Test results — {feature}",
+  data: {
+    path: "{service-name}/test-results.json",
+    passed: {n},
+    failed: {n},
+    skipped: {n}
+  }
+})
+```
+
+Use a path relative to the job working directory.
+
+### 8. Record insights
 
 If you encounter unexpected build errors, flaky tests, environment issues, or workarounds that future runs should know about, call `mcp__a5__add_insight` with the category, summary, and detail.
 
-### 8. Log progress
+### 9. Log progress
 
 Use `mcp__a5__log` to report: total tests, pass/fail counts, any critical findings.
 

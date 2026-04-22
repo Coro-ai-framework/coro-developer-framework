@@ -34,6 +34,8 @@ function rowToJob(row: JobRow): Job {
     features: (row.features ?? []) as FeatureItem[],
     featureLoopCount: row.featureLoopCount,
     prMappings: (row.prMappings ?? []) as PrMapping[],
+    interactive: ((row.params as Record<string, unknown>)?.['interactive'] === true),
+    artifacts: [],
     insights: (row.insights ?? []) as Insight[],
     tokenUsage: {
       inputTokens: row.tokenUsageInput,
@@ -130,6 +132,8 @@ export class PostgresStateBackend implements StateBackend {
       features: [],
       featureLoopCount: 0,
       prMappings,
+      interactive: input.params['interactive'] === true,
+      artifacts: [],
       insights: [],
       tokenUsage: emptyTokenUsage(),
       phaseUsage: [],

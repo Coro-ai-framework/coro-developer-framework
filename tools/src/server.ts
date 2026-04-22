@@ -1,13 +1,15 @@
 import crypto from 'crypto'
 import path from 'path'
+import fs from 'fs/promises'
 import express, { Express, Request, Response, NextFunction } from 'express'
 import swaggerUi from 'swagger-ui-express'
 import { Logger } from 'pino'
 import { Dispatcher } from './jobs/dispatcher'
 import type { StateBackend } from './state/backend'
-import { JobInput, JobType, isStoppedStatus } from './jobs/types'
+import { Artifact, JobInput, JobType, isStoppedStatus } from './jobs/types'
 import { Settings } from './config/settings'
 import { openApiSpec } from './openapi'
+import { loadWorkflowConfig } from './workflow-parser'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -46,6 +48,21 @@ function verifyHmac(rawBody: Buffer, signatureHeader: string | undefined, secret
   } catch {
     // Buffers were different lengths — signature is invalid
     return false
+  }
+}
+
+// ── MIME inference for artefact content ──────────────────────────────────────
+
+function inferMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase()
+  switch (ext) {
+    case '.md':   return 'text/markdown; charset=utf-8'
+    case '.json': return 'application/json; charset=utf-8'
+    case '.txt':  return 'text/plain; charset=utf-8'
+    case '.html': return 'text/html; charset=utf-8'
+    case '.yml':
+    case '.yaml': return 'text/yaml; charset=utf-8'
+    default:      return 'text/plain; charset=utf-8'
   }
 }
 
@@ -106,7 +123,7 @@ export function createServer(ctx: ServerContext): Express {
   // ── POST /jobs/migrate ─────────────────────────────────────────────────────
 
   app.post('/jobs/migrate', async (req: Request, res: Response) => {
-    const { repo, projects, reviewers, stagingUrl, serviceName } = req.body as Record<string, unknown>
+    const { repo, projects, reviewers, stagingUrl, serviceName, interactive } = req.body as Record<string, unknown>
 
     if (!repo || !projects || !reviewers || !stagingUrl || !serviceName) {
       res.status(400).json({
@@ -127,7 +144,10 @@ export function createServer(ctx: ServerContext): Express {
 
     const input: JobInput = {
       type: 'migration',
-      params: { repo, repoSlug: repo, projects, reviewers, stagingUrl, serviceName },
+      params: {
+        repo, repoSlug: repo, projects, reviewers, stagingUrl, serviceName,
+        interactive: interactive === true,
+      },
     }
 
     const job = await dispatcher.dispatch(input)
@@ -151,7 +171,11 @@ export function createServer(ctx: ServerContext): Express {
       const input: JobInput = {
         type: 'feature',
         triggerSource: 'jira',
-        params: { jiraTicketId: body['jiraTicketId'], serviceName: body['jiraTicketId'] },
+        params: {
+          jiraTicketId: body['jiraTicketId'],
+          serviceName: body['jiraTicketId'],
+          interactive: body['interactive'] === true,
+        },
       }
       const job = await dispatcher.dispatch(input)
       logger.info({ jobId: job.id, jiraTicketId: body['jiraTicketId'] }, 'Feature job dispatched (Jira)')
@@ -166,7 +190,7 @@ export function createServer(ctx: ServerContext): Express {
     }
 
     // CLI-triggered: repo, reviewers, description, serviceName required
-    const { repo, reviewers, description, serviceName, gitProvider } = body
+    const { repo, reviewers, description, serviceName, gitProvider, interactive } = body
     if (!repo || !reviewers || !description || !serviceName) {
       res.status(400).json({
         error: 'Missing required fields: repo, reviewers, description, serviceName (or provide jiraTicketId)',
@@ -183,7 +207,11 @@ export function createServer(ctx: ServerContext): Express {
 
     const input: JobInput = {
       type: 'feature',
-      params: { repo, repoSlug: repo, reviewers, description, serviceName, gitProvider: provider },
+      params: {
+        repo, repoSlug: repo, reviewers, description, serviceName,
+        gitProvider: provider,
+        interactive: interactive === true,
+      },
     }
 
     const job = await dispatcher.dispatch(input)
@@ -218,6 +246,8 @@ export function createServer(ctx: ServerContext): Express {
       phase: j.phase,
       currentFeature: j.currentFeature,
       triggerSource: j.triggerSource,
+      interactive: j.interactive ?? false,
+      artifactCount: (j.artifacts ?? []).length,
       prCount: j.prMappings.length,
       totalCostUsd: j.tokenUsage?.totalCostUsd ?? null,
       createdAt: j.createdAt,
@@ -236,7 +266,75 @@ export function createServer(ctx: ServerContext): Express {
       return
     }
 
-    res.json(job)
+    // Attach the parsed workflow phases so the dashboard can render a flowchart
+    // without a second round-trip. The MD parse is cheap and happens on demand.
+    let workflowPhases: Array<{ name: string; status: string; interactiveCheckpoint?: boolean }> | null = null
+    if (job.workflowPath) {
+      try {
+        const config = await loadWorkflowConfig(job.workflowPath, settings.paths.a5aiDir, logger)
+        if (config) {
+          workflowPhases = config.phases.map(p => ({
+            name: p.name,
+            status: p.status,
+            ...(p.interactiveCheckpoint ? { interactiveCheckpoint: true } : {}),
+          }))
+        }
+      } catch (err) {
+        logger.warn({ err, jobId: job.id }, 'Could not load workflow config for job detail response')
+      }
+    }
+
+    res.json({ ...job, workflowPhases })
+  })
+
+  // ── GET /jobs/:jobId/artifacts/:artifactId/content ─────────────────────────
+  // Read-only endpoint that returns the content of an artefact whose `data.path`
+  // is a file inside the job working directory. Used by the dashboard to render
+  // plan-md, report-md, and other file-based artefacts in a modal.
+  //
+  // Security: the resolved path MUST stay inside {workingDir}/{jobId}/.
+
+  app.get('/jobs/:jobId/artifacts/:artifactId/content', async (req: Request, res: Response) => {
+    const jobId = req.params['jobId'] as string
+    const artifactId = req.params['artifactId'] as string
+
+    const job = await stateBackend.getJob(jobId)
+    if (!job) {
+      res.status(404).json({ error: `Job not found: ${jobId}` })
+      return
+    }
+
+    const artifact: Artifact | undefined = (job.artifacts ?? []).find(a => a.id === artifactId)
+    if (!artifact) {
+      res.status(404).json({ error: `Artifact not found: ${artifactId}` })
+      return
+    }
+
+    const rawPath = artifact.data?.['path']
+    if (typeof rawPath !== 'string' || !rawPath.trim()) {
+      res.status(400).json({ error: 'Artifact has no `data.path` to read' })
+      return
+    }
+
+    // Resolve relative to the job's working directory and reject anything that
+    // escapes it (via .., absolute paths pointing elsewhere, symlinks, etc.).
+    const jobWorkingDir = path.resolve(settings.paths.workingDir, jobId)
+    const resolved = path.resolve(jobWorkingDir, rawPath)
+    if (!resolved.startsWith(jobWorkingDir + path.sep) && resolved !== jobWorkingDir) {
+      logger.warn({ jobId, artifactId, rawPath, resolved }, 'Artifact path escape attempt blocked')
+      res.status(400).json({ error: 'Artifact path is outside the job working directory' })
+      return
+    }
+
+    try {
+      const content = await fs.readFile(resolved, 'utf-8')
+      const mime = inferMimeType(resolved)
+      res.setHeader('Content-Type', mime)
+      res.send(content)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.status(404).json({ error: `Could not read artifact content: ${msg}` })
+    }
   })
 
   // ── GET /jobs/:jobId/stream ────────────────────────────────────────────────

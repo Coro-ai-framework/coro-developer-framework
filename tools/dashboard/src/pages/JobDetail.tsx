@@ -1,11 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useJob } from '../hooks/useJob'
 import { useJobStream } from '../hooks/useJobStream'
 import LogViewer from '../components/LogViewer'
 import ConnectionIndicator from '../components/ConnectionIndicator'
 import StatusBadge from '../components/StatusBadge'
-import type { TokenUsage, PhaseUsage } from '../types'
+import WorkflowFlow, { computePhaseState } from '../components/WorkflowFlow'
+import ArtifactLink from '../components/ArtifactLink'
+import ApprovalBox from '../components/ApprovalBox'
+import type { TokenUsage, PhaseUsage, WorkflowPhase } from '../types'
 
 function timeAgo(iso: string): string {
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
@@ -180,8 +183,6 @@ const NON_RUNNING_STATUSES = new Set([
   'complete', 'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge', 'queued',
 ])
 
-const WORKFLOW_PHASES = ['planning', 'coding', 'review', 'testing', 'evaluation'] as const
-
 export default function JobDetail() {
   const { jobId } = useParams<{ jobId: string }>()
   const { job, loading, error, refetch } = useJob(jobId)
@@ -194,6 +195,38 @@ export default function JobDetail() {
   const [messageText, setMessageText] = useState('')
   const [sendingMessage, setSendingMessage] = useState(false)
   const [messageError, setMessageError] = useState<string | null>(null)
+  const [selectedPhase, setSelectedPhase] = useState<string | null>(null)
+
+  // When the job's live phase changes (auto-advance, resume, etc.), follow it
+  // in the flowchart so the selected panel reflects the current work.
+  useEffect(() => {
+    if (!job) return
+    setSelectedPhase(prev => (prev === null ? job.phase : prev))
+  }, [job])
+
+  // Auto-refresh the job object periodically so artefact posts and status
+  // transitions show up without a manual reload. Cheap — single GET.
+  useEffect(() => {
+    if (!job) return
+    if (NON_RUNNING_STATUSES.has(job.status) && job.status !== 'awaiting-developer-input') return
+    const interval = setInterval(() => { void refetch() }, 4000)
+    return () => clearInterval(interval)
+  }, [job, refetch])
+
+  const workflowPhases: WorkflowPhase[] = useMemo(() => {
+    if (job?.workflowPhases && job.workflowPhases.length > 0) return job.workflowPhases
+    // Fallback: derive from the phaseUsage timeline + current phase.
+    if (!job) return []
+    const seen: WorkflowPhase[] = []
+    const names = new Set<string>()
+    for (const p of job.phaseUsage ?? []) {
+      if (!names.has(p.phase)) { names.add(p.phase); seen.push({ name: p.phase, status: p.phase }) }
+    }
+    if (!names.has(job.phase)) {
+      seen.push({ name: job.phase, status: job.phase })
+    }
+    return seen
+  }, [job])
 
   const handleResume = async (fromPhase?: string, shouldClearSession = false) => {
     if (!jobId) return
@@ -222,20 +255,26 @@ export default function JobDetail() {
     }
   }
 
+  const postMessage = async (text: string): Promise<void> => {
+    if (!jobId) throw new Error('No job ID')
+    const res = await fetch(`/jobs/${jobId}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    })
+    if (!res.ok) {
+      const data = await res.json() as { error?: string }
+      throw new Error(data.error ?? `HTTP ${res.status}`)
+    }
+    await refetch()
+  }
+
   const handleSendMessage = async () => {
     if (!jobId || !messageText.trim()) return
     setSendingMessage(true)
     setMessageError(null)
     try {
-      const res = await fetch(`/jobs/${jobId}/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: messageText.trim() }),
-      })
-      if (!res.ok) {
-        const data = await res.json() as { error?: string }
-        throw new Error(data.error ?? `HTTP ${res.status}`)
-      }
+      await postMessage(messageText.trim())
       setMessageText('')
     } catch (err) {
       setMessageError(err instanceof Error ? err.message : 'Failed to send')
@@ -270,6 +309,13 @@ export default function JobDetail() {
     )
   }
 
+  const currentPhaseName = selectedPhase ?? job.phase
+  const phaseArtifacts = (job.artifacts ?? []).filter(a => a.phase === currentPhaseName)
+  const phaseUsageForSelected = (job.phaseUsage ?? []).find(p => p.phase === currentPhaseName)
+  const phaseState = workflowPhases.length > 0
+    ? computePhaseState(currentPhaseName, workflowPhases, job)
+    : 'pending'
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       {/* Breadcrumb + header */}
@@ -280,11 +326,26 @@ export default function JobDetail() {
 
         <div className="flex items-start justify-between mt-2">
           <div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-lg font-semibold text-white">
                 {job.params['serviceName'] as string ?? job.id}
               </h1>
               <StatusBadge status={job.status} />
+              {job.interactive ? (
+                <span
+                  title="This job pauses between phases for developer approval"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-950/40 text-amber-300 border border-amber-800"
+                >
+                  ✋ Interactive
+                </span>
+              ) : (
+                <span
+                  title="This job runs autonomously without developer approval checkpoints"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-700"
+                >
+                  ▶ Non-interactive
+                </span>
+              )}
             </div>
             <p className="text-xs text-zinc-500 mt-1 font-mono">{job.id}</p>
           </div>
@@ -322,8 +383,8 @@ export default function JobDetail() {
                         className="w-full px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500"
                       >
                         <option value="">Current phase ({job.phase})</option>
-                        {WORKFLOW_PHASES.map(p => (
-                          <option key={p} value={p}>{p}{p === job.phase ? ' (current)' : ''}</option>
+                        {workflowPhases.map(p => (
+                          <option key={p.name} value={p.name}>{p.name}{p.name === job.phase ? ' (current)' : ''}</option>
                         ))}
                       </select>
                     </div>
@@ -375,6 +436,79 @@ export default function JobDetail() {
         </div>
       )}
 
+      {/* Workflow flowchart */}
+      <div className="bg-zinc-900/40 border border-zinc-800 rounded-lg p-3 mb-5">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Workflow</h3>
+          <span className="text-xs text-zinc-500">Tap a phase to see its artefacts and logs</span>
+        </div>
+        <WorkflowFlow
+          job={job}
+          phases={workflowPhases}
+          selectedPhase={selectedPhase}
+          onSelectPhase={setSelectedPhase}
+        />
+      </div>
+
+      {/* Approval + rework UI — only when parked waiting for developer */}
+      {job.status === 'awaiting-developer-input' && (
+        <div className="mb-5">
+          <ApprovalBox job={job} onSend={postMessage} />
+        </div>
+      )}
+
+      {/* Selected phase panel */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 mb-5">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-xs text-zinc-500 uppercase tracking-wider">Phase</div>
+            <div className="text-base font-semibold text-zinc-100">{currentPhaseName}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-xs text-zinc-500 uppercase tracking-wider">State</div>
+            <div className="text-sm font-medium text-zinc-200 capitalize">{phaseState.replace('-', ' ')}</div>
+          </div>
+        </div>
+
+        <div>
+          <h4 className="text-xs font-medium text-zinc-400 uppercase tracking-wider mb-2">
+            Artefacts{phaseArtifacts.length > 0 && ` (${phaseArtifacts.length})`}
+          </h4>
+          {phaseArtifacts.length === 0 ? (
+            <p className="text-xs text-zinc-500 italic">
+              No artefacts posted for this phase yet.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {phaseArtifacts.map(a => (
+                <ArtifactLink key={a.id} jobId={job.id} artifact={a} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {phaseUsageForSelected && (
+          <div className="mt-4 pt-3 border-t border-zinc-800 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div>
+              <div className="text-xs text-zinc-500">Input</div>
+              <div className="text-sm text-zinc-200 tabular-nums">{formatTokens(phaseUsageForSelected.inputTokens)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-zinc-500">Output</div>
+              <div className="text-sm text-zinc-200 tabular-nums">{formatTokens(phaseUsageForSelected.outputTokens)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-zinc-500">Duration</div>
+              <div className="text-sm text-zinc-200 tabular-nums">{formatDuration(phaseUsageForSelected.durationMs)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-zinc-500">Turns</div>
+              <div className="text-sm text-zinc-200 tabular-nums">{phaseUsageForSelected.numTurns}</div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
@@ -382,7 +516,7 @@ export default function JobDetail() {
           <div className="text-sm font-medium text-zinc-200 capitalize">{job.type}</div>
         </div>
         <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-          <div className="text-xs text-zinc-500 mb-0.5">Phase</div>
+          <div className="text-xs text-zinc-500 mb-0.5">Current phase</div>
           <div className="text-sm font-medium text-zinc-200">{job.phase}</div>
         </div>
         <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
@@ -394,13 +528,6 @@ export default function JobDetail() {
           <div className="text-sm font-medium text-zinc-200">{timeAgo(job.updatedAt)}</div>
         </div>
       </div>
-
-      {/* Token usage */}
-      {job.tokenUsage && (job.tokenUsage.inputTokens > 0 || job.tokenUsage.outputTokens > 0) && (
-        <div className="mb-5">
-          <TokenUsageCard usage={job.tokenUsage} />
-        </div>
-      )}
 
       {/* Features */}
       {job.features?.length > 0 && (
@@ -417,8 +544,8 @@ export default function JobDetail() {
         </div>
       )}
 
-      {/* Awaiting event */}
-      {job.awaitingEvent && (
+      {/* Awaiting event — show non-interactive waits here; interactive is handled by ApprovalBox above */}
+      {job.awaitingEvent && job.status !== 'awaiting-developer-input' && (
         <div className="mb-5 p-3 rounded-lg bg-amber-950/30 border border-amber-800">
           <div className="text-xs text-amber-400 font-medium mb-1">Awaiting Event</div>
           <p className="text-sm text-amber-200">{job.awaitingEvent}</p>
@@ -435,8 +562,8 @@ export default function JobDetail() {
         <LogViewer lines={lines} />
       </div>
 
-      {/* Message input */}
-      {canSendMessage && (
+      {/* Free-form message to a running agent (not parked) */}
+      {canSendMessage && job.status !== 'awaiting-developer-input' && (
         <div className="mb-5">
           {messageError && (
             <div className="mb-2 p-2 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-xs flex items-center justify-between">
@@ -464,6 +591,13 @@ export default function JobDetail() {
               {sendingMessage ? 'Sending...' : 'Send'}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Token usage — collapsed by default at the bottom */}
+      {job.tokenUsage && (job.tokenUsage.inputTokens > 0 || job.tokenUsage.outputTokens > 0) && (
+        <div className="mb-5">
+          <TokenUsageCard usage={job.tokenUsage} />
         </div>
       )}
 

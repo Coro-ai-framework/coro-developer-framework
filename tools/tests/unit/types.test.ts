@@ -7,6 +7,7 @@ import {
   STATUS_FAILED,
   STATUS_AWAITING_PLAN_APPROVAL,
   STATUS_AWAITING_PR_MERGE,
+  STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_CODING,
   isTerminalStatus,
   isStoppedStatus,
@@ -36,6 +37,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    interactive: false,
+    artifacts: [],
     insights: [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],
@@ -109,6 +112,7 @@ describe('isParkingStatus', () => {
   it.each([
     [STATUS_AWAITING_PLAN_APPROVAL, true],
     [STATUS_AWAITING_PR_MERGE, true],
+    [STATUS_AWAITING_DEVELOPER_INPUT, true],
     [STATUS_ESCALATED, true],
     [STATUS_FAILED, true],
   ])('returns true for parking status "%s"', (status, expected) => {

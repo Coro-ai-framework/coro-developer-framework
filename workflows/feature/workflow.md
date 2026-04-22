@@ -12,11 +12,13 @@ phases:
     agent: agents/planner.md
     model: planning
     status: planning
+    interactive_checkpoint: true
 
   - name: coding
     agent: agents/coder.md
     model: coding
     status: coding
+    interactive_checkpoint: true
     subagents:
       - name: code-reviewer
         agent: agents/pr-reviewer.md
@@ -27,16 +29,19 @@ phases:
     agent: agents/pr-reviewer.md
     model: coding
     status: reviewing
+    interactive_checkpoint: true
 
   - name: testing
     agent: agents/tester.md
     model: coding
     status: testing
+    interactive_checkpoint: true
 
   - name: evaluation
     agent: agents/evaluator.md
     model: planning
     status: evaluating
+    interactive_checkpoint: true
 
 overrides:
   jira:
@@ -72,6 +77,8 @@ The Planner agent detects the repository's language (from `go.mod`, `package.jso
 Feature state is tracked in Redis via the `features[]` array on the Job object. The Planner calls `set_features` to register the feature list. The Evaluator manages the feature loop — if multiple features exist, it uses `goto_phase("coding")` and `request_new_session` to cycle through them.
 
 ## Phases
+
+> **Checkpoint reminder:** Phases flagged `interactive_checkpoint: true` expect you — the agent — to call `await_event({ eventName: "developer-input: <reason>" })` at the end of the phase when `job.interactive` is `true`. The runner does not auto-park. See `.claude/CLAUDE.md` → "Interactive mode — agent-driven checkpoints".
 
 ---
 

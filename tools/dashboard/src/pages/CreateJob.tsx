@@ -56,6 +56,7 @@ export default function CreateJob() {
   const [jobType, setJobType] = useState<JobType>('migration')
   const [migrate, setMigrate] = useState<MigrateForm>(EMPTY_MIGRATE)
   const [feature, setFeature] = useState<FeatureForm>(EMPTY_FEATURE)
+  const [interactive, setInteractive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -88,12 +89,13 @@ export default function CreateJob() {
           projects: splitCsv(migrate.projects),
           reviewers: splitCsv(migrate.reviewers),
           stagingUrl: migrate.stagingUrl.trim(),
+          interactive,
         }
       } else {
         endpoint = '/jobs/feature'
         // Jira mode: only jiraTicketId required
         if (feature.jiraTicketId.trim()) {
-          body = { jiraTicketId: feature.jiraTicketId.trim() }
+          body = { jiraTicketId: feature.jiraTicketId.trim(), interactive }
         } else {
           body = {
             repo: feature.repo.trim(),
@@ -101,6 +103,7 @@ export default function CreateJob() {
             description: feature.description.trim(),
             reviewers: splitCsv(feature.reviewers),
             gitProvider: feature.gitProvider,
+            interactive,
           }
         }
       }
@@ -318,6 +321,26 @@ export default function CreateJob() {
             </div>
           </>
         )}
+
+        {/* Interactive mode toggle — shared by both workflows */}
+        <div className="rounded-lg border border-zinc-800 p-4 bg-zinc-900/40">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              name="interactive"
+              checked={interactive}
+              onChange={e => setInteractive(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
+            />
+            <div>
+              <div className="text-sm font-medium text-zinc-200">Interactive mode</div>
+              <div className="text-xs text-zinc-500 mt-0.5">
+                Pause for my approval between phases. The job will park after each interactive
+                checkpoint and wait until I either approve it or send a message asking for changes.
+              </div>
+            </div>
+          </label>
+        </div>
 
         {error && (
           <div className="p-3 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-sm">

@@ -27,19 +27,30 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 | `log` | Report progress to developers (call frequently) |
 | `set_job_params` | Register detected language and other params for downstream agents |
 | `set_features` | Register ordered feature list with job system |
+| `post_artifact` | Record the plan file as a job artefact so developers can open it from the dashboard |
 | `add_insight` | Record workarounds, patterns, or unexpected findings |
 | `escalate` | Escalate blockers to human |
 
 ## Step-by-step procedure
 
 ### 1. Read memory
-Read `memory/MEMORY.md` and all referenced files before planning.
+Call `read_memory` (no args) to fetch `MEMORY.md`, every linked file, and any pending proposals. The system prompt does not carry memory — pull it yourself before planning.
 
-### 2. Analyze inputs
+### 2. Confirm the git provider before touching the repo
+
+**Before cloning, reading, or querying anything on the repo**, check `params.gitProvider` in the job context:
+
+- `params.gitProvider === "github"` → clone via GitHub (see Infrastructure section of your always-loaded context) and use `gh_*` tools later
+- `params.gitProvider === "bitbucket"` → clone via BitBucket and use `bb_*` tools later
+- `params.gitProvider` is missing or unset → **do not guess**. Call `mcp__a5__escalate` asking the developer to confirm the provider, or pause via `await_event({ eventName: "developer-input: confirm git provider" })`. Never default to BitBucket silently — it wastes a clone attempt and produces the wrong conventions.
+
+Log which provider you selected so it's visible in `a5 logs`.
+
+### 3. Analyze inputs
 - For migration jobs: read all analyzer output files, understand the full service contract, dependencies, and traffic patterns
 - For feature jobs: read the feature spec or description, understand the scope and acceptance criteria
 
-### 3. Detect the target language
+### 4. Detect the target language
 
 Inspect the target repository to determine the language:
 - `go.mod` → `golang`
@@ -52,7 +63,7 @@ For migration jobs, this is the **target** language (what you're migrating TO). 
 
 Call `mcp__a5__set_job_params` with `{ language: "<detected-language>" }` so downstream phases load the correct conventions automatically.
 
-### 4. Produce the implementation plan
+### 5. Produce the implementation plan
 
 Follow the planning heuristics from the planning skill you invoked. The plan must be a sequenced list of **features** (logical groups of work). Each feature becomes a separate git branch and pull request.
 
@@ -64,15 +75,38 @@ Include for each feature:
 - Acceptance criteria
 - Build and test commands
 
-### 5. Register features with the job
+### 6. Register features with the job
 
 After writing the plan, call `mcp__a5__set_features` with the ordered list of feature names. This registers the features with the job system so all downstream agents can call `get_features` to track progress.
 
-### 6. Record insights
+### 7. Post the plan artefact
+
+Call `mcp__a5__post_artifact` so the plan appears on the dashboard:
+
+- Migration jobs:
+  ```
+  post_artifact({
+    kind: "plan-md",
+    title: "Migration plan — {service-name}",
+    data: { path: "{service-name}/migration-plan.md" }
+  })
+  ```
+- Feature jobs:
+  ```
+  post_artifact({
+    kind: "implementation-plan-md",
+    title: "Implementation plan — {feature-name}",
+    data: { path: "implementation-plan.md" }
+  })
+  ```
+
+Paths must be relative to the job working directory.
+
+### 8. Record insights
 
 If you discovered anything through trial-and-error — authentication workarounds, repo slug mismatches, environment quirks, API behavior that differs from documentation — call `mcp__a5__add_insight` with the category, a one-line summary, and full context. The Evaluator will review these and decide whether to create a self-improvement proposal.
 
-### 7. Log progress
+### 9. Log progress
 
 Use `mcp__a5__log` to report: how many features were identified, risk distribution, any significant gaps or concerns.
 

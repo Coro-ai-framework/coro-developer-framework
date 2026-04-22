@@ -16,6 +16,48 @@
 //   5. Waits for job dispatch commands from the CLI or cloud
 
 import 'dotenv/config'
+
+// ── Enable SDK parent-side debug logging BEFORE the SDK is imported ───────
+//
+// The Claude Agent SDK has a parent-side debug logger (`L6` in the
+// bundled sdk.mjs) that emits lines like
+//     [Query.connectSdkMcpServer] Failed to connect MCP server 'a5': …
+//     [Query.sendMcpServerMessageToCli] Transport write failed: …
+// These are the definitive signal for in-process MCP registration
+// failures. By default they are dropped entirely unless:
+//
+//   1. `DEBUG_SDK=1` (or `DEBUG`) is in the parent process env — enables
+//      the logger at all. The SDK memoises this check on first import,
+//      so we MUST set it before any `import` statement executes.
+//   2. `--debug-to-stderr` is in `process.argv` — redirects logger output
+//      from a rotating file (~/.claude/debug/<pid>.txt) to stderr, which
+//      is what our monkey-patch below can see. Without this flag L6
+//      writes to that file and we'd have to tail it separately.
+//
+// The stderr monkey-patch tees any line that mentions MCP/sdk-server
+// concerns into stdout tagged `[sdk-parent-stderr] …` so it shows up
+// in the runner's pino-pretty output next to our normal logs.
+if (!process.env.DEBUG_SDK && !process.env.DEBUG) {
+  process.env.DEBUG_SDK = '1'
+}
+if (!process.argv.includes('--debug-to-stderr') && !process.argv.includes('-d2e')) {
+  process.argv.push('--debug-to-stderr')
+}
+
+{
+  const origWrite = process.stderr.write.bind(process.stderr) as typeof process.stderr.write
+  const interestingRx = /(Query\.connectSdkMcpServer|Query\.sendMcpServerMessageToCli|mcp_set_servers|mcp_message|sdkMcpServer|Transport write failed|Failed to connect MCP)/i
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+    try {
+      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8')
+      if (interestingRx.test(text)) {
+        process.stdout.write(`[sdk-parent-stderr] ${text.trim()}\n`)
+      }
+    } catch { /* never break stderr */ }
+    return origWrite(chunk as string, ...(rest as [BufferEncoding?, ((err?: Error | null) => void)?]))
+  }) as typeof process.stderr.write
+}
+
 import pino from 'pino'
 import fs from 'fs'
 import {

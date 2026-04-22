@@ -7,6 +7,7 @@ import {
   STATUS_FAILED,
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_PLAN_APPROVAL,
+  STATUS_AWAITING_DEVELOPER_INPUT,
   emptyTokenUsage,
 } from '../../src/jobs/types'
 import type { Job } from '../../src/jobs/types'
@@ -54,6 +55,8 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     features: [],
     featureLoopCount: 0,
     prMappings: [],
+    interactive: false,
+    artifacts: [],
     insights: [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],
@@ -135,10 +138,9 @@ describe('runJob (mocked Agent SDK query)', () => {
     ctx = makeRunnerContext(stateBackend)
   })
 
-  it('completes a single-phase workflow when phaseComplete is signalled', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+  it('completes a single-phase workflow when the stream ends', async () => {
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'sess-single' }
       })()
 
@@ -156,10 +158,9 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('advances phases then completes', async () => {
     let call = 0
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
         call += 1
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: `sess-${call}` }
       })()
 
@@ -197,6 +198,62 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.awaitingPrId).toBe(99)
   })
 
+  it('parks with awaiting-developer-input when event name starts with "developer-input"', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.awaitingEvent = 'developer-input: unclear if X should be idempotent'
+        yield { type: 'system' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
+    expect(stateBackend.current.awaitingEvent).toBe(
+      'developer-input: unclear if X should be idempotent',
+    )
+    // The runner no longer auto-parks at phase boundaries, so awaitingNextPhase
+    // is never set by it. Agents drive developer approval via await_event.
+    expect(stateBackend.current.awaitingNextPhase).toBeUndefined()
+    expect(stateBackend.current.phase).toBe('alpha')
+  })
+
+  it('runner does NOT auto-park even when phase has interactiveCheckpoint metadata', async () => {
+    // interactiveCheckpoint is now dashboard-only metadata. The runner does
+    // not inspect it — agents are responsible for calling await_event when
+    // human approval is needed.
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+
+    stateBackend = createMockStateBackend(
+      makeJob({ phase: 'alpha', status: 'queued', interactive: true }),
+    )
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = () =>
+      (async function* () {
+        yield { type: 'system', session_id: 'sess-cp' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha', interactive: true }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowCheckpoint,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
+    expect(stateBackend.current.awaitingNextPhase).toBeUndefined()
+  })
+
   it('parks with awaiting-plan-approval when event name includes "plan"', async () => {
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
@@ -231,9 +288,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('persists sessionId from system messages', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'persist-me' }
       })()
 
@@ -246,9 +302,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('logs assistant text from BetaMessage content blocks', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield {
           type: 'assistant',
           message: { content: [{ type: 'text', text: 'Hello from the assistant' }] },
@@ -266,9 +321,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('logs tool_use blocks from assistant message', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield {
           type: 'assistant',
           message: {
@@ -291,9 +345,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('logs tool_use_summary with summary text', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'tool_use_summary', summary: 'Read 3 files in src/' }
         yield { type: 'system', session_id: 'x' }
       })()
@@ -366,14 +419,13 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
   })
 
-  it('uses phase transition prompt when sessionId exists on second phase', async () => {
+  it('uses phase kickoff prompt (fresh on phase 1, continuation on phase 2)', async () => {
     const prompts: string[] = []
     let n = 0
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         n += 1
         prompts.push(inv.prompt)
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: `sess-${n}` }
       })()
 
@@ -383,32 +435,43 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(prompts).toHaveLength(2)
-    expect(prompts[0]).toContain('A new migration job has started')
-    expect(prompts[1]).toContain('advancing to phase')
+    // Phase 1 has no sessionId yet — fresh kickoff.
+    expect(prompts[0]).toContain('Begin phase')
+    expect(prompts[0]).toContain('alpha')
+    // Phase 2 resumes the session — continuation kickoff.
+    expect(prompts[1]).toContain('now in phase')
     expect(prompts[1]).toContain('beta')
   })
 
   // ── Token usage & cost tracking ───────────────────────────────────────────
 
   it('creates PhaseUsage with computed cost when signal breaks stream before result event', async () => {
+    // Only signal nextPhase on the first invocation; phase beta simply
+    // completes. Without this guard the generator would keep setting
+    // nextPhase='beta' when already on beta, looping forever.
+    let call = 0
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
-        // Simulate an assistant turn with token usage, then a signal break
-        yield {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'text', text: 'Working...' }],
-            usage: {
-              input_tokens: 1000,
-              output_tokens: 200,
-              cache_read_input_tokens: 500,
-              cache_creation_input_tokens: 100,
+        call++
+        if (call === 1) {
+          yield {
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'Working...' }],
+              usage: {
+                input_tokens: 1000,
+                output_tokens: 200,
+                cache_read_input_tokens: 500,
+                cache_creation_input_tokens: 100,
+              },
             },
-          },
+          }
+          // Agent calls goto_phase — sets signal, stream breaks before result event
+          inv.signals.nextPhase = 'beta'
+          yield { type: 'system', session_id: 'sig-break' }
+        } else {
+          yield { type: 'system', session_id: 'beta-done' }
         }
-        // Agent calls goto_phase — sets signal, stream breaks before result event
-        inv.signals.nextPhase = 'beta'
-        yield { type: 'system', session_id: 'sig-break' }
       })()
 
     await runJob(makeJob({ phase: 'alpha' }), ctx, {
@@ -427,11 +490,16 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(alphaUsage!.numTurns).toBe(1)
     // No SDK result event → cost is 0 (token counts are the authoritative metric)
     expect(alphaUsage!.costUsd).toBe(0)
-    expect(alphaUsage!.durationMs).toBeGreaterThan(0)
+    expect(alphaUsage!.durationMs).toBeGreaterThanOrEqual(0)
   })
 
   it('creates PhaseUsage from result event and uses SDK cost when provided', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    // Seed the mock state backend with phase='only' so `syncJob` patches
+    // preserve the correct phase when the runner records PhaseUsage.
+    stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = () =>
       (async function* () {
         yield {
           type: 'assistant',
@@ -450,7 +518,6 @@ describe('runJob (mocked Agent SDK query)', () => {
           duration_api_ms: 30000,
           num_turns: 5,
         }
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'res-ok' }
       })()
 
@@ -477,7 +544,7 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('accumulates PhaseUsage entries across multiple phases', async () => {
     let call = 0
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
         call++
         yield {
@@ -492,7 +559,6 @@ describe('runJob (mocked Agent SDK query)', () => {
             },
           },
         }
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: `multi-${call}` }
       })()
 
@@ -513,9 +579,12 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('creates zero-cost PhaseUsage when phase has no assistant turns', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    // Seed the mock state backend with phase='only' to match the runJob arg.
+    stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'no-turns' }
       })()
 

@@ -50,3 +50,12 @@
 .animate-fade-in {
   animation: fade-in 0.15s ease-out;
 }
+
+@keyframes pulse-slow {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(245 158 11 / 0.35); }
+  50% { box-shadow: 0 0 0 6px rgb(245 158 11 / 0); }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 2.5s ease-in-out infinite;
+}

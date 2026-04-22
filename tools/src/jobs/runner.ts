@@ -1,4 +1,11 @@
-import { query, type McpSdkServerConfig, type Query } from '@anthropic-ai/claude-agent-sdk'
+import {
+  query,
+  type HookCallback,
+  type HookJSONOutput,
+  type McpSdkServerConfig,
+  type Query,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk'
 import { lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
@@ -25,9 +32,10 @@ import {
   Job,
   STATUS_COMPLETE,
   STATUS_FAILED,
+  STATUS_AWAITING_PLAN_APPROVAL,
+  STATUS_AWAITING_PR_MERGE,
+  STATUS_AWAITING_DEVELOPER_INPUT,
   isTerminalStatus,
-  jobServiceName,
-  jobJiraTicketId,
   TokenUsage,
   PhaseUsage,
   emptyTokenUsage,
@@ -85,6 +93,27 @@ export interface RunJobOptions {
   onQueryEnd?: (jobId: string) => void
 }
 
+// ── Default tool list ────────────────────────────────────────────────────────
+//
+// Used when the workflow YAML doesn't specify a per-phase `tools:` list.
+// Keep permissive — individual phases can narrow via the workflow file.
+// Note: `Agent` is injected dynamically when the phase has subagents.
+const DEFAULT_ALLOWED_TOOLS: readonly string[] = [
+  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
+  'Skill',
+  'mcp__a5__*',
+]
+
+/**
+ * Phases allowed to call `propose_change`. The evaluator is the canonical
+ * proposer (it reviews insights, then drafts changes). Other phases can
+ * record observations via `add_insight` — the evaluator reviews and
+ * promotes them. Agents reading the system prompt see the same rule in
+ * `.claude/CLAUDE.md`; the hook enforces it at runtime so a well-meaning
+ * planner can't open a PR mid-plan.
+ */
+const PROPOSE_CHANGE_ALLOWED_PHASES = new Set(['evaluation'])
+
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 /**
@@ -138,6 +167,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   const claudeCodeCliPath = resolveClaudeCodeCliPath(process.cwd())
   ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
 
+  // Pull a5-ai ONCE at the start of the job — not per phase. The prompt
+  // builder used to do this but that meant a network call on every phase,
+  // every rework, every dev-input round trip. Workflows are defined on disk
+  // and only change on human action — one pull per job is plenty.
+  try {
+    await ctx.gitClient.pull(settings.paths.a5aiDir)
+    logger.debug({ jobId: liveJob.id, a5aiDir: settings.paths.a5aiDir }, 'Pulled latest a5-ai')
+  } catch (err) {
+    logger.warn({ err }, 'Could not pull a5-ai — using cached version on disk')
+  }
+
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
@@ -148,7 +188,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       resetSignals(signals)
       const mcpServer = createA5McpServer(toolCtx, signals)
 
-      const systemPrompt = await buildSystemPrompt(liveJob, settings, ctx.gitClient, logger)
+      const systemPrompt = await buildSystemPrompt(liveJob, settings, logger)
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
@@ -157,13 +197,33 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       await stateBackend.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
       const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, liveJob.phase) : null
 
-      // pendingPrompt is set by the dispatcher when a webhook event resumes the job.
-      // It carries the event content the agent needs to act on.
-      const prompt = liveJob.pendingPrompt
-        ? liveJob.pendingPrompt
-        : liveJob.sessionId
-          ? buildPhaseTransitionMessage(liveJob.phase, liveJob)
-          : buildInitialMessage(liveJob)
+      // Minimal per-phase prompt. The system prompt already carries the
+      // workflow, agent role, and job state; we just need a short nudge to
+      // kick the agent into action for this phase. When the dispatcher
+      // injected a pendingPrompt (webhook event or developer message), use
+      // that verbatim instead — it carries the event payload the agent
+      // needs to react to.
+      const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(liveJob)
+
+      // Wrap the prompt as a one-message async iterable (NOT a plain string).
+      //
+      // Why: the Agent SDK's `query()` inspects `typeof prompt === "string"`
+      // and, if true, flags the Query as `isSingleUserTurn`. In single-turn
+      // mode the SDK:
+      //   - closes stdin after the first result message,
+      //   - skips the bidirectional IPC channel, and crucially
+      //   - never delivers the `initialize` control request that registers
+      //     in-process SDK MCP servers (`createSdkMcpServer`).
+      //
+      // Passing an `AsyncIterable<SDKUserMessage>` flips the SDK to
+      // bidirectional mode, so `mcp__a5__*` tools actually register.
+      const prompt = (async function* (): AsyncIterable<SDKUserMessage> {
+        yield {
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text: promptText }] },
+          parent_tool_use_id: null,
+        }
+      })()
 
       // Clear pendingPrompt immediately so it isn't replayed on the next turn.
       if (liveJob.pendingPrompt) {
@@ -192,6 +252,39 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         'Starting Agent SDK query for phase',
       )
 
+      // Per-phase allowedTools: workflow YAML takes precedence; otherwise
+      // fall back to the permissive default. `Agent` is appended when the
+      // phase has subagents so the model can actually delegate.
+      const baseTools = phaseConf?.tools ?? DEFAULT_ALLOWED_TOOLS
+      const allowedTools = agents && !baseTools.includes('Agent')
+        ? [...baseTools, 'Agent']
+        : [...baseTools]
+
+      // SDK hooks replace the "prose guard rails" that used to live in agent
+      // MDs (e.g. "only the evaluator may call propose_change"). The hook
+      // returns `permissionDecision: 'deny'` — the SDK then rejects the tool
+      // use with the reason visible to the model, which course-corrects.
+      const hooks = buildPhaseHooks({
+        liveJobRef: () => liveJob,
+        workingDir,
+        a5aiDir: settings.paths.a5aiDir,
+        logger,
+      })
+
+      // `resume: sessionId` carries the previous transcript forward. This is
+      // cheap (no rebuilt context) and usually desirable. It is opt-out via
+      // `A5_DISABLE_SESSION_RESUME=1` because the SDK historically had a bug
+      // where in-process MCP servers didn't survive resume
+      // (see anthropics/claude-agent-sdk-typescript#122). If you see
+      // `mcp__a5__*` tools disappearing after a rework turn, set that env
+      // var and the runner falls back to fresh-session-per-phase behaviour.
+      //
+      // Note: even with resume, the system prompt is re-sent every call —
+      // so phase transitions still update the agent's role correctly.
+      const resumeDisabled = process.env.A5_DISABLE_SESSION_RESUME === '1'
+        || process.env.A5_DISABLE_SESSION_RESUME === 'true'
+      const resumeSessionId = !resumeDisabled && liveJob.sessionId ? liveJob.sessionId : undefined
+
       const queryOptions: Record<string, unknown> = {
         pathToClaudeCodeExecutable: claudeCodeCliPath,
         systemPrompt,
@@ -199,21 +292,23 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         cwd: workingDir,
         settingSources: ['project'],
         mcpServers: { a5: mcpServer },
-        allowedTools: [
-          'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
-          'Skill',
-          'mcp__a5__*',
-          ...(agents ? ['Agent'] : []),
-        ],
+        allowedTools,
+        // Belt-and-suspenders to the ENABLE_TOOL_SEARCH=false env var below:
+        // even if a future SDK/CLI version re-enables deferred tool loading,
+        // we want the model to never call `ToolSearch`. Every agent prompt
+        // instructs the model to call mcp__a5__* tools by name; ToolSearch
+        // causes the agent to conclude "tools aren't available" when it
+        // returns zero hits for in-process SDK MCP servers.
+        disallowedTools: ['ToolSearch'],
+        hooks,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         maxTurns: 200,
         thinking: { type: 'adaptive' },
         systemPromptCacheControl: 'ephemeral',
         persistSession: true,
+        ...(resumeSessionId ? { resume: resumeSessionId } : {}),
         // Must inherit process.env (PATH, HOME, …). A bare object replaces the SDK default and breaks spawn('node', …).
-        // BB_* vars give the agent everything it needs to construct authenticated clone URLs without
-        // embedding credentials in the system prompt itself.
         env: {
           ...process.env,
           // Anthropic auth: pick exactly one of ANTHROPIC_API_KEY or
@@ -225,27 +320,36 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           BB_WORKSPACE: settings.bitbucket.workspace,
           BB_CODER_APP_PASSWORD: settings.bitbucket.coderAccount.appPassword,
           BB_BASE_URL: 'https://bitbucket.org',
-          // x-token-auth is the correct git username for BitBucket API tokens (ATATT3x...)
           BB_GIT_USERNAME: settings.bitbucket.coderAccount.appPassword.startsWith('ATATT')
             ? 'x-token-auth'
             : encodeURIComponent(settings.bitbucket.coderAccount.username),
-          // GitHub credentials (empty strings if not configured — agents check params.gitProvider)
           GH_OWNER: settings.github?.owner ?? '',
           GH_TOKEN: settings.github?.token ?? '',
-          // SDK default is 60s — agent phases run for minutes to hours. Without
-          // this, the Claude Code subprocess closes the MCP transport mid-phase,
-          // leaving all mcp__a5__* tools disconnected while built-in tools still work.
           CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000',
+          // Disable Claude Code's "Tool Search" / deferred-tool-loading feature.
+          // See issues #12164, #31002, #40314, #44290 in anthropics/claude-code
+          // and #122, #124 in anthropics/claude-agent-sdk-typescript.
+          ENABLE_TOOL_SEARCH: 'false',
+          DEBUG_CLAUDE_AGENT_SDK: '1',
+        },
+        // Capture the SDK and CLI subprocess stderr.
+        stderr: (chunk: string) => {
+          const text = String(chunk).trim()
+          if (!text) return
+          for (const line of text.split('\n')) {
+            const trimmed = line.trim()
+            if (!trimmed) continue
+            logger.debug({ jobId: liveJob.id, phase: liveJob.phase }, `[sdk-stderr] ${trimmed}`)
+            if (/mcp|Transport|sdkMcp|control_request/i.test(trimmed)) {
+              stateBackend.appendLog(liveJob.id, `[sdk-stderr] ${trimmed.slice(0, 500)}`)
+                .catch(() => { /* logging is best-effort */ })
+            }
+          }
         },
       }
 
       if (agents) {
         queryOptions.agents = agents
-      }
-
-      // Resume from previous session or start fresh
-      if (liveJob.sessionId) {
-        queryOptions.resume = liveJob.sessionId
       }
 
       // Run the Agent SDK query — this handles the entire tool-use loop
@@ -256,17 +360,23 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       let lastUsageSyncTurn = 0
       const phaseStartMs = Date.now()
       let phaseSnapshotRecorded = false
+      // Track real MCP availability — if the agent completes a phase with
+      // zero mcp__a5__* tool calls while ≥1 built-in tool_use fired, MCP
+      // is effectively broken and the result is almost certainly invalid.
+      let builtinToolUseCount = 0
+      let mcpToolUseCount = 0
 
+      // Tests inject `queryImpl` and still receive the plain string prompt
+      // (backwards-compatible with the QueryInvocation contract). The real
+      // SDK query is given the async-iterable form so bidirectional mode
+      // (and thus SDK MCP registration) is preserved.
       const queryStream = options?.queryImpl
-        ? options.queryImpl({ prompt, options: queryOptions, signals, toolCtx })
+        ? options.queryImpl({ prompt: promptText, options: queryOptions, signals, toolCtx })
         : query({
             prompt,
             options: queryOptions as Parameters<typeof query>[0]['options'],
           })
 
-      // Register the Query reference so the dispatcher can inject human
-      // messages via streamInput(). Only real SDK Query objects (not test
-      // mocks) have the streamInput method.
       const isRealQuery = !options?.queryImpl && typeof (queryStream as Query).streamInput === 'function'
       if (isRealQuery) {
         options?.onQueryStart?.(liveJob.id, queryStream as Query)
@@ -277,14 +387,40 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         const message = raw as Record<string, unknown>
         const eventType = String(message['type'] ?? '')
 
-        // Capture the session ID from any event that carries it
         if (eventType === 'system') {
           const sid = message['session_id']
           if (typeof sid === 'string') sessionId = sid
+
+          if (message['subtype'] === 'init') {
+            const mcpServers = Array.isArray(message['mcp_servers'])
+              ? (message['mcp_servers'] as Array<{ name?: unknown; status?: unknown }>)
+              : []
+            const tools = Array.isArray(message['tools']) ? (message['tools'] as string[]) : []
+            const mcpToolCount = tools.filter(t => typeof t === 'string' && t.startsWith('mcp__a5__')).length
+            const a5Tools = tools.filter(t => typeof t === 'string' && t.startsWith('mcp__a5__'))
+
+            logger.info(
+              {
+                jobId: liveJob.id,
+                phase: liveJob.phase,
+                mcpServersAtInit: mcpServers.map(s => ({ name: s.name, status: s.status })),
+                mcpToolCountAtInit: mcpToolCount,
+                totalToolsAtInit: tools.length,
+                allToolsAtInit: tools,
+                a5ToolsAtInit: a5Tools,
+                resumedFrom: resumeSessionId ?? null,
+              },
+              'Claude Code session init',
+            )
+
+            await stateBackend.appendLog(
+              liveJob.id,
+              `[init] session started — ${tools.length} tools at boot, ${mcpToolCount} mcp__a5__* tools` +
+              (resumeSessionId ? ` (resumed from ${resumeSessionId})` : ''),
+            )
+          }
         }
 
-        // SDKAssistantMessage: wraps a BetaMessage at message.message with content blocks.
-        // Content blocks include text, thinking, tool_use, and mcp_tool_use.
         if (eventType === 'assistant') {
           const betaMsg = message['message'] as Record<string, unknown> | undefined
           const content = betaMsg?.['content']
@@ -300,11 +436,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
                 const input = block['input']
                 const inputStr = input ? ` ${JSON.stringify(input).slice(0, 300)}` : ''
                 await stateBackend.appendLog(liveJob.id, `→ ${toolName}${inputStr}`)
+                if (toolName.startsWith('mcp__a5__')) mcpToolUseCount++
+                else builtinToolUseCount++
               }
             }
           }
 
-          // Accumulate per-turn token usage from the API response
           const turnUsage = betaMsg?.['usage'] as Record<string, unknown> | undefined
           if (turnUsage) {
             phaseTokens.inputTokens += Number(turnUsage['input_tokens'] ?? 0)
@@ -313,9 +450,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             phaseTokens.cacheCreationInputTokens += Number(turnUsage['cache_creation_input_tokens'] ?? 0)
             phaseTurns++
 
-            // Sync running totals to Redis every 5 turns to avoid write storms.
-            // Always merge against prePhaseUsage (frozen at phase start) so
-            // repeated syncs don't double-count.
             if (phaseTurns - lastUsageSyncTurn >= 5) {
               lastUsageSyncTurn = phaseTurns
               const merged = mergeTokenUsage(prePhaseUsage, phaseTokens)
@@ -325,7 +459,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           }
         }
 
-        // SDKToolUseSummaryMessage: human-readable summary of preceding tool uses
         if (eventType === 'tool_use_summary') {
           const summary = message['summary']
           if (typeof summary === 'string' && summary.trim()) {
@@ -333,7 +466,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           }
         }
 
-        // SDKToolProgressMessage: heartbeat for long-running tools
         if (eventType === 'tool_progress') {
           const toolName = message['tool_name']
           const elapsed = message['elapsed_time_seconds']
@@ -342,7 +474,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           }
         }
 
-        // SDKResultMessage: final result when query() completes
         if (eventType === 'result') {
           const isError = message['is_error']
           if (isError) {
@@ -358,9 +489,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
           phaseSnapshotRecorded = true
 
-          // Extract precise per-phase usage from the result event.
-          // The SDK provides authoritative totals here — use them over the
-          // accumulated per-turn values when available.
           const resultUsage = message['usage'] as Record<string, number> | undefined
           const resultModelUsage = message['modelUsage'] as Record<string, Record<string, unknown>> | undefined
 
@@ -371,9 +499,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             phaseTokens.cacheCreationInputTokens = Number(resultUsage['cache_creation_input_tokens'] ?? phaseTokens.cacheCreationInputTokens)
           }
 
-          // Pass through SDK-provided cost when available; otherwise 0.
-          // Token counts are the authoritative usage metric — cost is
-          // informational only and only present when the SDK reports it.
           const phaseCostUsd = typeof message['total_cost_usd'] === 'number' ? message['total_cost_usd'] as number : 0
           phaseTokens.totalCostUsd = phaseCostUsd
 
@@ -414,8 +539,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           )
         }
 
-        // Silently ignore: user messages, stream_event (partial deltas — too noisy),
-        // auth_status, and other internal system subtypes. Log truly unexpected types.
         const handledTypes = new Set([
           'system', 'assistant', 'tool_use_summary', 'tool_progress', 'result',
           'user', 'stream_event', 'auth_status',
@@ -424,9 +547,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           await stateBackend.appendLog(liveJob.id, `[event:${eventType}] ${JSON.stringify(message).slice(0, 500)}`)
         }
 
-        // If an exception signal was set, stop processing the stream early.
-        // phaseComplete is an optional hint — the runner auto-advances anyway.
-        if (signals.phaseComplete || signals.nextPhase || signals.awaitingEvent || signals.escalated) {
+        // Early break on exception signals so we don't keep pulling events
+        // after the agent has asked us to park, escalate, or re-route. The
+        // absence of any signal simply lets the stream drain naturally and
+        // then auto-advances.
+        if (signals.nextPhase || signals.awaitingEvent || signals.escalated) {
           break
         }
       }
@@ -436,9 +561,42 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
       }
 
+      // Authoritative MCP availability check — see comment in previous
+      // revision for rationale. Zero mcp calls while builtins fired is a
+      // strong signal that SDK MCP registration failed silently.
+      logger.info(
+        {
+          jobId: liveJob.id,
+          phase: liveJob.phase,
+          mcpToolUseCount,
+          builtinToolUseCount,
+        },
+        'Phase tool-use summary',
+      )
+      await stateBackend.appendLog(
+        liveJob.id,
+        `[phase-end] tool_use counts — mcp__a5__*: ${mcpToolUseCount}, built-in: ${builtinToolUseCount}`,
+      )
+      if (mcpToolUseCount === 0 && builtinToolUseCount > 0) {
+        logger.error(
+          {
+            jobId: liveJob.id,
+            phase: liveJob.phase,
+            builtinToolUseCount,
+          },
+          'A5 MCP tools were never invoked while built-in tools were — likely SDK MCP registration failed. Check stderr for [Query.connectSdkMcpServer] messages and consider restarting the runner.',
+        )
+        await stateBackend.appendLog(
+          liveJob.id,
+          `[error] Agent used ${builtinToolUseCount} built-in tool_use blocks but ZERO mcp__a5__* calls. ` +
+          `SDK MCP registration likely failed — this phase's output is not trustworthy. ` +
+          `See runner stderr for "[Query.connectSdkMcpServer]" or "Transport write failed" lines.`,
+        )
+      }
+
       // Ensure every phase gets a PhaseUsage snapshot, even when a signal
-      // (goto_phase, await_event, escalate, mark_phase_complete) broke the
-      // stream before the SDK's result event was consumed.
+      // (goto_phase, await_event, escalate) broke the stream before the
+      // SDK's result event was consumed.
       if (!phaseSnapshotRecorded) {
         const phaseSnapshot: PhaseUsage = {
           phase: liveJob.phase,
@@ -467,13 +625,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           `[usage] Phase ${liveJob.phase}: ${phaseTokens.inputTokens.toLocaleString()} in / ${phaseTokens.outputTokens.toLocaleString()} out`,
         )
       } else if (phaseTurns > lastUsageSyncTurn) {
-        // Result event was consumed but flush any residual unsynced turn data.
         const merged = mergeTokenUsage(prePhaseUsage, phaseTokens)
         liveJob = await syncJob(stateBackend, liveJob, { tokenUsage: merged })
         toolCtx.job = liveJob
       }
 
-      // Store session ID for potential future resumption
       if (sessionId) {
         liveJob = await syncJob(stateBackend, liveJob, { sessionId })
         toolCtx.job = liveJob
@@ -485,12 +641,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       //   1. Terminal status (already completed by another mechanism) → stop
       //   2. Escalated (agent explicitly asked for human help) → stop
       //   3. Awaiting event (agent needs to wait for external input) → park
-      //   4. Default: auto-advance to the next phase (or complete if none)
+      //   4. goto_phase or default: advance to the next workflow phase
       //
-      // The agent does NOT need to call mark_phase_complete. Finishing the
-      // query is sufficient — the runner treats "no exception signal" as
-      // "phase done, move on." This eliminates the most common failure mode
-      // where the LLM forgets to call a job-control tool.
+      // Interactive checkpoints are now driven by the agent: the workflow
+      // prose / agent MD instructs agents at relevant phase boundaries to
+      // call `await_event` with `developer-input: approval after <phase>`.
+      // The runner stays out of it — no `phaseConf.interactiveCheckpoint`
+      // branch, no `approvedAdvanceFromPhase` bookkeeping.
 
       if (isTerminalStatus(liveJob.status)) break
 
@@ -499,13 +656,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       if (signals.awaitingEvent) {
-        const awaitStatus = signals.awaitingEvent.includes('plan')
-          ? 'awaiting-plan-approval'
-          : 'awaiting-pr-merge'
+        const evt = signals.awaitingEvent
+        const awaitStatus = evt.startsWith('developer-input')
+          ? STATUS_AWAITING_DEVELOPER_INPUT
+          : evt.includes('plan')
+            ? STATUS_AWAITING_PLAN_APPROVAL
+            : STATUS_AWAITING_PR_MERGE
 
         liveJob = await syncJob(stateBackend, liveJob, {
           status: awaitStatus,
-          awaitingEvent: signals.awaitingEvent,
+          awaitingEvent: evt,
           awaitingPrId: signals.awaitingPrId,
         })
 
@@ -514,15 +674,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
 
         logger.info(
-          { jobId: liveJob.id, awaiting: signals.awaitingEvent, prId: signals.awaitingPrId },
+          { jobId: liveJob.id, awaiting: evt, prId: signals.awaitingPrId, status: awaitStatus },
           'Job parked — awaiting external event',
         )
-        await stateBackend.appendLog(liveJob.id, `Job parked — waiting for: ${signals.awaitingEvent}`)
+        await stateBackend.appendLog(liveJob.id, `Job parked — waiting for: ${evt}`)
         break
       }
 
-      // Default: auto-advance to the next phase.
-      // goto_phase overrides the next phase; otherwise use the workflow sequence.
+      // Default: auto-advance to the next phase. goto_phase overrides the
+      // workflow-defined order (e.g. evaluator loops back to coding).
       const nextPhase = signals.nextPhase
         ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
 
@@ -549,8 +709,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         // Clear sessionId so the next resume starts a fresh Claude Code subprocess.
         // A crash (529 overload, network error, SDK bug) leaves the MCP transport in
         // a broken state — resuming the old session would give the agent working
-        // built-in tools but broken mcp__a5__* tools. A fresh session costs
-        // conversation context but restores full MCP connectivity.
+        // built-in tools but broken mcp__a5__* tools.
         await stateBackend.updateJob(liveJob.id, {
           status: STATUS_FAILED,
           escalationMessage: String(err),
@@ -579,7 +738,6 @@ async function syncJob(
 }
 
 function resetSignals(s: PhaseSignals): void {
-  s.phaseComplete = undefined
   s.nextPhase = undefined
   s.awaitingEvent = undefined
   s.awaitingPrId = undefined
@@ -708,31 +866,112 @@ function ensureClaudeConfigSymlink(workingDir: string, a5aiDir: string, logger: 
   }
 }
 
-function buildInitialMessage(job: Job): string {
-  const lines = [
-    `A new ${job.type} job has started.`,
-    `Job ID: ${job.id}`,
-    `Service: ${jobServiceName(job)}`,
-    `Phase: ${job.phase}`,
-    '',
-    'Your current job context is in the system prompt. Read your instructions carefully, ' +
-    'then begin working through the steps for your current phase. ' +
-    'Use the `log` tool to report progress as you go.',
-  ]
-
-  const jiraTicketId = jobJiraTicketId(job)
-  if (jiraTicketId) {
-    lines.push(`\nThis job was triggered by Jira ticket: ${jiraTicketId}`)
+/**
+ * Very short per-phase kickoff message. The system prompt already carries
+ * the workflow, agent role, and job state — this message just nudges the
+ * agent to start (or continue) work in the current phase.
+ */
+function buildPhaseKickoffMessage(job: Job): string {
+  if (job.sessionId) {
+    return (
+      `You are now in phase **${job.phase}**. Your role for this phase is in the ` +
+      `system prompt under "Your Role This Phase". Continue the job — do what the phase ` +
+      `instructs, then let your turn end (the runner auto-advances).`
+    )
   }
-
-  return lines.join('\n')
+  return (
+    `Begin phase **${job.phase}** of this ${job.type} job. Your role and the full ` +
+    `workflow are in the system prompt. Follow your phase instructions and use the ` +
+    `\`log\` tool to report progress.`
+  )
 }
 
-function buildPhaseTransitionMessage(nextPhase: string, job: Job): string {
-  return (
-    `Phase complete. The job is now advancing to phase: **${nextPhase}**.\n\n` +
-    `Your system prompt has been updated with instructions for this phase. ` +
-    `Review your new role carefully before proceeding.\n\n` +
-    `Job ID: ${job.id} | Service: ${jobServiceName(job)}`
-  )
+// ── SDK hooks ─────────────────────────────────────────────────────────────────
+//
+// PreToolUse hooks fire before every tool call the model makes (builtins AND
+// mcp__a5__*). Returning a `permissionDecision: 'deny'` rejects the call and
+// surfaces `permissionDecisionReason` back to the model so it can course-
+// correct. We use this to encode the two guard rails that used to live as
+// prose in agent MDs:
+//
+//   1. `propose_change` is evaluator-only. Other phases use `add_insight`.
+//   2. `Write` / `Edit` / `Bash` writes must stay inside the job's working
+//      directory or `a5aiDir/memory/` — this prevents a runaway agent from
+//      clobbering files elsewhere on the dev machine.
+//
+// Both checks are cheap and deterministic, so moving them from prose to
+// code trades a few kB of tokens for actual enforcement.
+
+interface BuildHookOpts {
+  /** Closure that returns the current live job — phase can change between calls. */
+  liveJobRef: () => Job
+  /** Absolute path to the job's working directory. */
+  workingDir: string
+  /** Absolute path to the a5-ai intelligence dir. */
+  a5aiDir: string
+  logger: Logger
+}
+
+function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
+  const memoryRoot = path.join(opts.a5aiDir, 'memory')
+
+  const deny = (reason: string): HookJSONOutput => ({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  })
+
+  const preToolUse: HookCallback = async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return {}
+    const toolName = input.tool_name
+    const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
+    const job = opts.liveJobRef()
+
+    // Guard rail #1: propose_change is evaluator-only.
+    if (toolName === 'mcp__a5__propose_change') {
+      if (!PROPOSE_CHANGE_ALLOWED_PHASES.has(job.phase)) {
+        const reason =
+          `propose_change can only be called from the evaluation phase (got: ${job.phase}). ` +
+          `Record your learning via \`add_insight\` instead — the evaluator will review and ` +
+          `decide whether to promote it into a proposal.`
+        opts.logger.debug({ phase: job.phase }, reason)
+        return deny(reason)
+      }
+    }
+
+    // Guard rail #2: Write/Edit must stay inside working dir or memory/.
+    // Bash commands with obvious write intent (e.g. `rm -rf /`) are harder
+    // to validate generically, so we do the simple path check and rely on
+    // the model's prose instructions for shell safety.
+    if (toolName === 'Write' || toolName === 'Edit') {
+      const rawPath = (toolInput['file_path'] ?? toolInput['path']) as unknown
+      if (typeof rawPath === 'string' && rawPath.length > 0) {
+        const abs = path.resolve(opts.workingDir, rawPath)
+        const insideWorking = isInside(abs, opts.workingDir)
+        const insideMemory = isInside(abs, memoryRoot)
+        if (!insideWorking && !insideMemory) {
+          const reason =
+            `Blocked ${toolName}: "${rawPath}" resolves to ${abs}, which is outside the ` +
+            `allowed write roots. Permitted: ${opts.workingDir}/** and ${memoryRoot}/**. ` +
+            `Use \`propose_change\` (evaluation phase only) for changes to the intelligence repo.`
+          opts.logger.warn({ phase: job.phase, path: abs }, reason)
+          return deny(reason)
+        }
+      }
+    }
+
+    return {}
+  }
+
+  return {
+    PreToolUse: [{ hooks: [preToolUse] }],
+  }
+}
+
+/** Path containment check, defends against '..' escapes. */
+function isInside(candidate: string, root: string): boolean {
+  const rel = path.relative(root, candidate)
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }

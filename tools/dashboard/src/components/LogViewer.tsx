@@ -94,24 +94,69 @@ function LineContent({ line }: { line: LogLine }) {
   )
 }
 
+/** Scroll only the log container — never use scrollIntoView on inner nodes, or the window scrolls too. */
+function scrollLogContainerToBottom(
+  el: HTMLDivElement | null,
+  behavior: ScrollBehavior = 'auto',
+): void {
+  if (!el) return
+  el.scrollTo({ top: el.scrollHeight, behavior })
+}
+
+function isScrolledToBottom(el: HTMLDivElement, thresholdPx = 64): boolean {
+  const { scrollTop, scrollHeight, clientHeight } = el
+  return scrollHeight - scrollTop - clientHeight <= thresholdPx
+}
+
 export default function LogViewer({ lines, className = '' }: LogViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
   const [autoScroll, setAutoScroll] = useState(true)
+  const autoScrollRef = useRef(true)
   const [filter, setFilter] = useState<'all' | 'main' | 'tools'>('all')
+  /** Skip one scroll-handler sync right after we programmatically scroll (some browsers coalesce events). */
+  const programmaticScrollRef = useRef(false)
 
   useEffect(() => {
-    if (autoScroll && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [lines, autoScroll])
+    autoScrollRef.current = autoScroll
+  }, [autoScroll])
 
-  const handleScroll = () => {
-    if (!containerRef.current) return
-    const { scrollTop, scrollHeight, clientHeight } = containerRef.current
-    const atBottom = scrollHeight - scrollTop - clientHeight < 60
+  const updateAutoScrollFromScroll = () => {
+    const el = containerRef.current
+    if (!el) return
+    if (programmaticScrollRef.current) {
+      programmaticScrollRef.current = false
+      return
+    }
+    const atBottom = isScrolledToBottom(el)
+    autoScrollRef.current = atBottom
     setAutoScroll(atBottom)
   }
+
+  // New lines: only move the *log* scroll position when the user is following the tail.
+  // Never use scrollIntoView on a child — it scrolls the window and yanks the page.
+  useEffect(() => {
+    if (!autoScroll) return
+    // After paint so scrollHeight reflects new log lines.
+    const id = requestAnimationFrame(() => {
+      if (!autoScrollRef.current || !containerRef.current) return
+      programmaticScrollRef.current = true
+      scrollLogContainerToBottom(containerRef.current, 'auto')
+    })
+    return () => { cancelAnimationFrame(id) }
+  }, [lines, autoScroll, filter])
+
+  // When following the tail, stay pinned if the log panel resizes.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || !autoScroll) return
+    const ro = new ResizeObserver(() => {
+      if (!containerRef.current || !autoScrollRef.current) return
+      programmaticScrollRef.current = true
+      scrollLogContainerToBottom(containerRef.current, 'auto')
+    })
+    ro.observe(el)
+    return () => { ro.disconnect() }
+  }, [autoScroll])
 
   const TOOL_TYPES: LogLineType[] = ['tool_use', 'tool_summary', 'tool_progress', 'thinking', 'system']
   const MAIN_TYPES: LogLineType[] = ['text', 'phase', 'error', 'result', 'insight', 'session_reset', 'webhook', 'human']
@@ -150,9 +195,14 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
 
           {!autoScroll && (
             <button
+              type="button"
               onClick={() => {
+                autoScrollRef.current = true
                 setAutoScroll(true)
-                bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+                if (containerRef.current) {
+                  programmaticScrollRef.current = true
+                  scrollLogContainerToBottom(containerRef.current, 'smooth')
+                }
               }}
               className="px-2 py-1 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
             >
@@ -165,7 +215,7 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
       {/* Log content */}
       <div
         ref={containerRef}
-        onScroll={handleScroll}
+        onScroll={updateAutoScrollFromScroll}
         className="flex-1 overflow-y-auto font-mono text-[13px] leading-relaxed p-3 min-h-[200px] max-h-[calc(100vh-280px)]"
       >
         {filteredLines.length === 0 ? (
@@ -191,7 +241,6 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
             </div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   )
