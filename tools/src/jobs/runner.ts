@@ -665,11 +665,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           : evt.includes('plan')
             ? STATUS_AWAITING_PLAN_APPROVAL
             : STATUS_AWAITING_PR_MERGE
+        const approvalCheckpointNextPhase =
+          evt.startsWith('developer-input')
+          && liveJob.interactive
+          && phaseConf?.interactiveCheckpoint
+          && isDeveloperApprovalRequest(evt)
+            ? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
+            : null
 
         liveJob = await syncJob(stateBackend, liveJob, {
           status: awaitStatus,
           awaitingEvent: evt,
           awaitingPrId: signals.awaitingPrId,
+          awaitingNextPhase: approvalCheckpointNextPhase ?? undefined,
         })
 
         if (signals.awaitingPrId) {
@@ -790,6 +798,10 @@ function resetSignals(s: PhaseSignals): void {
   s.awaitingPrId = undefined
   s.escalated = undefined
   s.escalationReason = undefined
+}
+
+function isDeveloperApprovalRequest(eventName: string): boolean {
+  return /\bapprov(?:e|ed|al)\b/i.test(eventName)
 }
 
 /**

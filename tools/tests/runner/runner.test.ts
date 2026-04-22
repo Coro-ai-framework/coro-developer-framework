@@ -255,6 +255,41 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.awaitingEvent).toBe('developer-input: approval after alpha')
   })
 
+  it('records awaitingNextPhase when agent explicitly asks for approval in an interactive checkpoint phase', async () => {
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+
+    stateBackend = createMockStateBackend(
+      makeJob({ phase: 'alpha', status: 'queued', interactive: true }),
+    )
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        inv.signals.awaitingEvent = 'developer-input: Approve implementation plan for alpha'
+        yield { type: 'system', session_id: 'sess-agent-approval' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha', interactive: true }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowCheckpoint,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
+    expect(stateBackend.current.phase).toBe('alpha')
+    expect(stateBackend.current.awaitingNextPhase).toBe('beta')
+    expect(stateBackend.current.awaitingEvent).toBe(
+      'developer-input: Approve implementation plan for alpha',
+    )
+  })
+
   it('advances past an interactive checkpoint after developer approval', async () => {
     const workflowCheckpoint: WorkflowConfig = {
       initialPhase: 'alpha',
