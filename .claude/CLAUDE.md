@@ -30,6 +30,8 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 10. **Use feature tracking tools for multi-feature jobs.** Call `get_features` to check progress, `update_feature` to update status, `set_features` to register the feature list, and `request_new_session` when starting a new feature.
 
+11. **Do not manually park normal workflow checkpoints.** If a phase is marked `interactive_checkpoint: true` and the workflow docs say the runner enforces it, finish the phase normally and let the runner park for approval. Use `await_event({ eventName: "developer-input: <reason>" })` only for extra mid-phase questions, clarifications, or external waits the runner cannot infer.
+
 ## Company context
 
 - **Company:** A5 Labs
@@ -70,7 +72,7 @@ All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__l
 - `goto_phase` — Override the next phase (e.g., loop back to coding, or jump over phases). If you do not call `goto_phase`, the runner auto-advances to the next phase when your turn ends. There is no separate "complete this phase" tool — simply finish your work and end your turn.
 - `await_event` — Park the job waiting for an external event. Two main uses:
   - `await_event({ eventName: "pr:merged", prId })` for PR-driven waits.
-  - `await_event({ eventName: "developer-input: <short reason>" })` whenever you need a human to approve, clarify, or choose between options. This is the **only** way to get a human in the loop — the runner never auto-parks for you.
+  - `await_event({ eventName: "developer-input: <short reason>" })` whenever you need a human to clarify, choose between options, confirm an ambiguous point, or provide information mid-phase. Use this for additional developer input, not for normal workflow checkpoints that the runner already enforces.
 - `escalate` — Escalate to human when you cannot self-resolve (not a substitute for `await_event`).
 - `log` — Append to the job log stream.
 
@@ -155,21 +157,24 @@ post_artifact({
 })
 ```
 
-## Interactive mode — agent-driven checkpoints
+## Interactive mode
 
-The runner **never** auto-parks at phase boundaries. If a phase needs human approval, the **agent** must explicitly ask for it by calling:
+Phases flagged `interactive_checkpoint: true` are enforced by the runner when `job.interactive` is `true`. Finish the phase normally; the runner will park for developer approval before advancing.
 
-```
-await_event({ eventName: "developer-input: <short reason>" })
-```
+Use `await_event({ eventName: "developer-input: <short reason>" })` only when you need additional developer input that is not the standard workflow checkpoint, for example:
+
+- an ambiguous spec or requirement
+- a design tradeoff that needs a human choice
+- missing repo/provider/environment information
+- an external action the developer must take before you can continue
 
 The `developer-input:` prefix is recognised by the runner and parks the job with status `awaiting-developer-input`.
 
-### When to park for approval
+### When to park explicitly
 
-Jobs run with `interactive: true` expect a checkpoint at phase boundaries that the workflow MD marks with `interactive_checkpoint: true`. That flag is metadata for the dashboard only — **you** are responsible for calling `await_event` at the end of such a phase. Check `job.interactive` in your context; when it is `true` and you have just finished a phase that the workflow flagged as a checkpoint, call `await_event` before ending your turn. When `job.interactive` is `false`, skip the park and let the runner auto-advance.
+If the workflow docs say a phase checkpoint is runner-enforced, do **not** call `await_event` just to request the normal approval for that phase. Finish the phase and let the runner park automatically.
 
-Also park proactively — regardless of `interactive_checkpoint` — whenever you need a human decision mid-phase (an ambiguous spec, a design tradeoff, a credential you cannot find). Prefer `await_event` over `escalate` when a human response would let you continue; reserve `escalate` for actual blockers.
+Call `await_event` explicitly only for additional mid-phase questions or for non-checkpoint waits that the runner cannot infer. Prefer `await_event` over `escalate` when a human response would let you continue; reserve `escalate` for true blockers.
 
 ### Resume prompt format
 

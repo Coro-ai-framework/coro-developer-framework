@@ -141,7 +141,7 @@ When the review phase sends you back to fix issues (via `goto_phase("coding")`):
 - **Use the appropriate `create_pr` MCP tool to open PRs** — this registers the PR with the job system. PRs created via other methods (including `curl` to the API) won't be tracked and will break the workflow.
 - **Never fall back to `curl` or raw HTTP for git provider operations.** Always use the MCP tools listed above. If an MCP tool fails, check the parameters — do not attempt the same operation via curl.
 - **Use `mcp__a5__log` frequently** so developers can follow your progress.
-- **The runner auto-advances** when you finish the phase — just end your turn. There is no "complete this phase" tool. If you need to re-enter the same phase or jump to a different one, call `goto_phase`. If you need a human in the loop before proceeding, call `await_event({ eventName: "developer-input: <reason>" })`.
+- **The runner auto-advances** when you finish the phase — just end your turn. There is no "complete this phase" tool. If you need to re-enter the same phase or jump to a different one, call `goto_phase`. If you need additional developer input mid-phase, call `await_event({ eventName: "developer-input: <reason>" })`. Do not use `await_event` for a normal workflow checkpoint when the workflow docs say the runner enforces that approval.
 - **Call `mcp__a5__escalate`** if anything blocks you that you cannot resolve.
 - **On persistent auth failures (401/403):** immediately escalate with the exact error. Do not retry more than twice.
 - **Call `mcp__a5__add_insight`** when you discover a workaround, hit an unexpected error, or learn something that future runs should know (e.g., auth patterns, build quirks, dependency issues).
