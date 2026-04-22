@@ -143,6 +143,22 @@ export interface Job {
    */
   awaitingNextPhase?: string
 
+  /**
+   * Set by the dispatcher when a developer replies to an interactive
+   * checkpoint park. Its value is the phase the developer had the option to
+   * advance to (i.e., the former `awaitingNextPhase`).
+   *
+   * The runner consumes this on the next turn: if the agent finishes that
+   * turn with the job still on the phase it was parked in, the runner skips
+   * the "park for approval after {phase}" check for that one transition —
+   * otherwise the job loops forever (agent calls `goto_phase` because the
+   * framed prompt told it to, runner parks again because the phase still
+   * has `interactive_checkpoint: true`). The field is cleared as soon as
+   * the phase advances, so a subsequent natural phase end re-arms the
+   * checkpoint.
+   */
+  approvedAdvanceFromPhase?: string
+
   /** Accumulated learnings from all agents. The evaluator reviews these and decides what to propose. */
   insights: Insight[]
 

@@ -28,9 +28,26 @@ export class GitClient {
     return dest
   }
 
-  /** Pull latest from origin in the given repo directory. */
+  /**
+   * Pull latest from origin in the given repo directory.
+   *
+   * Handles branches without upstream tracking by explicitly passing
+   * `origin <branch>`. This avoids spurious warnings on feature branches
+   * that were checked out locally without `--track`.
+   */
   async pull(repoDir: string): Promise<void> {
-    await this.git(repoDir).pull()
+    const g = this.git(repoDir)
+    const status = await g.status()
+    if (status.tracking) {
+      await g.pull()
+      return
+    }
+    const branch = status.current
+    if (!branch) {
+      // Detached HEAD or empty repo — nothing to pull.
+      return
+    }
+    await g.pull('origin', branch)
   }
 
   /** Checkout an existing branch, or create and checkout a new one. */

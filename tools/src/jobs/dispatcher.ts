@@ -268,12 +268,20 @@ export class Dispatcher {
       (job.artifacts ?? []).filter(a => a.phase === job.phase),
     )
 
+    // If this was an approval checkpoint park (not a mid-phase pause),
+    // remember that the developer has already approved leaving this phase.
+    // The runner consumes this flag on the next turn to avoid re-parking
+    // when the agent follows the framed prompt's instruction to call
+    // `goto_phase(awaitingNextPhase)`.
+    const isCheckpointApproval = Boolean(job.awaitingNextPhase)
+
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
       pendingPrompt,
+      ...(isCheckpointApproval ? { approvedAdvanceFromPhase: job.phase } : {}),
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)

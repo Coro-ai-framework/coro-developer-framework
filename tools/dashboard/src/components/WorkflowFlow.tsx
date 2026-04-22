@@ -1,3 +1,4 @@
+import type React from 'react'
 import type { Artifact, Job, WorkflowPhase } from '../types'
 
 export type PhaseState = 'complete' | 'in-progress' | 'awaiting-input' | 'pending'
@@ -57,7 +58,7 @@ function phaseStateClasses(state: PhaseState, selected: boolean): string {
   }
 }
 
-function stateIcon(state: PhaseState): JSX.Element {
+function stateIcon(state: PhaseState): React.ReactElement {
   switch (state) {
     case 'complete':
       return (

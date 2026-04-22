@@ -331,12 +331,19 @@ export default function JobDetail() {
                 {job.params['serviceName'] as string ?? job.id}
               </h1>
               <StatusBadge status={job.status} />
-              {job.interactive && (
+              {job.interactive ? (
                 <span
                   title="This job pauses between phases for developer approval"
                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-950/40 text-amber-300 border border-amber-800"
                 >
                   ✋ Interactive
+                </span>
+              ) : (
+                <span
+                  title="This job runs autonomously without developer approval checkpoints"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-700"
+                >
+                  ▶ Non-interactive
                 </span>
               )}
             </div>

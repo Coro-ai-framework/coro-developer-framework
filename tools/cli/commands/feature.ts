@@ -16,7 +16,7 @@ export const featureCommand = new Command('feature')
   .option('--reviewers <list>', 'PR reviewers (comma-separated usernames)')
   .option('--description <text>', 'Feature description')
   .option('--service-name <name>', 'Service name (defaults to repo slug)')
-  .option('--git-provider <provider>', 'Git provider: github or bitbucket (default: bitbucket)', 'bitbucket')
+  .option('--git-provider <provider>', 'Git provider: github or bitbucket (defaults to the configured provider from ~/.a5/config.json)')
   .option('--jira-ticket <id>', 'Jira ticket ID (triggers Jira-driven workflow)')
   .option('--no-stream', 'Do not stream logs after dispatch')
   .action(async (opts: {
@@ -24,7 +24,7 @@ export const featureCommand = new Command('feature')
     reviewers?: string
     description?: string
     serviceName?: string
-    gitProvider: string
+    gitProvider?: string
     jiraTicket?: string
     stream: boolean
   }) => {
@@ -43,7 +43,7 @@ export const featureCommand = new Command('feature')
 
       console.log(`\x1b[36m▸\x1b[0m Starting feature: ${serviceName}`)
       console.log(`  Repo:        ${opts.repo}`)
-      console.log(`  Provider:    ${opts.gitProvider}`)
+      if (opts.gitProvider) console.log(`  Provider:    ${opts.gitProvider}`)
       console.log(`  Reviewers:   ${reviewers.join(', ')}`)
       console.log(`  Description: ${opts.description!.slice(0, 80)}`)
       console.log()
@@ -53,7 +53,9 @@ export const featureCommand = new Command('feature')
         reviewers,
         description: opts.description,
         serviceName,
-        gitProvider: opts.gitProvider,
+        // Only include when set so the server falls back to the configured
+        // provider in ~/.a5/config.json when the flag is omitted.
+        ...(opts.gitProvider ? { gitProvider: opts.gitProvider } : {}),
       }
     }
 

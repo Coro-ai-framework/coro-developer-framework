@@ -532,13 +532,29 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       // Default: auto-advance to the next phase.
       // goto_phase overrides the next phase; otherwise use the workflow sequence.
+      const explicitGoto = signals.nextPhase != null
       const nextPhase = signals.nextPhase
         ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
 
       // Interactive-mode phase-boundary checkpoint: park for developer
       // approval BEFORE advancing. We synthesize an awaitingEvent so the
       // same dispatcher resume path handles both this and mid-phase pauses.
-      if (liveJob.interactive && phaseConf?.interactiveCheckpoint && nextPhase) {
+      //
+      // If the developer has already approved advancement from this phase
+      // AND the agent followed the framed prompt by calling `goto_phase`,
+      // we must NOT re-park — otherwise the job loops forever on a
+      // self-perpetuating approve → re-park cycle. We require the explicit
+      // `goto_phase` signal so that a "rework" message (agent ends its
+      // turn normally after doing the requested changes) still re-parks
+      // for re-approval, as the workflow expects.
+      const alreadyApproved =
+        liveJob.approvedAdvanceFromPhase === liveJob.phase && explicitGoto
+      if (
+        liveJob.interactive
+        && phaseConf?.interactiveCheckpoint
+        && nextPhase
+        && !alreadyApproved
+      ) {
         liveJob = await syncJob(stateBackend, liveJob, {
           status: STATUS_AWAITING_DEVELOPER_INPUT,
           awaitingEvent: `developer-input: approval after ${liveJob.phase}`,
@@ -563,7 +579,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
-      liveJob = await syncJob(stateBackend, liveJob, { phase: nextPhase })
+      liveJob = await syncJob(stateBackend, liveJob, {
+        phase: nextPhase,
+        // Clear the one-shot approval guard as soon as the phase advances so
+        // the next checkpoint phase can park normally.
+        approvedAdvanceFromPhase: undefined,
+      })
       toolCtx.job = liveJob
 
       logger.info({ jobId: liveJob.id, phase: nextPhase }, 'Phase advanced')
