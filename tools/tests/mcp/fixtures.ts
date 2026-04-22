@@ -6,7 +6,7 @@ import type { BitBucketClient } from '../../src/clients/bitbucket'
 import type { LokiClient } from '../../src/clients/loki'
 import type { TempoClient } from '../../src/clients/tempo'
 import type { JiraClient } from '../../src/clients/jira'
-import type { JobRegistry } from '../../src/jobs/registry'
+import type { StateBackend } from '../../src/state/backend'
 
 export function makeMockJob(overrides: Record<string, unknown> = {}) {
   return {
@@ -57,7 +57,7 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
     mergePr: vi.fn().mockResolvedValue({ state: 'MERGED' }),
   } as unknown as BitBucketClient
 
-  const registry = {
+  const stateBackend = {
     getJob: vi.fn().mockImplementation(async () => makeMockJob()),
     updateJob: vi.fn().mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeMockJob(),
@@ -69,7 +69,7 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
       prMappings: [mapping],
     })),
     mapPrToJob: vi.fn().mockResolvedValue(undefined),
-  } as unknown as JobRegistry
+  } as unknown as StateBackend
 
   const lokiClient = {
     query: vi.fn().mockResolvedValue({ streams: [] }),
@@ -88,13 +88,15 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
 
   return {
     job: makeMockJob(),
-    registry,
+    stateBackend,
     settings: {
       paths: { a5aiDir: '/tmp/a5ai-mcp-test', workingDir: '/tmp/work-mcp' },
     } as ToolContext['settings'],
     gitClient: {} as ToolContext['gitClient'],
     bbCoder,
     bbReviewer,
+    ghClient: null,
+    ghGitClient: null,
     lokiClient,
     tempoClient,
     jiraClient,

@@ -3,12 +3,14 @@ import Redis from 'ioredis'
 import pino from 'pino'
 import { loadSettings } from './config/settings'
 import { createBitBucketClients } from './clients/bitbucket'
-import { createGitClient } from './clients/git'
+import { createGitHubClient } from './clients/github'
+import { createGitClient, createGitHubGitClient } from './clients/git'
 import { createJiraClient } from './clients/jira'
 import { createLokiClient } from './clients/loki'
 import { createTempoClient } from './clients/tempo'
 import { Dispatcher } from './jobs/dispatcher'
-import { JobRegistry } from './jobs/registry'
+import { RedisStateBackend } from './state/redis-backend'
+import { InProcessTransport } from './state/in-process-transport'
 import { RunnerContext } from './jobs/runner'
 import { createServer } from './server'
 import { startWatcher } from './watcher'
@@ -57,41 +59,47 @@ async function main(): Promise<void> {
   await redis.ping()
   logger.info('Redis ping OK')
 
-  // 4. Create registry and external clients
-  const registry = new JobRegistry(redis, settings.paths.a5aiDir, logger)
+  // 4. Create state backend and external clients
+  const stateBackend = new RedisStateBackend(redis, settings.paths.a5aiDir, logger)
 
   // Rebuild PR→job reverse-lookup keys so webhooks can find parked jobs after restart
-  const rebuilt = await registry.rebuildPrMappings()
+  const rebuilt = await stateBackend.rebuildPrMappings()
   if (rebuilt > 0) logger.info({ rebuilt }, 'PR mappings rebuilt from job state')
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
   const gitClient = createGitClient(settings)
+  const ghClient = createGitHubClient(settings)
+  const ghGitClient = createGitHubGitClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
   const jiraClient = createJiraClient(settings)
 
   logger.info('All clients initialised')
+  if (ghClient) logger.info({ owner: settings.github.owner }, 'GitHub client active')
 
   // 5. Build runner context (MCP server is created per-job by the runner)
   const runnerCtx: RunnerContext = {
-    registry,
+    stateBackend,
     settings,
     gitClient,
     bbCoder,
     bbReviewer,
+    ghClient,
+    ghGitClient,
     lokiClient,
     tempoClient,
     jiraClient,
     logger,
   }
 
-  // 6. Create dispatcher
-  const dispatcher = new Dispatcher(runnerCtx)
+  // 6. Create event transport and dispatcher
+  const transport = new InProcessTransport()
+  const dispatcher = new Dispatcher(runnerCtx, transport)
 
   // 7. Start file watcher (self-improvement loop)
-  const watcher = startWatcher({ settings, gitClient, bbCoder, registry, logger })
+  const watcher = startWatcher({ settings, gitClient, bbCoder, stateBackend, logger })
 
   // 8. Start HTTP server
-  const app = createServer({ registry, dispatcher, settings, logger })
+  const app = createServer({ stateBackend, dispatcher, settings, logger })
 
   const server = app.listen(settings.host.port, () => {
     logger.info({ port: settings.host.port }, 'HTTP server listening')

@@ -1,0 +1,47 @@
+# Cloud control plane development stack
+#
+# Usage:
+#   docker compose -f docker-compose.cloud.yml up      # starts Postgres + Redis
+#   npm run dev:cloud                                    # starts cloud service
+#
+# Environment:
+#   Copy .env.cloud.example to .env.cloud and fill in values
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: a5cloud
+      POSTGRES_USER: a5cloud
+      POSTGRES_PASSWORD: a5cloud_dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U a5cloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local

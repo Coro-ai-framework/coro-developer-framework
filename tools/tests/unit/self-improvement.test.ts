@@ -38,9 +38,9 @@ function makeJob(overrides: Partial<Job> = {}): Job {
 function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     job: makeJob(),
-    registry: {
+    stateBackend: {
       appendLog: vi.fn().mockResolvedValue(undefined),
-    } as unknown as ToolContext['registry'],
+    } as unknown as ToolContext['stateBackend'],
     settings: {
       paths: { a5aiDir: A5AI_DIR, workingDir: '/data/working' },
     } as unknown as ToolContext['settings'],
@@ -53,6 +53,8 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     gitClient: {} as ToolContext['gitClient'],
     bbCoder: {} as ToolContext['bbCoder'],
     bbReviewer: {} as ToolContext['bbReviewer'],
+    ghClient: null,
+    ghGitClient: null,
     lokiClient: {} as ToolContext['lokiClient'],
     tempoClient: {} as ToolContext['tempoClient'],
     jiraClient: {} as ToolContext['jiraClient'],
@@ -221,7 +223,7 @@ describe('proposeChange', () => {
         description: 'd',
       }, ctx)
 
-      expect(ctx.registry.appendLog).toHaveBeenCalledWith(
+      expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith(
         'test-job-1',
         expect.stringContaining('[propose_change]'),
       )

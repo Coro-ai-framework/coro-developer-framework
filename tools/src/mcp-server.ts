@@ -93,6 +93,73 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         h.bb_merge_pr,
       ),
 
+      // ── GitHub ────────────────────────────────────────────────────────────
+
+      tool(
+        'gh_create_repo',
+        'Create a new private GitHub repository.',
+        { repoSlug: z.string(), description: z.string().optional() },
+        h.gh_create_repo,
+      ),
+
+      tool(
+        'gh_create_pr',
+        'Open a pull request on GitHub. Reviewers default to job reviewers if omitted.',
+        {
+          repoSlug: z.string(),
+          title: z.string(),
+          description: z.string().optional(),
+          sourceBranch: z.string(),
+          targetBranch: z.string().optional(),
+          reviewerUsernames: z.array(z.string()).optional(),
+        },
+        h.gh_create_pr,
+      ),
+
+      tool(
+        'gh_get_pr_status',
+        'Get the current state and approval count of a GitHub pull request.',
+        { repoSlug: z.string(), prId: z.number() },
+        h.gh_get_pr_status,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'gh_get_pr_comments',
+        'List all comments on a GitHub pull request.',
+        { repoSlug: z.string(), prId: z.number() },
+        h.gh_get_pr_comments,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'gh_post_pr_comment',
+        'Post a new top-level comment on a GitHub pull request.',
+        { repoSlug: z.string(), prId: z.number(), content: z.string() },
+        h.gh_post_pr_comment,
+      ),
+
+      tool(
+        'gh_reply_to_comment',
+        'Reply to an existing review comment on a GitHub pull request.',
+        { repoSlug: z.string(), prId: z.number(), parentId: z.number(), content: z.string() },
+        h.gh_reply_to_comment,
+      ),
+
+      tool(
+        'gh_approve_pr',
+        'Approve a GitHub pull request.',
+        { repoSlug: z.string(), prId: z.number() },
+        h.gh_approve_pr,
+      ),
+
+      tool(
+        'gh_merge_pr',
+        'Merge a GitHub pull request (squash merge). Only call when approved.',
+        { repoSlug: z.string(), prId: z.number(), message: z.string().optional() },
+        h.gh_merge_pr,
+      ),
+
       // ── Test harness ──────────────────────────────────────────────────────
 
       tool(

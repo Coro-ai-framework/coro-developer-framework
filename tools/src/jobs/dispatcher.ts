@@ -1,6 +1,7 @@
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { JobInput, STATUS_CODING, STATUS_COMPLETE, STATUS_FAILED, isParkingStatus } from './types'
 import { runJob, RunnerContext } from './runner'
+import type { EventTransport } from '../state/transport'
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 //
@@ -16,12 +17,22 @@ export class Dispatcher {
   private readonly eventQueue = new Map<string, WebhookEvent[]>()
   private readonly activeQueries = new Map<string, Query>()
 
-  constructor(private readonly ctx: RunnerContext) {}
+  constructor(
+    private readonly ctx: RunnerContext,
+    transport?: EventTransport,
+  ) {
+    // Register for transport events (used in Phase 3 when events arrive via WebSocket)
+    if (transport) {
+      transport.onEvent(async (event) => {
+        await this.handleWebhookEvent(event.source, event.eventKey, event.payload)
+      })
+    }
+  }
 
   // ── CLI / API triggers ──────────────────────────────────────────────────────
 
   async dispatch(input: JobInput) {
-    const job = await this.ctx.registry.createJob(input)
+    const job = await this.ctx.stateBackend.createJob(input)
     this.ctx.logger.info({ jobId: job.id, type: job.type }, 'Job dispatched')
     this.fireAndForget(job.id)
     return job
@@ -40,7 +51,7 @@ export class Dispatcher {
    * and the session is reset (Claude starts fresh for that phase).
    */
   async resumeJob(jobId: string, fromPhase?: string, clearSession = false): Promise<void> {
-    const job = await this.ctx.registry.getJob(jobId)
+    const job = await this.ctx.stateBackend.getJob(jobId)
     if (!job) throw new Error(`Job not found: ${jobId}`)
 
     if (this.activeJobs.has(jobId)) {
@@ -54,7 +65,7 @@ export class Dispatcher {
     const phaseChanged = fromPhase && fromPhase !== job.phase
     const resetSession = clearSession || phaseChanged
 
-    await this.ctx.registry.updateJob(jobId, {
+    await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
       escalationMessage: undefined,
       awaitingEvent: undefined,
@@ -64,7 +75,7 @@ export class Dispatcher {
     })
 
     const sessionNote = resetSession ? ' (fresh session)' : job.sessionId ? ' (resuming session)' : ''
-    await this.ctx.registry.appendLog(
+    await this.ctx.stateBackend.appendLog(
       jobId,
       phaseChanged
         ? `[manual-resume] Restarting from phase: ${fromPhase}${sessionNote}`
@@ -101,7 +112,7 @@ export class Dispatcher {
       return
     }
 
-    const job = await this.ctx.registry.getJobByPr(prId)
+    const job = await this.ctx.stateBackend.getJobByPr(prId)
     if (!job) {
       this.ctx.logger.debug({ eventKey, prId }, 'No job found for PR — skipping')
       return
@@ -136,7 +147,7 @@ export class Dispatcher {
     const ticketId = extractJiraTicketId(payload)
     if (!ticketId) return
 
-    const job = await this.ctx.registry.getJobByJiraTicket(ticketId)
+    const job = await this.ctx.stateBackend.getJobByJiraTicket(ticketId)
     if (!job || !isParkingStatus(job.status)) return
 
     await this.resumeWithEvent(job.id, eventKey, payload)
@@ -163,19 +174,19 @@ export class Dispatcher {
   }
 
   private async injectAndResume(jobId: string, event: WebhookEvent): Promise<void> {
-    const job = await this.ctx.registry.getJob(jobId)
+    const job = await this.ctx.stateBackend.getJob(jobId)
     if (!job) return
 
     const pendingPrompt = buildWebhookMessage(event.eventKey, event.payload)
 
-    await this.ctx.registry.updateJob(jobId, {
+    await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       pendingPrompt,
     })
 
-    await this.ctx.registry.appendLog(jobId, `[webhook] Received: ${event.eventKey}`)
+    await this.ctx.stateBackend.appendLog(jobId, `[webhook] Received: ${event.eventKey}`)
     this.ctx.logger.info({ jobId, eventKey: event.eventKey }, 'Resuming parked job')
 
     this.fireAndForget(jobId)
@@ -216,7 +227,7 @@ export class Dispatcher {
       throw new Error('Failed to inject message — the agent query may have just finished')
     }
 
-    await this.ctx.registry.appendLog(jobId, `[human] ${message}`)
+    await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
     this.ctx.logger.info({ jobId }, 'Developer message injected into running agent')
   }
 
@@ -230,7 +241,7 @@ export class Dispatcher {
 
     this.activeJobs.add(jobId)
 
-    this.ctx.registry
+    this.ctx.stateBackend
       .getJob(jobId)
       .then(job => {
         if (!job) throw new Error(`Job not found: ${jobId}`)
@@ -241,7 +252,7 @@ export class Dispatcher {
       })
       .catch(err => {
         this.ctx.logger.error({ err, jobId }, 'Runner crashed unexpectedly')
-        return this.ctx.registry
+        return this.ctx.stateBackend
           .updateJob(jobId, {
             status: STATUS_FAILED,
             escalationMessage: `Runner crashed: ${String(err)}`,
@@ -262,7 +273,7 @@ export class Dispatcher {
         const next = queued.shift()!
         if (queued.length === 0) this.eventQueue.delete(jobId)
 
-        const job = await this.ctx.registry.getJob(jobId)
+        const job = await this.ctx.stateBackend.getJob(jobId)
         if (!job || !isParkingStatus(job.status)) {
           this.eventQueue.delete(jobId)
           return

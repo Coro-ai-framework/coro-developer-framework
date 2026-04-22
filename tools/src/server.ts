@@ -4,7 +4,7 @@ import express, { Express, Request, Response, NextFunction } from 'express'
 import swaggerUi from 'swagger-ui-express'
 import { Logger } from 'pino'
 import { Dispatcher } from './jobs/dispatcher'
-import { JobRegistry } from './jobs/registry'
+import type { StateBackend } from './state/backend'
 import { JobInput, JobType, isStoppedStatus } from './jobs/types'
 import { Settings } from './config/settings'
 import { openApiSpec } from './openapi'
@@ -12,7 +12,7 @@ import { openApiSpec } from './openapi'
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ServerContext {
-  registry: JobRegistry
+  stateBackend: StateBackend
   dispatcher: Dispatcher
   settings: Settings
   logger: Logger
@@ -63,7 +63,7 @@ function sseHeartbeat(res: Response): void {
 // ── Server factory ────────────────────────────────────────────────────────────
 
 export function createServer(ctx: ServerContext): Express {
-  const { registry, dispatcher, settings, logger } = ctx
+  const { stateBackend, dispatcher, settings, logger } = ctx
   const app = express()
 
   // ── Global middleware ──────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ export function createServer(ctx: ServerContext): Express {
     }
 
     // CLI-triggered: repo, reviewers, description, serviceName required
-    const { repo, reviewers, description, serviceName } = body
+    const { repo, reviewers, description, serviceName, gitProvider } = body
     if (!repo || !reviewers || !description || !serviceName) {
       res.status(400).json({
         error: 'Missing required fields: repo, reviewers, description, serviceName (or provide jiraTicketId)',
@@ -179,9 +179,11 @@ export function createServer(ctx: ServerContext): Express {
       return
     }
 
+    const provider = gitProvider === 'github' ? 'github' : 'bitbucket'
+
     const input: JobInput = {
       type: 'feature',
-      params: { repo, repoSlug: repo, reviewers, description, serviceName },
+      params: { repo, repoSlug: repo, reviewers, description, serviceName, gitProvider: provider },
     }
 
     const job = await dispatcher.dispatch(input)
@@ -202,9 +204,9 @@ export function createServer(ctx: ServerContext): Express {
 
     let jobs
     if (typeFilter && Object.values(JobType).includes(typeFilter as JobType)) {
-      jobs = await registry.listJobsByType(typeFilter as JobType)
+      jobs = await stateBackend.listJobsByType(typeFilter as JobType)
     } else {
-      jobs = await registry.listJobs()
+      jobs = await stateBackend.listJobs()
     }
 
     // Strip conversation history from list view — it can be large
@@ -228,7 +230,7 @@ export function createServer(ctx: ServerContext): Express {
   // ── GET /jobs/:jobId ───────────────────────────────────────────────────────
 
   app.get('/jobs/:jobId', async (req: Request, res: Response) => {
-    const job = await registry.getJob(req.params['jobId'] as string)
+    const job = await stateBackend.getJob(req.params['jobId'] as string)
     if (!job) {
       res.status(404).json({ error: `Job not found: ${req.params['jobId']}` })
       return
@@ -243,7 +245,7 @@ export function createServer(ctx: ServerContext): Express {
 
   app.get('/jobs/:jobId/stream', async (req: Request, res: Response) => {
     const jobId = req.params['jobId'] as string
-    const job = await registry.getJob(jobId)
+    const job = await stateBackend.getJob(jobId)
 
     if (!job) {
       res.status(404).json({ error: `Job not found: ${jobId}` })
@@ -260,7 +262,7 @@ export function createServer(ctx: ServerContext): Express {
     let cursor = 0
 
     // Send any existing log lines immediately
-    const existing = await registry.getLog(jobId)
+    const existing = await stateBackend.getLog(jobId)
     for (const line of existing) {
       sseWrite(res, line)
     }
@@ -269,14 +271,14 @@ export function createServer(ctx: ServerContext): Express {
     // Poll for new log lines every 500ms
     const pollInterval = setInterval(async () => {
       try {
-        const newLines = await registry.getLog(jobId, cursor, -1)
+        const newLines = await stateBackend.getLog(jobId, cursor, -1)
         for (const line of newLines) {
           sseWrite(res, line)
         }
         cursor += newLines.length
 
         // Close the stream when the job finishes (complete / failed / escalated)
-        const current = await registry.getJob(jobId)
+        const current = await stateBackend.getJob(jobId)
         if (!current) {
           clearInterval(pollInterval)
           clearInterval(heartbeatInterval)
@@ -312,7 +314,7 @@ export function createServer(ctx: ServerContext): Express {
 
   app.post('/jobs/:jobId/resume', async (req: Request, res: Response) => {
     const jobId = req.params['jobId'] as string
-    const job = await registry.getJob(jobId)
+    const job = await stateBackend.getJob(jobId)
     if (!job) {
       res.status(404).json({ error: `Job not found: ${jobId}` })
       return

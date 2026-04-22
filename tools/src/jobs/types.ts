@@ -163,6 +163,44 @@ export interface JobInput {
   params: Record<string, unknown>
 }
 
+// ── Proposals ─────────────────────────────────────────────────────────────────
+
+export type ProposalType =
+  | 'new-tool'
+  | 'modify-tool'
+  | 'new-workflow'
+  | 'modify-workflow'
+  | 'new-agent'
+  | 'modify-agent'
+  | 'memory-update'
+  | 'source-change'
+  | 'skill-create'
+  | 'skill-update'
+  | 'claude-md-update'
+
+export type ProposalStatus = 'pending' | 'approved' | 'rejected'
+
+export interface ProposalFile {
+  path: string
+  content: string
+}
+
+export interface Proposal {
+  id: string
+  tenantId: string
+  jobId: string
+  type: ProposalType
+  title: string
+  rationale: string
+  description: string
+  status: ProposalStatus
+  files: ProposalFile[]
+  createdAt: string
+  updatedAt: string
+  reviewedBy?: string
+  reviewNote?: string
+}
+
 // ── Token usage helpers ───────────────────────────────────────────────────────
 
 export function emptyTokenUsage(): TokenUsage {

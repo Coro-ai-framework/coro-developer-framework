@@ -44,7 +44,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
       })
 
-      await ctx.registry.addPrMapping(ctx.job.id, {
+      await ctx.stateBackend.addPrMapping(ctx.job.id, {
         prId: pr.id,
         feature: ctx.job.currentFeature ?? ctx.job.phase,
         repoSlug: repoSlug,
@@ -91,6 +91,87 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
     bb_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
       const pr = await ctx.bbReviewer.mergePr(repoSlug, prId, message)
+      return text({ state: pr.state })
+    },
+
+    // GitHub — uses a single token for both coder and reviewer operations
+    gh_create_repo: async ({ repoSlug, description }: { repoSlug: string; description?: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
+      const repo = await ctx.ghClient.createRepo({ repoSlug, description, isPrivate: true })
+      return text({ fullName: repo.full_name })
+    },
+
+    gh_create_pr: async ({
+      repoSlug, title, description, sourceBranch, targetBranch, reviewerUsernames,
+    }: {
+      repoSlug: string
+      title: string
+      description?: string
+      sourceBranch: string
+      targetBranch?: string
+      reviewerUsernames?: string[]
+    }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
+      const { jobReviewers } = await import('./jobs/types')
+      const pr = await ctx.ghClient.createPr({
+        repoSlug, title, description,
+        sourceBranch,
+        targetBranch: targetBranch ?? 'main',
+        reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
+      })
+
+      await ctx.stateBackend.addPrMapping(ctx.job.id, {
+        prId: pr.id,
+        feature: ctx.job.currentFeature ?? ctx.job.phase,
+        repoSlug: repoSlug,
+        openedAt: new Date().toISOString(),
+      })
+
+      return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
+    },
+
+    gh_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const status = await ctx.ghClient.getPrStatus(repoSlug, prId)
+      return text(status)
+    },
+
+    gh_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const comments = await ctx.ghClient.getComments(repoSlug, prId)
+      const mapped = comments.map(c => ({
+        id: c.id,
+        content: c.content.raw,
+        parentId: c.parent?.id ?? null,
+        createdOn: c.created_on,
+        inline: c.inline ?? null,
+      }))
+      return text(mapped)
+    },
+
+    gh_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const comment = await ctx.ghClient.postComment(repoSlug, prId, content)
+      return text({ commentId: comment.id })
+    },
+
+    gh_reply_to_comment: async ({
+      repoSlug, prId, parentId, content,
+    }: { repoSlug: string; prId: number; parentId: number; content: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const comment = await ctx.ghClient.replyToComment(repoSlug, prId, parentId, content)
+      return text({ commentId: comment.id })
+    },
+
+    gh_approve_pr: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      await ctx.ghClient.approvePr(repoSlug, prId)
+      return text({ approved: true })
+    },
+
+    gh_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
+      if (!ctx.ghClient) return error('GitHub is not configured.')
+      const pr = await ctx.ghClient.mergePr(repoSlug, prId, message)
       return text({ state: pr.state })
     },
 
@@ -208,15 +289,15 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       const items: FeatureItem[] = features.map(name => ({
         name, status: 'pending', loopCount: 0,
       }))
-      await ctx.registry.updateJob(ctx.job.id, { features: items })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.updateJob(ctx.job.id, { features: items })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ registered: features.length })
     },
 
     update_feature: async ({ name, status, incrementLoop }: {
       name: string; status?: string; incrementLoop?: boolean
     }) => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const features = job.features.map(f => {
         if (f.name !== name) return f
         return {
@@ -226,32 +307,32 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         }
       })
       const current = features.find(f => f.name === name)
-      await ctx.registry.updateJob(ctx.job.id, {
+      await ctx.stateBackend.updateJob(ctx.job.id, {
         features,
         currentFeature: status === 'in-progress' ? name : ctx.job.currentFeature,
         featureLoopCount: current?.loopCount ?? ctx.job.featureLoopCount,
       })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ updated: name, status: current?.status, loopCount: current?.loopCount })
     },
 
     get_features: async () => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ features: job.features, currentFeature: job.currentFeature })
     },
 
     request_new_session: async ({ reason }: { reason: string }) => {
-      await ctx.registry.updateJob(ctx.job.id, { sessionId: undefined })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
-      await ctx.registry.appendLog(ctx.job.id, `[session-reset] ${reason}`)
+      await ctx.stateBackend.updateJob(ctx.job.id, { sessionId: undefined })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.appendLog(ctx.job.id, `[session-reset] ${reason}`)
       return text({ newSession: true, reason })
     },
 
     set_job_params: async ({ params }: { params: Record<string, unknown> }) => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const merged = { ...job.params, ...params }
-      await ctx.registry.updateJob(ctx.job.id, { params: merged })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.updateJob(ctx.job.id, { params: merged })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       return text({ updated: Object.keys(params) })
     },
 
@@ -274,7 +355,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
     escalate: async ({ reason }: { reason: string }) => {
       const { STATUS_ESCALATED } = await import('./jobs/types')
-      await ctx.registry.updateJob(ctx.job.id, {
+      await ctx.stateBackend.updateJob(ctx.job.id, {
         status: STATUS_ESCALATED,
         escalationMessage: reason,
       })
@@ -287,7 +368,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     add_insight: async ({ category, summary, detail, suggestion }: {
       category: string; summary: string; detail: string; suggestion?: string
     }) => {
-      const job = await ctx.registry.getJob(ctx.job.id) as Job
+      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const insight: Insight = {
         phase: job.phase,
         category,
@@ -296,14 +377,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         ...(suggestion ? { suggestion } : {}),
       }
       const insights = [...(job.insights ?? []), insight]
-      await ctx.registry.updateJob(ctx.job.id, { insights })
-      ctx.job = await ctx.registry.getJob(ctx.job.id) as Job
-      await ctx.registry.appendLog(ctx.job.id, `[insight] ${category}: ${summary}`)
+      await ctx.stateBackend.updateJob(ctx.job.id, { insights })
+      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      await ctx.stateBackend.appendLog(ctx.job.id, `[insight] ${category}: ${summary}`)
       return text({ recorded: true, totalInsights: insights.length })
     },
 
     log: async ({ message }: { message: string }) => {
-      await ctx.registry.appendLog(ctx.job.id, message)
+      await ctx.stateBackend.appendLog(ctx.job.id, message)
       return text(null)
     },
 

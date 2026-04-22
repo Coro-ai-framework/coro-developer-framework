@@ -10,8 +10,8 @@ export function useJobs(pollIntervalMs = 5000) {
     try {
       const res = await fetch('/jobs')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json() as { jobs: JobSummary[] }
-      setJobs(data.jobs)
+      const data = await res.json() as JobSummary[]
+      setJobs(data)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch jobs')

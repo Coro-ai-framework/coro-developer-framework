@@ -17,9 +17,10 @@ export class GitClient {
     private readonly username: string,
     private readonly appPassword: string,
     private readonly workspace: string,
+    private readonly host: string = 'bitbucket.org',
   ) {}
 
-  /** Clone a BitBucket repo into `targetDir` (relative to workingDir if not absolute). */
+  /** Clone a repo into `targetDir` (relative to workingDir if not absolute). */
   async clone(repoSlug: string, targetDir: string): Promise<string> {
     const url = this.repoUrl(repoSlug)
     const dest = path.isAbsolute(targetDir) ? targetDir : path.join(this.workingDir, targetDir)
@@ -91,12 +92,18 @@ export class GitClient {
     return result.all
   }
 
+  /** Get the name of the currently checked-out branch. */
+  async currentBranch(repoDir: string): Promise<string> {
+    const result = await this.git(repoDir).branchLocal()
+    return result.current
+  }
+
   // ── Private helpers ─────────────────────────────────────────────────────────
 
   private repoUrl(repoSlug: string): string {
     const u = encodeURIComponent(this.username)
     const p = encodeURIComponent(this.appPassword)
-    return `https://${u}:${p}@bitbucket.org/${this.workspace}/${repoSlug}.git`
+    return `https://${u}:${p}@${this.host}/${this.workspace}/${repoSlug}.git`
   }
 
   private git(dir: string) {
@@ -119,6 +126,20 @@ export function createGitClient(settings: Settings): GitClient {
     gitUsername,
     coderAccount.appPassword,
     settings.bitbucket.workspace,
+    'bitbucket.org',
+  )
+}
+
+/** Create a GitClient that clones from GitHub using a PAT. */
+export function createGitHubGitClient(settings: Settings): GitClient | null {
+  if (!settings.github.token) return null
+  // GitHub PATs use x-access-token as the username for HTTPS auth
+  return new GitClient(
+    settings.paths.workingDir,
+    'x-access-token',
+    settings.github.token,
+    settings.github.owner,
+    'github.com',
   )
 }
 

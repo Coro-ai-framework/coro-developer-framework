@@ -170,12 +170,17 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
 }
 
 const RESUMABLE_STATUSES = new Set([
-  'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge',
+  'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge', 'queued',
+  // Phase statuses — job may be stuck here after a server restart or crash
+  'planning', 'coding', 'reviewing', 'testing', 'evaluating',
+  'spec-writing', 'analysis', 'repo-setup', 'reporting',
 ])
 
 const NON_RUNNING_STATUSES = new Set([
   'complete', 'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge', 'queued',
 ])
+
+const WORKFLOW_PHASES = ['planning', 'coding', 'review', 'testing', 'evaluation'] as const
 
 export default function JobDetail() {
   const { jobId } = useParams<{ jobId: string }>()
@@ -183,24 +188,32 @@ export default function JobDetail() {
   const { lines, status: connStatus, lastHeartbeat } = useJobStream(jobId)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
+  const [showResumeOptions, setShowResumeOptions] = useState(false)
+  const [resumePhase, setResumePhase] = useState<string>('')
+  const [clearSession, setClearSession] = useState(false)
   const [messageText, setMessageText] = useState('')
   const [sendingMessage, setSendingMessage] = useState(false)
   const [messageError, setMessageError] = useState<string | null>(null)
 
-  const handleResume = async () => {
+  const handleResume = async (fromPhase?: string, shouldClearSession = false) => {
     if (!jobId) return
     setResuming(true)
     setResumeError(null)
     try {
+      const body: Record<string, unknown> = {}
+      if (fromPhase) body.fromPhase = fromPhase
+      if (shouldClearSession) body.clearSession = true
+
       const res = await fetch(`/jobs/${jobId}/resume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
       })
       if (!res.ok) {
         const data = await res.json() as { error?: string }
         throw new Error(data.error ?? `HTTP ${res.status}`)
       }
+      setShowResumeOptions(false)
       await refetch()
     } catch (err) {
       setResumeError(err instanceof Error ? err.message : 'Resume failed')
@@ -278,13 +291,71 @@ export default function JobDetail() {
 
           <div className="flex items-center gap-2">
             {RESUMABLE_STATUSES.has(job.status) && (
-              <button
-                onClick={() => void handleResume()}
-                disabled={resuming}
-                className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {resuming ? 'Resuming...' : '▶ Resume'}
-              </button>
+              <div className="relative">
+                <div className="flex">
+                  <button
+                    onClick={() => void handleResume()}
+                    disabled={resuming}
+                    className="px-3 py-1.5 rounded-l-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {resuming ? 'Resuming...' : `▶ Resume (${job.phase})`}
+                  </button>
+                  <button
+                    onClick={() => setShowResumeOptions(prev => !prev)}
+                    disabled={resuming}
+                    className="px-1.5 py-1.5 rounded-r-md text-xs font-medium bg-indigo-700 text-white hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors border-l border-indigo-500"
+                    title="Resume options"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                </div>
+
+                {showResumeOptions && (
+                  <div className="absolute right-0 top-full mt-1 w-72 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl z-20 p-3 space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1">Resume from phase</label>
+                      <select
+                        value={resumePhase}
+                        onChange={(e) => setResumePhase(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="">Current phase ({job.phase})</option>
+                        {WORKFLOW_PHASES.map(p => (
+                          <option key={p} value={p}>{p}{p === job.phase ? ' (current)' : ''}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={clearSession}
+                        onChange={(e) => setClearSession(e.target.checked)}
+                        className="rounded bg-zinc-800 border-zinc-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
+                      />
+                      Fresh session (discard conversation history)
+                    </label>
+
+                    <div className="flex items-center justify-between pt-1 border-t border-zinc-800">
+                      <button
+                        onClick={() => setShowResumeOptions(false)}
+                        className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => void handleResume(resumePhase || undefined, clearSession)}
+                        disabled={resuming}
+                        className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors"
+                      >
+                        {resuming ? 'Resuming...' : 'Resume'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
             <button
               onClick={() => void refetch()}

@@ -15,6 +15,7 @@ const apiProxy: ProxyOptions = {
 }
 
 export default defineConfig({
+  base: '/dashboard/',
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
@@ -22,6 +23,7 @@ export default defineConfig({
       '/jobs': apiProxy,
       '/health': apiProxy,
       '/webhook': apiProxy,
+      '/config': apiProxy,
     },
   },
 })

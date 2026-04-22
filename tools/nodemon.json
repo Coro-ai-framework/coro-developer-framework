@@ -1,0 +1,12 @@
+{
+  "watch": ["src"],
+  "ext": "ts,json",
+  "ignore": [
+    "data/**",
+    "dist/**",
+    "dashboard/**",
+    "tests/**",
+    "node_modules/**",
+    "config/settings.json"
+  ]
+}

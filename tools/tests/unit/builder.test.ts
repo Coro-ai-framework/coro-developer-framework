@@ -36,12 +36,17 @@ function makeJob(overrides: Partial<Job> = {}): Job {
 function makeSettings(a5aiDir = '/data/a5-ai'): Settings {
   return {
     host: { port: 3000, webhookSecret: 'secret', logLevel: 'silent' },
-    claude: { apiKey: 'key', planningModel: 'claude-opus-4-6', codingModel: 'claude-sonnet-4-6' },
+    claude: {
+      auth: { method: 'apiKey', apiKey: 'key' },
+      planningModel: 'claude-opus-4-6',
+      codingModel: 'claude-sonnet-4-6',
+    },
     bitbucket: {
       workspace: 'ws', baseUrl: 'https://api.bitbucket.org/2.0',
       coderAccount: { username: 'coder', appPassword: 'pass' },
       reviewerAccount: { username: 'reviewer', appPassword: 'pass' },
     },
+    github: { owner: '', token: '', baseUrl: 'https://api.github.com' },
     redis: { url: 'redis://localhost' },
     paths: { workingDir: '/data/working', a5aiDir },
     loki: { baseUrl: '', apiKey: '', username: '' },
