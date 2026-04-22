@@ -299,13 +299,6 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
       // ── Job control ───────────────────────────────────────────────────────
 
       tool(
-        'mark_phase_complete',
-        'Optional hint that you are done. The runner auto-advances to the next phase when you finish regardless, so this is not required. Calling it ends the current turn early.',
-        {},
-        h.mark_phase_complete,
-      ),
-
-      tool(
         'goto_phase',
         'Override which phase runs next (e.g. go back to "coding" after posting review comments). Ends the current turn.',
         { phase: z.string() },
@@ -393,6 +386,16 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         'List past proposals filed by agents. Check before proposing duplicates.',
         { limit: z.number().optional(), type: z.string().optional() },
         h.list_proposals,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      // ── On-demand context ─────────────────────────────────────────────────
+
+      tool(
+        'read_memory',
+        'Load accumulated memory (known pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: returns the memory index + every linked file + pending proposals. Pass `file` (relative to memory/) to fetch a single file. Call this when you start a job OR when you need to check prior learnings before making decisions — the system prompt no longer carries memory by default.',
+        { file: z.string().optional().describe('Optional path relative to memory/, e.g. "known-pitfalls.md"') },
+        h.read_memory,
         { annotations: { readOnlyHint: true } },
       ),
 

@@ -48,13 +48,6 @@ describe('createMcpToolHandlers — job control & signals', () => {
     signals = {}
   })
 
-  it('mark_phase_complete sets phaseComplete hint', async () => {
-    const h = createMcpToolHandlers(ctx, signals)
-    const out = parseJson(await h.mark_phase_complete()) as Record<string, unknown>
-    expect(signals.phaseComplete).toBe(true)
-    expect(out).toEqual({ acknowledged: true })
-  })
-
   it('await_event sets awaitingEvent and optional awaitingPrId', async () => {
     const h = createMcpToolHandlers(ctx, signals)
     await h.await_event({ eventName: 'pr:merged', prId: 7 })

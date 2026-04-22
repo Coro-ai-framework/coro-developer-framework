@@ -51,12 +51,15 @@ export class Dispatcher {
   /**
    * Resume an escalated or failed job from its current phase (or a specific phase).
    *
-   * If `fromPhase` matches the job's current phase, the existing Agent SDK session
-   * is reused (`resume: sessionId`) so the conversation continues exactly where it
-   * stopped — previously completed phases are NOT re-run.
+   * The runner always starts a fresh Claude Code session per iteration (see
+   * runner.ts for rationale), so manual resume behaves the same way: the
+   * agent re-enters the chosen phase with the rebuilt system prompt and no
+   * carry-over transcript. Previously completed phases are NOT re-run — the
+   * job simply re-runs the current (or selected) phase from scratch.
    *
-   * If `fromPhase` differs from the current phase, the job is moved to that phase
-   * and the session is reset (Claude starts fresh for that phase).
+   * If `fromPhase` differs from the current phase, the job is moved to that
+   * phase before firing the runner. `clearSession` is kept for backward
+   * compatibility and simply wipes `sessionId` from state when set.
    */
   async resumeJob(jobId: string, fromPhase?: string, clearSession = false): Promise<void> {
     const job = await this.ctx.stateBackend.getJob(jobId)
@@ -209,8 +212,12 @@ export class Dispatcher {
    *   1. Job is actively running — inject via Query.streamInput() so the live
    *      agent sees the message mid-turn (zero session rebuild).
    *   2. Job is parked waiting for developer input — build a framed prompt,
-   *      clear the awaiting* fields, and resume the job. Session continuity is
-   *      preserved via `resume: sessionId` in the runner.
+   *      clear the awaiting* fields, and resume the job. The runner starts a
+   *      fresh Claude Code session for this next turn (it does not pass
+   *      `resume: sessionId`) — the framed prompt plus the rebuilt system
+   *      prompt carry the developer's message and all job context, which is
+   *      sufficient and sidesteps a known SDK bug where in-process MCP
+   *      servers do not reliably survive across resumed sessions.
    *
    * Any other status (complete, failed, queued without a live query) throws.
    */
@@ -264,16 +271,8 @@ export class Dispatcher {
       message,
       job.phase,
       job.awaitingEvent,
-      job.awaitingNextPhase,
       (job.artifacts ?? []).filter(a => a.phase === job.phase),
     )
-
-    // If this was an approval checkpoint park (not a mid-phase pause),
-    // remember that the developer has already approved leaving this phase.
-    // The runner consumes this flag on the next turn to avoid re-parking
-    // when the agent follows the framed prompt's instruction to call
-    // `goto_phase(awaitingNextPhase)`.
-    const isCheckpointApproval = Boolean(job.awaitingNextPhase)
 
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
@@ -281,7 +280,6 @@ export class Dispatcher {
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
       pendingPrompt,
-      ...(isCheckpointApproval ? { approvedAdvanceFromPhase: job.phase } : {}),
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
@@ -347,42 +345,35 @@ export class Dispatcher {
 
 /**
  * Build the framed prompt the runner will send to the agent when a developer
- * responds to an interactive checkpoint or mid-phase pause.
+ * responds to a paused-for-developer-input park.
  *
- * The agent is expected to:
- *   - Treat a "continue" / "approved" message as permission to advance (call
- *     `goto_phase` to `awaitingNextPhase` when present).
- *   - Treat any substantive feedback as rework instructions for the CURRENT
- *     phase. When done, finish the turn — the runner will re-park for
- *     re-approval if the phase still has interactiveCheckpoint.
+ * The runner no longer auto-parks at phase boundaries — agents explicitly
+ * call `await_event('developer-input: <reason>')` when they need human input
+ * (approval, clarification, design choice). This builder therefore just
+ * relays the developer's reply and reminds the agent to:
+ *
+ *   1. Apply the guidance and finish the phase as normal (the runner will
+ *      auto-advance — or the agent can call `goto_phase` to loop back).
+ *   2. Capture reusable guidance via `add_insight` for the evaluator.
  */
 export function buildDeveloperInputMessage(
   message: string,
   phase: string,
   awaitingEvent: string | undefined,
-  awaitingNextPhase: string | undefined,
   currentPhaseArtifacts: Artifact[],
 ): string {
-  const midPhase = !awaitingNextPhase // mid-phase pause via await_event
   const reason = awaitingEvent?.startsWith('developer-input:')
     ? awaitingEvent.slice('developer-input:'.length).trim()
     : ''
 
   const lines = [
-    '[DEVELOPER RESPONSE — INTERACTIVE CHECKPOINT]',
+    '[DEVELOPER RESPONSE]',
     '',
+    `You paused during phase: ${phase}.`,
   ]
 
-  if (midPhase) {
-    lines.push(
-      `You paused mid-phase during: ${phase}.`,
-      reason ? `You were waiting for input on: "${reason}".` : '',
-    )
-  } else {
-    lines.push(
-      `You are parked waiting for developer approval after phase: ${phase}.`,
-      `Next phase (if approved): ${awaitingNextPhase}`,
-    )
+  if (reason) {
+    lines.push(`You were waiting for input on: "${reason}".`)
   }
 
   if (currentPhaseArtifacts.length > 0) {
@@ -397,30 +388,13 @@ export function buildDeveloperInputMessage(
     'Developer said:',
     `"${message}"`,
     '',
+    'Use the developer\'s answer to continue. Finish the phase normally when done — the ' +
+    'runner will auto-advance. If you need to revisit an earlier phase (e.g. rework after ' +
+    'a review comment), call `goto_phase`. If this reply contains a reusable pattern or ' +
+    'convention, record it via `add_insight` so the evaluator can review it.',
   )
 
-  if (midPhase) {
-    lines.push(
-      'Use the developer\'s answer to continue your current phase. When you\'re done, ' +
-      'just finish your turn — the runner will advance (or re-park for approval if your ' +
-      'phase has a checkpoint).',
-    )
-  } else {
-    lines.push(
-      `If this is approval to proceed, call \`mcp__a5__goto_phase\` with phase "${awaitingNextPhase}".`,
-      `If they want changes, do the requested work in the CURRENT phase (${phase}) and:`,
-      `  - when done, finish your turn and you will park again for re-approval, OR`,
-      `  - if they explicitly asked you to advance after you finish, call goto_phase to "${awaitingNextPhase}".`,
-    )
-  }
-
-  lines.push(
-    '',
-    'If this guidance represents a reusable pattern or convention that should apply to ' +
-    'future jobs, record it via the `add_insight` tool so the Evaluator can review it.',
-  )
-
-  return lines.filter(l => l !== undefined).join('\n')
+  return lines.join('\n')
 }
 
 // ── Webhook message builder ───────────────────────────────────────────────────

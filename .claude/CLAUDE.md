@@ -10,7 +10,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 ## Agent behavior rules
 
-1. **Read memory before doing anything.** Read `memory/MEMORY.md` and every file it references. Memory contains hard-won knowledge from past runs. Do not repeat known mistakes.
+1. **Load memory on demand via `read_memory`.** Memory is NOT pre-loaded into your system prompt. At the start of a job (or whenever you need to check prior learnings, known pitfalls, conventions, or pending proposals), call `mcp__a5__read_memory` with no arguments — it returns the index, every linked file, and any pending on-disk proposals. For a single file, pass `{ file: "known-pitfalls.md" }`.
 
 2. **Read conventions before writing code or opening PRs.** Follow the git conventions below and invoke the language conventions skill for the target language before writing or reviewing code.
 
@@ -20,7 +20,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 5. **Never change an API contract without documenting it.** If a service must deviate from the source contract, document the deviation in the PR description with the reason. Never silently omit an endpoint.
 
-6. **Record insights when you learn something reusable.** A failure pattern, a workaround, a translation rule, an auth quirk — if it will help future runs, call `add_insight` with the category, a one-line summary, and full context. The Evaluator reviews all insights at the end and decides what to propose via `propose_change`. Do not call `propose_change` directly unless you are the Evaluator or PR Reviewer agent.
+6. **Record insights when you learn something reusable.** A failure pattern, a workaround, a translation rule, an auth quirk — if it will help future runs, call `add_insight` with the category, a one-line summary, and full context. The Evaluator reviews all insights at the end and decides what to propose via `propose_change`. `propose_change` is enforced by a runtime hook to only work during the `evaluation` phase — calls from any other phase are denied. Use `add_insight` everywhere else and let the evaluator decide.
 
 7. **Prefer observed behavior over code analysis.** When a service's behavior is ambiguous, call `loki_query` to check actual production traffic before assuming. Code can lie; logs don't.
 
@@ -67,11 +67,15 @@ All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__l
 - `set_job_params` — Set dynamic job parameters (e.g., language)
 
 ### Job control
-- `mark_phase_complete` — Optional early turn end
-- `goto_phase` — Override next phase (e.g., loop back to coding)
-- `await_event` — Park job waiting for external event
-- `escalate` — Escalate to human
-- `log` — Append to job log stream
+- `goto_phase` — Override the next phase (e.g., loop back to coding, or jump over phases). If you do not call `goto_phase`, the runner auto-advances to the next phase when your turn ends. There is no separate "complete this phase" tool — simply finish your work and end your turn.
+- `await_event` — Park the job waiting for an external event. Two main uses:
+  - `await_event({ eventName: "pr:merged", prId })` for PR-driven waits.
+  - `await_event({ eventName: "developer-input: <short reason>" })` whenever you need a human to approve, clarify, or choose between options. This is the **only** way to get a human in the loop — the runner never auto-parks for you.
+- `escalate` — Escalate to human when you cannot self-resolve (not a substitute for `await_event`).
+- `log` — Append to the job log stream.
+
+### On-demand context
+- `read_memory` — Load accumulated memory (pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: full bundle. `{ file }`: a single file. The system prompt no longer carries memory by default — call this yourself.
 
 ### BitBucket (use when `params.gitProvider` is `bitbucket` or unset)
 - `bb_create_repo` — Create a new private BitBucket repository
@@ -151,38 +155,35 @@ post_artifact({
 })
 ```
 
-## Interactive mode — parking and developer messages
+## Interactive mode — agent-driven checkpoints
 
-Some jobs run with `interactive: true`. For these, the runtime parks the job **after** your turn ends at any phase marked `interactive_checkpoint: true` in the workflow MD (currently: planning, coding, review, testing, evaluation, reporting). You do not need to do anything special — just finish your work, post artefacts, and end your turn. The runner sets the status to `awaiting-developer-input` and waits.
-
-When the developer sends a message, you will be resumed with a framed prompt starting with:
-
-```
-[DEVELOPER RESPONSE — INTERACTIVE CHECKPOINT]
-```
-
-The prompt tells you:
-- The phase you were parked after.
-- The artefacts you posted that phase.
-- The next phase (if you are approved to proceed).
-- The developer's verbatim message.
-
-Based on the message:
-- **Approval** ("go ahead", "looks good", "continue") → call `goto_phase("{next-phase}")` to advance.
-- **Rework** ("add X", "rename Y", "fix Z before moving on") → do the requested work in the **current** phase, post any updated artefacts, then end your turn. The runner will park again for re-approval.
-- **Ambiguous** → make your best interpretation and explain in `log` what you're about to do. Do not ask another question — the developer has already spoken.
-
-### Mid-phase pause (asking for developer input yourself)
-
-If you genuinely need developer input **mid-phase** (e.g., a critical design decision that the spec does not answer), call:
+The runner **never** auto-parks at phase boundaries. If a phase needs human approval, the **agent** must explicitly ask for it by calling:
 
 ```
 await_event({ eventName: "developer-input: <short reason>" })
 ```
 
-The `developer-input:` prefix is recognised by the runner and parks the job with status `awaiting-developer-input`. When the developer replies, you are resumed with the same `[DEVELOPER RESPONSE …]` prompt pattern. Because this is mid-phase, there is no `next-phase` — continue on the current phase with the guidance the developer gave you.
+The `developer-input:` prefix is recognised by the runner and parks the job with status `awaiting-developer-input`.
 
-**Reserve `escalate` for actual blockers** — things you genuinely cannot resolve (build broken after 5 attempts, auth credentials invalid, external API down). "Asking for approval" or "wanting a design decision" is not an escalation; use the interactive-checkpoint auto-park or `await_event('developer-input: …')` instead.
+### When to park for approval
+
+Jobs run with `interactive: true` expect a checkpoint at phase boundaries that the workflow MD marks with `interactive_checkpoint: true`. That flag is metadata for the dashboard only — **you** are responsible for calling `await_event` at the end of such a phase. Check `job.interactive` in your context; when it is `true` and you have just finished a phase that the workflow flagged as a checkpoint, call `await_event` before ending your turn. When `job.interactive` is `false`, skip the park and let the runner auto-advance.
+
+Also park proactively — regardless of `interactive_checkpoint` — whenever you need a human decision mid-phase (an ambiguous spec, a design tradeoff, a credential you cannot find). Prefer `await_event` over `escalate` when a human response would let you continue; reserve `escalate` for actual blockers.
+
+### Resume prompt format
+
+When the developer sends a message, you are resumed with a framed prompt starting with `[DEVELOPER RESPONSE]`. It tells you:
+
+- The phase you were paused during.
+- What you were waiting for (the reason string you passed to `await_event`).
+- The artefacts you posted that phase.
+- The developer's verbatim message.
+
+Based on the message:
+- **Approval** ("go ahead", "looks good", "continue") → finish your turn. The runner auto-advances to the next workflow phase. If you want to jump somewhere non-default, call `goto_phase` before ending.
+- **Rework** ("add X", "rename Y", "fix Z first") → do the work in the **current** phase, post any updated artefacts, then either (a) call `await_event` again if you still need re-approval, or (b) end your turn / call `goto_phase` to move on.
+- **Ambiguous** → make your best interpretation and explain in `log` what you're about to do. Do not re-park just to re-ask — the developer has already spoken.
 
 ## Banned tools — do NOT use
 
@@ -204,6 +205,8 @@ When any agent calls `propose_change`, the Agent Host file watcher detects the w
 ## Working directory
 
 The Agent Host sets your current working directory (`cwd`) to `working/{job-id}/` before each phase starts. **This is your sandbox. All file operations must happen inside this directory.**
+
+This is enforced at runtime: a `PreToolUse` hook denies any `Write` or `Edit` that resolves outside your working directory. The only other write-allowed location is `<a5-ai>/memory/` — used when the evaluator's `propose_change` writes a proposal file. Any other path will be denied with a clear error message.
 
 Rules:
 - **Never `cd` above your working directory.** Do not navigate to parent directories, the user's home directory, or any path outside `$PWD`.

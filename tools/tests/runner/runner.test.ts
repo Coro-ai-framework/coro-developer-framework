@@ -138,10 +138,9 @@ describe('runJob (mocked Agent SDK query)', () => {
     ctx = makeRunnerContext(stateBackend)
   })
 
-  it('completes a single-phase workflow when phaseComplete is signalled', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+  it('completes a single-phase workflow when the stream ends', async () => {
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'sess-single' }
       })()
 
@@ -159,10 +158,9 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('advances phases then completes', async () => {
     let call = 0
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
         call += 1
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: `sess-${call}` }
       })()
 
@@ -216,13 +214,16 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.awaitingEvent).toBe(
       'developer-input: unclear if X should be idempotent',
     )
-    // Mid-phase pause: next phase is NOT recorded
+    // The runner no longer auto-parks at phase boundaries, so awaitingNextPhase
+    // is never set by it. Agents drive developer approval via await_event.
     expect(stateBackend.current.awaitingNextPhase).toBeUndefined()
-    // Phase stays the same
     expect(stateBackend.current.phase).toBe('alpha')
   })
 
-  it('auto-parks at phase boundary when interactive + interactiveCheckpoint', async () => {
+  it('runner does NOT auto-park even when phase has interactiveCheckpoint metadata', async () => {
+    // interactiveCheckpoint is now dashboard-only metadata. The runner does
+    // not inspect it — agents are responsible for calling await_event when
+    // human approval is needed.
     const workflowCheckpoint: WorkflowConfig = {
       initialPhase: 'alpha',
       initialStatus: 'queued',
@@ -233,15 +234,13 @@ describe('runJob (mocked Agent SDK query)', () => {
       overrides: {},
     }
 
-    // Seed state backend with interactive=true so syncJob patches preserve it.
     stateBackend = createMockStateBackend(
       makeJob({ phase: 'alpha', status: 'queued', interactive: true }),
     )
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'sess-cp' }
       })()
 
@@ -250,60 +249,9 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowCheckpoint,
     })
 
-    expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
-    expect(stateBackend.current.awaitingEvent).toContain('developer-input')
-    expect(stateBackend.current.awaitingNextPhase).toBe('beta')
-    // Phase stays on alpha — developer is approving into beta
-    expect(stateBackend.current.phase).toBe('alpha')
-  })
-
-  it('does NOT auto-park when interactive is false even if checkpoint flag is set', async () => {
-    const workflowCheckpoint: WorkflowConfig = {
-      initialPhase: 'alpha',
-      initialStatus: 'queued',
-      phases: [
-        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
-        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
-      ],
-      overrides: {},
-    }
-
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
-        inv.signals.phaseComplete = true
-        yield { type: 'system', session_id: 'sess' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha', interactive: false }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowCheckpoint,
-    })
-
-    // Advances to beta and completes normally
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
     expect(stateBackend.current.phase).toBe('beta')
-  })
-
-  it('does NOT auto-park on non-checkpoint phase even when interactive is true', async () => {
-    stateBackend = createMockStateBackend(
-      makeJob({ phase: 'alpha', status: 'queued', interactive: true }),
-    )
-    ctx = makeRunnerContext(stateBackend)
-
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
-        inv.signals.phaseComplete = true
-        yield { type: 'system', session_id: 'sess' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha', interactive: true }), ctx, {
-      queryImpl,
-      // workflowTwoPhase has no interactiveCheckpoint flags set
-      workflowConfigOverride: workflowTwoPhase,
-    })
-
-    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
-    expect(stateBackend.current.phase).toBe('beta')
+    expect(stateBackend.current.awaitingNextPhase).toBeUndefined()
   })
 
   it('parks with awaiting-plan-approval when event name includes "plan"', async () => {
@@ -340,9 +288,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('persists sessionId from system messages', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'persist-me' }
       })()
 
@@ -355,9 +302,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('logs assistant text from BetaMessage content blocks', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield {
           type: 'assistant',
           message: { content: [{ type: 'text', text: 'Hello from the assistant' }] },
@@ -375,9 +321,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('logs tool_use blocks from assistant message', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield {
           type: 'assistant',
           message: {
@@ -400,9 +345,8 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('logs tool_use_summary with summary text', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'tool_use_summary', summary: 'Read 3 files in src/' }
         yield { type: 'system', session_id: 'x' }
       })()
@@ -475,14 +419,13 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
   })
 
-  it('uses phase transition prompt when sessionId exists on second phase', async () => {
+  it('uses phase kickoff prompt (fresh on phase 1, continuation on phase 2)', async () => {
     const prompts: string[] = []
     let n = 0
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         n += 1
         prompts.push(inv.prompt)
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: `sess-${n}` }
       })()
 
@@ -492,8 +435,11 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(prompts).toHaveLength(2)
-    expect(prompts[0]).toContain('A new migration job has started')
-    expect(prompts[1]).toContain('advancing to phase')
+    // Phase 1 has no sessionId yet — fresh kickoff.
+    expect(prompts[0]).toContain('Begin phase')
+    expect(prompts[0]).toContain('alpha')
+    // Phase 2 resumes the session — continuation kickoff.
+    expect(prompts[1]).toContain('now in phase')
     expect(prompts[1]).toContain('beta')
   })
 
@@ -524,7 +470,6 @@ describe('runJob (mocked Agent SDK query)', () => {
           inv.signals.nextPhase = 'beta'
           yield { type: 'system', session_id: 'sig-break' }
         } else {
-          inv.signals.phaseComplete = true
           yield { type: 'system', session_id: 'beta-done' }
         }
       })()
@@ -554,7 +499,7 @@ describe('runJob (mocked Agent SDK query)', () => {
     stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
         yield {
           type: 'assistant',
@@ -573,7 +518,6 @@ describe('runJob (mocked Agent SDK query)', () => {
           duration_api_ms: 30000,
           num_turns: 5,
         }
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'res-ok' }
       })()
 
@@ -600,7 +544,7 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('accumulates PhaseUsage entries across multiple phases', async () => {
     let call = 0
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
         call++
         yield {
@@ -615,7 +559,6 @@ describe('runJob (mocked Agent SDK query)', () => {
             },
           },
         }
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: `multi-${call}` }
       })()
 
@@ -640,9 +583,8 @@ describe('runJob (mocked Agent SDK query)', () => {
     stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = (inv: QueryInvocation) =>
+    const queryImpl = () =>
       (async function* () {
-        inv.signals.phaseComplete = true
         yield { type: 'system', session_id: 'no-turns' }
       })()
 

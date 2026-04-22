@@ -15,41 +15,20 @@ function art(partial: Partial<Artifact> = {}): Artifact {
   }
 }
 
-describe('buildDeveloperInputMessage', () => {
-  it('builds a checkpoint (phase-boundary) prompt with next phase guidance', () => {
-    const prompt = buildDeveloperInputMessage(
-      'Looks good, go ahead',
-      'planning',
-      'developer-input: approval after planning',
-      'coding',
-      [art()],
-    )
-
-    expect(prompt).toContain('[DEVELOPER RESPONSE — INTERACTIVE CHECKPOINT]')
-    expect(prompt).toContain('parked waiting for developer approval after phase: planning')
-    expect(prompt).toContain('Next phase (if approved): coding')
-    expect(prompt).toContain('plan-md: Migration plan')
-    expect(prompt).toContain('"Looks good, go ahead"')
-    expect(prompt).toContain('`mcp__a5__goto_phase`')
-    expect(prompt).toContain('"coding"')
-  })
-
-  it('builds a mid-phase prompt when awaitingNextPhase is undefined', () => {
+describe('buildDeveloperInputMessage (agent-driven checkpoints)', () => {
+  it('includes the pause reason when awaitingEvent has developer-input: prefix', () => {
     const prompt = buildDeveloperInputMessage(
       'Yes, make it idempotent',
       'coding',
       'developer-input: unclear if X should be idempotent',
-      undefined,
       [],
     )
 
-    expect(prompt).toContain('paused mid-phase during: coding')
+    expect(prompt).toContain('[DEVELOPER RESPONSE]')
+    expect(prompt).toContain('paused during phase: coding')
     expect(prompt).toContain('waiting for input on: "unclear if X should be idempotent"')
     expect(prompt).toContain('Developer said:')
     expect(prompt).toContain('"Yes, make it idempotent"')
-    expect(prompt).toContain('continue your current phase')
-    // Mid-phase message should NOT instruct goto_phase
-    expect(prompt).not.toContain('`mcp__a5__goto_phase`')
   })
 
   it('omits reason line when awaitingEvent has no "developer-input:" prefix', () => {
@@ -57,26 +36,43 @@ describe('buildDeveloperInputMessage', () => {
       'please proceed',
       'planning',
       undefined,
-      'coding',
       [],
     )
+    expect(prompt).toContain('[DEVELOPER RESPONSE]')
     expect(prompt).not.toContain('waiting for input on:')
+  })
+
+  it('lists artefacts posted during the current phase', () => {
+    const prompt = buildDeveloperInputMessage(
+      'Looks good, go ahead',
+      'planning',
+      'developer-input: approval after planning',
+      [art()],
+    )
+
+    expect(prompt).toContain('plan-md: Migration plan')
   })
 
   it('limits artefact listing to the last 10 entries', () => {
     const artifacts = Array.from({ length: 15 }, (_, i) =>
       art({ id: `art-${i}`, title: `artefact ${i}`, kind: 'file' }),
     )
-    const prompt = buildDeveloperInputMessage('ok', 'planning', undefined, 'coding', artifacts)
-    // Should include the last 10, not the first
+    const prompt = buildDeveloperInputMessage('ok', 'planning', undefined, artifacts)
     expect(prompt).toContain('artefact 14')
     expect(prompt).toContain('artefact 5')
     expect(prompt).not.toContain('artefact 0')
     expect(prompt).not.toContain('artefact 4')
   })
 
+  it('instructs agent to finish the phase normally (runner auto-advances) and can goto_phase on rework', () => {
+    const prompt = buildDeveloperInputMessage('x', 'coding', undefined, [])
+    expect(prompt).toContain('Finish the phase normally')
+    expect(prompt).toContain('runner will auto-advance')
+    expect(prompt).toContain('goto_phase')
+  })
+
   it('instructs agent to record reusable guidance via add_insight', () => {
-    const prompt = buildDeveloperInputMessage('x', 'planning', undefined, 'coding', [])
+    const prompt = buildDeveloperInputMessage('x', 'planning', undefined, [])
     expect(prompt).toContain('add_insight')
   })
 })

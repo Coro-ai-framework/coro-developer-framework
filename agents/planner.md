@@ -34,7 +34,7 @@ These are the MCP tools you use in this phase. Call them with the `mcp__a5__` pr
 ## Step-by-step procedure
 
 ### 1. Read memory
-Read `memory/MEMORY.md` and all referenced files before planning.
+Call `read_memory` (no args) to fetch `MEMORY.md`, every linked file, and any pending proposals. The system prompt does not carry memory — pull it yourself before planning.
 
 ### 2. Confirm the git provider before touching the repo
 

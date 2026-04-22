@@ -337,11 +337,6 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     },
 
     // Job control
-    mark_phase_complete: async () => {
-      signals.phaseComplete = true
-      return text({ acknowledged: true })
-    },
-
     goto_phase: async ({ phase }: { phase: string }) => {
       signals.nextPhase = phase
       return text({ goingToPhase: phase })
@@ -448,6 +443,61 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       const { listProposals } = await import('./tools/self-improvement')
       const result = await listProposals({ limit: args.limit, type: args.type }, ctx)
       return text(result)
+    },
+
+    // On-demand memory access. The system prompt no longer carries the memory
+    // bundle — agents pull what they need via this tool. Zero args returns the
+    // index + every file linked from it + any pending on-disk proposals; pass
+    // a specific relative path (e.g. "known-pitfalls.md") to fetch a single
+    // file without the rest.
+    read_memory: async (args: { file?: string }) => {
+      const fs = await import('fs/promises')
+      const nodePath = await import('path')
+      const memoryDir = nodePath.join(ctx.settings.paths.a5aiDir, 'memory')
+
+      const readFile = async (rel: string): Promise<string | null> => {
+        try {
+          return await fs.readFile(nodePath.join(memoryDir, rel), 'utf-8')
+        } catch {
+          return null
+        }
+      }
+
+      if (args.file) {
+        const content = await readFile(args.file)
+        if (content === null) return error(`memory file not found: ${args.file}`)
+        return text({ file: args.file, content })
+      }
+
+      const index = await readFile('MEMORY.md')
+      if (index === null) {
+        return text({ index: null, files: [], proposals: [] })
+      }
+
+      const linkRe = /\[[^\]]*\]\(([^)]+)\)/g
+      const linkedFiles: Array<{ path: string; content: string }> = []
+      const seen = new Set<string>()
+      let match: RegExpExecArray | null
+      while ((match = linkRe.exec(index)) !== null) {
+        const href = match[1].split(/[?#]/)[0]
+        if (!href || href.startsWith('http') || href.startsWith('#') || seen.has(href)) continue
+        seen.add(href)
+        const c = await readFile(href)
+        if (c !== null) linkedFiles.push({ path: href, content: c })
+      }
+
+      const proposals: Array<{ path: string; content: string }> = []
+      try {
+        const entries = await fs.readdir(nodePath.join(memoryDir, 'proposals'))
+        for (const f of entries.filter(e => e.endsWith('.md')).sort()) {
+          const c = await readFile(`proposals/${f}`)
+          if (c !== null) proposals.push({ path: `proposals/${f}`, content: c })
+        }
+      } catch {
+        // proposals dir absent — normal for new installs
+      }
+
+      return text({ index, files: linkedFiles, proposals })
     },
   }
 }

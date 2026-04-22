@@ -1,7 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
 import { Logger } from 'pino'
-import { GitClient } from '../clients/git'
 import { Settings } from '../config/settings'
 import { Job } from '../jobs/types'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
@@ -11,58 +10,42 @@ import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workfl
 /**
  * Assembles the system prompt for a Claude API call.
  *
- * Static content (behavior rules, company context, git conventions, infrastructure)
- * is loaded natively by the SDK via settingSources: ['project'] from .claude/CLAUDE.md.
- * Domain knowledge and language conventions are on-demand skills agents invoke themselves.
+ * The prompt is intentionally lean — just the ambient context the agent needs
+ * before it can decide what to do next. Anything the agent might *not* need
+ * every turn (memory, proposals, domain skills) is loaded on-demand via MCP
+ * tools (`read_memory`, `list_proposals`) and native SDK skills.
  *
- * This builder handles only dynamic, phase-conditioned content:
- *   1. Workflow file      — lifecycle definition for this job type
+ * Sections included (in order):
+ *   1. Workflow file      — phase list + high-level workflow prose
  *   2. Agent instructions — role-specific steps for the current phase
- *   3. Memory             — accumulated knowledge from past jobs
- *   4. Job context        — current job state as JSON (always last, most specific)
+ *   3. Job context        — current job state as JSON, plus insights if any
  *
- * The a5-ai repo is pulled before assembly so agents always run against
- * the latest instructions and memory. Pull failures are non-fatal — the
- * cached version is used instead.
+ * Static ambient content (behaviour rules, git conventions, infra context)
+ * is loaded natively by the SDK via `settingSources: ['project']` from
+ * `.claude/CLAUDE.md`. The `a5-ai` repo is pulled once per job in the runner,
+ * not per phase, so this function never does network I/O.
  */
 export async function buildSystemPrompt(
   job: Job,
   settings: Settings,
-  gitClient: GitClient,
   logger: Logger,
 ): Promise<string> {
   const a5aiDir = settings.paths.a5aiDir
 
-  // 1. Pull latest a5-ai — non-fatal if it fails (network issue, not a git repo locally)
-  try {
-    await gitClient.pull(a5aiDir)
-    logger.debug({ jobId: job.id, phase: job.phase }, 'Pulled latest a5-ai')
-  } catch (err) {
-    logger.warn({ err }, 'Could not pull a5-ai — using cached version on disk')
-  }
-
   const sections: string[] = []
 
-  // Root instructions (.claude/CLAUDE.md) and git/infrastructure context are now
-  // loaded natively by the SDK via settingSources: ['project']. The builder only
-  // handles dynamic, phase-conditioned content below.
-
-  // 2. Workflow file (dynamic per JobType — not hardcoded)
   const workflowAbsPath = path.join(a5aiDir, job.workflowPath)
   const workflowMd = await readSafe(workflowAbsPath, logger)
   const workflowConfig = workflowMd ? parseWorkflowConfig(workflowMd) : null
 
   if (workflowMd) {
-    const contentWithoutFrontMatter = stripFrontMatter(workflowMd)
-    sections.push(banner('Current Workflow', job.workflowPath) + contentWithoutFrontMatter)
+    sections.push(banner('Current Workflow', job.workflowPath) + stripFrontMatter(workflowMd))
   } else {
     logger.warn({ workflowPath: job.workflowPath }, 'Workflow file not found — continuing without it')
   }
 
-  // 4. Phase-specific agent instructions — resolved from workflow config
   const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, job.phase) : null
   const agentRelPath = phaseConf?.agent ?? null
-
   if (agentRelPath) {
     const agentMd = await readSafe(path.join(a5aiDir, agentRelPath), logger)
     if (agentMd) {
@@ -72,64 +55,9 @@ export async function buildSystemPrompt(
     }
   }
 
-  // 5. Memory
-  const memorySections = await loadMemory(a5aiDir, logger)
-  sections.push(...memorySections)
-
-  // Conventions, knowledge modules, and infrastructure context have been migrated
-  // to .claude/CLAUDE.md (always-loaded) and .claude/skills/ (on-demand).
-  // Agents invoke skills themselves when they need domain knowledge or language conventions.
-
-  // 8. Job context — always last so it is never overridden by generic instructions
   sections.push(buildJobContext(job))
 
   return sections.join('\n\n---\n\n')
-}
-
-// ── Memory loader ─────────────────────────────────────────────────────────────
-
-async function loadMemory(a5aiDir: string, logger: Logger): Promise<string[]> {
-  const memoryDir = path.join(a5aiDir, 'memory')
-  const sections: string[] = []
-
-  // Read the MEMORY.md index first
-  const indexContent = await readSafe(path.join(memoryDir, 'MEMORY.md'), logger)
-  if (!indexContent) return sections
-
-  sections.push(banner('Memory Index', 'memory/MEMORY.md') + indexContent)
-
-  // Load each file linked from the index
-  const linkedFiles = extractMarkdownLinkTargets(indexContent)
-  for (const filename of linkedFiles) {
-    // Skip external URLs and anchors
-    if (filename.startsWith('http') || filename.startsWith('#')) continue
-
-    const filePath = path.join(memoryDir, filename)
-    const content = await readSafe(filePath, logger)
-    if (content) {
-      sections.push(banner('Memory', `memory/${filename}`) + content)
-    }
-  }
-
-  // Load any pending proposals so the agent knows what improvements are in flight
-  const proposalsDir = path.join(memoryDir, 'proposals')
-  try {
-    const proposalFiles = await fs.readdir(proposalsDir)
-    const mdFiles = proposalFiles.filter(f => f.endsWith('.md')).sort()
-
-    if (mdFiles.length > 0) {
-      const proposalParts = [`## Pending Proposals (${mdFiles.length} awaiting human review)\n`]
-      for (const filename of mdFiles) {
-        const content = await readSafe(path.join(proposalsDir, filename), logger)
-        if (content) proposalParts.push(`### ${filename}\n\n${content}`)
-      }
-      sections.push(banner('Pending Proposals', 'memory/proposals/') + proposalParts.join('\n\n'))
-    }
-  } catch {
-    // proposals dir doesn't exist yet — normal for new installs
-  }
-
-  return sections
 }
 
 // ── Job context ───────────────────────────────────────────────────────────────
@@ -196,19 +124,6 @@ async function readSafe(filePath: string, logger: Logger): Promise<string | null
   }
 }
 
-/** Extract href values from all `[text](href)` links in markdown, stripping fragments/query. */
-function extractMarkdownLinkTargets(markdown: string): string[] {
-  const targets: string[] = []
-  const regex = /\[[^\]]*\]\(([^)]+)\)/g
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(markdown)) !== null) {
-    const href = match[1].split(/[?#]/)[0]
-    if (href) targets.push(href)
-  }
-  return targets
-}
-
-/** Format a section header so Claude can easily identify each loaded file. */
 function banner(label: string, source: string): string {
   return `# ${label}\n*Source: ${source}*\n\n`
 }

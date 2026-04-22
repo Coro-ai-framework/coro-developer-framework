@@ -104,11 +104,13 @@ Feature state is tracked in Redis via the `features[]` array on the Job object. 
 
 ## Phases
 
+> **Checkpoint reminder:** Phases flagged `interactive_checkpoint: true` expect you — the agent — to call `await_event({ eventName: "developer-input: <reason>" })` at the end of the phase when `job.interactive` is `true`. The runner does not auto-park. See `.claude/CLAUDE.md` → "Interactive mode — agent-driven checkpoints".
+
 ---
 
 ### Phase 0: Initialization
 
-1. Read `memory/MEMORY.md` and all referenced memory files
+1. Call `read_memory` to load `MEMORY.md`, every file it links, and any pending proposals. The system prompt no longer carries memory — you must pull it yourself at job start.
 2. Read `config/credentials.md` — verify BitBucket credentials are present; halt if not
 3. Read `config/repos.md` — look up the service entry if it exists; create/update it if not
 4. Create `working/{service-name}/` directory
@@ -145,7 +147,7 @@ The Planner must:
 2. Call `set_features` to register the feature list with the job
 3. Call `set_job_params({ language: "golang" })` to switch to the target language for all downstream phases
 
-**Human checkpoint (optional):** Present the migration plan to the user for review before proceeding.
+**Human checkpoint:** This phase is flagged `interactive_checkpoint: true`. If `job.interactive` is `true`, post the plan artefact and then call `await_event({ eventName: "developer-input: approval of migration plan" })` before ending your turn. The runner does NOT auto-park — you must park explicitly. If `job.interactive` is `false`, skip the park and let the runner advance to repo-setup.
 
 ---
 

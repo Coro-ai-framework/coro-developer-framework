@@ -19,14 +19,23 @@ export interface PhaseConfig {
   status: string
   subagents?: SubagentConfig[]
   /**
-   * When true AND the job is in interactive mode, the runner parks at the end
-   * of this phase waiting for developer approval before advancing.
+   * Metadata flag surfaced to the dashboard to mark a phase as
+   * "developer should approve before advancing". The runner no longer
+   * auto-parks based on this; agents are expected to call `await_event`
+   * explicitly when they need approval (see `.claude/CLAUDE.md`).
    */
   interactiveCheckpoint?: boolean
-  /** @deprecated No longer consumed by the builder — knowledge is now loaded on-demand via skills. Kept for parser backward compatibility. */
-  knowledge?: string[]
-  /** @deprecated No longer consumed by the builder — conventions are now loaded on-demand via skills. Kept for parser backward compatibility. */
-  conventions?: string[]
+  /**
+   * Optional whitelist of tool names available to the agent during this
+   * phase. When set, replaces the default tool list entirely — the runner
+   * passes this straight to `allowedTools` on the Agent SDK query. Use the
+   * exact tool names the SDK expects: `Read`, `Write`, `Edit`, `Bash`,
+   * `Glob`, `Grep`, `Skill`, `Agent`, and any `mcp__a5__*` patterns.
+   *
+   * If unset, the runner falls back to the workflow-agnostic defaults
+   * (all built-ins + all `mcp__a5__*`).
+   */
+  tools?: string[]
 }
 
 export interface WorkflowConfig {
@@ -65,8 +74,7 @@ interface RawPhase {
   status?: string
   subagents?: RawSubagent[]
   interactive_checkpoint?: boolean
-  knowledge?: string[]
-  conventions?: string[]
+  tools?: string[]
 }
 
 interface RawConfig {
@@ -107,6 +115,10 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
         phase.interactiveCheckpoint = true
       }
 
+      if (Array.isArray(p.tools) && p.tools.length > 0) {
+        phase.tools = p.tools.filter((t): t is string => typeof t === 'string')
+      }
+
       if (Array.isArray(p.subagents) && p.subagents.length > 0) {
         phase.subagents = p.subagents
           .filter((sa): sa is RawSubagent & { name: string } => typeof sa.name === 'string')
@@ -116,14 +128,6 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
             model: sa.model,
             tools: sa.tools,
           }))
-      }
-
-      if (Array.isArray(p.knowledge) && p.knowledge.length > 0) {
-        phase.knowledge = p.knowledge
-      }
-
-      if (Array.isArray(p.conventions) && p.conventions.length > 0) {
-        phase.conventions = p.conventions
       }
 
       return phase

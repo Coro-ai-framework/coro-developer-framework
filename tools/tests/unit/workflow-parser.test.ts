@@ -243,65 +243,33 @@ phases:
     })
   })
 
-  describe('knowledge and conventions metadata', () => {
-    it('parses knowledge array from phase', () => {
+  describe('per-phase tools whitelist', () => {
+    it('parses tools array from phase', () => {
       const yaml = `
 phases:
   - name: analysis
     agent: agents/analyzer.md
     model: planning
-    knowledge: [knowledge/migration/analysis-guide.md]
+    tools: [Read, Grep, Glob, mcp__a5__log]
 `
       const config = parseWorkflowConfig(md(yaml))!
-      expect(config.phases[0].knowledge).toEqual(['knowledge/migration/analysis-guide.md'])
+      expect(config.phases[0].tools).toEqual(['Read', 'Grep', 'Glob', 'mcp__a5__log'])
     })
 
-    it('parses conventions array from phase', () => {
-      const yaml = `
-phases:
-  - name: coding
-    agent: agents/coder.md
-    model: coding
-    conventions: [auto]
-`
-      const config = parseWorkflowConfig(md(yaml))!
-      expect(config.phases[0].conventions).toEqual(['auto'])
-    })
-
-    it('parses multiple knowledge and convention entries', () => {
-      const yaml = `
-phases:
-  - name: coding
-    agent: agents/coder.md
-    model: coding
-    knowledge: [knowledge/migration/coding-guide.md, knowledge/migration/review-guide.md]
-    conventions: [auto, conventions/extra.md]
-`
-      const config = parseWorkflowConfig(md(yaml))!
-      expect(config.phases[0].knowledge).toEqual([
-        'knowledge/migration/coding-guide.md',
-        'knowledge/migration/review-guide.md',
-      ])
-      expect(config.phases[0].conventions).toEqual(['auto', 'conventions/extra.md'])
-    })
-
-    it('omits knowledge and conventions when not specified', () => {
+    it('omits tools when not specified', () => {
       const config = parseWorkflowConfig(md(MINIMAL_YAML))!
-      expect(config.phases[0].knowledge).toBeUndefined()
-      expect(config.phases[0].conventions).toBeUndefined()
+      expect(config.phases[0].tools).toBeUndefined()
     })
 
-    it('omits knowledge and conventions when arrays are empty', () => {
+    it('omits tools when array is empty', () => {
       const yaml = `
 phases:
   - name: work
     model: coding
-    knowledge: []
-    conventions: []
+    tools: []
 `
       const config = parseWorkflowConfig(md(yaml))!
-      expect(config.phases[0].knowledge).toBeUndefined()
-      expect(config.phases[0].conventions).toBeUndefined()
+      expect(config.phases[0].tools).toBeUndefined()
     })
 
     it('parses interactive_checkpoint: true', () => {
