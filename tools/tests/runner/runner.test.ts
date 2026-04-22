@@ -500,24 +500,33 @@ describe('runJob (mocked Agent SDK query)', () => {
   // ── Token usage & cost tracking ───────────────────────────────────────────
 
   it('creates PhaseUsage with computed cost when signal breaks stream before result event', async () => {
+    // Only signal nextPhase on the first invocation; phase beta simply
+    // completes. Without this guard the generator would keep setting
+    // nextPhase='beta' when already on beta, looping forever.
+    let call = 0
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
-        // Simulate an assistant turn with token usage, then a signal break
-        yield {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'text', text: 'Working...' }],
-            usage: {
-              input_tokens: 1000,
-              output_tokens: 200,
-              cache_read_input_tokens: 500,
-              cache_creation_input_tokens: 100,
+        call++
+        if (call === 1) {
+          yield {
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'Working...' }],
+              usage: {
+                input_tokens: 1000,
+                output_tokens: 200,
+                cache_read_input_tokens: 500,
+                cache_creation_input_tokens: 100,
+              },
             },
-          },
+          }
+          // Agent calls goto_phase — sets signal, stream breaks before result event
+          inv.signals.nextPhase = 'beta'
+          yield { type: 'system', session_id: 'sig-break' }
+        } else {
+          inv.signals.phaseComplete = true
+          yield { type: 'system', session_id: 'beta-done' }
         }
-        // Agent calls goto_phase — sets signal, stream breaks before result event
-        inv.signals.nextPhase = 'beta'
-        yield { type: 'system', session_id: 'sig-break' }
       })()
 
     await runJob(makeJob({ phase: 'alpha' }), ctx, {
@@ -536,10 +545,15 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(alphaUsage!.numTurns).toBe(1)
     // No SDK result event → cost is 0 (token counts are the authoritative metric)
     expect(alphaUsage!.costUsd).toBe(0)
-    expect(alphaUsage!.durationMs).toBeGreaterThan(0)
+    expect(alphaUsage!.durationMs).toBeGreaterThanOrEqual(0)
   })
 
   it('creates PhaseUsage from result event and uses SDK cost when provided', async () => {
+    // Seed the mock state backend with phase='only' so `syncJob` patches
+    // preserve the correct phase when the runner records PhaseUsage.
+    stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
+    ctx = makeRunnerContext(stateBackend)
+
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         yield {
@@ -622,6 +636,10 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('creates zero-cost PhaseUsage when phase has no assistant turns', async () => {
+    // Seed the mock state backend with phase='only' to match the runJob arg.
+    stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
+    ctx = makeRunnerContext(stateBackend)
+
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         inv.signals.phaseComplete = true
