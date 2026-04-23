@@ -167,6 +167,28 @@ describe('local-config', () => {
       expect(loaded?.anthropic.oauthToken).toBe('sk-ant-oat01-abc')
     })
 
+    it('accepts { method: "claudeLogin" } with optional account metadata', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          anthropic: {
+            method: 'claudeLogin',
+            account: {
+              email: 'dev@a5labs.com',
+              organization: 'A5 Labs',
+              subscriptionType: 'max',
+              tokenSource: 'oauth',
+              apiProvider: 'firstParty',
+            },
+          },
+        }),
+      )
+      const loaded = loadLocalConfig(configPath)
+      expect(loaded?.anthropic.method).toBe('claudeLogin')
+      expect(loaded?.anthropic.account?.email).toBe('dev@a5labs.com')
+      expect(loaded?.anthropic.account?.apiProvider).toBe('firstParty')
+    })
+
     it('rejects { method: "oauth" } without a token', () => {
       fs.writeFileSync(
         configPath,

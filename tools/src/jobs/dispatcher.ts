@@ -51,11 +51,12 @@ export class Dispatcher {
   /**
    * Resume an escalated or failed job from its current phase (or a specific phase).
    *
-   * The runner always starts a fresh Claude Code session per iteration (see
-   * runner.ts for rationale), so manual resume behaves the same way: the
-   * agent re-enters the chosen phase with the rebuilt system prompt and no
-   * carry-over transcript. Previously completed phases are NOT re-run — the
-   * job simply re-runs the current (or selected) phase from scratch.
+    * The runner persists Claude sessions by default and reuses `sessionId`
+    * when it is safe to do so. Manual resume can either continue the prior
+    * session or force a fresh one: if `fromPhase` changes the phase (or
+    * `clearSession` is true), the agent re-enters with a rebuilt system prompt
+    * and no carry-over transcript. Previously completed phases are NOT re-run
+    * — the job simply re-runs the current (or selected) phase from scratch.
    *
    * If `fromPhase` differs from the current phase, the job is moved to that
    * phase before firing the runner. `clearSession` is kept for backward
@@ -280,6 +281,7 @@ export class Dispatcher {
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
       approvedAdvanceFromPhase: job.awaitingNextPhase ? job.phase : undefined,
+      sessionId: undefined,
       pendingPrompt,
     })
 

@@ -110,6 +110,7 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
         method: config.anthropic.method,
         apiKey: config.anthropic.apiKey,
         oauthToken: config.anthropic.oauthToken,
+        account: config.anthropic.account,
       },
       planningModel: process.env.CLAUDE_PLANNING_MODEL ?? 'claude-opus-4-6',
       codingModel: process.env.CLAUDE_CODING_MODEL ?? 'claude-sonnet-4-6',

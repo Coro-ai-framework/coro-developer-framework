@@ -3,6 +3,22 @@ import path from 'path'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+export interface ClaudeAccountInfo {
+  email?: string
+  organization?: string
+  subscriptionType?: string
+  tokenSource?: string
+  apiKeySource?: string
+  apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws'
+}
+
+export interface ClaudeAuthConfig {
+  method: 'apiKey' | 'oauth' | 'claudeLogin'
+  apiKey?: string
+  oauthToken?: string
+  account?: ClaudeAccountInfo
+}
+
 export interface BitBucketAccountConfig {
   username: string
   appPassword: string
@@ -23,15 +39,11 @@ export interface Settings {
   claude: {
     /**
      * Runtime-selected Anthropic auth. The runner maps this to exactly one of
-     * ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN when spawning Claude Code —
-     * setting both leaves ANTHROPIC_API_KEY winning, which silently ignores
-     * the user's choice.
+     * ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN when needed. The claudeLogin
+     * mode intentionally passes neither env var so Claude Code can use its own
+     * persisted login session and refresh handling.
      */
-    auth: {
-      method: 'apiKey' | 'oauth'
-      apiKey?: string
-      oauthToken?: string
-    }
+    auth: ClaudeAuthConfig
     planningModel: string
     codingModel: string
   }
@@ -163,7 +175,7 @@ function validate(s: Settings): void {
   if (!hasClaudeCredential(s.claude.auth)) {
     missing.push(
       'Anthropic credentials: set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, ' +
-      'or claude.auth in settings.json',
+      'or claude.auth in settings.json (apiKey, oauth, or claudeLogin)',
     )
   }
   if (!s.redis.url) missing.push('REDIS_URL (or redis.url in settings.json)')
@@ -220,6 +232,9 @@ function resolveClaudeAuth(file: Settings): Settings['claude']['auth'] {
   if (envOauth) return { method: 'oauth', oauthToken: envOauth }
 
   const fileAuth = (file.claude as Partial<Settings['claude']> | undefined)?.auth
+  if (fileAuth?.method === 'claudeLogin') {
+    return { method: 'claudeLogin', account: fileAuth.account }
+  }
   if (fileAuth?.method === 'oauth' && fileAuth.oauthToken) {
     return { method: 'oauth', oauthToken: fileAuth.oauthToken }
   }
@@ -235,6 +250,7 @@ function resolveClaudeAuth(file: Settings): Settings['claude']['auth'] {
 }
 
 function hasClaudeCredential(auth: Settings['claude']['auth']): boolean {
+  if (auth.method === 'claudeLogin') return true
   if (auth.method === 'apiKey') return !!auth.apiKey
   return !!auth.oauthToken
 }
