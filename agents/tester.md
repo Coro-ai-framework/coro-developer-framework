@@ -8,7 +8,7 @@ You are language-agnostic. Before running tests, invoke the testing skill for th
 
 ## MCP tools for this agent
 
-These are the MCP tools you use in this phase. Call them with the `mcp__a5__` prefix (e.g., `mcp__a5__log`). **Do NOT use ToolSearch to discover tools — this is the complete list.**
+These are the MCP tools most relevant in this phase. Call them with the `mcp__a5__` prefix (e.g., `mcp__a5__log`). Prefer these directly for predictable execution; use ToolSearch only if you cannot identify the right tool.
 
 | Tool | Purpose |
 |------|------|

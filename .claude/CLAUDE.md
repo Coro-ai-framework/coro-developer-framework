@@ -20,7 +20,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 5. **Never change an API contract without documenting it.** If a service must deviate from the source contract, document the deviation in the PR description with the reason. Never silently omit an endpoint.
 
-6. **Record insights when you learn something reusable.** A failure pattern, a workaround, a translation rule, an auth quirk — if it will help future runs, call `add_insight` with the category, a one-line summary, and full context. The Evaluator reviews all insights at the end and decides what to propose via `propose_change`. `propose_change` is enforced by a runtime hook to only work during the `evaluation` phase — calls from any other phase are denied. Use `add_insight` everywhere else and let the evaluator decide.
+6. **Record insights when you learn something reusable.** A failure pattern, a workaround, a translation rule, an auth quirk — if it will help future runs, call `add_insight` with the category, a one-line summary, and full context. Prefer letting the Evaluator review insights and decide what to promote via `propose_change`, but call `propose_change` directly when a systemic fix is clear and urgent.
 
 7. **Prefer observed behavior over code analysis.** When a service's behavior is ambiguous, call `loki_query` to check actual production traffic before assuming. Code can lie; logs don't.
 
@@ -59,7 +59,7 @@ Human developers interact with these accounts exactly as they would with a human
 
 ## MCP tools available to agents
 
-All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__log`, `mcp__a5__bb_create_pr`). **Do NOT use `ToolSearch` to discover these tools — the complete list is below.** If a tool call fails, check the name and parameters rather than searching for it.
+All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__log`, `mcp__a5__bb_create_pr`). Prefer calling the documented tool names directly for predictable workflows; use `ToolSearch` only when the right tool is genuinely unclear.
 
 ### Feature tracking
 - `set_features` — Register the ordered feature list (called by planner)
@@ -117,7 +117,7 @@ All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__l
 
 ### Self-improvement
 - `add_insight` — Record a learning, workaround, or pattern for the Evaluator to review (all agents)
-- `propose_change` — Propose an improvement to agents, skills, memory, or code (Evaluator / PR Reviewer only)
+- `propose_change` — Propose an improvement to agents, skills, memory, or code (typically Evaluator / PR Reviewer)
 - `list_proposals` — Check past proposals before proposing duplicates
 
 ### Artefacts
@@ -193,7 +193,6 @@ Based on the message:
 ## Banned tools — do NOT use
 
 - **`TodoWrite` / `TodoRead`** — Do NOT use the built-in todo tool. Use `mcp__a5__log` to report progress instead. The todo tool is a local scratch pad that no one monitors. Developers follow your work via `a5 logs`, which reads from `mcp__a5__log`.
-- **`ToolSearch`** — Do NOT use ToolSearch to discover MCP tools. The complete tool list is documented above. If a tool call fails, verify the tool name and parameters.
 
 ## Self-improvement rule
 

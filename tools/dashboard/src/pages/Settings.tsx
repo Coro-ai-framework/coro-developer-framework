@@ -137,6 +137,13 @@ export default function Settings() {
         message?: string
         stderr?: string
         authUrl?: string | null
+        requestedScopes?: string[] | null
+        scopeRequestSupported?: boolean
+        forcedReauth?: boolean
+        tokenKind?: string
+        mcpCompatible?: boolean
+        limitation?: string
+        recommendation?: string
       }
 
       if (data.authUrl) setOauthAuthUrl(data.authUrl)
@@ -168,11 +175,21 @@ export default function Settings() {
       if (data.token) {
         const tok = data.token
         const looksValid = /^sk-ant-oat\d+-/.test(tok) || /^sk-ant-/.test(tok)
+        const scopeMsg = data.scopeRequestSupported
+          ? (data.requestedScopes?.length
+              ? ` Requested scopes: ${data.requestedScopes.join(', ')}.`
+              : '')
+          : ' Your installed Claude CLI did not expose scope flags, so token scopes were not explicitly requested.'
+        const reauthMsg = data.forcedReauth
+          ? ' Forced re-auth was requested to avoid cached older-scope tokens.'
+          : ''
+        const limitationMsg = data.limitation ? ` ${data.limitation}` : ''
+        const recommendationMsg = data.recommendation ? ` ${data.recommendation}` : ''
         setForm(prev => ({ ...prev, oauthToken: tok, anthropicMethod: 'oauth' }))
         setOauthStatus(
           looksValid
-            ? `Token generated (${tok.slice(0, 16)}…). Click Save to persist it.`
-            : `Captured value does not look like an Anthropic OAuth token (got "${tok.slice(0, 24)}…"). Regenerate or paste a token manually.`,
+            ? `Token generated (${tok.slice(0, 16)}…).${scopeMsg}${reauthMsg}${limitationMsg}${recommendationMsg} Click Save to persist it.`
+            : `Captured value does not look like an Anthropic OAuth token (got "${tok.slice(0, 24)}…").${scopeMsg}${reauthMsg}${limitationMsg}${recommendationMsg} Regenerate or paste a token manually.`,
         )
         setOauthAuthUrl(null)
       } else {
@@ -356,7 +373,10 @@ export default function Settings() {
                   className={inputClass()}
                 />
                 <FieldHint>
-                  Long-lived token from <code className="text-zinc-400">claude setup-token</code>. OAuth tokens are for personal use per Anthropic&apos;s ToS — use an API key for production.
+                  This runner stores only a single OAuth token value. The built-in generate flow uses <code className="text-zinc-400">claude setup-token</code>, which produces a long-lived inference-only token in the installed Claude CLI and does not provide MCP scopes such as <code className="text-zinc-400">user:mcp_servers</code>.
+                </FieldHint>
+                <FieldHint>
+                  If you need MCP-enabled workflows in this app, prefer the API key method. OAuth tokens remain personal-use only per Anthropic&apos;s ToS.
                 </FieldHint>
               </div>
 

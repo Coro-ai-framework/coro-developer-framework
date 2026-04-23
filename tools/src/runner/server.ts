@@ -9,7 +9,7 @@ import express, { Request, Response } from 'express'
 import http from 'http'
 import path from 'path'
 import fs from 'fs'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { Logger } from 'pino'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { StateBackend } from '../state/backend'
@@ -105,6 +105,53 @@ function extractOauthToken(rawOutput: string): string | null {
 function extractOauthUrl(text: string): string | null {
   const match = text.match(/https:\/\/(?:[\w.-]*\.)?anthropic\.com\/[^\s"')<>]+/i)
   return match ? match[0] : null
+}
+
+/**
+ * Detect whether `claude setup-token --help` supports scope flags.
+ * Newer CLIs expose `--scope` or `--scopes`; older CLIs do not.
+ */
+function detectSetupTokenScopeFlag(cliCmd: string, cliArgs: string[], logger: Logger): '--scope' | '--scopes' | null {
+  try {
+    const help = spawnSync(cliCmd, [...cliArgs, '--help'], {
+      env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+      encoding: 'utf-8',
+      timeout: 5_000,
+    })
+    const text = `${help.stdout ?? ''}\n${help.stderr ?? ''}`
+    if (/\b--scope\b/.test(text)) return '--scope'
+    if (/\b--scopes\b/.test(text)) return '--scopes'
+    return null
+  } catch (err) {
+    logger.warn({ err }, 'Could not probe setup-token --help; using legacy invocation')
+    return null
+  }
+}
+
+/**
+ * Detect whether setup-token supports an explicit re-auth/force-refresh flag.
+ * If present, we should use it so the CLI does not hand back a cached token
+ * that may have narrower scopes than we now require.
+ */
+function detectSetupTokenForceFlag(cliCmd: string, cliArgs: string[], logger: Logger): string | null {
+  try {
+    const help = spawnSync(cliCmd, [...cliArgs, '--help'], {
+      env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+      encoding: 'utf-8',
+      timeout: 5_000,
+    })
+    const text = `${help.stdout ?? ''}\n${help.stderr ?? ''}`
+    const candidates = ['--force', '--reauth', '--re-auth', '--reset-auth'] as const
+    for (const flag of candidates) {
+      if (new RegExp(`\\b${flag.replace(/[-]/g, '\\-')}\\b`).test(text)) {
+        return flag
+      }
+    }
+    return null
+  } catch (err) {
+    logger.warn({ err }, 'Could not probe setup-token force flags; using default invocation')
+    return null
+  }
 }
 
 /**
@@ -531,6 +578,22 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       cliArgs = ['setup-token']
     }
 
+    // Prefer requesting the MCP server scope explicitly when supported so the
+    // generated token can register in-process MCP servers used by the runner.
+    // We keep a compatibility fallback for older CLIs that only support the
+    // legacy no-flag flow.
+    const requiredScopes = ['user:inference', 'user:mcp_servers'] as const
+    const scopeFlag = detectSetupTokenScopeFlag(cliCmd, cliArgs, logger)
+    const forceFlag = detectSetupTokenForceFlag(cliCmd, cliArgs, logger)
+    const setupTokenArgsBase = scopeFlag === '--scope'
+      ? [...cliArgs, '--scope', requiredScopes[0], '--scope', requiredScopes[1]]
+      : scopeFlag === '--scopes'
+        ? [...cliArgs, '--scopes', requiredScopes.join(',')]
+        : [...cliArgs]
+    const setupTokenArgs = forceFlag
+      ? [...setupTokenArgsBase, forceFlag]
+      : setupTokenArgsBase
+
     // The CLI uses Ink (React-for-terminals) to render the token inside a
     // `<Text>` component. Ink reads `process.stdout.columns` *directly* from
     // the TTY — setting the COLUMNS env var does NOT work. Without a TTY,
@@ -556,7 +619,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       return
     }
 
-    const inner = `stty cols 10000 rows 10000 2>/dev/null; exec ${[cliCmd, ...cliArgs].map(shellQuote).join(' ')}`
+    const inner = `stty cols 10000 rows 10000 2>/dev/null; exec ${[cliCmd, ...setupTokenArgs].map(shellQuote).join(' ')}`
     const cmd = 'script'
     const args = process.platform === 'darwin'
       ? ['-q', '/dev/null', 'sh', '-c', inner]   // BSD: script [options] file [command...]
@@ -668,6 +731,9 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         {
           exitCode: code,
           usingBundled,
+          scopeFlag: scopeFlag ?? 'none',
+          forceFlag: forceFlag ?? 'none',
+          requestedScopes: scopeFlag ? requiredScopes.join(',') : null,
           tokenFound: !!token,
           tokenLength: token?.length ?? 0,
           tokenPrefix: token ? `${token.slice(0, 16)}…` : null,
@@ -705,7 +771,18 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
 
-      res.json({ token })
+      res.json({
+        token,
+        requestedScopes: scopeFlag ? requiredScopes : null,
+        scopeRequestSupported: !!scopeFlag,
+        forcedReauth: !!forceFlag,
+        tokenKind: 'long-lived-inference-only',
+        mcpCompatible: false,
+        limitation:
+          'Claude CLI setup-token produces a long-lived inference-only token in this runner version. It does not provide MCP scopes such as user:mcp_servers.',
+        recommendation:
+          'Use ANTHROPIC_API_KEY for MCP-enabled workflows in this app. This runner only stores a single OAuth token value and does not persist Claude refresh-token session state.',
+      })
     })
   })
 
