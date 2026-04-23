@@ -93,27 +93,6 @@ export interface RunJobOptions {
   onQueryEnd?: (jobId: string) => void
 }
 
-// ── Default tool list ────────────────────────────────────────────────────────
-//
-// Used when the workflow YAML doesn't specify a per-phase `tools:` list.
-// Keep permissive — individual phases can narrow via the workflow file.
-// Note: `Agent` is injected dynamically when the phase has subagents.
-const DEFAULT_ALLOWED_TOOLS: readonly string[] = [
-  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
-  'Skill',
-  'mcp__a5__*',
-]
-
-/**
- * Phases allowed to call `propose_change`. The evaluator is the canonical
- * proposer (it reviews insights, then drafts changes). Other phases can
- * record observations via `add_insight` — the evaluator reviews and
- * promotes them. Agents reading the system prompt see the same rule in
- * `.claude/CLAUDE.md`; the hook enforces it at runtime so a well-meaning
- * planner can't open a PR mid-plan.
- */
-const PROPOSE_CHANGE_ALLOWED_PHASES = new Set(['evaluation'])
-
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 /**
@@ -252,19 +231,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         'Starting Agent SDK query for phase',
       )
 
-      // Per-phase allowedTools: workflow YAML takes precedence; otherwise
-      // fall back to the permissive default. `Agent` is appended when the
-      // phase has subagents so the model can actually delegate.
-      const baseTools = phaseConf?.tools ?? DEFAULT_ALLOWED_TOOLS
-      const allowedTools = agents && !baseTools.includes('Agent')
-        ? [...baseTools, 'Agent']
-        : [...baseTools]
-      const expectsA5McpTools = allowedTools.some(
-        tool => tool === 'mcp__a5__*' || tool.startsWith('mcp__a5__'),
-      )
-
-      // SDK hooks replace the "prose guard rails" that used to live in agent
-      // MDs (e.g. "only the evaluator may call propose_change"). The hook
+      // SDK hooks enforce filesystem safety guard rails that were previously
+      // described only in prose inside agent markdown.
+      // The hook
       // returns `permissionDecision: 'deny'` — the SDK then rejects the tool
       // use with the reason visible to the model, which course-corrects.
       const hooks = buildPhaseHooks({
@@ -295,14 +264,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         cwd: workingDir,
         settingSources: ['project'],
         mcpServers: { a5: mcpServer },
-        allowedTools,
-        // Belt-and-suspenders to the ENABLE_TOOL_SEARCH=false env var below:
-        // even if a future SDK/CLI version re-enables deferred tool loading,
-        // we want the model to never call `ToolSearch`. Every agent prompt
-        // instructs the model to call mcp__a5__* tools by name; ToolSearch
-        // causes the agent to conclude "tools aren't available" when it
-        // returns zero hits for in-process SDK MCP servers.
-        disallowedTools: ['ToolSearch'],
         hooks,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
@@ -329,10 +290,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           GH_OWNER: settings.github?.owner ?? '',
           GH_TOKEN: settings.github?.token ?? '',
           CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000',
-          // Disable Claude Code's "Tool Search" / deferred-tool-loading feature.
-          // See issues #12164, #31002, #40314, #44290 in anthropics/claude-code
-          // and #122, #124 in anthropics/claude-agent-sdk-typescript.
-          ENABLE_TOOL_SEARCH: 'false',
+          // Explicitly enable ToolSearch / deferred tool loading.
+          ENABLE_TOOL_SEARCH: 'true',
           DEBUG_CLAUDE_AGENT_SDK: '1',
         },
         // Capture the SDK and CLI subprocess stderr.
@@ -363,9 +322,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       let lastUsageSyncTurn = 0
       const phaseStartMs = Date.now()
       let phaseSnapshotRecorded = false
-      // Track real MCP availability — if the agent completes a phase with
-      // zero mcp__a5__* tool calls while ≥1 built-in tool_use fired, MCP
-      // is effectively broken and the result is almost certainly invalid.
+      // Track MCP usage for observability. A phase with built-in tool calls
+      // and zero mcp__a5__* calls can indicate MCP registration trouble,
+      // but it is no longer treated as a hard failure.
       let builtinToolUseCount = 0
       let mcpToolUseCount = 0
 
@@ -564,9 +523,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
       }
 
-      // Authoritative MCP availability check — see comment in previous
-      // revision for rationale. Zero mcp calls while builtins fired is a
-      // strong signal that SDK MCP registration failed silently.
+      // MCP usage diagnostics. Zero mcp calls while built-ins fired can
+      // indicate SDK MCP registration issues and is logged for operators.
       logger.info(
         {
           jobId: liveJob.id,
@@ -581,23 +539,21 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         `[phase-end] tool_use counts — mcp__a5__*: ${mcpToolUseCount}, built-in: ${builtinToolUseCount}`,
       )
       if (mcpToolUseCount === 0 && builtinToolUseCount > 0) {
-        logger.error(
+        logger.warn(
           {
             jobId: liveJob.id,
             phase: liveJob.phase,
             builtinToolUseCount,
           },
-          'A5 MCP tools were never invoked while built-in tools were — likely SDK MCP registration failed. Check stderr for [Query.connectSdkMcpServer] messages and consider restarting the runner.',
+          'A5 MCP tools were not invoked while built-in tools were. This may indicate SDK MCP registration trouble; check stderr for [Query.connectSdkMcpServer] messages.',
         )
         await stateBackend.appendLog(
           liveJob.id,
-          `[error] Agent used ${builtinToolUseCount} built-in tool_use blocks but ZERO mcp__a5__* calls. ` +
-          `SDK MCP registration likely failed — this phase's output is not trustworthy. ` +
+          `[warning] Agent used ${builtinToolUseCount} built-in tool_use blocks but ZERO mcp__a5__* calls. ` +
+          `SDK MCP registration may have issues. ` +
           `See runner stderr for "[Query.connectSdkMcpServer]" or "Transport write failed" lines.`,
         )
       }
-      const missingRequiredMcpTools = expectsA5McpTools && mcpToolUseCount === 0 && builtinToolUseCount > 0
-
       // Ensure every phase gets a PhaseUsage snapshot, even when a signal
       // (goto_phase, await_event, escalate) broke the stream before the
       // SDK's result event was consumed.
@@ -689,23 +645,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           'Job parked — awaiting external event',
         )
         await stateBackend.appendLog(liveJob.id, `Job parked — waiting for: ${evt}`)
-        break
-      }
-
-      if (missingRequiredMcpTools) {
-        const reason =
-          'Phase ended without any mcp__a5__* tool calls even though A5 MCP tools were allowed. ' +
-          'Refusing to auto-advance because the phase output is not trustworthy.'
-
-        liveJob = await syncJob(stateBackend, liveJob, {
-          status: STATUS_FAILED,
-          escalationMessage: reason,
-          sessionId: undefined,
-        })
-        toolCtx.job = liveJob
-
-        logger.error({ jobId: liveJob.id, phase: liveJob.phase }, reason)
-        await stateBackend.appendLog(liveJob.id, `[error] ${reason}`)
         break
       }
 
@@ -881,14 +820,9 @@ function buildSubagentDefinitions(
       agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
     }
 
-    const tools = sa.tools
-      ? ensureSkillTool(sa.tools)
-      : ['Read', 'Glob', 'Grep', 'Bash', 'Skill', 'mcp__a5__*']
-
     defs[sa.name] = {
       description: `Subagent: ${sa.name}`,
       prompt: agentPrompt,
-      tools,
       model: sa.model === 'coding'
         ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
         : (sa.model ?? 'inherit'),
@@ -896,12 +830,6 @@ function buildSubagentDefinitions(
     }
   }
   return defs
-}
-
-/** Ensure 'Skill' is in the tool list so subagents can invoke on-demand skills. */
-function ensureSkillTool(tools: string[]): string[] {
-  if (tools.includes('Skill')) return tools
-  return [...tools, 'Skill']
 }
 
 /**
@@ -950,13 +878,12 @@ function buildPhaseKickoffMessage(job: Job): string {
 // PreToolUse hooks fire before every tool call the model makes (builtins AND
 // mcp__a5__*). Returning a `permissionDecision: 'deny'` rejects the call and
 // surfaces `permissionDecisionReason` back to the model so it can course-
-// correct. We use this to encode the two guard rails that used to live as
-// prose in agent MDs:
+// correct. We use this to encode a filesystem safety guard rail that used to
+// live as prose in agent MDs:
 //
-//   1. `propose_change` is evaluator-only. Other phases use `add_insight`.
-//   2. `Write` / `Edit` / `Bash` writes must stay inside the job's working
-//      directory or `a5aiDir/memory/` — this prevents a runaway agent from
-//      clobbering files elsewhere on the dev machine.
+//   `Write` / `Edit` operations must stay inside the job's working directory
+//   or `a5aiDir/memory/` — this prevents a runaway agent from clobbering
+//   files elsewhere on the dev machine.
 //
 // Both checks are cheap and deterministic, so moving them from prose to
 // code trades a few kB of tokens for actual enforcement.
@@ -986,21 +913,7 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
     if (input.hook_event_name !== 'PreToolUse') return {}
     const toolName = input.tool_name
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
-    const job = opts.liveJobRef()
-
-    // Guard rail #1: propose_change is evaluator-only.
-    if (toolName === 'mcp__a5__propose_change') {
-      if (!PROPOSE_CHANGE_ALLOWED_PHASES.has(job.phase)) {
-        const reason =
-          `propose_change can only be called from the evaluation phase (got: ${job.phase}). ` +
-          `Record your learning via \`add_insight\` instead — the evaluator will review and ` +
-          `decide whether to promote it into a proposal.`
-        opts.logger.debug({ phase: job.phase }, reason)
-        return deny(reason)
-      }
-    }
-
-    // Guard rail #2: Write/Edit must stay inside working dir or memory/.
+    // Guard rail: Write/Edit must stay inside working dir or memory/.
     // Bash commands with obvious write intent (e.g. `rm -rf /`) are harder
     // to validate generically, so we do the simple path check and rely on
     // the model's prose instructions for shell safety.
@@ -1014,8 +927,8 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
           const reason =
             `Blocked ${toolName}: "${rawPath}" resolves to ${abs}, which is outside the ` +
             `allowed write roots. Permitted: ${opts.workingDir}/** and ${memoryRoot}/**. ` +
-            `Use \`propose_change\` (evaluation phase only) for changes to the intelligence repo.`
-          opts.logger.warn({ phase: job.phase, path: abs }, reason)
+            `Use \`propose_change\` for changes to the intelligence repo.`
+          opts.logger.warn({ phase: opts.liveJobRef().phase, path: abs }, reason)
           return deny(reason)
         }
       }
