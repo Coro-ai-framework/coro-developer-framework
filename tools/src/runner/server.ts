@@ -22,6 +22,7 @@ import {
   resolveWorkingDir as resolveLocalWorkingDir,
 } from '../config/local-config'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
+import { ClaudeLoginManager } from './claude-login'
 
 export interface RunnerServerOptions {
   port: number
@@ -191,6 +192,25 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   const { port, dispatcher, stateBackend, logger, mode = 'hybrid' } = opts
   const app = express()
   app.use(express.json())
+  const claudeLoginManager = new ClaudeLoginManager({ logger })
+
+  function saveClaudeLoginConfig(account?: {
+    email?: string
+    organization?: string
+    subscriptionType?: string
+    tokenSource?: string
+    apiKeySource?: string
+    apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws'
+  }) {
+    const existing = loadLocalConfig() ?? { anthropic: { method: 'apiKey' as const, apiKey: '' } }
+    saveLocalConfig({
+      ...existing,
+      anthropic: {
+        method: 'claudeLogin',
+        account,
+      },
+    })
+  }
 
   // ── Health ──────────────────────────────────────────────────────────────
 
@@ -438,14 +458,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const detected = detectMode(config)
 
       // Redact sensitive fields for display. Both apiKey and oauthToken need
-      // masking; we always send back the full `method` tag so the UI renders
-      // the correct field regardless of which one currently has a value.
+      // masking; claudeLogin stores only metadata, so that can be returned as-is.
+      // We always send back the full `method` tag so the UI renders the correct
+      // auth state regardless of which credential is currently active.
       const safeConfig = config ? {
         ...config,
         anthropic: {
           method: config.anthropic?.method ?? 'apiKey',
           apiKey: redactSecret(config.anthropic?.apiKey),
           oauthToken: redactSecret(config.anthropic?.oauthToken),
+          account: config.anthropic?.account,
         },
         git: config.git ? {
           ...config.git,
@@ -489,19 +511,31 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       // keep whatever is already on disk. When the method flips we wipe the
       // other credential so the config doesn't accumulate stale secrets.
       if (updates.anthropic) {
-        const incomingMethod: 'apiKey' | 'oauth' =
-          updates.anthropic.method === 'oauth' ? 'oauth' : 'apiKey'
+        const incomingMethod: 'apiKey' | 'oauth' | 'claudeLogin' =
+          updates.anthropic.method === 'oauth'
+            ? 'oauth'
+            : updates.anthropic.method === 'claudeLogin'
+              ? 'claudeLogin'
+              : 'apiKey'
 
         if (incomingMethod === 'apiKey') {
           const nextKey = isRedacted(updates.anthropic.apiKey)
             ? existing.anthropic?.apiKey ?? ''
             : updates.anthropic.apiKey ?? existing.anthropic?.apiKey ?? ''
           merged.anthropic = { method: 'apiKey', apiKey: nextKey }
-        } else {
+        } else if (incomingMethod === 'oauth') {
           const nextToken = isRedacted(updates.anthropic.oauthToken)
             ? existing.anthropic?.oauthToken ?? ''
             : updates.anthropic.oauthToken ?? existing.anthropic?.oauthToken ?? ''
           merged.anthropic = { method: 'oauth', oauthToken: nextToken }
+        } else {
+          merged.anthropic = {
+            method: 'claudeLogin',
+            account:
+              updates.anthropic.account && typeof updates.anthropic.account === 'object'
+                ? updates.anthropic.account
+                : existing.anthropic?.account,
+          }
         }
       }
 
@@ -535,6 +569,59 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ saved: true, configPath: defaultConfigPath() })
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  app.get('/config/anthropic/claude-login/status', (_req: Request, res: Response) => {
+    try {
+      const state = claudeLoginManager.getState()
+      if (state.status === 'connected') {
+        saveClaudeLoginConfig(state.account)
+      }
+      res.json(state)
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  app.post('/config/anthropic/claude-login/start', async (_req: Request, res: Response) => {
+    try {
+      const state = await claudeLoginManager.start()
+      if (state.status === 'connected') {
+        saveClaudeLoginConfig(state.account)
+      }
+      res.json(state)
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  app.post('/config/anthropic/claude-login/callback', async (req: Request, res: Response) => {
+    try {
+      const authorizationCode = typeof req.body?.authorizationCode === 'string'
+        ? req.body.authorizationCode.trim()
+        : ''
+      const callbackState = typeof req.body?.state === 'string'
+        ? req.body.state
+        : undefined
+
+      if (!authorizationCode) {
+        res.status(400).json({ error: 'authorizationCode is required' })
+        return
+      }
+
+      const state = await claudeLoginManager.submitCallback({
+        authorizationCode,
+        state: callbackState,
+      })
+      if (state.status === 'connected') {
+        saveClaudeLoginConfig(state.account)
+      }
+      res.json(state)
+    } catch (err) {
+      const message = (err as Error).message
+      const status = message === 'No active Claude login flow' ? 409 : 500
+      res.status(status).json({ error: message })
     }
   })
 

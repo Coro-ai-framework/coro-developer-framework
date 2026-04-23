@@ -17,6 +17,12 @@ describe('buildAnthropicAuthEnv', () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
   })
 
+  it('clears both auth env vars when method=claudeLogin', () => {
+    const env = buildAnthropicAuthEnv({ method: 'claudeLogin' })
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+  })
+
   it('defaults to empty string for missing apiKey so the CLI can report a clear auth error', () => {
     const env = buildAnthropicAuthEnv({ method: 'apiKey' })
     expect(env.ANTHROPIC_API_KEY).toBe('')

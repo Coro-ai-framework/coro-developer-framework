@@ -17,26 +17,38 @@ const cloudConfigSchema = z.object({
   token: z.string().min(1),
 }).optional()
 
-// Anthropic auth supports two methods today:
+const claudeAccountSchema = z.object({
+  email: z.string().optional(),
+  organization: z.string().optional(),
+  subscriptionType: z.string().optional(),
+  tokenSource: z.string().optional(),
+  apiKeySource: z.string().optional(),
+  apiProvider: z.enum(['firstParty', 'bedrock', 'vertex', 'foundry', 'anthropicAws']).optional(),
+}).optional()
+
+// Anthropic auth supports three modes:
 //   - apiKey: direct Anthropic API key (production, billed per token)
-//   - oauth: long-lived Claude Code OAuth token from `claude setup-token`
-//            (Pro/Max subscription; Anthropic ToS restricts this to personal use)
+//   - oauth: legacy long-lived Claude Code OAuth token from `claude setup-token`
+//   - claudeLogin: Claude Code manages its own persisted login session locally;
+//                  we only store the selected mode plus optional account metadata
 // The method field is optional/defaulted so that legacy configs containing only
 // `{ apiKey: "..." }` continue to load. The refine() guarantees that the chosen
 // method has a matching non-empty credential.
 const anthropicConfigSchema = z
   .object({
-    method: z.enum(['apiKey', 'oauth']).default('apiKey'),
+    method: z.enum(['apiKey', 'oauth', 'claudeLogin']).default('apiKey'),
     apiKey: z.string().optional(),
     oauthToken: z.string().optional(),
+    account: claudeAccountSchema,
   })
   .refine(
     v =>
       (v.method === 'apiKey' && typeof v.apiKey === 'string' && v.apiKey.length > 0) ||
-      (v.method === 'oauth' && typeof v.oauthToken === 'string' && v.oauthToken.length > 0),
+      (v.method === 'oauth' && typeof v.oauthToken === 'string' && v.oauthToken.length > 0) ||
+      v.method === 'claudeLogin',
     {
       message:
-        'Anthropic config requires apiKey when method="apiKey", or oauthToken when method="oauth"',
+        'Anthropic config requires apiKey when method="apiKey", oauthToken when method="oauth", or method="claudeLogin"',
     },
   )
 
