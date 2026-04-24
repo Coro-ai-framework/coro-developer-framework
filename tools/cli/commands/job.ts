@@ -2,7 +2,9 @@ import { Command } from 'commander'
 import { apiPost, baseUrl, die } from '../http'
 import { connectSse } from '../sse-client'
 
-interface FeatureResponse {
+const IMPLEMENTATION_WORKFLOW_PATH = 'workflows/job/workflow.md'
+
+interface JobResponse {
   jobId: string
   type: string
   status: string
@@ -10,11 +12,11 @@ interface FeatureResponse {
   error?: string
 }
 
-export const featureCommand = new Command('feature')
-  .description('Start a feature implementation job')
+export const jobCommand = new Command('job')
+  .description('Start a generic implementation job')
   .option('--repo <slug>', 'Repository slug')
   .option('--reviewers <list>', 'PR reviewers (comma-separated usernames)')
-  .option('--description <text>', 'Feature description')
+  .option('--description <text>', 'Job description')
   .option('--service-name <name>', 'Service name (defaults to repo slug)')
   .option('--git-provider <provider>', 'Git provider: github or bitbucket (defaults to the configured provider from ~/.a5/config.json)')
   .option('--jira-ticket <id>', 'Jira ticket ID (triggers Jira-driven workflow)')
@@ -31,35 +33,39 @@ export const featureCommand = new Command('feature')
     let body: Record<string, unknown>
 
     if (opts.jiraTicket) {
-      console.log(`\x1b[36m▸\x1b[0m Starting feature from Jira ticket: ${opts.jiraTicket}`)
-      body = { jiraTicketId: opts.jiraTicket }
+      console.log(`\x1b[36m▸\x1b[0m Starting implementation job from Jira ticket: ${opts.jiraTicket}`)
+      body = {
+        type: 'job',
+        workflowPath: IMPLEMENTATION_WORKFLOW_PATH,
+        jiraTicketId: opts.jiraTicket,
+      }
     } else {
       if (!opts.repo) die('--repo is required (or use --jira-ticket)')
       if (!opts.reviewers) die('--reviewers is required (or use --jira-ticket)')
       if (!opts.description) die('--description is required (or use --jira-ticket)')
 
-      const reviewers = opts.reviewers!.split(',').map(r => r.trim()).filter(Boolean)
-      const serviceName = opts.serviceName ?? opts.repo!
+      const reviewers = opts.reviewers.split(',').map(r => r.trim()).filter(Boolean)
+      const serviceName = opts.serviceName ?? opts.repo
 
-      console.log(`\x1b[36m▸\x1b[0m Starting feature: ${serviceName}`)
+      console.log(`\x1b[36m▸\x1b[0m Starting implementation job: ${serviceName}`)
       console.log(`  Repo:        ${opts.repo}`)
       if (opts.gitProvider) console.log(`  Provider:    ${opts.gitProvider}`)
       console.log(`  Reviewers:   ${reviewers.join(', ')}`)
-      console.log(`  Description: ${opts.description!.slice(0, 80)}`)
+      console.log(`  Description: ${opts.description.slice(0, 80)}`)
       console.log()
 
       body = {
+        type: 'job',
+        workflowPath: IMPLEMENTATION_WORKFLOW_PATH,
         repo: opts.repo,
         reviewers,
         description: opts.description,
         serviceName,
-        // Only include when set so the server falls back to the configured
-        // provider in ~/.a5/config.json when the flag is omitted.
         ...(opts.gitProvider ? { gitProvider: opts.gitProvider } : {}),
       }
     }
 
-    const res = await apiPost<FeatureResponse>('/jobs/feature', body)
+    const res = await apiPost<JobResponse>('/jobs', body)
 
     if (!res.ok) {
       die(res.data.error ?? `Server returned ${res.status}`)

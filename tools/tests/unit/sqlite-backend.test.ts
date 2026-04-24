@@ -62,26 +62,26 @@ describe('SqliteStateBackend', () => {
       expect(loaded!.params['serviceName']).toBe('svc-a')
     })
 
-    it('creates feature jobs', async () => {
+    it('creates generic implementation jobs', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         triggerSource: 'cli',
         params: { serviceName: 'my-svc', description: 'Add rate limiting' },
       })
 
-      expect(job.type).toBe(JobType.Feature)
-      expect(job.workflowPath).toBe('workflows/feature/workflow.md')
+      expect(job.type).toBe(JobType.Job)
+      expect(job.workflowPath).toBe('workflows/job/workflow.md')
     })
 
-    it('creates self-update jobs without a workflow file', async () => {
+    it('creates self-update jobs with the centralized workflow', async () => {
       const job = await backend.createJob({
         type: 'self-update',
         params: { serviceName: 'self' },
       })
 
       expect(job.type).toBe(JobType.SelfUpdate)
-      expect(job.workflowPath).toBe('')
-      expect(job.phase).toBe('init')
+      expect(job.workflowPath).toBe('workflows/self-update/workflow.md')
+      expect(job.phase).toBe('tracking')
     })
 
     it('returns null for unknown job id', async () => {
@@ -91,18 +91,18 @@ describe('SqliteStateBackend', () => {
 
     it('seeds prMappings when prId and branchName are present', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: {
           serviceName: 'svc-b',
           prId: 42,
-          branchName: 'feature/test',
+          branchName: 'job/test',
           repoSlug: 'svc-b',
         },
       })
 
       expect(job.prMappings).toHaveLength(1)
       expect(job.prMappings[0].prId).toBe(42)
-      expect(job.prMappings[0].feature).toBe('feature/test')
+      expect(job.prMappings[0].workItem).toBe('job/test')
 
       // PR mapping should be persisted too
       const found = await backend.getJobByPr(42)
@@ -122,7 +122,7 @@ describe('SqliteStateBackend', () => {
       // Ensure different timestamps
       await new Promise(r => setTimeout(r, 10))
       const j2 = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'b' },
       })
 
@@ -134,7 +134,7 @@ describe('SqliteStateBackend', () => {
 
     it('filters by type', async () => {
       await backend.createJob({ type: 'migration', params: { serviceName: 'x' } })
-      await backend.createJob({ type: 'feature', params: { serviceName: 'y' } })
+      await backend.createJob({ type: 'job', params: { serviceName: 'y' } })
 
       const migrations = await backend.listJobsByType(JobType.Migration)
       expect(migrations.length).toBe(1)
@@ -235,7 +235,7 @@ describe('SqliteStateBackend', () => {
   describe('PR and Jira mappings', () => {
     it('mapPrToJob and getJobByPr roundtrip', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'pr-test' },
       })
 
@@ -247,7 +247,7 @@ describe('SqliteStateBackend', () => {
 
     it('mapJiraTicketToJob and getJobByJiraTicket roundtrip', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'jira-test' },
       })
 
@@ -259,7 +259,7 @@ describe('SqliteStateBackend', () => {
 
     it('mapRepoToJob stores the mapping', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'repo-test' },
       })
 
@@ -272,13 +272,13 @@ describe('SqliteStateBackend', () => {
   describe('addPrMapping / markPrMerged', () => {
     it('addPrMapping appends and registers pr key', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'pr-add' },
       })
 
       const updated = await backend.addPrMapping(job.id, {
         prId: 77,
-        feature: 'feat/x',
+        workItem: 'feat/x',
         repoSlug: 'repo-x',
         openedAt: new Date().toISOString(),
       })
@@ -294,7 +294,7 @@ describe('SqliteStateBackend', () => {
       await expect(
         backend.addPrMapping('nope', {
           prId: 1,
-          feature: 'x',
+          workItem: 'x',
           repoSlug: 'r',
           openedAt: new Date().toISOString(),
         })
@@ -303,13 +303,13 @@ describe('SqliteStateBackend', () => {
 
     it('markPrMerged sets mergedAt on the matching PR', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'merge-test' },
       })
 
       await backend.addPrMapping(job.id, {
         prId: 88,
-        feature: 'feat/y',
+        workItem: 'feat/y',
         repoSlug: 'repo-y',
         openedAt: new Date().toISOString(),
       })

@@ -33,9 +33,9 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     triggerSource: 'cli',
     status: STATUS_QUEUED,
     phase: 'init',
-    currentFeature: null,
-    features: [],
-    featureLoopCount: 0,
+    currentWorkItem: null,
+    workItems: [],
+    workItemLoopCount: 0,
     prMappings: [],
     interactive: false,
     artifacts: [],
@@ -148,16 +148,16 @@ describe('isParkingStatus', () => {
 // ── defaultWorkflowPath ───────────────────────────────────────────────────────
 
 describe('defaultWorkflowPath', () => {
+  it('returns the generic implementation workflow for Job type', () => {
+    expect(defaultWorkflowPath(JobType.Job)).toBe('workflows/job/workflow.md')
+  })
+
   it('returns migration workflow for Migration type', () => {
     expect(defaultWorkflowPath(JobType.Migration)).toBe('workflows/migration/workflow.md')
   })
 
-  it('returns feature workflow for Feature type', () => {
-    expect(defaultWorkflowPath(JobType.Feature)).toBe('workflows/feature/workflow.md')
-  })
-
-  it('returns empty string for SelfUpdate type', () => {
-    expect(defaultWorkflowPath(JobType.SelfUpdate)).toBe('')
+  it('returns self-update workflow for SelfUpdate type', () => {
+    expect(defaultWorkflowPath(JobType.SelfUpdate)).toBe('workflows/self-update/workflow.md')
   })
 })
 
@@ -277,8 +277,8 @@ describe('status constants', () => {
 
 describe('JobType', () => {
   it('has expected string values', () => {
+    expect(JobType.Job).toBe('job')
     expect(JobType.Migration).toBe('migration')
-    expect(JobType.Feature).toBe('feature')
     expect(JobType.SelfUpdate).toBe('self-update')
   })
 

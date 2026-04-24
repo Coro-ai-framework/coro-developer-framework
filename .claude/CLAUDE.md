@@ -28,7 +28,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 9. **Credentials are never read from files.** They are injected by the Agent Host as environment variables and available in the job context. Never ask for or log credentials.
 
-10. **Use feature tracking tools for multi-feature jobs.** Call `get_features` to check progress, `update_feature` to update status, `set_features` to register the feature list, and `request_new_session` when starting a new feature.
+10. **Use work-item tracking tools for multi-work-item jobs.** Call `get_work_items` to check progress, `update_work_item` to update status, `set_work_items` to register the work-item list, and `request_new_session` when starting a new work item.
 
 11. **Do not manually park normal workflow checkpoints.** If a phase is marked `interactive_checkpoint: true` and the workflow docs say the runner enforces it, finish the phase normally and let the runner park for approval. Use `await_event({ eventName: "developer-input: <reason>" })` only for extra mid-phase questions, clarifications, or external waits the runner cannot infer.
 
@@ -40,7 +40,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 - **Observability:** Grafana — Loki (logs) + Tempo (distributed traces)
 - **Deployment:** Kubernetes via Helm. Per-service config in `helm-app-config` repo (see `config/repos.md`)
 - **Environments:** staging and production. Staging is the benchmark for all migration testing.
-- **Issue tracking:** Jira (future integration — Jira-triggered feature jobs)
+- **Issue tracking:** Jira (future integration — Jira-triggered implementation jobs)
 
 ## Service accounts
 
@@ -61,11 +61,11 @@ Human developers interact with these accounts exactly as they would with a human
 
 All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__log`, `mcp__a5__bb_create_pr`). Prefer calling the documented tool names directly for predictable workflows; use `ToolSearch` only when the right tool is genuinely unclear.
 
-### Feature tracking
-- `set_features` — Register the ordered feature list (called by planner)
-- `update_feature` — Update a feature's status or increment its loop count
-- `get_features` — Read the current feature list with statuses
-- `request_new_session` — Clear session for fresh context (e.g., new feature)
+### Work-item tracking
+- `set_work_items` — Register the ordered work-item list (called by planner)
+- `update_work_item` — Update a work item's status or increment its loop count
+- `get_work_items` — Read the current work-item list with statuses
+- `request_new_session` — Clear session for fresh context (e.g., new work item)
 - `set_job_params` — Set dynamic job parameters (e.g., language)
 
 ### Job control

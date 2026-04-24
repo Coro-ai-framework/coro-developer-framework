@@ -7,7 +7,7 @@
 
 ## What is this?
 
-An internal AI agent platform that automates engineering workflows — currently **.NET-to-Go service migration** and **feature implementation** in any language. New workflows and languages can be added without infrastructure changes.
+An internal AI agent platform that automates engineering workflows — currently **.NET-to-Go service migration** and **generic implementation jobs** in any language. New workflows and languages can be added without infrastructure changes.
 
 The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven by a lightweight **Agent Host Service** that manages jobs and tools. The key design principle:
 
@@ -20,7 +20,7 @@ The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven b
 
 ```
   Developer runs CLI command          Jira ticket assigned          BitBucket webhook
-  (a5 migrate ... / a5 feature ...)   to AI agent                   (PR merged, comment, etc.)
+  (a5 migrate ... / a5 job ...)       to AI agent                   (PR merged, comment, etc.)
               │                              │                              │
               └──────────────────────────────┼──────────────────────────────┘
                                              ▼
@@ -67,17 +67,17 @@ Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript
 
 ```
 Analysis → Planning → Repo Setup → [Code → Review → Test → Evaluate] → Report
-                                     └──── repeats per feature ────┘
+                                     └──── repeats per work item ──┘
 ```
 
 - **Analyzer** extracts endpoints, models, and dependencies from the .NET codebase
-- **Planner** groups work into features, orders by risk and dependencies
-- **Coder** implements each feature in Go, opens a PR
+- **Planner** groups work into work items, orders by risk and dependencies
+- **Coder** implements each work item in Go, opens a PR
 - **Reviewer** posts a structured code review (AI agent + human approval required)
 - **Tester** runs comparison tests against the staging .NET service
-- **Evaluator** decides: fix needed? next feature? all done?
+- **Evaluator** decides: fix needed? next work item? all done?
 
-### Feature implementation
+### Generic implementation job
 
 ```
 [Spec Writing] → Planning → [Code → Review → Test → Evaluate]

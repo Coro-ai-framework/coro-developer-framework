@@ -32,7 +32,7 @@ export class GitClient {
    * Pull latest from origin in the given repo directory.
    *
    * Handles branches without upstream tracking by explicitly passing
-   * `origin <branch>`. This avoids spurious warnings on feature branches
+    * `origin <branch>`. This avoids spurious warnings on topic branches
    * that were checked out locally without `--track`.
    */
   async pull(repoDir: string): Promise<void> {

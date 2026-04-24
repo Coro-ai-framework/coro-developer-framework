@@ -22,6 +22,7 @@ import {
   resolveWorkingDir as resolveLocalWorkingDir,
 } from '../config/local-config'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
+import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { ClaudeLoginManager } from './claude-login'
 
 export interface RunnerServerOptions {
@@ -220,6 +221,28 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   // ── Job dispatch ────────────────────────────────────────────────────────
 
+  app.post('/jobs', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as Partial<CreateJobRequest>
+      if (typeof body?.workflowPath !== 'string' || !body.workflowPath.trim()) {
+        res.status(400).json({ error: 'workflowPath is required' })
+        return
+      }
+
+      const input = createJobInput(body as CreateJobRequest)
+      const job = await dispatcher.dispatch(input)
+      res.status(201).json({
+        jobId: job.id,
+        type: job.type,
+        status: job.status,
+        streamUrl: `/jobs/${job.id}/stream`,
+      })
+    } catch (err) {
+      logger.error({ err }, 'Generic job dispatch failed')
+      res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
   app.post('/jobs/migrate', async (req: Request, res: Response) => {
     try {
       const { repo, projects, reviewers, stagingUrl, serviceName, gitProvider, interactive } = req.body ?? {}
@@ -227,19 +250,19 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
       const provider = resolveGitProvider(gitProvider)
 
-      const job = await dispatcher.dispatch({
+      const job = await dispatcher.dispatch(createJobInput({
         type: 'migration',
+        workflowPath: 'workflows/migration/workflow.md',
+        repo,
+        serviceName: serviceName ?? repo,
+        reviewers,
+        gitProvider: provider,
+        interactive: interactive === true,
         params: {
-          repo,
-          repoSlug: repo,
           projects,
-          reviewers,
           stagingUrl,
-          serviceName: serviceName ?? repo,
-          gitProvider: provider,
-          interactive: interactive === true,
         },
-      })
+      }))
       res.status(201).json({
         jobId: job.id,
         type: job.type,
@@ -248,52 +271,6 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       })
     } catch (err) {
       logger.error({ err }, 'Migration dispatch failed')
-      res.status(500).json({ error: (err as Error).message })
-    }
-  })
-
-  app.post('/jobs/feature', async (req: Request, res: Response) => {
-    try {
-      const {
-        repo,
-        description,
-        reviewers,
-        jiraTicket,
-        jiraTicketId,
-        serviceName,
-        gitProvider,
-        interactive,
-      } = req.body ?? {}
-
-      const isJira = Boolean(jiraTicket ?? jiraTicketId)
-      if (!repo && !isJira) {
-        res.status(400).json({ error: 'repo is required (or provide jiraTicketId)' })
-        return
-      }
-
-      const provider = resolveGitProvider(gitProvider)
-
-      const job = await dispatcher.dispatch({
-        type: 'feature',
-        params: {
-          repo,
-          repoSlug: repo,
-          description,
-          reviewers,
-          jiraTicket: jiraTicket ?? jiraTicketId,
-          serviceName: serviceName ?? repo,
-          gitProvider: provider,
-          interactive: interactive === true,
-        },
-      })
-      res.status(201).json({
-        jobId: job.id,
-        type: job.type,
-        status: job.status,
-        streamUrl: `/jobs/${job.id}/stream`,
-      })
-    } catch (err) {
-      logger.error({ err }, 'Feature dispatch failed')
       res.status(500).json({ error: (err as Error).message })
     }
   })

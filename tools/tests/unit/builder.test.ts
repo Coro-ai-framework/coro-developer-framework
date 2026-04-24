@@ -19,9 +19,9 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     triggerSource: 'cli',
     status: 'analyzing',
     phase: 'analysis',
-    currentFeature: null,
-    features: [],
-    featureLoopCount: 0,
+    currentWorkItem: null,
+    workItems: [],
+    workItemLoopCount: 0,
     prMappings: [],
     interactive: false,
     artifacts: [],
@@ -200,18 +200,18 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(ctx['escalationMessage']).toBeNull()
     })
 
-    it('includes features and featureLoopCount in job context', async () => {
+    it('includes work items and workItemLoopCount in job context', async () => {
       setupFs({
         '/data/a5-ai/workflows/migration/workflow.md': '',
       })
 
       const job = makeJob({
-        features: [
+        workItems: [
           { name: 'scaffold', status: 'complete', loopCount: 1 },
           { name: 'users-api', status: 'in-progress', loopCount: 0 },
         ],
-        featureLoopCount: 0,
-        currentFeature: 'users-api',
+        workItemLoopCount: 0,
+        currentWorkItem: 'users-api',
       })
 
       const prompt = await buildSystemPrompt(job, makeSettings(), noopLogger)
@@ -219,12 +219,12 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       const jsonEnd = prompt.indexOf('\n```', jsonStart)
       const ctx = JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
 
-      expect(ctx['features']).toEqual([
+      expect(ctx['workItems']).toEqual([
         { name: 'scaffold', status: 'complete', loopCount: 1 },
         { name: 'users-api', status: 'in-progress', loopCount: 0 },
       ])
-      expect(ctx['featureLoopCount']).toBe(0)
-      expect(ctx['currentFeature']).toBe('users-api')
+      expect(ctx['workItemLoopCount']).toBe(0)
+      expect(ctx['currentWorkItem']).toBe('users-api')
     })
   })
 

@@ -2,7 +2,7 @@
 
 import { Command } from 'commander'
 import { migrateCommand } from './commands/migrate'
-import { featureCommand } from './commands/feature'
+import { jobCommand } from './commands/job'
 import { statusCommand } from './commands/status'
 import { jobsCommand } from './commands/jobs'
 import { logsCommand } from './commands/logs'
@@ -20,7 +20,7 @@ program
   .version('0.2.0')
 
 program.addCommand(migrateCommand)
-program.addCommand(featureCommand)
+program.addCommand(jobCommand)
 program.addCommand(statusCommand)
 program.addCommand(jobsCommand)
 program.addCommand(logsCommand)

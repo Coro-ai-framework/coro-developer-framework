@@ -36,8 +36,8 @@ Every job carries a `type` and a `workflowPath`. The Agent Host uses these — n
 | Trigger | JobType | workflowPath |
 |---------|---------|-------------|
 | `a5 migrate ...` (CLI) | `migration` | `workflows/migration/workflow.md` |
-| `a5 feature ...` (CLI) | `feature` | `workflows/feature/workflow.md` |
-| Jira ticket assigned to agent | `feature` | `workflows/feature/workflow.md` |
+| `a5 job ...` (CLI) | `job` | `workflows/job/workflow.md` |
+| Jira ticket assigned to agent | `job` | `workflows/job/workflow.md` |
 | Agent writes to `memory/`, `agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
 
 ---
@@ -114,8 +114,8 @@ a5 migrate \
   --reviewers alice,bob \
   --staging-url https://staging.my-service.a5labs.com
 
-# Implement a feature
-a5 feature \
+# Start a generic implementation job
+a5 job \
   --repo my-service-go \
   --description "Add rate limiting to /api/users" \
   --reviewers alice,bob
@@ -181,13 +181,13 @@ a5-ai/
 │   ├── tester.md                         ← Build verification and testing
 │   ├── evaluator.md                      ← Failure diagnosis, memory updates, feature loop management
 │   ├── pr-reviewer.md                    ← PR review, merge coordination
-│   └── spec-writer.md                    ← Jira ticket → feature spec
+│   └── spec-writer.md                    ← Jira ticket → implementation spec
 ├── workflows/
 │   ├── migration/
 │   │   ├── workflow.md                   ← Migration lifecycle (YAML + docs)
 │   │   └── report-template.md           ← Final migration report
-│   └── feature/
-│       └── workflow.md                   ← Feature implementation lifecycle (YAML + docs)
+│   └── job/
+│       └── workflow.md                   ← Generic implementation lifecycle (YAML + docs)
 ├── memory/
 │   ├── MEMORY.md                        ← Index — loaded into every agent prompt
 │   ├── known-pitfalls.md                ← Translation mistakes and failure patterns
@@ -219,7 +219,7 @@ a5-ai/
     │       └── logs.ts
     └── src/
         ├── index.ts                     ← Startup: Redis, MCP server, HTTP server
-        ├── server.ts                    ← HTTP: /jobs/migrate, /jobs/feature, /webhook, SSE
+        ├── server.ts                    ← HTTP: /jobs, /jobs/migrate, /webhook, SSE
         ├── mcp-server.ts                ← In-process MCP server (all domain tools)
         ├── mcp-handlers.ts              ← MCP tool implementations
         ├── watcher.ts                   ← File watcher: memory/ + agents/ + .claude/ → self-update PRs

@@ -8,11 +8,11 @@
 
 ## 1. Executive Summary
 
-We are building an internal AI agent platform to automate engineering workflows. Two workflows are currently defined: .NET-to-Go service migration and feature implementation in any language. The platform is designed to grow: new workflows, new languages, and new agents drop in without requiring infrastructure changes.
+We are building an internal AI agent platform to automate engineering workflows. Two workflows are currently defined: .NET-to-Go service migration and generic implementation jobs in any language. The platform is designed to grow: new workflows, new languages, and new agents drop in without requiring infrastructure changes.
 
 The platform uses the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) as its reasoning engine, orchestrated by a purpose-built **Agent Host Service** that receives events, manages job state, and drives agents through structured workflows defined as Markdown files.
 
-**Core design principle:** The Markdown files in the `a5-ai` repository are the intelligence. The TypeScript infrastructure is a deliberately thin "dumb tool shell" — it runs phases linearly, provides MCP tools, persists state in Redis, and parks/resumes on webhooks. It has **zero orchestration intelligence**. All workflow logic, decision rules, feature loop management, and accumulated knowledge live in MD files. The LLM reads these files, calls tools to update state, and uses `goto_phase` to control flow. The evaluator decides when to loop. The planner decides how many features. The coder decides when it needs a fresh session.
+**Core design principle:** The Markdown files in the `a5-ai` repository are the intelligence. The TypeScript infrastructure is a deliberately thin "dumb tool shell" — it runs phases linearly, provides MCP tools, persists state in Redis, and parks/resumes on webhooks. It has **zero orchestration intelligence**. All workflow logic, decision rules, work-item loop management, and accumulated knowledge live in MD files. The LLM reads these files, calls tools to update state, and uses `goto_phase` to control flow. The evaluator decides when to loop. The planner decides how many work items. The coder decides when it needs a fresh session.
 
 ### Language-agnostic architecture
 
@@ -35,7 +35,7 @@ Adding support for a new language requires writing one skill file. Zero infrastr
 │                                                                              │
 │  Developer CLI              BitBucket Webhooks         Jira Webhooks         │
 │  a5 migrate ...             pr:created                 issue_assigned        │
-│  a5 feature ...             pr:comment_created         issue_updated         │
+│  a5 job ...                 pr:comment_created         issue_updated         │
 │                             pr:approved                                      │
 │                             pr:fulfilled (merged)                            │
 └──────────────┬──────────────────────────┬──────────────────────┬─────────────┘
@@ -128,12 +128,12 @@ Adding support for a new language requires writing one skill file. Zero infrastr
 
 The central service. Always running. Key responsibilities:
 
-- **HTTP Server:** Accepts job requests from the `a5` CLI (`POST /jobs/migrate`, `POST /jobs/feature`). Streams log output via SSE (`GET /jobs/:id/stream`).
+- **HTTP Server:** Accepts job requests from the `a5` CLI (`POST /jobs`, `POST /jobs/migrate`). Streams log output via SSE (`GET /jobs/:id/stream`).
 - **Webhook Receiver:** Accepts BitBucket and Jira webhook events. Verifies HMAC signatures. Routes each event to the correct parked job via the Redis registry.
 - **Job Dispatcher:** Creates `Job` objects with the correct `type` and `workflowPath`, and starts job runners. Maps trigger sources (CLI, BitBucket, Jira) to job types.
-- **Job Runners:** Each active job runs as a series of Claude Agent SDK `query()` calls — one per workflow phase. The SDK manages the entire tool-use loop, subagent spawning, and conversation flow internally. The runner handles linear phase advancement, `goto_phase` overrides, `await_event` parking, and error handling. The runner has **zero orchestration intelligence** — all multi-feature loops, session resets, and completion decisions are made by the LLM via agent instructions.
+- **Job Runners:** Each active job runs as a series of Claude Agent SDK `query()` calls — one per workflow phase. The SDK manages the entire tool-use loop, subagent spawning, and conversation flow internally. The runner handles linear phase advancement, `goto_phase` overrides, `await_event` parking, and error handling. The runner has **zero orchestration intelligence** — all multi-work-item loops, session resets, and completion decisions are made by the LLM via agent instructions.
 - **Prompt Builder:** Assembles the system prompt for each phase by loading the workflow file, agent instructions, memory files, and job context JSON. Static content (behavior rules, company context, git conventions, infrastructure) is loaded natively by the SDK from `.claude/CLAUDE.md`. Domain knowledge and language conventions are loaded on-demand by agents via skills.
-- **MCP Server:** An in-process MCP server exposes all domain-specific tools (BitBucket, observability, Jira, test harness, feature tracking, job control, self-improvement) to the Agent SDK. The SDK's built-in tools handle filesystem, shell, git, and code search.
+- **MCP Server:** An in-process MCP server exposes all domain-specific tools (BitBucket, observability, Jira, test harness, work-item tracking, job control, self-improvement) to the Agent SDK. The SDK's built-in tools handle filesystem, shell, git, and code search.
 - **File Watcher:** Monitors `a5-ai/memory/`, `a5-ai/agents/`, `a5-ai/.claude/`, and `a5-ai/tools/src/` on the shared volume. When an agent writes to these directories, the watcher validates changes (TypeScript build, YAML parse, workflow config parse, skill frontmatter) and opens a PR on the `a5-ai` repo for human review.
 
 #### Intelligence Layer
@@ -174,7 +174,7 @@ Redis stores job metadata (not conversation history — the SDK manages that):
 
 | Key                    | Type          | Contains                                                                                               |
 | ---------------------- | ------------- | ------------------------------------------------------------------------------------------------------ |
-| `job:{jobId}`          | String (JSON) | Job metadata: status, phase, params, features[], insights[], featureLoopCount, PR mappings, timestamps |
+| `job:{jobId}`          | String (JSON) | Job metadata: status, phase, params, workItems[], insights[], workItemLoopCount, PR mappings, timestamps |
 | `job:{jobId}:log`      | List          | Log lines streamed to the CLI                                                                          |
 | `pr:{prId}:job`        | String        | Maps BitBucket PR ID → jobId                                                                           |
 | `jira:{ticketId}:job`  | String        | Maps Jira ticket ID → jobId                                                                            |
@@ -262,7 +262,7 @@ Key metadata fields on each phase:
 | `subagents` | Array of subagent definitions for parallel work within this phase    |
 
 
-The Markdown content below the front matter contains the human-readable workflow documentation, phase descriptions, and orchestration logic (e.g., how the evaluator manages the multi-feature loop).
+The Markdown content below the front matter contains the human-readable workflow documentation, phase descriptions, and orchestration logic (e.g., how the evaluator manages the multi-work-item loop).
 
 ### 3.3 Domain knowledge and conventions (skills)
 
@@ -276,8 +276,8 @@ The SDK discovers skills via the `.claude/` directory (symlinked into the job wo
 | Trigger source    | Event                                                   | JobType       | workflowPath                      |
 | ----------------- | ------------------------------------------------------- | ------------- | --------------------------------- |
 | CLI: `a5 migrate` | —                                                       | `migration`   | `workflows/migration/workflow.md` |
-| CLI: `a5 feature` | —                                                       | `feature`     | `workflows/feature/workflow.md`   |
-| Jira webhook      | `issue_assigned`                                        | `feature`     | `workflows/feature/workflow.md`   |
+| CLI: `a5 job`     | —                                                       | `job`         | `workflows/job/workflow.md`       |
+| Jira webhook      | `issue_assigned`                                        | `job`         | `workflows/job/workflow.md`       |
 | File watcher      | `memory/*.md`, `agents/*.md`, `.claude/**` modified      | `self-update` | *(inline)*                        |
 
 
@@ -326,10 +326,10 @@ Phase 1: Analysis (Analyzer Agent + migration-analysis skill)
 
         ▼
 Phase 2: Planning (Planner Agent + migration-planning skill)
-  - Group endpoints into features (domain-based)
+  - Group endpoints into work items (domain-based)
   - Order by: dependencies first, then traffic volume, then complexity
   - Annotate with risk level (high/medium/low)
-  - Call set_features to register the feature list with the job
+  - Call set_work_items to register the work-item list with the job
   - Call set_job_params({ language: "golang" }) to switch to target language
   - Output: migration-plan.md
   ✋ Optional human checkpoint before proceeding
@@ -340,14 +340,14 @@ Phase 3: Repository Setup (Coder Agent)
   - Push initial Go project scaffold to main
 
         ▼
-Phase 4-7: Feature Implementation Loop  ◄──────────────────────┐
+Phase 4-7: Work-Item Implementation Loop  ◄────────────────────┐
   │  Driven by the Evaluator agent, NOT the runner             │
   │                                                             │
   ├── Coding (Coder Agent + migration-coding skill)            │
-  │     - Call get_features → find next pending feature         │
-  │     - Call update_feature → mark it in-progress            │
-  │     - If new feature: call request_new_session             │
-  │     - Create feature branch, implement, open PR            │
+  │     - Call get_work_items → find next pending work item    │
+  │     - Call update_work_item → mark it in-progress          │
+  │     - If new work item: call request_new_session           │
+  │     - Create branch, implement, open PR                    │
   │                                                             │
   ├── Review (PR Reviewer Agent + migration-review skill)      │
   │     - Post structured review as @a5-reviewer-agent         │
@@ -361,11 +361,11 @@ Phase 4-7: Feature Implementation Loop  ◄────────────�
   │                                                             │
   └── Evaluation (Evaluator Agent + migration-evaluation skill) │
         - Classify failures, write to memory                   │
-        - Call update_feature to set status                    │
+        - Call update_work_item to set status                  │
         - Decision:                                            │
           ├─ Fix needed → incrementLoop, check count ──────────┘
           │   (if loopCount >= 5 → escalate)
-          ├─ Feature complete + more pending →
+          ├─ Work item complete + more pending →
           │   request_new_session + goto_phase("coding") ──────┘
           └─ All complete → auto-advance to reporting
 
@@ -405,9 +405,9 @@ PR #42 merged by developer
 
 This same pattern handles PR comment events, approval events, and Jira ticket updates.
 
-### 4.4 Feature tracking
+### 4.4 Work-item tracking
 
-Feature progress is tracked as structured state on the Job object in Redis:
+Work-item progress is tracked as structured state on the Job object in Redis:
 
 ```typescript
 interface FeatureItem {
@@ -417,19 +417,19 @@ interface FeatureItem {
 }
 
 // On the Job object:
-features: FeatureItem[]     // populated by planner via set_features
-featureLoopCount: number    // current feature's loop count
-currentFeature: string      // name of the in-progress feature
+workItems: WorkItem[]          // populated by planner via set_work_items
+workItemLoopCount: number      // current work-item loop count
+currentWorkItem: string        // name of the in-progress work item
 ```
 
-Agents manage this state via MCP tools (`set_features`, `update_feature`, `get_features`). The runner never reads or acts on these fields — they are purely for agent use and context visibility.
+Agents manage this state via MCP tools (`set_work_items`, `update_work_item`, `get_work_items`). The runner never reads or acts on these fields — they are purely for agent use and context visibility.
 
 ---
 
-## 5. Workflow: Feature Implementation
+## 5. Workflow: Generic Implementation Job
 
 ```
-Trigger: a5 feature ... OR Jira ticket assigned to @a5-feature-agent
+Trigger: a5 job ... OR Jira ticket assigned to the implementation workflow
         │
         ▼
 [Jira path only] Phase 0: Spec Writing (Spec Writer Agent)
@@ -443,18 +443,18 @@ Phase 1: Planning (Planner Agent + feature-planning skill)
   - Read feature-spec.md (or CLI description)
   - Detect target language from repo (go.mod → golang, *.csproj → dotnet, etc.)
   - Call set_job_params({ language: "<detected>" })
-  - Call set_features to register feature list
+  - Call set_work_items to register work-item list
   - Produce implementation plan
 
         ▼
 Phase 2+: Code → Review → Test → Evaluate
   - Same agents as migration, invoking language conventions skills on-demand
   - Feature-specific skills (feature-planning, feature-testing) invoked by agents
-  - Same evaluator-driven loop for multi-feature jobs
+  - Same evaluator-driven loop for multi-work-item jobs
   - On complete: transition Jira ticket to Done (via mcp__a5__jira_transition_issue)
 ```
 
-The feature workflow is completely language-neutral. Agents invoke the relevant language conventions skill on-demand (e.g., `golang-conventions`, `dotnet-conventions`). The planner detects the language and downstream agents invoke the correct conventions skill.
+The generic implementation workflow is completely language-neutral. Agents invoke the relevant language conventions skill on-demand (e.g., `golang-conventions`, `dotnet-conventions`). The planner detects the language and downstream agents invoke the correct conventions skill.
 
 ---
 
@@ -568,10 +568,10 @@ On merge:
 Multiple developers can run workflows simultaneously. Jobs are fully isolated:
 
 ```
-Developer 1: a5 migrate --repo user-service        Developer 2: a5 feature --repo payments-api
+Developer 1: a5 migrate --repo user-service        Developer 2: a5 job --repo payments-api
                     │                                                   │
                     ▼                                                   ▼
-      working/user-svc-migration-1234/              working/payments-feature-5678/
+  working/user-svc-migration-1234/              working/payments-job-5678/
       Job Runner A (SDK query() per phase)          Job Runner B (SDK query() per phase)
       language: golang (target)                     language: typescript (detected)
       golang-conventions skill invoked              typescript-conventions skill invoked
@@ -612,13 +612,13 @@ working/{job-id}/
 ├── dependencies.json                ← External dependencies (migration)
 ├── traffic-baseline.json            ← Loki traffic patterns (migration)
 ├── analysis-notes.md                ← Analyzer ambiguity flags
-├── feature-spec.md                  ← Jira-derived feature specification (feature jobs)
-├── migration-plan.md                ← Ordered feature list (migration)
-├── implementation-plan.md           ← Feature implementation plan (feature jobs)
+├── feature-spec.md                  ← Jira-derived implementation specification
+├── migration-plan.md                ← Ordered work-item list (migration)
+├── implementation-plan.md           ← Generic implementation plan (job workflow)
 ├── test-results/
-│   └── {feature}.json               ← Tester output per feature
+│   └── {work-item}.json             ← Tester output per work item
 ├── evaluations/
-│   └── {feature}.md                 ← Evaluator diagnosis and fix brief
+│   └── {work-item}.md               ← Evaluator diagnosis and fix brief
 ├── migration-report.md              ← Final output (migration)
 └── errors.md                        ← Escalated blockers requiring human input
 ```
@@ -655,23 +655,23 @@ Domain-specific tools are exposed via an in-process MCP server (`mcp-server.ts`)
 | Observability        | `loki_query`, `tempo_get_trace`, `tempo_search`                                                   | 3      |
 | Jira                 | `jira_get_issue`, `jira_post_comment`, `jira_transition_issue`                                    | 3      |
 | Test harness         | `run_go_build`, `start_go_service`, `stop_go_service`, `compare_request`                          | 4      |
-| Feature tracking     | `set_features`, `update_feature`, `get_features`, `request_new_session`, `set_job_params`         | 5      |
+| Work-item tracking   | `set_work_items`, `update_work_item`, `get_work_items`, `request_new_session`, `set_job_params`   | 5      |
 | Job control          | `mark_phase_complete`, `goto_phase`, `await_event`, `escalate`, `log`                             | 5      |
 | Self-improvement     | `add_insight`, `propose_change`, `list_proposals`                                                 | 3      |
 | **Total domain**     |                                                                                                   | **31** |
 
 
-#### Feature tracking tools
+#### Work-item tracking tools
 
-These tools enable LLM-driven multi-feature orchestration without any logic in the runner:
+These tools enable LLM-driven multi-work-item orchestration without any logic in the runner:
 
 
 | Tool                  | Purpose                                                           | Called by         |
 | --------------------- | ----------------------------------------------------------------- | ----------------- |
-| `set_features`        | Register the ordered feature list for the job                     | Planner           |
-| `update_feature`      | Update a feature's status or increment its loop count             | Evaluator, Coder  |
-| `get_features`        | Read the current feature list with statuses and loop counts       | All agents        |
-| `request_new_session` | Clear session ID for fresh context (e.g., starting a new feature) | Evaluator, Coder  |
+| `set_work_items`      | Register the ordered work-item list for the job                   | Planner           |
+| `update_work_item`    | Update a work item's status or increment its loop count           | Evaluator, Coder  |
+| `get_work_items`      | Read the current work-item list with statuses and loop counts     | All agents        |
+| `request_new_session` | Clear session ID for fresh context (e.g., starting a new work item) | Evaluator, Coder |
 | `set_job_params`      | Merge key-value pairs into job.params (e.g., set language)        | Planner, Analyzer |
 
 
@@ -783,10 +783,10 @@ All configuration lives in `tools/config/settings.json` with environment variabl
 | Agent            | A Claude Agent SDK `query()` session given a specific role via an MD file, with access to built-in tools and the MCP server                                                              |
 | Convention skill | A coding standards skill (`.claude/skills/{lang}-conventions/SKILL.md`), invoked on-demand by agents based on `job.params.language`                                                      |
 | Feature          | A logical group of endpoints or changes handled as one branch + PR, tracked via `FeatureItem` in the job state                                                                           |
-| FeatureItem      | A structured record tracking a feature's name, status (pending/in-progress/complete/escalated), and loop count                                                                           |
+| WorkItem         | A structured record tracking a work item's name, status (pending/in-progress/complete/escalated), and loop count                                                                         |
 | Insight          | A structured learning or workaround recorded by any agent via `add_insight`, stored on `Job.insights[]`, and reviewed by the evaluator at the end of the workflow                        |
-| Job              | A unit of work with a `type`, `workflowPath`, features list, insights list, and state persisted in Redis and the shared volume                                                           |
-| JobType          | `migration`, `feature`, or `self-update` — determines which workflow and phases apply                                                                                                    |
+| Job              | A unit of work with a `type`, `workflowPath`, work-item list, insights list, and state persisted in Redis and the shared volume                                                         |
+| JobType          | `job`, `migration`, or `self-update` — determines which workflow and phases apply                                                                                                        |
 | Job Runner       | The TypeScript code that drives Claude Agent SDK sessions for one job across its phases. Has zero orchestration intelligence.                                                            |
 | Knowledge skill  | A domain-specific skill in `.claude/skills/` that supplements agent instructions with workflow-specific expertise, invoked on-demand                                                     |
 | Memory           | MD files in `a5-ai/memory/` containing accumulated knowledge from past jobs, updated via PRs                                                                                             |

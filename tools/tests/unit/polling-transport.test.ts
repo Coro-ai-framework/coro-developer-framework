@@ -12,16 +12,16 @@ const logger = pino({ level: 'silent' })
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'test-job-1',
-    type: JobType.Feature,
-    workflowPath: 'workflows/feature/workflow.md',
+    type: JobType.Job,
+    workflowPath: 'workflows/job/workflow.md',
     params: { serviceName: 'svc', repoSlug: 'my-repo' },
     triggerSource: 'cli',
     status: 'awaiting-pr-merge',
     phase: 'coding',
-    currentFeature: null,
-    features: [],
-    featureLoopCount: 0,
-    prMappings: [{ prId: 42, feature: 'feat/x', repoSlug: 'my-repo', openedAt: '2026-01-01T00:00:00Z' }],
+    currentWorkItem: null,
+    workItems: [],
+    workItemLoopCount: 0,
+    prMappings: [{ prId: 42, workItem: 'feat/x', repoSlug: 'my-repo', openedAt: '2026-01-01T00:00:00Z' }],
     interactive: false,
     artifacts: [],
     insights: [],
@@ -318,7 +318,7 @@ describe('PollingTransport', () => {
     it('resolves repoSlug from prMappings', async () => {
       const job = makeJob({
         params: {},  // no repoSlug in params
-        prMappings: [{ prId: 42, feature: 'f', repoSlug: 'mapped-repo', openedAt: '2026-01-01' }],
+        prMappings: [{ prId: 42, workItem: 'f', repoSlug: 'mapped-repo', openedAt: '2026-01-01' }],
       })
       const backend = makeMockBackend([job])
       const poller = makeMockPoller('OPEN', 0, [])

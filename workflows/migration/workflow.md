@@ -100,7 +100,7 @@ This workflow uses two languages: the **source** language (.NET/C#) for analysis
 
 All intermediate state is written to `working/{service-name}/`. This directory persists across sessions so work can be resumed if interrupted.
 
-Feature state is tracked in Redis via the `features[]` array on the Job object. Agents use `get_features`, `update_feature`, and `set_features` to manage feature progress.
+Work-item state is tracked on the Job object via `workItems[]`. Agents use `get_work_items`, `update_work_item`, and `set_work_items` to manage work-item progress.
 
 ## Phases
 
@@ -143,8 +143,8 @@ Run the Analyzer agent with the cloned repo and job parameters.
 Run the Planner agent with the Analyzer outputs.
 
 The Planner must:
-1. Produce `working/{service-name}/migration-plan.md` with at least 1 feature
-2. Call `set_features` to register the feature list with the job
+1. Produce `working/{service-name}/migration-plan.md` with at least 1 work item
+2. Call `set_work_items` to register the work-item list with the job
 3. Call `set_job_params({ language: "golang" })` to switch to the target language for all downstream phases
 
 **Human checkpoint:** This phase is flagged `interactive_checkpoint: true`. If `job.interactive` is `true`, post the plan artefact and then finish the phase normally. The runner will park for developer approval before advancing to repo-setup. If you need clarification before the phase ends, call `await_event({ eventName: "developer-input: <reason>" })` explicitly. If `job.interactive` is `false`, skip the pause and let the runner advance to repo-setup.
@@ -156,7 +156,7 @@ The Planner must:
 **Agent:** Coder (`agents/coder.md`)
 **Skills:** Agent invokes language conventions skill (e.g., `golang-conventions`) for the target language
 
-Before beginning feature implementation:
+Before beginning work-item implementation:
 
 1. Create the target repository on BitBucket: `{service-name}-go`
 2. Initialize with the target language project template
@@ -165,25 +165,25 @@ Before beginning feature implementation:
 
 ---
 
-### Phase 4-7: Feature Implementation Loop
+### Phase 4-7: Work-Item Implementation Loop
 
-The coding → review → testing → evaluation cycle repeats for each feature in the migration plan. This loop is driven by the **Evaluator agent** — not by the runner infrastructure. The runner simply advances linearly through phases; the Evaluator uses `goto_phase` to loop back when needed.
+The coding → review → testing → evaluation cycle repeats for each work item in the migration plan. This loop is driven by the **Evaluator agent** — not by the runner infrastructure. The runner simply advances linearly through phases; the Evaluator uses `goto_phase` to loop back when needed.
 
 #### How the loop works:
 
-1. **Coder** calls `get_features`, finds the next `pending` feature, calls `update_feature` to mark it `in-progress`, implements it, opens the PR
+1. **Coder** calls `get_work_items`, finds the next `pending` work item, calls `update_work_item` to mark it `in-progress`, implements it, opens the PR
 2. **PR Reviewer** reviews, coordinates fixes, waits for approval, merges
 3. **Tester** builds and runs comparison tests, writes results
 4. **Evaluator** reads results and decides:
-   - **Feature complete:** call `update_feature(name, status: "complete")`. Then call `get_features` — if more features remain, call `request_new_session` (fresh context for the next feature) then `goto_phase("coding")`. If no features remain, finish (runner auto-advances to reporting).
-   - **Fix needed:** call `update_feature(name, incrementLoop: true)`. Check `loopCount` — if >= 5, call `escalate`. Otherwise call `goto_phase("coding")` with a fix brief.
+  - **Work item complete:** call `update_work_item(name, status: "complete")`. Then call `get_work_items` — if more work items remain, call `request_new_session` (fresh context for the next work item) then `goto_phase("coding")`. If no work items remain, finish (runner auto-advances to reporting).
+  - **Fix needed:** call `update_work_item(name, incrementLoop: true)`. Check `loopCount` — if >= 5, call `escalate`. Otherwise call `goto_phase("coding")` with a fix brief.
    - **Blocked:** call `escalate` with diagnosis.
 
 ---
 
 ### Phase 8: Migration Report
 
-When all features are `complete` (or `escalated` with user acknowledgment):
+When all work items are `complete` (or `escalated` with user acknowledgment):
 
 Generate `working/{service-name}/migration-report.md` using `workflows/migration/report-template.md`.
 
@@ -199,7 +199,7 @@ The report must include:
 
 ## Resuming interrupted workflows
 
-If a workflow was interrupted, read `working/{service-name}/job.md` and call `get_features` to determine which phase and feature to resume from. Do not re-run completed phases or features.
+If a workflow was interrupted, read `working/{service-name}/job.md` and call `get_work_items` to determine which phase and work item to resume from. Do not re-run completed phases or work items.
 
 ## Error handling
 

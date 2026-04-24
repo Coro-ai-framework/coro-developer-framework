@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-type JobType = 'migration' | 'feature'
+type JobType = 'migration' | 'job'
 
 interface MigrateForm {
   repo: string
@@ -13,7 +13,7 @@ interface MigrateForm {
 
 type GitProvider = 'bitbucket' | 'github'
 
-interface FeatureForm {
+interface JobForm {
   repo: string
   serviceName: string
   description: string
@@ -30,7 +30,7 @@ const EMPTY_MIGRATE: MigrateForm = {
   stagingUrl: '',
 }
 
-const EMPTY_FEATURE: FeatureForm = {
+const EMPTY_JOB: JobForm = {
   repo: '',
   serviceName: '',
   description: '',
@@ -55,7 +55,7 @@ export default function CreateJob() {
   const navigate = useNavigate()
   const [jobType, setJobType] = useState<JobType>('migration')
   const [migrate, setMigrate] = useState<MigrateForm>(EMPTY_MIGRATE)
-  const [feature, setFeature] = useState<FeatureForm>(EMPTY_FEATURE)
+  const [jobForm, setJobForm] = useState<JobForm>(EMPTY_JOB)
   const [interactive, setInteractive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -64,8 +64,8 @@ export default function CreateJob() {
     setMigrate(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
-  function handleFeatureChange(e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) {
-    setFeature(prev => ({ ...prev, [e.target.name]: e.target.value }))
+  function handleJobChange(e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) {
+    setJobForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
   function splitCsv(val: string): string[] {
@@ -92,17 +92,24 @@ export default function CreateJob() {
           interactive,
         }
       } else {
-        endpoint = '/jobs/feature'
+        endpoint = '/jobs'
         // Jira mode: only jiraTicketId required
-        if (feature.jiraTicketId.trim()) {
-          body = { jiraTicketId: feature.jiraTicketId.trim(), interactive }
+        if (jobForm.jiraTicketId.trim()) {
+          body = {
+            type: 'job',
+            workflowPath: 'workflows/job/workflow.md',
+            jiraTicketId: jobForm.jiraTicketId.trim(),
+            interactive,
+          }
         } else {
           body = {
-            repo: feature.repo.trim(),
-            serviceName: feature.serviceName.trim(),
-            description: feature.description.trim(),
-            reviewers: splitCsv(feature.reviewers),
-            gitProvider: feature.gitProvider,
+            type: 'job',
+            workflowPath: 'workflows/job/workflow.md',
+            repo: jobForm.repo.trim(),
+            serviceName: jobForm.serviceName.trim(),
+            description: jobForm.description.trim(),
+            reviewers: splitCsv(jobForm.reviewers),
+            gitProvider: jobForm.gitProvider,
             interactive,
           }
         }
@@ -127,18 +134,18 @@ export default function CreateJob() {
     }
   }
 
-  const isJiraMode = jobType === 'feature' && feature.jiraTicketId.trim().length > 0
+  const isJiraMode = jobType === 'job' && jobForm.jiraTicketId.trim().length > 0
 
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
       <div className="mb-8">
         <h1 className="text-xl font-semibold text-white">New Job</h1>
-        <p className="text-sm text-zinc-400 mt-1">Dispatch a migration or feature job to the agent runtime.</p>
+        <p className="text-sm text-zinc-400 mt-1">Dispatch a migration or implementation job to the agent runtime.</p>
       </div>
 
       {/* Workflow selector */}
       <div className="flex gap-2 mb-8">
-        {(['migration', 'feature'] as JobType[]).map(t => (
+        {(['migration', 'job'] as JobType[]).map(t => (
           <button
             key={t}
             type="button"
@@ -149,7 +156,7 @@ export default function CreateJob() {
                 : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600'
             }`}
           >
-            {t === 'migration' ? 'Migration' : 'Feature'}
+            {t === 'migration' ? 'Migration' : 'Implementation'}
           </button>
         ))}
       </div>
@@ -225,7 +232,7 @@ export default function CreateJob() {
           </>
         )}
 
-        {jobType === 'feature' && (
+        {jobType === 'job' && (
           <>
             {/* Jira shortcut */}
             <div className="rounded-lg border border-zinc-800 p-4 space-y-3 bg-zinc-900/40">
@@ -234,8 +241,8 @@ export default function CreateJob() {
                 <label className={labelClass()}>Jira ticket ID</label>
                 <input
                   name="jiraTicketId"
-                  value={feature.jiraTicketId}
-                  onChange={handleFeatureChange}
+                  value={jobForm.jiraTicketId}
+                  onChange={handleJobChange}
                   placeholder="ENG-1234"
                   className={inputClass()}
                 />
@@ -257,8 +264,8 @@ export default function CreateJob() {
                 <label className={labelClass()}>Git provider</label>
                 <select
                   name="gitProvider"
-                  value={feature.gitProvider}
-                  onChange={handleFeatureChange}
+                  value={jobForm.gitProvider}
+                  onChange={handleJobChange}
                   className={inputClass()}
                 >
                   <option value="bitbucket">BitBucket</option>
@@ -272,20 +279,20 @@ export default function CreateJob() {
                   <label className={labelClass()}>Repository slug {!isJiraMode && <span className="text-rose-400">*</span>}</label>
                   <input
                     name="repo"
-                    value={feature.repo}
-                    onChange={handleFeatureChange}
+                    value={jobForm.repo}
+                    onChange={handleJobChange}
                     required={!isJiraMode}
                     placeholder="my-service-go"
                     className={inputClass()}
                   />
-                  <FieldHint>{feature.gitProvider === 'github' ? 'GitHub repo name' : 'BitBucket repo slug'}</FieldHint>
+                  <FieldHint>{jobForm.gitProvider === 'github' ? 'GitHub repo name' : 'BitBucket repo slug'}</FieldHint>
                 </div>
                 <div>
                   <label className={labelClass()}>Service name {!isJiraMode && <span className="text-rose-400">*</span>}</label>
                   <input
                     name="serviceName"
-                    value={feature.serviceName}
-                    onChange={handleFeatureChange}
+                    value={jobForm.serviceName}
+                    onChange={handleJobChange}
                     required={!isJiraMode}
                     placeholder="MyService"
                     className={inputClass()}
@@ -297,8 +304,8 @@ export default function CreateJob() {
                 <label className={labelClass()}>Description {!isJiraMode && <span className="text-rose-400">*</span>}</label>
                 <textarea
                   name="description"
-                  value={feature.description}
-                  onChange={handleFeatureChange}
+                  value={jobForm.description}
+                  onChange={handleJobChange}
                   required={!isJiraMode}
                   rows={3}
                   placeholder="Add rate limiting to /api/users"
@@ -310,13 +317,13 @@ export default function CreateJob() {
                 <label className={labelClass()}>Reviewers {!isJiraMode && <span className="text-rose-400">*</span>}</label>
                 <input
                   name="reviewers"
-                  value={feature.reviewers}
-                  onChange={handleFeatureChange}
+                  value={jobForm.reviewers}
+                  onChange={handleJobChange}
                   required={!isJiraMode}
                   placeholder="alice, bob"
                   className={inputClass()}
                 />
-                <FieldHint>{feature.gitProvider === 'github' ? 'Comma-separated GitHub usernames' : 'Comma-separated BitBucket usernames'}</FieldHint>
+                <FieldHint>{jobForm.gitProvider === 'github' ? 'Comma-separated GitHub usernames' : 'Comma-separated BitBucket usernames'}</FieldHint>
               </div>
             </div>
           </>

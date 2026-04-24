@@ -12,14 +12,12 @@ import {
   Job,
   JobInput,
   JobType,
-  STATUS_QUEUED,
   PrMapping,
   Proposal,
   ProposalStatus,
   defaultWorkflowPath,
-  emptyTokenUsage,
 } from '../jobs/types'
-import { loadWorkflowConfig, resolveInitialPhase, getPhaseConfig } from '../workflow-parser'
+import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
 
 // ── Schema ────────────────────────────────────────────────────────────────────
@@ -106,57 +104,14 @@ export class SqliteStateBackend implements StateBackend {
   // ── Job CRUD ──────────────────────────────────────────────────────────────
 
   async createJob(input: JobInput): Promise<Job> {
-    const now = new Date().toISOString()
-
     const jobType = inputToJobType(input)
-    const workflowPath = defaultWorkflowPath(jobType)
-    const triggerSource = input.triggerSource ?? 'cli'
-
-    const config = workflowPath && this.a5aiDir
-      ? await loadWorkflowConfig(workflowPath, this.a5aiDir, this.logger as Parameters<typeof loadWorkflowConfig>[2])
-      : null
-
-    const initialPhase = config
-      ? resolveInitialPhase(config, triggerSource)
-      : 'init'
-    const phaseConfig = config ? getPhaseConfig(config, initialPhase) : null
-    const initialStatus = phaseConfig?.status ?? config?.initialStatus ?? STATUS_QUEUED
-
-    const label = (input.params['serviceName'] as string)
-      ?? (input.params['jiraTicketId'] as string)
-      ?? input.type
-    const id = `${label}-${input.type}-${Date.now()}`
-
-    const prMappings: PrMapping[] = []
-    if (input.params['prId'] && input.params['branchName']) {
-      prMappings.push({
-        prId: input.params['prId'] as number,
-        feature: input.params['branchName'] as string,
-        repoSlug: (input.params['repoSlug'] as string) ?? '',
-        openedAt: now,
-      })
-    }
-
-    const job: Job = {
-      id,
-      type: jobType,
-      workflowPath,
-      params: input.params,
-      triggerSource,
-      status: initialStatus,
-      phase: initialPhase,
-      currentFeature: null,
-      features: [],
-      featureLoopCount: 0,
-      prMappings,
-      interactive: input.params['interactive'] === true,
-      artifacts: [],
-      insights: [],
-      tokenUsage: emptyTokenUsage(),
-      phaseUsage: [],
-      createdAt: now,
-      updatedAt: now,
-    }
+    const workflowPath = resolveWorkflowPath(input, defaultWorkflowPath(jobType))
+    const job = await buildJobRecord(input, jobType, workflowPath, {
+      a5aiDir: this.a5aiDir,
+      logger: this.logger,
+    })
+    const now = job.createdAt
+    const prMappings = job.prMappings
 
     this.db.prepare(`
       INSERT INTO jobs (id, data, type, status, created_at, updated_at)
@@ -372,8 +327,8 @@ export class SqliteStateBackend implements StateBackend {
 
 function inputToJobType(input: JobInput): JobType {
   switch (input.type) {
+    case 'job':         return JobType.Job
     case 'migration':   return JobType.Migration
-    case 'feature':     return JobType.Feature
     case 'self-update': return JobType.SelfUpdate
     default:
       throw new Error(`Unknown job type: ${String((input as unknown as Record<string, unknown>).type)}`)

@@ -26,7 +26,7 @@ export interface JobSummary {
   serviceName: string | null
   status: string
   phase: string
-  currentFeature: string | null
+  currentWorkItem: string | null
   triggerSource: string
   interactive?: boolean
   artifactCount?: number
@@ -36,7 +36,7 @@ export interface JobSummary {
   updatedAt: string
 }
 
-export interface FeatureItem {
+export interface WorkItem {
   name: string
   status: 'pending' | 'in-progress' | 'complete' | 'escalated'
   loopCount: number
@@ -44,7 +44,7 @@ export interface FeatureItem {
 
 export interface PrMapping {
   prId: number
-  feature: string
+  workItem: string
   repoSlug: string
   openedAt: string
   mergedAt?: string
@@ -82,9 +82,9 @@ export interface Job {
   triggerSource: string
   status: string
   phase: string
-  currentFeature: string | null
-  features: FeatureItem[]
-  featureLoopCount: number
+  currentWorkItem: string | null
+  workItems: WorkItem[]
+  workItemLoopCount: number
   prMappings: PrMapping[]
   interactive: boolean
   artifacts: Artifact[]

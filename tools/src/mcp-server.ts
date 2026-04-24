@@ -35,7 +35,7 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'bb_create_pr',
-        'Open a pull request from a feature branch. Reviewers default to job reviewers if omitted.',
+        'Open a pull request from the current work-item branch. Reviewers default to job reviewers if omitted.',
         {
           repoSlug: z.string(),
           title: z.string(),
@@ -254,37 +254,37 @@ export function createA5McpServer(ctx: ToolContext, signals: PhaseSignals) {
         h.jira_transition_issue,
       ),
 
-      // ── Feature tracking ─────────────────────────────────────────────────
+      // ── Work-item tracking ───────────────────────────────────────────────
 
       tool(
-        'set_features',
-        'Register the ordered feature list for this job. Called by the planner after producing the implementation plan.',
-        { features: z.array(z.string()) },
-        h.set_features,
+        'set_work_items',
+        'Register the ordered work-item list for this job. Called after producing the implementation plan.',
+        { workItems: z.array(z.string()) },
+        h.set_work_items,
       ),
 
       tool(
-        'update_feature',
-        'Update a feature\'s status or increment its loop count. Called by evaluator/coder.',
+        'update_work_item',
+        'Update a work item\'s status or increment its loop count. Called by evaluator/coder.',
         {
           name: z.string(),
           status: z.enum(['pending', 'in-progress', 'complete', 'escalated']).optional(),
           incrementLoop: z.boolean().optional(),
         },
-        h.update_feature,
+        h.update_work_item,
       ),
 
       tool(
-        'get_features',
-        'Read the current feature list with statuses and loop counts.',
+        'get_work_items',
+        'Read the current work-item list with statuses and loop counts.',
         {},
-        h.get_features,
+        h.get_work_items,
         { annotations: { readOnlyHint: true } },
       ),
 
       tool(
         'request_new_session',
-        'Clear the session ID so the next phase starts a fresh conversation. Call when switching to a new feature or when context is stale.',
+        'Clear the session ID so the next phase starts a fresh conversation. Call when switching to a new work item or when context is stale.',
         { reason: z.string() },
         h.request_new_session,
       ),

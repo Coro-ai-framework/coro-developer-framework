@@ -66,9 +66,9 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(loaded!.createdAt).toBe(job.createdAt)
     })
 
-    it('uses Jira override initial phase for feature jobs', async () => {
+    it('uses Jira override initial phase for generic jobs', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         triggerSource: 'jira',
         params: { serviceName: 'feat-x', repoSlug: 'feat-x', jiraTicketId: 'PROJ-99' },
       })
@@ -77,9 +77,9 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(job.status).toBe('spec-writing')
     })
 
-    it('uses default initial phase for feature jobs from CLI', async () => {
+    it('uses default initial phase for generic jobs from CLI', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         triggerSource: 'cli',
         params: { serviceName: 'feat-y', repoSlug: 'feat-y' },
       })
@@ -107,14 +107,14 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
           serviceName: 'svc-pr',
           repoSlug: 'svc-pr',
           prId: 555,
-          branchName: 'feature/foo',
+          branchName: 'job/foo',
         },
       })
 
       expect(job.prMappings).toHaveLength(1)
       expect(job.prMappings[0]).toMatchObject({
         prId: 555,
-        feature: 'feature/foo',
+        workItem: 'job/foo',
         repoSlug: 'svc-pr',
       })
     })
@@ -131,7 +131,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
         params: { serviceName: 'm1', repoSlug: 'r1' },
       })
       const j2 = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'f1', repoSlug: 'r2' },
       })
 
@@ -144,8 +144,8 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(migrations.some(j => j.id === j1.id)).toBe(true)
       expect(migrations.some(j => j.id === j2.id)).toBe(false)
 
-      const features = await backend.listJobsByType(JobType.Feature)
-      expect(features.some(j => j.id === j2.id)).toBe(true)
+      const jobs = await backend.listJobsByType(JobType.Job)
+      expect(jobs.some(j => j.id === j2.id)).toBe(true)
     })
 
     it('sorts listJobs by createdAt descending (newest first)', async () => {
@@ -177,7 +177,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('indexes Jira ticket id when present', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         triggerSource: 'jira',
         params: { serviceName: 'j', repoSlug: 'r', jiraTicketId: 'ABC-42' },
       })
@@ -260,7 +260,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('mapJiraTicketToJob and getJobByJiraTicket roundtrip', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'j1', repoSlug: 'j1' },
       })
       await backend.mapJiraTicketToJob('XYZ-1', job.id)
@@ -290,7 +290,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
       const updated = await backend.addPrMapping(job.id, {
         prId: 1001,
-        feature: 'feat-a',
+        workItem: 'feat-a',
         repoSlug: 'apm',
         openedAt: '2026-04-04T12:00:00Z',
       })
@@ -304,7 +304,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       await expect(
         backend.addPrMapping('nope', {
           prId: 1,
-          feature: 'f',
+          workItem: 'f',
           repoSlug: 'r',
           openedAt: '2026-01-01T00:00:00Z',
         }),
@@ -318,7 +318,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       })
       await backend.addPrMapping(job.id, {
         prId: 2002,
-        feature: 'b',
+        workItem: 'b',
         repoSlug: 'mrg',
         openedAt: '2026-04-04T12:00:00Z',
       })
