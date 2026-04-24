@@ -683,8 +683,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
+      // New workflow phases must start in a fresh Claude session. The SDK's
+      // in-process MCP registration is not reliable across resumed sessions,
+      // so carrying the previous phase's sessionId into the next phase can
+      // drop the A5 MCP toolset exactly when the agent role changes.
       liveJob = await syncJob(stateBackend, liveJob, {
         phase: nextPhase,
+        sessionId: undefined,
         awaitingNextPhase: undefined,
         approvedAdvanceFromPhase: checkpointApproved ? undefined : liveJob.approvedAdvanceFromPhase,
       })

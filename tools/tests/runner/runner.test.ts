@@ -519,13 +519,15 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
   })
 
-  it('uses phase kickoff prompt (fresh on phase 1, continuation on phase 2)', async () => {
+  it('starts a fresh session on phase boundaries', async () => {
     const prompts: string[] = []
+    const resumes: Array<string | undefined> = []
     let n = 0
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         n += 1
         prompts.push(inv.prompt)
+        resumes.push(inv.options['resume'] as string | undefined)
         yield { type: 'system', session_id: `sess-${n}` }
       })()
 
@@ -535,11 +537,12 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(prompts).toHaveLength(2)
+    expect(resumes).toEqual([undefined, undefined])
     // Phase 1 has no sessionId yet — fresh kickoff.
     expect(prompts[0]).toContain('Begin phase')
     expect(prompts[0]).toContain('alpha')
-    // Phase 2 resumes the session — continuation kickoff.
-    expect(prompts[1]).toContain('now in phase')
+    // Phase 2 is also a fresh kickoff because phase boundaries reset session state.
+    expect(prompts[1]).toContain('Begin phase')
     expect(prompts[1]).toContain('beta')
   })
 
