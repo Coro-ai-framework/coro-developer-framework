@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
+import { reattachDynamicMcpServers, runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
 import {
   JobType,
   STATUS_COMPLETE,
@@ -519,7 +519,7 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
   })
 
-  it('starts a fresh session on phase boundaries', async () => {
+  it('uses phase kickoff prompt (fresh on phase 1, continuation on phase 2)', async () => {
     const prompts: string[] = []
     const resumes: Array<string | undefined> = []
     let n = 0
@@ -537,13 +537,35 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(prompts).toHaveLength(2)
-    expect(resumes).toEqual([undefined, undefined])
+    expect(resumes).toEqual([undefined, 'sess-1'])
     // Phase 1 has no sessionId yet — fresh kickoff.
     expect(prompts[0]).toContain('Begin phase')
     expect(prompts[0]).toContain('alpha')
-    // Phase 2 is also a fresh kickoff because phase boundaries reset session state.
-    expect(prompts[1]).toContain('Begin phase')
+    // Phase 2 resumes the session and uses the continuation kickoff.
+    expect(prompts[1]).toContain('now in phase')
     expect(prompts[1]).toContain('beta')
+  })
+
+  it('re-registers dynamic MCP servers on resumed queries', async () => {
+    const dynamicMcpServers = { a5: { type: 'sdk' as const, name: 'a5', instance: {} as never } }
+    const liveQuery = {
+      setMcpServers: vi.fn().mockResolvedValue({ added: ['a5'], removed: [], errors: {} }),
+      mcpServerStatus: vi.fn().mockResolvedValue([{ name: 'a5', status: 'connected' }]),
+      reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const result = await reattachDynamicMcpServers(
+      liveQuery as never,
+      dynamicMcpServers,
+      'a5',
+    )
+
+    expect(liveQuery.setMcpServers).toHaveBeenCalledWith(dynamicMcpServers)
+    expect(liveQuery.mcpServerStatus).toHaveBeenCalledTimes(1)
+    expect(liveQuery.reconnectMcpServer).not.toHaveBeenCalled()
+    expect(result.initialStatus).toBe('connected')
+    expect(result.finalStatus).toBe('connected')
+    expect(result.reconnected).toBe(false)
   })
 
   // ── Token usage & cost tracking ───────────────────────────────────────────

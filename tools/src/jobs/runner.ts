@@ -2,7 +2,9 @@ import {
   query,
   type HookCallback,
   type HookJSONOutput,
+  type McpServerConfig,
   type McpSdkServerConfig,
+  type McpSetServersResult,
   type Query,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
@@ -245,17 +247,18 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       // `resume: sessionId` carries the previous transcript forward. This is
       // cheap (no rebuilt context) and usually desirable. It is opt-out via
-      // `A5_DISABLE_SESSION_RESUME=1` because the SDK historically had a bug
-      // where in-process MCP servers didn't survive resume
-      // (see anthropics/claude-agent-sdk-typescript#122). If you see
-      // `mcp__a5__*` tools disappearing after a rework turn, set that env
-      // var and the runner falls back to fresh-session-per-phase behaviour.
+      // `A5_DISABLE_SESSION_RESUME=1` for cases where a completely fresh
+      // session is still preferable.
       //
-      // Note: even with resume, the system prompt is re-sent every call —
-      // so phase transitions still update the agent's role correctly.
+      // The SDK has historically been flaky about in-process MCP servers on
+      // resumed sessions. We still resume, but immediately re-register the
+      // dynamic A5 MCP server on the live Query before consuming model output.
+      // Note: even with resume, the system prompt is re-sent every call — so
+      // phase transitions still update the agent's role correctly.
       const resumeDisabled = process.env.A5_DISABLE_SESSION_RESUME === '1'
         || process.env.A5_DISABLE_SESSION_RESUME === 'true'
       const resumeSessionId = !resumeDisabled && liveJob.sessionId ? liveJob.sessionId : undefined
+      const dynamicMcpServers = { a5: mcpServer } satisfies Record<string, McpServerConfig>
 
       const queryOptions: Record<string, unknown> = {
         pathToClaudeCodeExecutable: claudeCodeCliPath,
@@ -263,7 +266,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         model,
         cwd: workingDir,
         settingSources: ['project'],
-        mcpServers: { a5: mcpServer },
+        mcpServers: dynamicMcpServers,
         hooks,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
@@ -341,7 +344,45 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const isRealQuery = !options?.queryImpl && typeof (queryStream as Query).streamInput === 'function'
       if (isRealQuery) {
-        options?.onQueryStart?.(liveJob.id, queryStream as Query)
+        const liveQuery = queryStream as Query
+        options?.onQueryStart?.(liveJob.id, liveQuery)
+
+        if (resumeSessionId) {
+          try {
+            const mcpRefresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'a5')
+            logger.debug(
+              {
+                jobId: liveJob.id,
+                phase: liveJob.phase,
+                resumedFrom: resumeSessionId,
+                added: mcpRefresh.setResult.added,
+                removed: mcpRefresh.setResult.removed,
+                errors: mcpRefresh.setResult.errors,
+                initialStatus: mcpRefresh.initialStatus,
+                finalStatus: mcpRefresh.finalStatus,
+                reconnected: mcpRefresh.reconnected,
+              },
+              'Refreshed dynamic A5 MCP server on resumed query',
+            )
+
+            if (mcpRefresh.setResult.errors['a5'] || mcpRefresh.finalStatus === 'failed') {
+              await stateBackend.appendLog(
+                liveJob.id,
+                `[warning] A5 MCP refresh reported issues on resumed session. ` +
+                `errors=${JSON.stringify(mcpRefresh.setResult.errors)} status=${mcpRefresh.finalStatus ?? 'unknown'}`,
+              )
+            }
+          } catch (err) {
+            logger.warn(
+              { err, jobId: liveJob.id, phase: liveJob.phase, resumedFrom: resumeSessionId },
+              'Failed to refresh dynamic A5 MCP server on resumed query',
+            )
+            await stateBackend.appendLog(
+              liveJob.id,
+              '[warning] Failed to refresh A5 MCP server on resumed session; MCP tools may be unavailable.',
+            )
+          }
+        }
       }
 
       try {
@@ -683,13 +724,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
-      // New workflow phases must start in a fresh Claude session. The SDK's
-      // in-process MCP registration is not reliable across resumed sessions,
-      // so carrying the previous phase's sessionId into the next phase can
-      // drop the A5 MCP toolset exactly when the agent role changes.
       liveJob = await syncJob(stateBackend, liveJob, {
         phase: nextPhase,
-        sessionId: undefined,
         awaitingNextPhase: undefined,
         approvedAdvanceFromPhase: checkpointApproved ? undefined : liveJob.approvedAdvanceFromPhase,
       })
@@ -794,6 +830,42 @@ export function buildAnthropicAuthEnv(auth: Settings['claude']['auth']): Record<
   return {
     ANTHROPIC_API_KEY: auth.apiKey ?? '',
     CLAUDE_CODE_OAUTH_TOKEN: undefined,
+  }
+}
+
+type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconnectMcpServer'>
+
+export async function reattachDynamicMcpServers(
+  liveQuery: DynamicMcpQuery,
+  dynamicMcpServers: Record<string, McpServerConfig>,
+  serverName: string,
+): Promise<{
+  setResult: McpSetServersResult
+  initialStatus: string | null
+  finalStatus: string | null
+  reconnected: boolean
+}> {
+  const setResult = await liveQuery.setMcpServers(dynamicMcpServers)
+  const readStatus = async () => {
+    const statuses = await liveQuery.mcpServerStatus()
+    return statuses.find(status => status.name === serverName)?.status ?? null
+  }
+
+  const initialStatus = await readStatus()
+  let finalStatus = initialStatus
+  let reconnected = false
+
+  if (finalStatus && finalStatus !== 'connected' && !setResult.errors[serverName]) {
+    await liveQuery.reconnectMcpServer(serverName)
+    reconnected = true
+    finalStatus = await readStatus()
+  }
+
+  return {
+    setResult,
+    initialStatus,
+    finalStatus,
+    reconnected,
   }
 }
 
