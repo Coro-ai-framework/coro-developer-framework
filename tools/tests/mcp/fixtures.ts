@@ -11,8 +11,8 @@ import type { StateBackend } from '../../src/state/backend'
 export function makeMockJob(overrides: Record<string, unknown> = {}) {
   return {
     id: 'job-mcp-test',
-    type: JobType.Migration,
-    workflowPath: 'workflows/migration/workflow.md',
+    type: JobType.Job,
+    workflowPath: 'workflows/job/workflow.md',
     params: { repoSlug: 'svc', reviewers: ['reviewer-1'] },
     triggerSource: 'cli' as const,
     status: STATUS_QUEUED,

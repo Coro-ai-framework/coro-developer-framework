@@ -147,52 +147,6 @@ export function createServer(ctx: ServerContext): Express {
     }
   })
 
-  // ── POST /jobs/migrate ─────────────────────────────────────────────────────
-
-  app.post('/jobs/migrate', async (req: Request, res: Response) => {
-    const { repo, projects, reviewers, stagingUrl, serviceName, interactive } = req.body as Record<string, unknown>
-
-    if (!repo || !projects || !reviewers || !stagingUrl || !serviceName) {
-      res.status(400).json({
-        error: 'Missing required fields: repo, projects, reviewers, stagingUrl, serviceName',
-      })
-      return
-    }
-
-    if (!Array.isArray(projects) || projects.length === 0) {
-      res.status(400).json({ error: 'projects must be a non-empty array' })
-      return
-    }
-
-    if (!Array.isArray(reviewers) || reviewers.length === 0) {
-      res.status(400).json({ error: 'reviewers must be a non-empty array' })
-      return
-    }
-
-    const input = createJobInput({
-      type: 'migration',
-      workflowPath: 'workflows/migration/workflow.md',
-      repo: repo as string,
-      serviceName: serviceName as string,
-      reviewers: reviewers as string[],
-      interactive: interactive === true,
-      params: {
-        projects,
-        stagingUrl,
-      },
-    })
-
-    const job = await dispatcher.dispatch(input)
-    logger.info({ jobId: job.id, repo, serviceName }, 'Migration job dispatched')
-
-    res.status(201).json({
-      jobId: job.id,
-      type: job.type,
-      status: job.status,
-      streamUrl: `/jobs/${job.id}/stream`,
-    })
-  })
-
   // ── GET /jobs ──────────────────────────────────────────────────────────────
 
   app.get('/jobs', async (req: Request, res: Response) => {

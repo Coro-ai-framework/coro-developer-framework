@@ -35,7 +35,6 @@ Every job carries a `type` and a `workflowPath`. The Agent Host uses these — n
 
 | Trigger | JobType | workflowPath |
 |---------|---------|-------------|
-| `a5 migrate ...` (CLI) | `migration` | `workflows/migration/workflow.md` |
 | `a5 job ...` (CLI) | `job` | `workflows/job/workflow.md` |
 | Jira ticket assigned to agent | `job` | `workflows/job/workflow.md` |
 | Agent writes to `memory/`, `agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
@@ -48,7 +47,7 @@ Every job carries a `type` and a `workflowPath`. The Agent Host uses these — n
 - **workflows/** — Lifecycle definitions, one subdirectory per workflow type. Each `workflow.md` has YAML front matter defining phases, agent assignments, model selection, and subagent definitions.
 - **.claude/** — Intelligence loaded by the Agent SDK natively:
   - `.claude/CLAUDE.md` — Always-loaded runtime instructions: behavior rules, company context, git conventions, infrastructure context.
-  - `.claude/skills/` — On-demand domain knowledge and language conventions. Agents invoke skills when they need specialized guidance (e.g., `migration-coding`, `golang-conventions`).
+  - `.claude/skills/` — On-demand domain knowledge and language conventions. Agents invoke skills when they need specialized guidance (e.g., `feature-planning`, `golang-conventions`).
 - **config/** — `credentials.md` (gitignored, read by Agent Host at startup) and `repos.md` (service registry).
 - **memory/** — Accumulated knowledge from past jobs. Read at the start of every phase. Never modified directly — updates go through a self-improvement PR.
 - **docs/** — Architecture documentation for engineers and stakeholders.
@@ -69,15 +68,14 @@ The system is fully language-agnostic. No language-specific defaults are hardcod
 
 | Agent file | Phase(s) | Used by workflows |
 |-----------|----------|------------------|
-| `agents/analyzer.md` | analysis | migration |
-| `agents/planner.md` | planning, reporting | migration, feature |
-| `agents/coder.md` | repo-setup, coding | migration, feature |
-| `agents/tester.md` | testing | migration, feature |
-| `agents/evaluator.md` | evaluation | migration, feature |
-| `agents/pr-reviewer.md` | review | migration, feature |
-| `agents/spec-writer.md` | spec-writing | feature (Jira-triggered) |
+| `agents/planner.md` | planning, reporting | job |
+| `agents/coder.md` | coding | job |
+| `agents/tester.md` | testing | job |
+| `agents/evaluator.md` | evaluation | job |
+| `agents/pr-reviewer.md` | review | job |
+| `agents/spec-writer.md` | spec-writing | job (Jira-triggered) |
 
-Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go migrations, .NET features, and TypeScript projects — the invoked skills change, not the agent.
+Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go, .NET, and TypeScript projects — the invoked skills change, not the agent.
 
 ---
 
@@ -87,14 +85,8 @@ On-demand domain knowledge and language conventions that agents invoke via the `
 
 ```
 .claude/skills/
-  migration-analysis/SKILL.md       — .NET codebase analysis patterns
-  migration-planning/SKILL.md       — Migration planning heuristics
-  migration-coding/SKILL.md         — Contract parity and translation patterns
-  migration-testing/SKILL.md        — Comparison testing methodology
-  migration-evaluation/SKILL.md     — Migration failure taxonomy
-  migration-review/SKILL.md         — Migration PR review checklist
-  feature-planning/SKILL.md         — Feature scoping and planning
-  feature-testing/SKILL.md          — Feature testing methodology
+  feature-planning/SKILL.md         — Generic implementation planning guidance
+  feature-testing/SKILL.md          — Generic implementation testing guidance
   golang-conventions/SKILL.md       — Go coding standards
   dotnet-conventions/SKILL.md       — .NET/C# coding standards
   self-improvement-guide/SKILL.md   — Proposal types and file structure guide
@@ -107,24 +99,16 @@ Skills are invoked on-demand by agents, reducing per-phase token costs compared 
 ## How to start a workflow
 
 ```bash
-# Migrate a .NET service to Go
-a5 migrate \
-  --repo my-service \
-  --projects MyService.API,MyService.Models \
-  --reviewers alice,bob \
-  --staging-url https://staging.my-service.a5labs.com
-
-# Start a generic implementation job
 a5 job \
   --repo my-service-go \
   --description "Add rate limiting to /api/users" \
   --reviewers alice,bob
 
 # Check job status
-a5 status --job my-service-migration
+a5 status --job my-service-job-1712123456789
 
 # Stream live logs for a running job
-a5 logs --job my-service-migration
+a5 logs --job my-service-job-1712123456789
 
 # List all jobs
 a5 jobs
@@ -160,12 +144,6 @@ a5-ai/
 │   ├── CLAUDE.md                         ← Agent runtime instructions (loaded by SDK)
 │   ├── settings.json                     ← Claude Code settings
 │   └── skills/                           ← On-demand skills (domain knowledge + conventions)
-│       ├── migration-analysis/SKILL.md
-│       ├── migration-planning/SKILL.md
-│       ├── migration-coding/SKILL.md
-│       ├── migration-testing/SKILL.md
-│       ├── migration-evaluation/SKILL.md
-│       ├── migration-review/SKILL.md
 │       ├── feature-planning/SKILL.md
 │       ├── feature-testing/SKILL.md
 │       ├── golang-conventions/SKILL.md
@@ -173,9 +151,8 @@ a5-ai/
 │       └── self-improvement-guide/SKILL.md
 ├── config/
 │   ├── credentials.md                    ← API keys and tokens (gitignored)
-│   └── repos.md                          ← Service registry (add services here before migrating)
+│   └── repos.md                          ← Service registry (repositories known to the platform)
 ├── agents/
-│   ├── analyzer.md                       ← Codebase analysis (language-agnostic)
 │   ├── planner.md                        ← Implementation planning and ordering
 │   ├── coder.md                          ← Code generation and PR management (unified, language-agnostic)
 │   ├── tester.md                         ← Build verification and testing
@@ -183,11 +160,10 @@ a5-ai/
 │   ├── pr-reviewer.md                    ← PR review, merge coordination
 │   └── spec-writer.md                    ← Jira ticket → implementation spec
 ├── workflows/
-│   ├── migration/
-│   │   ├── workflow.md                   ← Migration lifecycle (YAML + docs)
-│   │   └── report-template.md           ← Final migration report
-│   └── job/
-│       └── workflow.md                   ← Generic implementation lifecycle (YAML + docs)
+│   ├── job/
+│   │   └── workflow.md                   ← Generic implementation lifecycle (YAML + docs)
+│   └── self-update/
+│       └── workflow.md                   ← Internal workflow for intelligence updates
 ├── memory/
 │   ├── MEMORY.md                        ← Index — loaded into every agent prompt
 │   ├── known-pitfalls.md                ← Translation mistakes and failure patterns
@@ -212,21 +188,25 @@ a5-ai/
     │   ├── sse-client.ts
     │   └── commands/
     │       ├── migrate.ts
-    │       ├── feature.ts
+    │       ├── init.ts
+    │       ├── job.ts
+    │       ├── login.ts
+    │       ├── message.ts
     │       ├── status.ts
     │       ├── jobs.ts
     │       ├── resume.ts
+    │       ├── runner.ts
     │       └── logs.ts
     └── src/
         ├── index.ts                     ← Startup: Redis, MCP server, HTTP server
-        ├── server.ts                    ← HTTP: /jobs, /jobs/migrate, /webhook, SSE
+        ├── server.ts                    ← HTTP: /jobs, /webhook, SSE
         ├── mcp-server.ts                ← In-process MCP server (all domain tools)
         ├── mcp-handlers.ts              ← MCP tool implementations
         ├── watcher.ts                   ← File watcher: memory/ + agents/ + .claude/ → self-update PRs
         ├── workflow-parser.ts           ← YAML front matter parser (phases, knowledge, conventions)
         ├── config/settings.ts
         ├── jobs/
-        │   ├── types.ts                 ← JobType, Job, FeatureItem, status constants
+        │   ├── types.ts                 ← JobType, Job, WorkItem, status constants
         │   ├── registry.ts              ← Redis CRUD + PR/Jira/repo mappings
         │   ├── runner.ts                ← Claude Agent SDK query() per phase
         │   └── dispatcher.ts            ← Routes CLI/webhook/Jira triggers to job runners

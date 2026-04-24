@@ -16,8 +16,8 @@ const A5AI_DIR = '/data/a5-ai'
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'test-job-1',
-    type: JobType.Migration,
-    workflowPath: 'workflows/migration/workflow.md',
+    type: JobType.Job,
+    workflowPath: 'workflows/job/workflow.md',
     params: { serviceName: 'my-svc' },
     triggerSource: 'cli',
     status: 'coding',

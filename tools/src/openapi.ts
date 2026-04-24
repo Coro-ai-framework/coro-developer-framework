@@ -8,7 +8,7 @@ export const openApiSpec = {
     title: 'A5 Agent Host',
     version: '0.1.0',
     description:
-      'Orchestration service that drives AI agents through migration and implementation workflows. ' +
+      'Orchestration service that drives AI agents through markdown-defined implementation workflows. ' +
       'Receives job requests from the `a5` CLI or external webhooks, runs Claude API sessions, ' +
       'and parks/resumes jobs on BitBucket and Jira events.',
   },
@@ -75,36 +75,6 @@ export const openApiSpec = {
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/JobCreateInput' },
-            },
-          },
-        },
-        responses: {
-          201: {
-            description: 'Job created',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/JobCreatedResponse' },
-              },
-            },
-          },
-          400: { $ref: '#/components/responses/BadRequest' },
-        },
-      },
-    },
-
-    '/jobs/migrate': {
-      post: {
-        tags: ['jobs'],
-        summary: 'Create a migration job',
-        description:
-          'Starts a .NET → Go migration workflow for the specified service. ' +
-          'Returns immediately with a `streamUrl` the CLI uses to tail logs.',
-        operationId: 'createMigrationJob',
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/MigrationJobInput' },
             },
           },
         },
@@ -310,7 +280,7 @@ export const openApiSpec = {
         name: 'jobId',
         in: 'path',
         required: true,
-        schema: { type: 'string', example: 'my-service-migration-1712123456789' },
+        schema: { type: 'string', example: 'my-service-job-1712123456789' },
         description: 'Job identifier returned on creation',
       },
     },
@@ -329,7 +299,7 @@ export const openApiSpec = {
         content: {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
-            example: { error: 'Job not found: my-service-migration-123' },
+            example: { error: 'Job not found: my-service-job-123' },
           },
         },
       },
@@ -340,7 +310,7 @@ export const openApiSpec = {
 
       JobType: {
         type: 'string',
-        enum: ['job', 'migration', 'self-update'],
+        enum: ['job', 'self-update'],
         description: 'The type of work a job performs',
       },
 
@@ -382,19 +352,16 @@ export const openApiSpec = {
       Job: {
         type: 'object',
         required: [
-          'id', 'type', 'workflowPath', 'serviceName', 'repoSlug', 'projects',
-          'reviewers', 'stagingUrl', 'triggerSource', 'status', 'phase',
+          'id', 'type', 'workflowPath', 'triggerSource', 'status', 'phase',
           'currentWorkItem', 'prMappings', 'createdAt', 'updatedAt',
         ],
         properties: {
-          id: { type: 'string', example: 'my-service-migration-1712123456789' },
+          id: { type: 'string', example: 'my-service-job-1712123456789' },
           type: { $ref: '#/components/schemas/JobType' },
-          workflowPath: { type: 'string', example: 'workflows/migration/workflow.md' },
+          workflowPath: { type: 'string', example: 'workflows/job/workflow.md' },
           serviceName: { type: 'string', example: 'my-service' },
           repoSlug: { type: 'string', example: 'my-service' },
-          projects: { type: 'array', items: { type: 'string' }, example: ['MyService.API'] },
           reviewers: { type: 'array', items: { type: 'string' }, example: ['alice', 'bob'] },
-          stagingUrl: { type: 'string', example: 'https://staging.my-service.a5labs.com' },
           triggerSource: { type: 'string', enum: ['cli', 'jira', 'internal'] },
           jiraTicketId: { type: 'string', nullable: true, example: 'A5-1234' },
           status: { $ref: '#/components/schemas/JobStatus' },
@@ -431,41 +398,13 @@ export const openApiSpec = {
 
       // ── Inputs ──────────────────────────────────────────────────────────────
 
-      MigrationJobInput: {
-        type: 'object',
-        required: ['repo', 'projects', 'reviewers', 'stagingUrl', 'serviceName'],
-        properties: {
-          repo: { type: 'string', description: 'BitBucket repo slug', example: 'my-service' },
-          projects: {
-            type: 'array',
-            items: { type: 'string' },
-            minItems: 1,
-            description: 'C# project names within the .NET solution',
-            example: ['MyService.API', 'MyService.Models'],
-          },
-          reviewers: {
-            type: 'array',
-            items: { type: 'string' },
-            minItems: 1,
-            description: 'BitBucket usernames to tag as PR reviewers',
-            example: ['alice', 'bob'],
-          },
-          stagingUrl: {
-            type: 'string',
-            description: 'Base URL of the .NET staging service (used for request comparison)',
-            example: 'https://staging.my-service.a5labs.com',
-          },
-          serviceName: { type: 'string', example: 'my-service' },
-        },
-      },
-
       JobCreateInput: {
         type: 'object',
         required: ['workflowPath'],
         properties: {
           type: {
             type: 'string',
-            enum: ['job', 'migration', 'self-update'],
+            enum: ['job', 'self-update'],
             description: 'Optional explicit job type. Omit for the default generic job type.',
           },
           workflowPath: {
@@ -515,10 +454,10 @@ export const openApiSpec = {
         type: 'object',
         required: ['jobId', 'type', 'status', 'streamUrl'],
         properties: {
-          jobId: { type: 'string', example: 'my-service-migration-1712123456789' },
+          jobId: { type: 'string', example: 'my-service-job-1712123456789' },
           type: { $ref: '#/components/schemas/JobType' },
           status: { $ref: '#/components/schemas/JobStatus' },
-          streamUrl: { type: 'string', example: '/jobs/my-service-migration-1712123456789/stream' },
+          streamUrl: { type: 'string', example: '/jobs/my-service-job-1712123456789/stream' },
         },
       },
 

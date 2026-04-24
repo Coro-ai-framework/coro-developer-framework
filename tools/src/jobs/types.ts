@@ -6,7 +6,6 @@
  */
 export enum JobType {
   Job        = 'job',
-  Migration  = 'migration',
   SelfUpdate = 'self-update',
 }
 
@@ -214,7 +213,7 @@ export function jobJiraTicketId(job: Job): string | undefined {
 // ── Job input ─────────────────────────────────────────────────────────────────
 
 export interface JobInput {
-  type?: 'job' | 'migration' | 'self-update'
+  type?: 'job' | 'self-update'
   workflowPath?: string
   triggerSource?: 'cli' | 'jira' | 'internal'
   params: Record<string, unknown>
@@ -311,7 +310,6 @@ export function isParkingStatus(status: string): boolean {
 export function defaultWorkflowPath(type: JobType): string {
   switch (type) {
     case JobType.Job:        return 'workflows/job/workflow.md'
-    case JobType.Migration:  return 'workflows/migration/workflow.md'
     case JobType.SelfUpdate: return 'workflows/self-update/workflow.md'
   }
 }

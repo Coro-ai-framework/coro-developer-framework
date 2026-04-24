@@ -50,7 +50,7 @@ function makeSettings(): Settings {
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'runner-job-1',
-    type: JobType.Migration,
+    type: JobType.Job,
     workflowPath: '',
     params: { serviceName: 'svc', repoSlug: 'svc' },
     triggerSource: 'cli',
@@ -454,7 +454,7 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(ctx.logger.error).toHaveBeenCalled()
   })
 
-  it('fails instead of auto-advancing when built-in tools ran but no A5 MCP tool was used', async () => {
+  it('warns but still auto-advances when built-in tools ran but no A5 MCP tool was used', async () => {
     const queryImpl = () =>
       (async function* () {
         yield {
@@ -471,9 +471,12 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowTwoPhase,
     })
 
-    expect(stateBackend.current.status).toBe(STATUS_FAILED)
-    expect(stateBackend.current.phase).toBe('alpha')
-    expect(stateBackend.current.escalationMessage).toContain('without any mcp__a5__* tool calls')
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
+    expect(stateBackend.appendLog).toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.stringContaining('ZERO mcp__a5__* calls'),
+    )
   })
 
   it('stops when escalated signal is set (after stateBackend update)', async () => {

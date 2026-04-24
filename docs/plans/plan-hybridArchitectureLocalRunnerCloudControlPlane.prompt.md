@@ -12,7 +12,7 @@ This supersedes the previous multi-tenant-only plan (`multi-tenant-agent-host.md
 
 1. **Compliance/NDA** — source code never leaves the developer's machine. The cloud only sees job metadata, logs, token counts, and proposals (intelligence file diffs). No repo contents, no source code.
 2. **Team shareability** — the real product value: shared knowledge base, shared dashboards, webhook delivery, proposal review, job history across the team.
-3. **Developer experience** — `a5` CLI or lightweight desktop app. `a5 login`, `a5 migrate --repo my-service`, watch progress on the dashboard. Like GitHub Actions self-hosted runners but for AI agents.
+3. **Developer experience** — `a5` CLI or lightweight desktop app. `a5 login`, `a5 job --repo my-service --description "..."`, watch progress on the dashboard. Like GitHub Actions self-hosted runners but for AI agents.
 4. **Cost model** — developers bring their own Anthropic API key. We host the control plane (low compute — just state + static dashboard). Our infrastructure cost is minimal.
 
 ---
@@ -87,9 +87,9 @@ This supersedes the previous multi-tenant-only plan (`multi-tenant-agent-host.md
 ## Data Flow: Complete Job Lifecycle
 
 ```
-1.  Developer: a5 migrate --repo payment-service
+1.  Developer: a5 job --repo payment-service --description "Implement scoped change"
 2.  Local runner connects to cloud via WebSocket (already authenticated)
-3.  Runner → Cloud: createJob({ type: 'migration', params: { repo: 'payment-service' } })
+3.  Runner → Cloud: createJob({ type: 'job', workflowPath: 'workflows/job/workflow.md', params: { repo: 'payment-service' } })
 4.  Cloud: creates job in Postgres, returns job ID, broadcasts to dashboard SSE
 5.  Runner: loads workflow from local intelligence dir
 6.  Runner: builds system prompt from local intelligence (agents, memory, skills)
@@ -399,7 +399,7 @@ a5 init                               # interactive: API key, intelligence repo,
 a5 init --local                       # skip cloud, use SQLite + polling
 
 # Job management (dispatched locally, state synced to cloud)
-a5 migrate --repo payment-service
+a5 job --repo payment-service --description "Implement scoped change"
 a5 feature --repo my-service --description "Add rate limiting"
 a5 status                             # list running/recent jobs
 a5 logs --job <id>                    # tail logs (live from runner + cloud)
@@ -525,7 +525,7 @@ For solo developers, air-gapped environments, or quick evaluation.
 5. CLI commands: `a5 login`, `a5 init`, `a5 runner start/stop/status`
 6. npm package: `@a5labs/runner`
 
-**Verification:** Full job E2E: `a5 init` → `a5 runner start` → `a5 migrate --repo test` → job runs locally, state in cloud, logs on dashboard, proposal visible.
+**Verification:** Full job E2E: `a5 init` → `a5 runner start` → `a5 job --repo test --description "Smoke test workflow"` → job runs locally, state in cloud, logs on dashboard, proposal visible.
 
 ---
 
@@ -538,7 +538,7 @@ For solo developers, air-gapped environments, or quick evaluation.
 3. Local dashboard: runner serves React SPA on `localhost:3000`
 4. `a5 init --local` mode
 
-**Verification:** `a5 init --local` → `a5 migrate` → jobs in SQLite, local dashboard works, PR polling picks up events.
+**Verification:** `a5 init --local` → `a5 job --repo test --description "Smoke test workflow"` → jobs in SQLite, local dashboard works, PR polling picks up events.
 
 ---
 

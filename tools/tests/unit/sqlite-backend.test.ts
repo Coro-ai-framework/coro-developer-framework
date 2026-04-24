@@ -43,22 +43,22 @@ describe('SqliteStateBackend', () => {
   // ── Job CRUD ──────────────────────────────────────────────────────────────
 
   describe('createJob + getJob', () => {
-    it('persists a migration job and loads workflow-driven phase/status', async () => {
+    it('persists a generic job and loads workflow-driven phase/status', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         triggerSource: 'cli',
         params: { serviceName: 'svc-a', repoSlug: 'svc-a' },
       })
 
-      expect(job.type).toBe(JobType.Migration)
-      expect(job.workflowPath).toBe('workflows/migration/workflow.md')
-      expect(job.phase).toBe('init')
-      expect(job.id).toContain('svc-a-migration-')
+      expect(job.type).toBe(JobType.Job)
+      expect(job.workflowPath).toBe('workflows/job/workflow.md')
+      expect(job.phase).toBe('planning')
+      expect(job.id).toContain('svc-a-job-')
 
       const loaded = await backend.getJob(job.id)
       expect(loaded).not.toBeNull()
       expect(loaded!.id).toBe(job.id)
-      expect(loaded!.type).toBe(JobType.Migration)
+      expect(loaded!.type).toBe(JobType.Job)
       expect(loaded!.params['serviceName']).toBe('svc-a')
     })
 
@@ -116,7 +116,7 @@ describe('SqliteStateBackend', () => {
   describe('listJobs + listJobsByType', () => {
     it('lists all jobs sorted by createdAt descending', async () => {
       const j1 = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'a' },
       })
       // Ensure different timestamps
@@ -133,12 +133,12 @@ describe('SqliteStateBackend', () => {
     })
 
     it('filters by type', async () => {
-      await backend.createJob({ type: 'migration', params: { serviceName: 'x' } })
+      await backend.createJob({ type: 'job', params: { serviceName: 'x' } })
       await backend.createJob({ type: 'job', params: { serviceName: 'y' } })
 
-      const migrations = await backend.listJobsByType(JobType.Migration)
-      expect(migrations.length).toBe(1)
-      expect(migrations[0].type).toBe(JobType.Migration)
+      const jobs = await backend.listJobsByType(JobType.Job)
+      expect(jobs.length).toBe(2)
+      expect(jobs.every(job => job.type === JobType.Job)).toBe(true)
     })
   })
 
@@ -147,7 +147,7 @@ describe('SqliteStateBackend', () => {
   describe('updateJob', () => {
     it('merges partial updates and refreshes updatedAt', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'svc' },
       })
 
@@ -176,7 +176,7 @@ describe('SqliteStateBackend', () => {
   describe('deleteJob', () => {
     it('removes job and associated logs', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'del-me' },
       })
       await backend.appendLog(job.id, 'test log')
@@ -197,7 +197,7 @@ describe('SqliteStateBackend', () => {
   describe('appendLog / getLog / logLength', () => {
     it('stores chronological log lines', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'log-test' },
       })
 
@@ -215,7 +215,7 @@ describe('SqliteStateBackend', () => {
 
     it('getLog supports range slicing', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'slice' },
       })
 

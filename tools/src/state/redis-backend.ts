@@ -289,7 +289,6 @@ function normalizeJob(job: Job): Job {
 function inputToJobType(input: JobInput): JobType {
   switch (input.type) {
     case 'job':         return JobType.Job
-    case 'migration':   return JobType.Migration
     case 'self-update': return JobType.SelfUpdate
     default:
       throw new Error(`Unknown job type: ${String((input as unknown as Record<string, unknown>).type)}`)

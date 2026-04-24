@@ -15,7 +15,6 @@ function timeAgo(iso: string): string {
 
 const TYPE_STYLES: Record<string, string> = {
   job: 'bg-cyan-950 text-cyan-300',
-  migration: 'bg-violet-950 text-violet-300',
   'self-update': 'bg-zinc-800 text-zinc-300',
 }
 

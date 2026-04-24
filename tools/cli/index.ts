@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander'
-import { migrateCommand } from './commands/migrate'
 import { jobCommand } from './commands/job'
 import { statusCommand } from './commands/status'
 import { jobsCommand } from './commands/jobs'
@@ -19,7 +18,6 @@ program
   .description('A5 Labs — AI Agent Developer Framework CLI')
   .version('0.2.0')
 
-program.addCommand(migrateCommand)
 program.addCommand(jobCommand)
 program.addCommand(statusCommand)
 program.addCommand(jobsCommand)

@@ -68,27 +68,29 @@ tools/
 
 ## HTTP API
 
-### `POST /jobs/migrate`
+### `POST /jobs`
 
-Submitted by the CLI to start a migration job.
+Submitted by the CLI or dashboard to start a generic implementation job.
 
 **Request body:**
 ```json
 {
+  "type": "job",
+  "workflowPath": "workflows/job/workflow.md",
   "repo": "my-service",
-  "projects": ["MyService.API", "MyService.Models"],
+  "serviceName": "my-service",
+  "description": "Add rate limiting to /api/users",
   "reviewers": ["alice", "bob"],
-  "stagingUrl": "https://staging.my-service.a5labs.com",
-  "serviceName": "my-service"
+  "gitProvider": "bitbucket"
 }
 ```
 
 **Response:**
 ```json
 {
-  "jobId": "my-service-migration-1234",
+  "jobId": "my-service-job-1234",
   "status": "queued",
-  "streamUrl": "/jobs/my-service-migration-1234/stream"
+  "streamUrl": "/jobs/my-service-job-1234/stream"
 }
 ```
 
@@ -117,9 +119,9 @@ Receives BitBucket webhook events. Validates HMAC signature before processing.
 ### Job states (stored in Redis)
 
 ```
-queued → initializing → analyzing → planning → awaiting-plan-approval
-→ coding:{feature-n} → awaiting-pr-merge:{feature-n}
-→ testing:{feature-n} → evaluating:{feature-n}
+queued → planning → awaiting-plan-approval
+→ coding:{work-item} → awaiting-pr-merge:{work-item}
+→ testing:{work-item} → evaluating:{work-item}
 → [loops back to coding if needed]
 → reporting → complete | escalated
 ```
@@ -184,12 +186,12 @@ When a job is waiting for a BitBucket event (e.g., PR to be merged), it parks it
 ```
 Job: "I've opened PR #42. Now waiting for it to be merged."
 ↓ Job stores: awaiting_event = "pr:fulfilled", pr_id = 42
-↓ Maps: redis SET pr:42:job → my-service-migration-1234
+↓ Maps: redis SET pr:42:job → my-service-job-1234
 ↓ Job runner exits (no CPU usage while waiting)
 
 Later: BitBucket fires pr:fulfilled for PR #42
-↓ Dispatcher: lookup redis GET pr:42:job → my-service-migration-1234
-↓ Resume job my-service-migration-1234
+↓ Dispatcher: lookup redis GET pr:42:job → my-service-job-1234
+↓ Resume job my-service-job-1234
 ↓ Job runner restarts from last checkpoint with webhook payload as new input
 ```
 
@@ -265,15 +267,15 @@ The prompt has two layers:
 ```typescript
 // Example: building the system prompt for the Coder phase
 const systemPrompt = [
-  readFile('a5-ai/workflows/migration/workflow.md'),
-  readFile('a5-ai/agents/coder.md'),
+  readFile('a5-ai/workflows/job/workflow.md'),
+  readFile('a5-ai/agents/planner.md'),
   readFile('a5-ai/memory/MEMORY.md'),
   ...loadAllMemoryFiles('a5-ai/memory/'),
   `## Current job context\n${JSON.stringify(job.context, null, 2)}`
 ].join('\n\n---\n\n')
 ```
 
-Domain knowledge (e.g. migration coding patterns) and language conventions (e.g. Go standards) are no longer injected into the system prompt. Agents invoke them on-demand via the `Skill` tool, significantly reducing per-phase token costs.
+Domain knowledge (e.g. implementation planning or testing guidance) and language conventions (e.g. Go standards) are no longer injected into the system prompt. Agents invoke them on-demand via the `Skill` tool, significantly reducing per-phase token costs.
 
 ---
 
