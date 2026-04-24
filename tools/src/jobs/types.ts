@@ -5,8 +5,7 @@
  * Determines which workflowPath is used and which phases are valid.
  */
 export enum JobType {
-  Migration  = 'migration',
-  Feature    = 'feature',
+  Job        = 'job',
   SelfUpdate = 'self-update',
 }
 
@@ -25,15 +24,15 @@ export const STATUS_CODING                      = 'coding'
 
 export interface PrMapping {
   prId: number
-  feature: string
+  workItem: string
   repoSlug: string
   openedAt: string
   mergedAt?: string
 }
 
-// ── Feature tracking ──────────────────────────────────────────────────────────
+// ── Work-item tracking ────────────────────────────────────────────────────────
 
-export interface FeatureItem {
+export interface WorkItem {
   name: string
   status: 'pending' | 'in-progress' | 'complete' | 'escalated'
   loopCount: number
@@ -113,12 +112,12 @@ export interface Job {
 
   status: string
   phase: string
-  currentFeature: string | null
+  currentWorkItem: string | null
 
-  /** Populated by planner via set_features tool. The runner does not act on these. */
-  features: FeatureItem[]
-  /** Current feature's loop count — denormalized from features[] for quick access. */
-  featureLoopCount: number
+  /** Populated by planning via set_work_items. The runner does not act on these. */
+  workItems: WorkItem[]
+  /** Current work-item loop count — denormalized from workItems[] for quick access. */
+  workItemLoopCount: number
 
   prMappings: PrMapping[]
 
@@ -214,7 +213,8 @@ export function jobJiraTicketId(job: Job): string | undefined {
 // ── Job input ─────────────────────────────────────────────────────────────────
 
 export interface JobInput {
-  type: 'migration' | 'feature' | 'self-update'
+  type?: 'job' | 'self-update'
+  workflowPath?: string
   triggerSource?: 'cli' | 'jira' | 'internal'
   params: Record<string, unknown>
 }
@@ -309,8 +309,7 @@ export function isParkingStatus(status: string): boolean {
 
 export function defaultWorkflowPath(type: JobType): string {
   switch (type) {
-    case JobType.Migration:  return 'workflows/migration/workflow.md'
-    case JobType.Feature:    return 'workflows/feature/workflow.md'
-    case JobType.SelfUpdate: return ''
+    case JobType.Job:        return 'workflows/job/workflow.md'
+    case JobType.SelfUpdate: return 'workflows/self-update/workflow.md'
   }
 }

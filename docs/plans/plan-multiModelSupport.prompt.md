@@ -71,7 +71,7 @@ All three runners receive the **same system prompt** assembled by `prompt/builde
 
 **Verification:**
 - All existing tests in `tests/runner/runner.test.ts` pass unchanged — `queryImpl` mock still works
-- Manual: run a migration job with `provider: 'claude'` — behavior identical to today
+- Manual: run an implementation job with `provider: 'claude'` — behavior identical to today
 
 ---
 
@@ -242,7 +242,7 @@ The Claude Code CLI provides `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `S
 
 ## Further Considerations
 
-1. **Subagent spawning (`Agent` tool):** The Claude Code CLI's `Agent` built-in spawns subagents as defined in the workflow YAML `subagents:` block. For non-Claude runners, this requires implementing a recursive `run_subagent` MCP tool that creates a nested runner, runs it to completion, and returns the result. Not in scope for MVP but needed before non-Claude runners can handle migration workflows (which use subagents in the analysis phase).
+1. **Subagent spawning (`Agent` tool):** The Claude Code CLI's `Agent` built-in spawns subagents as defined in the workflow YAML `subagents:` block. For non-Claude runners, this requires implementing a recursive `run_subagent` MCP tool that creates a nested runner, runs it to completion, and returns the result. Not in scope for MVP but needed before non-Claude runners can handle workflows that rely on subagents.
 
 2. **Cost tracking per provider:** `PhaseUsage.costUsd` is currently calculated from Anthropic's token pricing. Each runner must implement its own cost calculation based on provider pricing. Consider adding a `calculateCost(model, inputTokens, outputTokens): number` function per runner, and moving the cost lookup table out of the runner into a `pricing.ts` file.
 

@@ -8,11 +8,11 @@ interface JobDetail {
   phase: string
   workflowPath: string
   triggerSource: string
-  currentFeature: string | null
+  currentWorkItem: string | null
   params: Record<string, unknown>
   prMappings: Array<{
     prId: number
-    feature: string
+    workItem: string
     repoSlug: string
     openedAt: string
     mergedAt?: string
@@ -51,8 +51,8 @@ export const statusCommand = new Command('status')
       console.log(`\x1b[1mService:\x1b[0m ${j.params['serviceName']}`)
     }
 
-    if (j.currentFeature) {
-      console.log(`\x1b[1mFeature:\x1b[0m ${j.currentFeature}`)
+    if (j.currentWorkItem) {
+      console.log(`\x1b[1mWork Item:\x1b[0m ${j.currentWorkItem}`)
     }
 
     if (j.awaitingEvent) {
@@ -71,7 +71,7 @@ export const statusCommand = new Command('status')
       console.log(`\x1b[1mPull Requests (${j.prMappings.length}):\x1b[0m`)
       for (const pr of j.prMappings) {
         const merged = pr.mergedAt ? `\x1b[32m merged ${formatTime(pr.mergedAt)}\x1b[0m` : '\x1b[33m open\x1b[0m'
-        console.log(`  PR #${pr.prId} — ${pr.feature} (${pr.repoSlug}) ${merged}`)
+        console.log(`  PR #${pr.prId} — ${pr.workItem} (${pr.repoSlug}) ${merged}`)
       }
     }
 

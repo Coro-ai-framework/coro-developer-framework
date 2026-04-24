@@ -6,7 +6,8 @@ import swaggerUi from 'swagger-ui-express'
 import { Logger } from 'pino'
 import { Dispatcher } from './jobs/dispatcher'
 import type { StateBackend } from './state/backend'
-import { Artifact, JobInput, JobType, isStoppedStatus } from './jobs/types'
+import { Artifact, JobType, isStoppedStatus } from './jobs/types'
+import { createJobInput, type CreateJobRequest } from './jobs/creation'
 import { Settings } from './config/settings'
 import { openApiSpec } from './openapi'
 import { loadWorkflowConfig } from './workflow-parser'
@@ -120,65 +121,20 @@ export function createServer(ctx: ServerContext): Express {
   app.use('/docs', swaggerUi.serve)
   app.get('/docs', swaggerUi.setup(openApiSpec))
 
-  // ── POST /jobs/migrate ─────────────────────────────────────────────────────
+  // ── POST /jobs ─────────────────────────────────────────────────────────────
 
-  app.post('/jobs/migrate', async (req: Request, res: Response) => {
-    const { repo, projects, reviewers, stagingUrl, serviceName, interactive } = req.body as Record<string, unknown>
-
-    if (!repo || !projects || !reviewers || !stagingUrl || !serviceName) {
-      res.status(400).json({
-        error: 'Missing required fields: repo, projects, reviewers, stagingUrl, serviceName',
-      })
-      return
-    }
-
-    if (!Array.isArray(projects) || projects.length === 0) {
-      res.status(400).json({ error: 'projects must be a non-empty array' })
-      return
-    }
-
-    if (!Array.isArray(reviewers) || reviewers.length === 0) {
-      res.status(400).json({ error: 'reviewers must be a non-empty array' })
-      return
-    }
-
-    const input: JobInput = {
-      type: 'migration',
-      params: {
-        repo, repoSlug: repo, projects, reviewers, stagingUrl, serviceName,
-        interactive: interactive === true,
-      },
-    }
-
-    const job = await dispatcher.dispatch(input)
-    logger.info({ jobId: job.id, repo, serviceName }, 'Migration job dispatched')
-
-    res.status(201).json({
-      jobId: job.id,
-      type: job.type,
-      status: job.status,
-      streamUrl: `/jobs/${job.id}/stream`,
-    })
-  })
-
-  // ── POST /jobs/feature ─────────────────────────────────────────────────────
-
-  app.post('/jobs/feature', async (req: Request, res: Response) => {
-    const body = req.body as Record<string, unknown>
-
-    // Jira-triggered: only jiraTicketId is required
-    if (body['jiraTicketId']) {
-      const input: JobInput = {
-        type: 'feature',
-        triggerSource: 'jira',
-        params: {
-          jiraTicketId: body['jiraTicketId'],
-          serviceName: body['jiraTicketId'],
-          interactive: body['interactive'] === true,
-        },
+  app.post('/jobs', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as Partial<CreateJobRequest>
+      if (typeof body?.workflowPath !== 'string' || !body.workflowPath.trim()) {
+        res.status(400).json({ error: 'workflowPath is required' })
+        return
       }
+
+      const input = createJobInput(body as CreateJobRequest)
       const job = await dispatcher.dispatch(input)
-      logger.info({ jobId: job.id, jiraTicketId: body['jiraTicketId'] }, 'Feature job dispatched (Jira)')
+
+      logger.info({ jobId: job.id, workflowPath: job.workflowPath }, 'Job dispatched')
 
       res.status(201).json({
         jobId: job.id,
@@ -186,43 +142,9 @@ export function createServer(ctx: ServerContext): Express {
         status: job.status,
         streamUrl: `/jobs/${job.id}/stream`,
       })
-      return
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message })
     }
-
-    // CLI-triggered: repo, reviewers, description, serviceName required
-    const { repo, reviewers, description, serviceName, gitProvider, interactive } = body
-    if (!repo || !reviewers || !description || !serviceName) {
-      res.status(400).json({
-        error: 'Missing required fields: repo, reviewers, description, serviceName (or provide jiraTicketId)',
-      })
-      return
-    }
-
-    if (!Array.isArray(reviewers) || reviewers.length === 0) {
-      res.status(400).json({ error: 'reviewers must be a non-empty array' })
-      return
-    }
-
-    const provider = gitProvider === 'github' ? 'github' : 'bitbucket'
-
-    const input: JobInput = {
-      type: 'feature',
-      params: {
-        repo, repoSlug: repo, reviewers, description, serviceName,
-        gitProvider: provider,
-        interactive: interactive === true,
-      },
-    }
-
-    const job = await dispatcher.dispatch(input)
-    logger.info({ jobId: job.id, repo, serviceName }, 'Feature job dispatched (CLI)')
-
-    res.status(201).json({
-      jobId: job.id,
-      type: job.type,
-      status: job.status,
-      streamUrl: `/jobs/${job.id}/stream`,
-    })
   })
 
   // ── GET /jobs ──────────────────────────────────────────────────────────────
@@ -244,7 +166,7 @@ export function createServer(ctx: ServerContext): Express {
       serviceName: j.params['serviceName'] ?? null,
       status: j.status,
       phase: j.phase,
-      currentFeature: j.currentFeature,
+      currentWorkItem: j.currentWorkItem,
       triggerSource: j.triggerSource,
       interactive: j.interactive ?? false,
       artifactCount: (j.artifacts ?? []).length,

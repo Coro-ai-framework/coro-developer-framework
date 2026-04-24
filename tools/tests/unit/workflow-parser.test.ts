@@ -24,13 +24,9 @@ phases:
 `
 
 const MULTI_PHASE_YAML = `
-initial_phase: analysis
+initial_phase: planning
 initial_status: queued
 phases:
-  - name: analysis
-    agent: agents/analyzer.md
-    model: planning
-    status: analyzing
   - name: planning
     agent: agents/planner.md
     model: planning
@@ -99,9 +95,9 @@ describe('parseWorkflowConfig', () => {
 
     it('parses multiple phases in order', () => {
       const config = parseWorkflowConfig(md(MULTI_PHASE_YAML))!
-      expect(config.phases).toHaveLength(4)
+      expect(config.phases).toHaveLength(3)
       expect(config.phases.map(p => p.name)).toEqual([
-        'analysis', 'planning', 'coding', 'testing',
+        'planning', 'coding', 'testing',
       ])
     })
 
@@ -247,8 +243,8 @@ phases:
     it('parses tools array from phase', () => {
       const yaml = `
 phases:
-  - name: analysis
-    agent: agents/analyzer.md
+  - name: planning
+    agent: agents/planner.md
     model: planning
     tools: [Read, Grep, Glob, mcp__a5__log]
 `
@@ -404,7 +400,6 @@ describe('getNextPhase', () => {
   const config = parseWorkflowConfig(md(MULTI_PHASE_YAML))!
 
   it('returns the next phase in sequence', () => {
-    expect(getNextPhase(config, 'analysis')).toBe('planning')
     expect(getNextPhase(config, 'planning')).toBe('coding')
     expect(getNextPhase(config, 'coding')).toBe('testing')
   })

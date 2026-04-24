@@ -9,19 +9,21 @@ import type { Settings } from '../../src/config/settings'
 vi.mock('fs/promises')
 
 const mockFs = vi.mocked(fs)
+const WORKFLOW_PATH = '/data/a5-ai/workflows/job/workflow.md'
+const PLANNER_AGENT_PATH = '/data/a5-ai/agents/planner.md'
 
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'test-job-1',
-    type: JobType.Migration,
-    workflowPath: 'workflows/migration/workflow.md',
+    type: JobType.Job,
+    workflowPath: 'workflows/job/workflow.md',
     params: { serviceName: 'my-svc', repoSlug: 'my-svc', reviewers: ['alice'] },
     triggerSource: 'cli',
-    status: 'analyzing',
-    phase: 'analysis',
-    currentFeature: null,
-    features: [],
-    featureLoopCount: 0,
+    status: 'planning',
+    phase: 'planning',
+    currentWorkItem: null,
+    workItems: [],
+    workItemLoopCount: 0,
     prMappings: [],
     interactive: false,
     artifacts: [],
@@ -88,7 +90,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     it('does not load CLAUDE.md (natively loaded by SDK via settingSources)', async () => {
       setupFs({
         '/data/a5-ai/CLAUDE.md': '# Root instructions — should NOT appear',
-        '/data/a5-ai/workflows/migration/workflow.md': '',
+        [WORKFLOW_PATH]: '',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
@@ -96,34 +98,34 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
 
     it('includes workflow content with front matter stripped', async () => {
-      const workflow = '---\ninitial_phase: analysis\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Migration Workflow\n\nThis is the workflow.'
+      const workflow = '---\ninitial_phase: planning\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Job Workflow\n\nThis is the workflow.'
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': workflow,
-        '/data/a5-ai/agents/analyzer.md': '# Analyzer Agent\n\nAnalyze things.',
+        [WORKFLOW_PATH]: workflow,
+        [PLANNER_AGENT_PATH]: '# Planner Agent\n\nPlan things.',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
-      expect(prompt).toContain('# Migration Workflow')
+      expect(prompt).toContain('# Job Workflow')
       expect(prompt).toContain('This is the workflow.')
-      expect(prompt).not.toContain('initial_phase: analysis')
+      expect(prompt).not.toContain('initial_phase: planning')
     })
 
     it('includes agent instructions for the current phase', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Workflow'
+      const workflow = '---\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': workflow,
-        '/data/a5-ai/agents/analyzer.md': '# Analyzer\n\nStep 1: Analyze endpoints.',
+        [WORKFLOW_PATH]: workflow,
+        [PLANNER_AGENT_PATH]: '# Planner\n\nStep 1: Order the work items.',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
-      expect(prompt).toContain('# Analyzer')
-      expect(prompt).toContain('Step 1: Analyze endpoints.')
+      expect(prompt).toContain('# Planner')
+      expect(prompt).toContain('Step 1: Order the work items.')
       expect(prompt).toContain('Your Role This Phase')
     })
 
     it('does not inject memory (now on-demand via the read_memory MCP tool)', async () => {
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '',
+        [WORKFLOW_PATH]: '',
         '/data/a5-ai/memory/MEMORY.md': '# Memory — should NOT appear',
         '/data/a5-ai/memory/known-pitfalls.md': 'Do not use X.',
       })
@@ -136,7 +138,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
     it('does not inject infrastructure context (now in .claude/CLAUDE.md)', async () => {
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '',
+        [WORKFLOW_PATH]: '',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
@@ -146,8 +148,8 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
     it('always includes job context as the last section', async () => {
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Migration Workflow',
-        '/data/a5-ai/agents/analyzer.md': '# Analyzer Agent',
+        [WORKFLOW_PATH]: '---\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Job Workflow',
+        [PLANNER_AGENT_PATH]: '# Planner Agent',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
@@ -160,7 +162,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
   describe('job context', () => {
     it('includes all key job fields in JSON', async () => {
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '',
+        [WORKFLOW_PATH]: '',
       })
 
       const job = makeJob({
@@ -175,9 +177,9 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       const ctx = JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
 
       expect(ctx['jobId']).toBe('test-job-1')
-      expect(ctx['type']).toBe('migration')
-      expect(ctx['phase']).toBe('analysis')
-      expect(ctx['status']).toBe('analyzing')
+      expect(ctx['type']).toBe('job')
+      expect(ctx['phase']).toBe('planning')
+      expect(ctx['status']).toBe('planning')
       expect(ctx['triggerSource']).toBe('cli')
       expect(ctx['awaitingEvent']).toBe('pr:fulfilled')
       expect(ctx['awaitingPrId']).toBe(42)
@@ -187,7 +189,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
     it('nulls out optional fields when not set', async () => {
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '',
+        [WORKFLOW_PATH]: '',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
@@ -200,18 +202,18 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(ctx['escalationMessage']).toBeNull()
     })
 
-    it('includes features and featureLoopCount in job context', async () => {
+    it('includes work items and workItemLoopCount in job context', async () => {
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '',
+        [WORKFLOW_PATH]: '',
       })
 
       const job = makeJob({
-        features: [
+        workItems: [
           { name: 'scaffold', status: 'complete', loopCount: 1 },
           { name: 'users-api', status: 'in-progress', loopCount: 0 },
         ],
-        featureLoopCount: 0,
-        currentFeature: 'users-api',
+        workItemLoopCount: 0,
+        currentWorkItem: 'users-api',
       })
 
       const prompt = await buildSystemPrompt(job, makeSettings(), noopLogger)
@@ -219,12 +221,12 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       const jsonEnd = prompt.indexOf('\n```', jsonStart)
       const ctx = JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
 
-      expect(ctx['features']).toEqual([
+      expect(ctx['workItems']).toEqual([
         { name: 'scaffold', status: 'complete', loopCount: 1 },
         { name: 'users-api', status: 'in-progress', loopCount: 0 },
       ])
-      expect(ctx['featureLoopCount']).toBe(0)
-      expect(ctx['currentFeature']).toBe('users-api')
+      expect(ctx['workItemLoopCount']).toBe(0)
+      expect(ctx['currentWorkItem']).toBe('users-api')
     })
   })
 
@@ -237,9 +239,9 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
 
     it('continues when agent file is missing', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/missing.md\n    model: planning\n---\n\n# Workflow'
+      const workflow = '---\nphases:\n  - name: planning\n    agent: agents/missing.md\n    model: planning\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': workflow,
+        [WORKFLOW_PATH]: workflow,
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
@@ -249,7 +251,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
     it('does not load agent when workflow has no front matter', async () => {
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': '# Just a plain markdown file\n\nNo YAML here.',
+        [WORKFLOW_PATH]: '# Just a plain markdown file\n\nNo YAML here.',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
@@ -257,9 +259,9 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
 
     it('does not load agent when current phase has no agent', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: ~\n    model: planning\n---\n\n# Workflow'
+      const workflow = '---\nphases:\n  - name: planning\n    agent: ~\n    model: planning\n---\n\n# Workflow'
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': workflow,
+        [WORKFLOW_PATH]: workflow,
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
@@ -269,16 +271,16 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
   describe('section ordering', () => {
     it('places sections in correct order: workflow, agent, job', async () => {
-      const workflow = '---\nphases:\n  - name: analysis\n    agent: agents/analyzer.md\n    model: planning\n---\n\n# Workflow Content'
+      const workflow = '---\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Workflow Content'
       setupFs({
-        '/data/a5-ai/workflows/migration/workflow.md': workflow,
-        '/data/a5-ai/agents/analyzer.md': '# Analyzer Agent',
+        [WORKFLOW_PATH]: workflow,
+        [PLANNER_AGENT_PATH]: '# Planner Agent',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
 
       const workflowIdx = prompt.indexOf('# Workflow Content')
-      const agentIdx = prompt.indexOf('# Analyzer Agent')
+      const agentIdx = prompt.indexOf('# Planner Agent')
       const jobIdx = prompt.indexOf('# Current Job')
 
       expect(workflowIdx).toBeLessThan(agentIdx)

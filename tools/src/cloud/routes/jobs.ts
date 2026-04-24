@@ -5,6 +5,7 @@ import type { WsGateway } from '../ws/gateway'
 import { PostgresStateBackend } from '../db/postgres-backend'
 import { requireAuth, requireTeamMember } from '../auth/middleware'
 import { JobInput, isStoppedStatus, ProposalStatus } from '../../jobs/types'
+import { createJobInput, type CreateJobRequest } from '../../jobs/creation'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,10 +31,18 @@ export function jobRoutes(db: CloudDb, config: CloudConfig, gateway?: WsGateway)
   router.post('/', auth, member, async (req: Request, res: Response) => {
     const teamId = p(req, 'teamId')
     const backend = backendFor(db, teamId)
-    const input: JobInput = req.body
+    const body = (req.body ?? {}) as Partial<CreateJobRequest>
 
-    if (!input?.type || !input?.params) {
-      res.status(400).json({ error: 'type and params are required' })
+    let input: JobInput
+    try {
+      input = createJobInput(body as CreateJobRequest)
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message })
+      return
+    }
+
+    if (!input?.workflowPath || !input?.params) {
+      res.status(400).json({ error: 'workflowPath and params are required' })
       return
     }
 

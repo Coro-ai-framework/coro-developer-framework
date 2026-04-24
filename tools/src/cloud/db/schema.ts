@@ -13,7 +13,7 @@ import {
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
 export const teamRoleEnum = pgEnum('team_role', ['admin', 'member'])
-export const jobTypeEnum = pgEnum('job_type', ['migration', 'feature', 'self-update'])
+export const jobTypeEnum = pgEnum('job_type', ['job', 'self-update'])
 export const triggerSourceEnum = pgEnum('trigger_source', ['cli', 'jira', 'internal'])
 export const proposalStatusEnum = pgEnum('proposal_status', ['pending', 'approved', 'rejected'])
 export const webhookProviderEnum = pgEnum('webhook_provider', ['bitbucket', 'github', 'jira'])
@@ -74,10 +74,10 @@ export const jobs = pgTable('jobs', {
 
   status: text('status').notNull(),
   phase: text('phase').notNull(),
-  currentFeature: text('current_feature'),
+  currentWorkItem: text('current_feature'),
 
-  features: jsonb('features').notNull().$type<unknown[]>().default([]),
-  featureLoopCount: integer('feature_loop_count').notNull().default(0),
+  workItems: jsonb('features').notNull().$type<unknown[]>().default([]),
+  workItemLoopCount: integer('feature_loop_count').notNull().default(0),
 
   prMappings: jsonb('pr_mappings').notNull().$type<unknown[]>().default([]),
   insights: jsonb('insights').notNull().$type<unknown[]>().default([]),

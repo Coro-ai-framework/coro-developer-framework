@@ -6,7 +6,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 **TypeScript = dumb tool shell.** It runs phases linearly, provides MCP tools, persists state in Redis, and parks/resumes on webhooks. It has zero orchestration intelligence.
 
-**Intelligence = MD files + LLM judgment.** Workflow markdown defines phases and metadata. Agent markdown defines procedures. The LLM reads artifacts, calls tools to update state, and uses `goto_phase` to control flow. The evaluator decides when to loop. The planner decides how many features. The coder decides when it needs a fresh session.
+**Intelligence = MD files + LLM judgment.** Workflow markdown defines phases and metadata. Agent markdown defines procedures. The LLM reads artifacts, calls tools to update state, and uses `goto_phase` to control flow. The evaluator decides when to loop. The planner decides how many work items. The coder decides when it needs a fresh session.
 
 ## Agent behavior rules
 
@@ -28,7 +28,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 9. **Credentials are never read from files.** They are injected by the Agent Host as environment variables and available in the job context. Never ask for or log credentials.
 
-10. **Use feature tracking tools for multi-feature jobs.** Call `get_features` to check progress, `update_feature` to update status, `set_features` to register the feature list, and `request_new_session` when starting a new feature.
+10. **Use work-item tracking tools for multi-work-item jobs.** Call `get_work_items` to check progress, `update_work_item` to update status, `set_work_items` to register the work-item list, and `request_new_session` when starting a new work item.
 
 11. **Do not manually park normal workflow checkpoints.** If a phase is marked `interactive_checkpoint: true` and the workflow docs say the runner enforces it, finish the phase normally and let the runner park for approval. Use `await_event({ eventName: "developer-input: <reason>" })` only for extra mid-phase questions, clarifications, or external waits the runner cannot infer.
 
@@ -39,8 +39,8 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 - **Source control:** BitBucket or GitHub — the job's `params.gitProvider` field specifies which provider hosts the target repository. Default: `bitbucket`. BitBucket workspace slug is in `config/credentials.md`.
 - **Observability:** Grafana — Loki (logs) + Tempo (distributed traces)
 - **Deployment:** Kubernetes via Helm. Per-service config in `helm-app-config` repo (see `config/repos.md`)
-- **Environments:** staging and production. Staging is the benchmark for all migration testing.
-- **Issue tracking:** Jira (future integration — Jira-triggered feature jobs)
+- **Environments:** staging and production. Staging is the default verification environment when a job needs an external benchmark.
+- **Issue tracking:** Jira (future integration — Jira-triggered implementation jobs)
 
 ## Service accounts
 
@@ -61,11 +61,11 @@ Human developers interact with these accounts exactly as they would with a human
 
 All MCP tools are prefixed with `mcp__a5__` when calling them (e.g., `mcp__a5__log`, `mcp__a5__bb_create_pr`). Prefer calling the documented tool names directly for predictable workflows; use `ToolSearch` only when the right tool is genuinely unclear.
 
-### Feature tracking
-- `set_features` — Register the ordered feature list (called by planner)
-- `update_feature` — Update a feature's status or increment its loop count
-- `get_features` — Read the current feature list with statuses
-- `request_new_session` — Clear session for fresh context (e.g., new feature)
+### Work-item tracking
+- `set_work_items` — Register the ordered work-item list (called by planner)
+- `update_work_item` — Update a work item's status or increment its loop count
+- `get_work_items` — Read the current work-item list with statuses
+- `request_new_session` — Clear session for fresh context (e.g., new work item)
 - `set_job_params` — Set dynamic job parameters (e.g., language)
 
 ### Job control
@@ -138,12 +138,12 @@ Common kinds:
 
 | kind | When | Data shape |
 |---|---|---|
-| `plan-md` | Planner writes a migration or feature plan | `{ path: "…/migration-plan.md" }` |
-| `implementation-plan-md` | Planner writes an implementation plan for a feature | `{ path: "…/implementation-plan.md" }` |
+| `plan-md` | Planner writes a workflow plan | `{ path: "…/implementation-plan.md" }` |
+| `implementation-plan-md` | Planner writes an implementation plan for a job or work item | `{ path: "…/implementation-plan.md" }` |
 | `analysis-contract` | Analyzer writes the service contract JSON | `{ path: "…/service-contract.json" }` |
 | `pr-link` | Coder opens a PR (both bb and gh paths) | `{ url, prId, repoSlug, title }` |
 | `review-summary` | PR Reviewer posts a review summary | `{ prId, repoSlug, verdict, summary }` |
-| `test-results` | Tester finishes running the comparison suite | `{ path, passed, failed, skipped }` |
+| `test-results` | Tester finishes running the validation suite | `{ path, passed, failed, skipped }` |
 | `evaluation-md` | Evaluator writes an evaluation report | `{ path: "…/evaluation.md" }` |
 | `report-md` | Any agent writes a human-readable report | `{ path: "…/report.md" }` |
 | `url` | Any external link that doesn't fit above | `{ url, label }` |
@@ -152,8 +152,8 @@ Example:
 ```
 post_artifact({
   kind: "plan-md",
-  title: "Migration plan for user-service",
-  data: { path: "user-service/migration-plan.md" }
+  title: "Implementation plan for user-service",
+  data: { path: "user-service/implementation-plan.md" }
 })
 ```
 
@@ -295,17 +295,15 @@ Rules:
 ## What
 {1-2 sentences describing what this PR implements}
 
-## Migration context
-- Feature: {feature name from migration plan}
-- Endpoints implemented:
-  - METHOD /path/one
-  - METHOD /path/two
+## Implementation context
+- Workflow: {workflow path or job type}
+- Work item: {work item name, or "N/A"}
 
-## Deviations from .NET contract
-{List any deviations, or "None"}
+## Behavioral deviations
+{List any intended deviations, or "None"}
 
 ## Testing
-{Describe how to test, or reference the acceptance criteria from the migration plan}
+{Describe how to test, or reference the acceptance criteria from the implementation plan}
 
 ## Gaps / follow-up
 {Any endpoints not yet implemented, with reason, or "None"}

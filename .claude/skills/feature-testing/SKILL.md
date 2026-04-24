@@ -1,26 +1,26 @@
 ---
 name: feature-testing
 description: >-
-  Feature testing methodology: build verification, acceptance criteria
+  Implementation testing methodology: build verification, acceptance criteria
   verification, test result format, existing test regression checks.
-  Use when testing feature implementations.
+  Use when testing generic implementation jobs.
 ---
 
-# Feature Testing Guide
+# Implementation Testing Guide
 
-Domain-specific guidance for testing feature implementations. Supplements the generic Tester agent instructions with feature-specific verification methodology.
+Domain-specific guidance for testing generic implementation jobs. Supplements the generic Tester agent instructions with acceptance verification and regression-check methodology for work-item-based execution.
 
 ## Core approach: build verification + acceptance criteria
 
-Feature testing verifies that the implemented changes work correctly and don't break existing functionality. Unlike migration testing, there is no source service to compare against — the acceptance criteria from the feature spec define the expected behavior.
+Implementation testing verifies that the implemented changes work correctly and don't break existing functionality. Unlike migration testing, there is no source service to compare against — the acceptance criteria from the job spec or implementation plan define the expected behavior.
 
 ## Test execution flow
 
-1. Check out the feature branch or main branch (post-merge)
+1. Check out the work-item branch or main branch (post-merge)
 2. Install dependencies and build the project
 3. Run the project's existing test suite — all existing tests must still pass
 4. Run any new tests added by the coder
-5. If the feature includes a running service, start it and verify the new behavior
+5. If the work item includes a running service, start it and verify the new behavior
 
 ## Build verification
 
@@ -33,7 +33,7 @@ If the build fails, stop immediately and report to the Evaluator.
 
 ## Acceptance criteria verification
 
-For each acceptance criterion in the feature spec or implementation plan:
+For each acceptance criterion in the job spec or implementation plan:
 - Design a test case that verifies the criterion
 - Execute the test
 - Record pass/fail with details
@@ -42,7 +42,7 @@ For each acceptance criterion in the feature spec or implementation plan:
 
 ```json
 {
-  "feature": "string",
+  "workItem": "string",
   "tested_at": "ISO8601",
   "summary": {
     "total": 0,
@@ -67,6 +67,6 @@ For each acceptance criterion in the feature spec or implementation plan:
 
 ## Important rules
 
-- **Existing tests must not break** — a feature that breaks existing tests is not ready
+- **Existing tests must not break** — a work item that breaks existing tests is not ready
 - **Build must pass** before running any tests
 - **Skipped tests need justification** — explain why each test was skipped

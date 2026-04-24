@@ -7,15 +7,15 @@ import {
   Job,
   JobInput,
   JobType,
-  STATUS_QUEUED,
+  defaultWorkflowPath,
   PrMapping,
   Proposal,
   ProposalStatus,
-  FeatureItem,
+  WorkItem,
   Insight,
   PhaseUsage,
-  emptyTokenUsage,
 } from '../../jobs/types'
+import { buildJobRecord, resolveWorkflowPath } from '../../jobs/creation'
 
 // ── Row ↔ Job mapping ─────────────────────────────────────────────────────────
 
@@ -30,9 +30,9 @@ function rowToJob(row: JobRow): Job {
     triggerSource: row.triggerSource as Job['triggerSource'],
     status: row.status,
     phase: row.phase,
-    currentFeature: row.currentFeature,
-    features: (row.features ?? []) as FeatureItem[],
-    featureLoopCount: row.featureLoopCount,
+    currentWorkItem: row.currentWorkItem,
+    workItems: (row.workItems ?? []) as WorkItem[],
+    workItemLoopCount: row.workItemLoopCount,
     prMappings: (row.prMappings ?? []) as PrMapping[],
     interactive: ((row.params as Record<string, unknown>)?.['interactive'] === true),
     artifacts: [],
@@ -65,9 +65,9 @@ function jobToInsert(job: Job, teamId: string): typeof schema.jobs.$inferInsert 
     triggerSource: job.triggerSource as typeof schema.jobs.$inferInsert['triggerSource'],
     status: job.status,
     phase: job.phase,
-    currentFeature: job.currentFeature,
-    features: job.features as unknown[],
-    featureLoopCount: job.featureLoopCount,
+    currentWorkItem: job.currentWorkItem,
+    workItems: job.workItems as unknown[],
+    workItemLoopCount: job.workItemLoopCount,
     prMappings: job.prMappings as unknown[],
     insights: job.insights as unknown[],
     tokenUsageInput: job.tokenUsage.inputTokens,
@@ -102,50 +102,15 @@ export class PostgresStateBackend implements StateBackend {
   // ── Job CRUD ──────────────────────────────────────────────────────────────
 
   async createJob(input: JobInput): Promise<Job> {
-    const now = new Date().toISOString()
     const jobType = input.type as JobType
-
-    const label = (input.params['serviceName'] as string)
-      ?? (input.params['jiraTicketId'] as string)
-      ?? input.type
-    const id = `${label}-${input.type}-${Date.now()}`
-
-    const prMappings: PrMapping[] = []
-    if (input.params['prId'] && input.params['branchName']) {
-      prMappings.push({
-        prId: input.params['prId'] as number,
-        feature: input.params['branchName'] as string,
-        repoSlug: (input.params['repoSlug'] as string) ?? '',
-        openedAt: now,
-      })
-    }
-
-    const job: Job = {
-      id,
-      type: jobType,
-      workflowPath: '',  // Cloud doesn't load workflows — runner does
-      params: input.params,
-      triggerSource: input.triggerSource ?? 'cli',
-      status: STATUS_QUEUED,
-      phase: 'init',
-      currentFeature: null,
-      features: [],
-      featureLoopCount: 0,
-      prMappings,
-      interactive: input.params['interactive'] === true,
-      artifacts: [],
-      insights: [],
-      tokenUsage: emptyTokenUsage(),
-      phaseUsage: [],
-      createdAt: now,
-      updatedAt: now,
-    }
+    const workflowPath = resolveWorkflowPath(input, defaultWorkflowPath(jobType))
+    const job = await buildJobRecord(input, jobType, workflowPath)
 
     await this.db.insert(schema.jobs).values(jobToInsert(job, this.teamId))
 
     // Seed PR mapping index
-    for (const pr of prMappings) {
-      await this.mapPrToJob(pr.prId, id)
+    for (const pr of job.prMappings) {
+      await this.mapPrToJob(pr.prId, job.id)
     }
 
     return job

@@ -48,33 +48,39 @@ overrides:
     initial_phase: spec-writing
 ---
 
-# Workflow: Feature Implementation
+# Workflow: Generic Implementation Job
 
 ## Purpose
 
-Implement a new feature in an existing service. The service can be written in any language — Go, .NET, TypeScript, or any other supported language. The workflow is fully language-agnostic; the correct conventions and coding standards are loaded dynamically based on the repository's language.
+Implement a scoped change in an existing service or repository. The change can be a new feature, enhancement, bug fix, or other code change described in the job request. The workflow is fully language-agnostic; the correct conventions and coding standards are loaded dynamically based on the repository's language.
 
 ## How this workflow runs
 
 This workflow is executed by the **Agent Host Service**. The Agent Host:
-1. Receives a job request from the `a5` CLI or a Jira webhook
+1. Receives a job request from the CLI, UI, or a webhook-driven job source
 2. Loads this file and the relevant agent MD files as system prompts
 3. Calls the Claude API in a loop, dispatching tool calls, until the workflow reaches `complete`
 4. Parks the job and resumes it when git provider webhook events (BitBucket or GitHub) arrive
 
 ## Trigger
 
-**CLI path:** The user provides repo, description, reviewers, service name, and optionally `gitProvider` (`github` or `bitbucket`, defaults to `bitbucket`).
+The caller supplies this workflow path plus a generic job payload. For this workflow, the common params are:
+- `repo`
+- `serviceName`
+- `description`
+- `reviewers`
+- optional `gitProvider`
+- optional `jiraTicketId`
 
-**Jira path:** A Jira ticket is assigned to the agent. The spec-writer agent reads the ticket and infers repo, reviewers, description, and test plan.
+When `jiraTicketId` is present, the spec-writer phase can infer the rest of the implementation context.
 
 ## Language handling
 
-The Planner agent detects the repository's language (from `go.mod`, `package.json`, `*.csproj`, etc.) and calls `set_job_params({ language: "<detected-language>" })`. Downstream agents invoke the relevant language conventions skill (e.g., `golang-conventions`, `dotnet-conventions`) on-demand when writing or reviewing code. The workflow itself is completely language-neutral.
+The Planner agent detects the repository's language (from `go.mod`, `package.json`, `*.csproj`, etc.) and calls `set_job_params({ language: "<detected-language>" })`. Downstream agents invoke the relevant language conventions skill on-demand when writing or reviewing code. The workflow itself is completely language-neutral.
 
-## Feature tracking
+## Work-item tracking
 
-Feature state is tracked in Redis via the `features[]` array on the Job object. The Planner calls `set_features` to register the feature list. The Evaluator manages the feature loop — if multiple features exist, it uses `goto_phase("coding")` and `request_new_session` to cycle through them.
+Work-item state is tracked on the Job object via `workItems[]`. The Planner calls `set_work_items` to register the ordered work-item list. The Evaluator manages the work-item loop — if multiple work items exist, it uses `goto_phase("coding")` and `request_new_session` to cycle through them.
 
 ## Phases
 
@@ -87,7 +93,7 @@ Feature state is tracked in Redis via the `features[]` array on the Job object. 
 **Agent:** Spec Writer (`agents/spec-writer.md`)
 
 1. Read the Jira ticket: title, description, acceptance criteria, components
-2. Infer: repo, affected files/services, PR reviewers, test plan
+2. Infer: repo, affected files/services, reviewers, and test plan
 3. Output: `working/{job-id}/feature-spec.md`
 4. Post a comment on the Jira ticket confirming receipt
 
@@ -98,25 +104,25 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 1: Planning
 
 **Agent:** Planner (`agents/planner.md`)
-**Skills:** Agent invokes `feature-planning` for domain knowledge
+**Skills:** Agent invokes `feature-planning` for domain heuristics that translate a prose change request into a sequenced implementation plan
 
-1. Read the feature spec (or CLI description)
+1. Read the job spec (or CLI description)
 2. Analyze the existing codebase to understand language, structure, and patterns
 3. Call `set_job_params({ language: "<detected-language>" })` to set the language
-4. Produce an implementation plan with features and acceptance criteria
-5. Call `set_features` to register the feature list
+4. Produce an implementation plan with work items and acceptance criteria
+5. Call `set_work_items` to register the work-item list
 
 ---
 
 ### Phase 2: Coding
 
 **Agent:** Coder (`agents/coder.md`)
-**Skills:** Agent invokes language conventions skill for the target language
+**Skills:** Agent invokes the relevant language conventions skill for the target language
 
-1. Call `get_features` to find the current feature
-2. Call `update_feature` to mark it `in-progress`
+1. Call `get_work_items` to find the current work item
+2. Call `update_work_item` to mark it `in-progress`
 3. Read the implementation plan
-4. Create a feature branch
+4. Create a work-item branch
 5. Implement the changes following the injected conventions
 6. Write tests
 7. Open a PR with a detailed description
@@ -126,7 +132,7 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 3: Review
 
 **Agent:** PR Reviewer (`agents/pr-reviewer.md`)
-**Skills:** Agent invokes language conventions skill for code review
+**Skills:** Agent invokes the relevant language conventions skill for code review
 
 1. Post a structured code review against conventions and plan
 2. Monitor for human reviewer comments
@@ -138,7 +144,7 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 4: Testing
 
 **Agent:** Tester (`agents/tester.md`)
-**Skills:** Agent invokes `feature-testing` for domain knowledge
+**Skills:** Agent invokes `feature-testing` for implementation acceptance verification heuristics
 
 1. Build the service
 2. Run the test suite
@@ -154,8 +160,8 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 1. Classify any failures
 2. Write new knowledge to memory
 3. Decision:
-   - **Feature complete:** call `update_feature(name, status: "complete")`. If more features remain, call `request_new_session` then `goto_phase("coding")`. Otherwise finish.
-   - **Fix needed:** call `update_feature(name, incrementLoop: true)`, check loop count, and `goto_phase("coding")` with fix brief.
+   - **Work item complete:** call `update_work_item(name, status: "complete")`. If more work items remain, call `request_new_session` then `goto_phase("coding")`. Otherwise finish.
+   - **Fix needed:** call `update_work_item(name, incrementLoop: true)`, check loop count, and `goto_phase("coding")` with a fix brief.
    - **Escalate:** if loop count >= 5 or blocker found.
 
 ---

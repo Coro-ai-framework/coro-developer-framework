@@ -22,6 +22,7 @@ import {
   resolveWorkingDir as resolveLocalWorkingDir,
 } from '../config/local-config'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
+import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { ClaudeLoginManager } from './claude-login'
 
 export interface RunnerServerOptions {
@@ -155,21 +156,6 @@ function detectSetupTokenForceFlag(cliCmd: string, cliArgs: string[], logger: Lo
   }
 }
 
-/**
- * Resolve the git provider for a new job. Explicit per-job values win, then
- * we fall back to the local config's configured provider, then BitBucket
- * (the historical default). This prevents jobs dispatched from the CLI or
- * dashboard without a `gitProvider` field from silently defaulting to the
- * wrong provider and making the planner guess.
- */
-function resolveGitProvider(explicit: unknown): 'github' | 'bitbucket' {
-  if (explicit === 'github' || explicit === 'bitbucket') return explicit
-  const cfg = loadLocalConfig()
-  const configured = cfg?.git?.provider
-  if (configured === 'github') return 'github'
-  return 'bitbucket'
-}
-
 /** Best-effort MIME type inference for the artefact-content endpoint. */
 function mimeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
@@ -186,7 +172,7 @@ function mimeForPath(filePath: string): string {
 
 /**
  * Create and start the runner's local HTTP server.
- * CLI commands (`a5 migrate`, `a5 status`, etc.) talk to this.
+ * CLI commands (`a5 job`, `a5 status`, etc.) talk to this.
  */
 export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   const { port, dispatcher, stateBackend, logger, mode = 'hybrid' } = opts
@@ -220,72 +206,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   // ── Job dispatch ────────────────────────────────────────────────────────
 
-  app.post('/jobs/migrate', async (req: Request, res: Response) => {
+  app.post('/jobs', async (req: Request, res: Response) => {
     try {
-      const { repo, projects, reviewers, stagingUrl, serviceName, gitProvider, interactive } = req.body ?? {}
-      if (!repo) { res.status(400).json({ error: 'repo is required' }); return }
-
-      const provider = resolveGitProvider(gitProvider)
-
-      const job = await dispatcher.dispatch({
-        type: 'migration',
-        params: {
-          repo,
-          repoSlug: repo,
-          projects,
-          reviewers,
-          stagingUrl,
-          serviceName: serviceName ?? repo,
-          gitProvider: provider,
-          interactive: interactive === true,
-        },
-      })
-      res.status(201).json({
-        jobId: job.id,
-        type: job.type,
-        status: job.status,
-        streamUrl: `/jobs/${job.id}/stream`,
-      })
-    } catch (err) {
-      logger.error({ err }, 'Migration dispatch failed')
-      res.status(500).json({ error: (err as Error).message })
-    }
-  })
-
-  app.post('/jobs/feature', async (req: Request, res: Response) => {
-    try {
-      const {
-        repo,
-        description,
-        reviewers,
-        jiraTicket,
-        jiraTicketId,
-        serviceName,
-        gitProvider,
-        interactive,
-      } = req.body ?? {}
-
-      const isJira = Boolean(jiraTicket ?? jiraTicketId)
-      if (!repo && !isJira) {
-        res.status(400).json({ error: 'repo is required (or provide jiraTicketId)' })
+      const body = req.body as Partial<CreateJobRequest>
+      if (typeof body?.workflowPath !== 'string' || !body.workflowPath.trim()) {
+        res.status(400).json({ error: 'workflowPath is required' })
         return
       }
 
-      const provider = resolveGitProvider(gitProvider)
-
-      const job = await dispatcher.dispatch({
-        type: 'feature',
-        params: {
-          repo,
-          repoSlug: repo,
-          description,
-          reviewers,
-          jiraTicket: jiraTicket ?? jiraTicketId,
-          serviceName: serviceName ?? repo,
-          gitProvider: provider,
-          interactive: interactive === true,
-        },
-      })
+      const input = createJobInput(body as CreateJobRequest)
+      const job = await dispatcher.dispatch(input)
       res.status(201).json({
         jobId: job.id,
         type: job.type,
@@ -293,8 +223,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         streamUrl: `/jobs/${job.id}/stream`,
       })
     } catch (err) {
-      logger.error({ err }, 'Feature dispatch failed')
-      res.status(500).json({ error: (err as Error).message })
+      logger.error({ err }, 'Generic job dispatch failed')
+      res.status(400).json({ error: (err as Error).message })
     }
   })
 

@@ -21,8 +21,8 @@ function timeAgo(iso: string): string {
   return `${days}d ago`
 }
 
-function FeatureProgress({ features }: { features: { name: string; status: string; loopCount: number }[] }) {
-  if (features.length === 0) return null
+function WorkItemProgress({ workItems }: { workItems: { name: string; status: string; loopCount: number }[] }) {
+  if (workItems.length === 0) return null
 
   const statusColor: Record<string, string> = {
     'pending': 'bg-zinc-700',
@@ -33,9 +33,9 @@ function FeatureProgress({ features }: { features: { name: string; status: strin
 
   return (
     <div className="space-y-1.5">
-      <h4 className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Features</h4>
+      <h4 className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Work Items</h4>
       <div className="space-y-1">
-        {features.map(f => (
+        {workItems.map(f => (
           <div key={f.name} className="flex items-center gap-2 text-xs">
             <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor[f.status] ?? 'bg-zinc-600'}`} />
             <span className="text-zinc-300 flex-1 truncate">{f.name}</span>
@@ -529,10 +529,10 @@ export default function JobDetail() {
         </div>
       </div>
 
-      {/* Features */}
-      {job.features?.length > 0 && (
+      {/* Work items */}
+      {job.workItems?.length > 0 && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-5">
-          <FeatureProgress features={job.features} />
+          <WorkItemProgress workItems={job.workItems} />
         </div>
       )}
 

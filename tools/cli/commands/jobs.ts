@@ -7,7 +7,7 @@ interface JobSummary {
   serviceName: string | null
   status: string
   phase: string
-  currentFeature: string | null
+  currentWorkItem: string | null
   triggerSource: string
   prCount: number
   createdAt: string

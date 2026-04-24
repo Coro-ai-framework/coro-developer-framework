@@ -254,6 +254,7 @@ async function processChanges(changedFiles: string[], ctx: WatcherContext): Prom
   try {
     const job = await stateBackend.createJob({
       type: 'self-update',
+      workflowPath: 'workflows/self-update/workflow.md',
       triggerSource: 'internal',
       params: {
         prId,

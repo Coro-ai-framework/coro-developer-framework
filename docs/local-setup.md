@@ -133,20 +133,20 @@ a5 status
 
 ---
 
-## Step 7: Run your first migration
+## Step 7: Run your first job
 
 ```bash
-a5 migrate \
+a5 job \
   --repo my-service \
-  --projects MyService.API,MyService.Models \
+  --description "Add rate limiting to /api/users" \
   --reviewers alice,bob \
-  --staging-url https://staging.my-service.a5labs.com
+  --workflow workflows/job/workflow.md
 ```
 
 The CLI submits the job to the Agent Host and streams progress. You can close the terminal — the job continues running. Check back with:
 
 ```bash
-a5 status --job my-service-migration
+a5 status --job my-service-job-1712123456789
 ```
 
 ---
@@ -166,8 +166,8 @@ The Agent Host pulls the latest `a5-ai` repo into `data/a5-ai/` on startup and b
 
 To inspect job state while a job is running:
 ```bash
-cat tools/data/working/my-service/migration-plan.md
-cat tools/data/working/my-service/test-results/feature-1.json
+cat tools/data/working/my-service-job-1712123456789/implementation-plan.md
+cat tools/data/working/my-service-job-1712123456789/test-results/work-item-1.json
 ```
 
 ---
@@ -267,9 +267,9 @@ docker-compose down -v
 - Or check `tools/.env` has the environment variables set
 
 **Job stuck or lost:**
-- Check job state: `cat tools/data/working/{service}/job.md`
+- Check job state: `cat tools/data/working/{job-id}/job.md`
 - Check Redis: `docker exec -it a5-redis redis-cli keys '*'`
-- Restart the job from the last checkpoint: `a5 resume --job {service}-migration`
+- Restart the job from the last checkpoint: `a5 resume --job {job-id}`
 
 **BitBucket API rate limits:**
 - The Agent Host has built-in rate limiting. If you hit limits, jobs will pause and retry automatically.

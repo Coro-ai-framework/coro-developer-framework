@@ -47,15 +47,15 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
   })
 
   describe('createJob + getJob', () => {
-    it('persists a migration job and loads workflow-driven phase/status from disk', async () => {
+    it('persists a generic job and loads workflow-driven phase/status from disk', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         triggerSource: 'cli',
         params: { serviceName: 'svc-a', repoSlug: 'svc-a' },
       })
 
-      expect(job.type).toBe(JobType.Migration)
-      expect(job.workflowPath).toBe('workflows/migration/workflow.md')
+      expect(job.type).toBe(JobType.Job)
+      expect(job.workflowPath).toBe('workflows/job/workflow.md')
       expect(job.phase).toBe('init')
       expect(job.status).toBe('initializing')
       expect(job.params['serviceName']).toBe('svc-a')
@@ -66,9 +66,9 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(loaded!.createdAt).toBe(job.createdAt)
     })
 
-    it('uses Jira override initial phase for feature jobs', async () => {
+    it('uses Jira override initial phase for generic jobs', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         triggerSource: 'jira',
         params: { serviceName: 'feat-x', repoSlug: 'feat-x', jiraTicketId: 'PROJ-99' },
       })
@@ -77,9 +77,9 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(job.status).toBe('spec-writing')
     })
 
-    it('uses default initial phase for feature jobs from CLI', async () => {
+    it('uses default initial phase for generic jobs from CLI', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         triggerSource: 'cli',
         params: { serviceName: 'feat-y', repoSlug: 'feat-y' },
       })
@@ -102,19 +102,19 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('seeds prMappings when prId and branchName are present in params', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: {
           serviceName: 'svc-pr',
           repoSlug: 'svc-pr',
           prId: 555,
-          branchName: 'feature/foo',
+          branchName: 'job/foo',
         },
       })
 
       expect(job.prMappings).toHaveLength(1)
       expect(job.prMappings[0]).toMatchObject({
         prId: 555,
-        feature: 'feature/foo',
+        workItem: 'job/foo',
         repoSlug: 'svc-pr',
       })
     })
@@ -127,11 +127,11 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
   describe('indexes and listings', () => {
     it('adds job id to global and type sets', async () => {
       const j1 = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'm1', repoSlug: 'r1' },
       })
       const j2 = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'f1', repoSlug: 'r2' },
       })
 
@@ -140,22 +140,21 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(ids).toContain(j1.id)
       expect(ids).toContain(j2.id)
 
-      const migrations = await backend.listJobsByType(JobType.Migration)
-      expect(migrations.some(j => j.id === j1.id)).toBe(true)
-      expect(migrations.some(j => j.id === j2.id)).toBe(false)
+      const jobsByType = await backend.listJobsByType(JobType.Job)
+      expect(jobsByType.some(j => j.id === j1.id)).toBe(true)
+      expect(jobsByType.some(j => j.id === j2.id)).toBe(true)
 
-      const features = await backend.listJobsByType(JobType.Feature)
-      expect(features.some(j => j.id === j2.id)).toBe(true)
+      expect(jobsByType.some(j => j.id === j2.id)).toBe(true)
     })
 
     it('sorts listJobs by createdAt descending (newest first)', async () => {
       const a = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'older', repoSlug: 'x1' },
       })
       await new Promise(r => setTimeout(r, 5))
       const b = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'newer', repoSlug: 'x2' },
       })
 
@@ -167,7 +166,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('indexes repo slug when present', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'svc', repoSlug: 'my-repo' },
       })
 
@@ -177,7 +176,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('indexes Jira ticket id when present', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         triggerSource: 'jira',
         params: { serviceName: 'j', repoSlug: 'r', jiraTicketId: 'ABC-42' },
       })
@@ -190,7 +189,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
   describe('updateJob', () => {
     it('merges partial updates and refreshes updatedAt', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'u1', repoSlug: 'u1' },
       })
       const before = job.updatedAt
@@ -226,7 +225,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
   describe('deleteJob', () => {
     it('removes job document, log, and set memberships', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'd1', repoSlug: 'repo-del' },
       })
       await backend.appendLog(job.id, 'line1')
@@ -237,7 +236,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(await redis.get(`job:${job.id}`)).toBeNull()
       expect(await redis.llen(`job:${job.id}:log`)).toBe(0)
       expect(await redis.sismember('jobs:all', job.id)).toBe(0)
-      expect(await redis.sismember(`jobs:type:${JobType.Migration}`, job.id)).toBe(0)
+      expect(await redis.sismember(`jobs:type:${JobType.Job}`, job.id)).toBe(0)
       expect(await redis.sismember('repo:repo-del:jobs', job.id)).toBe(0)
     })
 
@@ -249,7 +248,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
   describe('PR and Jira mappings', () => {
     it('mapPrToJob and getJobByPr roundtrip', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'p1', repoSlug: 'p1' },
       })
       await backend.mapPrToJob(777, job.id)
@@ -260,7 +259,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('mapJiraTicketToJob and getJobByJiraTicket roundtrip', async () => {
       const job = await backend.createJob({
-        type: 'feature',
+        type: 'job',
         params: { serviceName: 'j1', repoSlug: 'j1' },
       })
       await backend.mapJiraTicketToJob('XYZ-1', job.id)
@@ -271,7 +270,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('mapRepoToJob adds job id to repo set', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'mr', repoSlug: 'extra-repo' },
       })
       await backend.mapRepoToJob('another-repo', job.id)
@@ -284,13 +283,13 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
   describe('PR mappings on Job', () => {
     it('addPrMapping appends and registers pr key', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'apm', repoSlug: 'apm' },
       })
 
       const updated = await backend.addPrMapping(job.id, {
         prId: 1001,
-        feature: 'feat-a',
+        workItem: 'feat-a',
         repoSlug: 'apm',
         openedAt: '2026-04-04T12:00:00Z',
       })
@@ -304,7 +303,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       await expect(
         backend.addPrMapping('nope', {
           prId: 1,
-          feature: 'f',
+          workItem: 'f',
           repoSlug: 'r',
           openedAt: '2026-01-01T00:00:00Z',
         }),
@@ -313,12 +312,12 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('markPrMerged sets mergedAt on the matching PR', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'mrg', repoSlug: 'mrg' },
       })
       await backend.addPrMapping(job.id, {
         prId: 2002,
-        feature: 'b',
+        workItem: 'b',
         repoSlug: 'mrg',
         openedAt: '2026-04-04T12:00:00Z',
       })
@@ -336,7 +335,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
   describe('appendLog / getLog / logLength', () => {
     it('stores chronological log lines', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'log', repoSlug: 'log' },
       })
 
@@ -351,7 +350,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
     it('getLog supports range slicing', async () => {
       const job = await backend.createJob({
-        type: 'migration',
+        type: 'job',
         params: { serviceName: 'lr', repoSlug: 'lr' },
       })
       await backend.appendLog(job.id, 'a')

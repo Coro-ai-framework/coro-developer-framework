@@ -14,8 +14,7 @@ function timeAgo(iso: string): string {
 }
 
 const TYPE_STYLES: Record<string, string> = {
-  migration: 'bg-violet-950 text-violet-300',
-  feature: 'bg-cyan-950 text-cyan-300',
+  job: 'bg-cyan-950 text-cyan-300',
   'self-update': 'bg-zinc-800 text-zinc-300',
 }
 
@@ -79,10 +78,10 @@ export default function JobList() {
                     <span title={job.id} className="truncate max-w-[280px]">{job.id}</span>
                     <span>·</span>
                     <span>phase: {job.phase}</span>
-                    {job.currentFeature && (
+                    {job.currentWorkItem && (
                       <>
                         <span>·</span>
-                        <span className="text-zinc-400">{job.currentFeature}</span>
+                        <span className="text-zinc-400">{job.currentWorkItem}</span>
                       </>
                     )}
                   </div>

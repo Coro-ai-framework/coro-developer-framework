@@ -1,5 +1,5 @@
 import { ToolContext, PhaseSignals } from './tools/types'
-import { Artifact, FeatureItem, Insight, Job } from './jobs/types'
+import { Artifact, WorkItem, Insight, Job } from './jobs/types'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -18,6 +18,43 @@ export function mcpError(msg: string) {
 export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const text = mcpText
   const error = mcpError
+
+  const setWorkItems = async ({ workItems }: { workItems: string[] }) => {
+    const items: WorkItem[] = workItems.map(name => ({
+      name, status: 'pending', loopCount: 0,
+    }))
+    await ctx.stateBackend.updateJob(ctx.job.id, { workItems: items })
+    ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+    return text({ registered: workItems.length })
+  }
+
+  const updateWorkItem = async ({ name, status, incrementLoop }: {
+    name: string; status?: string; incrementLoop?: boolean
+  }) => {
+    const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+    const workItems = job.workItems.map(item => {
+      if (item.name !== name) return item
+      return {
+        ...item,
+        ...(status ? { status: status as WorkItem['status'] } : {}),
+        loopCount: incrementLoop ? item.loopCount + 1 : item.loopCount,
+      }
+    })
+    const current = workItems.find(item => item.name === name)
+    await ctx.stateBackend.updateJob(ctx.job.id, {
+      workItems,
+      currentWorkItem: status === 'in-progress' ? name : ctx.job.currentWorkItem,
+      workItemLoopCount: current?.loopCount ?? ctx.job.workItemLoopCount,
+    })
+    ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+    return text({ updated: name, status: current?.status, loopCount: current?.loopCount })
+  }
+
+  const getWorkItems = async () => {
+    const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+    ctx.job = job
+    return text({ workItems: job.workItems, currentWorkItem: job.currentWorkItem })
+  }
 
   return {
     // BitBucket — coder
@@ -46,7 +83,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
       await ctx.stateBackend.addPrMapping(ctx.job.id, {
         prId: pr.id,
-        feature: ctx.job.currentFeature ?? ctx.job.phase,
+        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
         repoSlug: repoSlug,
         openedAt: new Date().toISOString(),
       })
@@ -122,7 +159,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
       await ctx.stateBackend.addPrMapping(ctx.job.id, {
         prId: pr.id,
-        feature: ctx.job.currentFeature ?? ctx.job.phase,
+        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
         repoSlug: repoSlug,
         openedAt: new Date().toISOString(),
       })
@@ -284,42 +321,10 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text(result ?? { transitioned: true })
     },
 
-    // Feature tracking — pure state CRUD, zero orchestration logic
-    set_features: async ({ features }: { features: string[] }) => {
-      const items: FeatureItem[] = features.map(name => ({
-        name, status: 'pending', loopCount: 0,
-      }))
-      await ctx.stateBackend.updateJob(ctx.job.id, { features: items })
-      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-      return text({ registered: features.length })
-    },
-
-    update_feature: async ({ name, status, incrementLoop }: {
-      name: string; status?: string; incrementLoop?: boolean
-    }) => {
-      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-      const features = job.features.map(f => {
-        if (f.name !== name) return f
-        return {
-          ...f,
-          ...(status ? { status: status as FeatureItem['status'] } : {}),
-          loopCount: incrementLoop ? f.loopCount + 1 : f.loopCount,
-        }
-      })
-      const current = features.find(f => f.name === name)
-      await ctx.stateBackend.updateJob(ctx.job.id, {
-        features,
-        currentFeature: status === 'in-progress' ? name : ctx.job.currentFeature,
-        featureLoopCount: current?.loopCount ?? ctx.job.featureLoopCount,
-      })
-      ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-      return text({ updated: name, status: current?.status, loopCount: current?.loopCount })
-    },
-
-    get_features: async () => {
-      const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-      return text({ features: job.features, currentFeature: job.currentFeature })
-    },
+    // Work-item tracking — pure state CRUD, zero orchestration logic
+    set_work_items: setWorkItems,
+    update_work_item: updateWorkItem,
+    get_work_items: getWorkItems,
 
     request_new_session: async ({ reason }: { reason: string }) => {
       await ctx.stateBackend.updateJob(ctx.job.id, { sessionId: undefined })
@@ -396,7 +401,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         kind,
         title,
         data: data ?? {},
-        createdBy: job.currentFeature ? `${job.phase}:${job.currentFeature}` : job.phase,
+        createdBy: job.currentWorkItem ? `${job.phase}:${job.currentWorkItem}` : job.phase,
         createdAt: now.toISOString(),
       }
       const artifacts = [...(job.artifacts ?? []), artifact]

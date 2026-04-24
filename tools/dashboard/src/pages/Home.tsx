@@ -27,7 +27,7 @@ export default function Home() {
             type="text"
             value={jobId}
             onChange={e => setJobId(e.target.value)}
-            placeholder="e.g. my-service-feature-1712345678"
+            placeholder="e.g. my-service-job-1712345678"
             autoFocus
             className="flex-1 px-4 py-2.5 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors font-mono"
           />

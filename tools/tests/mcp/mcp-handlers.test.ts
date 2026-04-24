@@ -339,78 +339,78 @@ describe('createMcpToolHandlers — start_go_service / stop_go_service', () => {
   })
 })
 
-describe('createMcpToolHandlers — feature tracking', () => {
+describe('createMcpToolHandlers — work-item tracking', () => {
   let ctx: ReturnType<typeof makeMockToolContext>
 
   beforeEach(() => {
     ctx = makeMockToolContext()
   })
 
-  it('set_features registers features with pending status and loopCount 0', async () => {
+  it('set_work_items registers work items with pending status and loopCount 0', async () => {
     const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.set_features({ features: ['scaffold', 'users-api'] })) as Record<string, unknown>
+    const data = parseJson(await h.set_work_items({ workItems: ['scaffold', 'users-api'] })) as Record<string, unknown>
 
     expect(data['registered']).toBe(2)
     expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith('job-mcp-test', {
-      features: [
+      workItems: [
         { name: 'scaffold', status: 'pending', loopCount: 0 },
         { name: 'users-api', status: 'pending', loopCount: 0 },
       ],
     })
   })
 
-  it('get_features returns features and currentFeature from job', async () => {
-    const jobWithFeatures = makeMockJob({
-      features: [{ name: 'f1', status: 'complete', loopCount: 1 }],
-      currentFeature: 'f1',
+  it('get_work_items returns work items and currentWorkItem from job', async () => {
+    const jobWithWorkItems = makeMockJob({
+      workItems: [{ name: 'f1', status: 'complete', loopCount: 1 }],
+      currentWorkItem: 'f1',
     })
-    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithWorkItems)
 
     const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.get_features()) as Record<string, unknown>
-    expect(data['currentFeature']).toBe('f1')
-    expect((data['features'] as unknown[]).length).toBe(1)
+    const data = parseJson(await h.get_work_items()) as Record<string, unknown>
+    expect(data['currentWorkItem']).toBe('f1')
+    expect((data['workItems'] as unknown[]).length).toBe(1)
   })
 
-  it('update_feature updates status and sets currentFeature when in-progress', async () => {
-    const jobWithFeatures = makeMockJob({
-      features: [
+  it('update_work_item updates status and sets currentWorkItem when in-progress', async () => {
+    const jobWithWorkItems = makeMockJob({
+      workItems: [
         { name: 'f1', status: 'pending', loopCount: 0 },
         { name: 'f2', status: 'pending', loopCount: 0 },
       ],
     })
-    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithWorkItems)
 
     const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.update_feature({ name: 'f1', status: 'in-progress' })) as Record<string, unknown>
+    const data = parseJson(await h.update_work_item({ name: 'f1', status: 'in-progress' })) as Record<string, unknown>
 
     expect(data['updated']).toBe('f1')
     expect(data['status']).toBe('in-progress')
     expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith(
       'job-mcp-test',
-      expect.objectContaining({ currentFeature: 'f1' }),
+      expect.objectContaining({ currentWorkItem: 'f1' }),
     )
   })
 
-  it('update_feature increments loop count', async () => {
-    const jobWithFeatures = makeMockJob({
-      features: [{ name: 'f1', status: 'in-progress', loopCount: 2 }],
+  it('update_work_item increments loop count', async () => {
+    const jobWithWorkItems = makeMockJob({
+      workItems: [{ name: 'f1', status: 'in-progress', loopCount: 2 }],
     })
-    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithFeatures)
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithWorkItems)
 
     const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.update_feature({ name: 'f1', incrementLoop: true })) as Record<string, unknown>
+    const data = parseJson(await h.update_work_item({ name: 'f1', incrementLoop: true })) as Record<string, unknown>
 
     expect(data['loopCount']).toBe(3)
   })
 
   it('request_new_session clears sessionId and logs reason', async () => {
     const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.request_new_session({ reason: 'Starting next feature' })) as Record<string, unknown>
+    const data = parseJson(await h.request_new_session({ reason: 'Starting next work item' })) as Record<string, unknown>
 
     expect(data['newSession']).toBe(true)
     expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith('job-mcp-test', { sessionId: undefined })
-    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith('job-mcp-test', '[session-reset] Starting next feature')
+    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith('job-mcp-test', '[session-reset] Starting next work item')
   })
 
   it('set_job_params merges params into job', async () => {

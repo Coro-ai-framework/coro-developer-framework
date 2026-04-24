@@ -8,7 +8,7 @@ export const openApiSpec = {
     title: 'A5 Agent Host',
     version: '0.1.0',
     description:
-      'Orchestration service that drives AI agents through migration and feature workflows. ' +
+      'Orchestration service that drives AI agents through markdown-defined implementation workflows. ' +
       'Receives job requests from the `a5` CLI or external webhooks, runs Claude API sessions, ' +
       'and parks/resumes jobs on BitBucket and Jira events.',
   },
@@ -63,58 +63,18 @@ export const openApiSpec = {
           },
         },
       },
-    },
-
-    '/jobs/migrate': {
       post: {
         tags: ['jobs'],
-        summary: 'Create a migration job',
+        summary: 'Create a generic job',
         description:
-          'Starts a .NET → Go migration workflow for the specified service. ' +
-          'Returns immediately with a `streamUrl` the CLI uses to tail logs.',
-        operationId: 'createMigrationJob',
+          'Creates a job by supplying a workflow path plus generic job parameters. ' +
+          'Use this for implementation jobs and any future markdown-defined workflow.',
+        operationId: 'createJob',
         requestBody: {
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/MigrationJobInput' },
-            },
-          },
-        },
-        responses: {
-          201: {
-            description: 'Job created',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/JobCreatedResponse' },
-              },
-            },
-          },
-          400: { $ref: '#/components/responses/BadRequest' },
-        },
-      },
-    },
-
-    '/jobs/feature': {
-      post: {
-        tags: ['jobs'],
-        summary: 'Create a feature job',
-        description:
-          'Starts a feature implementation workflow. ' +
-          'Accepts either a full CLI-triggered body (repo + description + reviewers) ' +
-          'or a Jira-triggered body (jiraTicketId only — spec-writer agent infers the rest).',
-        operationId: 'createFeatureJob',
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                oneOf: [
-                  { $ref: '#/components/schemas/FeatureJobCliInput' },
-                  { $ref: '#/components/schemas/FeatureJobJiraInput' },
-                ],
-                discriminator: { propertyName: 'jiraTicketId' },
-              },
+              schema: { $ref: '#/components/schemas/JobCreateInput' },
             },
           },
         },
@@ -320,7 +280,7 @@ export const openApiSpec = {
         name: 'jobId',
         in: 'path',
         required: true,
-        schema: { type: 'string', example: 'my-service-migration-1712123456789' },
+        schema: { type: 'string', example: 'my-service-job-1712123456789' },
         description: 'Job identifier returned on creation',
       },
     },
@@ -339,7 +299,7 @@ export const openApiSpec = {
         content: {
           'application/json': {
             schema: { $ref: '#/components/schemas/ErrorResponse' },
-            example: { error: 'Job not found: my-service-migration-123' },
+            example: { error: 'Job not found: my-service-job-123' },
           },
         },
       },
@@ -350,7 +310,7 @@ export const openApiSpec = {
 
       JobType: {
         type: 'string',
-        enum: ['migration', 'feature', 'self-update'],
+        enum: ['job', 'self-update'],
         description: 'The type of work a job performs',
       },
 
@@ -377,10 +337,10 @@ export const openApiSpec = {
 
       PrMapping: {
         type: 'object',
-        required: ['prId', 'feature', 'repoSlug', 'openedAt'],
+        required: ['prId', 'workItem', 'repoSlug', 'openedAt'],
         properties: {
           prId: { type: 'integer', example: 42 },
-          feature: { type: 'string', example: 'feature-3-users-endpoints' },
+          workItem: { type: 'string', example: 'users-endpoints' },
           repoSlug: { type: 'string', example: 'my-service-go' },
           openedAt: { type: 'string', format: 'date-time' },
           mergedAt: { type: 'string', format: 'date-time', nullable: true },
@@ -392,24 +352,23 @@ export const openApiSpec = {
       Job: {
         type: 'object',
         required: [
-          'id', 'type', 'workflowPath', 'serviceName', 'repoSlug', 'projects',
-          'reviewers', 'stagingUrl', 'triggerSource', 'status', 'phase',
-          'currentFeature', 'prMappings', 'createdAt', 'updatedAt',
+          'id', 'type', 'workflowPath', 'triggerSource', 'status', 'phase',
+          'currentWorkItem', 'prMappings', 'createdAt', 'updatedAt',
         ],
         properties: {
-          id: { type: 'string', example: 'my-service-migration-1712123456789' },
+          id: { type: 'string', example: 'my-service-job-1712123456789' },
           type: { $ref: '#/components/schemas/JobType' },
-          workflowPath: { type: 'string', example: 'workflows/migration/workflow.md' },
+          workflowPath: { type: 'string', example: 'workflows/job/workflow.md' },
           serviceName: { type: 'string', example: 'my-service' },
           repoSlug: { type: 'string', example: 'my-service' },
-          projects: { type: 'array', items: { type: 'string' }, example: ['MyService.API'] },
           reviewers: { type: 'array', items: { type: 'string' }, example: ['alice', 'bob'] },
-          stagingUrl: { type: 'string', example: 'https://staging.my-service.a5labs.com' },
           triggerSource: { type: 'string', enum: ['cli', 'jira', 'internal'] },
           jiraTicketId: { type: 'string', nullable: true, example: 'A5-1234' },
           status: { $ref: '#/components/schemas/JobStatus' },
           phase: { $ref: '#/components/schemas/JobPhase' },
-          currentFeature: { type: 'string', nullable: true },
+          currentWorkItem: { type: 'string', nullable: true },
+          workItems: { type: 'array', items: { $ref: '#/components/schemas/WorkItem' } },
+          workItemLoopCount: { type: 'integer' },
           prMappings: { type: 'array', items: { $ref: '#/components/schemas/PrMapping' } },
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
@@ -429,7 +388,7 @@ export const openApiSpec = {
           serviceName: { type: 'string' },
           status: { $ref: '#/components/schemas/JobStatus' },
           phase: { $ref: '#/components/schemas/JobPhase' },
-          currentFeature: { type: 'string', nullable: true },
+          currentWorkItem: { type: 'string', nullable: true },
           triggerSource: { type: 'string', enum: ['cli', 'jira', 'internal'] },
           prCount: { type: 'integer' },
           createdAt: { type: 'string', format: 'date-time' },
@@ -439,57 +398,43 @@ export const openApiSpec = {
 
       // ── Inputs ──────────────────────────────────────────────────────────────
 
-      MigrationJobInput: {
+      JobCreateInput: {
         type: 'object',
-        required: ['repo', 'projects', 'reviewers', 'stagingUrl', 'serviceName'],
+        required: ['workflowPath'],
         properties: {
-          repo: { type: 'string', description: 'BitBucket repo slug', example: 'my-service' },
-          projects: {
-            type: 'array',
-            items: { type: 'string' },
-            minItems: 1,
-            description: 'C# project names within the .NET solution',
-            example: ['MyService.API', 'MyService.Models'],
-          },
-          reviewers: {
-            type: 'array',
-            items: { type: 'string' },
-            minItems: 1,
-            description: 'BitBucket usernames to tag as PR reviewers',
-            example: ['alice', 'bob'],
-          },
-          stagingUrl: {
+          type: {
             type: 'string',
-            description: 'Base URL of the .NET staging service (used for request comparison)',
-            example: 'https://staging.my-service.a5labs.com',
+            enum: ['job', 'self-update'],
+            description: 'Optional explicit job type. Omit for the default generic job type.',
           },
-          serviceName: { type: 'string', example: 'my-service' },
-        },
-      },
-
-      FeatureJobCliInput: {
-        type: 'object',
-        required: ['repo', 'reviewers', 'description', 'serviceName'],
-        properties: {
+          workflowPath: {
+            type: 'string',
+            description: 'Path to the workflow markdown file that defines the job lifecycle.',
+            example: 'workflows/job/workflow.md',
+          },
+          triggerSource: {
+            type: 'string',
+            enum: ['cli', 'jira', 'internal'],
+          },
           repo: { type: 'string', example: 'my-service-go' },
           reviewers: { type: 'array', items: { type: 'string' }, minItems: 1 },
           description: {
             type: 'string',
-            description: 'Natural language description of the feature to implement',
+            description: 'Natural language description of the change to implement',
             example: 'Add rate limiting to /api/users — 100 req/min per IP',
           },
           serviceName: { type: 'string', example: 'my-service' },
-        },
-      },
-
-      FeatureJobJiraInput: {
-        type: 'object',
-        required: ['jiraTicketId'],
-        properties: {
+          gitProvider: { type: 'string', enum: ['bitbucket', 'github'] },
           jiraTicketId: {
             type: 'string',
-            description: 'Jira ticket ID — spec-writer agent infers repo, reviewers, and description',
+            description: 'Jira ticket ID — the workflow may infer repo, reviewers, and description from this.',
             example: 'A5-1234',
+          },
+          interactive: { type: 'boolean' },
+          params: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Additional workflow-specific fields merged into the generic job params bag.',
           },
         },
       },
@@ -509,10 +454,10 @@ export const openApiSpec = {
         type: 'object',
         required: ['jobId', 'type', 'status', 'streamUrl'],
         properties: {
-          jobId: { type: 'string', example: 'my-service-migration-1712123456789' },
+          jobId: { type: 'string', example: 'my-service-job-1712123456789' },
           type: { $ref: '#/components/schemas/JobType' },
           status: { $ref: '#/components/schemas/JobStatus' },
-          streamUrl: { type: 'string', example: '/jobs/my-service-migration-1712123456789/stream' },
+          streamUrl: { type: 'string', example: '/jobs/my-service-job-1712123456789/stream' },
         },
       },
 

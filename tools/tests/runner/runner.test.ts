@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
+import { reattachDynamicMcpServers, runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
 import {
   JobType,
   STATUS_COMPLETE,
@@ -50,15 +50,15 @@ function makeSettings(): Settings {
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'runner-job-1',
-    type: JobType.Migration,
+    type: JobType.Job,
     workflowPath: '',
     params: { serviceName: 'svc', repoSlug: 'svc' },
     triggerSource: 'cli',
     status: 'queued',
     phase: 'alpha',
-    currentFeature: null,
-    features: [],
-    featureLoopCount: 0,
+    currentWorkItem: null,
+    workItems: [],
+    workItemLoopCount: 0,
     prMappings: [],
     interactive: false,
     artifacts: [],
@@ -454,7 +454,7 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(ctx.logger.error).toHaveBeenCalled()
   })
 
-  it('fails instead of auto-advancing when built-in tools ran but no A5 MCP tool was used', async () => {
+  it('warns but still auto-advances when built-in tools ran but no A5 MCP tool was used', async () => {
     const queryImpl = () =>
       (async function* () {
         yield {
@@ -471,9 +471,12 @@ describe('runJob (mocked Agent SDK query)', () => {
       workflowConfigOverride: workflowTwoPhase,
     })
 
-    expect(stateBackend.current.status).toBe(STATUS_FAILED)
-    expect(stateBackend.current.phase).toBe('alpha')
-    expect(stateBackend.current.escalationMessage).toContain('without any mcp__a5__* tool calls')
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
+    expect(stateBackend.appendLog).toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.stringContaining('ZERO mcp__a5__* calls'),
+    )
   })
 
   it('stops when escalated signal is set (after stateBackend update)', async () => {
@@ -518,11 +521,13 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('uses phase kickoff prompt (fresh on phase 1, continuation on phase 2)', async () => {
     const prompts: string[] = []
+    const resumes: Array<string | undefined> = []
     let n = 0
     const queryImpl = (inv: QueryInvocation) =>
       (async function* () {
         n += 1
         prompts.push(inv.prompt)
+        resumes.push(inv.options['resume'] as string | undefined)
         yield { type: 'system', session_id: `sess-${n}` }
       })()
 
@@ -532,12 +537,35 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
 
     expect(prompts).toHaveLength(2)
+    expect(resumes).toEqual([undefined, 'sess-1'])
     // Phase 1 has no sessionId yet — fresh kickoff.
     expect(prompts[0]).toContain('Begin phase')
     expect(prompts[0]).toContain('alpha')
-    // Phase 2 resumes the session — continuation kickoff.
+    // Phase 2 resumes the session and uses the continuation kickoff.
     expect(prompts[1]).toContain('now in phase')
     expect(prompts[1]).toContain('beta')
+  })
+
+  it('re-registers dynamic MCP servers on resumed queries', async () => {
+    const dynamicMcpServers = { a5: { type: 'sdk' as const, name: 'a5', instance: {} as never } }
+    const liveQuery = {
+      setMcpServers: vi.fn().mockResolvedValue({ added: ['a5'], removed: [], errors: {} }),
+      mcpServerStatus: vi.fn().mockResolvedValue([{ name: 'a5', status: 'connected' }]),
+      reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const result = await reattachDynamicMcpServers(
+      liveQuery as never,
+      dynamicMcpServers,
+      'a5',
+    )
+
+    expect(liveQuery.setMcpServers).toHaveBeenCalledWith(dynamicMcpServers)
+    expect(liveQuery.mcpServerStatus).toHaveBeenCalledTimes(1)
+    expect(liveQuery.reconnectMcpServer).not.toHaveBeenCalled()
+    expect(result.initialStatus).toBe('connected')
+    expect(result.finalStatus).toBe('connected')
+    expect(result.reconnected).toBe(false)
   })
 
   // ── Token usage & cost tracking ───────────────────────────────────────────

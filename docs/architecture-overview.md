@@ -7,7 +7,7 @@
 
 ## What is this?
 
-An internal AI agent platform that automates engineering workflows — currently **.NET-to-Go service migration** and **feature implementation** in any language. New workflows and languages can be added without infrastructure changes.
+An internal AI agent platform that automates engineering workflows — currently **generic implementation jobs** in any language plus internal **self-update** jobs for the intelligence layer. New workflows and languages can be added without infrastructure changes.
 
 The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven by a lightweight **Agent Host Service** that manages jobs and tools. The key design principle:
 
@@ -20,7 +20,7 @@ The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven b
 
 ```
   Developer runs CLI command          Jira ticket assigned          BitBucket webhook
-  (a5 migrate ... / a5 feature ...)   to AI agent                   (PR merged, comment, etc.)
+  (a5 job ...)                        to AI agent                   (PR merged, comment, etc.)
               │                              │                              │
               └──────────────────────────────┼──────────────────────────────┘
                                              ▼
@@ -54,7 +54,7 @@ All agent behavior is defined in Markdown files, organized into four layers:
 | **Always-loaded context** (`.claude/CLAUDE.md`) | Behavior rules, company context, git conventions, infrastructure | Humans edit directly |
 | **Agents** (`agents/`) | Step-by-step procedures for each role (coder, tester, reviewer, etc.) | Agents can propose updates via PR |
 | **Workflows** (`workflows/`) | Phase sequences, agent assignments, model selection | Humans edit directly |
-| **Skills** (`.claude/skills/`) | Domain knowledge (migration patterns, testing methodology) and language conventions (Go, .NET) — invoked on-demand | Agents can propose updates via PR |
+| **Skills** (`.claude/skills/`) | Domain knowledge (implementation planning and testing) and language conventions (Go, .NET) — invoked on-demand | Agents can propose updates via PR |
 | **Memory** (`memory/`) | Lessons learned from past jobs — pitfalls, successful patterns, PR feedback | Grows automatically, reviewed via PR |
 
 Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript. It becomes specialized by invoking the relevant skills on-demand during execution.
@@ -63,27 +63,13 @@ Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript
 
 ## Workflows
 
-### Migration (.NET → Go)
-
-```
-Analysis → Planning → Repo Setup → [Code → Review → Test → Evaluate] → Report
-                                     └──── repeats per feature ────┘
-```
-
-- **Analyzer** extracts endpoints, models, and dependencies from the .NET codebase
-- **Planner** groups work into features, orders by risk and dependencies
-- **Coder** implements each feature in Go, opens a PR
-- **Reviewer** posts a structured code review (AI agent + human approval required)
-- **Tester** runs comparison tests against the staging .NET service
-- **Evaluator** decides: fix needed? next feature? all done?
-
-### Feature implementation
+### Generic implementation job
 
 ```
 [Spec Writing] → Planning → [Code → Review → Test → Evaluate]
 ```
 
-Same agents, different skills invoked. Triggered by CLI or Jira ticket. Automatically detects the repo's language and invokes the right conventions skill.
+Triggered by CLI or Jira ticket. The planner turns the request into work items, and the runtime loops through coding, review, testing, and evaluation until those work items are done.
 
 ---
 
@@ -125,4 +111,4 @@ Moving between environments only requires updating webhook URLs and providing cr
 
 ## In one sentence
 
-AI agents — defined entirely in Markdown — autonomously plan, code, test, review, and ship features through structured workflows, learning and improving from every job they run, with humans always in the approval loop.
+AI agents — defined entirely in Markdown — autonomously plan, code, test, review, and ship scoped changes through structured workflows, learning and improving from every job they run, with humans always in the approval loop.

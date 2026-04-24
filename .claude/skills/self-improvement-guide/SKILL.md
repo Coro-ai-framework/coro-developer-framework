@@ -42,6 +42,6 @@ frontmatter causes a validation failure written to `memory/proposals/`.
 
 ## Things that no longer exist
 
-- `knowledge/` directory — migrated to `.claude/skills/` (e.g., `migration-coding`, `feature-testing`)
+- `knowledge/` directory — migrated to `.claude/skills/` (e.g., `feature-planning`, `feature-testing`)
 - `conventions/` directory — `git.md` absorbed into `.claude/CLAUDE.md`; `golang.md` and `dotnet.md` migrated to `.claude/skills/`
 - ProposalTypes `convention-change` and `knowledge-update` — use `skill-update` instead

@@ -212,13 +212,10 @@ export class Dispatcher {
    * Two paths:
    *   1. Job is actively running — inject via Query.streamInput() so the live
    *      agent sees the message mid-turn (zero session rebuild).
-   *   2. Job is parked waiting for developer input — build a framed prompt,
-   *      clear the awaiting* fields, and resume the job. The runner starts a
-   *      fresh Claude Code session for this next turn (it does not pass
-   *      `resume: sessionId`) — the framed prompt plus the rebuilt system
-   *      prompt carry the developer's message and all job context, which is
-   *      sufficient and sidesteps a known SDK bug where in-process MCP
-   *      servers do not reliably survive across resumed sessions.
+  *   2. Job is parked waiting for developer input — build a framed prompt,
+  *      clear the awaiting* fields, and resume the job in the existing Claude
+  *      session. The runner re-registers the dynamic A5 MCP server before the
+  *      next turn so the agent keeps both transcript continuity and MCP tools.
    *
    * Any other status (complete, failed, queued without a live query) throws.
    */
@@ -281,7 +278,6 @@ export class Dispatcher {
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
       approvedAdvanceFromPhase: job.awaitingNextPhase ? job.phase : undefined,
-      sessionId: undefined,
       pendingPrompt,
     })
 
