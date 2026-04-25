@@ -121,7 +121,15 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
   return {
     stateBackend: stateBackend as unknown as RunnerContext['stateBackend'],
     settings: makeSettings(),
-    gitClient: {} as RunnerContext['gitClient'],
+    tenantContext: {
+      tenantId: 'solo-test-host',
+      mode: 'solo',
+      displayName: 'Solo (test-host)',
+      overlay: { kind: 'none' },
+    },
+    gitClient: {
+      pull: vi.fn().mockResolvedValue(undefined),
+    } as unknown as RunnerContext['gitClient'],
     bbCoder: {} as RunnerContext['bbCoder'],
     bbReviewer: {} as RunnerContext['bbReviewer'],
     ghClient: null,

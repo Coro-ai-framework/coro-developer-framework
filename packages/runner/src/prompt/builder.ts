@@ -1,7 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
 import { Logger } from 'pino'
-import { Settings } from '../config/settings'
 import { Job } from '../jobs/types'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 
@@ -25,16 +24,20 @@ import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workfl
  * `.claude/CLAUDE.md`. The intelligence repo is pulled once per job in the runner,
  * not per phase, so this function never does network I/O.
  */
+/**
+ * @param intelligenceDir Per-job intelligence overlay produced by
+ *   {@link resolveJobIntelligence}. The runner passes its resolved path
+ *   here so workflow + agent reads see the correct stack of layers
+ *   (base → tenant → repo) for this specific job.
+ */
 export async function buildSystemPrompt(
   job: Job,
-  settings: Settings,
+  intelligenceDir: string,
   logger: Logger,
 ): Promise<string> {
-  const coroIntelligenceDir = settings.paths.coroIntelligenceDir
-
   const sections: string[] = []
 
-  const workflowAbsPath = path.join(coroIntelligenceDir, job.workflowPath)
+  const workflowAbsPath = path.join(intelligenceDir, job.workflowPath)
   const workflowMd = await readSafe(workflowAbsPath, logger)
   const workflowConfig = workflowMd ? parseWorkflowConfig(workflowMd) : null
 
@@ -47,7 +50,7 @@ export async function buildSystemPrompt(
   const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, job.phase) : null
   const agentRelPath = phaseConf?.agent ?? null
   if (agentRelPath) {
-    const agentMd = await readSafe(path.join(coroIntelligenceDir, agentRelPath), logger)
+    const agentMd = await readSafe(path.join(intelligenceDir, agentRelPath), logger)
     if (agentMd) {
       sections.push(banner('Your Role This Phase', agentRelPath) + agentMd)
     } else {

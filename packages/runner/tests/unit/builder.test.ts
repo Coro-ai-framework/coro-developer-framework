@@ -2,13 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
 import { buildSystemPrompt } from '../../src/prompt/builder'
 import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
-import type { Settings } from '../../src/config/settings'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 vi.mock('fs/promises')
 
 const mockFs = vi.mocked(fs)
+const INTELLIGENCE_DIR = '/data/coro-intelligence'
 const WORKFLOW_PATH = '/data/coro-intelligence/workflows/job/workflow.md'
 const PLANNER_AGENT_PATH = '/data/coro-intelligence/agents/planner.md'
 
@@ -33,29 +33,6 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     createdAt: '2026-04-04T00:00:00Z',
     updatedAt: '2026-04-04T00:00:00Z',
     ...overrides,
-  }
-}
-
-function makeSettings(coroIntelligenceDir = '/data/coro-intelligence'): Settings {
-  return {
-    host: { port: 3000, webhookSecret: 'secret', logLevel: 'silent' },
-    claude: {
-      auth: { method: 'apiKey', apiKey: 'key' },
-      planningModel: 'claude-opus-4-6',
-      codingModel: 'claude-sonnet-4-6',
-    },
-    bitbucket: {
-      workspace: 'ws', baseUrl: 'https://api.bitbucket.org/2.0',
-      coderAccount: { username: 'coder', appPassword: 'pass' },
-      reviewerAccount: { username: 'reviewer', appPassword: 'pass' },
-    },
-    github: { owner: '', token: '', baseUrl: 'https://api.github.com' },
-    redis: { url: 'redis://localhost' },
-    paths: { workingDir: '/data/working', coroIntelligenceDir, baseLayerDir: '/tmp/coro-base-layer' },
-    loki: { baseUrl: '', apiKey: '', username: '' },
-    tempo: { baseUrl: '', apiKey: '' },
-    jira: { baseUrl: '', username: '', apiToken: '', pollIntervalSeconds: 60 },
-    ngrok: { authToken: '', staticDomain: '' },
   }
 }
 
@@ -93,7 +70,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [WORKFLOW_PATH]: '',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).not.toContain('# Root instructions — should NOT appear')
     })
 
@@ -104,7 +81,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [PLANNER_AGENT_PATH]: '# Planner Agent\n\nPlan things.',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).toContain('# Job Workflow')
       expect(prompt).toContain('This is the workflow.')
       expect(prompt).not.toContain('initial_phase: planning')
@@ -117,7 +94,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [PLANNER_AGENT_PATH]: '# Planner\n\nStep 1: Order the work items.',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).toContain('# Planner')
       expect(prompt).toContain('Step 1: Order the work items.')
       expect(prompt).toContain('Your Role This Phase')
@@ -130,7 +107,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         '/data/coro-intelligence/memory/known-pitfalls.md': 'Do not use X.',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).not.toContain('# Memory — should NOT appear')
       expect(prompt).not.toContain('Do not use X.')
       expect(prompt).not.toContain('Pending Proposals')
@@ -141,7 +118,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [WORKFLOW_PATH]: '',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).not.toContain('# Infrastructure')
       expect(prompt).not.toContain('BB_WORKSPACE')
     })
@@ -152,7 +129,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [PLANNER_AGENT_PATH]: '# Planner Agent',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       const lastSectionStart = prompt.lastIndexOf('# Current Job')
       expect(lastSectionStart).toBeGreaterThan(0)
       expect(prompt.slice(lastSectionStart)).toContain('"test-job-1"')
@@ -171,7 +148,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         escalationMessage: 'Something went wrong',
       })
 
-      const prompt = await buildSystemPrompt(job, makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(job, INTELLIGENCE_DIR, noopLogger)
       const jsonStart = prompt.indexOf('```json\n') + 8
       const jsonEnd = prompt.indexOf('\n```', jsonStart)
       const ctx = JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
@@ -192,7 +169,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [WORKFLOW_PATH]: '',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       const jsonStart = prompt.indexOf('```json\n') + 8
       const jsonEnd = prompt.indexOf('\n```', jsonStart)
       const ctx = JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
@@ -216,7 +193,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         currentWorkItem: 'users-api',
       })
 
-      const prompt = await buildSystemPrompt(job, makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(job, INTELLIGENCE_DIR, noopLogger)
       const jsonStart = prompt.indexOf('```json\n') + 8
       const jsonEnd = prompt.indexOf('\n```', jsonStart)
       const ctx = JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
@@ -234,7 +211,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     it('continues when workflow file is missing', async () => {
       setupFs({})
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).toContain('# Current Job')
     })
 
@@ -244,7 +221,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [WORKFLOW_PATH]: workflow,
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).not.toContain('Your Role This Phase')
       expect(prompt).toContain('# Current Job')
     })
@@ -254,7 +231,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [WORKFLOW_PATH]: '# Just a plain markdown file\n\nNo YAML here.',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).not.toContain('Your Role This Phase')
     })
 
@@ -264,7 +241,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [WORKFLOW_PATH]: workflow,
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
       expect(prompt).not.toContain('Your Role This Phase')
     })
   })
@@ -277,7 +254,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         [PLANNER_AGENT_PATH]: '# Planner Agent',
       })
 
-      const prompt = await buildSystemPrompt(makeJob(), makeSettings(), noopLogger)
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
 
       const workflowIdx = prompt.indexOf('# Workflow Content')
       const agentIdx = prompt.indexOf('# Planner Agent')

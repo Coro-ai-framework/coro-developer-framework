@@ -46,6 +46,13 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     settings: {
       paths: { coroIntelligenceDir: CORO_INTELLIGENCE_DIR, workingDir: '/data/working' },
     } as unknown as ToolContext['settings'],
+    tenantContext: {
+      tenantId: 'solo-test-host',
+      mode: 'solo' as const,
+      displayName: 'Solo (test-host)',
+      overlay: { kind: 'none' as const },
+    },
+    jobIntelligenceDir: CORO_INTELLIGENCE_DIR,
     logger: {
       debug: vi.fn(),
       info: vi.fn(),

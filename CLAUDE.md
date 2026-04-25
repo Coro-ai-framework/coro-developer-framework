@@ -33,16 +33,38 @@ Coro composes intelligence from three layers:
 - **Base** is everything in `packages/intelligence-base/layer/`. It is
   intentionally company-agnostic: no BitBucket workspace names, no service
   accounts, no migration stories. It is the contract every tenant extends.
-- **Tenant overlay** (Phase 3+) supplies company-specific facts: identity
+- **Tenant overlay** (Phase 4+) supplies company-specific facts: identity
   of the BitBucket / GitHub / GitLab service accounts, observability
   endpoints, deployment substrate, primary language stack, etc.
 - **Repo overlay** (Phase 4+) is per-target-repo customization that lives
   in a `.coro/` folder inside the repo being worked on.
 
 Conflict resolution: last-wins for `agents/`, `workflows/`, `skills/`;
-concatenated for `.claude/CLAUDE.md` and `memory/`. The intelligence
-resolver materialises the merged tree into a per-job `_intelligence/`
-directory that the runner points the SDK at.
+concatenated for `.claude/CLAUDE.md` and `memory/`. The **intelligence
+resolver** (`packages/runner/src/intelligence/resolver.ts`) materialises
+the merged tree into a per-job `_intelligence/` directory under the job's
+working tree, and the runner points all per-job markdown reads (workflow
+loader, prompt builder, subagent loader, filesystem hooks) at that
+resolved path. Process-wide consumers (file watcher, HTTP server) keep
+reading from `settings.paths.coroIntelligenceDir` for now — they are
+tenant-agnostic and Phase 5 covers their migration.
+
+#### Tenant context
+
+Every runner instance carries a `TenantContext`
+(`packages/runner/src/intelligence/tenant-context.ts`) that identifies
+which tenant a job belongs to:
+
+- **Solo mode** (legacy Redis monolith + local SQLite deployments)
+  synthesises `solo-<host>` from the OS hostname.
+- **Hybrid mode** derives `team-<teamId>` from the JWT used to
+  authenticate to the cloud control plane.
+
+The `TenantContext` is attached to the `RunnerContext` at bootstrap and
+to the `ToolContext` per job. The intelligence resolver reads it to
+decide which tenant overlay to apply (Phase 4); MCP tools that write
+back to memory or proposals will use it to route writes to the right
+layer in later phases.
 
 ## How this system works
 
@@ -232,6 +254,7 @@ a5-ai/                                   ← workspace root (will be renamed to 
     │       ├── jobs/                    ← runner.ts, dispatcher.ts, types.ts
     │       ├── clients/                 ← bitbucket, github, git, jira, loki, tempo
     │       ├── prompt/builder.ts
+    │       ├── intelligence/            ← TenantContext + per-job intelligence resolver
     │       ├── runner/                  ← Hybrid + local mode bootstrap (`coro runner start`)
     │       ├── cloud/                   ← Cloud control plane service
     │       ├── state/                   ← Redis / SQLite / Cloud state backends

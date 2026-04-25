@@ -92,8 +92,15 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
     job: makeMockJob(),
     stateBackend,
     settings: {
-      paths: { coroIntelligenceDir: '/tmp/a5ai-mcp-test', workingDir: '/tmp/work-mcp' },
+      paths: { coroIntelligenceDir: '/tmp/coro-mcp-test', workingDir: '/tmp/work-mcp' },
     } as ToolContext['settings'],
+    tenantContext: {
+      tenantId: 'solo-test-host',
+      mode: 'solo' as const,
+      displayName: 'Solo (test-host)',
+      overlay: { kind: 'none' as const },
+    },
+    jobIntelligenceDir: '/tmp/coro-mcp-test',
     gitClient: {} as ToolContext['gitClient'],
     bbCoder,
     bbReviewer,

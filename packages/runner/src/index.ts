@@ -8,6 +8,7 @@ import { createGitClient, createGitHubGitClient } from './clients/git'
 import { createJiraClient } from './clients/jira'
 import { createLokiClient } from './clients/loki'
 import { createTempoClient } from './clients/tempo'
+import { synthesizeSoloTenant } from './intelligence/tenant-context'
 import { Dispatcher } from './jobs/dispatcher'
 import { RedisStateBackend } from './state/redis-backend'
 import { InProcessTransport } from './state/in-process-transport'
@@ -76,10 +77,17 @@ async function main(): Promise<void> {
   logger.info('All clients initialised')
   if (ghClient) logger.info({ owner: settings.github.owner }, 'GitHub client active')
 
+  // Legacy (Redis monolith) mode has no external tenant identity, so we
+  // synthesise a solo tenant keyed off the host. Phase 4+ may upgrade
+  // legacy deployments to read tenant info from a config file.
+  const tenantContext = synthesizeSoloTenant()
+  logger.info({ tenantId: tenantContext.tenantId, mode: tenantContext.mode }, 'Tenant context')
+
   // 5. Build runner context (MCP server is created per-job by the runner)
   const runnerCtx: RunnerContext = {
     stateBackend,
     settings,
+    tenantContext,
     gitClient,
     bbCoder,
     bbReviewer,

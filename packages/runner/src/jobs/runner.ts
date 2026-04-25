@@ -19,6 +19,11 @@ import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import { Settings } from '../config/settings'
+import {
+  resolveJobIntelligence,
+  type ResolvedIntelligence,
+} from '../intelligence/resolver'
+import type { TenantContext } from '../intelligence/tenant-context'
 import { buildSystemPrompt } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
@@ -49,6 +54,16 @@ import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../clau
 export interface RunnerContext {
   stateBackend: StateBackend
   settings: Settings
+  /**
+   * Identifies which tenant (solo developer or team) this runner instance
+   * is acting on behalf of. The intelligence resolver and the
+   * proposal-routing layer use it to scope reads and writes correctly.
+   *
+   * Synthesized at runner bootstrap (`solo-<host>` for solo deployments,
+   * `team-<teamId>` for hybrid). Process-scoped — every job dispatched
+   * by this runner shares the same tenant context.
+   */
+  tenantContext: TenantContext
   gitClient: GitClient
   bbCoder: BitBucketClient
   bbReviewer: BitBucketClient
@@ -106,15 +121,45 @@ export interface RunJobOptions {
  * decide whether to advance, park, or terminate.
  */
 export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptions): Promise<void> {
-  const { stateBackend, settings, logger } = ctx
+  const { stateBackend, settings, tenantContext, logger } = ctx
 
   const runningServices = new Map<string, ChildProcess>()
+
+  // Pull the legacy intelligence checkout BEFORE materialising the per-job
+  // overlay. In legacy / single-tenant deployments this is the upstream
+  // company intelligence repo; pulling here keeps "company changes" fresh
+  // on disk so Phase 4's tenant-overlay loader can pick them up. In Phase
+  // 3 the resolver itself only stacks the base layer, so the pull is a
+  // forward-compatible no-op for the SDK reads below.
+  try {
+    await ctx.gitClient.pull(settings.paths.coroIntelligenceDir)
+    logger.debug(
+      { jobId: job.id, coroIntelligenceDir: settings.paths.coroIntelligenceDir },
+      'Pulled latest intelligence repo',
+    )
+  } catch (err) {
+    logger.warn({ err }, 'Could not pull intelligence repo — using cached version on disk')
+  }
+
+  // Materialise a per-job intelligence overlay. Phase 3 stacks only the
+  // base layer; Phase 4 will append tenant + repo overlays. From here on,
+  // every per-job markdown read inside this function and the MCP tools
+  // resolves against `resolved.intelligenceDir`, NOT the process-wide
+  // `settings.paths.coroIntelligenceDir`.
+  const resolved: ResolvedIntelligence = await resolveJobIntelligence({
+    baseLayerDir: settings.paths.baseLayerDir,
+    tenantContext,
+    jobId: job.id,
+    workingRoot: settings.paths.workingDir,
+    logger,
+  })
+  const jobIntelligenceDir = resolved.intelligenceDir
 
   const workflowConfig: WorkflowConfig | null =
     options?.workflowConfigOverride !== undefined
       ? options.workflowConfigOverride
       : job.workflowPath
-        ? await loadWorkflowConfig(job.workflowPath, settings.paths.coroIntelligenceDir, logger)
+        ? await loadWorkflowConfig(job.workflowPath, jobIntelligenceDir, logger)
         : null
 
   if (!workflowConfig && job.workflowPath) {
@@ -128,6 +173,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     job: liveJob,
     stateBackend,
     settings,
+    tenantContext,
+    jobIntelligenceDir,
     gitClient: ctx.gitClient,
     bbCoder: ctx.bbCoder,
     bbReviewer: ctx.bbReviewer,
@@ -142,22 +189,21 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
   const signals: PhaseSignals = {}
 
-  logger.info({ jobId: liveJob.id, type: liveJob.type, phase: liveJob.phase }, 'Job runner started')
+  logger.info(
+    {
+      jobId: liveJob.id,
+      type: liveJob.type,
+      phase: liveJob.phase,
+      tenantId: tenantContext.tenantId,
+      tenantMode: tenantContext.mode,
+      jobIntelligenceDir,
+    },
+    'Job runner started',
+  )
 
   /** Bundled Claude Code entrypoint; npm ships it as non-executable — we chmod if needed. */
   const claudeCodeCliPath = resolveClaudeCodeCliPath(process.cwd())
   ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
-
-  // Pull intelligence repo ONCE at the start of the job — not per phase. The prompt
-  // builder used to do this but that meant a network call on every phase,
-  // every rework, every dev-input round trip. Workflows are defined on disk
-  // and only change on human action — one pull per job is plenty.
-  try {
-    await ctx.gitClient.pull(settings.paths.coroIntelligenceDir)
-    logger.debug({ jobId: liveJob.id, coroIntelligenceDir: settings.paths.coroIntelligenceDir }, 'Pulled latest intelligence repo')
-  } catch (err) {
-    logger.warn({ err }, 'Could not pull intelligence repo — using cached version on disk')
-  }
 
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
@@ -169,7 +215,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       resetSignals(signals)
       const mcpServer = createCoroMcpServer(toolCtx, signals)
 
-      const systemPrompt = await buildSystemPrompt(liveJob, settings, logger)
+      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger)
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
@@ -216,11 +262,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
       /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as "cli.js not found". */
       mkdirSync(workingDir, { recursive: true })
-      ensureClaudeConfigSymlink(workingDir, settings.paths.coroIntelligenceDir, logger)
+      ensureClaudeConfigSymlink(workingDir, jobIntelligenceDir, logger)
 
       // Build subagent definitions from workflow config
       const agents = phaseConf?.subagents
-        ? buildSubagentDefinitions(phaseConf.subagents, settings, mcpServer as McpSdkServerConfig)
+        ? buildSubagentDefinitions(phaseConf.subagents, jobIntelligenceDir, settings, mcpServer as McpSdkServerConfig)
         : undefined
 
       // Update job status for the current phase
@@ -241,7 +287,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const hooks = buildPhaseHooks({
         liveJobRef: () => liveJob,
         workingDir,
-        coroIntelligenceDir: settings.paths.coroIntelligenceDir,
+        coroIntelligenceDir: jobIntelligenceDir,
         logger,
       })
 
@@ -876,6 +922,7 @@ export async function reattachDynamicMcpServers(
 
 function buildSubagentDefinitions(
   subagents: SubagentConfig[],
+  intelligenceDir: string,
   settings: Settings,
   mcpServer: McpSdkServerConfig,
 ) {
@@ -886,7 +933,7 @@ function buildSubagentDefinitions(
   let claudeMdContent = ''
   try {
     claudeMdContent = readFileSync(
-      path.join(settings.paths.coroIntelligenceDir, '.claude', 'CLAUDE.md'),
+      path.join(intelligenceDir, '.claude', 'CLAUDE.md'),
       'utf-8',
     )
   } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
@@ -897,7 +944,7 @@ function buildSubagentDefinitions(
     if (sa.agent) {
       try {
         const agentMd = readFileSync(
-          path.join(settings.paths.coroIntelligenceDir, sa.agent),
+          path.join(intelligenceDir, sa.agent),
           'utf-8',
         )
         agentPrompt = agentMd

@@ -74,6 +74,7 @@ import { CloudStateBackend } from '../state/cloud-backend'
 import { WebSocketTransport } from '../state/ws-transport'
 import { SqliteStateBackend } from '../state/sqlite-backend'
 import { PollingTransport } from '../state/polling-transport'
+import { synthesizeSoloTenant, tenantFromTeamId } from '../intelligence/tenant-context'
 import { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
 import { createBitBucketClients } from '../clients/bitbucket'
@@ -224,10 +225,16 @@ export async function startLocalRunner(
   })
   await transport.connect()
 
+  // Local mode = solo developer on their own machine. Synthesize a stable
+  // `solo-<host>` tenant so per-job state and overlays are scoped consistently.
+  const tenantContext = synthesizeSoloTenant()
+  logger.info({ tenantId: tenantContext.tenantId, mode: tenantContext.mode }, 'Tenant context')
+
   // Build runner context
   const runnerCtx: RunnerContext = {
     stateBackend,
     settings,
+    tenantContext,
     gitClient,
     bbCoder,
     bbReviewer,
@@ -293,6 +300,12 @@ export async function startHybridRunner(
   // Extract team ID from the runner token (JWT payload)
   const teamId = extractTeamIdFromToken(config.cloud.token)
 
+  // Hybrid mode = the runner acts on behalf of a team. The tenant ID is
+  // derived from the JWT-issued teamId so every job dispatched here is
+  // correctly scoped to that team.
+  const tenantContext = tenantFromTeamId(teamId)
+  logger.info({ tenantId: tenantContext.tenantId, mode: tenantContext.mode, teamId }, 'Tenant context')
+
   // Create CloudStateBackend that routes state ops over WebSocket
   const stateBackend = new CloudStateBackend(transport, teamId)
 
@@ -309,6 +322,7 @@ export async function startHybridRunner(
   const runnerCtx: RunnerContext = {
     stateBackend,
     settings,
+    tenantContext,
     gitClient,
     bbCoder,
     bbReviewer,

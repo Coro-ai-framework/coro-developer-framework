@@ -7,6 +7,7 @@ import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import { Settings } from '../config/settings'
+import type { TenantContext } from '../intelligence/tenant-context'
 import type { StateBackend } from '../state/backend'
 import { Job } from '../jobs/types'
 
@@ -20,6 +21,19 @@ export interface ToolContext {
   job: Job
   stateBackend: StateBackend
   settings: Settings
+  /**
+   * Tenant the active job belongs to. Tools that touch tenant-scoped
+   * state (memory, proposals) read this so writes are routed to the
+   * right layer.
+   */
+  tenantContext: TenantContext
+  /**
+   * Absolute path to the per-job materialised intelligence overlay
+   * (created by {@link resolveJobIntelligence}). Tools should prefer
+   * this over `settings.paths.coroIntelligenceDir` when reading
+   * workflow / agent / skill markdown for the active job.
+   */
+  jobIntelligenceDir: string
   gitClient: GitClient
   bbCoder: BitBucketClient
   bbReviewer: BitBucketClient
