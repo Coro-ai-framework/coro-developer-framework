@@ -1,41 +1,51 @@
-# A5 Labs — AI Agent Workspace
+# Coro — AI Agent Workspace
 
 > **Agent runtime instructions are in `.claude/CLAUDE.md`.** This file is for developers working on this repository.
+>
+> **Naming note:** the product is now called **Coro**. The MD files under
+> `agents/`, `workflows/`, `memory/`, and `.claude/` in this repo currently
+> still describe the **A5 Labs example tenant**. Phase 2 of the multi-tenant
+> rollout carves the A5 Labs–specific content out into a separate tenant
+> overlay. Until then, treat the company-specific facts (BitBucket workspace,
+> service accounts, observability endpoints, language migration stories) as
+> tenant data, not platform behaviour.
 
-This repository contains all AI agent definitions, workflows, skills, memory, and tooling for A5 Labs engineering automation.
+This repository contains the Coro runner, the Coro dashboard, and the
+bootstrap intelligence layer (agents, workflows, skills, memory) used by the
+A5 Labs example tenant.
 
 ## How this system works
 
-Agents in this repository do not run directly inside Claude Code sessions. They are driven by the **Agent Host Service** — an always-running TypeScript/Node.js service (`tools/`) that:
+Agents in this repository do not run directly inside Claude Code sessions. They are driven by the **Coro Runner** — an always-running TypeScript/Node.js service (`packages/runner/`) that:
 
-1. Receives job requests from the `a5` CLI or external event sources (BitBucket webhooks, Jira webhooks)
+1. Receives job requests from the `coro` CLI or external event sources (BitBucket webhooks, Jira webhooks)
 2. Creates a typed `Job` object with a `workflowPath` pointing to the correct workflow MD file
-3. Assembles a system prompt from the workflow file, agent instructions, and memory — static content (behavior rules, company context, git conventions) is loaded natively by the SDK from `.claude/CLAUDE.md`
+3. Assembles a system prompt from the workflow file, agent instructions, and memory — static content (behavior rules, tenant context, git conventions) is loaded natively by the SDK from `.claude/CLAUDE.md`
 4. Runs the Claude Agent SDK's `query()` function for each workflow phase — the SDK manages the full tool-use loop, subagent spawning, and conversation history internally
 5. Parks the job in Redis when waiting for an external event (PR merge, review comment, human approval)
 6. Resumes the job when the expected event webhook arrives
 
-**The MD files in this repo are the intelligence. The Agent Host is the infrastructure that runs them.**
+**The MD files in this repo are the intelligence. The Coro Runner is the infrastructure that runs them.**
 
 ### Design philosophy
 
-**TypeScript = dumb tool shell.** It runs phases linearly, provides MCP tools, persists state in Redis, and parks/resumes on webhooks. It has zero orchestration intelligence.
+**TypeScript = dumb tool shell.** It runs phases linearly, provides MCP tools, persists state (Redis / SQLite / cloud), and parks/resumes on webhooks. It has zero orchestration intelligence.
 
 **Intelligence = MD files + LLM judgment.** Workflow markdown defines phases and metadata. Agent markdown defines procedures. The LLM reads artifacts, calls tools to update state, and uses `goto_phase` to control flow. The evaluator decides when to loop. The planner decides how many features. The coder decides when it needs a fresh session.
 
 Full architecture: [docs/architecture.md](docs/architecture.md)
 Local setup guide: [docs/local-setup.md](docs/local-setup.md)
-Agent Host technical spec: [docs/agent-host-spec.md](docs/agent-host-spec.md)
+Coro Runner technical spec: [docs/agent-host-spec.md](docs/agent-host-spec.md)
 
 ---
 
 ## Job types and workflow routing
 
-Every job carries a `type` and a `workflowPath`. The Agent Host uses these — not hardcoded logic — to decide which workflow and which agents to run. This is how new workflows drop in without changing the infrastructure.
+Every job carries a `type` and a `workflowPath`. The runner uses these — not hardcoded logic — to decide which workflow and which agents to run. This is how new workflows drop in without changing the infrastructure.
 
 | Trigger | JobType | workflowPath |
 |---------|---------|-------------|
-| `a5 job ...` (CLI) | `job` | `workflows/job/workflow.md` |
+| `coro job ...` (CLI) | `job` | `workflows/job/workflow.md` |
 | Jira ticket assigned to agent | `job` | `workflows/job/workflow.md` |
 | Agent writes to `memory/`, `agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
 
@@ -46,12 +56,13 @@ Every job carries a `type` and a `workflowPath`. The Agent Host uses these — n
 - **agents/** — One MD file per agent. Each defines role, inputs, outputs, and step-by-step procedure. Agents are language-agnostic generic process definitions.
 - **workflows/** — Lifecycle definitions, one subdirectory per workflow type. Each `workflow.md` has YAML front matter defining phases, agent assignments, model selection, and subagent definitions.
 - **.claude/** — Intelligence loaded by the Agent SDK natively:
-  - `.claude/CLAUDE.md` — Always-loaded runtime instructions: behavior rules, company context, git conventions, infrastructure context.
+  - `.claude/CLAUDE.md` — Always-loaded runtime instructions: behavior rules, tenant context, git conventions, infrastructure context.
   - `.claude/skills/` — On-demand domain knowledge and language conventions. Agents invoke skills when they need specialized guidance (e.g., `feature-planning`, `golang-conventions`).
-- **config/** — `credentials.md` (gitignored, read by Agent Host at startup) and `repos.md` (service registry).
+- **config/** — `credentials.md` (gitignored, read by the runner at startup) and `repos.md` (service registry).
 - **memory/** — Accumulated knowledge from past jobs. Read at the start of every phase. Never modified directly — updates go through a self-improvement PR.
 - **docs/** — Architecture documentation for engineers and stakeholders.
-- **tools/** — The Agent Host Service (TypeScript/Node.js). This is what actually runs the agents.
+- **packages/runner/** — The Coro Runner (TypeScript/Node.js). Local agent runtime, cloud control plane, and the `coro` CLI.
+- **packages/dashboard/** — The Coro Dashboard (React + Vite). Web UI for jobs, intelligence editing, and tenant administration.
 
 ---
 
@@ -99,34 +110,34 @@ Skills are invoked on-demand by agents, reducing per-phase token costs compared 
 ## How to start a workflow
 
 ```bash
-a5 job \
+coro job \
   --repo my-service-go \
   --description "Add rate limiting to /api/users" \
   --reviewers alice,bob
 
 # Check job status
-a5 status --job my-service-job-1712123456789
+coro status --job my-service-job-1712123456789
 
 # Stream live logs for a running job
-a5 logs --job my-service-job-1712123456789
+coro logs --job my-service-job-1712123456789
 
 # List all jobs
-a5 jobs
+coro jobs
 ```
 
 ---
 
 ## Self-improvement rule
 
-When any agent calls `propose_change`, the Agent Host file watcher detects the written files and automatically:
+When any agent calls `propose_change`, the runner's intelligence file watcher detects the written files and automatically:
 
 1. Validates the proposal (TypeScript build, YAML parse, workflow config parse, skill frontmatter)
 2. Creates a branch in this repo: `improvement/{short-description}`
 3. Commits the changed files
-4. Opens a PR tagged with the human developers and `@a5-reviewer-agent`
+4. Opens a PR tagged with the human developers and the configured reviewer account
 5. Labels the PR `agent-self-improvement`
 
-**Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the Agent Host pulls the latest `a5-ai` and all subsequent job phases use the updated instructions immediately.
+**Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the runner pulls the latest intelligence and all subsequent job phases use the updated instructions immediately.
 
 The self-improvement pipeline covers three layers of intelligence:
 - **Memory** (`memory/*.md`) — high volatility, grows with every job
@@ -138,87 +149,57 @@ The self-improvement pipeline covers three layers of intelligence:
 ## Repository structure
 
 ```
-a5-ai/
-├── CLAUDE.md                             ← You are here. Developer-facing guide.
-├── .claude/
-│   ├── CLAUDE.md                         ← Agent runtime instructions (loaded by SDK)
-│   ├── settings.json                     ← Claude Code settings
-│   └── skills/                           ← On-demand skills (domain knowledge + conventions)
+a5-ai/                                   ← workspace root (will be renamed to coro/ in a future cut)
+├── CLAUDE.md                            ← You are here. Developer-facing guide.
+├── package.json                         ← pnpm workspace root
+├── pnpm-workspace.yaml
+├── tsconfig.base.json                   ← Shared TS compiler options
+│
+├── .claude/                             ← Intelligence loaded by the SDK natively
+│   ├── CLAUDE.md                        ← Agent runtime instructions (A5 Labs tenant content)
+│   ├── settings.json                    ← Claude Code settings
+│   └── skills/
 │       ├── feature-planning/SKILL.md
 │       ├── feature-testing/SKILL.md
 │       ├── golang-conventions/SKILL.md
 │       ├── dotnet-conventions/SKILL.md
 │       └── self-improvement-guide/SKILL.md
 ├── config/
-│   ├── credentials.md                    ← API keys and tokens (gitignored)
-│   └── repos.md                          ← Service registry (repositories known to the platform)
-├── agents/
-│   ├── planner.md                        ← Implementation planning and ordering
-│   ├── coder.md                          ← Code generation and PR management (unified, language-agnostic)
-│   ├── tester.md                         ← Build verification and testing
-│   ├── evaluator.md                      ← Failure diagnosis, memory updates, feature loop management
-│   ├── pr-reviewer.md                    ← PR review, merge coordination
-│   └── spec-writer.md                    ← Jira ticket → implementation spec
-├── workflows/
-│   ├── job/
-│   │   └── workflow.md                   ← Generic implementation lifecycle (YAML + docs)
-│   └── self-update/
-│       └── workflow.md                   ← Internal workflow for intelligence updates
-├── memory/
-│   ├── MEMORY.md                        ← Index — loaded into every agent prompt
-│   ├── known-pitfalls.md                ← Translation mistakes and failure patterns
-│   ├── successful-patterns.md           ← Validated approaches to reuse
-│   ├── pr-feedback.md                   ← Recurring developer review feedback
-│   └── dotnet-to-go-mappings.md         ← .NET→Go translation patterns (pre-seeded)
-├── docs/
-│   ├── architecture.md                  ← Full system architecture
-│   ├── architecture-overview.md         ← High-level overview
-│   ├── local-setup.md                   ← Docker Compose + ngrok local dev guide
-│   └── agent-host-spec.md               ← Agent Host technical specification
-└── tools/                               ← Agent Host Service (TypeScript/Node.js)
-    ├── docker-compose.yml               ← Local stack: agent-host + redis + ngrok
-    ├── Dockerfile
-    ├── package.json
-    ├── tsconfig.json
-    ├── .env.example
-    ├── config/
-    │   └── settings.example.json
-    ├── cli/                             ← The `a5` CLI
-    │   ├── index.ts
-    │   ├── sse-client.ts
-    │   └── commands/
-    │       ├── migrate.ts
-    │       ├── init.ts
-    │       ├── job.ts
-    │       ├── login.ts
-    │       ├── message.ts
-    │       ├── status.ts
-    │       ├── jobs.ts
-    │       ├── resume.ts
-    │       ├── runner.ts
-    │       └── logs.ts
-    └── src/
-        ├── index.ts                     ← Startup: Redis, MCP server, HTTP server
-        ├── server.ts                    ← HTTP: /jobs, /webhook, SSE
-        ├── mcp-server.ts                ← In-process MCP server (all domain tools)
-        ├── mcp-handlers.ts              ← MCP tool implementations
-        ├── watcher.ts                   ← File watcher: memory/ + agents/ + .claude/ → self-update PRs
-        ├── workflow-parser.ts           ← YAML front matter parser (phases, knowledge, conventions)
-        ├── config/settings.ts
-        ├── jobs/
-        │   ├── types.ts                 ← JobType, Job, WorkItem, status constants
-        │   ├── registry.ts              ← Redis CRUD + PR/Jira/repo mappings
-        │   ├── runner.ts                ← Claude Agent SDK query() per phase
-        │   └── dispatcher.ts            ← Routes CLI/webhook/Jira triggers to job runners
-        ├── clients/
-        │   ├── bitbucket.ts             ← BitBucket REST API (two accounts)
-        │   ├── git.ts                   ← Git operations via simple-git
-        │   ├── loki.ts                  ← Loki HTTP API (graceful degradation)
-        │   ├── tempo.ts                 ← Tempo HTTP API (graceful degradation)
-        │   └── jira.ts                  ← Jira REST API (graceful degradation)
-        ├── prompt/
-        │   └── builder.ts              ← Assembles system prompt from MD files per phase
-        └── tools/
-            ├── types.ts                 ← ToolContext, PhaseSignals
-            └── self-improvement.ts      ← propose_change, list_proposals
+│   ├── credentials.md                   ← API keys and tokens (gitignored)
+│   └── repos.md                         ← Service registry
+├── agents/                              ← Agent role definitions
+├── workflows/                           ← Workflow phase definitions
+├── memory/                              ← Accumulated knowledge from past jobs
+├── docs/                                ← Architecture documentation
+│
+└── packages/                            ← pnpm workspace packages
+    ├── runner/                          ← Coro Runner (TypeScript/Node.js)
+    │   ├── docker-compose.yml           ← Local legacy stack: runner + redis + ngrok
+    │   ├── docker-compose.cloud.yml     ← Cloud control plane stack: postgres + redis
+    │   ├── Dockerfile
+    │   ├── package.json                 ← @coro/runner
+    │   ├── tsconfig.json
+    │   ├── config/settings.example.json
+    │   ├── cli/                         ← The `coro` CLI
+    │   │   ├── index.ts
+    │   │   └── commands/                ← job, login, init, runner, logs, status, ...
+    │   └── src/
+    │       ├── index.ts                 ← Legacy monolith entry point
+    │       ├── server.ts                ← HTTP: /jobs, /webhook, SSE
+    │       ├── mcp-server.ts            ← In-process MCP server (Coro domain tools)
+    │       ├── mcp-handlers.ts
+    │       ├── watcher.ts               ← Self-improvement file watcher
+    │       ├── workflow-parser.ts
+    │       ├── config/                  ← settings.ts, local-config.ts
+    │       ├── jobs/                    ← runner.ts, dispatcher.ts, types.ts
+    │       ├── clients/                 ← bitbucket, github, git, jira, loki, tempo
+    │       ├── prompt/builder.ts
+    │       ├── runner/                  ← Hybrid + local mode bootstrap (`coro runner start`)
+    │       ├── cloud/                   ← Cloud control plane service
+    │       ├── state/                   ← Redis / SQLite / Cloud state backends
+    │       └── tools/                   ← MCP tool implementations
+    └── dashboard/                       ← Coro Dashboard (React + Vite)
+        ├── package.json                 ← @coro/dashboard
+        ├── vite.config.ts
+        └── src/                         ← React UI (jobs, intelligence, settings)
 ```

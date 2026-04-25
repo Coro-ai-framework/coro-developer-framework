@@ -1,0 +1,30 @@
+{
+  "name": "@coro/dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Coro Dashboard — multi-tenant agent platform UI",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.14.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.14",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "tailwindcss": "^4.2.2",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.4"
+  }
+}

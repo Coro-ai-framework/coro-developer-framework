@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+
+import { Command } from 'commander'
+import { jobCommand } from './commands/job'
+import { statusCommand } from './commands/status'
+import { jobsCommand } from './commands/jobs'
+import { logsCommand } from './commands/logs'
+import { resumeCommand } from './commands/resume'
+import { messageCommand } from './commands/message'
+import { loginCommand } from './commands/login'
+import { initCommand } from './commands/init'
+import { runnerCommand } from './commands/runner'
+
+const program = new Command()
+
+program
+  .name('coro')
+  .description('Coro — multi-tenant AI agent platform CLI')
+  .version('0.2.0')
+
+program.addCommand(jobCommand)
+program.addCommand(statusCommand)
+program.addCommand(jobsCommand)
+program.addCommand(logsCommand)
+program.addCommand(resumeCommand)
+program.addCommand(messageCommand)
+program.addCommand(loginCommand)
+program.addCommand(initCommand)
+program.addCommand(runnerCommand)
+
+program.parse()

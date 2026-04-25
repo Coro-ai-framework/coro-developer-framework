@@ -1,0 +1,68 @@
+{
+  "name": "@coro/runner",
+  "version": "0.1.0",
+  "description": "Coro Runner — local agent runtime, cloud control plane, and CLI",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "main": "dist/src/index.js",
+  "bin": {
+    "coro": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "start:cloud": "node dist/src/cloud/index.js",
+    "dev": "nodemon --exec ts-node src/index.ts",
+    "dev:cloud": "DOTENV_CONFIG_PATH=.env.cloud nodemon --exec ts-node src/cloud/index.ts",
+    "dev:runner": "tsx cli/index.ts runner start",
+    "dev:cli": "ts-node cli/index.ts",
+    "db:generate": "DOTENV_CONFIG_PATH=.env.cloud drizzle-kit generate",
+    "db:migrate": "DOTENV_CONFIG_PATH=.env.cloud drizzle-kit migrate",
+    "db:push": "DOTENV_CONFIG_PATH=.env.cloud drizzle-kit push",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run tests/integration",
+    "test:mcp": "vitest run tests/mcp",
+    "test:runner": "vitest run tests/runner",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.92",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.9.0",
+    "chokidar": "^4.0.3",
+    "commander": "^13.1.0",
+    "dotenv": "^17.4.0",
+    "drizzle-orm": "^0.45.2",
+    "express": "^4.21.2",
+    "ioredis": "^5.4.2",
+    "jose": "^6.2.2",
+    "js-yaml": "^4.1.1",
+    "pg": "^8.20.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "simple-git": "^3.27.0",
+    "swagger-ui-express": "^5.0.1",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.1",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.13.14",
+    "@types/pg": "^8.20.0",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.2",
+    "drizzle-kit": "^0.31.10",
+    "nodemon": "^3.1.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.2"
+  }
+}

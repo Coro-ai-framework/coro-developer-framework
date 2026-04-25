@@ -1,0 +1,130 @@
+import 'dotenv/config'
+import Redis from 'ioredis'
+import pino from 'pino'
+import { loadSettings } from './config/settings'
+import { createBitBucketClients } from './clients/bitbucket'
+import { createGitHubClient } from './clients/github'
+import { createGitClient, createGitHubGitClient } from './clients/git'
+import { createJiraClient } from './clients/jira'
+import { createLokiClient } from './clients/loki'
+import { createTempoClient } from './clients/tempo'
+import { Dispatcher } from './jobs/dispatcher'
+import { RedisStateBackend } from './state/redis-backend'
+import { InProcessTransport } from './state/in-process-transport'
+import { RunnerContext } from './jobs/runner'
+import { createServer } from './server'
+import { startWatcher } from './watcher'
+
+// ── Bootstrap ────────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  // 1. Load and validate settings
+  const settings = loadSettings()
+
+  // 2. Set up structured logger
+  const logger = pino({
+    level: settings.host.logLevel,
+    transport: process.env.NODE_ENV !== 'production'
+      ? { target: 'pino-pretty', options: { colorize: true } }
+      : undefined,
+  })
+
+  logger.info('─────────────────────────────────────────')
+  logger.info('  Coro Runner (legacy mode)  v0.2.0')
+  logger.info('  Powered by Claude Agent SDK')
+  logger.info('─────────────────────────────────────────')
+  logger.info({ port: settings.host.port, logLevel: settings.host.logLevel }, 'Configuration loaded')
+  logger.info({ model: settings.claude.planningModel }, 'Planning model')
+  logger.info({ model: settings.claude.codingModel }, 'Coding model')
+  logger.info({ workspace: settings.bitbucket.workspace }, 'BitBucket workspace')
+  logger.info({ url: settings.redis.url }, 'Connecting to Redis')
+
+  // 3. Connect to Redis
+  const redis = new Redis(settings.redis.url, {
+    retryStrategy: (times) => {
+      if (times > 10) {
+        logger.error('Redis connection failed after 10 retries — exiting')
+        process.exit(1)
+      }
+      const delay = Math.min(times * 200, 2000)
+      logger.warn({ attempt: times, delayMs: delay }, 'Redis reconnecting')
+      return delay
+    },
+    lazyConnect: false,
+  })
+
+  redis.on('connect', () => logger.info('Redis connected'))
+  redis.on('error', (err: Error) => logger.error({ err }, 'Redis error'))
+
+  await redis.ping()
+  logger.info('Redis ping OK')
+
+  // 4. Create state backend and external clients
+  const stateBackend = new RedisStateBackend(redis, settings.paths.coroIntelligenceDir, logger)
+
+  // Rebuild PR→job reverse-lookup keys so webhooks can find parked jobs after restart
+  const rebuilt = await stateBackend.rebuildPrMappings()
+  if (rebuilt > 0) logger.info({ rebuilt }, 'PR mappings rebuilt from job state')
+  const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
+  const gitClient = createGitClient(settings)
+  const ghClient = createGitHubClient(settings)
+  const ghGitClient = createGitHubGitClient(settings)
+  const lokiClient = createLokiClient(settings)
+  const tempoClient = createTempoClient(settings)
+  const jiraClient = createJiraClient(settings)
+
+  logger.info('All clients initialised')
+  if (ghClient) logger.info({ owner: settings.github.owner }, 'GitHub client active')
+
+  // 5. Build runner context (MCP server is created per-job by the runner)
+  const runnerCtx: RunnerContext = {
+    stateBackend,
+    settings,
+    gitClient,
+    bbCoder,
+    bbReviewer,
+    ghClient,
+    ghGitClient,
+    lokiClient,
+    tempoClient,
+    jiraClient,
+    logger,
+  }
+
+  // 6. Create event transport and dispatcher
+  const transport = new InProcessTransport()
+  const dispatcher = new Dispatcher(runnerCtx, transport)
+
+  // 7. Start file watcher (self-improvement loop)
+  const watcher = startWatcher({ settings, gitClient, bbCoder, stateBackend, logger })
+
+  // 8. Start HTTP server
+  const app = createServer({ stateBackend, dispatcher, settings, logger })
+
+  const server = app.listen(settings.host.port, () => {
+    logger.info({ port: settings.host.port }, 'HTTP server listening')
+    logger.info('─────────────────────────────────────────')
+    logger.info('  Coro Runner is ready')
+    logger.info(`  Docs: http://localhost:${settings.host.port}/docs`)
+    logger.info('─────────────────────────────────────────')
+  })
+
+  // 9. Graceful shutdown
+  const shutdown = async (signal: string): Promise<void> => {
+    logger.info({ signal }, 'Shutdown signal received')
+    server.close(() => logger.info('HTTP server closed'))
+    await watcher.close()
+    logger.info('File watcher stopped')
+    await redis.quit()
+    logger.info('Redis disconnected')
+    process.exit(0)
+  }
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+}
+
+main().catch((err: unknown) => {
+  console.error('Fatal error during startup:', err)
+  process.exit(1)
+})

@@ -1,6 +1,7 @@
 # Local Development Setup
 
-This guide walks through running the full A5 AI agent platform locally for development and testing.
+This guide walks through running the full Coro agent platform locally for
+development and testing of the runner + cloud control plane.
 
 ## Prerequisites
 
@@ -8,21 +9,29 @@ This guide walks through running the full A5 AI agent platform locally for devel
 |------|---------|---------|
 | Docker Desktop | Run all services locally | https://docker.com |
 | ngrok | Expose local webhook endpoint to BitBucket | https://ngrok.com |
-| Node.js 20+ | Run the CLI locally | https://nodejs.org |
+| Node.js 20+ | Run the CLI and runner locally | https://nodejs.org |
+| pnpm 9+ | Workspace package manager | `corepack enable` |
 | Git | Clone repos | system |
 
 ## Overview
 
-The local stack runs three containers:
+The local stack runs three containers (legacy monolith mode):
 
 ```
 docker-compose
-├── agent-host    Port 3000   The agent orchestration service
+├── coro-runner   Port 3000   Legacy agent orchestration service
 ├── redis         Port 6379   Job queue and state
 └── ngrok         Port 4040   Tunnel → BitBucket can reach your local webhook
 ```
 
-The CLI (`a5`) runs on your machine and talks to `agent-host` at `localhost:3000`.
+The CLI (`coro`) runs on your machine and talks to `coro-runner` at
+`localhost:3000`.
+
+> **Note:** This guide describes the legacy monolith mode that ships with the
+> repo today. The recommended deployment going forward is hybrid mode (local
+> runner + cloud control plane) or solo local mode (SQLite). See the
+> multi-tenant architecture plan for the desktop-first onboarding flow that
+> replaces most of this manual setup.
 
 ---
 
@@ -30,16 +39,17 @@ The CLI (`a5`) runs on your machine and talks to `agent-host` at `localhost:3000
 
 ```bash
 # You should already have this repo
-cd a5-ai/tools
+cd a5-ai
 
-# Install dependencies (once agent host code exists)
-npm install
+# Install workspace dependencies (generates pnpm-lock.yaml)
+pnpm install
 
 # Copy the example settings file
-cp config/settings.example.json config/settings.json
+cp packages/runner/config/settings.example.json packages/runner/config/settings.json
 ```
 
-Edit `config/settings.json` — see the [Settings Reference](#settings-reference) below.
+Edit `packages/runner/config/settings.json` — see the
+[Settings Reference](#settings-reference) below.
 
 ---
 
@@ -48,12 +58,14 @@ Edit `config/settings.json` — see the [Settings Reference](#settings-reference
 The credentials file is gitignored. Fill it in:
 
 ```
-a5-ai/config/credentials.md
+config/credentials.md
 ```
 
-All values in that file are read by agents. The Agent Host also reads them at startup to configure its API clients.
+All values in that file are read by agents. The runner also reads them at
+startup to configure its API clients.
 
-Alternatively, create `tools/.env` (also gitignored) with the same values as environment variables — Docker Compose will load this automatically.
+Alternatively, create `packages/runner/.env` (also gitignored) with the same
+values as environment variables — Docker Compose will load this automatically.
 
 ```env
 BITBUCKET_WORKSPACE=a5labs
@@ -72,7 +84,8 @@ WEBHOOK_SECRET=generate-a-random-string
 
 ## Step 3: Configure ngrok
 
-ngrok creates a public HTTPS URL that tunnels to your local `agent-host`. BitBucket uses this URL to send webhook events.
+ngrok creates a public HTTPS URL that tunnels to your local `coro-runner`.
+BitBucket uses this URL to send webhook events.
 
 ```bash
 # Authenticate ngrok (one-time, free account works)
@@ -86,49 +99,51 @@ ngrok config add-authtoken YOUR_NGROK_TOKEN
 ## Step 4: Start the stack
 
 ```bash
-cd a5-ai/tools
-docker-compose up
+cd packages/runner
+docker compose up
 ```
 
 You will see output like:
 
 ```
-agent-host  | Agent Host running on port 3000
-agent-host  | Webhook endpoint: POST /webhook
-redis       | Ready to accept connections
-ngrok       | Tunnel established: https://abc123.ngrok-free.app → localhost:3000
-ngrok       | Webhook URL: https://abc123.ngrok-free.app/webhook
+coro-runner  | Coro Runner is ready
+coro-runner  | Webhook endpoint: POST /webhook
+redis        | Ready to accept connections
+ngrok        | Tunnel established: https://abc123.ngrok-free.app → localhost:3000
+ngrok        | Webhook URL: https://abc123.ngrok-free.app/webhook
 ```
 
-The ngrok URL changes every time you restart unless you have a paid ngrok account with a static domain. For consistent local development, consider a free static ngrok domain.
+The ngrok URL changes every time you restart unless you have a paid ngrok
+account with a static domain.
 
 ---
 
 ## Step 5: Register webhooks in BitBucket
 
-For each repository involved (the .NET source repo, the `a5-ai` repo):
+For each repository involved (the .NET source repo, the intelligence repo):
 
 1. Go to **Repository Settings → Webhooks → Add webhook**
 2. URL: `https://YOUR-NGROK-URL/webhook`
 3. Secret: the value of `WEBHOOK_SECRET` from your `.env`
-4. Triggers: select these events:
+4. Triggers:
    - Pull Request: Created, Updated, Approved, Fulfilled (merged), Comment created
 
-You only need to do this once per repo. When you move to production, you update the URL to the stable K8s ingress.
+You only need to do this once per repo. When you move to production, you update
+the URL to the stable K8s ingress.
 
 ---
 
 ## Step 6: Install the CLI
 
 ```bash
-cd a5-ai/tools
-npm link   # makes 'a5' available globally
+cd packages/runner
+pnpm link --global   # makes 'coro' available globally
 ```
 
 Test it:
 ```bash
-a5 --help
-a5 status
+coro --help
+coro status
 ```
 
 ---
@@ -136,49 +151,52 @@ a5 status
 ## Step 7: Run your first job
 
 ```bash
-a5 job \
+coro job \
   --repo my-service \
   --description "Add rate limiting to /api/users" \
   --reviewers alice,bob \
   --workflow workflows/job/workflow.md
 ```
 
-The CLI submits the job to the Agent Host and streams progress. You can close the terminal — the job continues running. Check back with:
+The CLI submits the job to the runner and streams progress. You can close the
+terminal — the job continues running. Check back with:
 
 ```bash
-a5 status --job my-service-job-1712123456789
+coro status --job my-service-job-1712123456789
 ```
 
 ---
 
 ## Shared Volume in Local Development
 
-In production, the shared volume is a Kubernetes PersistentVolumeClaim. Locally, it is a Docker named volume mapped to `./data/` on your machine:
+In production, the shared volume is a Kubernetes PersistentVolumeClaim.
+Locally, it is a Docker named volume mapped to `./data/` on your machine:
 
 ```
-tools/data/
-├── working/                 ← Per-job state
+packages/runner/data/
+├── working/                  ← Per-job state
 │   └── my-service/
-└── a5-ai/                   ← Checked-out copy of this repo (agents read from here)
+└── coro-intelligence/        ← Checked-out copy of the intelligence repo
 ```
 
-The Agent Host pulls the latest `a5-ai` repo into `data/a5-ai/` on startup and before each new job phase.
+The runner pulls the latest intelligence repo into
+`data/coro-intelligence/` on startup and before each new job phase.
 
 To inspect job state while a job is running:
 ```bash
-cat tools/data/working/my-service-job-1712123456789/implementation-plan.md
-cat tools/data/working/my-service-job-1712123456789/test-results/work-item-1.json
+cat packages/runner/data/working/my-service-job-1712123456789/implementation-plan.md
+cat packages/runner/data/working/my-service-job-1712123456789/test-results/work-item-1.json
 ```
 
 ---
 
 ## Settings Reference
 
-`tools/config/settings.json`:
+`packages/runner/config/settings.json`:
 
 ```jsonc
 {
-  // Agent Host
+  // Runner host (legacy monolith mode)
   "host": {
     "port": 3000,
     "webhookSecret": "",          // Must match BitBucket webhook secret
@@ -194,7 +212,7 @@ cat tools/data/working/my-service-job-1712123456789/test-results/work-item-1.jso
 
   // BitBucket
   "bitbucket": {
-    "workspace": "",              // e.g. "a5labs"
+    "workspace": "",
     "coderAccount": {
       "username": "a5-coder-agent",
       "appPassword": ""
@@ -213,8 +231,8 @@ cat tools/data/working/my-service-job-1712123456789/test-results/work-item-1.jso
 
   // Shared volume paths
   "paths": {
-    "workingDir": "./data/working",     // Per-job state root
-    "a5aiDir": "./data/a5-ai"           // Checked-out a5-ai repo
+    "workingDir": "./data/working",                    // Per-job state root
+    "coroIntelligenceDir": "./data/coro-intelligence"  // Checked-out intelligence repo
   },
 
   // Observability
@@ -229,8 +247,8 @@ cat tools/data/working/my-service-job-1712123456789/test-results/work-item-1.jso
 
   // ngrok (local only)
   "ngrok": {
-    "authToken": "",              // From ngrok dashboard
-    "staticDomain": ""           // Optional: paid ngrok static domain
+    "authToken": "",
+    "staticDomain": ""
   }
 }
 ```
@@ -241,16 +259,16 @@ cat tools/data/working/my-service-job-1712123456789/test-results/work-item-1.jso
 
 ```bash
 # Stop everything
-docker-compose down
+docker compose down
 
 # Wipe job state (keeps credentials and settings)
-rm -rf tools/data/working/
+rm -rf packages/runner/data/working/
 
-# Wipe everything including a5-ai checkout (will re-clone on next start)
-rm -rf tools/data/
+# Wipe everything including the intelligence checkout (will re-clone on next start)
+rm -rf packages/runner/data/
 
 # Nuke Redis state
-docker-compose down -v
+docker compose down -v
 ```
 
 ---
@@ -259,17 +277,18 @@ docker-compose down -v
 
 **Webhooks not arriving:**
 - Check ngrok dashboard at `http://localhost:4040` — it shows all incoming requests
-- Verify the webhook URL in BitBucket matches the current ngrok URL (it changes on restart)
-- Verify `WEBHOOK_SECRET` matches between `.env` and BitBucket webhook config
+- Verify the webhook URL in BitBucket matches the current ngrok URL
+- Verify `WEBHOOK_SECRET` matches between `.env` and the BitBucket webhook config
 
 **Agent not finding credentials:**
 - Check `config/credentials.md` is populated
-- Or check `tools/.env` has the environment variables set
+- Or check `packages/runner/.env` has the environment variables set
 
 **Job stuck or lost:**
-- Check job state: `cat tools/data/working/{job-id}/job.md`
-- Check Redis: `docker exec -it a5-redis redis-cli keys '*'`
-- Restart the job from the last checkpoint: `a5 resume --job {job-id}`
+- Check job state: `cat packages/runner/data/working/{job-id}/job.md`
+- Check Redis: `docker exec -it coro-runner-redis redis-cli keys '*'`
+- Restart the job from the last checkpoint: `coro resume --job {job-id}`
 
 **BitBucket API rate limits:**
-- The Agent Host has built-in rate limiting. If you hit limits, jobs will pause and retry automatically.
+- The runner has built-in rate limiting. If you hit limits, jobs pause and
+  retry automatically.
