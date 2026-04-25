@@ -15,3 +15,10 @@ Writing to any file in this directory triggers the runner's self-improvement
 pipeline: a PR is automatically opened on the intelligence repo for human
 review. Memory changes only become canonical after a human approves and
 merges that PR.
+
+## Tenant overrides
+
+Tenant overlays may add their own memory files (e.g. company-specific
+pitfalls, language migration patterns, organisational conventions). Add an
+entry here when you do — agents read this index first to discover what's
+available.

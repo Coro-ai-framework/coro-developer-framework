@@ -1,18 +1,48 @@
 # Coro — AI Agent Workspace
 
 > **Agent runtime instructions are in `.claude/CLAUDE.md`.** This file is for developers working on this repository.
->
-> **Naming note:** the product is now called **Coro**. The MD files under
-> `agents/`, `workflows/`, `memory/`, and `.claude/` in this repo currently
-> still describe the **A5 Labs example tenant**. Phase 2 of the multi-tenant
-> rollout carves the A5 Labs–specific content out into a separate tenant
-> overlay. Until then, treat the company-specific facts (BitBucket workspace,
-> service accounts, observability endpoints, language migration stories) as
-> tenant data, not platform behaviour.
 
-This repository contains the Coro runner, the Coro dashboard, and the
-bootstrap intelligence layer (agents, workflows, skills, memory) used by the
-A5 Labs example tenant.
+This repository contains:
+
+- The **Coro runner** (`packages/runner/`) — TypeScript/Node.js process that
+  executes agent workflows.
+- The **Coro dashboard** (`packages/dashboard/`) — React + Vite web UI.
+- The **base intelligence layer** (`packages/intelligence-base/`) — the
+  generic, company-agnostic agents, workflows, skills, and memory templates
+  that ship with every Coro install.
+- A **working copy of the base intelligence at the repo root** (`agents/`,
+  `workflows/`, `.claude/`, `memory/`) — currently identical to the package
+  layer. The runner reads from this copy by default for development; a
+  later phase rewires it to read from `@coro/intelligence-base` directly so
+  the repo-root copies can be removed.
+
+### Layered intelligence
+
+Coro composes intelligence from three layers:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Repo overlay        repo/.coro/                             │
+├─────────────────────────────────────────────────────────────┤
+│ Tenant overlay      tenant remote / cloud blob              │
+├─────────────────────────────────────────────────────────────┤
+│ Base intelligence   @coro/intelligence-base/layer/  ← here  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Base** is everything in `packages/intelligence-base/layer/`. It is
+  intentionally company-agnostic: no BitBucket workspace names, no service
+  accounts, no migration stories. It is the contract every tenant extends.
+- **Tenant overlay** (Phase 3+) supplies company-specific facts: identity
+  of the BitBucket / GitHub / GitLab service accounts, observability
+  endpoints, deployment substrate, primary language stack, etc.
+- **Repo overlay** (Phase 4+) is per-target-repo customization that lives
+  in a `.coro/` folder inside the repo being worked on.
+
+Conflict resolution: last-wins for `agents/`, `workflows/`, `skills/`;
+concatenated for `.claude/CLAUDE.md` and `memory/`. The intelligence
+resolver materialises the merged tree into a per-job `_intelligence/`
+directory that the runner points the SDK at.
 
 ## How this system works
 
@@ -155,8 +185,8 @@ a5-ai/                                   ← workspace root (will be renamed to 
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json                   ← Shared TS compiler options
 │
-├── .claude/                             ← Intelligence loaded by the SDK natively
-│   ├── CLAUDE.md                        ← Agent runtime instructions (A5 Labs tenant content)
+├── .claude/                             ← Working copy of base intelligence (loaded by SDK)
+│   ├── CLAUDE.md                        ← Generic Coro runtime instructions
 │   ├── settings.json                    ← Claude Code settings
 │   └── skills/
 │       ├── feature-planning/SKILL.md
@@ -164,15 +194,23 @@ a5-ai/                                   ← workspace root (will be renamed to 
 │       ├── golang-conventions/SKILL.md
 │       ├── dotnet-conventions/SKILL.md
 │       └── self-improvement-guide/SKILL.md
-├── config/
-│   ├── credentials.md                   ← API keys and tokens (gitignored)
-│   └── repos.md                         ← Service registry
-├── agents/                              ← Agent role definitions
-├── workflows/                           ← Workflow phase definitions
-├── memory/                              ← Accumulated knowledge from past jobs
+├── config/                              ← Tenant-supplied: credentials.md (gitignored), repos.md
+├── agents/                              ← Working copy of base agent role definitions
+├── workflows/                           ← Working copy of base workflow phase definitions
+├── memory/                              ← Empty memory templates (tenants populate)
 ├── docs/                                ← Architecture documentation
 │
 └── packages/                            ← pnpm workspace packages
+    ├── intelligence-base/               ← @coro/intelligence-base — base intelligence layer
+    │   ├── package.json
+    │   ├── README.md
+    │   ├── src/index.ts                 ← Manifest: getBaseLayerRoot(), pathInBaseLayer()
+    │   ├── tests/manifest.test.ts
+    │   └── layer/                       ← Canonical generic intelligence (mirrors repo root)
+    │       ├── .claude/{CLAUDE.md, skills/}
+    │       ├── agents/
+    │       ├── workflows/
+    │       └── memory/
     ├── runner/                          ← Coro Runner (TypeScript/Node.js)
     │   ├── docker-compose.yml           ← Local legacy stack: runner + redis + ngrok
     │   ├── docker-compose.cloud.yml     ← Cloud control plane stack: postgres + redis

@@ -67,6 +67,8 @@ import {
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
+import { getBaseLayerRoot } from '@coro/intelligence-base'
+
 import { Settings } from '../config/settings'
 import { CloudStateBackend } from '../state/cloud-backend'
 import { WebSocketTransport } from '../state/ws-transport'
@@ -140,6 +142,7 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
     paths: {
       workingDir,
       coroIntelligenceDir: intelligenceDir,
+      baseLayerDir: getBaseLayerRoot(),
     },
     loki: {
       baseUrl: process.env.LOKI_BASE_URL ?? '',

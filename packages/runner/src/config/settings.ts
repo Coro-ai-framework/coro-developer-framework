@@ -1,6 +1,8 @@
 import fs from 'fs'
 import path from 'path'
 
+import { getBaseLayerRoot } from '@coro/intelligence-base'
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ClaudeAccountInfo {
@@ -59,7 +61,21 @@ export interface Settings {
   }
   paths: {
     workingDir: string
+    /**
+     * Active intelligence dir for the running process. Currently the
+     * repository root (legacy behaviour). The intelligence resolver
+     * (introduced in a later phase) will materialise a per-job overlay
+     * directory and rewrite this per job, leaving the process-wide
+     * default untouched.
+     */
     coroIntelligenceDir: string
+    /**
+     * Absolute on-disk path of the base intelligence layer that ships
+     * with the runner (`@coro/intelligence-base/layer`). Always present;
+     * used as the foundation of the layered intelligence stack
+     * (base → tenant → repo).
+     */
+    baseLayerDir: string
   }
   loki: {
     baseUrl: string
@@ -144,6 +160,7 @@ export function loadSettings(): Settings {
         env('CORO_INTELLIGENCE_DIR'),
         file.paths?.coroIntelligenceDir,
       ),
+      baseLayerDir: getBaseLayerRoot(),
     },
     loki: {
       baseUrl: env('LOKI_BASE_URL') ?? file.loki?.baseUrl ?? '',

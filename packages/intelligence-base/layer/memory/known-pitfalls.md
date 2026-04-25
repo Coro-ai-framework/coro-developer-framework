@@ -1,6 +1,7 @@
 # Known Pitfalls
 
-Patterns that have caused failures in past runs. Read before writing any code.
+Patterns that have caused failures in past runs against this tenant. Read
+before writing any code.
 
 The Evaluator agent populates this file via `propose_change` when it
 identifies a recurring failure pattern that future jobs should avoid.
@@ -24,4 +25,4 @@ identifies a recurring failure pattern that future jobs should avoid.
 
 ---
 
-*No entries yet.*
+*No entries yet. The Evaluator will populate this file as jobs run.*

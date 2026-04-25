@@ -51,7 +51,7 @@ function makeSettings(coroIntelligenceDir = '/data/coro-intelligence'): Settings
     },
     github: { owner: '', token: '', baseUrl: 'https://api.github.com' },
     redis: { url: 'redis://localhost' },
-    paths: { workingDir: '/data/working', coroIntelligenceDir },
+    paths: { workingDir: '/data/working', coroIntelligenceDir, baseLayerDir: '/tmp/coro-base-layer' },
     loki: { baseUrl: '', apiKey: '', username: '' },
     tempo: { baseUrl: '', apiKey: '' },
     jira: { baseUrl: '', username: '', apiToken: '', pollIntervalSeconds: 60 },

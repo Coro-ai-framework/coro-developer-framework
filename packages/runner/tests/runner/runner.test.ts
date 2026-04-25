@@ -39,7 +39,11 @@ function makeSettings(): Settings {
     },
     github: { owner: '', token: '', baseUrl: 'https://api.github.com' },
     redis: { url: 'redis://localhost' },
-    paths: { workingDir: '/tmp/coro-work', coroIntelligenceDir: '/tmp/coro-intelligence' },
+    paths: {
+      workingDir: '/tmp/coro-work',
+      coroIntelligenceDir: '/tmp/coro-intelligence',
+      baseLayerDir: '/tmp/coro-base-layer',
+    },
     loki: { baseUrl: '', apiKey: '', username: '' },
     tempo: { baseUrl: '', apiKey: '' },
     jira: { baseUrl: '', username: '', apiToken: '', pollIntervalSeconds: 60 },

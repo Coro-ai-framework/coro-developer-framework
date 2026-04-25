@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.92",
+    "@coro/intelligence-base": "workspace:*",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",
     "chokidar": "^4.0.3",
