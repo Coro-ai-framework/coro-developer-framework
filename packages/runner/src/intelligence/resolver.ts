@@ -1,35 +1,37 @@
-// ── Intelligence resolver (Phase 3 skeleton) ─────────────────────────────────
+// ── Intelligence resolver ────────────────────────────────────────────────────
 //
 // The resolver materialises a per-job intelligence directory by stacking
-// the layered intelligence model (base → tenant → repo) into a single
-// on-disk overlay that the runner reads from for that job.
+// the layered intelligence model into a single on-disk overlay that the
+// runner reads from for that job:
 //
-// Phase 3 scope (this file):
-//   - Apply only the **base layer** (`@coro/intelligence-base/layer`)
-//   - Produce a clean per-job dir at `<workingRoot>/<jobId>/_intelligence/`
-//   - Return a `ResolvedIntelligence` describing which layers were applied
+//   1. base    — `@coro/intelligence-base/layer/`         (always present)
+//   2. tenant  — local dir / git remote / cloud blob       (per TenantContext)
+//   3. repo    — `<repoCheckout>/.coro/`                   (per target repo)
 //
-// Phase 4 (resolver-overlay) extends this with:
-//   - `tenant` layer pulled from `TenantContext.overlay` (localDir / git /
-//     cloudBlob), with last-wins semantics for `agents/`, `workflows/`,
-//     `skills/` and concatenation for `.claude/CLAUDE.md` and `memory/`
-//   - `repo` layer from `<repo>/.coro/` (per-repository overrides)
+// Merge semantics (see `merge.ts`):
+//   - `replace` (last-wins) for  agents/, workflows/, .claude/skills/, etc.
+//   - `append`  (with banners) for  .claude/CLAUDE.md  and  memory/**/*.md
 //
-// Decoupling reasoning:
-//   - The runner already has a process-wide `settings.paths.coroIntelligenceDir`
-//     used by long-lived consumers (the file watcher, the HTTP server).
-//     Those stay tenant-agnostic for now.
-//   - Per-job consumers (workflow loader, prompt builder, subagent loader,
-//     filesystem hooks) read from the resolved per-job dir so each job sees
-//     its own coherent stack of layers.
-//   - The output dir is always under `workingRoot/<jobId>/` so it is
-//     cleaned up alongside the job's working tree.
+// What the resolver intentionally does NOT do:
+//   - touch `<repoCheckout>/.claude/`. That lives at the SDK's `cwd` and
+//     is loaded natively via `settingSources: ['project']`. Layering it
+//     here would shadow a contract devs already understand.
+//   - manage tenant overlay refresh cadence beyond a single job. The
+//     gitRemote loader pulls on every resolve; that's intentional for
+//     correctness today, and Phase 5 can add ETag-style caching.
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
 import type { Logger } from 'pino'
 
+import {
+  loadCloudBlobOverlay,
+  loadGitRemoteOverlay,
+  loadLocalDirOverlay,
+  loadRepoOverlay,
+} from './loaders'
+import { applyLayer } from './merge'
 import type { TenantContext } from './tenant-context'
 
 /** Inputs to {@link resolveJobIntelligence}. */
@@ -46,6 +48,20 @@ export interface ResolveJobIntelligenceArgs {
    * `<workingRoot>/<jobId>/_intelligence/`.
    */
   workingRoot: string
+  /**
+   * Absolute path to the cloned target repository, if known. Used to
+   * discover `<repoCheckoutDir>/.coro/` for the repo overlay layer. May
+   * be omitted (or refer to a non-existent dir) at initial resolve;
+   * callers can re-resolve later via {@link resolveJobIntelligence} once
+   * the agent has cloned the repo.
+   */
+  repoCheckoutDir?: string
+  /**
+   * Root under which loaders cache per-tenant artifacts (e.g. the
+   * gitRemote loader's clones). Defaults to `<workingRoot>/.cache/`.
+   * Phase 5 will switch the runner to pass `~/.coro/cache/`.
+   */
+  loaderCacheRoot?: string
   /** Logger for resolver diagnostics. */
   logger: Logger
 }
@@ -74,50 +90,80 @@ export interface ResolvedIntelligence {
 export const JOB_INTELLIGENCE_SUBDIR = '_intelligence'
 
 /**
- * Materialise the intelligence overlay for a single job.
+ * Materialise the intelligence overlay for a single job by stacking
+ * base → tenant → repo with the merge semantics defined in `merge.ts`.
  *
- * Phase 3 implements only the base layer; Phase 4 will append tenant and
- * repo overlays. The function is async and idempotent — calling it twice
- * for the same `jobId` re-creates the directory from scratch.
+ * The function is async and idempotent — calling it twice for the same
+ * `jobId` re-creates the directory from scratch. Use this property to
+ * "refresh" intelligence mid-job once the agent has cloned the target
+ * repo and a `.coro/` overlay becomes discoverable.
  */
 export async function resolveJobIntelligence(
   args: ResolveJobIntelligenceArgs,
 ): Promise<ResolvedIntelligence> {
-  const { baseLayerDir, tenantContext, jobId, workingRoot, logger } = args
+  const {
+    baseLayerDir,
+    tenantContext,
+    jobId,
+    workingRoot,
+    repoCheckoutDir,
+    logger,
+  } = args
+  const loaderCacheRoot = args.loaderCacheRoot ?? path.join(workingRoot, '.cache', 'tenant-overlays')
 
-  if (!jobId) {
-    throw new Error('resolveJobIntelligence: jobId is required')
-  }
-  if (!baseLayerDir) {
-    throw new Error('resolveJobIntelligence: baseLayerDir is required')
-  }
+  if (!jobId) throw new Error('resolveJobIntelligence: jobId is required')
+  if (!baseLayerDir) throw new Error('resolveJobIntelligence: baseLayerDir is required')
 
   // Resolve to an absolute path so downstream consumers (SDK hooks, MCP
   // tools) never accidentally relative-resolve against a different cwd.
   const intelligenceDir = path.resolve(workingRoot, jobId, JOB_INTELLIGENCE_SUBDIR)
 
   // Always start from a clean slate. We do NOT preserve previous content
-  // because layers are idempotent and any cached state on disk could mask
-  // a config change between runs.
+  // because layers are idempotent and any cached state on disk could
+  // mask a config or overlay change between runs.
   await fs.rm(intelligenceDir, { recursive: true, force: true })
   await fs.mkdir(intelligenceDir, { recursive: true })
 
   const layers: AppliedLayer[] = []
 
   // Layer 1 — base. Always applied; ships with the runner.
-  await copyDirectory(baseLayerDir, intelligenceDir)
-  const baseFileCount = await countFiles(intelligenceDir)
-  layers.push({ name: 'base', source: baseLayerDir, fileCount: baseFileCount })
-
-  // Layer 2 — tenant overlay. Phase 4 will switch on `tenantContext.overlay.kind`.
-  if (tenantContext.overlay.kind !== 'none') {
-    logger.warn(
-      { tenantId: tenantContext.tenantId, overlayKind: tenantContext.overlay.kind },
-      'Tenant overlay declared but resolver has no overlay loader yet — skipping (Phase 4)',
-    )
+  {
+    const result = await applyLayer({
+      srcRoot: baseLayerDir,
+      destRoot: intelligenceDir,
+      layerName: 'base',
+    })
+    layers.push({ name: 'base', source: baseLayerDir, fileCount: result.filesApplied })
   }
 
-  // Layer 3 — repo overlay. Phase 4 will read `<repo>/.coro/` if present.
+  // Layer 2 — tenant overlay (optional).
+  const tenantSource = await resolveTenantOverlaySource({
+    tenantContext,
+    cacheRoot: loaderCacheRoot,
+    logger,
+  })
+  if (tenantSource) {
+    const layerName = `tenant:${tenantContext.tenantId}`
+    const result = await applyLayer({
+      srcRoot: tenantSource,
+      destRoot: intelligenceDir,
+      layerName,
+    })
+    layers.push({ name: layerName, source: tenantSource, fileCount: result.filesApplied })
+  }
+
+  // Layer 3 — repo overlay (optional, opportunistic).
+  if (repoCheckoutDir) {
+    const repoSource = await loadRepoOverlay({ repoCheckoutDir, logger })
+    if (repoSource) {
+      const result = await applyLayer({
+        srcRoot: repoSource,
+        destRoot: intelligenceDir,
+        layerName: 'repo',
+      })
+      layers.push({ name: 'repo', source: repoSource, fileCount: result.filesApplied })
+    }
+  }
 
   logger.info(
     {
@@ -126,7 +172,7 @@ export async function resolveJobIntelligence(
       tenantMode: tenantContext.mode,
       intelligenceDir,
       layerCount: layers.length,
-      baseFileCount,
+      layers: layers.map(l => ({ name: l.name, files: l.fileCount })),
     },
     'Resolved per-job intelligence overlay',
   )
@@ -151,69 +197,45 @@ export async function cleanupJobIntelligence(
   }
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+// ── Internal: tenant overlay source dispatcher ────────────────────────────────
 
-/**
- * Recursive directory copy with overlay semantics: when `dest` already has
- * a file at the same relative path, the source overwrites it. Symlinks are
- * collapsed to their target file content. Empty directories from the
- * source are preserved.
- */
-async function copyDirectory(src: string, dest: string): Promise<void> {
-  let entries: import('node:fs').Dirent[]
-  try {
-    entries = await fs.readdir(src, { withFileTypes: true })
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') return // missing source layer is treated as empty
-    throw err
-  }
+async function resolveTenantOverlaySource(args: {
+  tenantContext: TenantContext
+  cacheRoot: string
+  logger: Logger
+}): Promise<string | null> {
+  const { tenantContext, cacheRoot, logger } = args
+  const overlay = tenantContext.overlay
 
-  await fs.mkdir(dest, { recursive: true })
+  switch (overlay.kind) {
+    case 'none':
+      return null
 
-  for (const entry of entries) {
-    // Skip OS metadata files that occasionally land inside layer dirs.
-    if (entry.name === '.DS_Store') continue
+    case 'localDir':
+      return loadLocalDirOverlay({ path: overlay.path, logger })
 
-    const srcPath = path.join(src, entry.name)
-    const destPath = path.join(dest, entry.name)
+    case 'gitRemote':
+      return loadGitRemoteOverlay({
+        url: overlay.url,
+        ref: overlay.ref,
+        tenantId: tenantContext.tenantId,
+        cacheRoot,
+        logger,
+      })
 
-    if (entry.isDirectory()) {
-      await copyDirectory(srcPath, destPath)
-    } else if (entry.isSymbolicLink()) {
-      const target = await fs.readlink(srcPath)
-      const resolvedTarget = path.isAbsolute(target) ? target : path.join(src, target)
-      const stat = await fs.stat(resolvedTarget).catch(() => null)
-      if (stat?.isDirectory()) {
-        await copyDirectory(resolvedTarget, destPath)
-      } else if (stat?.isFile()) {
-        await fs.copyFile(resolvedTarget, destPath)
-      }
-      // Broken symlinks are silently dropped — we never want to materialise them.
-    } else if (entry.isFile()) {
-      await fs.copyFile(srcPath, destPath)
+    case 'cloudBlob':
+      return loadCloudBlobOverlay({
+        key: overlay.key,
+        tenantId: tenantContext.tenantId,
+        logger,
+      })
+
+    default: {
+      // Exhaustiveness check — TS will flag if a new variant is added
+      // to TenantOverlaySource without a case here.
+      const _exhaustive: never = overlay
+      logger.warn({ overlay: _exhaustive }, 'Unknown tenant overlay kind — skipping')
+      return null
     }
   }
-}
-
-/** Count regular files under `root`, recursively. */
-async function countFiles(root: string): Promise<number> {
-  let entries: import('node:fs').Dirent[]
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true })
-  } catch {
-    return 0
-  }
-
-  let count = 0
-  for (const entry of entries) {
-    if (entry.name === '.DS_Store') continue
-    const child = path.join(root, entry.name)
-    if (entry.isDirectory()) {
-      count += await countFiles(child)
-    } else if (entry.isFile()) {
-      count += 1
-    }
-  }
-  return count
 }

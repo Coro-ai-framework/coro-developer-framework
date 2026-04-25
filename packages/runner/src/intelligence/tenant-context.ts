@@ -86,37 +86,62 @@ function readHostname(): string {
   }
 }
 
+/** Optional overrides for {@link synthesizeSoloTenant}. */
+export interface SynthesizeSoloOptions {
+  /** Optional explicit hostname (primarily for tests). */
+  hostnameOverride?: string
+  /** Override the auto-derived `Solo (<host>)` display name. */
+  displayName?: string
+  /**
+   * Tenant overlay source. When omitted, the tenant runs against base
+   * intelligence only (`{ kind: 'none' }`).
+   */
+  overlay?: TenantOverlaySource
+}
+
 /**
  * Build the implicit solo tenant for a developer running Coro on their own
  * machine. Used by legacy (Redis monolith) and local (SQLite + polling)
  * deployment modes — neither of which carries an external tenant identity.
  *
- * @param hostnameOverride Optional explicit hostname (primarily for tests).
- *   When omitted, the OS hostname is used.
+ * @param opts Optional hostname override (tests), display name override,
+ *   and overlay source (from `~/.coro/config.json -> tenant.overlay`).
  */
-export function synthesizeSoloTenant(hostnameOverride?: string): TenantContext {
-  const host = normaliseHostname(hostnameOverride ?? readHostname())
+export function synthesizeSoloTenant(opts: SynthesizeSoloOptions = {}): TenantContext {
+  const host = normaliseHostname(opts.hostnameOverride ?? readHostname())
   return {
     tenantId: `solo-${host}`,
     mode: 'solo',
-    displayName: `Solo (${host})`,
-    overlay: { kind: 'none' },
+    displayName: opts.displayName ?? `Solo (${host})`,
+    overlay: opts.overlay ?? { kind: 'none' },
   }
+}
+
+/** Optional overrides for {@link tenantFromTeamId}. */
+export interface TenantFromTeamIdOptions {
+  displayName?: string
+  /**
+   * Overlay descriptor supplied by the cloud control plane (Phase 5).
+   * For Phase 4 the WebSocket handshake doesn't carry overlays yet, so
+   * the runner leaves this `undefined` and the tenant runs base-only.
+   */
+  overlay?: TenantOverlaySource
 }
 
 /**
  * Build a team tenant from the `teamId` already extracted from the runner
  * JWT in hybrid mode. Optional `displayName` lets the cloud control plane
- * supply a friendlier label.
+ * supply a friendlier label; optional `overlay` is reserved for the
+ * Phase 5 cloud handshake.
  */
-export function tenantFromTeamId(teamId: string, displayName?: string): TenantContext {
+export function tenantFromTeamId(teamId: string, opts: TenantFromTeamIdOptions = {}): TenantContext {
   if (!teamId) {
     throw new Error('tenantFromTeamId: teamId is required')
   }
   return {
     tenantId: `team-${teamId}`,
     mode: 'team',
-    displayName: displayName ?? `Team ${teamId}`,
-    overlay: { kind: 'none' },
+    displayName: opts.displayName ?? `Team ${teamId}`,
+    overlay: opts.overlay ?? { kind: 'none' },
   }
 }

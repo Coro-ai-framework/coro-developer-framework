@@ -34,7 +34,7 @@ describe('normaliseHostname', () => {
 
 describe('synthesizeSoloTenant', () => {
   it('returns mode=solo with a stable solo-<host> tenantId for a given hostname', () => {
-    const ctx = synthesizeSoloTenant('emre-mbp')
+    const ctx = synthesizeSoloTenant({ hostnameOverride: 'emre-mbp' })
     expect(ctx.mode).toBe('solo')
     expect(ctx.tenantId).toBe('solo-emre-mbp')
     expect(ctx.displayName).toContain('emre-mbp')
@@ -42,7 +42,7 @@ describe('synthesizeSoloTenant', () => {
   })
 
   it('strips trailing .local from the supplied hostname', () => {
-    const ctx = synthesizeSoloTenant('Emre-MBP.local')
+    const ctx = synthesizeSoloTenant({ hostnameOverride: 'Emre-MBP.local' })
     expect(ctx.tenantId).toBe('solo-emre-mbp')
   })
 
@@ -50,11 +50,32 @@ describe('synthesizeSoloTenant', () => {
     // We don't know the test runner's hostname, but the contract is:
     //   - mode is 'solo'
     //   - tenantId starts with 'solo-' and is non-empty after the dash
-    //   - overlay is {kind: 'none'}
+    //   - overlay defaults to { kind: 'none' }
     const ctx = synthesizeSoloTenant()
     expect(ctx.mode).toBe('solo')
     expect(ctx.tenantId).toMatch(/^solo-[a-z0-9-]+$/)
     expect(ctx.overlay).toEqual({ kind: 'none' })
+  })
+
+  it('honours the displayName override', () => {
+    const ctx = synthesizeSoloTenant({ hostnameOverride: 'host', displayName: 'My Coro' })
+    expect(ctx.displayName).toBe('My Coro')
+  })
+
+  it('passes through an explicit overlay descriptor (localDir)', () => {
+    const ctx = synthesizeSoloTenant({
+      hostnameOverride: 'host',
+      overlay: { kind: 'localDir', path: '/tmp/overlay' },
+    })
+    expect(ctx.overlay).toEqual({ kind: 'localDir', path: '/tmp/overlay' })
+  })
+
+  it('passes through an explicit overlay descriptor (gitRemote)', () => {
+    const ctx = synthesizeSoloTenant({
+      hostnameOverride: 'host',
+      overlay: { kind: 'gitRemote', url: 'git@example.com:overlay.git', ref: 'main' },
+    })
+    expect(ctx.overlay).toEqual({ kind: 'gitRemote', url: 'git@example.com:overlay.git', ref: 'main' })
   })
 })
 
@@ -68,12 +89,17 @@ describe('tenantFromTeamId', () => {
   })
 
   it('uses the provided displayName when given', () => {
-    const ctx = tenantFromTeamId('abc', 'Acme Engineering')
+    const ctx = tenantFromTeamId('abc', { displayName: 'Acme Engineering' })
     expect(ctx.tenantId).toBe('team-abc')
     expect(ctx.displayName).toBe('Acme Engineering')
   })
 
   it('throws when teamId is empty (defensive)', () => {
     expect(() => tenantFromTeamId('')).toThrow(/teamId is required/)
+  })
+
+  it('passes through a cloud-supplied overlay descriptor', () => {
+    const ctx = tenantFromTeamId('abc', { overlay: { kind: 'cloudBlob', key: 'tenant/abc/v1' } })
+    expect(ctx.overlay).toEqual({ kind: 'cloudBlob', key: 'tenant/abc/v1' })
   })
 })

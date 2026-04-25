@@ -19,6 +19,7 @@ import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import { Settings } from '../config/settings'
+import { defaultLoaderCacheRoot } from '../config/local-config'
 import {
   resolveJobIntelligence,
   type ResolvedIntelligence,
@@ -141,19 +142,36 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     logger.warn({ err }, 'Could not pull intelligence repo — using cached version on disk')
   }
 
-  // Materialise a per-job intelligence overlay. Phase 3 stacks only the
-  // base layer; Phase 4 will append tenant + repo overlays. From here on,
-  // every per-job markdown read inside this function and the MCP tools
-  // resolves against `resolved.intelligenceDir`, NOT the process-wide
-  // `settings.paths.coroIntelligenceDir`.
-  const resolved: ResolvedIntelligence = await resolveJobIntelligence({
+  // Materialise a per-job intelligence overlay. The resolver stacks
+  //   base  →  tenant overlay (per TenantContext)  →  repo overlay (.coro/)
+  // and writes the merged result to `<workingDir>/<jobId>/_intelligence/`.
+  //
+  // From here on, every per-job markdown read inside this function and
+  // the MCP tools resolves against `jobIntelligenceDir`, NOT the
+  // process-wide `settings.paths.coroIntelligenceDir`.
+  //
+  // Repo overlay timing: agents `git clone` the target repo themselves
+  // during the workflow, so at the very first resolve the repo dir
+  // typically does not exist yet. We pass `repoCheckoutDir` based on
+  // `job.params.repoSlug`; the resolver gracefully skips the layer when
+  // the path is missing. Per-phase re-resolution (below) picks up the
+  // overlay as soon as the agent clones the repo.
+  const repoCheckoutDir = deriveRepoCheckoutDir(job, settings.paths.workingDir)
+  const loaderCacheRoot = defaultLoaderCacheRoot()
+
+  const initialResolved: ResolvedIntelligence = await resolveJobIntelligence({
     baseLayerDir: settings.paths.baseLayerDir,
     tenantContext,
     jobId: job.id,
     workingRoot: settings.paths.workingDir,
+    repoCheckoutDir,
+    loaderCacheRoot,
     logger,
   })
-  const jobIntelligenceDir = resolved.intelligenceDir
+  // The materialised path is stable across re-resolves (it's a function
+  // of jobId + workingRoot), so `jobIntelligenceDir` can be captured
+  // once. Per-phase calls below re-run the resolver to refresh CONTENTS.
+  const jobIntelligenceDir = initialResolved.intelligenceDir
 
   const workflowConfig: WorkflowConfig | null =
     options?.workflowConfigOverride !== undefined
@@ -214,6 +232,30 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // broken state if the previous Claude Code subprocess exited uncleanly.
       resetSignals(signals)
       const mcpServer = createCoroMcpServer(toolCtx, signals)
+
+      // Re-resolve intelligence at every phase boundary. This is
+      // idempotent (same materialised path) and cheap (file copies +
+      // tenant overlay refresh). Crucially it picks up the repo
+      // overlay (`<repoCheckout>/.coro/`) once the agent has cloned the
+      // target repo in an earlier phase.
+      try {
+        await resolveJobIntelligence({
+          baseLayerDir: settings.paths.baseLayerDir,
+          tenantContext,
+          jobId: liveJob.id,
+          workingRoot: settings.paths.workingDir,
+          repoCheckoutDir,
+          loaderCacheRoot,
+          logger,
+        })
+      } catch (err) {
+        // A re-resolve failure must NOT crash the phase. Fall back to the
+        // last good materialisation already on disk.
+        logger.warn(
+          { err, jobId: liveJob.id, phase: liveJob.phase },
+          'Per-phase intelligence re-resolve failed — using previous overlay',
+        )
+      }
 
       const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger)
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
@@ -814,6 +856,24 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Best-effort guess at where the agent will clone the target repo.
+ *
+ * Convention: agents do `git clone <url> <repoSlug>` inside the SDK's
+ * `cwd: workingDir`, which lands the checkout at
+ * `<workingDir>/<repoSlug>`. The resolver uses this path to discover a
+ * repo `.coro/` overlay; if the path doesn't exist (typical at first
+ * resolve), the resolver skips the layer.
+ *
+ * Returns `undefined` when no `repoSlug` is set on the job (e.g.
+ * self-update jobs that don't target a specific repo).
+ */
+function deriveRepoCheckoutDir(job: Job, workingRoot: string): string | undefined {
+  const slug = (job.params as Record<string, unknown> | undefined)?.['repoSlug']
+  if (typeof slug !== 'string' || slug.length === 0) return undefined
+  return path.join(workingRoot, job.id, slug)
+}
 
 async function syncJob(
   stateBackend: StateBackend,

@@ -227,8 +227,21 @@ export async function startLocalRunner(
 
   // Local mode = solo developer on their own machine. Synthesize a stable
   // `solo-<host>` tenant so per-job state and overlays are scoped consistently.
-  const tenantContext = synthesizeSoloTenant()
-  logger.info({ tenantId: tenantContext.tenantId, mode: tenantContext.mode }, 'Tenant context')
+  // Phase 4: forward the optional `tenant.overlay` from local config so a
+  // single-host solo deployment can still pull a tenant-level overlay
+  // (typically `localDir` or `gitRemote`).
+  const tenantContext = synthesizeSoloTenant({
+    displayName: effectiveConfig.tenant?.displayName,
+    overlay: effectiveConfig.tenant?.overlay,
+  })
+  logger.info(
+    {
+      tenantId: tenantContext.tenantId,
+      mode: tenantContext.mode,
+      overlayKind: tenantContext.overlay.kind,
+    },
+    'Tenant context',
+  )
 
   // Build runner context
   const runnerCtx: RunnerContext = {
@@ -303,8 +316,24 @@ export async function startHybridRunner(
   // Hybrid mode = the runner acts on behalf of a team. The tenant ID is
   // derived from the JWT-issued teamId so every job dispatched here is
   // correctly scoped to that team.
-  const tenantContext = tenantFromTeamId(teamId)
-  logger.info({ tenantId: tenantContext.tenantId, mode: tenantContext.mode, teamId }, 'Tenant context')
+  //
+  // Phase 4 leaves the cloud-supplied overlay descriptor `undefined` —
+  // the WebSocket handshake doesn't carry per-tenant overlays yet.
+  // Phase 5 will populate this from a `tenant.overlay` field returned by
+  // `wireCloudJobDispatch`'s initial `runner_hello` response.
+  const tenantContext = tenantFromTeamId(teamId, {
+    displayName: config.tenant?.displayName,
+    overlay: config.tenant?.overlay,
+  })
+  logger.info(
+    {
+      tenantId: tenantContext.tenantId,
+      mode: tenantContext.mode,
+      overlayKind: tenantContext.overlay.kind,
+      teamId,
+    },
+    'Tenant context',
+  )
 
   // Create CloudStateBackend that routes state ops over WebSocket
   const stateBackend = new CloudStateBackend(transport, teamId)

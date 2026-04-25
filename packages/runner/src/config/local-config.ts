@@ -57,6 +57,33 @@ const intelligenceConfigSchema = z.object({
   gitRemote: z.string().optional(),
 }).optional()
 
+// ── Tenant overlay (Phase 4) ─────────────────────────────────────────────────
+//
+// Solo deployments can opt-in to a tenant-level intelligence overlay by
+// declaring it here. The runner reads this field at bootstrap and feeds
+// it into the synthesised TenantContext.
+//
+// The variants here MUST match `TenantOverlaySource` in
+// `packages/runner/src/intelligence/tenant-context.ts`. Validation and
+// option resolution are zod-driven so a malformed config fails loudly.
+
+const tenantOverlaySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('none') }),
+  z.object({ kind: z.literal('localDir'), path: z.string().min(1) }),
+  z.object({ kind: z.literal('gitRemote'), url: z.string().min(1), ref: z.string().optional() }),
+  z.object({ kind: z.literal('cloudBlob'), key: z.string().min(1) }),
+])
+
+const tenantConfigSchema = z.object({
+  /**
+   * Optional explicit display name override. When omitted the bootstrap
+   * uses `Solo (<host>)` for the synthesized solo tenant.
+   */
+  displayName: z.string().optional(),
+  /** Where this tenant's intelligence overlay lives. */
+  overlay: tenantOverlaySchema.optional(),
+}).optional()
+
 const pathsConfigSchema = z.object({
   workingDir: z.string().min(1),
 }).optional()
@@ -74,6 +101,7 @@ const localConfigSchema = z.object({
   intelligence: intelligenceConfigSchema,
   paths: pathsConfigSchema,
   git: gitConfigSchema,
+  tenant: tenantConfigSchema,
 })
 
 export type LocalConfig = z.infer<typeof localConfigSchema>
@@ -117,6 +145,15 @@ export function defaultWorkingDir(): string {
   return path.join(defaultConfigDir(), 'working')
 }
 
+/**
+ * Cache root for intelligence loader artifacts (e.g. cloned tenant
+ * overlay repos). Lives under the config dir so the runner doesn't
+ * pollute the per-job working dirs.
+ */
+export function defaultLoaderCacheRoot(): string {
+  return path.join(defaultConfigDir(), 'cache', 'tenant-overlays')
+}
+
 // ── Read / Write ─────────────────────────────────────────────────────────────
 
 /**
@@ -158,6 +195,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     intelligence: patch.intelligence !== undefined ? patch.intelligence : existing.intelligence,
     paths: patch.paths !== undefined ? patch.paths : existing.paths,
     git: patch.git !== undefined ? patch.git : existing.git,
+    tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
   }
   saveLocalConfig(merged, configPath)
   return merged

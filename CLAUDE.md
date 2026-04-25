@@ -18,36 +18,72 @@ This repository contains:
 
 ### Layered intelligence
 
-Coro composes intelligence from three layers:
+Coro composes intelligence from three layers using a **hybrid model**:
+the resolver owns Coro-specific content (`agents/`, `workflows/`,
+`memory/`, `.claude/skills/`, `.claude/CLAUDE.md`); the target repo's
+own `.claude/` is left for Claude Code's native loader to discover at
+the SDK's `cwd`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Repo overlay        repo/.coro/                             │
+│ Repo overlay        <repoCheckout>/.coro/                   │
 ├─────────────────────────────────────────────────────────────┤
-│ Tenant overlay      tenant remote / cloud blob              │
+│ Tenant overlay      localDir | gitRemote | cloudBlob        │
 ├─────────────────────────────────────────────────────────────┤
 │ Base intelligence   @coro/intelligence-base/layer/  ← here  │
 └─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+   <workingDir>/<jobId>/_intelligence/    ← materialised overlay
 ```
 
 - **Base** is everything in `packages/intelligence-base/layer/`. It is
   intentionally company-agnostic: no BitBucket workspace names, no service
   accounts, no migration stories. It is the contract every tenant extends.
-- **Tenant overlay** (Phase 4+) supplies company-specific facts: identity
-  of the BitBucket / GitHub / GitLab service accounts, observability
-  endpoints, deployment substrate, primary language stack, etc.
-- **Repo overlay** (Phase 4+) is per-target-repo customization that lives
-  in a `.coro/` folder inside the repo being worked on.
+- **Tenant overlay** supplies company-specific facts (service-account
+  identities, observability endpoints, deployment substrate, etc.).
+  Declared via `tenant.overlay` in `~/.coro/config.json` (solo) or by
+  the cloud control plane (hybrid, Phase 5). Three source kinds:
+  `localDir` (filesystem), `gitRemote` (cached clone under
+  `~/.coro/cache/tenant-overlays/<tenantId>/`), and `cloudBlob`
+  (Phase 5 stub today — warns and skips).
+- **Repo overlay** is per-target-repo customisation that lives in a
+  `.coro/` folder inside the repo being worked on. The resolver
+  intentionally does NOT touch the repo's `.claude/` — that contract
+  belongs to Claude Code's native walk-up via
+  `settingSources: ['project']`.
 
-Conflict resolution: last-wins for `agents/`, `workflows/`, `skills/`;
-concatenated for `.claude/CLAUDE.md` and `memory/`. The **intelligence
-resolver** (`packages/runner/src/intelligence/resolver.ts`) materialises
-the merged tree into a per-job `_intelligence/` directory under the job's
-working tree, and the runner points all per-job markdown reads (workflow
-loader, prompt builder, subagent loader, filesystem hooks) at that
-resolved path. Process-wide consumers (file watcher, HTTP server) keep
-reading from `settings.paths.coroIntelligenceDir` for now — they are
-tenant-agnostic and Phase 5 covers their migration.
+#### Merge semantics
+
+Two deterministic rules, applied per-file as the resolver stacks
+layers:
+
+| Path | Mode | Rationale |
+|---|---|---|
+| `.claude/CLAUDE.md` | **append** with banners | Mirrors Claude Code's native CLAUDE.md walk-up; tenants extend, never overwrite, base guidance. |
+| `memory/**/*.md` | **append** with banners | Memory is cumulative knowledge — additions never erase prior entries. |
+| Everything else (`agents/`, `workflows/`, `.claude/skills/`, `.claude/settings.json`, …) | **last-wins** (file replace) | Predictable per-path override; tenants and repos can fully redefine an agent or workflow. |
+
+Append banners look like `<!-- ─── coro layer: tenant:team-abc ─── -->`
+so the model can see provenance when reading the merged file.
+
+#### Resolver lifecycle
+
+The **intelligence resolver**
+(`packages/runner/src/intelligence/resolver.ts`) runs:
+
+1. **At job start** — materialises base + tenant + (opportunistic) repo
+   overlay into `<workingDir>/<jobId>/_intelligence/`.
+2. **At every phase boundary** — re-resolves idempotently. This is how
+   the repo overlay (`<workingDir>/<repoSlug>/.coro/`) gets picked up:
+   the agent typically clones the target repo during phase 1, so phase
+   2 onward sees the now-present repo `.coro/`.
+
+The runner points all per-job markdown reads (workflow loader, prompt
+builder, subagent loader, filesystem hooks) at the resolved path.
+Process-wide consumers (file watcher, HTTP server) keep reading from
+`settings.paths.coroIntelligenceDir` for now — they are tenant-agnostic
+and Phase 5 covers their migration.
 
 #### Tenant context
 
@@ -56,15 +92,19 @@ Every runner instance carries a `TenantContext`
 which tenant a job belongs to:
 
 - **Solo mode** (legacy Redis monolith + local SQLite deployments)
-  synthesises `solo-<host>` from the OS hostname.
+  synthesises `solo-<host>` from the OS hostname. The local config can
+  attach a `tenant.overlay` source so a single-host solo deployment
+  still benefits from a tenant overlay.
 - **Hybrid mode** derives `team-<teamId>` from the JWT used to
-  authenticate to the cloud control plane.
+  authenticate to the cloud control plane. Phase 4 leaves the
+  cloud-supplied overlay descriptor `undefined`; Phase 5 wires it in
+  via the WebSocket handshake.
 
 The `TenantContext` is attached to the `RunnerContext` at bootstrap and
 to the `ToolContext` per job. The intelligence resolver reads it to
-decide which tenant overlay to apply (Phase 4); MCP tools that write
-back to memory or proposals will use it to route writes to the right
-layer in later phases.
+decide which tenant overlay to apply; MCP tools that write back to
+memory or proposals will use it to route writes to the right layer in
+later phases.
 
 ## How this system works
 
@@ -254,7 +294,11 @@ a5-ai/                                   ← workspace root (will be renamed to 
     │       ├── jobs/                    ← runner.ts, dispatcher.ts, types.ts
     │       ├── clients/                 ← bitbucket, github, git, jira, loki, tempo
     │       ├── prompt/builder.ts
-    │       ├── intelligence/            ← TenantContext + per-job intelligence resolver
+    │       ├── intelligence/            ← Layered intelligence
+    │       │   ├── tenant-context.ts    ← TenantContext (solo / team)
+    │       │   ├── resolver.ts          ← Per-job overlay materialisation
+    │       │   ├── merge.ts             ← Layer merge primitives (replace + append)
+    │       │   └── loaders/             ← localDir, gitRemote, cloudBlob, repo .coro/
     │       ├── runner/                  ← Hybrid + local mode bootstrap (`coro runner start`)
     │       ├── cloud/                   ← Cloud control plane service
     │       ├── state/                   ← Redis / SQLite / Cloud state backends
