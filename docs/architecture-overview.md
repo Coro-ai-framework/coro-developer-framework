@@ -1,63 +1,115 @@
-# AI Agent Platform: High-Level Overview
+# Coro: High-Level Overview
 
-**Audience:** Anyone who wants to understand how the system works  
-**Last updated:** 2026-04-14
+**Audience:** Anyone who wants to understand how the system works
+**Last updated:** 2026-04-26
 
 ---
 
-## What is this?
+## What is Coro?
 
-An internal AI agent platform that automates engineering workflows — currently **generic implementation jobs** in any language plus internal **self-update** jobs for the intelligence layer. New workflows and languages can be added without infrastructure changes.
+Coro is a multi-tenant, plug-and-play AI agent platform for software
+teams. It automates engineering workflows — currently **generic
+implementation jobs** in any language plus internal **self-update**
+jobs for the intelligence layer. New workflows and languages can be
+added without touching the runtime.
 
-The platform uses **Claude** (Anthropic's LLM) as its reasoning engine, driven by a lightweight **Agent Host Service** that manages jobs and tools. The key design principle:
+Coro uses **Claude** (via the Claude Agent SDK) as its reasoning engine,
+driven by a lightweight runner. The key design principle:
 
-> **Markdown files are the intelligence. TypeScript is just the plumbing.**  
-> All workflow logic, decision-making, and accumulated knowledge live in Markdown files. The infrastructure simply runs phases, provides tools, and stores state.
+> **Markdown files are the intelligence. TypeScript is just the plumbing.**
+> All workflow logic, decision-making, and accumulated knowledge live in
+> markdown files. The runner runs phases, provides tools, and stores
+> state.
+
+Coro ships in two deployment shapes:
+
+- **Solo mode** — runner + bundled dashboard + SQLite, all on a single
+  laptop. Zero external dependencies.
+- **Team mode (hybrid)** — local runner per developer plus a shared
+  cloud control plane (Postgres + WebSocket + dashboard).
 
 ---
 
 ## How it works
 
 ```
-  Developer runs CLI command          Jira ticket assigned          BitBucket webhook
-  (a5 job ...)                        to AI agent                   (PR merged, comment, etc.)
-              │                              │                              │
-              └──────────────────────────────┼──────────────────────────────┘
-                                             ▼
-                                    ┌─────────────────┐
-                                    │   Agent Host     │  TypeScript service (always running)
-                                    │   Service        │  Receives triggers, manages jobs
-                                    └────────┬────────┘
-                                             │
-                          ┌──────────────────┼──────────────────┐
-                          ▼                  ▼                  ▼
-                   ┌────────────┐    ┌─────────────┐    ┌─────────────────┐
-                   │   Redis    │    │  Claude SDK  │    │  Markdown Files │
-                   │ Job state  │    │  Runs agents │    │  (the brains)   │
-                   └────────────┘    └─────────────┘    └─────────────────┘
+  CLI / Dashboard           Jira ticket            Webhook (PR merged,
+  (coro job …)              assigned                comment, etc.)
+              │                  │                       │
+              └──────────────────┼───────────────────────┘
+                                 ▼
+                       ┌─────────────────────┐
+                       │   @coro/runner      │  one process per developer
+                       │   (always running)  │  • REST + dashboard server
+                       └────────┬────────────┘  • job runner + MCP tools
+                                │
+              ┌─────────────────┼──────────────────────┐
+              ▼                 ▼                      ▼
+      ┌──────────────┐  ┌────────────────┐  ┌────────────────────────┐
+      │  SQLite or   │  │  Claude Agent  │  │  Layered intelligence  │
+      │  Cloud (WS)  │  │  SDK           │  │  base + tenant + repo  │
+      │  state       │  │  runs phases   │  │  overlays              │
+      └──────────────┘  └────────────────┘  └────────────────────────┘
 ```
 
-1. A **trigger** starts a job — CLI command, Jira ticket, or webhook event.
-2. The Agent Host creates a **Job** and looks up the matching **Workflow** (a Markdown file with YAML config defining the sequence of phases).
-3. For each phase, the Host assembles a lightweight prompt from the workflow, agent instructions, and accumulated memory, then hands it to Claude. Static intelligence (behavior rules, company context, git conventions) is loaded natively by the SDK via `.claude/CLAUDE.md`, and domain knowledge and coding conventions are available as on-demand skills.
-4. Claude executes the phase: reading code, writing code, calling tools (BitBucket, Loki, Jira, etc.), and making decisions.
-5. When a job needs to wait for something external (e.g. a PR review), it **parks** in Redis and resumes automatically when the webhook arrives.
+1. A **trigger** starts a job — CLI command, dashboard form, Jira ticket,
+   or webhook event.
+2. The runner creates a **Job** with a `workflowPath` and looks up the
+   matching **Workflow** (a markdown file with YAML front matter
+   defining phase order, agent assignments, and model selection).
+3. The **intelligence resolver** materialises a per-job overlay from
+   three layers (base → tenant → repo) into
+   `<workingDir>/<jobId>/_intelligence/`.
+4. For each phase, the runner builds a small system prompt from the
+   workflow + agent markdown + job context, and hands it to the
+   Claude Agent SDK. Static intelligence (`.claude/CLAUDE.md`) and
+   skills (`.claude/skills/`) are loaded natively by the SDK.
+5. Claude executes the phase: reading code, writing code, calling MCP
+   tools (Git providers, Loki, Jira, etc.), and making decisions.
+6. When a job needs to wait for something external (e.g. a PR review),
+   it **parks** in state. In solo mode, the runner polls the Git
+   provider; in team mode, the cloud receives the webhook and notifies
+   the runner over WebSocket. Either way, the job resumes automatically.
 
 ---
 
-## The intelligence layer
+## The intelligence layers
 
-All agent behavior is defined in Markdown files, organized into four layers:
+Coro composes agent behaviour from three layers, materialised per-job:
 
-| Layer | What it contains | How it changes |
-|-------|-----------------|----------------|
-| **Always-loaded context** (`.claude/CLAUDE.md`) | Behavior rules, company context, git conventions, infrastructure | Humans edit directly |
-| **Agents** (`agents/`) | Step-by-step procedures for each role (coder, tester, reviewer, etc.) | Agents can propose updates via PR |
-| **Workflows** (`workflows/`) | Phase sequences, agent assignments, model selection | Humans edit directly |
-| **Skills** (`.claude/skills/`) | Domain knowledge (implementation planning and testing) and language conventions (Go, .NET) — invoked on-demand | Agents can propose updates via PR |
-| **Memory** (`memory/`) | Lessons learned from past jobs — pitfalls, successful patterns, PR feedback | Grows automatically, reviewed via PR |
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Repo overlay        <repoCheckout>/.coro/                   │
+├─────────────────────────────────────────────────────────────┤
+│ Tenant overlay      localDir | gitRemote | cloudBlob        │
+├─────────────────────────────────────────────────────────────┤
+│ Base intelligence   @coro/intelligence-base/layer/          │
+└─────────────────────────────────────────────────────────────┘
+```
 
-Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript. It becomes specialized by invoking the relevant skills on-demand during execution.
+| Layer      | What it contains                                                          | Owner               |
+| ---------- | ------------------------------------------------------------------------- | ------------------- |
+| **Base**   | Generic agents, workflows, skills, empty memory templates                 | Coro maintainers    |
+| **Tenant** | Company-specific facts, conventions, accumulated memory                   | The customer team   |
+| **Repo**   | Per-repository overrides (e.g. a custom planner for a specific service)   | The target repo     |
+
+Within each layer:
+
+| Path                            | What it is                                              | How it changes                          |
+| ------------------------------- | ------------------------------------------------------- | --------------------------------------- |
+| `.claude/CLAUDE.md`             | Always-loaded behaviour rules, conventions, context     | Humans edit; layers **append**          |
+| `agents/`                       | Step-by-step procedures for each role                   | Agents can `propose_change`             |
+| `workflows/`                    | Phase sequences, agent assignments, model selection     | Humans edit; layers replace             |
+| `.claude/skills/`               | On-demand domain knowledge and language conventions     | Agents can `propose_change`             |
+| `memory/`                       | Lessons learned from past jobs                          | Grows automatically; reviewed via PR    |
+
+Agents are **generic** — the same coder agent handles Go, .NET, and
+TypeScript. It becomes specialised by invoking the relevant skills on
+demand during execution.
+
+The target repo's own `.claude/` is **not** touched by Coro — Claude
+Code's native walk-up handles it directly when the SDK is rooted in
+the cloned repo.
 
 ---
 
@@ -66,49 +118,82 @@ Agents are **generic** — the same coder agent handles Go, .NET, and TypeScript
 ### Generic implementation job
 
 ```
-[Spec Writing] → Planning → [Code → Review → Test → Evaluate]
+[Spec Writing] → Planning → [Code → Review → Test → Evaluate] → Reporting
 ```
 
-Triggered by CLI or Jira ticket. The planner turns the request into work items, and the runtime loops through coding, review, testing, and evaluation until those work items are done.
+Triggered from the CLI, dashboard, or a Jira ticket. The planner turns
+the request into work items, and the runtime loops through coding,
+review, testing, and evaluation until those work items are done.
 
 ---
 
 ## Key concepts
 
-**Jobs park, not poll.** When a job waits for a PR merge or human review, it saves state to Redis and shuts down. When the webhook arrives, it resumes exactly where it left off. Zero CPU while waiting.
+**Jobs park, not poll.** When a job waits for a PR merge or a developer
+reply, it saves state and ends the SDK query. When the awaited event
+arrives, the runner resumes exactly where it left off. Zero CPU while
+waiting.
 
-**Self-improvement.** Agents record insights during their work. The Evaluator reviews all insights at the end and can propose changes to the Markdown files (memory, skills, agents). Every proposal goes through a PR — humans always approve before changes take effect.
+**Self-improvement.** Agents record insights during their work via
+`add_insight`. The evaluator reviews them at the end and can call
+`propose_change` to suggest updates to memory, skills, or agent
+markdown. **Humans always approve before changes take effect** —
+proposals land as files in solo mode (review locally) or in the cloud
+dashboard in team mode.
 
-**Language-agnostic.** Supporting a new language means adding one convention skill. No infrastructure changes.
+**Language-agnostic.** Supporting a new language means adding one
+convention skill (`.claude/skills/{language}-conventions/SKILL.md`).
+The planner detects the target language from the repo (e.g. `go.mod`
+→ `golang`, `*.csproj` → `dotnet`) and signals it to downstream agents
+via `set_job_params`. No infrastructure changes.
 
-**Two BitBucket accounts.** `@a5-coder-agent` (writes code, opens PRs) and `@a5-reviewer-agent` (reviews, approves, merges). They show up in PRs like normal team members.
+**Multi-tenant by design.** Each runner carries a `TenantContext` —
+`solo-<host>` for laptop deployments, `team-<teamId>` for cloud-backed
+teams — that scopes intelligence overlays, state, and proposals. One
+Coro deployment can serve many isolated tenants.
 
-**Concurrent jobs.** Multiple developers can run workflows simultaneously. Each job has isolated working directories and state.
+**Concurrent jobs.** Multiple developers (or a single developer
+running multiple jobs) can run workflows simultaneously. Each job has
+isolated working directories, its own intelligence overlay, and its
+own state row.
 
 ---
 
 ## Tools available to agents
 
-Agents have access to ~30 domain-specific tools plus standard file/shell operations:
+Agents have access to ~30 domain-specific MCP tools (under the
+`mcp__coro__` prefix) plus the standard SDK file/shell/grep tools:
 
-- **BitBucket** — create repos, open PRs, post reviews, merge
-- **Observability** — query Loki logs and Tempo traces
-- **Jira** — read tickets, post comments, transition issues
-- **Testing** — build services, run comparison tests
-- **Job control** — manage phases, park/resume, escalate to humans
-- **Self-improvement** — record insights, propose changes to agent knowledge
+- **Git provider** — BitBucket and GitHub: create repos, open PRs,
+  post reviews, approve, merge.
+- **Observability** — query Loki logs and Tempo traces.
+- **Jira** — read tickets, post comments, transition issues.
+- **Test harness** — build services, run comparison tests.
+- **Job control** — manage phases, work items, park/resume, escalate
+  to humans.
+- **Self-improvement** — record insights, propose changes to agent
+  knowledge.
 
 ---
 
 ## Deployment
 
-- **Local dev:** Docker Compose (Agent Host + Redis + ngrok for webhooks)
-- **Production:** Kubernetes with managed Redis, stable ingress URL for webhooks
+- **Solo mode (default):** `coro start` boots the runner, serves the
+  dashboard at `http://localhost:3000/dashboard/`, and keeps state in
+  `~/.coro/state.db`. PR events are detected by polling.
+- **Team mode (hybrid):** each developer's runner authenticates to a
+  shared cloud control plane (`@coro/runner`'s `src/cloud/`) over an
+  authenticated WebSocket. Postgres holds team state; webhooks land on
+  the cloud's stable URL and are routed to the right runner.
 
-Moving between environments only requires updating webhook URLs and providing credentials — no code changes.
+The same workflow and agent markdown work in both modes.
 
 ---
 
 ## In one sentence
 
-AI agents — defined entirely in Markdown — autonomously plan, code, test, review, and ship scoped changes through structured workflows, learning and improving from every job they run, with humans always in the approval loop.
+Coro is a multi-tenant AI agent platform — defined entirely in
+markdown — where Claude-powered agents autonomously plan, code, test,
+review, and ship scoped changes through structured workflows, learning
+and improving from every job they run, with humans always in the
+approval loop.

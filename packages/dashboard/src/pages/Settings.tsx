@@ -85,7 +85,7 @@ interface LegacyOauthResponse {
 }
 
 const EMPTY_FORM: SettingsForm = {
-  anthropicMethod: 'apiKey',
+  anthropicMethod: 'claudeLogin',
   apiKey: '',
   oauthToken: '',
   intelligenceDir: '',
@@ -255,7 +255,7 @@ export default function Settings() {
 
       if (data.config) {
         setForm({
-          anthropicMethod: anthropic?.method ?? 'apiKey',
+          anthropicMethod: anthropic?.method ?? 'claudeLogin',
           apiKey: anthropic?.apiKey ?? '',
           oauthToken: anthropic?.oauthToken ?? '',
           intelligenceDir: data.config.intelligence?.dir ?? '',

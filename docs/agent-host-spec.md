@@ -1,359 +1,485 @@
-# Agent Host Service — Technical Specification
+# Coro Runner — Technical Specification
 
-**Audience:** Engineers implementing or maintaining the Agent Host
-**Status:** Specification — not yet implemented
-**Last updated:** 2026-04-01
+**Audience:** Engineers implementing or maintaining `@coro/runner`
+**Status:** Implemented (mid-`0.2.x`)
+**Last updated:** 2026-04-26
 
----
-
-## Purpose
-
-The Agent Host is the always-running service that:
-1. Receives job requests from the CLI
-2. Receives BitBucket webhook events and routes them to the correct running job
-3. Manages the lifecycle of Claude API sessions (job runners)
-4. Persists job state in Redis and on the shared volume
-
-It is intentionally thin. All workflow intelligence lives in the MD files that agents read. The Agent Host is infrastructure — it runs the agents, it doesn't think for them.
+> **Naming note:** earlier drafts of this document called the runner the
+> "Agent Host". The runtime is now packaged as **`@coro/runner`** in the
+> pnpm workspace; the file name is preserved for backwards-compatibility
+> with existing links.
 
 ---
 
-## Technology
+## 1. Purpose
 
-| Choice | Rationale |
-|--------|-----------|
-| TypeScript / Node.js | Consistent with team preference; strong typing for job state |
-| Express.js | Minimal HTTP framework for webhook receiver and CLI API |
-| Redis (ioredis) | Job queue, PR→job mapping, status tracking |
-| Anthropic SDK (`@anthropic-ai/sdk`) | Claude API with tool use support |
-| Docker Compose | Local development stack |
+`@coro/runner` is the always-running process on a developer's machine.
+It is responsible for:
+
+1. Receiving job requests from the `coro` CLI, the bundled dashboard,
+   the cloud control plane (in hybrid mode), and webhook-driven
+   triggers.
+2. Materialising a per-job intelligence overlay (base + tenant + repo).
+3. Driving a Claude Agent SDK `query()` for each phase.
+4. Hosting the in-process MCP server that exposes Coro's domain tools.
+5. Persisting job state in SQLite (local mode) or in cloud Postgres via
+   a WebSocket transport (hybrid mode).
+6. Detecting external events (PR merge, comment, etc.) and resuming
+   parked jobs.
+
+It is intentionally thin. All workflow intelligence lives in markdown
+that the agents read; the runner runs the agents, it doesn't think for
+them.
 
 ---
 
-## Directory Structure
+## 2. Technology
+
+| Choice                                | Rationale                                                                   |
+| ------------------------------------- | --------------------------------------------------------------------------- |
+| TypeScript / Node.js (>= 20)          | Strong typing for job state; ecosystem for SDKs and MCP tooling             |
+| pnpm workspaces                       | Local linking between `@coro/runner`, `@coro/dashboard`, `@coro/intelligence-base` |
+| `@anthropic-ai/claude-agent-sdk`      | Drives the agent; manages the SDK MCP transport                             |
+| Express + `ws`                        | Local REST server, plus WebSocket transport (hybrid mode)                   |
+| `better-sqlite3`                      | Local-mode state (`~/.coro/state.db`)                                       |
+| Drizzle ORM + Postgres                | Cloud control plane state (hybrid mode)                                     |
+| `commander`                           | CLI command parsing                                                         |
+| `pino` + `pino-pretty`                | Structured logging                                                          |
+
+---
+
+## 3. Repository layout
+
+The runner lives in `packages/runner/`:
 
 ```
-tools/
-├── docker-compose.yml
-├── Dockerfile
-├── package.json
+packages/runner/
+├── package.json                ← @coro/runner
 ├── tsconfig.json
-├── .env.example
-├── config/
-│   ├── settings.example.json
-│   └── settings.json              ← gitignored, created by developer
+├── docker-compose.cloud.yml    ← Cloud control plane stack: Postgres + (optional) Redis
+├── cli/                        ← The `coro` CLI
+│   ├── index.ts                ← Top-level program (`coro start`, …)
+│   ├── browser-open.ts         ← Auto-opens dashboard with headless detection
+│   └── commands/               ← start, init, login, job, jobs, status, logs, resume, message, runner
 └── src/
-    ├── index.ts                   ← Entry point: starts HTTP server, connects Redis
-    ├── server.ts                  ← Express app: /webhook, /jobs, /migrate endpoints
-    ├── jobs/
-    │   ├── registry.ts            ← Redis-backed job registry
-    │   ├── dispatcher.ts          ← Routes webhook events to job runners
-    │   ├── runner.ts              ← Core job runner: Claude API session loop
-    │   └── types.ts               ← Job state types and enums
-    ├── prompt/
-    │   ├── builder.ts             ← Assembles system prompts from MD files
-    │   └── tools.ts               ← Tool definitions passed to Claude API
-    ├── clients/
-    │   ├── bitbucket.ts           ← BitBucket REST API client (both service accounts)
-    │   ├── loki.ts                ← Loki HTTP API client
-    │   ├── tempo.ts               ← Tempo HTTP API client
-    │   └── git.ts                 ← Git operations (clone, branch, commit, push)
-    ├── tools/
-    │   └── test-harness.ts        ← HTTP request replay and response diffing
-    └── config/
-        └── settings.ts            ← Loads and validates settings.json + env vars
+    ├── runner/
+    │   ├── index.ts            ← startRunner(): mode dispatch + bootstrap
+    │   ├── server.ts           ← Express server: /dashboard, /jobs, /config, …
+    │   ├── claude-login.ts     ← Claude OAuth login flow used by dashboard
+    │   └── hybrid-dispatcher.ts ← WebSocket-driven cloud job dispatch
+    ├── cloud/                  ← Cloud control plane service
+    │   ├── index.ts            ← Cloud entrypoint
+    │   ├── auth/               ← OAuth + JWT issuance for runner pairing
+    │   ├── routes/             ← /teams, /teams/:id/jobs, /teams/:id/proposals, /webhook
+    │   ├── ws/                 ← gateway + runner registry (WebSocket fan-out)
+    │   └── db/                 ← Drizzle schema + connection
+    ├── jobs/                   ← runner.ts (phase loop), dispatcher.ts, types.ts, creation.ts
+    ├── prompt/builder.ts       ← Phase-scoped system prompt assembly
+    ├── intelligence/           ← Layered intelligence
+    │   ├── tenant-context.ts   ← solo-<host> | team-<teamId>
+    │   ├── resolver.ts         ← Per-job overlay materialisation
+    │   ├── merge.ts            ← Layer merge primitives (replace + append)
+    │   └── loaders/            ← localDir, gitRemote, cloudBlob, repo-coro
+    ├── state/                  ← StateBackend interface + transports
+    │   ├── backend.ts
+    │   ├── sqlite-backend.ts   ← Local mode
+    │   ├── cloud-backend.ts    ← Hybrid mode (over WebSocket)
+    │   ├── redis-backend.ts    ← Legacy single-host shared state
+    │   ├── ws-transport.ts     ← Runner → cloud WebSocket client
+    │   ├── ws-protocol.ts
+    │   ├── polling-transport.ts ← Local-mode PR polling
+    │   └── in-process-transport.ts ← Test transport
+    ├── clients/                ← bitbucket, github, git, jira, loki, tempo
+    ├── tools/self-improvement.ts ← Proposal helpers
+    ├── mcp-server.ts           ← In-process MCP server (Coro domain tools)
+    ├── mcp-handlers.ts         ← Tool handler implementations
+    ├── workflow-parser.ts      ← YAML front-matter + phase config
+    ├── config/                 ← Settings type + LocalConfig schema
+    ├── claude-code-path.ts     ← Resolves bundled Claude Code CLI
+    └── dashboard-dist.ts       ← Resolves built dashboard assets
 ```
+
+The dashboard (`@coro/dashboard`) builds to a static `dist/` and is
+served by the runner from `dashboard-dist.ts`. The base intelligence
+(`@coro/intelligence-base`) is consumed via `getBaseLayerRoot()` and
+mounted as the bottom layer of every per-job overlay.
 
 ---
 
-## HTTP API
+## 4. Deployment modes
 
-### `POST /jobs`
+The runner detects its mode at startup
+(`src/config/local-config.ts → detectMode`):
 
-Submitted by the CLI or dashboard to start a generic implementation job.
+| Mode      | Trigger                                                | State                            | Event delivery                  |
+| --------- | ------------------------------------------------------ | -------------------------------- | ------------------------------- |
+| `local`   | No `cloud.url` / `cloud.token` in config               | SQLite (`~/.coro/state.db`)      | `PollingTransport` polls Git provider |
+| `hybrid`  | `cloud.url` + `cloud.token` present                    | Cloud Postgres via WebSocket     | Cloud forwards webhook events   |
 
-**Request body:**
+Bootstrapping:
+
+- `coro start` → `startRunner()` → either `startLocalRunner()` or
+  `startHybridRunner()`.
+- Both paths build a `Settings` object from `LocalConfig`, ensure the
+  working + intelligence dirs exist, instantiate the right
+  `StateBackend` and `EventTransport`, build the typed API clients,
+  synthesize a `TenantContext`, and start an Express server on the
+  configured port (default `3000`).
+- The Express server is identical in both modes; only the state and
+  transport differ.
+
+---
+
+## 5. Local HTTP API (the runner)
+
+These endpoints are served by every runner — local or hybrid — at the
+configured port (default `3000`). They power the bundled dashboard and
+the `coro` CLI.
+
+| Method | Path                                            | Purpose                                                                           |
+| ------ | ----------------------------------------------- | --------------------------------------------------------------------------------- |
+| GET    | `/health`                                       | Liveness probe                                                                    |
+| POST   | `/jobs`                                         | Submit a new job (CLI / dashboard)                                                |
+| GET    | `/jobs`                                         | List jobs (filtered by status, paginated)                                         |
+| GET    | `/jobs/:jobId`                                  | Get a single job's full state                                                     |
+| GET    | `/jobs/:jobId/stream`                           | Server-Sent Events stream of live logs                                            |
+| GET    | `/jobs/:jobId/artifacts/:artifactId/content`    | Download an artefact body                                                         |
+| POST   | `/jobs/:jobId/resume`                           | Resume a parked or failed job                                                     |
+| POST   | `/jobs/:jobId/message`                          | Send a mid-flight developer message into the running job                          |
+| GET    | `/config`                                       | Read current `LocalConfig` (secrets redacted)                                     |
+| PUT    | `/config`                                       | Patch `LocalConfig` (dashboard preserves redacted values)                         |
+| GET    | `/config/anthropic/claude-login/status`         | Status of an in-progress Claude OAuth login                                       |
+| POST   | `/config/anthropic/claude-login/start`          | Start the Claude Code OAuth login flow                                            |
+| POST   | `/config/anthropic/claude-login/callback`       | Complete the OAuth callback                                                       |
+| POST   | `/config/anthropic/generate-oauth-token`        | Generate a long-lived Claude OAuth token                                          |
+| GET    | `/dashboard/*`                                  | Serve the built dashboard SPA                                                     |
+| GET    | `/`                                             | Redirects to `/dashboard/`                                                        |
+
+### `POST /jobs` request (illustrative)
+
 ```json
 {
   "type": "job",
   "workflowPath": "workflows/job/workflow.md",
-  "repo": "my-service",
-  "serviceName": "my-service",
-  "description": "Add rate limiting to /api/users",
-  "reviewers": ["alice", "bob"],
-  "gitProvider": "bitbucket"
-}
-```
-
-**Response:**
-```json
-{
-  "jobId": "my-service-job-1234",
-  "status": "queued",
-  "streamUrl": "/jobs/my-service-job-1234/stream"
-}
-```
-
-The CLI can connect to `streamUrl` (SSE) to receive real-time log output.
-
-### `GET /jobs`
-
-Returns all active and recent jobs with their current status.
-
-### `GET /jobs/:jobId`
-
-Returns full status and phase breakdown for a specific job.
-
-### `POST /jobs/:jobId/resume`
-
-Resume a job from its last checkpoint (for use after a failure or restart).
-
-### `POST /webhook`
-
-Receives BitBucket webhook events. Validates HMAC signature before processing.
-
----
-
-## Job Lifecycle
-
-### Job states (stored in Redis)
-
-```
-queued → planning → awaiting-plan-approval
-→ coding:{work-item} → awaiting-pr-merge:{work-item}
-→ testing:{work-item} → evaluating:{work-item}
-→ [loops back to coding if needed]
-→ reporting → complete | escalated
-```
-
-### Redis key structure
-
-```
-job:{jobId}                    Hash: full job state
-job:{jobId}:log                List: log lines (for streaming)
-pr:{prId}:job                  String: jobId that owns this PR
-repo:{repoSlug}:jobs           Set: all job IDs that have touched this repo
-```
-
-### Job runner loop
-
-The job runner is the core of the system. It maintains a conversation history with Claude and loops until the job is done:
-
-```typescript
-while (job.phase !== 'complete') {
-  // 1. Pull latest a5-ai MD files
-  await git.pull(settings.paths.a5aiDir)
-
-  // 2. Build system prompt for current phase
-  const systemPrompt = await promptBuilder.build(job)
-  // (assembles CLAUDE.md + workflow.md + agent.md for current phase)
-
-  // 3. Call Claude API with tool use enabled
-  const response = await claude.messages.create({
-    model: selectModel(job.phase),
-    system: systemPrompt,
-    messages: job.conversationHistory,
-    tools: toolDefinitions
-  })
-
-  // 4. Process tool calls
-  for (const toolCall of response.tool_calls) {
-    const result = await tools[toolCall.name](toolCall.input)
-    job.conversationHistory.push({ role: 'tool', content: result })
-  }
-
-  // 5. Persist updated state
-  await redis.hset(`job:${job.id}`, job)
-
-  // 6. Check if phase is complete (agent signals via a special tool call)
-  if (response.phase_complete) {
-    job.phase = nextPhase(job)
-  }
-
-  // 7. If waiting for an external event (PR merge, human approval), park the job
-  if (response.awaiting_event) {
-    job.status = `awaiting-${response.awaiting_event}`
-    await redis.hset(`job:${job.id}`, job)
-    break  // Job resumes when the webhook arrives
+  "params": {
+    "repoSlug": "my-service",
+    "description": "Add rate limiting to /api/users",
+    "reviewers": ["alice", "bob"],
+    "gitProvider": "github"
   }
 }
 ```
 
-### How jobs park and resume
-
-When a job is waiting for a BitBucket event (e.g., PR to be merged), it parks itself:
-
-```
-Job: "I've opened PR #42. Now waiting for it to be merged."
-↓ Job stores: awaiting_event = "pr:fulfilled", pr_id = 42
-↓ Maps: redis SET pr:42:job → my-service-job-1234
-↓ Job runner exits (no CPU usage while waiting)
-
-Later: BitBucket fires pr:fulfilled for PR #42
-↓ Dispatcher: lookup redis GET pr:42:job → my-service-job-1234
-↓ Resume job my-service-job-1234
-↓ Job runner restarts from last checkpoint with webhook payload as new input
-```
+`workflowPath` is resolved against the per-job intelligence overlay,
+not the runner's process-wide intelligence dir.
 
 ---
 
-## Tool Definitions
+## 6. Cloud control plane API (hybrid mode only)
 
-These are the tools the Claude API can call during a job. Each is a TypeScript function in `src/tools/` that the job runner executes.
+The cloud entrypoint is `src/cloud/index.ts` (`@coro/runner`'s `dev:cloud`
+script). It is its own Express server, distinct from the per-developer
+runner:
 
-### File system tools
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read a file from the shared volume |
-| `write_file` | Write a file to the shared volume |
-| `list_directory` | List directory contents |
-| `create_directory` | Create a directory |
+| Method | Path                                | Purpose                                                                           |
+| ------ | ----------------------------------- | --------------------------------------------------------------------------------- |
+| GET    | `/health`                           | Liveness                                                                          |
+| -      | `/auth/*`                           | OAuth login + JWT issuance for runner pairing                                     |
+| -      | `/teams/*`                          | Team CRUD                                                                         |
+| -      | `/teams/:teamId/jobs/*`             | Team-scoped job CRUD; dispatches to the team's connected runner over WebSocket    |
+| -      | `/teams/:teamId/proposals/*`        | Self-improvement proposal review + apply                                          |
+| -      | `/webhook/*`                        | Per-team, HMAC-verified webhook receiver (BitBucket / GitHub)                     |
+| GET    | `/teams/:teamId/runners`            | List currently connected runners for a team                                       |
+| WS     | `/ws/runner`                        | Authenticated WebSocket for runner-cloud state + dispatch                         |
 
-### Git tools
-| Tool | Description |
-|------|-------------|
-| `git_clone` | Clone a repo to the shared volume |
-| `git_checkout_branch` | Create and checkout a new branch |
-| `git_commit` | Stage all changes and commit |
-| `git_push` | Push branch to BitBucket |
-| `git_pull` | Pull latest from remote |
-| `git_get_diff` | Get the current diff as text |
-
-### BitBucket tools
-| Tool | Description | Account used |
-|------|-------------|-------------|
-| `bb_create_repo` | Create a new repository | `a5-coder-agent` |
-| `bb_create_pr` | Open a pull request | `a5-coder-agent` |
-| `bb_get_pr_comments` | Fetch all comments on a PR | `a5-reviewer-agent` |
-| `bb_post_pr_comment` | Post a comment on a PR | `a5-reviewer-agent` |
-| `bb_reply_to_comment` | Reply to a comment thread | `a5-reviewer-agent` |
-| `bb_approve_pr` | Approve a PR | `a5-reviewer-agent` |
-| `bb_merge_pr` | Merge a PR | `a5-reviewer-agent` |
-| `bb_get_pr_status` | Get PR approvals and CI status | `a5-reviewer-agent` |
-
-### Observability tools
-| Tool | Description |
-|------|-------------|
-| `loki_query` | Run a LogQL query against Loki |
-| `tempo_get_trace` | Fetch a trace by ID from Tempo |
-| `tempo_search` | Search traces by service and tags |
-
-### Test harness tools
-| Tool | Description |
-|------|-------------|
-| `run_go_build` | Build the Go service and return any errors |
-| `start_go_service` | Start the Go service on a local port |
-| `stop_go_service` | Stop the running Go service |
-| `compare_request` | Send identical request to two services, return diff |
-
-### Job control tools
-| Tool | Description |
-|------|-------------|
-| `mark_phase_complete` | Signal to the runner that the current phase is done |
-| `await_event` | Park the job waiting for a named BitBucket event |
-| `escalate` | Surface a blocker to the user and pause the job |
-| `log` | Emit a log line visible to the developer watching the job |
+The `RunnerRegistry` (`src/cloud/ws/runner-registry.ts`) tracks live
+connections per team; the `WsGateway` routes job-dispatch and
+event-delivery messages to the right runner.
 
 ---
 
-## Prompt Assembly
+## 7. Job lifecycle
 
-The prompt has two layers:
+### 7.1 State
 
-1. **Natively loaded by the SDK** — The Agent Host passes `settingSources: ['project']` and symlinks `.claude/` into each job's working directory. The SDK discovers `.claude/CLAUDE.md` (always-loaded behavior rules, company context, git conventions, infrastructure) and `.claude/skills/` (on-demand knowledge and conventions) automatically.
-
-2. **Custom system prompt** — The `promptBuilder` assembles a lightweight system prompt from a5-ai MD files. It always pulls the latest git state before building, so merged improvements are immediately reflected.
-
-```typescript
-// Example: building the system prompt for the Coder phase
-const systemPrompt = [
-  readFile('a5-ai/workflows/job/workflow.md'),
-  readFile('a5-ai/agents/planner.md'),
-  readFile('a5-ai/memory/MEMORY.md'),
-  ...loadAllMemoryFiles('a5-ai/memory/'),
-  `## Current job context\n${JSON.stringify(job.context, null, 2)}`
-].join('\n\n---\n\n')
-```
-
-Domain knowledge (e.g. implementation planning or testing guidance) and language conventions (e.g. Go standards) are no longer injected into the system prompt. Agents invoke them on-demand via the `Skill` tool, significantly reducing per-phase token costs.
-
----
-
-## Webhook Event Routing
+Job records carry:
 
 ```
-Incoming webhook → verify HMAC signature → parse event type
-
-pr:created          → check if PR is owned by a job
-                      → activate PR Reviewer job
-
-pr:comment_created  → lookup pr:{prId}:job in Redis
-                      → resume PR Reviewer job with comment payload
-
-pr:approved         → lookup job → check if all required approvers have approved
-                      → if yes: signal PR Reviewer job to proceed with merge
-
-pr:fulfilled        → lookup job → advance to Tester phase
-
-pr:fulfilled        (on a5-ai repo)
-                    → pull latest a5-ai on shared volume
-                    → notify all running jobs that MD files have updated
+id            jobId (e.g. my-service-job-1712123456789)
+type          'job' | 'self-update' | …
+tenantId      'solo-<host>' | 'team-<teamId>'
+workflowPath  string (resolved against the per-job overlay)
+params        free-form bag (repoSlug, description, reviewers, language, …)
+phase         current phase name
+status        'queued' | 'planning' | 'coding' | 'awaiting-pr-merge' |
+              'awaiting-developer-input' | 'complete' | 'escalated' | 'failed' | …
+workItems     ordered list with per-item status + loop count
+currentWorkItem
+prMappings    map of PRs owned by this job
+artefacts     dashboard-renderable outputs (plan-md, pr-link, report-md, …)
+insights      accumulated learnings for the evaluator
+tokenUsage    per-phase usage telemetry
 ```
 
+### 7.2 Typical sequence
+
+```
+queued
+  → planning
+  → awaiting-plan-approval        (interactive checkpoint)
+  → coding:{work-item}
+  → awaiting-pr-merge:{work-item}
+  → testing:{work-item}
+  → evaluation:{work-item}
+  → [loop or advance]
+  → reporting
+  → complete | escalated | failed
+```
+
+### 7.3 Phase loop
+
+Each phase is a single `query()` call to the Claude Agent SDK. The SDK
+manages the full tool-use loop internally. The runner's outer loop
+advances phases based on `PhaseSignals` set by MCP tool handlers.
+
+```ts
+while (!isTerminalStatus(job.status)) {
+  resetSignals(signals)
+  const mcp = createCoroMcpServer(toolCtx, signals)
+
+  await resolveJobIntelligence({ … })      // re-resolve at every phase boundary
+  const systemPrompt = await buildSystemPrompt(job, jobIntelligenceDir, logger)
+
+  for await (const _ of query({
+    prompt: oneShotPromptStream(buildPhaseKickoffMessage(job)),
+    options: {
+      systemPrompt,
+      mcpServers: { coro: mcp },
+      cwd: clonedRepoDir,
+      settingSources: ['project'],
+      // …
+    },
+  })) {
+    // SDK drives tool calls; handlers mutate signals + state via stateBackend
+  }
+
+  job = applyPhaseSignals(job, signals)     // goto_phase, await_event, escalate, complete
+  await stateBackend.saveJob(job)
+  if (signals.parked) break                 // resume happens on event delivery
+}
+```
+
+The job runner does **not** decide work-item boundaries, loop counts,
+or feature-specific logic. Those decisions live in the workflow + agent
+markdown and are surfaced to the runner exclusively via tool calls.
+
+### 7.4 Parking and resumption
+
+When an agent calls `await_event`, the runner sets the awaited event in
+state and ends the SDK query. The slot is freed.
+
+- **Local mode:** `PollingTransport` polls the configured Git provider
+  (BitBucket or GitHub) at a fixed interval (default `60s`) and
+  delivers PR-state changes to parked jobs via the dispatcher.
+- **Hybrid mode:** the cloud's webhook receiver verifies the HMAC,
+  resolves the team and the parked job, and sends a job-resume
+  message to the runner over WebSocket. The runner re-loads the job
+  and resumes the phase loop.
+
+Developer-driven resumption (`coro resume <jobId>`, dashboard "resume"
+button, or `coro message <jobId> <text>`) goes through the same
+dispatcher path.
+
 ---
 
-## Self-Update Flow
+## 8. Intelligence resolution
 
-When an agent writes to `a5-ai/memory/`, `a5-ai/agents/`, or `a5-ai/.claude/` on the shared volume, the Agent Host detects the change (file watcher) and triggers a self-update job:
+Triggered at job start and at every phase boundary
+(`src/intelligence/resolver.ts`):
 
-1. Branch `a5-ai`: `improvement/{description}`
-2. Commit the changed files with a structured message
-3. Open PR on `a5-ai` repo via `@a5-coder-agent`
-4. Activate `@a5-reviewer-agent` on the PR
-5. Wait for human approval and merge
-6. On merge: pull latest, clear file-change flag
+```
+inputs:
+  baseLayerDir        → @coro/intelligence-base/layer/
+  tenantContext       → solo-<host> | team-<teamId> with optional overlay descriptor
+  jobId               → unique job id
+  workingRoot         → settings.paths.workingDir
+  repoCheckoutDir     → derived from job.params.repoSlug (may not yet exist)
+  loaderCacheRoot     → ~/.coro/cache/
 
-This ensures the shared volume's `a5-ai/` checkout is always in sync with the git repo.
+outputs:
+  intelligenceDir     → <workingRoot>/<jobId>/_intelligence/
+```
+
+Layers are merged according to the rules described in
+[architecture.md §4.2](architecture.md#42-merge-rules):
+
+- `.claude/CLAUDE.md` and `memory/**/*.md` are **appended** with
+  provenance banners.
+- All other paths follow **last-wins replace** semantics.
+
+The materialised path is stable across re-resolves (it's a pure
+function of `jobId` + `workingRoot`), so callers can capture
+`jobIntelligenceDir` once and trust per-phase calls to refresh
+contents in place.
 
 ---
 
-## Docker Compose Spec (reference)
+## 9. Prompt assembly
+
+`src/prompt/builder.ts` produces a phase-scoped system prompt from the
+per-job overlay:
+
+1. The workflow markdown referenced by `workflowPath` (front matter
+   stripped).
+2. The agent markdown for the current phase.
+3. Structured current-job context (state JSON, accumulated insights).
+
+`.claude/CLAUDE.md` and `.claude/skills/` are loaded natively by the
+SDK when `settingSources: ['project']` is set and the SDK's `cwd` is
+inside the per-job overlay (or the cloned repo, depending on the
+phase). Skills are invoked on demand by agents — they are not injected
+into the prompt.
+
+The result is a small, focused prompt that does not hard-wire knowledge
+into TypeScript and avoids per-phase token bloat.
+
+---
+
+## 10. MCP domain tools
+
+The in-process MCP server (`src/mcp-server.ts`) is created fresh for
+every phase, sharing the `ToolContext` and `PhaseSignals` objects with
+the runner so handler tool calls are observed immediately.
+
+Tool surface (under the `mcp__coro__` prefix):
+
+| Group                          | Tools                                                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| BitBucket                      | `bb_create_repo`, `bb_create_pr`, `bb_get_pr_status`, `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_reply_to_comment`, `bb_approve_pr`, `bb_merge_pr` |
+| GitHub                         | `gh_create_repo`, `gh_create_pr`, `gh_get_pr_status`, `gh_get_pr_comments`, `gh_post_pr_comment`, `gh_reply_to_comment`, `gh_approve_pr`, `gh_merge_pr` |
+| Test harness                   | `run_go_build`, `start_go_service`, `stop_go_service`, `compare_request`                                             |
+| Observability                  | `loki_query`, `tempo_get_trace`, `tempo_search`                                                                       |
+| Jira                           | `jira_get_issue`, `jira_post_comment`, `jira_transition_issue`                                                        |
+| Job control                    | `set_work_items`, `update_work_item`, `get_work_items`, `request_new_session`, `set_job_params`, `goto_phase`, `await_event`, `escalate`, `log` |
+| Artefacts                      | `post_artifact`, `get_artifacts`                                                                                      |
+| Self-improvement               | `add_insight`, `propose_change`, `list_proposals`, `read_memory`                                                      |
+
+The SDK ships standard built-in tools (Read, Write, Edit, Bash, Glob,
+Grep, Skill, …) which the workflow's per-phase tool allowlist may
+restrict.
+
+---
+
+## 11. State backends
+
+`StateBackend` (`src/state/backend.ts`) is the abstraction every job
+runner code path uses.
+
+| Backend                | When                                          |
+| ---------------------- | --------------------------------------------- |
+| `SqliteStateBackend`   | Local mode (`~/.coro/state.db`)               |
+| `CloudStateBackend`    | Hybrid mode (state ops over WebSocket)        |
+| `RedisStateBackend`    | Legacy / shared single-host deployments       |
+| `InProcessTransport`   | Test transport                                |
+
+The cloud control plane's Postgres schema (Drizzle) backs the cloud
+backend; the runner never talks to Postgres directly.
+
+---
+
+## 12. Working directory
+
+Default: `~/.coro/work/<jobId>/`.
+
+Typical contents:
+
+- `_intelligence/` — the materialised per-job overlay (base + tenant +
+  repo).
+- `<repoSlug>/` — the cloned target repository (where the SDK roots
+  its cwd for code-touching phases).
+- Generated plans, reports, evaluations, and test outputs.
+
+Each job's directory is isolated from every other job's, so concurrent
+runs are safe.
+
+---
+
+## 13. Self-update flow
+
+When an agent calls `propose_change`, the proposal is persisted in
+state with `kind` (memory / skill / agent / workflow), file payloads,
+and a description.
+
+- **Local mode:** the proposal is written to the configured
+  intelligence directory (under a `proposals/` subtree) for human
+  review locally before being committed to the upstream tenant
+  overlay.
+- **Hybrid mode:** the proposal is stored in cloud Postgres and shown
+  in the dashboard's review UI. On approval, the cloud applies the
+  change to the tenant overlay (and, optionally, opens a PR against
+  the overlay's git remote).
+
+In both cases, **proposals never silently mutate live intelligence**.
+Once approved and applied, all subsequent phases pick up the change at
+the next intelligence re-resolve.
+
+---
+
+## 14. CLI surface
+
+Defined in `cli/index.ts`. After `pnpm -r build`, the binary lives at
+`packages/runner/dist/cli/index.js`. Run any command with `--help`.
+
+| Command                                | Purpose                                                                       |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| `coro start [--port N] [--no-open]`    | Boot the runner + dashboard and (by default) open the dashboard in a browser  |
+| `coro init [--local]`                  | Non-interactive first-time configuration (writes `~/.coro/config.json`)       |
+| `coro login`                           | Pair the runner with the cloud control plane (team mode)                      |
+| `coro job …`                           | Submit a new job                                                              |
+| `coro jobs`                            | List recent jobs                                                              |
+| `coro status <jobId>`                  | Show a job's current state and phase                                          |
+| `coro logs <jobId> [--follow]`         | Stream a job's logs                                                           |
+| `coro message <jobId> <text>`          | Send a mid-flight message into a running job                                  |
+| `coro resume <jobId>`                  | Resume a parked or failed job                                                 |
+| `coro runner status` / `runner start`  | Inspect resolved config + mode; alias of `coro start` (back-compat)           |
+
+Auto-open behaviour suppresses the browser when the runner detects a
+headless environment (`CI=true`, `SSH_CONNECTION` set, or a Linux
+desktop with no `DISPLAY`). Override with `--open` (force) or
+`--no-open` (suppress); set `CORO_NO_OPEN=1` to make the suppression
+permanent.
+
+---
+
+## 15. Cloud Compose stack (hybrid mode reference)
+
+The cloud control plane is run separately from the per-developer
+runner. A reference Compose file ships at
+`packages/runner/docker-compose.cloud.yml` and stands up Postgres (and
+optionally Redis) for the cloud entrypoint to consume.
 
 ```yaml
 services:
-  agent-host:
-    build: .
-    ports:
-      - "3000:3000"
-    volumes:
-      - shared-data:/data
-      - ./config/settings.json:/app/config/settings.json:ro
-    env_file:
-      - .env
-    depends_on:
-      - redis
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
-    restart: unless-stopped
-
-  ngrok:
-    image: ngrok/ngrok:latest
-    command: http agent-host:3000
-    ports:
-      - "4040:4040"      # ngrok inspector UI
+  postgres:
+    image: postgres:16-alpine
     environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
-    depends_on:
-      - agent-host
+      POSTGRES_USER: coro
+      POSTGRES_PASSWORD: coro
+      POSTGRES_DB: coro
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
 
 volumes:
-  shared-data:    # working/ and a5-ai/ checkout
-  redis-data:     # Redis persistence
+  pg-data:
 ```
+
+The cloud entrypoint is started with:
+
+```bash
+pnpm --filter @coro/runner dev:cloud
+```
+
+Per-developer runners do **not** require Docker, Postgres, or Redis —
+they boot directly from `coro start` and use SQLite by default.

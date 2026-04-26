@@ -1,154 +1,82 @@
 # Local Development Setup
 
-This guide walks through running the full Coro agent platform locally for
-development and testing of the runner + cloud control plane.
+This guide walks through running Coro locally for development of the
+runner, the dashboard, and (optionally) the cloud control plane.
+
+> If you only want to **use** Coro on your laptop, follow the
+> [README quick start](../README.md#quick-start) instead — it covers
+> the dashboard-driven onboarding (`coro start` → browser auto-opens →
+> finish setup in **Settings**). This document is for engineers
+> hacking on Coro itself.
 
 ## Prerequisites
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| Docker Desktop | Run all services locally | https://docker.com |
-| ngrok | Expose local webhook endpoint to BitBucket | https://ngrok.com |
-| Node.js 20+ | Run the CLI and runner locally | https://nodejs.org |
-| pnpm 9+ | Workspace package manager | `corepack enable` |
-| Git | Clone repos | system |
+| Tool          | Why                                                             | Install                         |
+| ------------- | --------------------------------------------------------------- | ------------------------------- |
+| Node.js 20+   | Runtime for the runner, the dashboard build, and the CLI         | https://nodejs.org              |
+| pnpm 9+       | Workspace package manager                                       | `corepack enable`               |
+| Git           | Cloning target repos and (optionally) tenant overlays           | system                          |
+| Docker        | Optional — only needed for the cloud control plane (Postgres)   | https://docker.com              |
 
-## Overview
-
-The local stack runs three containers (legacy monolith mode):
-
-```
-docker-compose
-├── coro-runner   Port 3000   Legacy agent orchestration service
-├── redis         Port 6379   Job queue and state
-└── ngrok         Port 4040   Tunnel → BitBucket can reach your local webhook
-```
-
-The CLI (`coro`) runs on your machine and talks to `coro-runner` at
-`localhost:3000`.
-
-> **Note:** This guide describes the legacy monolith mode that ships with the
-> repo today. The recommended deployment going forward is hybrid mode (local
-> runner + cloud control plane) or solo local mode (SQLite). See the
-> multi-tenant architecture plan for the desktop-first onboarding flow that
-> replaces most of this manual setup.
+Coro is a pnpm workspace. **Do not use `npm install`** — the runner
+depends on `@coro/intelligence-base` via the `workspace:*` protocol and
+npm crashes mid-install.
 
 ---
 
-## Step 1: Clone and configure
+## Solo (local) mode
+
+Solo mode runs the runner, the dashboard, and SQLite state on a single
+laptop. Zero external dependencies.
+
+### 1. Install and build
 
 ```bash
-# You should already have this repo
-cd a5-ai
-
-# Install workspace dependencies (generates pnpm-lock.yaml)
 pnpm install
-
-# Copy the example settings file
-cp packages/runner/config/settings.example.json packages/runner/config/settings.json
+pnpm -r build      # builds @coro/intelligence-base, @coro/runner, @coro/dashboard
 ```
 
-Edit `packages/runner/config/settings.json` — see the
-[Settings Reference](#settings-reference) below.
-
----
-
-## Step 2: Set credentials
-
-The credentials file is gitignored. Fill it in:
-
-```
-config/credentials.md
-```
-
-All values in that file are read by agents. The runner also reads them at
-startup to configure its API clients.
-
-Alternatively, create `packages/runner/.env` (also gitignored) with the same
-values as environment variables — Docker Compose will load this automatically.
-
-```env
-BITBUCKET_WORKSPACE=a5labs
-BITBUCKET_USERNAME=a5-coder-agent
-BITBUCKET_APP_PASSWORD=your-app-password
-ANTHROPIC_API_KEY=your-claude-api-key
-LOKI_BASE_URL=https://loki.a5labs.internal
-LOKI_API_KEY=your-loki-key
-TEMPO_BASE_URL=https://tempo.a5labs.internal
-TEMPO_API_KEY=your-tempo-key
-REDIS_URL=redis://redis:6379
-WEBHOOK_SECRET=generate-a-random-string
-```
-
----
-
-## Step 3: Configure ngrok
-
-ngrok creates a public HTTPS URL that tunnels to your local `coro-runner`.
-BitBucket uses this URL to send webhook events.
+### 2. Boot the runner
 
 ```bash
-# Authenticate ngrok (one-time, free account works)
-ngrok config add-authtoken YOUR_NGROK_TOKEN
-
-# Or set it in settings.json (see Settings Reference)
+node packages/runner/dist/cli/index.js start
 ```
 
----
+This:
 
-## Step 4: Start the stack
+- starts the runner on `http://localhost:3000`
+- serves the bundled dashboard at `http://localhost:3000/dashboard/`
+- opens the dashboard in your browser (suppressed in headless / CI /
+  SSH; pass `--open` to force, `--no-open` to suppress, or set
+  `CORO_NO_OPEN=1`)
 
-```bash
-cd packages/runner
-docker compose up
-```
+> Tip: install the runner globally with
+> `pnpm --filter @coro/runner exec npm link` (or
+> `npm i -g ./packages/runner` after build) and just run `coro start`.
 
-You will see output like:
+### 3. Configure in the dashboard
 
-```
-coro-runner  | Coro Runner is ready
-coro-runner  | Webhook endpoint: POST /webhook
-redis        | Ready to accept connections
-ngrok        | Tunnel established: https://abc123.ngrok-free.app → localhost:3000
-ngrok        | Webhook URL: https://abc123.ngrok-free.app/webhook
-```
+On first launch the dashboard greets you with a **Welcome to Coro**
+banner and points you to **Settings**. Provide:
 
-The ngrok URL changes every time you restart unless you have a paid ngrok
-account with a static domain.
+- **Anthropic credentials** — API key, OAuth token, or sign in with
+  Claude Code.
+- **Git provider + access token** — for cloning repos and opening PRs
+  (BitBucket, GitHub, or GitLab).
+- **Working directory + intelligence directory** — sensible defaults
+  are pre-filled (`~/.coro/work` and `~/.coro/intelligence`).
 
----
+Hit **Save**. Settings are persisted to `~/.coro/config.json`. You can
+edit them later from the same page or by hand. The schema lives in
+[`packages/runner/src/config/local-config.ts`](../packages/runner/src/config/local-config.ts).
 
-## Step 5: Register webhooks in BitBucket
+### 4. Submit a job
 
-For each repository involved (the .NET source repo, the intelligence repo):
+From the dashboard's **New Job** page, point Coro at a repository and
+describe the change you want. Watch progress live; when the agent is
+done, it opens a PR against your target repo.
 
-1. Go to **Repository Settings → Webhooks → Add webhook**
-2. URL: `https://YOUR-NGROK-URL/webhook`
-3. Secret: the value of `WEBHOOK_SECRET` from your `.env`
-4. Triggers:
-   - Pull Request: Created, Updated, Approved, Fulfilled (merged), Comment created
-
-You only need to do this once per repo. When you move to production, you update
-the URL to the stable K8s ingress.
-
----
-
-## Step 6: Install the CLI
-
-```bash
-cd packages/runner
-pnpm link --global   # makes 'coro' available globally
-```
-
-Test it:
-```bash
-coro --help
-coro status
-```
-
----
-
-## Step 7: Run your first job
+You can also use the CLI:
 
 ```bash
 coro job \
@@ -158,137 +86,203 @@ coro job \
   --workflow workflows/job/workflow.md
 ```
 
-The CLI submits the job to the runner and streams progress. You can close the
-terminal — the job continues running. Check back with:
+The CLI submits the job to the running runner at `localhost:3000` and
+streams progress. You can close the terminal — the job continues
+running. Check back with:
 
 ```bash
-coro status --job my-service-job-1712123456789
+coro status <jobId>
+coro logs <jobId> --follow
 ```
 
 ---
 
-## Shared Volume in Local Development
+## Solo-mode storage
 
-In production, the shared volume is a Kubernetes PersistentVolumeClaim.
-Locally, it is a Docker named volume mapped to `./data/` on your machine:
+Everything Coro produces in solo mode is rooted under `~/.coro/`:
 
 ```
-packages/runner/data/
-├── working/                  ← Per-job state
-│   └── my-service/
-└── coro-intelligence/        ← Checked-out copy of the intelligence repo
+~/.coro/
+├── config.json                     ← LocalConfig (your settings)
+├── state.db                        ← SQLite (jobs, logs, proposals, …)
+├── work/                           ← Per-job working dirs
+│   └── <jobId>/
+│       ├── _intelligence/          ← Materialised per-job intelligence overlay
+│       └── <repoSlug>/             ← Cloned target repo
+├── intelligence/                   ← Your tenant overlay (optional)
+└── cache/
+    └── tenant-overlays/            ← Cached `gitRemote` overlays
 ```
-
-The runner pulls the latest intelligence repo into
-`data/coro-intelligence/` on startup and before each new job phase.
 
 To inspect job state while a job is running:
+
 ```bash
-cat packages/runner/data/working/my-service-job-1712123456789/implementation-plan.md
-cat packages/runner/data/working/my-service-job-1712123456789/test-results/work-item-1.json
+ls ~/.coro/work/<jobId>/_intelligence/
+cat ~/.coro/work/<jobId>/<repoSlug>/implementation-plan.md
+```
+
+To reset:
+
+```bash
+# Stop the runner, then:
+rm ~/.coro/state.db          # wipe job state
+rm -rf ~/.coro/work/         # wipe working dirs
+rm -rf ~/.coro/cache/        # wipe overlay caches
 ```
 
 ---
 
-## Settings Reference
+## Tenant overlay (optional)
 
-`packages/runner/config/settings.json`:
+Solo deployments can pull a tenant-level intelligence overlay (your
+team's customisations layered on top of the base). Add a
+`tenant.overlay` block to `~/.coro/config.json`:
 
 ```jsonc
 {
-  // Runner host (legacy monolith mode)
-  "host": {
-    "port": 3000,
-    "webhookSecret": "",          // Must match BitBucket webhook secret
-    "logLevel": "info"            // debug | info | warn | error
-  },
-
-  // Claude API
-  "claude": {
-    "apiKey": "",                 // Or set ANTHROPIC_API_KEY env var
-    "planningModel": "claude-opus-4-6",    // Used by Analyzer, Planner, Evaluator
-    "codingModel": "claude-sonnet-4-6"     // Used by Coder, Tester, PR Reviewer
-  },
-
-  // BitBucket
-  "bitbucket": {
-    "workspace": "",
-    "coderAccount": {
-      "username": "a5-coder-agent",
-      "appPassword": ""
-    },
-    "reviewerAccount": {
-      "username": "a5-reviewer-agent",
-      "appPassword": ""
-    },
-    "baseUrl": "https://api.bitbucket.org/2.0"
-  },
-
-  // Redis
-  "redis": {
-    "url": "redis://localhost:6379"  // docker-compose uses redis://redis:6379
-  },
-
-  // Shared volume paths
-  "paths": {
-    "workingDir": "./data/working",                    // Per-job state root
-    "coroIntelligenceDir": "./data/coro-intelligence"  // Checked-out intelligence repo
-  },
-
-  // Observability
-  "loki": {
-    "baseUrl": "",
-    "apiKey": ""
-  },
-  "tempo": {
-    "baseUrl": "",
-    "apiKey": ""
-  },
-
-  // ngrok (local only)
-  "ngrok": {
-    "authToken": "",
-    "staticDomain": ""
+  "tenant": {
+    "displayName": "My Team",
+    "overlay": {
+      "kind": "gitRemote",
+      "url":  "git@github.com:my-team/coro-overlay.git",
+      "ref":  "main"
+    }
   }
 }
 ```
 
+Supported `kind`s:
+
+- `localDir` — `{ "kind": "localDir", "path": "/abs/path" }`
+- `gitRemote` — cloned and cached under `~/.coro/cache/tenant-overlays/`
+- `cloudBlob` — `{ "kind": "cloudBlob", "key": "..." }`, served by the
+  cloud control plane in team mode (a no-op in solo mode today)
+
+The tenant overlay is merged on top of the base layer at job start;
+see [architecture.md §4](architecture.md#4-layered-intelligence) for
+the full merge semantics.
+
 ---
 
-## Resetting local state
+## Hybrid (team) mode
+
+Hybrid mode runs each developer's runner locally but delegates state
+to a shared cloud control plane. This is what teams use in production.
+
+### Pair the runner with the cloud
 
 ```bash
-# Stop everything
-docker compose down
-
-# Wipe job state (keeps credentials and settings)
-rm -rf packages/runner/data/working/
-
-# Wipe everything including the intelligence checkout (will re-clone on next start)
-rm -rf packages/runner/data/
-
-# Nuke Redis state
-docker compose down -v
+coro login
 ```
+
+This walks you through OAuth against the cloud control plane and
+writes a `cloud` block to `~/.coro/config.json`:
+
+```jsonc
+{
+  "cloud": {
+    "url":   "https://cloud.example.com",
+    "token": "<runner JWT>"
+  }
+}
+```
+
+On the next `coro start`, the runner detects the cloud config, opens
+an authenticated WebSocket to the cloud, and runs in hybrid mode. The
+dashboard at `localhost:3000/dashboard/` still works; it now reads
+team-scoped state from the cloud.
+
+### Webhooks (cloud side)
+
+Webhooks are **not** registered against your laptop in hybrid mode.
+Instead, the cloud's stable webhook URL receives BitBucket / GitHub
+events; the cloud verifies the per-team HMAC and forwards events to
+the right runner over WebSocket. Set webhook URLs per repo in your
+git provider:
+
+```
+URL:    https://cloud.example.com/webhook/<provider>?team=<teamSlug>
+Secret: <per-team webhook secret>
+Events: PR Created, Updated, Approved, Merged, Comment created
+```
+
+### Cloud control plane (developing it)
+
+If you're hacking on the cloud server itself
+(`packages/runner/src/cloud/`), bring up Postgres and run the cloud
+entrypoint:
+
+```bash
+docker compose -f packages/runner/docker-compose.cloud.yml up -d
+pnpm --filter @coro/runner dev:cloud
+```
+
+Then point a runner at `http://localhost:8080` (the default cloud
+port) using a JWT minted by the cloud's `/auth` flow.
+
+---
+
+## Developing the dashboard
+
+The runner serves the **built** dashboard at `/dashboard/`. While
+iterating, run Vite separately for HMR:
+
+```bash
+# Terminal 1
+pnpm --filter @coro/runner dev          # runner on :3000
+
+# Terminal 2
+pnpm --filter @coro/dashboard dev       # Vite dev server, default :5173,
+                                        # proxies API calls to localhost:3000
+```
+
+To override the production dashboard path the runner serves, set
+`CORO_DASHBOARD_DIST=/abs/path/to/dist` before launching it.
+
+---
+
+## Useful root scripts
+
+Defined in `package.json` at the workspace root:
+
+| Command              | What it does                                                          |
+| -------------------- | --------------------------------------------------------------------- |
+| `pnpm build`         | Build every package                                                   |
+| `pnpm typecheck`     | Typecheck every package                                               |
+| `pnpm test`          | Run every package's `test` script                                     |
+| `pnpm start`         | Build-aware: launch the runner + dashboard (same as `coro start`)     |
+| `pnpm dev`           | Run the runner from source via `tsx` (no build step) — auto-reload    |
+| `pnpm dev:cloud`     | Start the cloud control plane (Postgres required)                     |
+| `pnpm dev:dashboard` | Start the Vite dev server for the dashboard                           |
+| `pnpm clean`         | Remove `dist/` and `node_modules/` everywhere                         |
 
 ---
 
 ## Troubleshooting
 
-**Webhooks not arriving:**
-- Check ngrok dashboard at `http://localhost:4040` — it shows all incoming requests
-- Verify the webhook URL in BitBucket matches the current ngrok URL
-- Verify `WEBHOOK_SECRET` matches between `.env` and the BitBucket webhook config
+**Dashboard doesn't open automatically:**
+- Coro suppresses auto-open in headless / CI / SSH environments. Pass
+  `coro start --open` to force, or browse to
+  `http://localhost:3000/dashboard/` yourself.
 
-**Agent not finding credentials:**
-- Check `config/credentials.md` is populated
-- Or check `packages/runner/.env` has the environment variables set
+**`Cannot read properties of null (reading 'matches')` during install:**
+- You used `npm install`. Coro is a pnpm workspace. Use `pnpm install`.
 
 **Job stuck or lost:**
-- Check job state: `cat packages/runner/data/working/{job-id}/job.md`
-- Check Redis: `docker exec -it coro-runner-redis redis-cli keys '*'`
-- Restart the job from the last checkpoint: `coro resume --job {job-id}`
+- Check job state: `coro status <jobId>` or open the job in the
+  dashboard.
+- Inspect the working dir: `ls ~/.coro/work/<jobId>/`
+- Force-resume: `coro resume <jobId>`
 
-**BitBucket API rate limits:**
-- The runner has built-in rate limiting. If you hit limits, jobs pause and
-  retry automatically.
+**Runner can't pair with the cloud:**
+- Verify the cloud URL is reachable from your machine.
+- Re-run `coro login` to mint a fresh JWT.
+- Check `~/.coro/config.json` contains the `cloud` block with both
+  `url` and `token`.
+
+**`tenant.overlay` not loading:**
+- For `localDir`, the `path` must be absolute and exist.
+- For `gitRemote`, the runner clones into
+  `~/.coro/cache/tenant-overlays/<tenantId>/`. Delete that directory
+  to force a fresh clone, or run with `LOG_LEVEL=debug` to see the
+  loader's decisions.
