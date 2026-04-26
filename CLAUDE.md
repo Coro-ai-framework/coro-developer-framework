@@ -88,10 +88,10 @@ Every runner instance carries a `TenantContext`
 (`packages/runner/src/intelligence/tenant-context.ts`) that identifies
 which tenant a job belongs to:
 
-- **Solo mode** (legacy Redis monolith + local SQLite deployments)
-  synthesises `solo-<host>` from the OS hostname. The local config can
-  attach a `tenant.overlay` source so a single-host solo deployment
-  still benefits from a tenant overlay.
+- **Local mode** (single-host SQLite + polling) synthesises `solo-<host>`
+  from the OS hostname. The local config can attach a `tenant.overlay`
+  source so a single-host solo deployment still benefits from a tenant
+  overlay.
 - **Hybrid mode** derives `team-<teamId>` from the JWT used to
   authenticate to the cloud control plane. Phase 4 leaves the
   cloud-supplied overlay descriptor `undefined`; Phase 5 wires it in
@@ -265,23 +265,20 @@ a5-ai/                                   ← workspace root (will be renamed to 
     │       ├── workflows/               ← Generic workflow phase definitions
     │       └── memory/                  ← Empty memory templates (tenants populate)
     ├── runner/                          ← Coro Runner (TypeScript/Node.js)
-    │   ├── docker-compose.yml           ← Local legacy stack: runner + redis + ngrok
     │   ├── docker-compose.cloud.yml     ← Cloud control plane stack: postgres + redis
-    │   ├── Dockerfile
     │   ├── package.json                 ← @coro/runner
     │   ├── tsconfig.json
-    │   ├── config/settings.example.json
     │   ├── cli/                         ← The `coro` CLI
-    │   │   ├── index.ts
-    │   │   └── commands/                ← job, login, init, runner, logs, status, ...
+    │   │   ├── index.ts                 ← Top-level program (`coro start`, …)
+    │   │   ├── browser-open.ts          ← Auto-opens dashboard with headless detection
+    │   │   └── commands/                ← start, job, login, init, runner, logs, status, …
     │   └── src/
-    │       ├── index.ts                 ← Legacy monolith entry point
-    │       ├── server.ts                ← HTTP: /jobs, /webhook, SSE
+    │       ├── dashboard-dist.ts        ← Resolves built dashboard assets (shared helper)
+    │       ├── claude-code-path.ts      ← Resolves bundled Claude Code CLI
     │       ├── mcp-server.ts            ← In-process MCP server (Coro domain tools)
     │       ├── mcp-handlers.ts
-    │       ├── watcher.ts               ← Self-improvement file watcher
     │       ├── workflow-parser.ts
-    │       ├── config/                  ← settings.ts, local-config.ts
+    │       ├── config/                  ← settings.ts (types only), local-config.ts
     │       ├── jobs/                    ← runner.ts, dispatcher.ts, types.ts
     │       ├── clients/                 ← bitbucket, github, git, jira, loki, tempo
     │       ├── prompt/builder.ts
@@ -290,9 +287,13 @@ a5-ai/                                   ← workspace root (will be renamed to 
     │       │   ├── resolver.ts          ← Per-job overlay materialisation
     │       │   ├── merge.ts             ← Layer merge primitives (replace + append)
     │       │   └── loaders/             ← localDir, gitRemote, cloudBlob, repo .coro/
-    │       ├── runner/                  ← Hybrid + local mode bootstrap (`coro runner start`)
+    │       ├── runner/                  ← Local + hybrid bootstrap (`coro start`)
+    │       │   ├── index.ts             ← startRunner(): mode dispatch + bootstrap
+    │       │   ├── server.ts            ← Express server: /dashboard, /jobs, /config, …
+    │       │   ├── claude-login.ts      ← Claude OAuth login flow used by dashboard
+    │       │   └── hybrid-dispatcher.ts ← WebSocket-driven cloud job dispatch
     │       ├── cloud/                   ← Cloud control plane service
-    │       ├── state/                   ← Redis / SQLite / Cloud state backends
+    │       ├── state/                   ← SQLite (local) and cloud-backed (hybrid) state backends
     │       └── tools/                   ← MCP tool implementations
     └── dashboard/                       ← Coro Dashboard (React + Vite)
         ├── package.json                 ← @coro/dashboard

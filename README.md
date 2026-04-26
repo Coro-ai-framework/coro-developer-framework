@@ -256,8 +256,7 @@ pnpm --filter @coro/runner build
 pnpm --filter @coro/runner typecheck
 
 # Run from built JS (after `pnpm --filter @coro/runner build`)
-pnpm --filter @coro/runner start         # primary: dashboard-first runner
-pnpm --filter @coro/runner start:legacy  # advanced: Redis-monolith mode
+pnpm --filter @coro/runner start         # boots `coro start` (runner + dashboard)
 
 # Develop with auto-reload (no build, runs via tsx)
 pnpm --filter @coro/runner dev           # primary dashboard-first runner
@@ -276,7 +275,7 @@ Key directories:
 - `src/jobs/` — job lifecycle, phase loop, intelligence resolution per phase
 - `src/intelligence/` — resolver, layer-merge primitives, tenant/repo loaders
 - `src/tools/` — MCP tool implementations (`coro__*`)
-- `src/state/` — SQLite (solo) and Redis (legacy/hybrid) state backends
+- `src/state/` — SQLite (local) and cloud-backed (hybrid) state backends
 - `cli/` — `coro` commands
 
 ### Dashboard (`@coro/dashboard`)
@@ -434,9 +433,6 @@ to solo mode and skipped in CI defaults.
 users can install Coro by downloading one app.
 - **CLI install:** publish a single `npm i -g @coro/cli` once the workspace
 separation has settled.
-- **Legacy monolith retirement:** remove the `packages/runner/src/index.ts`
-bootstrap (and its file watcher / Redis assumptions) now that solo and
-hybrid modes cover all use cases.
 
 For a developer-oriented deep dive on the architecture (intelligence
 resolver, MCP tool wiring, tenant context, runner modes), read

@@ -1,14 +1,12 @@
-# Credentials and local config — never commit these
+# Credentials — never commit these
 .env
 .env.cloud
-config/settings.json
 
-# Local job state and a5-ai checkout on the shared volume
+# Local job state and any per-package data dirs
 data/
 
 # Build output
 dist/
-dashboard/dist/
 
 # Dependencies
 node_modules/
