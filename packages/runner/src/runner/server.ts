@@ -16,11 +16,14 @@ import type { Dispatcher } from '../jobs/dispatcher'
 import type { StateBackend } from '../state/backend'
 import {
   loadLocalConfig,
+  loadLocalConfigRaw,
   saveLocalConfig,
+  validateLocalConfig,
   defaultConfigPath,
   detectMode,
   resolveIntelligenceDir,
   resolveWorkingDir as resolveLocalWorkingDir,
+  type LocalConfig,
 } from '../config/local-config'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
@@ -45,6 +48,56 @@ function redactSecret(value: string | undefined | null): string {
 /** The dashboard echoes redacted values back on submit; treat `...` as "unchanged". */
 function isRedacted(value: unknown): boolean {
   return typeof value === 'string' && value.includes('...')
+}
+
+/**
+ * Strip nested objects whose required fields are missing/empty.
+ *
+ * The dashboard sends `{ intelligence: { dir: undefined }, paths: { workingDir: undefined } }`
+ * when those fields are blank. If we wrote that as-is, the next read would
+ * fail zod validation and every `/config` call afterwards would 500.
+ *
+ * Rule: an optional sub-object should be dropped entirely if it has no
+ * meaningful content. The top-level shape stays a `LocalConfig`.
+ */
+function pruneEmptyConfigSections(config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...config }
+
+  const intelligence = out.intelligence as { dir?: unknown; gitRemote?: unknown } | undefined
+  if (intelligence) {
+    const hasDir = typeof intelligence.dir === 'string' && intelligence.dir.length > 0
+    const hasRemote = typeof intelligence.gitRemote === 'string' && intelligence.gitRemote.length > 0
+    if (!hasDir && !hasRemote) delete out.intelligence
+    else if (!hasDir) {
+      // gitRemote alone isn't enough — schema requires `dir`. Keep neither.
+      delete out.intelligence
+    }
+  }
+
+  const paths = out.paths as { workingDir?: unknown } | undefined
+  if (paths) {
+    const hasWorkingDir = typeof paths.workingDir === 'string' && paths.workingDir.length > 0
+    if (!hasWorkingDir) delete out.paths
+  }
+
+  const git = out.git as
+    | { provider?: unknown; username?: unknown; token?: unknown; workspace?: unknown }
+    | undefined
+  if (git) {
+    const hasProvider = typeof git.provider === 'string' && git.provider.length > 0
+    const hasUsername = typeof git.username === 'string' && git.username.length > 0
+    const hasToken = typeof git.token === 'string' && git.token.length > 0
+    if (!hasProvider || !hasUsername || !hasToken) delete out.git
+  }
+
+  const cloud = out.cloud as { url?: unknown; token?: unknown } | undefined
+  if (cloud) {
+    const hasUrl = typeof cloud.url === 'string' && cloud.url.length > 0
+    const hasToken = typeof cloud.token === 'string' && cloud.token.length > 0
+    if (!hasUrl || !hasToken) delete out.cloud
+  }
+
+  return out
 }
 
 /**
@@ -385,8 +438,31 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   app.get('/config', (_req: Request, res: Response) => {
     try {
-      const config = loadLocalConfig()
       const configPath = defaultConfigPath()
+      const result = loadLocalConfigRaw()
+
+      // If the on-disk file is malformed (e.g. an older save wrote an empty
+      // sub-object that the current schema rejects), surface it as data
+      // rather than a 500. The dashboard can then render the offending
+      // file alongside an "Invalid config — please re-save" banner instead
+      // of a generic error toast.
+      if (result.kind === 'invalid') {
+        logger.warn(
+          { configPath, error: result.error.message },
+          'Local config is invalid — returning raw payload to dashboard for repair',
+        )
+        res.json({
+          config: null,
+          configPath,
+          mode: 'local',
+          resolved: null,
+          configError: result.error.message,
+          rawConfig: result.raw,
+        })
+        return
+      }
+
+      const config = result.kind === 'ok' ? result.config : null
       const detected = detectMode(config)
 
       // Redact sensitive fields for display. Both apiKey and oauthToken need
@@ -434,8 +510,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       // Load existing, merge, save. The placeholder apiKey keeps zod's refine
       // happy when no real credential has been written yet; real writes below
       // overwrite it before save.
-      const existing = loadLocalConfig() ?? { anthropic: { method: 'apiKey' as const, apiKey: '' } }
-      const merged = { ...existing }
+      //
+      // We use loadLocalConfigRaw() so a previously corrupt file doesn't block
+      // the save: if the on-disk JSON fails schema validation, we treat the
+      // existing state as empty and let the user overwrite it cleanly.
+      const existingResult = loadLocalConfigRaw()
+      const existing: LocalConfig =
+        existingResult.kind === 'ok'
+          ? existingResult.config
+          : { anthropic: { method: 'apiKey' as const, apiKey: '' } }
+      const merged: LocalConfig = { ...existing }
 
       // Update anthropic auth. The UI sends a discriminated object with
       // `method` plus whichever field belongs to that method. We never trust
@@ -496,7 +580,23 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         delete (merged as Record<string, unknown>).cloud
       }
 
-      saveLocalConfig(merged)
+      // Drop empty sub-objects (e.g. `{ paths: {}, intelligence: {} }`) so the
+      // file we write back will round-trip through the schema on next read.
+      const pruned = pruneEmptyConfigSections(merged as Record<string, unknown>)
+
+      // Validate before writing. Fail-fast with a 400 carrying the field-level
+      // zod error rather than writing garbage that would break later reads.
+      const validation = validateLocalConfig(pruned)
+      if (!validation.success) {
+        logger.warn({ issues: validation.issues }, 'Rejecting invalid config from dashboard')
+        res.status(400).json({
+          error: 'Invalid configuration',
+          issues: validation.issues,
+        })
+        return
+      }
+
+      saveLocalConfig(validation.config)
       logger.info('Configuration updated via dashboard')
       res.json({ saved: true, configPath: defaultConfigPath() })
     } catch (err) {

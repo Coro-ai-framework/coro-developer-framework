@@ -151,7 +151,9 @@ export function defaultLoaderCacheRoot(): string {
 
 /**
  * Load config from the given path (default: ~/.coro/config.json).
- * Returns null if the file doesn't exist. Throws on invalid content.
+ * Returns null if the file doesn't exist. Throws on invalid content —
+ * callers that need to recover from a corrupt file should use
+ * `loadLocalConfigRaw` instead.
  */
 export function loadLocalConfig(configPath?: string): LocalConfig | null {
   const p = configPath ?? defaultConfigPath()
@@ -159,6 +161,58 @@ export function loadLocalConfig(configPath?: string): LocalConfig | null {
 
   const raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
   return localConfigSchema.parse(raw)
+}
+
+/**
+ * Resilient variant of `loadLocalConfig` that distinguishes "file missing"
+ * from "file present but malformed". Used by the HTTP API so a bad save
+ * from a previous session doesn't permanently 500 the dashboard — instead
+ * the dashboard can render the offending payload alongside a "please
+ * re-save" banner and the next valid PUT overwrites it cleanly.
+ */
+export type LoadLocalConfigResult =
+  | { kind: 'missing' }
+  | { kind: 'ok'; config: LocalConfig }
+  | { kind: 'invalid'; raw: unknown; error: Error }
+
+export function loadLocalConfigRaw(configPath?: string): LoadLocalConfigResult {
+  const p = configPath ?? defaultConfigPath()
+  if (!fs.existsSync(p)) return { kind: 'missing' }
+
+  let raw: unknown
+  try {
+    raw = JSON.parse(fs.readFileSync(p, 'utf-8'))
+  } catch (err) {
+    return { kind: 'invalid', raw: null, error: err as Error }
+  }
+
+  const parsed = localConfigSchema.safeParse(raw)
+  if (parsed.success) return { kind: 'ok', config: parsed.data }
+  return { kind: 'invalid', raw, error: new Error(parsed.error.message) }
+}
+
+/**
+ * Validate a candidate config without touching the filesystem.
+ *
+ * Returns either a fully-typed `LocalConfig` (after zod has applied
+ * defaults/coercion) or a list of human-readable issues. Used by the
+ * `PUT /config` handler to fail-fast with a 400 rather than writing a
+ * payload that would break subsequent reads.
+ */
+export type ValidateLocalConfigResult =
+  | { success: true; config: LocalConfig }
+  | { success: false; issues: { path: string; message: string }[] }
+
+export function validateLocalConfig(candidate: unknown): ValidateLocalConfigResult {
+  const parsed = localConfigSchema.safeParse(candidate)
+  if (parsed.success) return { success: true, config: parsed.data }
+  return {
+    success: false,
+    issues: parsed.error.issues.map(i => ({
+      path: i.path.join('.') || '(root)',
+      message: i.message,
+    })),
+  }
 }
 
 /**
