@@ -1,12 +1,12 @@
-// ── Hybrid Runner Entry Point ─────────────────────────────────────────────────
+// ── Coro Runner Entry Point ───────────────────────────────────────────────────
 //
-// Standalone process that runs agent jobs locally while delegating state to the
-// cloud control plane via WebSocket (hybrid mode) or storing state locally in
-// SQLite (local mode). Falls back to legacy monolith when REDIS_URL is present.
+// Standalone process that runs agent jobs locally and either:
+//   • delegates state to the cloud control plane via WebSocket (hybrid mode), or
+//   • keeps state locally in SQLite (local mode, the default for solo developers).
 //
 // Usage:
-//   coro runner start                     # reads ~/.coro/config.json
-//   coro runner start --config ./my.json  # custom config path
+//   coro start                     # reads ~/.coro/config.json
+//   coro start --config ./my.json  # custom config path
 //
 // The runner:
 //   1. Reads local config to determine deployment mode
@@ -94,9 +94,10 @@ export interface RunnerOptions {
 // ── Build Settings from LocalConfig ──────────────────────────────────────────
 
 /**
- * Build a Settings object from LocalConfig. In hybrid mode, not all legacy
- * settings are needed — the runner only uses Anthropic API key, git credentials,
- * intelligence dir, and working dir. Cloud state replaces Redis.
+ * Build the in-memory `Settings` object that the runner hands to its API
+ * clients (BitBucket, GitHub, Loki, …) and the job runner. We synthesise it
+ * from `LocalConfig`; legacy disk-based settings.json loading was removed
+ * along with the Redis monolith.
  */
 function buildSettingsFromLocal(config: LocalConfig): Settings {
   const intelligenceDir = resolveIntelligenceDir(config)
@@ -104,8 +105,8 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
 
   return {
     host: {
-      port: 0,             // Not used in hybrid mode — no local HTTP server for the monolith
-      webhookSecret: '',    // Webhooks handled by cloud
+      port: 0,
+      webhookSecret: '',
       logLevel: process.env.LOG_LEVEL ?? 'info',
     },
     claude: {
@@ -138,7 +139,7 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       baseUrl: process.env.GITHUB_API_BASE_URL ?? 'https://api.github.com',
     },
     redis: {
-      url: '',  // Not used in hybrid mode
+      url: '',  // Reserved for future cloud-worker use; unused in local + hybrid modes.
     },
     paths: {
       workingDir,
@@ -433,9 +434,8 @@ export async function startRunner(options: RunnerOptions = {}): Promise<void> {
 
     case 'local': {
       if (!config) {
-        // No config at all — create minimal config to get started
         logger.info('No config found — using defaults for local mode')
-        logger.info('Run `coro init --local` to customise settings')
+        logger.info('Open the dashboard to configure Claude credentials and Git, or run `coro init --local`')
       }
 
       const localPort = options.port ?? 3000
@@ -456,15 +456,6 @@ export async function startRunner(options: RunnerOptions = {}): Promise<void> {
 
       // Keep process alive
       await new Promise(() => {})
-      break
-    }
-
-    case 'legacy': {
-      // Legacy mode: redirect to the existing monolith entry point
-      logger.info('Legacy mode detected — starting monolith agent host')
-      logger.info('To switch to hybrid mode, run: coro login && coro init')
-      // Dynamically import to avoid loading all monolith dependencies
-      await import('../index')
       break
     }
   }

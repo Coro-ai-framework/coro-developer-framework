@@ -108,22 +108,15 @@ export type LocalConfig = z.infer<typeof localConfigSchema>
 
 // ── Deployment mode ──────────────────────────────────────────────────────────
 
-export type DeploymentMode = 'hybrid' | 'local' | 'legacy'
+export type DeploymentMode = 'hybrid' | 'local'
 
 /**
  * Determine deployment mode from config:
- * - hybrid: cloud URL + token present → runner connects to cloud
- * - local: no cloud config → SQLite + polling (Phase 5)
- * - legacy: env vars for Redis/settings.json present → monolith mode
+ *   - hybrid: cloud URL + token present → runner connects to cloud
+ *   - local:  everything else → SQLite + polling on the developer's machine
  */
 export function detectMode(config: LocalConfig | null): DeploymentMode {
-  // If no local config exists but REDIS_URL or SETTINGS_PATH is set, we're legacy
-  if (!config) {
-    if (process.env.REDIS_URL || process.env.SETTINGS_PATH) return 'legacy'
-    return 'local'
-  }
-
-  if (config.cloud?.url && config.cloud?.token) return 'hybrid'
+  if (config?.cloud?.url && config.cloud.token) return 'hybrid'
   return 'local'
 }
 

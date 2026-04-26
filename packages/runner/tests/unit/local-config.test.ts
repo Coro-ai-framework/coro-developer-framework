@@ -88,28 +88,10 @@ describe('local-config', () => {
       expect(detectMode({ anthropic: { method: 'apiKey', apiKey: 'sk-test' } })).toBe('local')
     })
 
-    it('returns local when config is null and no env vars', () => {
-      const origRedis = process.env.REDIS_URL
-      const origSettings = process.env.SETTINGS_PATH
-      delete process.env.REDIS_URL
-      delete process.env.SETTINGS_PATH
-      try {
-        expect(detectMode(null)).toBe('local')
-      } finally {
-        if (origRedis !== undefined) process.env.REDIS_URL = origRedis
-        if (origSettings !== undefined) process.env.SETTINGS_PATH = origSettings
-      }
-    })
-
-    it('returns legacy when config is null but REDIS_URL is set', () => {
-      const orig = process.env.REDIS_URL
-      process.env.REDIS_URL = 'redis://localhost:6379'
-      try {
-        expect(detectMode(null)).toBe('legacy')
-      } finally {
-        if (orig !== undefined) process.env.REDIS_URL = orig
-        else delete process.env.REDIS_URL
-      }
+    it('returns local when config is null', () => {
+      // Env vars (REDIS_URL etc.) are intentionally ignored — there is no
+      // longer a legacy Redis-monolith fallback.
+      expect(detectMode(null)).toBe('local')
     })
   })
 

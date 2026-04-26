@@ -8,7 +8,6 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/index.ts', 'src/openapi.ts'],
       reporter: ['text', 'text-summary'],
     },
     testTimeout: 10_000,

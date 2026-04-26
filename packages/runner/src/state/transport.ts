@@ -6,9 +6,9 @@ import type { InboundEvent, OutboundEvent } from './events'
 // and how the runner reports state back to the control plane.
 //
 // Implementations:
-//   InProcessTransport   — direct in-process delivery (current monolith)
-//   WebSocketTransport   — cloud control plane relay (Phase 3)
-//   PollingTransport     — poll external APIs for events (Phase 5)
+//   InProcessTransport   — direct in-process delivery (local mode)
+//   WebSocketTransport   — cloud control plane relay (hybrid mode)
+//   PollingTransport     — poll external APIs for events (local mode)
 
 export interface EventTransport {
 

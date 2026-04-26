@@ -1,9 +1,10 @@
 // ── Runner Local HTTP Server ──────────────────────────────────────────────────
 //
-// A lightweight Express server that runs on the developer's machine when the
-// runner is in hybrid mode. This provides a REST API for CLI commands to
-// dispatch jobs, check status, and stream logs — same interface as the legacy
-// monolith but backed by the cloud StateBackend.
+// A lightweight Express server that runs on the developer's machine. It serves
+// the dashboard at `/dashboard/` and exposes a REST API for CLI commands and
+// the dashboard to dispatch jobs, check status, stream logs, and edit
+// configuration. State is backed by either the cloud (hybrid mode) or local
+// SQLite (local mode) — the server is identical in both cases.
 
 import express, { Request, Response } from 'express'
 import http from 'http'
@@ -23,6 +24,7 @@ import {
 } from '../config/local-config'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
+import { resolveDashboardDist } from '../dashboard-dist'
 import { ClaudeLoginManager } from './claude-login'
 
 export interface RunnerServerOptions {
@@ -154,40 +156,6 @@ function detectSetupTokenForceFlag(cliCmd: string, cliArgs: string[], logger: Lo
     logger.warn({ err }, 'Could not probe setup-token force flags; using default invocation')
     return null
   }
-}
-
-/**
- * Resolve the dashboard's built static-asset directory.
- *
- * Order of preference:
- *   1. `CORO_DASHBOARD_DIST` env var (operator override, e.g. for prod images).
- *   2. `<runnerPackageRoot>/../dashboard/dist` (the pnpm-workspace layout).
- *
- * Returns `null` if no build is found so callers can serve a friendly 503
- * instead of crashing on startup.
- */
-function resolveDashboardDist(logger: Logger): string | null {
-  const fromEnv = process.env.CORO_DASHBOARD_DIST
-  if (fromEnv && fs.existsSync(path.join(fromEnv, 'index.html'))) return fromEnv
-
-  // `__dirname` is either `<root>/packages/runner/src/runner` (tsx/dev)
-  // or `<root>/packages/runner/dist/src/runner` (compiled). In both cases
-  // walking up to `packages/runner/` and then to the sibling dashboard pkg
-  // gives the correct path.
-  const candidates = [
-    path.resolve(__dirname, '../../../dashboard/dist'),     // dev: src/runner -> packages/dashboard/dist
-    path.resolve(__dirname, '../../../../dashboard/dist'),  // built: dist/src/runner -> packages/dashboard/dist
-  ]
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(path.join(candidate, 'index.html'))) return candidate
-  }
-
-  logger.warn(
-    { candidates },
-    'Dashboard build not found; /dashboard will return 503. Run `pnpm --filter @coro/dashboard build`.',
-  )
-  return null
 }
 
 /** Best-effort MIME type inference for the artefact-content endpoint. */

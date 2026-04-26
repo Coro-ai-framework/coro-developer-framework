@@ -233,15 +233,17 @@ pnpm -r typecheck   # verifies types across the workspace
 Useful root scripts (defined in `[package.json](package.json)`):
 
 
-| Command              | What it does                                      |
-| -------------------- | ------------------------------------------------- |
-| `pnpm build`         | Build every package                               |
-| `pnpm typecheck`     | Typecheck every package                           |
-| `pnpm test`          | Run every package's `test` script                 |
-| `pnpm dev:runner`    | Start the runner via tsx (no build step)          |
-| `pnpm dev:cloud`     | Start the cloud control plane (Postgres required) |
-| `pnpm dev:dashboard` | Start Vite dev server for the dashboard           |
-| `pnpm clean`         | Remove `dist/` and `node_modules/` everywhere     |
+| Command              | What it does                                                          |
+| -------------------- | --------------------------------------------------------------------- |
+| `pnpm build`         | Build every package                                                   |
+| `pnpm typecheck`     | Typecheck every package                                               |
+| `pnpm test`          | Run every package's `test` script                                     |
+| `pnpm start`         | Build-aware: launch the runner + dashboard (same as `coro start`)     |
+| `pnpm dev`           | Run the runner from source via `tsx` (no build step) — auto-reload    |
+| `pnpm dev:runner`    | Alias of `pnpm dev` (kept for back-compat)                            |
+| `pnpm dev:cloud`     | Start the cloud control plane (Postgres required)                     |
+| `pnpm dev:dashboard` | Start Vite dev server for the dashboard                               |
+| `pnpm clean`         | Remove `dist/` and `node_modules/` everywhere                         |
 
 
 ### Runner (`@coro/runner`)
@@ -253,8 +255,12 @@ The local agent runtime, REST server, and `coro` CLI.
 pnpm --filter @coro/runner build
 pnpm --filter @coro/runner typecheck
 
-# Develop with auto-reload (no build)
-pnpm --filter @coro/runner dev:runner    # local-mode runner from CLI
+# Run from built JS (after `pnpm --filter @coro/runner build`)
+pnpm --filter @coro/runner start         # primary: dashboard-first runner
+pnpm --filter @coro/runner start:legacy  # advanced: Redis-monolith mode
+
+# Develop with auto-reload (no build, runs via tsx)
+pnpm --filter @coro/runner dev           # primary dashboard-first runner
 pnpm --filter @coro/runner dev:cloud     # cloud control plane
 
 # Tests

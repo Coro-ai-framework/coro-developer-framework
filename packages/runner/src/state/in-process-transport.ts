@@ -3,14 +3,13 @@ import type { InboundEvent, OutboundEvent } from './events'
 
 // ── In-process transport ──────────────────────────────────────────────────────
 //
-// Used in the monolithic deployment where the HTTP server, dispatcher, and
-// runner all live in the same process. Events flow synchronously through
-// function calls — no network, no serialisation.
+// Used in single-process deployments (local mode) where the HTTP server,
+// dispatcher, and runner all live in the same process. Events flow
+// synchronously through function calls — no network, no serialisation.
 //
-// The onEvent handler is registered by the Dispatcher at startup. In Phase 1
-// the server still calls dispatcher.handleWebhookEvent() directly, so the
-// handler is wired but not exercised through the transport path. Phase 3
-// (WebSocketTransport) will use it for cloud-forwarded webhook events.
+// The `onEvent` handler is registered by the Dispatcher at startup.
+// `WebSocketTransport` is the cloud-mode counterpart that forwards events
+// over the cloud control plane WebSocket.
 
 export class InProcessTransport implements EventTransport {
   private handler?: (event: InboundEvent) => Promise<void>

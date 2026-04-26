@@ -13,7 +13,9 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
     "test:runner": "pnpm --filter @coro/runner test",
-    "dev:runner": "pnpm --filter @coro/runner dev:runner",
+    "start": "pnpm --filter @coro/runner start",
+    "dev": "pnpm --filter @coro/runner dev",
+    "dev:runner": "pnpm --filter @coro/runner dev",
     "dev:cloud": "pnpm --filter @coro/runner dev:cloud",
     "dev:dashboard": "pnpm --filter @coro/dashboard dev",
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo"

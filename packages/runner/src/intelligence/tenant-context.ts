@@ -101,8 +101,8 @@ export interface SynthesizeSoloOptions {
 
 /**
  * Build the implicit solo tenant for a developer running Coro on their own
- * machine. Used by legacy (Redis monolith) and local (SQLite + polling)
- * deployment modes — neither of which carries an external tenant identity.
+ * machine. Used by local mode (SQLite + polling), which carries no external
+ * tenant identity.
  *
  * @param opts Optional hostname override (tests), display name override,
  *   and overlay source (from `~/.coro/config.json -> tenant.overlay`).
