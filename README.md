@@ -9,7 +9,7 @@ testers, reviewers — that work together on real PRs against your real
 repositories. Customise their behaviour by dropping markdown into a folder;
 extend them with MCP tools when you need new capabilities.
 
-> **Status: pre-1.0.** The repository is mid-rebrand from `a5` → `coro`
+> **Status: pre-1.0.** The repository is mid-rebrand → `coro`
 > and mid-restructure into a pnpm workspace. Solo mode runs end-to-end;
 > team mode and the desktop shell are tracked under [Roadmap](#roadmap).
 
@@ -22,18 +22,27 @@ extend them with MCP tools when you need new capabilities.
 
 ## Table of contents
 
-- [Quick start](#quick-start)
-- [What you get](#what-you-get)
-- [Repository layout](#repository-layout)
-- [The intelligence layers](#the-intelligence-layers)
-- [Working on the codebase](#working-on-the-codebase)
-  - [Runner (`@coro/runner`)](#runner-coro-runner)
-  - [Dashboard (`@coro/dashboard`)](#dashboard-coro-dashboard)
-  - [Base intelligence (`@coro/intelligence-base`)](#base-intelligence-coro-intelligence-base)
-- [CLI reference (advanced)](#cli-reference-advanced)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [Roadmap](#roadmap)
+- [Coro](#coro)
+  - [Table of contents](#table-of-contents)
+  - [Quick start](#quick-start)
+    - [Prerequisites](#prerequisites)
+    - [1. Install once](#1-install-once)
+    - [2. Start Coro](#2-start-coro)
+    - [3. Finish setup in the dashboard](#3-finish-setup-in-the-dashboard)
+    - [4. Submit your first job](#4-submit-your-first-job)
+  - [What you get](#what-you-get)
+  - [Repository layout](#repository-layout)
+    - [Where does the base intelligence live?](#where-does-the-base-intelligence-live)
+  - [The intelligence layers](#the-intelligence-layers)
+  - [Working on the codebase](#working-on-the-codebase)
+    - [Bootstrap once](#bootstrap-once)
+    - [Runner (`@coro/runner`)](#runner-cororunner)
+    - [Dashboard (`@coro/dashboard`)](#dashboard-corodashboard)
+    - [Base intelligence (`@coro/intelligence-base`)](#base-intelligence-corointelligence-base)
+  - [CLI reference (advanced)](#cli-reference-advanced)
+  - [Configuration](#configuration)
+  - [Testing](#testing)
+  - [Roadmap](#roadmap)
 
 ---
 
@@ -137,7 +146,7 @@ in your intelligence dir for review.
 ## Repository layout
 
 ```
-a5-ai/
+root/
 ├── packages/
 │   ├── runner/                  ← @coro/runner — the runtime + CLI + REST server
 │   │   ├── src/                 ← runtime: jobs, intelligence resolver, MCP tools, state
