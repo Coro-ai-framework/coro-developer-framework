@@ -4,71 +4,119 @@ import path from 'path'
 import { Logger } from 'pino'
 
 /**
- * Resolve the Claude Code CLI shipped inside `@anthropic-ai/claude-agent-sdk`.
- * The SDK spawns this file; it must be executable (see `ensureClaudeCodeCliExecutable`).
+ * Resolve the path the Claude Agent SDK should spawn (returned via the
+ * SDK's `pathToClaudeCodeExecutable` option).
+ *
+ * The SDK has shipped in two distribution shapes that we both need to handle:
+ *
+ *   - **Modern (>=0.2.x)** — `@anthropic-ai/claude-agent-sdk` itself ships
+ *     only JS modules; the actual `claude` executable lives inside a
+ *     platform-specific optional dependency such as
+ *     `@anthropic-ai/claude-agent-sdk-darwin-arm64`. npm/pnpm install only
+ *     the package matching the host's `os`/`cpu`, and we resolve its
+ *     `claude` binary directly.
+ *
+ *   - **Legacy (<=0.1.x)** — the main package shipped a `cli.js` next to
+ *     `sdk.mjs`, and the SDK spawned that file with `node`.
  *
  * Resolution order (first match wins):
- *   1. `CLAUDE_CODE_CLI_PATH` env var (operator override).
- *   2. The caller's `workingDirectory` — preserved for tooling that wants
- *      to pin to a specific install (e.g. tests against a fixture).
- *   3. The runner module itself (`__filename`). This is the path that
- *      always works, because the SDK is a hard dependency of `@coro/runner`
- *      and pnpm guarantees it is reachable from anywhere inside the
- *      runner package — independent of the user's `process.cwd()`.
  *
- * The third fallback is what makes `coro start` work when launched from
- * the workspace root: pnpm doesn't hoist the SDK to the root `node_modules`,
- * so anchoring resolution at the user's CWD fails with "Cannot find module".
+ *   1. `CLAUDE_CODE_CLI_PATH` env var (operator override).
+ *   2. Modern shape: platform-specific `claude` binary.
+ *   3. Legacy shape: `cli.js` next to the SDK main entry.
+ *
+ * We anchor `require.resolve` at `__filename` so resolution always succeeds
+ * from inside the runner package, independent of the user's CWD — pnpm does
+ * not hoist the SDK to the workspace root, so anchoring at `process.cwd()`
+ * fails with "Cannot find module" when the dashboard is launched from the
+ * monorepo root.
  */
-export function resolveClaudeCodeCliPath(workingDirectory?: string): string {
+export function resolveClaudeCodeCliPath(): string {
   const env = process.env['CLAUDE_CODE_CLI_PATH']
   if (env && existsSync(env)) return path.resolve(env)
 
-  const candidates: string[] = []
-  if (workingDirectory) candidates.push(path.join(workingDirectory, 'package.json'))
-  // `__filename` is the compiled .js inside packages/runner/dist/ — the SDK
-  // is always reachable from there via the runner's own node_modules.
-  candidates.push(__filename)
+  const localRequire = createRequire(__filename)
 
-  let lastError: unknown
-  for (const anchor of candidates) {
+  // Locate the SDK main entry first; both shapes branch off this anchor.
+  let sdkMain: string
+  try {
+    sdkMain = localRequire.resolve('@anthropic-ai/claude-agent-sdk')
+  } catch (err) {
+    throw new Error(
+      `Could not locate @anthropic-ai/claude-agent-sdk from the runner module. ` +
+        `Run \`pnpm install\` or set CLAUDE_CODE_CLI_PATH. Underlying error: ${(err as Error).message}`,
+    )
+  }
+
+  const platformPackage = nativePlatformPackageName()
+  if (platformPackage) {
     try {
-      const require = createRequire(anchor)
-      const sdkMain: string = require.resolve('@anthropic-ai/claude-agent-sdk')
-      return path.join(path.dirname(sdkMain), 'cli.js')
-    } catch (err) {
-      lastError = err
+      // Anchor at the SDK main: with pnpm the platform package is only
+      // hoisted into the SDK's own module graph (as an optionalDependency),
+      // not next to the runner's node_modules.
+      const sdkRequire = createRequire(sdkMain)
+      const platformPkgJson = sdkRequire.resolve(`${platformPackage}/package.json`)
+      const binaryName = process.platform === 'win32' ? 'claude.exe' : 'claude'
+      const binary = path.join(path.dirname(platformPkgJson), binaryName)
+      if (existsSync(binary)) return binary
+    } catch {
+      // Optional package missing for this platform — fall through to legacy.
     }
   }
 
+  const legacy = path.join(path.dirname(sdkMain), 'cli.js')
+  if (existsSync(legacy)) return legacy
+
+  const tried = [platformPackage ?? '<no platform package matched>', legacy]
   throw new Error(
-    `Could not resolve @anthropic-ai/claude-agent-sdk from any of: ${candidates.join(', ')}. ` +
-      `Run \`pnpm install\` (or set CLAUDE_CODE_CLI_PATH). Underlying error: ${(lastError as Error)?.message}`,
+    `Could not locate the Claude Agent SDK executable. Tried: ${tried.join(
+      ', ',
+    )}. Run \`pnpm install\` or set CLAUDE_CODE_CLI_PATH to a working binary.`,
   )
 }
 
+function nativePlatformPackageName(): string | null {
+  const platform = process.platform
+  const arch = process.arch
+  if (platform !== 'darwin' && platform !== 'linux' && platform !== 'win32') return null
+  if (arch !== 'x64' && arch !== 'arm64') return null
+  // Note: on linux/musl the SDK ships a separate `-musl` package. npm's
+  // optionalDependencies installer normally picks the right one based on
+  // the host libc, so we don't try to detect it here. If a musl host ends
+  // up with the glibc binary by mistake, the operator can point
+  // CLAUDE_CODE_CLI_PATH at the correct install.
+  return `@anthropic-ai/claude-agent-sdk-${platform}-${arch}`
+}
+
 /**
- * npm installs `cli.js` as non-executable (644). The Agent SDK checks `access(X_OK)`
- * and throws if the file cannot be executed. Fix by chmod +x when needed.
+ * Make sure the resolved Claude executable is runnable.
+ *
+ * - The modern native `claude` binary is normally already 755, but pnpm's
+ *   content-addressable store has been observed to flatten permissions in
+ *   edge cases.
+ * - The legacy `cli.js` was published 644 by npm, so it always needed a
+ *   chmod fix.
+ *
+ * Either way, this is a defensive `chmod +x` with a clear log message.
  */
-export function ensureClaudeCodeCliExecutable(cliPath: string, logger: Logger): void {
-  if (!existsSync(cliPath)) {
+export function ensureClaudeCodeCliExecutable(executablePath: string, logger: Logger): void {
+  if (!existsSync(executablePath)) {
     logger.warn(
-      { cliPath },
-      'Claude Code cli.js missing — reinstall @anthropic-ai/claude-agent-sdk or set CLAUDE_CODE_CLI_PATH',
+      { executablePath },
+      'Claude Agent SDK executable missing — reinstall @anthropic-ai/claude-agent-sdk or set CLAUDE_CODE_CLI_PATH',
     )
     return
   }
   try {
-    accessSync(cliPath, constants.X_OK)
+    accessSync(executablePath, constants.X_OK)
   } catch {
     try {
-      chmodSync(cliPath, 0o755)
-      logger.info({ cliPath }, 'Made bundled Claude Code cli.js executable (was 644 from npm)')
+      chmodSync(executablePath, 0o755)
+      logger.info({ executablePath }, 'Made Claude Agent SDK executable runnable (chmod +x)')
     } catch (err) {
       logger.warn(
-        { cliPath, err },
-        'Could not chmod Claude Code cli.js; run: chmod +x node_modules/@anthropic-ai/claude-agent-sdk/cli.js',
+        { executablePath, err },
+        `Could not chmod Claude Agent SDK executable — run: chmod +x ${executablePath}`,
       )
     }
   }
