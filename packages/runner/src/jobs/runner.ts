@@ -220,7 +220,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   )
 
   /** Bundled Claude Code entrypoint; npm ships it as non-executable — we chmod if needed. */
-  const claudeCodeCliPath = resolveClaudeCodeCliPath(process.cwd())
+  const claudeCodeCliPath = resolveClaudeCodeCliPath()
   ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
 
   try {

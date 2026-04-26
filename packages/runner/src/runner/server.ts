@@ -156,6 +156,40 @@ function detectSetupTokenForceFlag(cliCmd: string, cliArgs: string[], logger: Lo
   }
 }
 
+/**
+ * Resolve the dashboard's built static-asset directory.
+ *
+ * Order of preference:
+ *   1. `CORO_DASHBOARD_DIST` env var (operator override, e.g. for prod images).
+ *   2. `<runnerPackageRoot>/../dashboard/dist` (the pnpm-workspace layout).
+ *
+ * Returns `null` if no build is found so callers can serve a friendly 503
+ * instead of crashing on startup.
+ */
+function resolveDashboardDist(logger: Logger): string | null {
+  const fromEnv = process.env.CORO_DASHBOARD_DIST
+  if (fromEnv && fs.existsSync(path.join(fromEnv, 'index.html'))) return fromEnv
+
+  // `__dirname` is either `<root>/packages/runner/src/runner` (tsx/dev)
+  // or `<root>/packages/runner/dist/src/runner` (compiled). In both cases
+  // walking up to `packages/runner/` and then to the sibling dashboard pkg
+  // gives the correct path.
+  const candidates = [
+    path.resolve(__dirname, '../../../dashboard/dist'),     // dev: src/runner -> packages/dashboard/dist
+    path.resolve(__dirname, '../../../../dashboard/dist'),  // built: dist/src/runner -> packages/dashboard/dist
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'index.html'))) return candidate
+  }
+
+  logger.warn(
+    { candidates },
+    'Dashboard build not found; /dashboard will return 503. Run `pnpm --filter @coro/dashboard build`.',
+  )
+  return null
+}
+
 /** Best-effort MIME type inference for the artefact-content endpoint. */
 function mimeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
@@ -584,7 +618,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     let cliArgs: string[]
     let usingBundled = false
     try {
-      const cliPath = resolveClaudeCodeCliPath(process.cwd())
+      const cliPath = resolveClaudeCodeCliPath()
       ensureClaudeCodeCliExecutable(cliPath, logger)
       cliCmd = process.execPath // same node that's running the runner
       cliArgs = [cliPath, 'setup-token']
@@ -804,14 +838,30 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   })
 
   // ── Dashboard (served under /dashboard/) ───────────────────────────────
+  //
+  // The dashboard now lives in a sibling workspace package (`@coro/dashboard`),
+  // so we resolve its built `dist/` relative to the runner's package root and
+  // tolerate two layouts:
+  //   • compiled:  packages/runner/dist/src/runner/server.js  (4 levels up)
+  //   • source:    packages/runner/src/runner/server.ts       (3 levels up)
+  // We also accept an env override for non-monorepo deployments.
 
-  const dashboardDir = path.join(__dirname, '../../dashboard/dist')
-  app.use('/dashboard', express.static(dashboardDir))
-  app.get('/dashboard/*', (_req: Request, res: Response) => {
-    res.sendFile(path.join(dashboardDir, 'index.html'), err => {
-      if (err) res.status(404).json({ error: 'Not found' })
+  const dashboardDir = resolveDashboardDist(logger)
+  if (dashboardDir) {
+    app.use('/dashboard', express.static(dashboardDir))
+    app.get('/dashboard/*', (_req: Request, res: Response) => {
+      res.sendFile(path.join(dashboardDir, 'index.html'), err => {
+        if (err) res.status(404).json({ error: 'Not found' })
+      })
     })
-  })
+  } else {
+    app.get('/dashboard/*', (_req: Request, res: Response) => {
+      res.status(503).json({
+        error: 'Dashboard build not found',
+        hint: 'Run `pnpm --filter @coro/dashboard build` or set CORO_DASHBOARD_DIST.',
+      })
+    })
+  }
 
   // Redirect root to dashboard for convenience
   app.get('/', (_req: Request, res: Response) => {

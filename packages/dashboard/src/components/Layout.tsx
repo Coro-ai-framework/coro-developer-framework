@@ -11,11 +11,11 @@ export default function Layout() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-14">
             <Link to="/" className="flex items-center gap-2.5 group">
-              <div className="w-7 h-7 rounded-md bg-indigo-500 flex items-center justify-center text-white text-xs font-bold">
-                A5
+              <div className="w-7 h-7 rounded-md bg-indigo-500 flex items-center justify-center text-white text-[10px] font-bold tracking-tight">
+                Coro
               </div>
               <span className="text-sm font-semibold text-zinc-200 group-hover:text-white transition-colors">
-                Agent Dashboard
+                Coro Dashboard
               </span>
             </Link>
 

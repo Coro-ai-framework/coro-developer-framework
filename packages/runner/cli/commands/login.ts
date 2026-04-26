@@ -9,7 +9,7 @@ interface LoginResponse {
 }
 
 export const loginCommand = new Command('login')
-  .description('Log in to the A5 cloud control plane')
+  .description('Log in to the Coro cloud control plane')
   .option('--cloud-url <url>', 'Cloud control plane URL', 'http://localhost:4000')
   .option('--email <email>', 'Email address')
   .option('--password <password>', 'Password')

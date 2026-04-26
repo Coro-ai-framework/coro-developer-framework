@@ -532,7 +532,7 @@ export default function Settings() {
     <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
       <div className="mb-8">
         <h1 className="text-xl font-semibold text-white">Settings</h1>
-        <p className="text-sm text-zinc-400 mt-1">Configure the A5 runner. Changes are saved to the local config file.</p>
+        <p className="text-sm text-zinc-400 mt-1">Configure the Coro runner. Changes are saved to the local config file.</p>
       </div>
 
       {meta && (
@@ -626,7 +626,7 @@ export default function Settings() {
                       )}
                     </div>
                     <FieldHint>
-                      Uses Claude Code&apos;s own local login session, including MCP permissions and session refresh. No copy-pasted token is stored in A5.
+                      Uses Claude Code&apos;s own local login session, including MCP permissions and session refresh. No copy-pasted token is stored in Coro.
                     </FieldHint>
                   </div>
 

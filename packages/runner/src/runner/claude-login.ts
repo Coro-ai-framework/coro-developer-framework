@@ -201,7 +201,9 @@ export class ClaudeLoginManager {
 
 function createClaudeLoginSession(options: { logger: Logger; cwd: string }): ClaudeLoginSession {
   const { logger, cwd } = options
-  const claudeCodeCliPath = resolveClaudeCodeCliPath(cwd)
+  // CLI resolution is anchored at the runner module (not `cwd`) so it works
+  // when launched from any directory in the workspace.
+  const claudeCodeCliPath = resolveClaudeCodeCliPath()
   ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
 
   const idlePrompt = createIdlePromptStream()

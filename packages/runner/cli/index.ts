@@ -9,15 +9,24 @@ import { resumeCommand } from './commands/resume'
 import { messageCommand } from './commands/message'
 import { loginCommand } from './commands/login'
 import { initCommand } from './commands/init'
-import { runnerCommand } from './commands/runner'
+import { runnerCommand, startCommand } from './commands/runner'
 
 const program = new Command()
 
 program
   .name('coro')
-  .description('Coro — multi-tenant AI agent platform CLI')
+  .description(
+    'Coro — multi-tenant AI agent platform.\n\n' +
+    'The dashboard is the primary product surface. Run `coro start` to bring\n' +
+    'up the runner and open the dashboard for setup; the other commands\n' +
+    'below are for power users, CI, and scripting.',
+  )
   .version('0.2.0')
 
+// ── Primary command (dashboard-first) ────────────────────────────────────────
+program.addCommand(startCommand)
+
+// ── Power-user / CI commands ─────────────────────────────────────────────────
 program.addCommand(jobCommand)
 program.addCommand(statusCommand)
 program.addCommand(jobsCommand)

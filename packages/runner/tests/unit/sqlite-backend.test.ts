@@ -4,22 +4,13 @@ import path from 'path'
 import os from 'os'
 import { SqliteStateBackend } from '../../src/state/sqlite-backend'
 import { JobType } from '../../src/jobs/types'
+import { resolveIntelligenceRoot } from '../integration/repo-root'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 const noopLogger = {
   warn: (): void => {},
   debug: (): void => {},
-}
-
-/** Resolve the Coro intelligence root (where workflows/ lives). */
-function resolveIntelligenceRoot(): string {
-  let dir = __dirname
-  for (let i = 0; i < 10; i++) {
-    if (fs.existsSync(path.join(dir, 'workflows'))) return dir
-    dir = path.dirname(dir)
-  }
-  throw new Error('Could not find Coro intelligence root (directory containing workflows/)')
 }
 
 let tmpDir: string

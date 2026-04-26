@@ -11,7 +11,10 @@ import {
 import { die } from '../http'
 
 export const initCommand = new Command('init')
-  .description('Initialize the A5 runner configuration')
+  .description(
+    'Initialize the Coro runner configuration (advanced — most users should ' +
+    'instead run `coro start` and complete setup in the dashboard).',
+  )
   .option('--local', 'Configure for local-only mode (no cloud)')
   .option('--api-key <key>', 'Anthropic API key')
   .option('--intelligence-dir <dir>', 'Intelligence directory', defaultIntelligenceDir())
@@ -37,7 +40,7 @@ export const initCommand = new Command('init')
     const ask = (q: string, def?: string): Promise<string> =>
       new Promise(r => rl.question(def ? `${q} [${def}]: ` : `${q}: `, (a) => r(a || def || '')))
 
-    console.log('\x1b[36m▸\x1b[0m A5 Runner Configuration\n')
+    console.log('\x1b[36m▸\x1b[0m Coro Runner Configuration\n')
 
     const existing = loadLocalConfig() ?? { anthropic: { method: 'apiKey' as const, apiKey: '' } }
 
@@ -103,10 +106,9 @@ export const initCommand = new Command('init')
     console.log(`  Mode:         ${config.cloud ? 'hybrid' : 'local'}`)
     console.log()
 
-    if (config.cloud) {
-      console.log('Run \x1b[36mcoro runner start\x1b[0m to start the hybrid runner')
-    } else {
-      console.log('Run \x1b[36mcoro runner start\x1b[0m to start in local mode')
-      console.log('Run \x1b[36mcoro login\x1b[0m first to enable cloud/team features')
+    console.log('Next: run \x1b[36mcoro start\x1b[0m — the dashboard is the primary way to')
+    console.log('manage Coro from here on. The CLI remains available for scripting / CI.')
+    if (!config.cloud) {
+      console.log('Run \x1b[36mcoro login\x1b[0m first to enable cloud/team features.')
     }
   })

@@ -1,6 +1,6 @@
 # Coro — AI Agent Workspace
 
-> **Agent runtime instructions are in `.claude/CLAUDE.md`.** This file is for developers working on this repository.
+> **Agent runtime instructions** are in `packages/intelligence-base/layer/.claude/CLAUDE.md`. **This** file is for developers working on this repository.
 
 This repository contains:
 
@@ -9,12 +9,9 @@ This repository contains:
 - The **Coro dashboard** (`packages/dashboard/`) — React + Vite web UI.
 - The **base intelligence layer** (`packages/intelligence-base/`) — the
   generic, company-agnostic agents, workflows, skills, and memory templates
-  that ship with every Coro install.
-- A **working copy of the base intelligence at the repo root** (`agents/`,
-  `workflows/`, `.claude/`, `memory/`) — currently identical to the package
-  layer. The runner reads from this copy by default for development; a
-  later phase rewires it to read from `@coro/intelligence-base` directly so
-  the repo-root copies can be removed.
+  that ship with every Coro install. The runner reads its base intelligence
+  from this package via `getBaseLayerRoot()`; nothing in the repo root
+  shadows it anymore.
 
 ### Layered intelligence
 
@@ -187,7 +184,7 @@ Agents are workflow-agnostic and language-agnostic. They receive domain-specific
 On-demand domain knowledge and language conventions that agents invoke via the `Skill` tool:
 
 ```
-.claude/skills/
+packages/intelligence-base/layer/.claude/skills/
   feature-planning/SKILL.md         — Generic implementation planning guidance
   feature-testing/SKILL.md          — Generic implementation testing guidance
   golang-conventions/SKILL.md       — Go coding standards
@@ -246,20 +243,7 @@ a5-ai/                                   ← workspace root (will be renamed to 
 ├── package.json                         ← pnpm workspace root
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json                   ← Shared TS compiler options
-│
-├── .claude/                             ← Working copy of base intelligence (loaded by SDK)
-│   ├── CLAUDE.md                        ← Generic Coro runtime instructions
-│   ├── settings.json                    ← Claude Code settings
-│   └── skills/
-│       ├── feature-planning/SKILL.md
-│       ├── feature-testing/SKILL.md
-│       ├── golang-conventions/SKILL.md
-│       ├── dotnet-conventions/SKILL.md
-│       └── self-improvement-guide/SKILL.md
-├── config/                              ← Tenant-supplied: credentials.md (gitignored), repos.md
-├── agents/                              ← Working copy of base agent role definitions
-├── workflows/                           ← Working copy of base workflow phase definitions
-├── memory/                              ← Empty memory templates (tenants populate)
+├── README.md                            ← User-facing quick start + workflows
 ├── docs/                                ← Architecture documentation
 │
 └── packages/                            ← pnpm workspace packages
@@ -268,11 +252,18 @@ a5-ai/                                   ← workspace root (will be renamed to 
     │   ├── README.md
     │   ├── src/index.ts                 ← Manifest: getBaseLayerRoot(), pathInBaseLayer()
     │   ├── tests/manifest.test.ts
-    │   └── layer/                       ← Canonical generic intelligence (mirrors repo root)
-    │       ├── .claude/{CLAUDE.md, skills/}
-    │       ├── agents/
-    │       ├── workflows/
-    │       └── memory/
+    │   └── layer/                       ← THE canonical generic intelligence
+    │       ├── .claude/
+    │       │   ├── CLAUDE.md            ← Generic Coro runtime instructions
+    │       │   └── skills/
+    │       │       ├── feature-planning/SKILL.md
+    │       │       ├── feature-testing/SKILL.md
+    │       │       ├── golang-conventions/SKILL.md
+    │       │       ├── dotnet-conventions/SKILL.md
+    │       │       └── self-improvement-guide/SKILL.md
+    │       ├── agents/                  ← Generic agent role definitions
+    │       ├── workflows/               ← Generic workflow phase definitions
+    │       └── memory/                  ← Empty memory templates (tenants populate)
     ├── runner/                          ← Coro Runner (TypeScript/Node.js)
     │   ├── docker-compose.yml           ← Local legacy stack: runner + redis + ngrok
     │   ├── docker-compose.cloud.yml     ← Cloud control plane stack: postgres + redis
