@@ -455,7 +455,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           config: null,
           configPath,
           mode: 'local',
-          resolved: null,
+          resolved: {
+            intelligenceDir: resolveIntelligenceDir(null),
+            workingDir: resolveLocalWorkingDir(null),
+          },
           configError: result.error.message,
           rawConfig: result.raw,
         })
@@ -485,14 +488,19 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         } : undefined,
       } : null
 
+      // `resolved` mirrors what the runner will actually use on disk:
+      // - if the user has set `paths.workingDir` / `intelligence.dir`, those win
+      // - otherwise the helpers fall back to the `~/.coro/...` defaults
+      // The dashboard renders these as placeholders so leaving a path field
+      // blank visibly means "use this default".
       res.json({
         config: safeConfig,
         configPath,
         mode: detected,
-        resolved: config ? {
+        resolved: {
           intelligenceDir: resolveIntelligenceDir(config),
           workingDir: resolveLocalWorkingDir(config),
-        } : null,
+        },
       })
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })

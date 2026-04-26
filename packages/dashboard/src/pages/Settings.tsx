@@ -41,10 +41,19 @@ interface ConfigResponse {
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
+  // `resolved` is always present and reflects what the runner will use right
+  // now: saved values when set, `~/.coro/...` defaults otherwise. The
+  // dashboard renders these as placeholders for the corresponding inputs so
+  // leaving a path field blank visibly means "use this default".
   resolved: {
     intelligenceDir: string
     workingDir: string
-  } | null
+  }
+  // Surfaced when the on-disk config file fails schema validation (e.g.
+  // it was written before the fail-fast PUT validation existed). The
+  // dashboard renders a banner so the user can re-save and recover.
+  configError?: string
+  rawConfig?: unknown
 }
 
 interface SettingsForm {
@@ -860,10 +869,12 @@ export default function Settings() {
                 name="intelligenceDir"
                 value={form.intelligenceDir}
                 onChange={handleChange}
-                placeholder="~/.coro/intelligence"
+                placeholder={meta?.resolved.intelligenceDir ?? '~/.coro/intelligence'}
                 className={inputClass()}
               />
-              <FieldHint>Directory containing agents/, workflows/, skills/, and memory/ (the Coro intelligence layer)</FieldHint>
+              <FieldHint>
+                Directory containing agents/, workflows/, skills/, and memory/. Leave blank to use the default shown above.
+              </FieldHint>
             </div>
             <div>
               <label className={labelClass()}>Intelligence git remote</label>
@@ -882,10 +893,12 @@ export default function Settings() {
                 name="workingDir"
                 value={form.workingDir}
                 onChange={handleChange}
-                placeholder="~/.coro/working"
+                placeholder={meta?.resolved.workingDir ?? '~/.coro/working'}
                 className={inputClass()}
               />
-              <FieldHint>Directory where repos are cloned during job execution</FieldHint>
+              <FieldHint>
+                Where repos are cloned during job execution. Leave blank to use the default shown above.
+              </FieldHint>
             </div>
           </div>
         </section>
