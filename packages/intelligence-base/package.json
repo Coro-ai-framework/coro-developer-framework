@@ -1,0 +1,32 @@
+{
+  "name": "@coro/intelligence-base",
+  "version": "0.1.0",
+  "description": "Coro base intelligence layer — generic, company-agnostic agents, workflows, skills, and runtime instructions that ship with every Coro install.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "layer",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.4"
+  }
+}

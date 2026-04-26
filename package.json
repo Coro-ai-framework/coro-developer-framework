@@ -1,0 +1,26 @@
+{
+  "name": "coro",
+  "version": "0.1.0",
+  "description": "Coro — multi-tenant, plug-and-play AI agent platform",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:runner": "pnpm --filter @coro/runner test",
+    "start": "pnpm --filter @coro/runner start",
+    "dev": "pnpm --filter @coro/runner dev",
+    "dev:runner": "pnpm --filter @coro/runner dev",
+    "dev:cloud": "pnpm --filter @coro/runner dev:cloud",
+    "dev:dashboard": "pnpm --filter @coro/dashboard dev",
+    "clean": "pnpm -r exec rm -rf dist node_modules .turbo"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}

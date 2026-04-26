@@ -1,8 +1,19 @@
 config/credentials.md
 working/
 node_modules/
-tools/dist/
+dist/
+.pnpm-store/
+.turbo/
 *.env
 .env.*
 .DS_Store
-.DS_Store
+.cursor/
+.vscode/.cache/
+
+# Per-package stale outputs (legacy from tools/ era)
+packages/runner/.working/
+packages/runner/data/
+packages/runner/*_output.txt
+packages/runner/*_output.log
+packages/runner/*_result.log
+packages/runner/coverage/

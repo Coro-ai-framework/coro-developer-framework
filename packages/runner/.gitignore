@@ -1,0 +1,21 @@
+# Credentials — never commit these
+.env
+.env.cloud
+
+# Local job state and any per-package data dirs
+data/
+
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+dashboard/node_modules/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+
+.working/
