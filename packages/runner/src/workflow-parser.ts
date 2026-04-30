@@ -176,6 +176,53 @@ export async function loadWorkflowConfig(
   }
 }
 
+/**
+ * Resolve a workflow file by searching a list of intelligence roots in
+ * order — typically `[coroIntelligenceDir, baseLayerDir]`. Returns the
+ * first config that parses successfully, along with the root that
+ * resolved it.
+ *
+ * This mirrors the runtime resolver's layering (tenant overrides base):
+ * the tenant overlay's local cache is checked first, falling back to
+ * the base layer that ships with `@coro/intelligence-base`. Callers
+ * should treat a `null` return as a hard error — there is no legitimate
+ * scenario in which a configured workflow is unresolvable.
+ *
+ * Absolute `workflowPath` values bypass the search and are loaded
+ * directly (we still report the originating root as `path.dirname(...)`
+ * for diagnostics).
+ */
+export async function loadWorkflowConfigFromRoots(
+  workflowPath: string,
+  searchRoots: ReadonlyArray<string>,
+  logger: Logger,
+): Promise<{ config: WorkflowConfig; resolvedFrom: string } | null> {
+  if (!workflowPath) return null
+
+  if (path.isAbsolute(workflowPath)) {
+    const config = await loadWorkflowConfig(workflowPath, '', logger)
+    return config ? { config, resolvedFrom: path.dirname(workflowPath) } : null
+  }
+
+  // Drop falsy/duplicate roots without disturbing order.
+  const seen = new Set<string>()
+  const roots = searchRoots.filter(r => {
+    if (!r || seen.has(r)) return false
+    seen.add(r)
+    return true
+  })
+
+  for (const root of roots) {
+    const config = await loadWorkflowConfig(workflowPath, root, logger)
+    if (config) {
+      logger.debug?.({ workflowPath, resolvedFrom: root }, 'Workflow resolved')
+      return { config, resolvedFrom: root }
+    }
+  }
+
+  return null
+}
+
 // ── Lookup helpers ────────────────────────────────────────────────────────────
 
 export function getNextPhase(config: WorkflowConfig, currentPhase: string): string | null {

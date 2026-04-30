@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import Redis from 'ioredis'
 import { RedisStateBackend } from '../../src/state/redis-backend'
-import { JobType, STATUS_QUEUED } from '../../src/jobs/types'
+import { JobType, STATUS_AWAITING_PR_MERGE } from '../../src/jobs/types'
 import { createTestRedis, flushTestRedis } from './redis-client'
 import { resolveIntelligenceRoot } from './repo-root'
 
@@ -56,8 +56,11 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
       expect(job.type).toBe(JobType.Job)
       expect(job.workflowPath).toBe('workflows/job/workflow.md')
-      expect(job.phase).toBe('init')
-      expect(job.status).toBe('initializing')
+      // The workflow declares `initial_phase: planning` and the planning
+      // phase's `status` is `planning`. Jobs are now created in that
+      // state directly, no transient `init` phase any more.
+      expect(job.phase).toBe('planning')
+      expect(job.status).toBe('planning')
       expect(job.params['serviceName']).toBe('svc-a')
 
       const loaded = await backend.getJob(job.id)
@@ -87,17 +90,20 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
       expect(job.phase).toBe('planning')
     })
 
-    it('creates self-update jobs without a workflow file', async () => {
+    it('creates self-update jobs against the bundled tracking workflow', async () => {
       const job = await backend.createJob({
         type: 'self-update',
         triggerSource: 'internal',
         params: { changedFiles: ['agents/coder.md'] },
       })
 
+      // Self-update jobs are not free-form — they ride on the tracking
+      // workflow shipped in @coro/intelligence-base so they share the
+      // same workflowPath-driven dispatch model as every other job.
       expect(job.type).toBe(JobType.SelfUpdate)
-      expect(job.workflowPath).toBe('')
-      expect(job.phase).toBe('init')
-      expect(job.status).toBe(STATUS_QUEUED)
+      expect(job.workflowPath).toBe('workflows/self-update/workflow.md')
+      expect(job.phase).toBe('tracking')
+      expect(job.status).toBe(STATUS_AWAITING_PR_MERGE)
     })
 
     it('seeds prMappings when prId and branchName are present in params', async () => {

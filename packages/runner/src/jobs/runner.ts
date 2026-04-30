@@ -29,7 +29,7 @@ import { buildSystemPrompt } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
-  loadWorkflowConfig,
+  loadWorkflowConfigFromRoots,
   getNextPhase as wfGetNextPhase,
   getPhaseConfig,
   SubagentConfig,
@@ -177,11 +177,38 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     options?.workflowConfigOverride !== undefined
       ? options.workflowConfigOverride
       : job.workflowPath
-        ? await loadWorkflowConfig(job.workflowPath, jobIntelligenceDir, logger)
+        ? (await loadWorkflowConfigFromRoots(
+            job.workflowPath,
+            [jobIntelligenceDir, settings.paths.baseLayerDir],
+            logger,
+          ))?.config ?? null
         : null
 
-  if (!workflowConfig && job.workflowPath) {
-    logger.warn({ jobId: job.id, workflowPath: job.workflowPath }, 'No workflow config found')
+  // A configured workflow that we can't resolve at runtime is a hard
+  // failure. We also validate that the job's current phase is one we
+  // know how to dispatch — otherwise the runner would burn planning-
+  // tier tokens on a phantom phase with no agent role.
+  if (job.workflowPath && !workflowConfig) {
+    const message =
+      `Cannot resolve workflow '${job.workflowPath}' for job ${job.id}. ` +
+      `Searched [${jobIntelligenceDir}, ${settings.paths.baseLayerDir}]. ` +
+      `Failing the job — fix the intelligence path before re-submitting.`
+    logger.error({ jobId: job.id, workflowPath: job.workflowPath }, message)
+    await stateBackend.appendLog(job.id, `[error] ${message}`)
+    await stateBackend.updateJob(job.id, { status: STATUS_FAILED, escalationMessage: message })
+    return
+  }
+
+  if (workflowConfig && !workflowConfig.phases.some(p => p.name === job.phase)) {
+    const message =
+      `Job ${job.id} is in phase '${job.phase}', which is not declared in ` +
+      `workflow '${job.workflowPath}' (declared phases: ` +
+      `${workflowConfig.phases.map(p => p.name).join(', ')}). ` +
+      `This indicates a stale or corrupt job record. Failing fast.`
+    logger.error({ jobId: job.id, phase: job.phase }, message)
+    await stateBackend.appendLog(job.id, `[error] ${message}`)
+    await stateBackend.updateJob(job.id, { status: STATUS_FAILED, escalationMessage: message })
+    return
   }
 
   let liveJob: Job = { ...job }
@@ -265,6 +292,25 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       )
       await stateBackend.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
       const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, liveJob.phase) : null
+
+      // Defence in depth — the start-of-runJob guard already rejects
+      // jobs with an unknown initial phase, but `goto_phase` could
+      // still land us on something the workflow doesn't declare. Fail
+      // loudly rather than silently picking the planning-tier model
+      // for a phase with no agent role.
+      if (workflowConfig && !phaseConf) {
+        const message =
+          `Job ${liveJob.id} advanced to phase '${liveJob.phase}', which is ` +
+          `not declared in workflow '${liveJob.workflowPath}'. Failing the job.`
+        logger.error({ jobId: liveJob.id, phase: liveJob.phase }, message)
+        await stateBackend.appendLog(liveJob.id, `[error] ${message}`)
+        liveJob = await syncJob(stateBackend, liveJob, {
+          status: STATUS_FAILED,
+          escalationMessage: message,
+        })
+        toolCtx.job = liveJob
+        break
+      }
 
       // Minimal per-phase prompt. The system prompt already carries the
       // workflow, agent role, and job state; we just need a short nudge to

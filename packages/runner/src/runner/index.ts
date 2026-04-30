@@ -200,7 +200,12 @@ export async function startLocalRunner(
   fs.mkdirSync(configDir, { recursive: true })
 
   logger.info({ dbPath }, 'Opening SQLite database')
-  const stateBackend = new SqliteStateBackend(dbPath, settings.paths.coroIntelligenceDir, logger)
+  const stateBackend = new SqliteStateBackend(
+    dbPath,
+    settings.paths.coroIntelligenceDir,
+    logger,
+    settings.paths.baseLayerDir,
+  )
   await stateBackend.initialize()
 
   // Build external API clients (run locally on dev machine)

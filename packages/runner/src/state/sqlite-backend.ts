@@ -82,6 +82,13 @@ export class SqliteStateBackend implements StateBackend {
     dbPath: string,
     private readonly coroIntelligenceDir: string = '',
     private readonly logger?: { warn: (obj: object, msg: string) => void; debug?: (obj: object, msg: string) => void },
+    /**
+     * Optional base layer fallback. When omitted, `buildJobRecord`
+     * defaults to `getBaseLayerRoot()` from `@coro/intelligence-base`,
+     * so production callers can leave it undefined and tests can pin
+     * a specific fixture root.
+     */
+    private readonly baseLayerDir?: string,
   ) {
     this.db = new Database(dbPath)
     // Enable WAL mode for better concurrent read performance
@@ -108,6 +115,7 @@ export class SqliteStateBackend implements StateBackend {
     const workflowPath = resolveWorkflowPath(input, defaultWorkflowPath(jobType))
     const job = await buildJobRecord(input, jobType, workflowPath, {
       coroIntelligenceDir: this.coroIntelligenceDir,
+      baseLayerDir: this.baseLayerDir,
       logger: this.logger,
     })
     const now = job.createdAt

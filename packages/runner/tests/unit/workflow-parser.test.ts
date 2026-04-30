@@ -1,9 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import * as fs from 'fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import {
   parseWorkflowConfig,
   stripFrontMatter,
   getNextPhase,
   getPhaseConfig,
+  loadWorkflowConfigFromRoots,
   resolveInitialPhase,
 } from '../../src/workflow-parser'
 
@@ -457,5 +461,107 @@ describe('resolveInitialPhase', () => {
   it('returns the default when overrides is empty', () => {
     const noOverrides = parseWorkflowConfig(md(MINIMAL_YAML))!
     expect(resolveInitialPhase(noOverrides, 'jira')).toBe('planning')
+  })
+})
+
+// ── loadWorkflowConfigFromRoots ──────────────────────────────────────────────
+
+const noopLogger = {
+  warn: (): void => {},
+  debug: (): void => {},
+} as unknown as Parameters<typeof loadWorkflowConfigFromRoots>[2]
+
+describe('loadWorkflowConfigFromRoots', () => {
+  let tmp: string
+  let tenantRoot: string
+  let baseRoot: string
+
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-wp-roots-'))
+    tenantRoot = path.join(tmp, 'tenant')
+    baseRoot = path.join(tmp, 'base')
+    await fs.mkdir(path.join(tenantRoot, 'workflows', 'job'), { recursive: true })
+    await fs.mkdir(path.join(baseRoot, 'workflows', 'job'), { recursive: true })
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true })
+  })
+
+  it('returns the first hit and reports which root resolved it', async () => {
+    await fs.writeFile(
+      path.join(tenantRoot, 'workflows', 'job', 'workflow.md'),
+      md('initial_phase: tenant\nphases:\n  - name: tenant\n    model: planning\n'),
+    )
+    await fs.writeFile(
+      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      md('initial_phase: base\nphases:\n  - name: base\n    model: planning\n'),
+    )
+
+    const result = await loadWorkflowConfigFromRoots(
+      'workflows/job/workflow.md',
+      [tenantRoot, baseRoot],
+      noopLogger,
+    )
+
+    expect(result).not.toBeNull()
+    expect(result!.config.initialPhase).toBe('tenant')
+    expect(result!.resolvedFrom).toBe(tenantRoot)
+  })
+
+  it('falls back to the next root when the first does not have the file', async () => {
+    await fs.writeFile(
+      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      md('initial_phase: base\nphases:\n  - name: base\n    model: planning\n'),
+    )
+
+    const result = await loadWorkflowConfigFromRoots(
+      'workflows/job/workflow.md',
+      [tenantRoot, baseRoot],
+      noopLogger,
+    )
+
+    expect(result).not.toBeNull()
+    expect(result!.config.initialPhase).toBe('base')
+    expect(result!.resolvedFrom).toBe(baseRoot)
+  })
+
+  it('returns null when no root has the workflow', async () => {
+    const result = await loadWorkflowConfigFromRoots(
+      'workflows/job/workflow.md',
+      [tenantRoot, baseRoot],
+      noopLogger,
+    )
+    expect(result).toBeNull()
+  })
+
+  it('handles absolute paths without consulting the search roots', async () => {
+    const absPath = path.join(baseRoot, 'workflows', 'job', 'workflow.md')
+    await fs.writeFile(
+      absPath,
+      md('initial_phase: abs\nphases:\n  - name: abs\n    model: planning\n'),
+    )
+
+    const result = await loadWorkflowConfigFromRoots(absPath, [tenantRoot], noopLogger)
+
+    expect(result).not.toBeNull()
+    expect(result!.config.initialPhase).toBe('abs')
+    expect(result!.resolvedFrom).toBe(path.dirname(absPath))
+  })
+
+  it('skips empty / duplicate roots without changing order', async () => {
+    await fs.writeFile(
+      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      md('initial_phase: base\nphases:\n  - name: base\n    model: planning\n'),
+    )
+
+    const result = await loadWorkflowConfigFromRoots(
+      'workflows/job/workflow.md',
+      ['', tenantRoot, '', baseRoot, baseRoot],
+      noopLogger,
+    )
+
+    expect(result).not.toBeNull()
+    expect(result!.resolvedFrom).toBe(baseRoot)
   })
 })

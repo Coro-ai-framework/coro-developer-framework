@@ -1,11 +1,11 @@
-import { getPhaseConfig, loadWorkflowConfig, resolveInitialPhase } from '../workflow-parser'
+import { getBaseLayerRoot } from '@coro/intelligence-base'
+import { getPhaseConfig, loadWorkflowConfigFromRoots, resolveInitialPhase } from '../workflow-parser'
 import {
   emptyTokenUsage,
   type Job,
   type JobInput,
   type JobType,
   type PrMapping,
-  STATUS_QUEUED,
 } from './types'
 
 type WorkflowLogger = {
@@ -28,9 +28,45 @@ export interface CreateJobRequest {
 }
 
 export interface JobBootstrapOptions {
+  /**
+   * Tenant overlay's locally materialised intelligence (typically
+   * `~/.coro/intelligence/` or the test fixture root). Searched first
+   * so tenant customisations override base.
+   */
   coroIntelligenceDir?: string
+  /**
+   * Base layer shipped with `@coro/intelligence-base`. Searched as a
+   * deterministic fallback so a missing/empty tenant overlay does not
+   * cause workflow-resolution to fail. Defaults to `getBaseLayerRoot()`
+   * if omitted — supplying it explicitly is recommended for tests that
+   * pin a specific base layer fixture.
+   */
+  baseLayerDir?: string
   logger?: WorkflowLogger
   now?: string
+}
+
+/**
+ * Thrown by {@link buildJobRecord} when the workflow file cannot be
+ * resolved from any of the supplied roots. We surface this loudly
+ * rather than silently stamping a placeholder phase — a job with no
+ * workflow has no agent role and no model assignment we can reason
+ * about, so creating it would just burn tokens on a phantom phase.
+ */
+export class WorkflowResolutionError extends Error {
+  constructor(
+    public readonly workflowPath: string,
+    public readonly searchedRoots: ReadonlyArray<string>,
+  ) {
+    super(
+      `Cannot resolve workflow file '${workflowPath}'. Searched roots: ` +
+        `${searchedRoots.length === 0 ? '(none)' : searchedRoots.join(', ')}. ` +
+        `Verify that paths.coroIntelligenceDir points at an intelligence ` +
+        `tree containing this workflow, or that @coro/intelligence-base ` +
+        `ships it at the same path.`,
+    )
+    this.name = 'WorkflowResolutionError'
+  }
 }
 
 export function normalizeGitProvider(explicit: unknown): 'bitbucket' | 'github' | undefined {
@@ -79,15 +115,43 @@ export async function buildJobRecord(
   const now = options.now ?? new Date().toISOString()
   const triggerSource = input.triggerSource ?? 'cli'
 
-  const config = workflowPath && options.coroIntelligenceDir
-    ? await loadWorkflowConfig(workflowPath, options.coroIntelligenceDir, options.logger as Parameters<typeof loadWorkflowConfig>[2])
-    : null
+  if (!workflowPath) {
+    throw new Error(
+      'buildJobRecord requires a non-empty workflowPath. ' +
+        'Use defaultWorkflowPath(jobType) for the canonical default.',
+    )
+  }
 
-  const initialPhase = config
-    ? resolveInitialPhase(config, triggerSource)
-    : 'init'
-  const phaseConfig = config ? getPhaseConfig(config, initialPhase) : null
-  const initialStatus = phaseConfig?.status ?? config?.initialStatus ?? STATUS_QUEUED
+  // Resolve the workflow against the layered intelligence stack — same
+  // ordering the runtime resolver uses (tenant overrides base). The
+  // result is required: if neither root resolves the workflow, we
+  // throw rather than fabricate a placeholder phase.
+  const searchRoots = [options.coroIntelligenceDir, options.baseLayerDir ?? getBaseLayerRoot()]
+    .filter((r): r is string => typeof r === 'string' && r.length > 0)
+
+  const resolution = await loadWorkflowConfigFromRoots(
+    workflowPath,
+    searchRoots,
+    options.logger as Parameters<typeof loadWorkflowConfigFromRoots>[2],
+  )
+
+  if (!resolution) {
+    throw new WorkflowResolutionError(workflowPath, searchRoots)
+  }
+
+  const config = resolution.config
+  const initialPhase = resolveInitialPhase(config, triggerSource)
+  const phaseConfig = getPhaseConfig(config, initialPhase)
+  if (!phaseConfig) {
+    // initial_phase points at a phase that doesn't exist in the
+    // declared phase list — workflow file is internally inconsistent.
+    throw new Error(
+      `Workflow '${workflowPath}' resolved from '${resolution.resolvedFrom}' ` +
+        `declares initial_phase='${initialPhase}' but no matching phase ` +
+        `entry exists. Fix the workflow file's frontmatter.`,
+    )
+  }
+  const initialStatus = phaseConfig.status ?? config.initialStatus
 
   const label = (input.params['serviceName'] as string)
     ?? (input.params['jiraTicketId'] as string)

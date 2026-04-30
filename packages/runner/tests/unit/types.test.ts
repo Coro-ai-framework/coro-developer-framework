@@ -32,7 +32,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     params: {},
     triggerSource: 'cli',
     status: STATUS_QUEUED,
-    phase: 'init',
+    phase: 'planning',
     currentWorkItem: null,
     workItems: [],
     workItemLoopCount: 0,

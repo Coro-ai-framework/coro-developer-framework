@@ -28,6 +28,11 @@ export class RedisStateBackend implements StateBackend {
     private readonly redis: Redis,
     private readonly coroIntelligenceDir: string = '',
     private readonly logger?: { warn: (obj: object, msg: string) => void; debug?: (obj: object, msg: string) => void },
+    /**
+     * Optional base layer fallback. When omitted, `buildJobRecord`
+     * defaults to `getBaseLayerRoot()` from `@coro/intelligence-base`.
+     */
+    private readonly baseLayerDir?: string,
   ) {}
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -70,6 +75,7 @@ export class RedisStateBackend implements StateBackend {
     const workflowPath = resolveWorkflowPath(input, defaultWorkflowPath(jobType))
     const job = await buildJobRecord(input, jobType, workflowPath, {
       coroIntelligenceDir: this.coroIntelligenceDir,
+      baseLayerDir: this.baseLayerDir,
       logger: this.logger,
     })
 

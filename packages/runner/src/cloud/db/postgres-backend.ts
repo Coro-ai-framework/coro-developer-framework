@@ -90,6 +90,18 @@ export class PostgresStateBackend implements StateBackend {
   constructor(
     private readonly db: CloudDb,
     private readonly teamId: string,
+    /**
+     * Optional tenant overlay root. The cloud worker doesn't typically
+     * materialise a tenant overlay on disk before job creation (the
+     * runner-side resolver does), so this is left empty in production.
+     * Tests may pin it to override base for fixture purposes.
+     */
+    private readonly coroIntelligenceDir: string = '',
+    /**
+     * Optional base layer fallback. When omitted, `buildJobRecord`
+     * defaults to `getBaseLayerRoot()` from `@coro/intelligence-base`.
+     */
+    private readonly baseLayerDir?: string,
   ) {}
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -104,7 +116,10 @@ export class PostgresStateBackend implements StateBackend {
   async createJob(input: JobInput): Promise<Job> {
     const jobType = input.type as JobType
     const workflowPath = resolveWorkflowPath(input, defaultWorkflowPath(jobType))
-    const job = await buildJobRecord(input, jobType, workflowPath)
+    const job = await buildJobRecord(input, jobType, workflowPath, {
+      coroIntelligenceDir: this.coroIntelligenceDir,
+      baseLayerDir: this.baseLayerDir,
+    })
 
     await this.db.insert(schema.jobs).values(jobToInsert(job, this.teamId))
 
