@@ -221,6 +221,14 @@ export interface JobInput {
 
 // ── Proposals ─────────────────────────────────────────────────────────────────
 
+// Proposal types map to specific writable file locations in the
+// intelligence stack — see the `self-improvement-guide` skill in
+// `@coro/intelligence-base` for the canonical mapping.
+//
+// `source-change` was removed when the legacy `tools/src/**/*.ts`
+// layout disappeared with the monorepo conversion. Runner source
+// changes are out-of-band today; agents should use a regular code PR
+// rather than `propose_change`.
 export type ProposalType =
   | 'new-tool'
   | 'modify-tool'
@@ -229,12 +237,19 @@ export type ProposalType =
   | 'new-agent'
   | 'modify-agent'
   | 'memory-update'
-  | 'source-change'
   | 'skill-create'
   | 'skill-update'
   | 'claude-md-update'
 
 export type ProposalStatus = 'pending' | 'approved' | 'rejected'
+
+/**
+ * Where a proposal lands.
+ *   - `tenant` — the tenant intelligence repo (same mechanism for solo and team).
+ *   - `repo`   — the active job's target repo, under `.coro/`.
+ *   - The base layer is never writable.
+ */
+export type ProposalTargetLayer = 'tenant' | 'repo'
 
 export interface ProposalFile {
   path: string
@@ -255,6 +270,17 @@ export interface Proposal {
   updatedAt: string
   reviewedBy?: string
   reviewNote?: string
+  /**
+   * Layer the proposal was shipped to. Optional so legacy proposals
+   * predating the layered model continue to load cleanly.
+   */
+  targetLayer?: ProposalTargetLayer
+  /** Branch name in the target repo. */
+  branch?: string
+  /** Web URL of the opened PR (`null` if PR opening was skipped/failed). */
+  prUrl?: string | null
+  /** Provider-specific PR id. */
+  prId?: number | null
 }
 
 // ── Token usage helpers ───────────────────────────────────────────────────────

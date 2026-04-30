@@ -95,6 +95,29 @@ const gitConfigSchema = z.object({
   token: z.string().min(1),
 }).optional()
 
+// ── Proposals ────────────────────────────────────────────────────────────────
+//
+// Controls the self-improvement loop. Today there is exactly one knob —
+// the routing strategy — but we keep the shape nested so future seams
+// (auto-approval categories, runner-side coalescing, etc.) can land
+// without breaking the wire format of saved configs.
+//
+// `routing.strategy`:
+//   - `path`  — file path prefix decides the target layer (`.coro/...` →
+//               repo, anything else → tenant). Deterministic; recommended.
+//   - `agent` — agents must pass an explicit `targetLayer` and the tool
+//               only validates it for consistency. Reserved for future use.
+//
+// The schema is optional everywhere so legacy configs without a
+// `proposals` block continue to load. `resolveProposalsConfig()` below
+// fills in the canonical defaults at read time.
+
+const proposalsConfigSchema = z.object({
+  routing: z.object({
+    strategy: z.enum(['path', 'agent']).optional(),
+  }).optional(),
+}).optional()
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   anthropic: anthropicConfigSchema,
@@ -102,6 +125,7 @@ const localConfigSchema = z.object({
   paths: pathsConfigSchema,
   git: gitConfigSchema,
   tenant: tenantConfigSchema,
+  proposals: proposalsConfigSchema,
 })
 
 export type LocalConfig = z.infer<typeof localConfigSchema>
@@ -145,6 +169,19 @@ export function defaultWorkingDir(): string {
  */
 export function defaultLoaderCacheRoot(): string {
   return path.join(defaultConfigDir(), 'cache', 'tenant-overlays')
+}
+
+/**
+ * Cache root for the proposal writer's working clones.
+ *
+ * Separate from `defaultLoaderCacheRoot()` because the loader's clones
+ * are shallow + `--single-branch` + hard-reset on every job, which
+ * makes them unsuitable for hosting the long-lived feature branches
+ * the writer needs. Each `<tenantId>/<layer>/` subdir holds a full
+ * clone the writer can branch off and push from.
+ */
+export function defaultWriterCacheRoot(): string {
+  return path.join(defaultConfigDir(), 'cache', 'writers')
 }
 
 // ── Read / Write ─────────────────────────────────────────────────────────────
@@ -243,6 +280,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     paths: patch.paths !== undefined ? patch.paths : existing.paths,
     git: patch.git !== undefined ? patch.git : existing.git,
     tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
+    proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
   }
   saveLocalConfig(merged, configPath)
   return merged
@@ -260,4 +298,21 @@ export function resolveIntelligenceDir(config: LocalConfig | null): string {
  */
 export function resolveWorkingDir(config: LocalConfig | null): string {
   return config?.paths?.workingDir?.replace('~', os.homedir()) ?? defaultWorkingDir()
+}
+
+/**
+ * Resolve the proposals routing strategy. Defaults to `path`-based
+ * routing (the recommended deterministic mode) when the config block
+ * is missing or partial.
+ */
+export type ResolvedProposalsConfig = {
+  routing: { strategy: 'path' | 'agent' }
+}
+
+export function resolveProposalsConfig(config: LocalConfig | null): ResolvedProposalsConfig {
+  return {
+    routing: {
+      strategy: config?.proposals?.routing?.strategy ?? 'path',
+    },
+  }
 }

@@ -64,6 +64,7 @@ import {
   loadLocalConfig,
   detectMode,
   resolveIntelligenceDir,
+  resolveProposalsConfig,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
@@ -165,6 +166,7 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       authToken: '',
       staticDomain: '',
     },
+    proposals: resolveProposalsConfig(config),
   }
 }
 
@@ -270,6 +272,7 @@ export async function startLocalRunner(
     stateBackend,
     logger,
     mode: 'local',
+    tenantId: tenantContext.tenantId,
   })
 
   const shutdown = async () => {
@@ -376,6 +379,8 @@ export async function startHybridRunner(
     dispatcher,
     stateBackend,
     logger,
+    mode: 'hybrid',
+    tenantId: tenantContext.tenantId,
   })
 
   const shutdown = async () => {

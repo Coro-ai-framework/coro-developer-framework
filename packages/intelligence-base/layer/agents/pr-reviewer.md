@@ -137,7 +137,9 @@ Write findings to `memory/pr-feedback.md`:
 
 For single-job observations, call `mcp__coro__add_insight` so the Evaluator can incorporate them.
 
-If a pattern is systemic (seen in 2+ PRs), invoke the `self-improvement-guide` skill for proposal types, then call `mcp__coro__propose_change` to suggest edits to the relevant agent instructions or skills. Use `skill-update` for convention or domain knowledge gaps, `modify-agent` for agent instruction issues. Check `mcp__coro__list_proposals` first to avoid duplicates.
+If a pattern is systemic (seen in 2+ PRs), invoke the `self-improvement-guide` skill for proposal types, target-layer routing, and the consolidation rule. Then call `mcp__coro__propose_change` to suggest edits.
+
+**Consolidation rule (mandatory):** If you choose to propose changes yourself, make at most ONE `propose_change` call per target layer for this job, with every related file in a single multi-file `files: []` payload. Two calls = two PRs = duplicate review work. Use `skill-update` for convention or domain knowledge gaps, `modify-agent` for agent instruction issues. Check `mcp__coro__list_proposals({ status: "pending" })` first to avoid duplicates. The tool returns the PR URL synchronously; record it in your review summary.
 
 ### 5. Approve and merge when ready
 

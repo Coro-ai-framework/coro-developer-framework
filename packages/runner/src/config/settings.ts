@@ -100,4 +100,21 @@ export interface Settings {
     authToken: string
     staticDomain: string
   }
+  /**
+   * Self-improvement proposal flow. Mirrors the `proposals` block in
+   * `LocalConfig`; the runner copies it into Settings at bootstrap so
+   * tools/handlers can read a single shape regardless of deployment
+   * mode.
+   */
+  proposals: {
+    routing: {
+      /**
+       * `path`  — path prefix decides the target layer
+       *           (`.coro/...` → repo, otherwise → tenant). Deterministic.
+       * `agent` — agents pass an explicit `targetLayer`; the tool only
+       *           checks consistency. Reserved for future use.
+       */
+      strategy: 'path' | 'agent'
+    }
+  }
 }

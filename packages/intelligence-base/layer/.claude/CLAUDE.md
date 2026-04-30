@@ -217,21 +217,24 @@ Based on the message:
 
 ## Self-improvement rule
 
-When any agent calls `propose_change`, the Coro Runner file watcher detects the written files and automatically:
+When any agent calls `propose_change`, the Coro Runner synchronously:
 
-1. Validates the proposal (TypeScript build, YAML parse, workflow config parse, skill frontmatter)
-2. Creates a branch in this repo: `improvement/{short-description}`
-3. Commits the changed files
-4. Opens a PR tagged with the human developers and the configured reviewer service account
-5. Labels the PR `agent-self-improvement`
+1. Validates the proposal (path allowlist per layer, frontmatter / heading checks per type)
+2. Routes the change to the right writable layer (tenant intelligence repo or the project's `.coro/` overlay; **never** the base layer that ships with the runner)
+3. Creates a branch `coro/proposal/<jobId>-<layer>-<slug>` cut from that layer's default branch
+4. Commits every file in the multi-file payload as one atomic commit
+5. Pushes the branch and opens a PR via the configured git provider (GitHub / Bitbucket)
+6. Records the proposal in the state backend so the dashboard and `list_proposals` can show it
 
-**Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the Coro Runner pulls the latest intelligence and all subsequent job phases use the updated instructions immediately.
+**Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the next job's intelligence resolver pulls the merged change automatically.
+
+Each call produces exactly one PR. Bundle every file change for a layer into one `propose_change` call — splitting creates duplicate PRs and harder-to-merge diffs. See the `self-improvement-guide` skill for the full reference.
 
 ## Working directory
 
 The Coro Runner sets your current working directory (`cwd`) to `working/{job-id}/` before each phase starts. **This is your sandbox. All file operations must happen inside this directory.**
 
-This is enforced at runtime: a `PreToolUse` hook denies any `Write` or `Edit` that resolves outside your working directory. The only other write-allowed location is `<intelligence>/memory/` — used when the evaluator's `propose_change` writes a proposal file. Any other path will be denied with a clear error message.
+This is enforced at runtime: a `PreToolUse` hook denies any `Write` or `Edit` that resolves outside your working directory. Any other path will be denied with a clear error message — use `propose_change` for changes to the intelligence layers (it ships them as a PR rather than a local write).
 
 Rules:
 - **Never `cd` above your working directory.** Do not navigate to parent directories, the user's home directory, or any path outside `$PWD`.

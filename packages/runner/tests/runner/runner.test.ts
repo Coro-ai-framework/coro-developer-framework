@@ -48,6 +48,7 @@ function makeSettings(): Settings {
     tempo: { baseUrl: '', apiKey: '' },
     jira: { baseUrl: '', username: '', apiToken: '', pollIntervalSeconds: 60 },
     ngrok: { authToken: '', staticDomain: '' },
+    proposals: { routing: { strategy: 'path' } },
   }
 }
 

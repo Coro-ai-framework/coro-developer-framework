@@ -1,27 +1,51 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import fs from 'fs/promises'
-import path from 'path'
-import { proposeChange, listProposals } from '../../src/tools/self-improvement'
-import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
+
+import {
+  listProposals,
+  proposeChange,
+  routeFile,
+  validateProposalFiles,
+} from '../../src/tools/self-improvement'
+import { JobType, emptyTokenUsage, type Job, type Proposal } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
+import * as writerMock from '../../src/intelligence/writer'
 
-// ── Mocks ─────────────────────────────────────────────────────────────────────
+// ── Mock the writer module ───────────────────────────────────────────────────
+//
+// `proposeChange` end-to-end is exercised in the integration test. Here
+// we stub the writer so the unit tests focus on routing / validation /
+// state-recording behaviour.
 
-vi.mock('fs/promises')
+vi.mock('../../src/intelligence/writer', () => ({
+  prepareTenantWriter: vi.fn(async () => ({
+    dir: '/tmp/writer/tenant',
+    baseRef: 'main',
+    remoteUrl: 'git@github.com:acme/intel.git',
+  })),
+  prepareRepoWriter: vi.fn(async () => ({
+    dir: '/tmp/working/job-1/my-repo',
+    baseRef: 'main',
+    remoteUrl: 'git@github.com:acme/my-repo.git',
+  })),
+  commitAndPush: vi.fn(async () => undefined),
+  openProposalPr: vi.fn(async () => ({
+    id: 17,
+    url: 'https://github.com/acme/intel/pull/17',
+    provider: 'github' as const,
+  })),
+}))
 
-const mockFs = vi.mocked(fs)
-
-const CORO_INTELLIGENCE_DIR = '/data/coro-intelligence'
+// ── Fixtures ─────────────────────────────────────────────────────────────────
 
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
-    id: 'test-job-1',
+    id: 'job-1',
     type: JobType.Job,
     workflowPath: 'workflows/job/workflow.md',
-    params: { serviceName: 'my-svc' },
+    params: { repoSlug: 'my-repo' },
     triggerSource: 'cli',
-    status: 'coding',
-    phase: 'coding',
+    status: 'evaluation',
+    phase: 'evaluation',
     currentWorkItem: null,
     workItems: [],
     workItemLoopCount: 0,
@@ -37,22 +61,46 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   }
 }
 
-function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
+interface MakeCtxOpts {
+  job?: Partial<Job>
+  routingStrategy?: 'path' | 'agent'
+  overlay?: ToolContext['tenantContext']['overlay']
+  proposalsStore?: Map<string, Proposal>
+}
+
+function makeCtx(opts: MakeCtxOpts = {}): ToolContext {
+  const job = makeJob(opts.job)
+  const proposalsStore = opts.proposalsStore ?? new Map<string, Proposal>()
+
+  const stateBackend = {
+    appendLog: vi.fn().mockResolvedValue(undefined),
+    createProposal: vi.fn(async (p: Omit<Proposal, 'id'>) => {
+      const id = `proposal-${proposalsStore.size + 1}`
+      const stored: Proposal = { ...p, id }
+      proposalsStore.set(id, stored)
+      return stored
+    }),
+    listProposals: vi.fn(async (tenantId: string, status?: Proposal['status']) => {
+      let arr = Array.from(proposalsStore.values()).filter(p => p.tenantId === tenantId)
+      if (status) arr = arr.filter(p => p.status === status)
+      return arr
+    }),
+  } as unknown as ToolContext['stateBackend']
+
   return {
-    job: makeJob(),
-    stateBackend: {
-      appendLog: vi.fn().mockResolvedValue(undefined),
-    } as unknown as ToolContext['stateBackend'],
+    job,
+    stateBackend,
     settings: {
-      paths: { coroIntelligenceDir: CORO_INTELLIGENCE_DIR, workingDir: '/data/working' },
+      paths: { workingDir: '/tmp/working', coroIntelligenceDir: '/tmp/coro/intel' },
+      proposals: { routing: { strategy: opts.routingStrategy ?? 'path' } },
     } as unknown as ToolContext['settings'],
     tenantContext: {
-      tenantId: 'solo-test-host',
-      mode: 'solo' as const,
-      displayName: 'Solo (test-host)',
-      overlay: { kind: 'none' as const },
+      tenantId: 'team-acme',
+      mode: 'team' as const,
+      displayName: 'Team ACME',
+      overlay: opts.overlay ?? { kind: 'gitRemote', url: 'git@github.com:acme/intel.git', ref: 'main' },
     },
-    jobIntelligenceDir: CORO_INTELLIGENCE_DIR,
+    jobIntelligenceDir: '/tmp/working/job-1/_intelligence',
     logger: {
       debug: vi.fn(),
       info: vi.fn(),
@@ -62,409 +110,374 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     gitClient: {} as ToolContext['gitClient'],
     bbCoder: {} as ToolContext['bbCoder'],
     bbReviewer: {} as ToolContext['bbReviewer'],
-    ghClient: null,
+    ghClient: {} as unknown as ToolContext['ghClient'],
     ghGitClient: null,
     lokiClient: {} as ToolContext['lokiClient'],
     tempoClient: {} as ToolContext['tempoClient'],
     jiraClient: {} as ToolContext['jiraClient'],
     runningServices: new Map(),
-    ...overrides,
   }
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockFs.mkdir.mockResolvedValue(undefined)
-  mockFs.writeFile.mockResolvedValue(undefined)
 })
 
-// ── proposeChange ─────────────────────────────────────────────────────────────
+// ── routeFile ────────────────────────────────────────────────────────────────
+
+describe('routeFile', () => {
+  describe('path strategy', () => {
+    it('routes .coro/ paths to the repo layer', () => {
+      expect(routeFile('.coro/agents/coder.md', 'path', undefined)).toBe('repo')
+      expect(routeFile('.coro/memory/notes.md', 'path', undefined)).toBe('repo')
+    })
+
+    it('routes everything else to the tenant layer', () => {
+      expect(routeFile('agents/coder.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('memory/known-pitfalls.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('workflows/job/workflow.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('.claude/CLAUDE.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('.claude/skills/foo/SKILL.md', 'path', undefined)).toBe('tenant')
+    })
+
+    it('rejects paths outside the writable allowlist', () => {
+      expect(() => routeFile('src/index.ts', 'path', undefined)).toThrow('not in the writable allowlist')
+      expect(() => routeFile('package.json', 'path', undefined)).toThrow('not in the writable allowlist')
+    })
+
+    it('rejects path traversal', () => {
+      expect(() => routeFile('../etc/passwd', 'path', undefined)).toThrow('must be relative')
+      expect(() => routeFile('agents/../../../etc/passwd', 'path', undefined)).toThrow('must be relative')
+    })
+
+    it('rejects absolute paths', () => {
+      expect(() => routeFile('/etc/passwd', 'path', undefined)).toThrow('must be relative')
+    })
+
+    it('throws when explicit targetLayer disagrees with the path', () => {
+      expect(() => routeFile('agents/coder.md', 'path', 'repo')).toThrow('Layer mismatch')
+      expect(() => routeFile('.coro/agents/coder.md', 'path', 'tenant')).toThrow('Layer mismatch')
+    })
+
+    it('accepts an explicit targetLayer when it agrees with the path', () => {
+      expect(routeFile('agents/coder.md', 'path', 'tenant')).toBe('tenant')
+      expect(routeFile('.coro/agents/coder.md', 'path', 'repo')).toBe('repo')
+    })
+  })
+
+  describe('agent strategy', () => {
+    it('requires an explicit targetLayer', () => {
+      expect(() => routeFile('agents/coder.md', 'agent', undefined)).toThrow('requires an explicit targetLayer')
+    })
+
+    it('still validates path/layer consistency', () => {
+      expect(() => routeFile('agents/coder.md', 'agent', 'repo')).toThrow('Layer mismatch')
+    })
+
+    it('accepts a consistent explicit targetLayer', () => {
+      expect(routeFile('agents/coder.md', 'agent', 'tenant')).toBe('tenant')
+    })
+  })
+})
+
+// ── validateProposalFiles ────────────────────────────────────────────────────
+
+describe('validateProposalFiles', () => {
+  it('rejects empty file lists', () => {
+    expect(() => validateProposalFiles('memory-update', [])).toThrow('at least one file')
+  })
+
+  it('rejects empty file content', () => {
+    expect(() =>
+      validateProposalFiles('memory-update', [{ path: 'memory/x.md', content: '   ' }]),
+    ).toThrow('empty content')
+  })
+
+  it('requires skill files under .claude/skills/', () => {
+    expect(() =>
+      validateProposalFiles('skill-create', [
+        { path: 'agents/skill.md', content: 'x' },
+      ]),
+    ).toThrow('Skill files must live under')
+  })
+
+  it('requires SKILL.md to have YAML frontmatter with name + description', () => {
+    expect(() =>
+      validateProposalFiles('skill-create', [
+        { path: '.claude/skills/foo/SKILL.md', content: '# no frontmatter' },
+      ]),
+    ).toThrow('YAML frontmatter')
+
+    expect(() =>
+      validateProposalFiles('skill-create', [
+        { path: '.claude/skills/foo/SKILL.md', content: '---\nname: \n---\n# x' },
+      ]),
+    ).toThrow('non-empty "name"')
+
+    expect(() =>
+      validateProposalFiles('skill-create', [
+        { path: '.claude/skills/foo/SKILL.md', content: '---\nname: foo\n---\n# x' },
+      ]),
+    ).toThrow('non-empty "description"')
+
+    // Valid frontmatter passes.
+    expect(() =>
+      validateProposalFiles('skill-create', [
+        {
+          path: '.claude/skills/foo/SKILL.md',
+          content: '---\nname: foo\ndescription: a useful skill\n---\n# Foo skill\n',
+        },
+      ]),
+    ).not.toThrow()
+  })
+
+  it('restricts claude-md-update to CLAUDE.md', () => {
+    expect(() =>
+      validateProposalFiles('claude-md-update', [
+        { path: 'agents/coder.md', content: '# Coder' },
+      ]),
+    ).toThrow('claude-md-update proposals may only touch')
+  })
+
+  it('requires agent files to live under agents/', () => {
+    expect(() =>
+      validateProposalFiles('modify-agent', [
+        { path: 'memory/coder.md', content: '# Coder' },
+      ]),
+    ).toThrow('must live under agents/')
+  })
+
+  it('requires agent files to start with a heading', () => {
+    expect(() =>
+      validateProposalFiles('modify-agent', [
+        { path: 'agents/coder.md', content: 'no heading' },
+      ]),
+    ).toThrow('top-level heading')
+  })
+})
+
+// ── proposeChange ────────────────────────────────────────────────────────────
 
 describe('proposeChange', () => {
-  describe('file writing', () => {
-    it('writes a proposal summary to memory/proposals/', async () => {
-      const ctx = makeCtx()
-      await proposeChange({
-        type: 'new-tool',
-        title: 'Add foozle tool',
-        rationale: 'We need foozle.',
-        description: 'Adds a foozle tool.',
-        files: [{ path: 'tools/src/tools/foozle.ts', content: 'export const x = 1' }],
-      }, ctx)
-
-      const writeCalls = mockFs.writeFile.mock.calls
-      const proposalCall = writeCalls.find(c =>
-        String(c[0]).includes('memory/proposals/') && String(c[0]).endsWith('.md'),
-      )
-      expect(proposalCall).toBeDefined()
-
-      const proposalContent = proposalCall![1] as string
-      expect(proposalContent).toContain('# Proposal: Add foozle tool')
-      expect(proposalContent).toContain('**Type:** new-tool')
-      expect(proposalContent).toContain('We need foozle.')
-      expect(proposalContent).toContain('Adds a foozle tool.')
-    })
-
-    it('writes each proposed file to disk', async () => {
-      await proposeChange({
-        type: 'new-tool',
-        title: 'Multi file',
-        rationale: 'r',
-        description: 'd',
+  it('ships a single multi-file tenant proposal end-to-end', async () => {
+    const ctx = makeCtx()
+    const result = await proposeChange(
+      {
+        type: 'memory-update',
+        title: 'Add API quirk pitfall',
+        rationale: 'We hit this twice in two days.',
+        description: 'Append to known-pitfalls.md',
         files: [
-          { path: 'agents/new-agent.md', content: '# New Agent' },
-          { path: 'memory/patterns.md', content: '# Patterns' },
+          { path: 'memory/known-pitfalls.md', content: '## Pitfall: rate limit only on Tuesdays' },
         ],
-      }, makeCtx())
+      },
+      ctx,
+    )
 
-      const writePaths = mockFs.writeFile.mock.calls.map(c => String(c[0]))
-      expect(writePaths).toContainEqual(path.resolve(CORO_INTELLIGENCE_DIR, 'agents/new-agent.md'))
-      expect(writePaths).toContainEqual(path.resolve(CORO_INTELLIGENCE_DIR, 'memory/patterns.md'))
-    })
+    expect(result.targetLayer).toBe('tenant')
+    expect(result.branch).toMatch(/^coro\/proposal\/job-1-tenant-add-api-quirk-pitfall$/)
+    expect(result.prUrl).toBe('https://github.com/acme/intel/pull/17')
+    expect(result.prId).toBe(17)
 
-    it('creates directories recursively for each file', async () => {
-      await proposeChange({
-        type: 'new-tool',
-        title: 'Deep file',
-        rationale: 'r',
-        description: 'd',
-        files: [{ path: 'tools/src/deep/nested/file.ts', content: 'code' }],
-      }, makeCtx())
+    expect(writerMock.prepareTenantWriter).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'git@github.com:acme/intel.git',
+      tenantId: 'team-acme',
+    }))
+    expect(writerMock.commitAndPush).toHaveBeenCalledWith(expect.objectContaining({
+      branch: result.branch,
+      baseRef: 'main',
+      files: expect.arrayContaining([
+        expect.objectContaining({ path: 'memory/known-pitfalls.md' }),
+      ]),
+    }))
+    expect(writerMock.openProposalPr).toHaveBeenCalledWith(expect.objectContaining({
+      remoteUrl: 'git@github.com:acme/intel.git',
+      branch: result.branch,
+      title: 'Coro proposal: Add API quirk pitfall',
+    }))
 
-      const mkdirCalls = mockFs.mkdir.mock.calls.map(c => String(c[0]))
-      expect(mkdirCalls).toContainEqual(
-        path.dirname(path.resolve(CORO_INTELLIGENCE_DIR, 'tools/src/deep/nested/file.ts')),
-      )
-    })
+    expect(ctx.stateBackend.createProposal).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 'team-acme',
+      jobId: 'job-1',
+      type: 'memory-update',
+      targetLayer: 'tenant',
+      branch: result.branch,
+      prUrl: 'https://github.com/acme/intel/pull/17',
+      prId: 17,
+      status: 'pending',
+    }))
+
+    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-1',
+      expect.stringContaining('[propose_change]'),
+    )
   })
 
-  describe('legacy single-file input', () => {
-    it('handles targetFile + proposedContent', async () => {
-      await proposeChange({
-        type: 'modify-agent',
-        title: 'Update coder',
+  it('routes a .coro/ path to the repo layer and uses the repo writer', async () => {
+    const ctx = makeCtx()
+    const result = await proposeChange(
+      {
+        type: 'memory-update',
+        title: 'Project-only quirk',
         rationale: 'r',
         description: 'd',
-        targetFile: 'agents/coder.md',
-        proposedContent: '# Updated Coder',
-      }, makeCtx())
+        files: [{ path: '.coro/memory/notes.md', content: '## quirk' }],
+      },
+      ctx,
+    )
 
-      const writePaths = mockFs.writeFile.mock.calls.map(c => String(c[0]))
-      expect(writePaths).toContainEqual(path.resolve(CORO_INTELLIGENCE_DIR, 'agents/coder.md'))
-    })
-
-    it('merges legacy and multi-file inputs', async () => {
-      const result = await proposeChange({
-        type: 'new-tool',
-        title: 'Both',
-        rationale: 'r',
-        description: 'd',
-        targetFile: 'legacy.md',
-        proposedContent: 'legacy content',
-        files: [{ path: 'modern.md', content: 'modern content' }],
-      }, makeCtx()) as Record<string, unknown>
-
-      expect(result['fileCount']).toBe(2)
-    })
+    expect(result.targetLayer).toBe('repo')
+    expect(writerMock.prepareRepoWriter).toHaveBeenCalled()
+    expect(writerMock.prepareTenantWriter).not.toHaveBeenCalled()
   })
 
-  describe('path traversal prevention', () => {
-    it('throws when a file path escapes coroIntelligenceDir using ../', async () => {
-      await expect(
-        proposeChange({
-          type: 'source-change',
-          title: 'Escape attempt',
+  it('throws when tenant overlay is not configured but a tenant proposal is filed', async () => {
+    const ctx = makeCtx({ overlay: { kind: 'none' } })
+    await expect(
+      proposeChange(
+        {
+          type: 'memory-update',
+          title: 't',
           rationale: 'r',
           description: 'd',
-          files: [{ path: '../../../etc/passwd', content: 'malicious' }],
-        }, makeCtx()),
-      ).rejects.toThrow('escapes coroIntelligenceDir')
-    })
+          files: [{ path: 'memory/x.md', content: 'y' }],
+        },
+        ctx,
+      ),
+    ).rejects.toThrow('tenant.overlay must be configured')
+  })
 
-    it('throws for absolute paths outside coroIntelligenceDir', async () => {
-      await expect(
-        proposeChange({
-          type: 'source-change',
-          title: 'Absolute escape',
+  it('throws when the job has no repoSlug but a repo proposal is filed', async () => {
+    const ctx = makeCtx({ job: { params: {} } })
+    await expect(
+      proposeChange(
+        {
+          type: 'memory-update',
+          title: 't',
           rationale: 'r',
           description: 'd',
-          files: [{ path: '/etc/passwd', content: 'malicious' }],
-        }, makeCtx()),
-      ).rejects.toThrow('escapes coroIntelligenceDir')
-    })
+          files: [{ path: '.coro/memory/x.md', content: 'y' }],
+        },
+        ctx,
+      ),
+    ).rejects.toThrow('the active job has no repoSlug')
   })
 
-  describe('return value', () => {
-    it('returns expected structure', async () => {
-      const result = await proposeChange({
-        type: 'new-agent',
-        title: 'Add optimizer agent',
-        rationale: 'Performance improvements.',
-        description: 'New optimizer.',
-        files: [{ path: 'agents/optimizer.md', content: '# Optimizer' }],
-      }, makeCtx()) as Record<string, unknown>
+  it('rejects mixed layers in one call', async () => {
+    const ctx = makeCtx()
+    await expect(
+      proposeChange(
+        {
+          type: 'memory-update',
+          title: 'mixed',
+          rationale: 'r',
+          description: 'd',
+          files: [
+            { path: 'memory/tenant-note.md', content: 'a' },
+            { path: '.coro/memory/repo-note.md', content: 'b' },
+          ],
+        },
+        ctx,
+      ),
+    ).rejects.toThrow('All files in a single propose_change call must target the same layer')
+  })
 
-      expect(result['fileCount']).toBe(1)
-      expect(result['filesWritten']).toHaveLength(2) // proposal + 1 file
-      expect(result['nextStep']).toContain('File watcher')
-      expect(typeof result['proposalFile']).toBe('string')
-    })
+  it('records the proposal AFTER the PR is opened (not before)', async () => {
+    const ctx = makeCtx()
+    // Make commitAndPush throw — createProposal should not be called.
+    vi.mocked(writerMock.commitAndPush).mockRejectedValueOnce(new Error('git push failed'))
 
-    it('returns fileCount 0 when no files provided', async () => {
-      const result = await proposeChange({
+    await expect(
+      proposeChange(
+        {
+          type: 'memory-update',
+          title: 't',
+          rationale: 'r',
+          description: 'd',
+          files: [{ path: 'memory/x.md', content: 'y' }],
+        },
+        ctx,
+      ),
+    ).rejects.toThrow('git push failed')
+
+    expect(ctx.stateBackend.createProposal).not.toHaveBeenCalled()
+  })
+
+  it('normalises legacy targetFile + proposedContent into the files array', async () => {
+    const ctx = makeCtx()
+    await proposeChange(
+      {
         type: 'memory-update',
-        title: 'Note only',
-        rationale: 'Just a note.',
-        description: 'No files.',
-      }, makeCtx()) as Record<string, unknown>
-
-      expect(result['fileCount']).toBe(0)
-    })
-  })
-
-  describe('logging', () => {
-    it('appends to job log', async () => {
-      const ctx = makeCtx()
-      await proposeChange({
-        type: 'new-tool',
-        title: 'Test proposal',
+        title: 'Legacy shim',
         rationale: 'r',
         description: 'd',
-      }, ctx)
+        targetFile: 'memory/legacy.md',
+        proposedContent: '## legacy',
+      },
+      ctx,
+    )
 
-      expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith(
-        'test-job-1',
-        expect.stringContaining('[propose_change]'),
-      )
-    })
-  })
-
-  describe('proposal markdown content', () => {
-    it('includes file content in proposal summary', async () => {
-      await proposeChange({
-        type: 'new-tool',
-        title: 'With code',
-        rationale: 'r',
-        description: 'd',
-        files: [{ path: 'tools/src/foo.ts', content: 'export const foo = 42' }],
-      }, makeCtx())
-
-      const proposalCall = mockFs.writeFile.mock.calls.find(c =>
-        String(c[0]).includes('memory/proposals/'),
-      )
-      const content = proposalCall![1] as string
-      expect(content).toContain('```ts')
-      expect(content).toContain('export const foo = 42')
-    })
-
-    it('truncates large file content at 5000 chars', async () => {
-      const bigContent = 'x'.repeat(6000)
-      await proposeChange({
-        type: 'source-change',
-        title: 'Big file',
-        rationale: 'r',
-        description: 'd',
-        files: [{ path: 'tools/src/big.ts', content: bigContent }],
-      }, makeCtx())
-
-      const proposalCall = mockFs.writeFile.mock.calls.find(c =>
-        String(c[0]).includes('memory/proposals/'),
-      )
-      const md = proposalCall![1] as string
-      expect(md).toContain('... (truncated in proposal summary)')
-      expect(md.length).toBeLessThan(bigContent.length)
-    })
-
-    it('includes job context in proposal markdown', async () => {
-      const ctx = makeCtx({ job: makeJob({ id: 'special-job', phase: 'testing' }) })
-      await proposeChange({
-        type: 'memory-update',
-        title: 'Job info check',
-        rationale: 'r',
-        description: 'd',
-      }, ctx)
-
-      const proposalCall = mockFs.writeFile.mock.calls.find(c =>
-        String(c[0]).includes('memory/proposals/'),
-      )
-      const md = proposalCall![1] as string
-      expect(md).toContain('special-job')
-      expect(md).toContain('testing')
-    })
-  })
-
-  describe('slug generation', () => {
-    it('converts title to URL-safe slug', async () => {
-      await proposeChange({
-        type: 'new-tool',
-        title: 'Add Foo-Bar Tool (v2)',
-        rationale: 'r',
-        description: 'd',
-      }, makeCtx())
-
-      const proposalPath = String(mockFs.writeFile.mock.calls[0][0])
-      expect(proposalPath).toMatch(/add-foo-bar-tool-v2\.md$/)
-    })
-
-    it('truncates long slugs to 60 chars', async () => {
-      await proposeChange({
-        type: 'new-tool',
-        title: 'A'.repeat(100),
-        rationale: 'r',
-        description: 'd',
-      }, makeCtx())
-
-      const proposalPath = String(mockFs.writeFile.mock.calls[0][0])
-      const filename = path.basename(proposalPath, '.md')
-      // date prefix is 10 chars + dash = 11
-      const slug = filename.slice(11)
-      expect(slug.length).toBeLessThanOrEqual(60)
-    })
+    expect(writerMock.commitAndPush).toHaveBeenCalledWith(expect.objectContaining({
+      files: expect.arrayContaining([
+        expect.objectContaining({ path: 'memory/legacy.md', content: '## legacy' }),
+      ]),
+    }))
   })
 })
 
-// ── listProposals ─────────────────────────────────────────────────────────────
+// ── listProposals ────────────────────────────────────────────────────────────
 
 describe('listProposals', () => {
-  describe('when proposals directory exists', () => {
-    it('returns proposals sorted newest first', async () => {
-      mockFs.readdir.mockResolvedValue([
-        '2026-03-01-old.md',
-        '2026-04-01-new.md',
-        '2026-03-15-mid.md',
-      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
+  it('returns proposals for the tenant from the state backend', async () => {
+    const store = new Map<string, Proposal>()
+    const ctx = makeCtx({ proposalsStore: store })
 
-      mockFs.readFile.mockImplementation(async (p) => {
-        const name = path.basename(String(p))
-        return `# Proposal: ${name}\n\n**Type:** new-tool\n**Date:** 2026-01-01\n**Proposed by job:** j1\n\n## Rationale\n\nSome reason.`
+    // Seed two proposals; same-tenant only should be visible.
+    store.set('a', { id: 'a', tenantId: 'team-acme', jobId: 'j', type: 'memory-update', title: 'A', rationale: 'r', description: 'd', status: 'pending', files: [], createdAt: 't', updatedAt: 't' })
+    store.set('b', { id: 'b', tenantId: 'other', jobId: 'j', type: 'memory-update', title: 'B', rationale: 'r', description: 'd', status: 'pending', files: [], createdAt: 't', updatedAt: 't' })
+
+    const result = await listProposals({}, ctx)
+    expect(result.count).toBe(1)
+    expect(result.proposals[0].id).toBe('a')
+  })
+
+  it('respects the limit parameter', async () => {
+    const store = new Map<string, Proposal>()
+    for (let i = 0; i < 5; i++) {
+      store.set(String(i), {
+        id: String(i), tenantId: 'team-acme', jobId: 'j', type: 'memory-update',
+        title: `t${i}`, rationale: 'r', description: 'd', status: 'pending', files: [],
+        createdAt: 't', updatedAt: 't',
       })
-
-      const result = await listProposals({}, makeCtx()) as Record<string, unknown>
-      const proposals = result['proposals'] as Array<Record<string, unknown>>
-
-      expect(proposals).toHaveLength(3)
-      expect(proposals[0]['filename']).toBe('2026-04-01-new.md')
-      expect(proposals[2]['filename']).toBe('2026-03-01-old.md')
-    })
-
-    it('filters non-md files', async () => {
-      mockFs.readdir.mockResolvedValue([
-        '2026-04-01-real.md',
-        'readme.txt',
-        '.gitkeep',
-      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
-
-      mockFs.readFile.mockResolvedValue('# Proposal: Real\n\n**Type:** new-tool')
-
-      const result = await listProposals({}, makeCtx()) as Record<string, unknown>
-      expect((result['proposals'] as unknown[]).length).toBe(1)
-    })
-
-    it('respects the limit parameter', async () => {
-      mockFs.readdir.mockResolvedValue([
-        '2026-04-03-c.md',
-        '2026-04-02-b.md',
-        '2026-04-01-a.md',
-      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
-
-      mockFs.readFile.mockResolvedValue('# Proposal: X\n\n**Type:** new-tool')
-
-      const result = await listProposals({ limit: 2 }, makeCtx()) as Record<string, unknown>
-      expect((result['proposals'] as unknown[]).length).toBe(2)
-    })
-
-    it('filters by type when provided', async () => {
-      mockFs.readdir.mockResolvedValue([
-        '2026-04-01-new-tool-foozle.md',
-        '2026-04-01-new-agent-optimizer.md',
-        '2026-04-01-memory-update.md',
-      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
-
-      mockFs.readFile.mockResolvedValue('# Proposal: X\n\n**Type:** new-tool')
-
-      const result = await listProposals({ type: 'new-agent' }, makeCtx()) as Record<string, unknown>
-      const proposals = result['proposals'] as Array<Record<string, unknown>>
-      expect(proposals).toHaveLength(1)
-      expect(proposals[0]['filename']).toContain('new-agent')
-    })
-
-    it('extracts structured metadata from proposal markdown', async () => {
-      mockFs.readdir.mockResolvedValue([
-        '2026-04-01-test.md',
-      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
-
-      mockFs.readFile.mockResolvedValue(
-        '# Proposal: Add rate limiter\n\n' +
-        '**Type:** new-tool\n' +
-        '**Date:** 2026-04-01T10:00:00Z\n' +
-        '**Proposed by job:** my-job-123 (migration, phase: coding)\n' +
-        '**Files:** 2\n\n' +
-        '## Rationale\n\n' +
-        'The system needs rate limiting to prevent abuse.\n\n' +
-        '## Description\n\n' +
-        'Implementation details.',
-      )
-
-      const result = await listProposals({}, makeCtx()) as Record<string, unknown>
-      const p = (result['proposals'] as Array<Record<string, unknown>>)[0]
-
-      expect(p['title']).toBe('Add rate limiter')
-      expect(p['type']).toBe('new-tool')
-      expect(p['date']).toBe('2026-04-01T10:00:00Z')
-      expect(p['proposedBy']).toBe('my-job-123 (migration, phase: coding)')
-      expect(p['isBuildFailure']).toBe(false)
-      expect(p['preview']).toContain('rate limiting')
-    })
-
-    it('detects build failure proposals', async () => {
-      mockFs.readdir.mockResolvedValue([
-        '2026-04-01-build-failure-xyz.md',
-      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
-
-      mockFs.readFile.mockResolvedValue('# Build failure report\n\n## Compiler output\n\nTS2304: cannot find name.')
-
-      const result = await listProposals({}, makeCtx()) as Record<string, unknown>
-      const p = (result['proposals'] as Array<Record<string, unknown>>)[0]
-      expect(p['isBuildFailure']).toBe(true)
-      expect(p['preview']).toContain('TS2304')
-    })
-
-    it('returns totalOnDisk count matching all md files', async () => {
-      mockFs.readdir.mockResolvedValue([
-        '2026-04-03-c.md',
-        '2026-04-02-b.md',
-        '2026-04-01-a.md',
-      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
-
-      mockFs.readFile.mockResolvedValue('# Proposal: X')
-
-      const result = await listProposals({ limit: 1 }, makeCtx()) as Record<string, unknown>
-      expect(result['count']).toBe(1)
-      expect(result['totalOnDisk']).toBe(3)
-    })
+    }
+    const ctx = makeCtx({ proposalsStore: store })
+    const result = await listProposals({ limit: 2 }, ctx)
+    expect(result.count).toBe(2)
+    expect(result.totalForTenant).toBe(5)
   })
 
-  describe('when proposals directory does not exist', () => {
-    it('returns empty result with message', async () => {
-      mockFs.readdir.mockRejectedValue(new Error('ENOENT'))
+  it('filters by type', async () => {
+    const store = new Map<string, Proposal>()
+    store.set('a', { id: 'a', tenantId: 'team-acme', jobId: 'j', type: 'memory-update', title: 'A', rationale: 'r', description: 'd', status: 'pending', files: [], createdAt: 't', updatedAt: 't' })
+    store.set('b', { id: 'b', tenantId: 'team-acme', jobId: 'j', type: 'modify-agent', title: 'B', rationale: 'r', description: 'd', status: 'pending', files: [], createdAt: 't', updatedAt: 't' })
 
-      const result = await listProposals({}, makeCtx()) as Record<string, unknown>
-      expect(result['proposals']).toEqual([])
-      expect(result['count']).toBe(0)
-      expect(result['message']).toContain('No proposals directory')
-    })
+    const ctx = makeCtx({ proposalsStore: store })
+    const result = await listProposals({ type: 'modify-agent' }, ctx)
+    expect(result.count).toBe(1)
+    expect(result.proposals[0].id).toBe('b')
   })
 
-  describe('defaults', () => {
-    it('defaults limit to 20', async () => {
-      const files = Array.from({ length: 25 }, (_, i) =>
-        `2026-01-${String(i + 1).padStart(2, '0')}-p.md`,
-      )
-      mockFs.readdir.mockResolvedValue(files as unknown as Awaited<ReturnType<typeof fs.readdir>>)
-      mockFs.readFile.mockResolvedValue('# Proposal: X')
-
-      const result = await listProposals({}, makeCtx()) as Record<string, unknown>
-      expect((result['proposals'] as unknown[]).length).toBe(20)
+  it('truncates long rationale into a preview', async () => {
+    const store = new Map<string, Proposal>()
+    const longRationale = 'x'.repeat(1000)
+    store.set('a', {
+      id: 'a', tenantId: 'team-acme', jobId: 'j', type: 'memory-update',
+      title: 'A', rationale: longRationale, description: 'd', status: 'pending', files: [],
+      createdAt: 't', updatedAt: 't',
     })
+    const ctx = makeCtx({ proposalsStore: store })
+    const result = await listProposals({}, ctx)
+    expect(result.proposals[0].rationalePreview.length).toBeLessThan(longRationale.length)
+    expect(result.proposals[0].rationalePreview.endsWith('…')).toBe(true)
   })
 })

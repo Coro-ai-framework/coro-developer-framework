@@ -77,10 +77,9 @@ The **intelligence resolver**
    2 onward sees the now-present repo `.coro/`.
 
 The runner points all per-job markdown reads (workflow loader, prompt
-builder, subagent loader, filesystem hooks) at the resolved path.
-Process-wide consumers (file watcher, HTTP server) keep reading from
-`settings.paths.coroIntelligenceDir` for now — they are tenant-agnostic
-and Phase 5 covers their migration.
+builder, subagent loader, filesystem hooks) at the resolved path. The
+HTTP server still reads `settings.paths.coroIntelligenceDir` for the
+read-only mirror it serves — it is tenant-agnostic by design.
 
 #### Tenant context
 
@@ -218,18 +217,21 @@ coro jobs
 
 ## Self-improvement rule
 
-When any agent calls `propose_change`, the runner's intelligence file watcher detects the written files and automatically:
+When any agent calls `propose_change`, the runner synchronously:
 
-1. Validates the proposal (TypeScript build, YAML parse, workflow config parse, skill frontmatter)
-2. Creates a branch in this repo: `improvement/{short-description}`
-3. Commits the changed files
-4. Opens a PR tagged with the human developers and the configured reviewer account
-5. Labels the PR `agent-self-improvement`
+1. Validates the proposal (path allowlist per layer, frontmatter / heading checks per type)
+2. Routes the change to the right writable layer — **tenant** (the configured intelligence repo, identical for solo and team) or **repo** (the project's `.coro/` overlay). The base layer that ships with the runner is never written.
+3. Cuts a branch `coro/proposal/<jobId>-<layer>-<slug>` from that layer's default branch
+4. Commits every file in the multi-file payload as one atomic commit
+5. Pushes and opens a PR via the configured git provider (GitHub or Bitbucket)
+6. Records the proposal in the state backend so `list_proposals` and the dashboard can surface it
 
-**Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the runner pulls the latest intelligence and all subsequent job phases use the updated instructions immediately.
+**Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the next job's intelligence resolver pulls the merged change automatically.
 
-The self-improvement pipeline covers three layers of intelligence:
-- **Memory** (`memory/*.md`) — high volatility, grows with every job
+Each call produces exactly one PR. Bundle every file change for a layer into one `propose_change` call — splitting creates duplicate PRs. The Evaluator (and PR Reviewer for cross-PR systemic patterns) is responsible for grooming insights into a single multi-file proposal per layer per job.
+
+The self-improvement pipeline covers three writable surfaces (across the tenant and repo layers):
+- **Memory** (`memory/*.md` tenant, `.coro/memory/*.md` repo) — high volatility, grows with every job
 - **Skills** (`.claude/skills/*/SKILL.md`) — medium volatility, updated when agents discover systemic gaps
 - **Agent instructions** (`agents/*.md`) — lower volatility, updated when procedures need fixing
 

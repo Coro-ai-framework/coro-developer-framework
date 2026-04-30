@@ -33,7 +33,6 @@
     "@coro/intelligence-base": "workspace:*",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",
-    "chokidar": "^4.0.3",
     "commander": "^13.1.0",
     "dotenv": "^17.4.0",
     "drizzle-orm": "^0.45.2",

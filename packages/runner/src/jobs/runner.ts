@@ -1032,8 +1032,9 @@ function buildSubagentDefinitions(
 /**
  * Symlink {coroIntelligenceDir}/.claude into the job working directory so the Agent SDK's
  * native settingSources: ['project'] discovers .claude/CLAUDE.md and skills.
- * Uses a symlink (not copy) so propose_change writes to the real intelligence repo
- * and the file watcher picks up changes as usual.
+ * Uses a symlink (not copy) so the per-job overlay always reflects the
+ * latest layered intelligence (base + tenant + repo) without copies
+ * needing to be re-synced.
  */
 function ensureClaudeConfigSymlink(workingDir: string, coroIntelligenceDir: string, logger: Logger): void {
   const target = path.join(coroIntelligenceDir, '.claude')

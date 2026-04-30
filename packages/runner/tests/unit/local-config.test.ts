@@ -8,6 +8,7 @@ import {
   mergeLocalConfig,
   detectMode,
   resolveIntelligenceDir,
+  resolveProposalsConfig,
   resolveWorkingDir,
   type LocalConfig,
 } from '../../src/config/local-config'
@@ -191,6 +192,42 @@ describe('local-config', () => {
       fs.writeFileSync(
         configPath,
         JSON.stringify({ anthropic: { apiKey: '' } }),
+      )
+      expect(() => loadLocalConfig(configPath)).toThrow()
+    })
+  })
+
+  // ── Proposals schema ─────────────────────────────────────────────────────
+  describe('proposals config', () => {
+    it('defaults to path-based routing when the block is missing', () => {
+      saveLocalConfig({ anthropic: { method: 'apiKey', apiKey: 'sk-1' } }, configPath)
+      const loaded = loadLocalConfig(configPath)
+      expect(resolveProposalsConfig(loaded).routing.strategy).toBe('path')
+    })
+
+    it('defaults to path-based routing when config is null', () => {
+      expect(resolveProposalsConfig(null).routing.strategy).toBe('path')
+    })
+
+    it('round-trips an explicit agent-routing config', () => {
+      saveLocalConfig(
+        {
+          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
+          proposals: { routing: { strategy: 'agent' } },
+        },
+        configPath,
+      )
+      const loaded = loadLocalConfig(configPath)
+      expect(resolveProposalsConfig(loaded).routing.strategy).toBe('agent')
+    })
+
+    it('rejects an unknown routing strategy', () => {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
+          proposals: { routing: { strategy: 'magic' } },
+        }),
       )
       expect(() => loadLocalConfig(configPath)).toThrow()
     })

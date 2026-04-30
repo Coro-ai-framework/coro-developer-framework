@@ -36,6 +36,12 @@ export interface RunnerServerOptions {
   stateBackend: StateBackend
   logger: Logger
   mode?: 'hybrid' | 'local'
+  /**
+   * The runner's process-wide tenant. Used to scope tenant-aware
+   * read endpoints (e.g. `GET /proposals`) without requiring callers
+   * to know the synthesised solo-tenant id.
+   */
+  tenantId?: string
 }
 
 /** Mask a secret for display: show enough prefix/suffix to recognise it, hide the middle. */
@@ -230,7 +236,7 @@ function mimeForPath(filePath: string): string {
  * CLI commands (`coro job`, `coro status`, etc.) talk to this.
  */
 export function createRunnerServer(opts: RunnerServerOptions): http.Server {
-  const { port, dispatcher, stateBackend, logger, mode = 'hybrid' } = opts
+  const { port, dispatcher, stateBackend, logger, mode = 'hybrid', tenantId } = opts
   const app = express()
   app.use(express.json())
   const claudeLoginManager = new ClaudeLoginManager({ logger })
@@ -431,6 +437,57 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ sent: true })
     } catch (err) {
       res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
+  // ── Proposals (read-only) ───────────────────────────────────────────────
+  //
+  // The dashboard renders a read-only mirror of in-flight self-improvement
+  // PRs. Approvals happen on the git provider — this endpoint just
+  // exposes "what's open right now" so a developer doesn't have to dig
+  // through GitHub/Bitbucket UI to see what their agents proposed.
+  //
+  // Tenant scoping: the runner's process-wide tenant id (passed in via
+  // `RunnerServerOptions.tenantId`) is the default. Cloud/team setups can
+  // override per request via `?tenantId=<id>` — useful when a single
+  // dashboard surfaces multiple tenants in the future.
+
+  app.get('/proposals', async (req: Request, res: Response) => {
+    try {
+      const requested = typeof req.query.tenantId === 'string' ? req.query.tenantId : undefined
+      const scope = requested ?? tenantId
+      if (!scope) {
+        res.status(400).json({
+          error: 'tenantId is not configured on this runner; pass ?tenantId=<id> to scope the query.',
+        })
+        return
+      }
+      const status = typeof req.query.status === 'string' ? req.query.status : undefined
+      if (status && status !== 'pending' && status !== 'approved' && status !== 'rejected') {
+        res.status(400).json({ error: `invalid status "${status}" — must be pending, approved, or rejected` })
+        return
+      }
+      const proposals = await stateBackend.listProposals(scope, status as 'pending' | 'approved' | 'rejected' | undefined)
+      res.json({
+        tenantId: scope,
+        count: proposals.length,
+        proposals: proposals.map(p => ({
+          id: p.id,
+          jobId: p.jobId,
+          type: p.type,
+          title: p.title,
+          status: p.status,
+          targetLayer: p.targetLayer,
+          prUrl: p.prUrl,
+          branch: p.branch,
+          fileCount: p.files?.length ?? 0,
+          createdAt: p.createdAt,
+          updatedAt: p.updatedAt,
+        })),
+      })
+    } catch (err) {
+      logger.error({ err }, 'GET /proposals failed')
+      res.status(500).json({ error: (err as Error).message })
     }
   })
 

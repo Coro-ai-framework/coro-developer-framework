@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import fs from 'fs/promises'
 import * as cp from 'child_process'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
 import { STATUS_ESCALATED } from '../../src/jobs/types'
@@ -15,8 +14,6 @@ vi.mock('child_process', async (importOriginal) => {
     spawn: vi.fn(),
   }
 })
-
-const mockFs = vi.mocked(fs)
 
 /** Parses JSON from the first text content block returned by handlers. */
 function parseJson(result: { content: Array<{ type: string; text: string }> }): unknown {
@@ -595,23 +592,69 @@ describe('createMcpToolHandlers — artifacts', () => {
   })
 })
 
+// ── propose_change / list_proposals ──────────────────────────────────────────
+//
+// `propose_change` now opens a real PR via the writer module. We
+// stub the writer at module level so these handler tests verify the
+// MCP plumbing (input shape, error surfacing, state-backend wiring)
+// without exercising git or HTTP.
+
+vi.mock('../../src/intelligence/writer', () => ({
+  prepareTenantWriter: vi.fn(async () => ({
+    dir: '/tmp/writer/tenant',
+    baseRef: 'main',
+    remoteUrl: 'git@github.com:acme/intel.git',
+  })),
+  prepareRepoWriter: vi.fn(async () => ({
+    dir: '/tmp/working/proposal-job/my-repo',
+    baseRef: 'main',
+    remoteUrl: 'git@github.com:acme/my-repo.git',
+  })),
+  commitAndPush: vi.fn(async () => undefined),
+  openProposalPr: vi.fn(async () => ({
+    id: 99,
+    url: 'https://github.com/acme/intel/pull/99',
+    provider: 'github' as const,
+  })),
+}))
+
 describe('createMcpToolHandlers — propose_change / list_proposals', () => {
   let ctx: ReturnType<typeof makeMockToolContext>
+  const proposalsStore = new Map<string, import('../../src/jobs/types').Proposal>()
 
   beforeEach(() => {
     vi.clearAllMocks()
-    mockFs.mkdir.mockResolvedValue(undefined)
-    mockFs.writeFile.mockResolvedValue(undefined)
-    mockFs.readdir.mockResolvedValue([] as never)
-    mockFs.readFile.mockResolvedValue('')
+    proposalsStore.clear()
 
     ctx = makeMockToolContext({
-      job: makeMockJob({ id: 'proposal-job' }),
-      settings: { paths: { coroIntelligenceDir: '/data/a5ai', workingDir: '/tmp/w' } } as ToolContext['settings'],
+      job: makeMockJob({ id: 'proposal-job', params: { repoSlug: 'my-repo' } }),
+      settings: {
+        paths: { coroIntelligenceDir: '/data/a5ai', workingDir: '/tmp/w' },
+        proposals: { routing: { strategy: 'path' } },
+      } as ToolContext['settings'],
+      tenantContext: {
+        tenantId: 'team-acme',
+        mode: 'team' as const,
+        displayName: 'Team ACME',
+        overlay: { kind: 'gitRemote', url: 'git@github.com:acme/intel.git', ref: 'main' },
+      },
     })
+    // Override stateBackend.createProposal / listProposals to use a local store.
+    ;(ctx.stateBackend.createProposal as unknown as ReturnType<typeof vi.fn>) = vi.fn(
+      async (p: Omit<import('../../src/jobs/types').Proposal, 'id'>) => {
+        const id = `proposal-${proposalsStore.size + 1}`
+        const stored: import('../../src/jobs/types').Proposal = { ...p, id }
+        proposalsStore.set(id, stored)
+        return stored
+      },
+    )
+    ;(ctx.stateBackend.listProposals as unknown as ReturnType<typeof vi.fn>) = vi.fn(
+      async (tenantId: string) =>
+        Array.from(proposalsStore.values()).filter(p => p.tenantId === tenantId),
+    )
   })
 
-  it('propose_change writes proposal via self-improvement module', async () => {
+  it('propose_change ships the proposal and returns a PR URL', async () => {
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(
       await h.propose_change({
@@ -623,15 +666,45 @@ describe('createMcpToolHandlers — propose_change / list_proposals', () => {
       }),
     ) as Record<string, unknown>
 
-    expect(data['fileCount']).toBe(1)
-    expect(mockFs.writeFile).toHaveBeenCalled()
+    expect(data['targetLayer']).toBe('tenant')
+    expect(data['prUrl']).toBe('https://github.com/acme/intel/pull/99')
+    expect(data['filesShipped']).toEqual(['memory/x.md'])
+    expect(ctx.stateBackend.createProposal).toHaveBeenCalled()
   })
 
-  it('list_proposals returns empty when directory missing', async () => {
-    mockFs.readdir.mockRejectedValueOnce(new Error('ENOENT'))
+  it('propose_change surfaces validation errors as a structured tool error', async () => {
+    const h = createMcpToolHandlers(ctx, {})
+    const result = await h.propose_change({
+      type: 'skill-create',
+      title: 'Bad skill',
+      rationale: 'r',
+      description: 'd',
+      // Wrong path for a skill — should fail validation before any git happens
+      files: [{ path: 'agents/not-a-skill.md', content: 'x' }],
+    })
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(result.content[0].text).toContain('Skill files must live under')
+  })
+
+  it('list_proposals returns an empty list for a fresh tenant', async () => {
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.list_proposals({})) as Record<string, unknown>
     expect(data['proposals']).toEqual([])
     expect(data['count']).toBe(0)
+    expect(data['totalForTenant']).toBe(0)
+  })
+
+  it('list_proposals returns previously-recorded proposals for the tenant', async () => {
+    const h = createMcpToolHandlers(ctx, {})
+    await h.propose_change({
+      type: 'memory-update',
+      title: 'First',
+      rationale: 'r',
+      description: 'd',
+      files: [{ path: 'memory/a.md', content: '# A' }],
+    })
+    const data = parseJson(await h.list_proposals({})) as Record<string, unknown>
+    expect(data['count']).toBe(1)
+    expect((data['proposals'] as Array<Record<string, unknown>>)[0]['title']).toBe('First')
   })
 })

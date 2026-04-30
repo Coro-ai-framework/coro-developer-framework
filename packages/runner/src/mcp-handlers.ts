@@ -422,7 +422,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     propose_change: async (args: {
       type:
         | 'new-tool' | 'modify-tool' | 'new-workflow' | 'modify-workflow'
-        | 'new-agent' | 'modify-agent' | 'memory-update' | 'source-change'
+        | 'new-agent' | 'modify-agent' | 'memory-update'
         | 'skill-create' | 'skill-update' | 'claude-md-update'
       title: string
       rationale: string
@@ -430,23 +430,35 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       files?: Array<{ path: string; content: string }>
       targetFile?: string
       proposedContent?: string
+      targetLayer?: 'tenant' | 'repo'
     }) => {
       const { proposeChange } = await import('./tools/self-improvement')
-      const result = await proposeChange({
-        type: args.type,
-        title: args.title,
-        rationale: args.rationale,
-        description: args.description,
-        files: args.files,
-        targetFile: args.targetFile,
-        proposedContent: args.proposedContent,
-      }, ctx)
-      return text(result)
+      try {
+        const result = await proposeChange({
+          type: args.type,
+          title: args.title,
+          rationale: args.rationale,
+          description: args.description,
+          files: args.files,
+          targetFile: args.targetFile,
+          proposedContent: args.proposedContent,
+          targetLayer: args.targetLayer,
+        }, ctx)
+        return text(result)
+      } catch (err) {
+        // Surface validation / git / PR errors as a structured tool
+        // error so the agent can correct and retry rather than the
+        // SDK swallowing the rejection.
+        return error((err as Error).message)
+      }
     },
 
-    list_proposals: async (args: { limit?: number; type?: string }) => {
+    list_proposals: async (args: { limit?: number; type?: string; status?: 'pending' | 'approved' | 'rejected' }) => {
       const { listProposals } = await import('./tools/self-improvement')
-      const result = await listProposals({ limit: args.limit, type: args.type }, ctx)
+      const result = await listProposals(
+        { limit: args.limit, type: args.type, ...(args.status ? { status: args.status } : {}) },
+        ctx,
+      )
       return text(result)
     },
 
@@ -491,16 +503,23 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         if (c !== null) linkedFiles.push({ path: href, content: c })
       }
 
-      const proposals: Array<{ path: string; content: string }> = []
-      try {
-        const entries = await fs.readdir(nodePath.join(memoryDir, 'proposals'))
-        for (const f of entries.filter(e => e.endsWith('.md')).sort()) {
-          const c = await readFile(`proposals/${f}`)
-          if (c !== null) proposals.push({ path: `proposals/${f}`, content: c })
-        }
-      } catch {
-        // proposals dir absent — normal for new installs
-      }
+      // Pending proposals come from the state backend now (PRs against
+      // the tenant or project repo are the source of truth). Surface them
+      // here so agents reading memory also see what is in flight.
+      const pendingRecords = await ctx.stateBackend.listProposals(
+        ctx.tenantContext.tenantId,
+        'pending',
+      )
+      const proposals = pendingRecords.map(p => ({
+        id: p.id,
+        type: p.type,
+        title: p.title,
+        rationale: p.rationale,
+        targetLayer: p.targetLayer,
+        prUrl: p.prUrl,
+        branch: p.branch,
+        files: p.files.map(f => f.path),
+      }))
 
       return text({ index, files: linkedFiles, proposals })
     },

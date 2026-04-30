@@ -62,9 +62,20 @@ For each failed test case:
 
 ### 3. Review upstream insights and propose improvements
 
-The job context includes an **Insights from Upstream Agents** section — learnings, workarounds, and discoveries recorded by the planner, coder, tester, and reviewer during earlier phases. Before proposing, invoke the `self-improvement-guide` skill for file structure and proposal types. Review every insight carefully.
+The job context includes an **Insights from Upstream Agents** section — learnings, workarounds, and discoveries recorded by the planner, coder, tester, and reviewer during earlier phases. Before proposing, invoke the `self-improvement-guide` skill for file structure, proposal types, and target-layer routing rules.
 
-Check `mcp__coro__list_proposals` first to avoid duplicates.
+You are the **grooming agent** for self-improvement: review every insight, decide which ones deserve durable changes, and consolidate them into a coherent diff.
+
+**Consolidation rule (mandatory):** Make at most ONE `propose_change` call per target layer per job — one for the tenant intelligence repo and, if needed, one for the project repo's `.coro/` overlay. Bundle every related file change for a layer into a single multi-file payload. Two proposals to the same layer means two PRs and twice the human review time.
+
+Steps:
+
+1. Call `mcp__coro__list_proposals({ status: "pending" })` to check for in-flight PRs that already cover the same ground — skip duplicates.
+2. Group your durable changes by target layer. The default routing is path-prefix-based:
+   - `.coro/...` → repo layer (project-specific conventions)
+   - everything else (`memory/`, `agents/`, `workflows/`, `.claude/CLAUDE.md`, `.claude/skills/`) → tenant layer
+3. For each layer that has changes, make exactly one `mcp__coro__propose_change` call with a `files: []` array containing every file for that layer. The tool returns the PR URL synchronously; record it in your evaluation report.
+4. If validation fails, the tool throws a structured error — fix the input (path, frontmatter, layer mismatch) and retry. There is no half-state to clean up.
 
 ### 4. Write the evaluation report
 

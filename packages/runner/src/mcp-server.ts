@@ -368,27 +368,34 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'propose_change',
-        'Propose an improvement to the Agent Host. Supports multi-file proposals. The watcher validates and opens a PR.',
+        'Ship a self-improvement as a PR against the tenant intelligence repo or the project repo\'s .coro/ overlay. Bundle every file change for a given target layer into ONE call — splitting produces multiple PRs. The tool validates, branches, commits, pushes, opens a PR, and returns its URL.',
         {
           type: z.enum([
             'new-tool', 'modify-tool', 'new-workflow', 'modify-workflow',
-            'new-agent', 'modify-agent', 'memory-update', 'source-change',
+            'new-agent', 'modify-agent', 'memory-update',
             'skill-create', 'skill-update', 'claude-md-update',
           ]),
-          title: z.string(),
-          rationale: z.string(),
-          description: z.string(),
-          files: z.array(z.object({ path: z.string(), content: z.string() })).optional(),
-          targetFile: z.string().optional(),
+          title: z.string().describe('Short, human-readable title; becomes the PR title.'),
+          rationale: z.string().describe('Why this change is worth merging — drives the PR description and future list_proposals previews.'),
+          description: z.string().describe('Implementation details / what the diff does.'),
+          files: z.array(z.object({ path: z.string(), content: z.string() })).optional()
+            .describe('Multi-file payload. Paths are relative to the target layer\'s root.'),
+          targetFile: z.string().optional().describe('Single-file shim. Use `files` for multi-file proposals.'),
           proposedContent: z.string().optional(),
+          targetLayer: z.enum(['tenant', 'repo']).optional()
+            .describe('Where the change lands. Optional under default path-based routing (.coro/* → repo, else → tenant); required when proposals.routing.strategy=agent.'),
         },
         h.propose_change,
       ),
 
       tool(
         'list_proposals',
-        'List past proposals filed by agents. Check before proposing duplicates.',
-        { limit: z.number().optional(), type: z.string().optional() },
+        'List past proposals for this tenant from the state backend (de-dup before proposing). Filter by `status` (pending/approved/rejected) or `type`.',
+        {
+          limit: z.number().optional(),
+          type: z.string().optional(),
+          status: z.enum(['pending', 'approved', 'rejected']).optional(),
+        },
         h.list_proposals,
         { annotations: { readOnlyHint: true } },
       ),

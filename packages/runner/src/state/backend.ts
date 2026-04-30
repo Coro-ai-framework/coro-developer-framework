@@ -3,7 +3,7 @@ import { Job, JobInput, JobType, PrMapping, Proposal, ProposalStatus } from '../
 // ── State backend interface ───────────────────────────────────────────────────
 //
 // All job state persistence goes through this interface. The runner, MCP
-// handlers, dispatcher, server, and watcher never touch a concrete store
+// handlers, dispatcher, and server never touch a concrete store
 // directly — they always call through StateBackend.
 //
 // Implementations:
