@@ -124,6 +124,46 @@ describe('local-config', () => {
     })
   })
 
+  // ── Intelligence schema flexibility ────────────────────────────────────
+  //
+  // Both `dir` and `gitRemote` are optional so the dashboard can save
+  // either field on its own. Previously `dir` was required, which meant
+  // typing a `gitRemote` while leaving the `dir` placeholder blank would
+  // cause the entire intelligence block to be dropped at write time —
+  // the field would silently disappear after a refresh. These tests pin
+  // the round-trip behaviour so that regression cannot recur.
+  describe('intelligence schema (round-trip without dir)', () => {
+    it('accepts an intelligence block with only gitRemote', () => {
+      const config: LocalConfig = {
+        anthropic: { method: 'apiKey', apiKey: 'sk-x' },
+        intelligence: { gitRemote: 'https://github.com/me/intel.git' },
+      }
+      saveLocalConfig(config, configPath)
+      const loaded = loadLocalConfig(configPath)
+      expect(loaded?.intelligence?.gitRemote).toBe('https://github.com/me/intel.git')
+      expect(loaded?.intelligence?.dir).toBeUndefined()
+    })
+
+    it('accepts an intelligence block with only dir', () => {
+      const config: LocalConfig = {
+        anthropic: { method: 'apiKey', apiKey: 'sk-x' },
+        intelligence: { dir: '/custom/intel' },
+      }
+      saveLocalConfig(config, configPath)
+      const loaded = loadLocalConfig(configPath)
+      expect(loaded?.intelligence?.dir).toBe('/custom/intel')
+      expect(loaded?.intelligence?.gitRemote).toBeUndefined()
+    })
+
+    it('still uses the default dir when only gitRemote is set', () => {
+      const config: LocalConfig = {
+        anthropic: { method: 'apiKey', apiKey: 'sk-x' },
+        intelligence: { gitRemote: 'https://github.com/me/intel.git' },
+      }
+      expect(resolveIntelligenceDir(config)).toContain('.coro')
+    })
+  })
+
   // ── Anthropic auth schema ──────────────────────────────────────────────
   //
   // The schema must accept (a) legacy `{ apiKey }` configs written by older

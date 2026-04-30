@@ -52,9 +52,15 @@ const anthropicConfigSchema = z
     },
   )
 
+// Both fields are optional individually — `resolveIntelligenceDir`
+// already falls back to `defaultIntelligenceDir()` when `dir` is unset,
+// and `gitRemote` is meaningful on its own (it drives the tenant
+// overlay even when the local materialisation lives at the default
+// path). A user entering only one of the two fields in the dashboard
+// must round-trip through GET /config without disappearing.
 const intelligenceConfigSchema = z.object({
-  dir: z.string().min(1),
-  gitRemote: z.string().optional(),
+  dir: z.string().min(1).optional(),
+  gitRemote: z.string().min(1).optional(),
 }).optional()
 
 // ── Tenant overlay (Phase 4) ─────────────────────────────────────────────────

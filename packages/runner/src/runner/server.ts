@@ -57,6 +57,22 @@ function isRedacted(value: unknown): boolean {
 }
 
 /**
+ * Drop `undefined`-valued keys from a partial-update payload before
+ * merging it into the existing config. JS spread-merge would otherwise
+ * overwrite `existing.foo = 'bar'` with `undefined` when the dashboard
+ * sends `{ foo: undefined }` (e.g. when a path field was left blank
+ * and the user only meant to update a sibling field).
+ */
+function omitUndefined<T extends Record<string, unknown>>(obj: T | undefined): Partial<T> {
+  if (!obj) return {}
+  const out: Partial<T> = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) (out as Record<string, unknown>)[k] = v
+  }
+  return out
+}
+
+/**
  * Strip nested objects whose required fields are missing/empty.
  *
  * The dashboard sends `{ intelligence: { dir: undefined }, paths: { workingDir: undefined } }`
@@ -69,15 +85,21 @@ function isRedacted(value: unknown): boolean {
 function pruneEmptyConfigSections(config: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...config }
 
+  // Intelligence: keep the block if ANY field carries a value. Drop
+  // only-undefined / only-empty-string entries so the file we write is
+  // round-trippable, but never throw away a `gitRemote` just because
+  // `dir` is left to default.
   const intelligence = out.intelligence as { dir?: unknown; gitRemote?: unknown } | undefined
   if (intelligence) {
-    const hasDir = typeof intelligence.dir === 'string' && intelligence.dir.length > 0
-    const hasRemote = typeof intelligence.gitRemote === 'string' && intelligence.gitRemote.length > 0
-    if (!hasDir && !hasRemote) delete out.intelligence
-    else if (!hasDir) {
-      // gitRemote alone isn't enough — schema requires `dir`. Keep neither.
-      delete out.intelligence
+    const cleaned: Record<string, string> = {}
+    if (typeof intelligence.dir === 'string' && intelligence.dir.length > 0) {
+      cleaned['dir'] = intelligence.dir
     }
+    if (typeof intelligence.gitRemote === 'string' && intelligence.gitRemote.length > 0) {
+      cleaned['gitRemote'] = intelligence.gitRemote
+    }
+    if (Object.keys(cleaned).length === 0) delete out.intelligence
+    else out.intelligence = cleaned
   }
 
   const paths = out.paths as { workingDir?: unknown } | undefined
@@ -620,24 +642,35 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         }
       }
 
-      // Update intelligence
+      // Update intelligence — preserve existing fields when the dashboard
+      // sends `undefined` for them (e.g. user filled in `gitRemote` only
+      // and left `dir` blank to use the default).
       if (updates.intelligence) {
-        merged.intelligence = { ...existing.intelligence, ...updates.intelligence }
+        merged.intelligence = {
+          ...existing.intelligence,
+          ...omitUndefined(updates.intelligence),
+        }
       }
 
       // Update paths
       if (updates.paths) {
-        merged.paths = { ...existing.paths, ...updates.paths }
+        merged.paths = {
+          ...existing.paths,
+          ...omitUndefined(updates.paths),
+        } as LocalConfig['paths']
       }
 
       // Update git
       if (updates.git) {
+        const cleaned = omitUndefined(updates.git)
         merged.git = {
           ...existing.git,
-          ...updates.git,
+          ...cleaned,
           // Don't overwrite token with redacted value
-          token: updates.git.token?.includes('...') ? existing.git?.token ?? '' : updates.git.token ?? existing.git?.token ?? '',
-        }
+          token: typeof cleaned.token === 'string' && cleaned.token.includes('...')
+            ? existing.git?.token ?? ''
+            : (cleaned.token as string | undefined) ?? existing.git?.token ?? '',
+        } as LocalConfig['git']
       }
 
       // Respect local mode — strip cloud if not explicitly set
