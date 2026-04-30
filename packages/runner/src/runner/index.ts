@@ -158,11 +158,30 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       apiKey: process.env.TEMPO_API_KEY ?? '',
     },
     jira: {
-      baseUrl: process.env.JIRA_BASE_URL ?? '',
-      username: process.env.JIRA_USERNAME ?? '',
-      apiToken: process.env.JIRA_API_TOKEN ?? '',
+      // Local config wins so the dashboard's Tracker section is the
+      // single source of truth; env vars stay as a no-config fallback
+      // for headless deployments that drove the runner before the
+      // dashboard existed.
+      baseUrl: config.tracker?.jira?.baseUrl ?? process.env.JIRA_BASE_URL ?? '',
+      username: config.tracker?.jira?.username ?? process.env.JIRA_USERNAME ?? '',
+      apiToken: config.tracker?.jira?.apiToken ?? process.env.JIRA_API_TOKEN ?? '',
       pollIntervalSeconds: 60,
     },
+    // The campaign workflow consults `tracker.provider` to pick a client.
+    // When the user leaves the dashboard field unset we infer from
+    // available credentials at the factory layer, so saving a partial
+    // config never crashes the runner.
+    ...(config.tracker?.provider
+      ? { tracker: { provider: config.tracker.provider } }
+      : {}),
+    ...(config.tracker?.linear?.apiKey
+      ? {
+          linear: {
+            apiKey: config.tracker.linear.apiKey,
+            ...(config.tracker.linear.teamKey ? { teamKey: config.tracker.linear.teamKey } : {}),
+          },
+        }
+      : {}),
     ngrok: {
       authToken: '',
       staticDomain: '',

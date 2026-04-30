@@ -126,6 +126,45 @@ function pruneEmptyConfigSections(config: Record<string, unknown>): Record<strin
     if (!hasUrl || !hasToken) delete out.cloud
   }
 
+  // Tracker block: keep only the section relevant to the chosen provider
+  // so we never persist stale Jira creds after the user switches to Linear
+  // (and vice-versa). When provider is `none` or unset we drop the whole
+  // block — the factory falls back to inference, which is what the user
+  // expects when they intentionally clear the form.
+  const tracker = out.tracker as
+    | {
+        provider?: unknown
+        jira?: { baseUrl?: unknown; username?: unknown; apiToken?: unknown } | undefined
+        linear?: { apiKey?: unknown; teamKey?: unknown } | undefined
+      }
+    | undefined
+  if (tracker) {
+    const provider = typeof tracker.provider === 'string' ? tracker.provider : ''
+    const cleaned: Record<string, unknown> = {}
+    if (provider) cleaned['provider'] = provider
+
+    if (provider === 'jira' && tracker.jira) {
+      const jira: Record<string, string> = {}
+      if (typeof tracker.jira.baseUrl === 'string' && tracker.jira.baseUrl.length > 0) jira['baseUrl'] = tracker.jira.baseUrl
+      if (typeof tracker.jira.username === 'string' && tracker.jira.username.length > 0) jira['username'] = tracker.jira.username
+      if (typeof tracker.jira.apiToken === 'string' && tracker.jira.apiToken.length > 0) jira['apiToken'] = tracker.jira.apiToken
+      if (Object.keys(jira).length > 0) cleaned['jira'] = jira
+    }
+
+    if (provider === 'linear' && tracker.linear) {
+      const linear: Record<string, string> = {}
+      if (typeof tracker.linear.apiKey === 'string' && tracker.linear.apiKey.length > 0) linear['apiKey'] = tracker.linear.apiKey
+      if (typeof tracker.linear.teamKey === 'string' && tracker.linear.teamKey.length > 0) linear['teamKey'] = tracker.linear.teamKey
+      if (Object.keys(linear).length > 0) cleaned['linear'] = linear
+    }
+
+    if (Object.keys(cleaned).length === 0 || provider === 'none') {
+      delete out.tracker
+    } else {
+      out.tracker = cleaned
+    }
+  }
+
   return out
 }
 
@@ -705,6 +744,23 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             ? `${config.git.token.slice(0, 6)}...${config.git.token.slice(-4)}`
             : '',
         } : undefined,
+        // Tracker creds round-trip with the same `...` redaction
+        // convention as anthropic + git so the dashboard can display a
+        // hint that the secret is set without ever shipping it to the
+        // browser. PUT /config restores the on-disk value when it sees
+        // a `...`-redacted string come back.
+        tracker: config.tracker ? {
+          provider: config.tracker.provider,
+          jira: config.tracker.jira ? {
+            baseUrl: config.tracker.jira.baseUrl,
+            username: config.tracker.jira.username,
+            apiToken: redactSecret(config.tracker.jira.apiToken),
+          } : undefined,
+          linear: config.tracker.linear ? {
+            apiKey: redactSecret(config.tracker.linear.apiKey),
+            teamKey: config.tracker.linear.teamKey,
+          } : undefined,
+        } : undefined,
       } : null
 
       // `resolved` mirrors what the runner will actually use on disk:
@@ -816,6 +872,40 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       // Respect local mode — strip cloud if not explicitly set
       if (!updates.cloud) {
         delete (merged as Record<string, unknown>).cloud
+      }
+
+      // Tracker block. Treat redacted secrets the same way the anthropic
+      // branch does: when the dashboard echoes a `...` value back we
+      // preserve whatever is already on disk. Switching providers wipes
+      // the inactive credential sub-blocks on save (handled by
+      // `pruneEmptyConfigSections` below) so we don't accumulate stale
+      // tokens.
+      if (updates.tracker) {
+        const incoming = updates.tracker as {
+          provider?: 'none' | 'jira' | 'github' | 'linear'
+          jira?: { baseUrl?: string; username?: string; apiToken?: string }
+          linear?: { apiKey?: string; teamKey?: string }
+        }
+        const next: NonNullable<LocalConfig['tracker']> = {}
+        if (incoming.provider) next.provider = incoming.provider
+        if (incoming.jira) {
+          next.jira = {
+            ...(incoming.jira.baseUrl !== undefined ? { baseUrl: incoming.jira.baseUrl } : {}),
+            ...(incoming.jira.username !== undefined ? { username: incoming.jira.username } : {}),
+            apiToken: isRedacted(incoming.jira.apiToken)
+              ? existing.tracker?.jira?.apiToken
+              : incoming.jira.apiToken ?? existing.tracker?.jira?.apiToken,
+          }
+        }
+        if (incoming.linear) {
+          next.linear = {
+            apiKey: isRedacted(incoming.linear.apiKey)
+              ? existing.tracker?.linear?.apiKey
+              : incoming.linear.apiKey ?? existing.tracker?.linear?.apiKey,
+            ...(incoming.linear.teamKey !== undefined ? { teamKey: incoming.linear.teamKey } : {}),
+          }
+        }
+        merged.tracker = next
       }
 
       // Drop empty sub-objects (e.g. `{ paths: {}, intelligence: {} }`) so the

@@ -124,6 +124,34 @@ const proposalsConfigSchema = z.object({
   }).optional(),
 }).optional()
 
+// ── Issue tracker (campaign workflow) ────────────────────────────────────────
+//
+// The campaign workflow's planner/evaluator agents talk to an external issue
+// tracker via the `TrackerClient` abstraction. The tenant chooses the
+// provider here; when set to `'github'` the runner reuses the credentials
+// from the `git` block (no need to re-enter a token). Jira and Linear get
+// their own credential sub-objects since they are unrelated to the git
+// provider.
+//
+// All inner credential fields are optional so a partially-filled tracker
+// block round-trips cleanly through GET/PUT — useful when the user is
+// switching providers in the dashboard but hasn't filled in the new one
+// yet. The factory in `clients/tracker/index.ts` falls back to the
+// "stub" client when credentials are missing, which is what `provider:
+// 'none'` also produces.
+const trackerConfigSchema = z.object({
+  provider: z.enum(['none', 'jira', 'github', 'linear']).optional(),
+  jira: z.object({
+    baseUrl: z.string().optional(),
+    username: z.string().optional(),
+    apiToken: z.string().optional(),
+  }).optional(),
+  linear: z.object({
+    apiKey: z.string().optional(),
+    teamKey: z.string().optional(),
+  }).optional(),
+}).optional()
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   anthropic: anthropicConfigSchema,
@@ -132,6 +160,7 @@ const localConfigSchema = z.object({
   git: gitConfigSchema,
   tenant: tenantConfigSchema,
   proposals: proposalsConfigSchema,
+  tracker: trackerConfigSchema,
 })
 
 export type LocalConfig = z.infer<typeof localConfigSchema>
@@ -287,6 +316,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     git: patch.git !== undefined ? patch.git : existing.git,
     tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
+    tracker: patch.tracker !== undefined ? patch.tracker : existing.tracker,
   }
   saveLocalConfig(merged, configPath)
   return merged

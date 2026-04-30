@@ -21,6 +21,8 @@ interface ClaudeLoginState {
   completedAt?: string
 }
 
+type TrackerProvider = 'none' | 'jira' | 'github' | 'linear'
+
 interface ConfigResponse {
   config: {
     anthropic?: {
@@ -38,6 +40,11 @@ interface ConfigResponse {
       workspace?: string
     }
     cloud?: { url: string; token: string }
+    tracker?: {
+      provider?: TrackerProvider
+      jira?: { baseUrl?: string; username?: string; apiToken?: string }
+      linear?: { apiKey?: string; teamKey?: string }
+    }
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
@@ -67,6 +74,12 @@ interface SettingsForm {
   gitUsername: string
   gitToken: string
   gitWorkspace: string
+  trackerProvider: TrackerProvider
+  jiraBaseUrl: string
+  jiraUsername: string
+  jiraApiToken: string
+  linearApiKey: string
+  linearTeamKey: string
 }
 
 interface LegacyOauthResponse {
@@ -95,6 +108,12 @@ const EMPTY_FORM: SettingsForm = {
   gitUsername: '',
   gitToken: '',
   gitWorkspace: '',
+  trackerProvider: 'none',
+  jiraBaseUrl: '',
+  jiraUsername: '',
+  jiraApiToken: '',
+  linearApiKey: '',
+  linearTeamKey: '',
 }
 
 const EMPTY_CLAUDE_LOGIN_STATE: ClaudeLoginState = { status: 'idle' }
@@ -265,6 +284,12 @@ export default function Settings() {
           gitUsername: data.config.git?.username ?? '',
           gitToken: data.config.git?.token ?? '',
           gitWorkspace: data.config.git?.workspace ?? '',
+          trackerProvider: data.config.tracker?.provider ?? 'none',
+          jiraBaseUrl: data.config.tracker?.jira?.baseUrl ?? '',
+          jiraUsername: data.config.tracker?.jira?.username ?? '',
+          jiraApiToken: data.config.tracker?.jira?.apiToken ?? '',
+          linearApiKey: data.config.tracker?.linear?.apiKey ?? '',
+          linearTeamKey: data.config.tracker?.linear?.teamKey ?? '',
         })
       }
     } catch (err) {
@@ -490,6 +515,31 @@ export default function Settings() {
             ? { method: 'oauth' as const, oauthToken: form.oauthToken }
             : { method: 'apiKey' as const, apiKey: form.apiKey }
 
+      // Build the tracker payload only when the user picked a real
+      // provider. `provider: 'none'` is sent through deliberately so the
+      // server can prune any previously-saved credentials.
+      const trackerPayload =
+        form.trackerProvider === 'jira'
+          ? {
+              provider: 'jira' as const,
+              jira: {
+                baseUrl: form.jiraBaseUrl || undefined,
+                username: form.jiraUsername || undefined,
+                apiToken: form.jiraApiToken,
+              },
+            }
+          : form.trackerProvider === 'linear'
+            ? {
+                provider: 'linear' as const,
+                linear: {
+                  apiKey: form.linearApiKey,
+                  teamKey: form.linearTeamKey || undefined,
+                },
+              }
+            : form.trackerProvider === 'github'
+              ? { provider: 'github' as const }
+              : { provider: 'none' as const }
+
       const body: Record<string, unknown> = {
         anthropic,
         intelligence: {
@@ -503,6 +553,7 @@ export default function Settings() {
           token: form.gitToken,
           workspace: form.gitWorkspace || undefined,
         } : undefined,
+        tracker: trackerPayload,
       }
 
       const res = await fetch('/config', {
@@ -857,6 +908,120 @@ export default function Settings() {
                 className={inputClass()}
               />
             </div>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="text-sm font-semibold text-zinc-300 mb-4 pb-2 border-b border-zinc-800">Issue Tracker</h2>
+          <div className="space-y-4">
+            <div>
+              <label className={labelClass()}>Provider</label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="radiogroup" aria-label="Issue tracker provider">
+                {(['none', 'jira', 'github', 'linear'] as TrackerProvider[]).map(p => (
+                  <button
+                    key={p}
+                    type="button"
+                    role="radio"
+                    aria-checked={form.trackerProvider === p}
+                    onClick={() => {
+                      setForm(prev => ({ ...prev, trackerProvider: p }))
+                      setSuccess(null)
+                    }}
+                    className={authTabClass(form.trackerProvider === p)}
+                  >
+                    {p === 'none' ? 'None' : p === 'jira' ? 'Jira' : p === 'github' ? 'GitHub Issues' : 'Linear'}
+                  </button>
+                ))}
+              </div>
+              <FieldHint>
+                The campaign workflow uses this tracker to file an epic and per-child issues. Pick <span className="font-medium text-zinc-300">None</span> to run campaigns without tracker round-trips — children still execute normally.
+              </FieldHint>
+            </div>
+
+            {form.trackerProvider === 'jira' && (
+              <div className="space-y-3 rounded-lg bg-zinc-900/40 border border-zinc-800 p-3">
+                <div>
+                  <label className={labelClass()}>Base URL</label>
+                  <input
+                    name="jiraBaseUrl"
+                    value={form.jiraBaseUrl}
+                    onChange={handleChange}
+                    placeholder="https://your-org.atlassian.net"
+                    className={inputClass()}
+                  />
+                  <FieldHint>Your Jira Cloud or Server site, including the protocol.</FieldHint>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelClass()}>Username (email)</label>
+                    <input
+                      name="jiraUsername"
+                      value={form.jiraUsername}
+                      onChange={handleChange}
+                      placeholder="you@company.com"
+                      className={inputClass()}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelClass()}>API token</label>
+                    <input
+                      name="jiraApiToken"
+                      type="password"
+                      value={form.jiraApiToken}
+                      onChange={handleChange}
+                      placeholder="From id.atlassian.com/manage-profile/security/api-tokens"
+                      className={inputClass()}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {form.trackerProvider === 'github' && (
+              <div className="rounded-lg bg-zinc-900/40 border border-zinc-800 p-3 text-xs text-zinc-400">
+                {form.gitProvider === 'github' && form.gitToken ? (
+                  <>
+                    The campaign-planner will reuse the GitHub Personal Access Token you configured under <span className="font-medium text-zinc-200">Git Provider</span>{' '}
+                    (owner: <span className="font-mono text-zinc-300">{form.gitWorkspace || '—'}</span>). Make sure the token has{' '}
+                    <span className="font-mono">issues:write</span> + <span className="font-mono">repo</span> scopes.
+                  </>
+                ) : (
+                  <>
+                    Set the Git Provider above to <span className="font-medium text-zinc-200">GitHub</span> and fill in the token + organisation; the tracker reuses those credentials.
+                  </>
+                )}
+              </div>
+            )}
+
+            {form.trackerProvider === 'linear' && (
+              <div className="space-y-3 rounded-lg bg-zinc-900/40 border border-zinc-800 p-3">
+                <div>
+                  <label className={labelClass()}>API key</label>
+                  <input
+                    name="linearApiKey"
+                    type="password"
+                    value={form.linearApiKey}
+                    onChange={handleChange}
+                    placeholder="lin_api_..."
+                    className={inputClass()}
+                  />
+                  <FieldHint>
+                    Personal API key from <span className="font-mono">linear.app/settings/api</span>. Sent verbatim in the Authorization header.
+                  </FieldHint>
+                </div>
+                <div>
+                  <label className={labelClass()}>Default team key</label>
+                  <input
+                    name="linearTeamKey"
+                    value={form.linearTeamKey}
+                    onChange={handleChange}
+                    placeholder="ENG"
+                    className={inputClass()}
+                  />
+                  <FieldHint>Used when the campaign-planner doesn't override per-issue (e.g. <span className="font-mono">ENG</span>).</FieldHint>
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
