@@ -96,12 +96,28 @@ export const jobs = pgTable('jobs', {
   escalationMessage: text('escalation_message'),
   pendingPrompt: text('pending_prompt'),
 
+  // Previously persisted only in the in-memory Job blob; needed for
+  // multi-day jobs that reload from Postgres. `artifacts` is the post_artifact
+  // payloads; `awaitingNextPhase` / `approvedAdvanceFromPhase` carry
+  // interactive-checkpoint hand-off state across restarts.
+  artifacts: jsonb('artifacts').notNull().$type<unknown[]>().default([]),
+  awaitingNextPhase: text('awaiting_next_phase'),
+  approvedAdvanceFromPhase: text('approved_advance_from_phase'),
+
+  // Campaign coordination. `campaignChildren` is null on task jobs; non-null
+  // and possibly empty on campaign jobs (presence is the discriminator).
+  // `campaignParentId` is the back-pointer from a child Job to its campaign,
+  // indexed for efficient `listChildJobs(parentId)` queries.
+  campaignChildren: jsonb('campaign_children').$type<unknown[] | null>(),
+  campaignParentId: text('campaign_parent_id'),
+
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index('jobs_team_id_idx').on(t.teamId),
   index('jobs_team_status_idx').on(t.teamId, t.status),
   index('jobs_type_idx').on(t.type),
+  index('jobs_campaign_parent_idx').on(t.campaignParentId),
 ])
 
 // ── Job logs ──────────────────────────────────────────────────────────────────

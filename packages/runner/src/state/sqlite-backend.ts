@@ -166,6 +166,21 @@ export class SqliteStateBackend implements StateBackend {
     return rows.map(r => JSON.parse(r.data) as Job)
   }
 
+  async listChildJobs(parentJobId: string): Promise<Job[]> {
+    // SQLite has no dedicated index on campaignParentId; the field lives in
+    // the JSON blob. For tree sizes we expect (≤ a few dozen children)
+    // a scan + filter is fast enough. We can switch to a generated column
+    // + index later if profiles say otherwise.
+    const rows = this.db.prepare('SELECT data FROM jobs ORDER BY created_at DESC')
+      .all() as Array<{ data: string }>
+    const out: Job[] = []
+    for (const r of rows) {
+      const job = JSON.parse(r.data) as Job
+      if (job.campaignParentId === parentJobId) out.push(job)
+    }
+    return out
+  }
+
   async updateJob(jobId: string, patch: Partial<Job>): Promise<Job> {
     const existing = await this.getJob(jobId)
     if (!existing) throw new Error(`Job not found: ${jobId}`)

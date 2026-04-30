@@ -18,6 +18,12 @@ export const STATUS_FAILED                      = 'failed'
 export const STATUS_AWAITING_PLAN_APPROVAL      = 'awaiting-plan-approval'
 export const STATUS_AWAITING_PR_MERGE           = 'awaiting-pr-merge'
 export const STATUS_AWAITING_DEVELOPER_INPUT    = 'awaiting-developer-input'
+/**
+ * Campaign job status while parked in `coordinating`. The dispatcher's
+ * child-completion hook resumes the parent out of this status once every
+ * child reaches a terminal state.
+ */
+export const STATUS_AWAITING_CHILDREN           = 'awaiting-children'
 export const STATUS_CODING                      = 'coding'
 
 // ── PR tracking ───────────────────────────────────────────────────────────────
@@ -92,6 +98,64 @@ export interface Insight {
   summary: string
   detail: string
   suggestion?: string
+}
+
+// ── Campaign coordination ────────────────────────────────────────────────────
+//
+// A campaign is just a Job whose workflowPath is the campaign workflow.
+// The campaign-planner registers child specs on `Job.campaignChildren[]`;
+// the dispatcher's coordinator hook spawns each one as a normal Job and
+// links it back via `Job.campaignParentId`. No new JobType, no new table.
+
+/**
+ * Where a campaign child issue lives in the chosen tracker.
+ * Optional — children created mid-campaign without a tracker round-trip
+ * still execute; the tracker is system-of-record but not on the critical
+ * path. `provider` is informational; the runner picks the actual client
+ * via `settings.tracker.provider`.
+ */
+export interface TrackerRef {
+  provider: 'jira' | 'github' | 'linear'
+  key: string
+  url: string
+}
+
+/** Lifecycle of a single child within its campaign. */
+export type CampaignChildStatus =
+  | 'pending'         // registered, dependencies not yet satisfied
+  | 'ready'           // dependencies satisfied, awaiting dispatcher slot
+  | 'dispatched'      // child Job has been created and is running / parked
+  | 'complete'        // child Job reached complete
+  | 'failed'          // child Job failed
+  | 'escalated'       // child Job escalated to human
+  | 'skipped'         // human or evaluator skipped this child
+
+/**
+ * Spec for a single child of a campaign. Authored by the campaign-planner
+ * via `campaign_register_child`. The dispatcher uses this as the seed for
+ * a normal Job when dependencies are satisfied.
+ */
+export interface CampaignChild {
+  /** Unique within the campaign — used as the dependsOn key. */
+  name: string
+  /** Free-form description handed to the child's planner. */
+  description: string
+  /**
+   * Seed `params` for the dispatched child Job. The dispatcher merges in
+   * `epicAllowed: false` and `campaignParentId: <parent>` before creation.
+   */
+  params: Record<string, unknown>
+  /** Names of other children this one is blocked on. */
+  dependsOn: string[]
+  /** Tracker issue key/url, if the planner created one. */
+  trackerRef?: TrackerRef
+  /** Job id once dispatched. */
+  jobId?: string
+  status: CampaignChildStatus
+  /** When the child Job was first dispatched. */
+  startedAt?: string
+  /** When the child Job reached a terminal status. */
+  completedAt?: string
 }
 
 // ── Core Job type ─────────────────────────────────────────────────────────────
@@ -184,6 +248,21 @@ export interface Job {
    * The runner uses this as the prompt for the resumed turn, then clears it.
    */
   pendingPrompt?: string
+
+  /**
+   * Children registered by the campaign-planner via `campaign_register_child`.
+   * Present only on campaign jobs (whose workflowPath is the campaign
+   * workflow). Authoritative source of dependency edges between issues.
+   */
+  campaignChildren?: CampaignChild[]
+
+  /**
+   * Back-pointer from a child Job to its owning campaign Job. Set by the
+   * dispatcher when a campaign child is spawned. Used by webhook resolvers,
+   * the dashboard, and the coordinator hook to find the parent on
+   * child-stopped transitions.
+   */
+  campaignParentId?: string
 }
 
 // ── Convenience accessors ─────────────────────────────────────────────────────
@@ -328,6 +407,7 @@ export function isParkingStatus(status: string): boolean {
     status === STATUS_AWAITING_PLAN_APPROVAL ||
     status === STATUS_AWAITING_PR_MERGE ||
     status === STATUS_AWAITING_DEVELOPER_INPUT ||
+    status === STATUS_AWAITING_CHILDREN ||
     status === STATUS_ESCALATED ||
     status === STATUS_FAILED
   )
@@ -338,4 +418,46 @@ export function defaultWorkflowPath(type: JobType): string {
     case JobType.Job:        return 'workflows/job/workflow.md'
     case JobType.SelfUpdate: return 'workflows/self-update/workflow.md'
   }
+}
+
+/**
+ * Canonical path for the campaign workflow. The planner switches a job's
+ * `workflowPath` to this value via `convert_to_campaign`. Tenants override
+ * the workflow file itself through the layered intelligence resolver.
+ */
+export const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
+
+// ── Campaign helpers ──────────────────────────────────────────────────────────
+
+/**
+ * A job is a campaign job iff it has a `campaignChildren` array on it.
+ * We deliberately do NOT key off `workflowPath` so a tenant that renames
+ * the campaign workflow file still gets correctly classified.
+ */
+export function isCampaignJob(job: Job): boolean {
+  return Array.isArray(job.campaignChildren)
+}
+
+/**
+ * Whether `convert_to_campaign` is permitted on this job. Children are
+ * dispatched with `params.epicAllowed = false` to prevent recursive
+ * decomposition (a child becoming its own campaign).
+ */
+export function isEpicAllowed(job: Job): boolean {
+  return job.params['epicAllowed'] !== false
+}
+
+/** Terminal child statuses — coordinator stops dispatching once all are terminal. */
+export function isTerminalChildStatus(status: CampaignChildStatus): boolean {
+  return (
+    status === 'complete' ||
+    status === 'failed' ||
+    status === 'escalated' ||
+    status === 'skipped'
+  )
+}
+
+/** Status of a child considered "satisfied" for dependency resolution. */
+export function isSatisfiedChildStatus(status: CampaignChildStatus): boolean {
+  return status === 'complete' || status === 'skipped'
 }

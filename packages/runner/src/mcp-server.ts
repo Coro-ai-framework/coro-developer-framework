@@ -258,6 +258,81 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         h.jira_transition_issue,
       ),
 
+      // ── Tracker (provider-agnostic) ──────────────────────────────────────
+      //
+      // These tools let the campaign-planner work the same way against any
+      // configured tracker (Jira today, GitHub Issues / Linear later). They
+      // return `{ available: false, reason }` when no tracker is configured
+      // — the planner is expected to detect that and proceed in tracker-less
+      // mode.
+
+      tool(
+        'tracker_create_epic',
+        'Create a tracker epic to roll up the campaign\'s child issues. Returns the new issue\'s key/url.',
+        {
+          projectKey: z.string().describe('Jira project key, GitHub repo, or Linear team — provider-specific.'),
+          summary: z.string(),
+          description: z.string(),
+          labels: z.array(z.string()).optional(),
+        },
+        h.tracker_create_epic,
+      ),
+
+      tool(
+        'tracker_create_issue',
+        'Create a child tracker issue under an epic (or standalone). Use for each child registered with campaign_register_child.',
+        {
+          projectKey: z.string(),
+          summary: z.string(),
+          description: z.string(),
+          issueType: z.string().optional().describe('Provider-native issue type (Jira: Task/Story; defaults to Task).'),
+          parentKey: z.string().optional().describe('Parent epic key.'),
+          labels: z.array(z.string()).optional(),
+        },
+        h.tracker_create_issue,
+      ),
+
+      tool(
+        'tracker_link_issues',
+        'Add a relation between two tracker issues (e.g. Blocks). Reflects the campaign\'s dependsOn graph in the tracker.',
+        {
+          fromKey: z.string().describe('Dependent issue key (the one that is blocked).'),
+          toKey: z.string().describe('Upstream issue key (the blocker).'),
+          relation: z.string().optional().describe('Provider-native relation name. Defaults to "Blocks".'),
+        },
+        h.tracker_link_issues,
+      ),
+
+      tool(
+        'tracker_get_issue',
+        'Fetch a single tracker issue by its key.',
+        { key: z.string() },
+        h.tracker_get_issue,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'tracker_list_children',
+        'List the tracker issues that are direct children of a parent (e.g. epic). Used by the campaign-evaluator to reconcile state with the tracker.',
+        { parentKey: z.string() },
+        h.tracker_list_children,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'tracker_transition_issue',
+        'Move a tracker issue to a target status by name (e.g. "In Progress", "Done"). Provider-specific status names are passed through.',
+        { key: z.string(), status: z.string() },
+        h.tracker_transition_issue,
+      ),
+
+      tool(
+        'tracker_comment_issue',
+        'Post a plain-text comment on a tracker issue.',
+        { key: z.string(), body: z.string() },
+        h.tracker_comment_issue,
+      ),
+
       // ── Work-item tracking ───────────────────────────────────────────────
 
       tool(
@@ -398,6 +473,76 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         },
         h.list_proposals,
         { annotations: { readOnlyHint: true } },
+      ),
+
+      // ── Campaign coordination ─────────────────────────────────────────────
+
+      tool(
+        'convert_to_campaign',
+        'Promote the active job into a campaign. Call this from the planning phase ONLY when the work is too large for a single job (multiple services, > ~5 PRs, clear dependency layers). Switches the job\'s workflow to the campaign workflow and resets phase to campaign-planning. Refused if params.epicAllowed=false (children of an existing campaign cannot recurse).',
+        {
+          title: z.string().describe('Short epic title — surfaces on the tracker epic and PR copy.'),
+          description: z.string().describe('Long-form feature description handed to the campaign-planner agent.'),
+          trackerEpicRef: z.object({
+            provider: z.enum(['jira', 'github', 'linear']),
+            key: z.string(),
+            url: z.string(),
+          }).optional().describe('Optional pointer to a pre-existing tracker epic; otherwise the campaign-planner creates one.'),
+        },
+        h.convert_to_campaign,
+      ),
+
+      tool(
+        'campaign_register_child',
+        'Register a single child issue spec on a campaign. Call once per issue from the campaign-planner. The dispatcher dispatches each child as a normal job when its dependsOn list is satisfied.',
+        {
+          name: z.string().describe('Slug-like unique name within this campaign (used as dependsOn key and branch suffix).'),
+          description: z.string().describe('Scoped description for the child job (what the child planner sees).'),
+          params: z.record(z.string(), z.unknown()).optional().describe('Seed params for the child job (e.g. repoSlug). The dispatcher injects epicAllowed=false and campaignParentId automatically.'),
+          dependsOn: z.array(z.string()).optional().describe('Names of other registered children this one is blocked on.'),
+          trackerRef: z.object({
+            provider: z.enum(['jira', 'github', 'linear']),
+            key: z.string(),
+            url: z.string(),
+          }).optional().describe('Tracker issue created for this child (typically created via tracker_create_issue first).'),
+        },
+        h.campaign_register_child,
+      ),
+
+      tool(
+        'campaign_finalize',
+        'Commit the campaign breakdown. Validates that every dependsOn references a registered child and that there are no cycles. Promotes children with no dependencies to "ready" and advances the campaign job to the coordinating phase. Call exactly once after registering all children.',
+        {},
+        h.campaign_finalize,
+      ),
+
+      tool(
+        'campaign_status',
+        'Read the current state of a campaign: per-child status, dependency graph, dispatch progress. Used by the campaign-evaluator and the dashboard.',
+        {},
+        h.campaign_status,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'campaign_skip_child',
+        'Mark a campaign child as skipped. Children blocked only on the skipped child become eligible for dispatch. Refused if the child has already reached a terminal status.',
+        { name: z.string(), reason: z.string().optional() },
+        h.campaign_skip_child,
+      ),
+
+      tool(
+        'campaign_rerun_child',
+        'Reset a terminal campaign child back to pending so the coordinator dispatches a fresh child job. Use after fixing the underlying issue (e.g. a flaky failure or a now-corrected spec). Only allowed when the child is in a terminal status.',
+        { name: z.string(), reason: z.string().optional() },
+        h.campaign_rerun_child,
+      ),
+
+      tool(
+        'campaign_cancel_child',
+        'Cancel a running or pending campaign child. Marks the child failed; downstream children with this as dependsOn stay blocked unless campaign_skip_child is called instead.',
+        { name: z.string(), reason: z.string().optional() },
+        h.campaign_cancel_child,
       ),
 
       // ── On-demand context ─────────────────────────────────────────────────

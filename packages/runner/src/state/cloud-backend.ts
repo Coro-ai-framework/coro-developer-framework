@@ -43,6 +43,10 @@ export class CloudStateBackend implements StateBackend {
     return await this.call('job:listByType', { jobType: type }) as Job[]
   }
 
+  async listChildJobs(parentJobId: string): Promise<Job[]> {
+    return await this.call('job:listChildren', { parentJobId }) as Job[]
+  }
+
   async deleteJob(jobId: string): Promise<void> {
     await this.call('job:delete', { jobId })
   }

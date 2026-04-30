@@ -84,6 +84,7 @@ import { createGitHubClient } from '../clients/github'
 import { createJiraClient } from '../clients/jira'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
+import { createTrackerClient } from '../clients/tracker'
 import { wireCloudJobDispatch } from './hybrid-dispatcher'
 import { createRunnerServer } from './server'
 
@@ -216,6 +217,7 @@ export async function startLocalRunner(
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
   const jiraClient = createJiraClient(settings)
+  const trackerClient = createTrackerClient(settings)
 
   // Determine which PR poller to use based on git provider
   const gitProvider = effectiveConfig.git?.provider ?? 'github'
@@ -264,6 +266,7 @@ export async function startLocalRunner(
     lokiClient,
     tempoClient,
     jiraClient,
+    trackerClient,
     logger,
   }
 
@@ -355,6 +358,7 @@ export async function startHybridRunner(
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
   const jiraClient = createJiraClient(settings)
+  const trackerClient = createTrackerClient(settings)
 
   // Build runner context
   const runnerCtx: RunnerContext = {
@@ -369,6 +373,7 @@ export async function startHybridRunner(
     lokiClient,
     tempoClient,
     jiraClient,
+    trackerClient,
     logger,
   }
 

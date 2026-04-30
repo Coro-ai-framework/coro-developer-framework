@@ -14,6 +14,8 @@ import {
   WorkItem,
   Insight,
   PhaseUsage,
+  Artifact,
+  CampaignChild,
 } from '../../jobs/types'
 import { buildJobRecord, resolveWorkflowPath } from '../../jobs/creation'
 
@@ -22,7 +24,7 @@ import { buildJobRecord, resolveWorkflowPath } from '../../jobs/creation'
 type JobRow = typeof schema.jobs.$inferSelect
 
 function rowToJob(row: JobRow): Job {
-  return {
+  const job: Job = {
     id: row.id,
     type: row.type as JobType,
     workflowPath: row.workflowPath,
@@ -35,7 +37,7 @@ function rowToJob(row: JobRow): Job {
     workItemLoopCount: row.workItemLoopCount,
     prMappings: (row.prMappings ?? []) as PrMapping[],
     interactive: ((row.params as Record<string, unknown>)?.['interactive'] === true),
-    artifacts: [],
+    artifacts: (row.artifacts ?? []) as Artifact[],
     insights: (row.insights ?? []) as Insight[],
     tokenUsage: {
       inputTokens: row.tokenUsageInput,
@@ -53,6 +55,17 @@ function rowToJob(row: JobRow): Job {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
+
+  // Optional fields are only set when present so `isCampaignJob` and the
+  // checkpoint-state machinery keep their "undefined means absent" contract.
+  if (row.awaitingNextPhase) job.awaitingNextPhase = row.awaitingNextPhase
+  if (row.approvedAdvanceFromPhase) job.approvedAdvanceFromPhase = row.approvedAdvanceFromPhase
+  if (row.campaignParentId) job.campaignParentId = row.campaignParentId
+  if (row.campaignChildren !== null && row.campaignChildren !== undefined) {
+    job.campaignChildren = (row.campaignChildren ?? []) as CampaignChild[]
+  }
+
+  return job
 }
 
 function jobToInsert(job: Job, teamId: string): typeof schema.jobs.$inferInsert {
@@ -81,6 +94,15 @@ function jobToInsert(job: Job, teamId: string): typeof schema.jobs.$inferInsert 
     awaitingPrId: job.awaitingPrId ?? null,
     escalationMessage: job.escalationMessage ?? null,
     pendingPrompt: job.pendingPrompt ?? null,
+    artifacts: (job.artifacts ?? []) as unknown[],
+    awaitingNextPhase: job.awaitingNextPhase ?? null,
+    approvedAdvanceFromPhase: job.approvedAdvanceFromPhase ?? null,
+    // `null` (not undefined) when absent, so the column stays distinguishable
+    // from an empty children array on a campaign with zero registrations.
+    campaignChildren: job.campaignChildren === undefined
+      ? null
+      : (job.campaignChildren as unknown[]),
+    campaignParentId: job.campaignParentId ?? null,
   }
 }
 
@@ -189,6 +211,20 @@ export class PostgresStateBackend implements StateBackend {
       ))
 
     return rows.map(rowToJob)
+  }
+
+  async listChildJobs(parentJobId: string): Promise<Job[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.jobs)
+      .where(and(
+        eq(schema.jobs.teamId, this.teamId),
+        eq(schema.jobs.campaignParentId, parentJobId),
+      ))
+
+    return rows.map(rowToJob).sort((a, b) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    )
   }
 
   async deleteJob(jobId: string): Promise<void> {

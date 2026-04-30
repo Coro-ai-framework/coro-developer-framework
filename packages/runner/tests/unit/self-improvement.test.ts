@@ -115,6 +115,7 @@ function makeCtx(opts: MakeCtxOpts = {}): ToolContext {
     lokiClient: {} as ToolContext['lokiClient'],
     tempoClient: {} as ToolContext['tempoClient'],
     jiraClient: {} as ToolContext['jiraClient'],
+    trackerClient: {} as ToolContext['trackerClient'],
     runningServices: new Map(),
   }
 }

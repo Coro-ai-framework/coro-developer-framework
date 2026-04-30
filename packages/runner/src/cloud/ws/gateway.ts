@@ -198,6 +198,12 @@ export class WsGateway {
         return
       }
 
+      case 'job:listChildren': {
+        const jobs = await backend.listChildJobs(msg.parentJobId)
+        this.reply(ws, msg.messageId, jobs)
+        return
+      }
+
       case 'job:delete': {
         await backend.deleteJob(msg.jobId)
         this.reply(ws, msg.messageId, { ok: true })

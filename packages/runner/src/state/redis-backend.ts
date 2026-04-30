@@ -101,6 +101,15 @@ export class RedisStateBackend implements StateBackend {
     return this.loadMany(ids)
   }
 
+  async listChildJobs(parentJobId: string): Promise<Job[]> {
+    // Redis doesn't index by campaignParentId; campaign trees are small (~10s
+    // of children at most) so a full listJobs + filter is acceptable. If
+    // campaign sizes grow, a dedicated set key (`campaign:{id}:children`)
+    // populated on createJob would be the next step.
+    const all = await this.listJobs()
+    return all.filter(j => j.campaignParentId === parentJobId)
+  }
+
   // ── Update ────────────────────────────────────────────────────────────────
 
   async updateJob(jobId: string, patch: Partial<Job>): Promise<Job> {
@@ -281,6 +290,9 @@ export class RedisStateBackend implements StateBackend {
  * `artifacts` / `insights` fields.
  */
 function normalizeJob(job: Job): Job {
+  // campaignChildren is intentionally NOT defaulted here. Its absence is the
+  // signal for `isCampaignJob`; defaulting it to [] would silently mis-classify
+  // every legacy task job as a campaign.
   return {
     ...job,
     interactive: job.interactive ?? false,

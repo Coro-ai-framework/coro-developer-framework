@@ -96,6 +96,15 @@ export interface Settings {
     apiToken: string
     pollIntervalSeconds: number
   }
+  /**
+   * Issue tracker selection for the campaign workflow. Optional — when
+   * absent the tracker factory infers Jira if `jira.baseUrl` is set,
+   * otherwise the campaign-planner runs in tracker-less mode (it can
+   * still register children without a tracker round-trip).
+   */
+  tracker?: {
+    provider: 'jira' | 'github' | 'linear' | 'none'
+  }
   ngrok: {
     authToken: string
     staticDomain: string

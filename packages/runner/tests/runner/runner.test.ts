@@ -138,6 +138,7 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
     lokiClient: {} as RunnerContext['lokiClient'],
     tempoClient: {} as RunnerContext['tempoClient'],
     jiraClient: {} as RunnerContext['jiraClient'],
+    trackerClient: {} as RunnerContext['trackerClient'],
     logger: {
       debug: vi.fn(),
       info: vi.fn(),

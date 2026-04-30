@@ -1,15 +1,39 @@
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   Artifact,
+  CampaignChild,
+  Job,
   JobInput,
+  STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_CODING,
   STATUS_COMPLETE,
   STATUS_FAILED,
+  isCampaignJob,
   isParkingStatus,
+  isStoppedStatus,
+  isTerminalChildStatus,
 } from './types'
+import {
+  jobStatusToChildStatus,
+  reconcileReady,
+} from '../tools/campaign'
 import { runJob, RunnerContext } from './runner'
 import type { EventTransport } from '../state/transport'
+
+const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
+const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
+const CHILD_WORKFLOW_PATH = 'workflows/job/workflow.md'
+
+/**
+ * Maximum number of campaign children dispatched concurrently for a single
+ * campaign job. Conservative default — every child still spawns its own
+ * Claude session, so even small numbers consume meaningful API budget.
+ * Tenants can override via `settings.coordination.maxParallelChildren` once
+ * we surface the knob; for the MVP it stays inlined here so the rollout is
+ * predictable.
+ */
+const DEFAULT_MAX_PARALLEL_CHILDREN = 1
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 //
@@ -287,6 +311,297 @@ export class Dispatcher {
     this.fireAndForget(jobId)
   }
 
+  // ── Campaign coordination ──────────────────────────────────────────────────
+  //
+  // Campaign jobs park in the `coordinating` phase. The dispatcher is the
+  // only component that spawns child Jobs, persists `campaignChildren[]`
+  // status changes, and resumes the parent into `aggregation` once every
+  // child has reached a terminal state. Keeping spawn responsibility in one
+  // place is the only way the dependency-aware ready-set computation stays
+  // race-free.
+
+  /**
+   * Run one coordination sweep on a campaign job:
+   *   1. If any child failed/escalated and the failure policy is
+   *      `halt-on-failure` (today, the only mode), park the parent at
+   *      `awaiting-developer-input`.
+   *   2. If every child is in a terminal status, resume the parent into
+   *      the `aggregation` phase.
+   *   3. Otherwise dispatch up to `maxParallelChildren` ready children.
+   *
+   * Public so HTTP / CLI live-control endpoints (skip / rerun / cancel)
+   * can re-trigger a sweep after they mutate `campaignChildren[]`.
+   */
+  async coordinateCampaign(parentJobId: string): Promise<void> {
+    const parent = await this.ctx.stateBackend.getJob(parentJobId)
+    if (!parent) return
+    if (!isCampaignJob(parent)) {
+      this.ctx.logger.warn({ jobId: parentJobId }, 'coordinateCampaign called on non-campaign job — ignoring')
+      return
+    }
+
+    const children = parent.campaignChildren ?? []
+    if (children.length === 0) return
+
+    const halted = children.filter(c => c.status === 'failed' || c.status === 'escalated')
+    if (halted.length > 0) {
+      // halt-on-failure: park the parent so a human can decide between
+      // skip / rerun / cancel. We only park if not already parked, otherwise
+      // every subsequent child stop would re-trigger the same status update.
+      if (parent.status !== STATUS_AWAITING_DEVELOPER_INPUT) {
+        await this.ctx.stateBackend.updateJob(parent.id, {
+          status: STATUS_AWAITING_DEVELOPER_INPUT,
+          awaitingEvent: 'developer-input: campaign halted by failed child',
+          escalationMessage:
+            `Campaign halted: child${halted.length === 1 ? '' : 'ren'} ` +
+            `[${halted.map(c => c.name).join(', ')}] did not complete cleanly. ` +
+            `Use campaign_skip_child / campaign_rerun_child to resolve.`,
+        })
+        await this.ctx.stateBackend.appendLog(
+          parent.id,
+          `[campaign] Halted on failure — ${halted.length} child(ren) failed/escalated`,
+        )
+      }
+      return
+    }
+
+    const allTerminal = children.every(c => isTerminalChildStatus(c.status))
+    if (allTerminal) {
+      if (parent.phase !== CAMPAIGN_AGGREGATION_PHASE) {
+        await this.ctx.stateBackend.appendLog(
+          parent.id,
+          `[campaign] All ${children.length} children terminal — advancing to ${CAMPAIGN_AGGREGATION_PHASE}`,
+        )
+        // Force a fresh session so the campaign-evaluator starts with a
+        // clean prompt: the campaign-planner's transcript is irrelevant
+        // (and large) by aggregation time.
+        await this.resumeJob(parent.id, CAMPAIGN_AGGREGATION_PHASE, /* clearSession */ true)
+      }
+      return
+    }
+
+    // Otherwise: dispatch up to N ready children, where N = parallelism cap
+    // minus already-dispatched children.
+    const dispatched = children.filter(c => c.status === 'dispatched').length
+    const slots = Math.max(0, this.maxParallelChildren() - dispatched)
+    if (slots === 0) return
+
+    const ready = children.filter(c => c.status === 'ready')
+    const toDispatch = ready.slice(0, slots)
+    for (const spec of toDispatch) {
+      await this.dispatchCampaignChild(parent, spec).catch(async err => {
+        // Dispatch failures are recorded as a hard child failure so the
+        // coordinator doesn't loop on the same spec forever. The agent /
+        // human can then call campaign_rerun_child to retry.
+        this.ctx.logger.error(
+          { err, parentId: parent.id, childName: spec.name },
+          'Failed to dispatch campaign child',
+        )
+        await this.markChildFailed(parent.id, spec.name, `dispatch failed: ${String(err)}`)
+      })
+    }
+  }
+
+  /**
+   * React to a campaign child reaching a terminal status. Updates the
+   * parent's `campaignChildren[]` entry, promotes any newly-eligible
+   * pending children to `ready`, then runs a fresh coordination sweep.
+   */
+  private async onChildJobStopped(child: Job): Promise<void> {
+    if (!child.campaignParentId) return
+    const parent = await this.ctx.stateBackend.getJob(child.campaignParentId)
+    if (!parent) {
+      this.ctx.logger.warn(
+        { childId: child.id, parentId: child.campaignParentId },
+        'Child stopped but parent campaign job is missing — skipping',
+      )
+      return
+    }
+
+    const children = parent.campaignChildren ?? []
+    // Match by jobId first (set by the dispatcher), fallback to params'
+    // campaignChildName (defensive against state where jobId isn't yet
+    // persisted on the parent's view).
+    const childName = (child.params['campaignChildName'] as string | undefined) ?? null
+    const idx = children.findIndex(c =>
+      c.jobId === child.id || (childName !== null && c.name === childName),
+    )
+    if (idx === -1) {
+      this.ctx.logger.warn(
+        { childId: child.id, parentId: parent.id },
+        'Stopped child has no matching entry on parent — skipping coordinator',
+      )
+      return
+    }
+
+    const mapped = jobStatusToChildStatus(child.status)
+    if (!mapped) return
+
+    const updated = [...children]
+    updated[idx] = {
+      ...updated[idx],
+      jobId: child.id,
+      status: mapped,
+      completedAt: new Date().toISOString(),
+    }
+
+    const reconciled = reconcileReady(updated)
+    await this.ctx.stateBackend.updateJob(parent.id, { campaignChildren: reconciled })
+    await this.ctx.stateBackend.appendLog(
+      parent.id,
+      `[campaign] Child "${updated[idx].name}" reached ${mapped} (job ${child.id}); ` +
+        `re-running coordinator sweep`,
+    )
+
+    await this.coordinateCampaign(parent.id)
+  }
+
+  private async dispatchCampaignChild(parent: Job, spec: CampaignChild): Promise<void> {
+    // Build the child's `params` bag. Order matters: spec.params wins over
+    // the parent's inherited params, but the dispatcher's safety knobs
+    // (`epicAllowed: false`, the back-pointer) win over both. We also
+    // forward common scoping fields the planner agent expects on every
+    // job (repoSlug, reviewers, gitProvider).
+    const inherited: Record<string, unknown> = {}
+    for (const key of ['repoSlug', 'repo', 'reviewers', 'gitProvider']) {
+      if (parent.params[key] !== undefined) inherited[key] = parent.params[key]
+    }
+
+    const childInput: JobInput = {
+      type: 'job',
+      workflowPath: CHILD_WORKFLOW_PATH,
+      triggerSource: 'internal',
+      params: {
+        ...inherited,
+        ...spec.params,
+        description: spec.description,
+        epicAllowed: false,
+        campaignParentId: parent.id,
+        campaignChildName: spec.name,
+        ...(spec.trackerRef ? { trackerRef: spec.trackerRef } : {}),
+      },
+    }
+
+    const child = await this.ctx.stateBackend.createJob(childInput)
+
+    const refreshed = (await this.ctx.stateBackend.getJob(parent.id)) ?? parent
+    const list = refreshed.campaignChildren ?? []
+    const idx = list.findIndex(c => c.name === spec.name)
+    if (idx !== -1) {
+      list[idx] = {
+        ...list[idx],
+        jobId: child.id,
+        status: 'dispatched',
+        startedAt: new Date().toISOString(),
+      }
+      await this.ctx.stateBackend.updateJob(parent.id, { campaignChildren: list })
+    }
+
+    await this.ctx.stateBackend.appendLog(
+      parent.id,
+      `[campaign] Dispatched child "${spec.name}" as job ${child.id}`,
+    )
+    await this.ctx.stateBackend.appendLog(
+      child.id,
+      `[campaign-child] Spawned by campaign ${parent.id} as "${spec.name}"`,
+    )
+
+    this.fireAndForget(child.id)
+  }
+
+  private async markChildFailed(parentId: string, childName: string, reason: string): Promise<void> {
+    const refreshed = await this.ctx.stateBackend.getJob(parentId)
+    if (!refreshed) return
+    const list = refreshed.campaignChildren ?? []
+    const idx = list.findIndex(c => c.name === childName)
+    if (idx === -1) return
+    list[idx] = {
+      ...list[idx],
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+    }
+    await this.ctx.stateBackend.updateJob(parentId, { campaignChildren: list })
+    await this.ctx.stateBackend.appendLog(parentId, `[campaign] Child "${childName}" marked failed: ${reason}`)
+  }
+
+  private maxParallelChildren(): number {
+    // Read-once from settings; falls back to the conservative default until
+    // tenants opt in. Surfaced as a settings knob in a future cut so
+    // operators can dial up parallelism once they trust the workflow.
+    const overlay = this.ctx.settings as unknown as { coordination?: { maxParallelChildren?: number } }
+    const value = overlay.coordination?.maxParallelChildren
+    return typeof value === 'number' && value >= 1 ? value : DEFAULT_MAX_PARALLEL_CHILDREN
+  }
+
+  // ── Live-control entry points (used by HTTP / CLI) ─────────────────────────
+  //
+  // The MCP tools mutate state and run `reconcileReady` already, so these
+  // methods exist only to (a) re-run the coordinator sweep after a state
+  // change and (b) cancel any running child Job whose lifecycle the
+  // dispatcher controls. They are intentionally thin so HTTP handlers can
+  // forward straight through.
+
+  async campaignSkipChild(parentJobId: string, childName: string, reason?: string): Promise<void> {
+    const { campaignSkipChild } = await import('../tools/campaign')
+    const ctx = this.makeToolContextForCampaign(parentJobId)
+    if (!ctx) throw new Error(`Campaign job not found: ${parentJobId}`)
+    await campaignSkipChild({ name: childName, ...(reason ? { reason } : {}) }, ctx)
+    await this.coordinateCampaign(parentJobId)
+  }
+
+  async campaignRerunChild(parentJobId: string, childName: string, reason?: string): Promise<void> {
+    const { campaignRerunChild } = await import('../tools/campaign')
+    const ctx = this.makeToolContextForCampaign(parentJobId)
+    if (!ctx) throw new Error(`Campaign job not found: ${parentJobId}`)
+    await campaignRerunChild({ name: childName, ...(reason ? { reason } : {}) }, ctx)
+    await this.coordinateCampaign(parentJobId)
+  }
+
+  async campaignCancelChild(parentJobId: string, childName: string, reason?: string): Promise<void> {
+    // MVP: cancel is bookkeeping-only. We mark the campaign child failed
+    // in the parent's view so the coordinator stops blocking on it; if the
+    // underlying child Job is still running, its runner keeps executing
+    // and may eventually persist its own terminal status. The dispatcher's
+    // `onChildJobStopped` then overwrites the cancel marker with the
+    // child's natural outcome — confusing UX but consistent with the
+    // current SDK surface, which exposes no in-flight cancellation hook.
+    // A follow-up iteration can add real cancellation once the SDK gives
+    // us a stop primitive on Query.
+    const { campaignCancelChild } = await import('../tools/campaign')
+    const ctx = this.makeToolContextForCampaign(parentJobId)
+    if (!ctx) throw new Error(`Campaign job not found: ${parentJobId}`)
+    await campaignCancelChild({ name: childName, ...(reason ? { reason } : {}) }, ctx)
+    await this.coordinateCampaign(parentJobId)
+  }
+
+  /**
+   * Build a minimal {@link import('../tools/types').ToolContext} for invoking
+   * campaign tools outside an active runJob (HTTP/CLI). The MCP tools only
+   * read `job`, `stateBackend`, and `logger`; we leave the heavier client
+   * fields populated from the dispatcher's runner context so the type
+   * checker is satisfied even though they're unused on this path.
+   */
+  private makeToolContextForCampaign(jobId: string): import('../tools/types').ToolContext | null {
+    return {
+      job: { id: jobId } as Job, // The campaign tools refresh from stateBackend; this stub is only used for `id`.
+      stateBackend: this.ctx.stateBackend,
+      settings: this.ctx.settings,
+      tenantContext: this.ctx.tenantContext,
+      jobIntelligenceDir: this.ctx.settings.paths.coroIntelligenceDir,
+      gitClient: this.ctx.gitClient,
+      bbCoder: this.ctx.bbCoder,
+      bbReviewer: this.ctx.bbReviewer,
+      ghClient: this.ctx.ghClient,
+      ghGitClient: this.ctx.ghGitClient,
+      lokiClient: this.ctx.lokiClient,
+      tempoClient: this.ctx.tempoClient,
+      jiraClient: this.ctx.jiraClient,
+      trackerClient: this.ctx.trackerClient,
+      logger: this.ctx.logger,
+      runningServices: new Map(),
+    }
+  }
+
   // ── Fire-and-forget runner ──────────────────────────────────────────────────
 
   private fireAndForget(jobId: string): void {
@@ -317,6 +632,34 @@ export class Dispatcher {
       })
       .finally(async () => {
         this.activeJobs.delete(jobId)
+
+        // Campaign coordinator hook. Runs in two situations:
+        //   1. The just-stopped job is a campaign CHILD — its terminal
+        //      status updates the parent and may trigger the next
+        //      dispatch wave or the parent's advance to aggregation.
+        //   2. The just-parked job is a campaign PARENT entering the
+        //      coordinating phase for the first time — kick off the
+        //      initial dispatch sweep (no child stop drove us here).
+        try {
+          const finishedJob = await this.ctx.stateBackend.getJob(jobId)
+          if (finishedJob) {
+            if (finishedJob.campaignParentId && isStoppedStatus(finishedJob.status)) {
+              await this.onChildJobStopped(finishedJob).catch(err => {
+                this.ctx.logger.error({ err, jobId }, 'Campaign child completion handler failed')
+              })
+            } else if (
+              isCampaignJob(finishedJob) &&
+              finishedJob.phase === CAMPAIGN_COORDINATING_PHASE &&
+              finishedJob.status === STATUS_AWAITING_CHILDREN
+            ) {
+              await this.coordinateCampaign(finishedJob.id).catch(err => {
+                this.ctx.logger.error({ err, jobId }, 'Initial campaign coordinate failed')
+              })
+            }
+          }
+        } catch (err) {
+          this.ctx.logger.error({ err, jobId }, 'Failed loading job for campaign coordinator')
+        }
 
         // Process at most ONE queued event. injectAndResume calls fireAndForget
         // which will eventually hit this finally block again for the next event.

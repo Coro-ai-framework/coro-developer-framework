@@ -321,6 +321,61 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text(result ?? { transitioned: true })
     },
 
+    // Provider-agnostic issue tracker. Resolves to whichever provider is
+    // configured at runner bootstrap (Jira today; GitHub Issues / Linear
+    // later). All methods short-circuit with a structured `available:false`
+    // response when no tracker is configured, letting the campaign-planner
+    // proceed in degraded mode rather than aborting the phase.
+    tracker_create_epic: async (args: {
+      projectKey: string; summary: string; description: string; labels?: string[]
+    }) => {
+      const result = await ctx.trackerClient.createEpic(args)
+      return text(result)
+    },
+
+    tracker_create_issue: async (args: {
+      projectKey: string
+      summary: string
+      description: string
+      issueType?: string
+      parentKey?: string
+      labels?: string[]
+    }) => {
+      const result = await ctx.trackerClient.createIssue(args)
+      return text(result)
+    },
+
+    tracker_link_issues: async (args: {
+      fromKey: string; toKey: string; relation?: string
+    }) => {
+      const result = await ctx.trackerClient.linkIssues({
+        fromKey: args.fromKey,
+        toKey: args.toKey,
+        relation: args.relation ?? 'Blocks',
+      })
+      return text(result)
+    },
+
+    tracker_get_issue: async ({ key }: { key: string }) => {
+      const result = await ctx.trackerClient.getIssue(key)
+      return text(result)
+    },
+
+    tracker_list_children: async ({ parentKey }: { parentKey: string }) => {
+      const result = await ctx.trackerClient.listChildren(parentKey)
+      return text(result)
+    },
+
+    tracker_transition_issue: async (args: { key: string; status: string }) => {
+      const result = await ctx.trackerClient.transitionIssue(args)
+      return text(result)
+    },
+
+    tracker_comment_issue: async (args: { key: string; body: string }) => {
+      const result = await ctx.trackerClient.commentIssue(args)
+      return text(result)
+    },
+
     // Work-item tracking — pure state CRUD, zero orchestration logic
     set_work_items: setWorkItems,
     update_work_item: updateWorkItem,
@@ -460,6 +515,89 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         ctx,
       )
       return text(result)
+    },
+
+    // Campaign coordination — promotes a regular planning job into a
+    // campaign, registers child issues, and exposes live-control mutations.
+    // Implementation lives in `tools/campaign.ts`.
+    convert_to_campaign: async (args: {
+      title: string
+      description: string
+      trackerEpicRef?: { provider: 'jira' | 'github' | 'linear'; key: string; url: string }
+    }) => {
+      const { convertToCampaign } = await import('./tools/campaign')
+      try {
+        const result = await convertToCampaign(args, ctx, signals)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    campaign_register_child: async (args: {
+      name: string
+      description: string
+      params?: Record<string, unknown>
+      dependsOn?: string[]
+      trackerRef?: { provider: 'jira' | 'github' | 'linear'; key: string; url: string }
+    }) => {
+      const { campaignRegisterChild } = await import('./tools/campaign')
+      try {
+        const result = await campaignRegisterChild(args, ctx)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    campaign_finalize: async () => {
+      const { campaignFinalize } = await import('./tools/campaign')
+      try {
+        const result = await campaignFinalize(ctx, signals)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    campaign_status: async () => {
+      const { campaignStatus } = await import('./tools/campaign')
+      try {
+        const result = await campaignStatus(ctx)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    campaign_skip_child: async (args: { name: string; reason?: string }) => {
+      const { campaignSkipChild } = await import('./tools/campaign')
+      try {
+        const result = await campaignSkipChild(args, ctx)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    campaign_rerun_child: async (args: { name: string; reason?: string }) => {
+      const { campaignRerunChild } = await import('./tools/campaign')
+      try {
+        const result = await campaignRerunChild(args, ctx)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    campaign_cancel_child: async (args: { name: string; reason?: string }) => {
+      const { campaignCancelChild } = await import('./tools/campaign')
+      try {
+        const result = await campaignCancelChild(args, ctx)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
     },
 
     // On-demand memory access. The system prompt no longer carries the memory
