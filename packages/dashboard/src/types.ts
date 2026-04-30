@@ -74,6 +74,50 @@ export interface WorkflowPhase {
   interactiveCheckpoint?: boolean
 }
 
+export type CampaignChildStatus =
+  | 'pending'
+  | 'ready'
+  | 'dispatched'
+  | 'complete'
+  | 'failed'
+  | 'escalated'
+  | 'skipped'
+
+export interface TrackerRef {
+  provider: 'jira' | 'github' | 'linear'
+  key: string
+  url: string
+}
+
+/**
+ * A registered child of a campaign job. Mirrors the shape returned by
+ * `GET /jobs/:campaignJobId` on the runner: the server enriches each
+ * entry with a `summary` snapshot of the dispatched child Job so the
+ * campaign view doesn't have to fan out to N additional fetches.
+ */
+export interface CampaignChild {
+  name: string
+  description: string
+  params: Record<string, unknown>
+  dependsOn: string[]
+  trackerRef?: TrackerRef
+  jobId?: string
+  status: CampaignChildStatus
+  startedAt?: string
+  completedAt?: string
+  summary?: {
+    jobId: string
+    type: string
+    status: string
+    phase: string
+    workflowPath: string
+    tokenUsage: TokenUsage
+    prMappings: PrMapping[]
+    createdAt: string
+    updatedAt: string
+  } | null
+}
+
 export interface Job {
   id: string
   type: string
@@ -100,6 +144,10 @@ export interface Job {
   escalationMessage?: string
   /** Attached by the server when fetched via GET /jobs/:jobId. */
   workflowPhases?: WorkflowPhase[] | null
+  /** Present only on campaign jobs. */
+  campaignChildren?: CampaignChild[]
+  /** Present only on child jobs spawned by a campaign. */
+  campaignParentId?: string
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'

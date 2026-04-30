@@ -8,7 +8,10 @@ import StatusBadge from '../components/StatusBadge'
 import WorkflowFlow, { computePhaseState } from '../components/WorkflowFlow'
 import ArtifactLink from '../components/ArtifactLink'
 import ApprovalBox from '../components/ApprovalBox'
+import CampaignView from '../components/CampaignView'
 import type { TokenUsage, PhaseUsage, WorkflowPhase } from '../types'
+
+const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
 
 function timeAgo(iso: string): string {
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
@@ -315,6 +318,7 @@ export default function JobDetail() {
   const phaseState = workflowPhases.length > 0
     ? computePhaseState(currentPhaseName, workflowPhases, job)
     : 'pending'
+  const isCampaignJob = job.workflowPath === CAMPAIGN_WORKFLOW_PATH || (job.campaignChildren && job.campaignChildren.length > 0)
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -434,6 +438,31 @@ export default function JobDetail() {
           <span>Resume failed: {resumeError}</span>
           <button onClick={() => setResumeError(null)} className="text-rose-400 hover:text-rose-200 text-xs">dismiss</button>
         </div>
+      )}
+
+      {/* Parent campaign link — only when this job was spawned by a campaign */}
+      {job.campaignParentId && (
+        <div className="mb-4 p-3 rounded-lg bg-sky-950/30 border border-sky-800 text-sky-200 text-sm flex items-center justify-between">
+          <span>
+            Spawned by campaign{' '}
+            <Link
+              to={`/jobs/${job.campaignParentId}`}
+              className="font-mono text-sky-300 hover:text-sky-100 underline underline-offset-2"
+            >
+              {job.campaignParentId}
+            </Link>
+          </span>
+          <span className="text-[11px] text-sky-300/70">
+            {typeof job.params['campaignChildName'] === 'string' && (
+              <>child: <span className="font-medium text-sky-200">{job.params['campaignChildName'] as string}</span></>
+            )}
+          </span>
+        </div>
+      )}
+
+      {/* Campaign children — only when this job is a campaign */}
+      {isCampaignJob && (
+        <CampaignView job={job} onMutated={() => void refetch()} />
       )}
 
       {/* Workflow flowchart */}

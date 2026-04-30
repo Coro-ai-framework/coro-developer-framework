@@ -68,6 +68,8 @@ This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct
 
 Follow the git conventions (branch naming, commit format) from your always-loaded context. Branch from `main` (or the base branch specified in the plan).
 
+**Campaign children**: when this job has `params.trackerRef` set (the campaign-planner created a tracker issue for this child), incorporate the issue key into the branch suffix so the branch is correlated with the tracker. Example: `coro/payments-v2/PROJ-123-db-schema`. If `params.branchName` is supplied, prefer that verbatim — the campaign-planner already chose a sensible name.
+
 ### 5. Implement the changes
 
 Follow the implementation plan exactly:
@@ -107,6 +109,7 @@ Include in the PR description:
 - Any deviations from the plan with justification
 - Known gaps or follow-up items
 - Acceptance criteria
+- **Campaign children**: when `params.trackerRef` is set, reference the tracker issue (e.g. `Closes PROJ-123`) so the issue moves with the PR. Also call out which campaign this child belongs to (`params.campaignChildName` of campaign `params.campaignParentId`) so reviewers can find the parent campaign on the dashboard.
 
 ### 9. Post the PR artefact
 

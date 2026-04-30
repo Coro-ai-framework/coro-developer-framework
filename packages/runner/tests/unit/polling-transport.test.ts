@@ -42,6 +42,7 @@ function makeMockBackend(jobs: Job[]): StateBackend {
     getJob: vi.fn(),
     updateJob: vi.fn(),
     listJobsByType: vi.fn(),
+    listChildJobs: vi.fn().mockResolvedValue([]),
     deleteJob: vi.fn(),
     appendLog: vi.fn(),
     getLog: vi.fn(),
