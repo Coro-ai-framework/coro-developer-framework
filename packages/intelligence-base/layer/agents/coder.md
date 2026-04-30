@@ -87,15 +87,38 @@ Run the build and test commands specified in the implementation plan. If not spe
 
 If the build fails, fix the errors before proceeding. If you cannot fix them, call `mcp__coro__escalate` with the full build output.
 
-### 7. Commit and push
+### 7. Commit (do not push yet)
 
 ```bash
 git add -A
 git commit -m "<commit message following git conventions>"
+```
+
+Hold the push until step 8 confirms the diff is clean.
+
+### 8. Self-review via the `code-reviewer` subagent
+
+Before pushing, invoke the `code-reviewer` subagent on the staged diff. The subagent is declared on this phase in `workflows/job/workflow.md` and follows `agents/code-reviewer.md`. It checks the diff against:
+
+- the language conventions skill,
+- the implementation plan and the current work-item entry,
+- `memory/known-pitfalls.md` and `memory/pr-feedback.md`,
+- test coverage for the new behaviour.
+
+The subagent returns a structured report with `Verdict: blocking | non-blocking | clean`. Behaviour:
+
+- **blocking** — fix every blocking item, amend or add commits, then re-invoke the subagent. Repeat until the verdict is non-blocking or clean.
+- **non-blocking / clean** — record the verdict; carry it into the PR description in step 10.
+
+The subagent is the only convention/plan/test-coverage review this PR will receive. The `review` phase that follows is a thin merge gatekeeper and will **not** re-read the diff. Take the subagent's findings seriously.
+
+### 9. Push the branch
+
+```bash
 git push origin <work-item-branch-name>
 ```
 
-### 8. Open the pull request
+### 10. Open the pull request
 
 Use the appropriate MCP tool based on `params.gitProvider`:
 - **BitBucket**: `mcp__coro__bb_create_pr`
@@ -111,7 +134,7 @@ Include in the PR description:
 - Acceptance criteria
 - **Campaign children**: when `params.trackerRef` is set, reference the tracker issue (e.g. `Closes PROJ-123`) so the issue moves with the PR. Also call out which campaign this child belongs to (`params.campaignChildName` of campaign `params.campaignParentId`) so reviewers can find the parent campaign on the dashboard.
 
-### 9. Post the PR artefact
+### 11. Post the PR artefact
 
 Immediately after the PR is created (both on BitBucket and GitHub paths), call `mcp__coro__post_artifact` so the PR link appears on the dashboard:
 
@@ -123,17 +146,27 @@ post_artifact({
 })
 ```
 
-When responding to review feedback (step 10), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link.
+When responding to review feedback (step 12), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link.
 
-### 10. Responding to PR feedback
+### 12. Responding to review feedback
 
-When the review phase sends you back to fix issues (via `goto_phase("coding")`):
-1. Read the PR comments via the appropriate tool (`mcp__coro__bb_get_pr_comments` for BitBucket, `mcp__coro__gh_get_pr_comments` for GitHub)
-2. Apply fixes to the same branch
-3. Commit with `fix: address review feedback — <brief description>`
-4. Push to origin (the PR updates automatically)
-5. Reply to comments via the appropriate tool (`mcp__coro__bb_post_pr_comment` or `mcp__coro__gh_post_pr_comment`) confirming what was changed
-6. You are done — the runner automatically advances back to review
+There are two distinct loop-backs that can land you here:
+
+- **Merge gatekeeper loop-back** — a human reviewer posted a blocking comment on the PR and the gatekeeper called `goto_phase("coding")`.
+- **Evaluator loop-back** — the merged result failed the build, regressed existing tests, or missed an acceptance criterion, and the Evaluator called `goto_phase("coding")` with a fix brief.
+
+Procedure:
+
+1. Read the loop-back context:
+   - For gatekeeper loop-backs: read PR comments via the appropriate tool (`mcp__coro__bb_get_pr_comments` for BitBucket, `mcp__coro__gh_get_pr_comments` for GitHub).
+   - For evaluator loop-backs: read the latest evaluation report under `working/{job-id}/evaluations/` for the fix brief.
+2. Apply fixes to the same branch.
+3. Re-run the local build/tests.
+4. Re-invoke the `code-reviewer` subagent on the new diff and clear any blocking findings before pushing.
+5. Commit with `fix: address review feedback — <brief description>` (or `fix: address evaluation findings — ...` for evaluator loop-backs).
+6. Push to origin (the PR updates automatically). For evaluator loop-backs where the PR is already merged, open a new PR for the fix and link it back to the evaluation.
+7. Reply to comments via the appropriate tool (`mcp__coro__bb_post_pr_comment` or `mcp__coro__gh_post_pr_comment`) confirming what was changed.
+8. You are done — the runner automatically advances back to `review` (gatekeeper loop) or `evaluation` (evaluator loop).
 
 ## Critical rules
 

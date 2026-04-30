@@ -164,7 +164,7 @@ Common kinds:
 | `analysis-contract` | Analyzer writes the service contract JSON | `{ path: "…/service-contract.json" }` |
 | `pr-link` | Coder opens a PR (both bb and gh paths) | `{ url, prId, repoSlug, title }` |
 | `review-summary` | PR Reviewer posts a review summary | `{ prId, repoSlug, verdict, summary }` |
-| `test-results` | Tester finishes running the validation suite | `{ path, passed, failed, skipped }` |
+| `test-results` | Evaluator records build/test/acceptance verification on the merged commit | `{ path, passed, failed, skipped }` |
 | `evaluation-md` | Evaluator writes an evaluation report | `{ path: "…/evaluation.md" }` |
 | `report-md` | Any agent writes a human-readable report | `{ path: "…/report.md" }` |
 | `url` | Any external link that doesn't fit above | `{ url, label }` |
@@ -337,13 +337,15 @@ Rules:
 
 ### PR review process
 
-1. Coder opens PR and tags human reviewers + includes `[PR-REVIEWER-AGENT]`
-2. PR Reviewer agent performs initial automated review
-3. Human reviewers comment, approve, or request changes
-4. Coder responds to all change requests
-5. PR Reviewer agent verifies resolution and confirms via comment
-6. At least one human approval required before merge
-7. PR Reviewer agent triggers merge after human approval
+1. Coder builds, runs tests locally, and invokes the `code-reviewer` subagent on the diff. Address every blocking finding before pushing.
+2. Coder opens PR, tags human reviewers, and includes `[PR-REVIEWER-AGENT]` plus the subagent's review verdict in the description.
+3. The merge gatekeeper (`pr-reviewer.md`) coordinates with humans:
+   - It does **not** re-review the diff against conventions/plan/tests — that already happened in step 1.
+   - Human reviewers comment, approve, or request changes.
+   - Blocking change requests are routed back to the Coder via `goto_phase("coding")`.
+4. At least one human approval is required before merge.
+5. The merge gatekeeper triggers the merge after human approval and CI is green.
+6. The Evaluator runs the build/test suite and acceptance criteria on the merged commit and decides whether to loop back or finish.
 
 ### Merge strategy
 

@@ -227,7 +227,7 @@ phases:
     status: coding
     subagents:
       - name: code-reviewer
-        agent: agents/pr-reviewer.md
+        agent: agents/code-reviewer.md
         model: coding
         tools: [Read, Glob, Grep, mcp__coro__bb_post_pr_comment]
 
@@ -242,13 +242,18 @@ overrides:
 The generic implementation workflow is work-item driven:
 
 ```text
-[Spec Writing] → Planning → [Coding → Review → Testing → Evaluation] → Reporting
+[Spec Writing] → Planning → [Coding(+code-reviewer subagent) → Review(merge gate) → Evaluation(verify+loop)]
 ```
 
-The planner defines work items. The evaluator decides whether to loop,
-move forward, escalate, or finish. The runner only honours the agent's
-tool calls (`set_work_items`, `update_work_item`, `goto_phase`,
-`await_event`) and phase signals.
+The planner defines work items. The Coder writes code, runs the local
+build/tests, and invokes the `code-reviewer` subagent on the diff before
+opening the PR. The Review phase is a thin merge gatekeeper that
+coordinates with humans and merges when approved — it does **not**
+re-review the diff. The Evaluator runs build/tests on the merged commit,
+verifies acceptance criteria, queries Loki for runtime errors, and
+decides whether to loop, move forward, escalate, or finish. The runner
+only honours the agent's tool calls (`set_work_items`,
+`update_work_item`, `goto_phase`, `await_event`) and phase signals.
 
 ---
 
@@ -268,15 +273,13 @@ provides:
 
 ### 7.2 Phase agents
 
-| Phase          | Agent                       |
-| -------------- | --------------------------- |
-| `spec-writing` | `agents/spec-writer.md`     |
-| `planning`     | `agents/planner.md`         |
-| `coding`       | `agents/coder.md`           |
-| `review`       | `agents/pr-reviewer.md`     |
-| `testing`      | `agents/tester.md`          |
-| `evaluation`   | `agents/evaluator.md`       |
-| `reporting`    | `agents/planner.md`         |
+| Phase          | Agent                                                            |
+| -------------- | ---------------------------------------------------------------- |
+| `spec-writing` | `agents/spec-writer.md`                                          |
+| `planning`     | `agents/planner.md`                                              |
+| `coding`       | `agents/coder.md` + `agents/code-reviewer.md` (as subagent)      |
+| `review`       | `agents/pr-reviewer.md` (merge gatekeeper)                       |
+| `evaluation`   | `agents/evaluator.md` (also performs build/test/acceptance verification) |
 
 Agents are **generic procedures**. They become specialised by invoking
 skills on demand — the same coder agent works for Go, .NET, and other
@@ -340,10 +343,12 @@ Jobs persist:
 
 ```text
 queued → planning → awaiting-plan-approval
-       → coding:{work-item} → awaiting-pr-merge:{work-item}
-       → testing:{work-item} → evaluation:{work-item}
-       → [loop or advance]
-       → reporting → complete | escalated | failed
+       → coding:{work-item} (code-reviewer subagent runs pre-PR)
+       → review:{work-item} (merge gatekeeper, awaiting human approval)
+       → awaiting-pr-merge:{work-item}
+       → evaluation:{work-item} (build + tests + acceptance + Loki on merged commit)
+       → [loop back to coding or advance to next work item]
+       → complete | escalated | failed
 ```
 
 Some jobs may begin in `spec-writing` when triggered from Jira.

@@ -49,9 +49,16 @@ describe('@coro/intelligence-base manifest', () => {
         .readdirSync(path.join(layerRoot, 'agents'))
         .filter((f) => f.endsWith('.md'))
         .sort()
-      expect(agents).toEqual(
-        ['coder.md', 'evaluator.md', 'planner.md', 'pr-reviewer.md', 'spec-writer.md', 'tester.md'],
-      )
+      expect(agents).toEqual([
+        'campaign-evaluator.md',
+        'campaign-planner.md',
+        'code-reviewer.md',
+        'coder.md',
+        'evaluator.md',
+        'planner.md',
+        'pr-reviewer.md',
+        'spec-writer.md',
+      ])
     })
 
     it('ships the canonical workflows', () => {
@@ -71,6 +78,7 @@ describe('@coro/intelligence-base manifest', () => {
         .map((e) => e.name)
         .sort()
       expect(skills).toEqual([
+        'campaign-planning',
         'dotnet-conventions',
         'feature-planning',
         'feature-testing',
