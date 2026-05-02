@@ -37,7 +37,7 @@ import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 
-type DetailTab = 'overview' | 'activity' | 'workflow' | 'campaign' | 'artifacts' | 'usage' | 'raw'
+type DetailTab = 'overview' | 'activity' | 'tasks' | 'sub-runs' | 'artifacts' | 'usage' | 'raw'
 
 const RESUMABLE_STATUSES = new Set([
   'failed',
@@ -249,7 +249,17 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
   )
 }
 
-function PhaseFocusCard({ job, selectedPhase, phases }: { job: Job; selectedPhase: string; phases: WorkflowPhase[] }) {
+function PhaseFocusCard({
+  job,
+  selectedPhase,
+  phases,
+  showArtifacts = true,
+}: {
+  job: Job
+  selectedPhase: string
+  phases: WorkflowPhase[]
+  showArtifacts?: boolean
+}) {
   const phaseArtifacts = (job.artifacts ?? []).filter(artifact => artifact.phase === selectedPhase)
   const phaseUsage = (job.phaseUsage ?? []).find(phase => phase.phase === selectedPhase)
 
@@ -271,25 +281,29 @@ function PhaseFocusCard({ job, selectedPhase, phases }: { job: Job; selectedPhas
           </div>
         ) : null}
 
-        <Separator />
+        {showArtifacts ? (
+          <>
+            <Separator />
 
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-white">Artifacts</div>
-            <div className="text-xs uppercase tracking-[0.14em] text-slate-500">{phaseArtifacts.length} items</div>
-          </div>
-          {phaseArtifacts.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.025] px-4 py-5 text-sm text-slate-500">
-              No artifacts have been posted for this phase yet.
-            </div>
-          ) : (
             <div className="space-y-3">
-              {phaseArtifacts.map(artifact => (
-                <ArtifactLink key={artifact.id} jobId={job.id} artifact={artifact} />
-              ))}
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-white">Artifacts</div>
+                <div className="text-xs uppercase tracking-[0.14em] text-slate-500">{phaseArtifacts.length} items</div>
+              </div>
+              {phaseArtifacts.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.025] px-4 py-5 text-sm text-slate-500">
+                  No artifacts have been posted for this phase yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {phaseArtifacts.map(artifact => (
+                    <ArtifactLink key={artifact.id} jobId={job.id} artifact={artifact} />
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </>
+        ) : null}
 
         <Separator />
 
@@ -312,21 +326,28 @@ function WorkflowSnapshotCard({
   phases: WorkflowPhase[]
   onSelectPhase: (phase: string) => void
 }) {
+  const selectedPhaseName = selectedPhase ?? job.phase
+  const selectedPhaseArtifacts = (job.artifacts ?? []).filter(artifact => artifact.phase === selectedPhaseName)
+
   return (
     <Card>
-      <CardHeader className="gap-2 border-b border-white/8 pb-4">
-        <CardTitle>Workflow</CardTitle>
-        <CardDescription>{deriveWorkflowLabel(job.workflowPath)}</CardDescription>
-      </CardHeader>
       <CardContent className="space-y-4 pt-5">
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Path</div>
-          <div className="mt-1 break-all font-mono text-xs text-slate-400">{job.workflowPath}</div>
-        </div>
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0 space-y-1.5">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Workflow Progress</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-sm font-semibold text-white">{deriveWorkflowLabel(job.workflowPath)}</div>
+              <span className="rounded-full border border-white/8 bg-white/[0.03] px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                {phases.length} phases
+              </span>
+            </div>
+            <div className="break-all font-mono text-xs text-slate-500">{job.workflowPath}</div>
+          </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <SummaryStat label="Current" value={job.phase} detail={`${phases.length} phases`} />
-          <SummaryStat label="Selected" value={selectedPhase ?? job.phase} detail="Change focus directly from the map." />
+          <div className="grid gap-3 sm:grid-cols-2 xl:min-w-[360px]">
+            <SummaryStat label="Current" value={job.phase} detail="Live phase" />
+            <SummaryStat label="Selected" value={selectedPhase ?? job.phase} detail="Changes with map selection" />
+          </div>
         </div>
 
         <WorkflowFlow
@@ -335,6 +356,24 @@ function WorkflowSnapshotCard({
           selectedPhase={selectedPhase}
           onSelectPhase={onSelectPhase}
         />
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Selected Phase Artifact</div>
+            <div className="text-xs uppercase tracking-[0.14em] text-slate-500">{selectedPhaseName}</div>
+          </div>
+          {selectedPhaseArtifacts.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.025] px-4 py-4 text-sm text-slate-500">
+              No artifacts have been posted for this phase yet.
+            </div>
+          ) : (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {selectedPhaseArtifacts.map(artifact => (
+                <ArtifactLink key={artifact.id} jobId={job.id} artifact={artifact} />
+              ))}
+            </div>
+          )}
+        </div>
       </CardContent>
     </Card>
   )
@@ -414,7 +453,7 @@ function MessageComposer({
     <Card>
       <CardHeader>
         <CardTitle>Send Message</CardTitle>
-        <CardDescription>Push new context or instructions into the active run without waiting for a checkpoint.</CardDescription>
+        <CardDescription>Send additional guidance into the live run. You can send multiple messages as new context appears.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {error ? (
@@ -609,7 +648,7 @@ export default function JobDetail() {
   }, [job?.id, job?.phase])
 
   useEffect(() => {
-    if (activeTab === 'campaign' && !campaignMode) {
+    if (activeTab === 'sub-runs' && !campaignMode) {
       setActiveTab('activity')
     }
   }, [activeTab, campaignMode])
@@ -694,7 +733,8 @@ export default function JobDetail() {
     )
   }
 
-  const canSendMessage = !NON_RUNNING_STATUSES.has(job.status)
+  const canSendLiveMessage = !NON_RUNNING_STATUSES.has(job.status) && connectionStatus !== 'disconnected'
+  const canSendMessage = canSendLiveMessage || job.status === 'awaiting-developer-input'
   const repoSlug = getRepoSlug(job)
   const description = deriveJobDescription(job)
 
@@ -739,27 +779,40 @@ export default function JobDetail() {
         </CardContent>
       </Card>
 
+      <WorkflowSnapshotCard
+        job={job}
+        selectedPhase={selectedPhase}
+        phases={workflowPhases}
+        onSelectPhase={setSelectedPhase}
+      />
+
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>
         <TabsList className="h-auto flex-wrap">
           <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="tasks">Tasks</TabsTrigger>
+          {campaignMode ? <TabsTrigger value="sub-runs">Sub runs</TabsTrigger> : null}
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="workflow">Workflow</TabsTrigger>
-          {campaignMode ? <TabsTrigger value="campaign">Campaign</TabsTrigger> : null}
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
           <TabsTrigger value="usage">Usage</TabsTrigger>
           <TabsTrigger value="raw">Raw</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-5">
+          <WorkItemsCard job={job} />
+
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="space-y-5">
-              <PhaseFocusCard job={job} selectedPhase={currentPhase} phases={workflowPhases} />
-              <WorkItemsCard job={job} />
+              <PhaseFocusCard job={job} selectedPhase={currentPhase} phases={workflowPhases} showArtifacts={false} />
             </div>
             <div className="space-y-5">
+              <JobSignalsCard job={job} />
               <TokenUsagePanel usage={job.tokenUsage} />
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="tasks" className="space-y-5">
+          <WorkItemsCard job={job} />
         </TabsContent>
 
         <TabsContent value="activity" className="space-y-5">
@@ -767,15 +820,6 @@ export default function JobDetail() {
             <div className="space-y-5">
               {job.status === 'awaiting-developer-input' ? (
                 <ApprovalBox job={job} onSend={postMessage} />
-              ) : null}
-              {canSendMessage && job.status !== 'awaiting-developer-input' ? (
-                <MessageComposer
-                  value={messageText}
-                  onChange={setMessageText}
-                  onSend={handleSendMessage}
-                  sending={sendingMessage}
-                  error={messageError}
-                />
               ) : null}
 
               <Card>
@@ -790,6 +834,16 @@ export default function JobDetail() {
                   <LogViewer lines={lines} />
                 </CardContent>
               </Card>
+
+              {canSendMessage ? (
+                <MessageComposer
+                  value={messageText}
+                  onChange={setMessageText}
+                  onSend={handleSendMessage}
+                  sending={sendingMessage}
+                  error={messageError}
+                />
+              ) : null}
             </div>
 
             <div className="space-y-5">
@@ -811,13 +865,6 @@ export default function JobDetail() {
                 <AlertCard title="Escalation message" tone="rose">{job.escalationMessage}</AlertCard>
               ) : null}
 
-              <WorkflowSnapshotCard
-                job={job}
-                selectedPhase={selectedPhase}
-                phases={workflowPhases}
-                onSelectPhase={setSelectedPhase}
-              />
-
               <ActionPanel
                 job={job}
                 workflowPhases={workflowPhases}
@@ -830,32 +877,12 @@ export default function JobDetail() {
                 onResume={handleResume}
                 onRefresh={refetch}
               />
-
-              <JobSignalsCard job={job} />
             </div>
           </div>
         </TabsContent>
 
-        <TabsContent value="workflow" className="space-y-5">
-          <Card>
-            <CardHeader>
-              <CardTitle>Workflow Map</CardTitle>
-              <CardDescription>Select a phase to inspect its artifacts and usage without leaving the detail workspace.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <WorkflowFlow
-                job={job}
-                phases={workflowPhases}
-                selectedPhase={selectedPhase}
-                onSelectPhase={setSelectedPhase}
-              />
-            </CardContent>
-          </Card>
-          <PhaseFocusCard job={job} selectedPhase={currentPhase} phases={workflowPhases} />
-        </TabsContent>
-
         {campaignMode ? (
-          <TabsContent value="campaign">
+          <TabsContent value="sub-runs">
             <CampaignView job={job} onMutated={() => void refetch()} />
           </TabsContent>
         ) : null}
