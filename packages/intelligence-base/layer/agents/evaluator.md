@@ -150,9 +150,18 @@ For every **new** finding (not already in memory):
 
 ### 9. Review upstream insights and propose improvements
 
-The job context includes an **Insights from Upstream Agents** section — learnings recorded by the planner, coder, and merge gatekeeper during earlier phases. Before proposing, invoke the `self-improvement-guide` skill for file structure, proposal types, and target-layer routing rules.
+The job context includes an **Insights from Upstream Agents** section — learnings recorded by the planner, coder, merge gatekeeper, and (for campaign children) earlier siblings. Each insight may carry a `sourceChildName` indicating it was inherited from an earlier sibling in the same campaign. Before proposing, invoke the `self-improvement-guide` skill for file structure, proposal types, and target-layer routing rules.
 
 You are the **grooming agent** for self-improvement: review every insight, decide which ones deserve durable changes, and consolidate them into a coherent diff.
+
+**Heuristic for what deserves a memory entry:**
+
+- Any insight in category `sandbox-quirk`, `toolchain-pitfall`, or `intelligence-gap` should almost always become a `memory/known-pitfalls.md` entry — these are the patterns that re-bite future runs against this tenant.
+- Any insight in category `workaround` should become an entry under `memory/successful-patterns.md` with the exact recipe.
+- An insight in category `auth-friction` or `provider-bug` should become a known-pitfall when the root cause is environmental, or a skill update when the root cause is procedural.
+- An insight that appears under multiple `sourceChildName` values within the same campaign is gold — that's a generalisable pattern, not a one-off. Promote it with high priority.
+
+If you also see triggers that should have fired but didn't (e.g. coder retried 5+ times but recorded no insight), call `mcp__coro__add_insight` yourself in category `intelligence-gap` so the next campaign's siblings still get the recipe even before the memory PR merges.
 
 **Consolidation rule (mandatory):** Make at most ONE `propose_change` call per target layer per job — one for the tenant intelligence repo and, if needed, one for the project repo's `.coro/` overlay. Bundle every related file change for a layer into a single multi-file payload. Two proposals to the same layer means two PRs and twice the human review time.
 

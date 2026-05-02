@@ -20,7 +20,16 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 5. **Never change an API contract without documenting it.** If a service must deviate from the source contract, document the deviation in the PR description with the reason. Never silently omit an endpoint.
 
-6. **Record insights when you learn something reusable.** A failure pattern, a workaround, a translation rule, an auth quirk — if it will help future runs, call `add_insight` with the category, a one-line summary, and full context. Prefer letting the Evaluator review insights and decide what to promote via `propose_change`, but call `propose_change` directly when a systemic fix is clear and urgent.
+6. **Record insights aggressively — every wasted turn is a future-run tax.** Call `add_insight` *in the same turn* the workaround clicks; do not batch. You MUST record when ANY of these triggers fire:
+   - You retried the same operation **3+ times** before it worked.
+   - You spent **>5 minutes wall-clock** on a single op.
+   - You discovered a **sandbox / toolchain quirk** the prompt didn't mention (network-allowlist, filesystem-write-block, package-cache, host-factory, git-config).
+   - You used a **workaround that bypasses the documented happy path** (inline-URL git push, raw curl/python after an MCP tool failed, custom NuGet/pip/npm config).
+   - A failure left you **guessing for >2 turns** about whose fault it was.
+
+   Use one of these `category` values: `sandbox-quirk`, `toolchain-pitfall`, `auth-friction`, `provider-bug`, `intelligence-gap`, `workaround`, `spec-ambiguity`. Put the **exact, copy-pasteable recipe** in `suggestion` — config snippet, command line, env var. Vague insights ("be careful with NuGet") are worse than no insight; the Evaluator will discard them. Prefer letting the Evaluator review and promote via `propose_change`, but call `propose_change` yourself when the fix is clear AND urgent.
+
+   **Campaign children:** insights you record carry over automatically to sibling children dispatched after you. If `params.campaignSiblingInsights` is non-empty (or your job context has "Insights from Upstream Agents" entries with a `sourceChildName`), read them before doing anything else — they're fresher and more applicable than `memory/known-pitfalls.md`.
 
 7. **Prefer observed behavior over code analysis.** When a service's behavior is ambiguous, call `loki_query` to check actual production traffic before assuming. Code can lie; logs don't.
 

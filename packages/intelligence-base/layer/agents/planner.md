@@ -130,7 +130,21 @@ Paths must be relative to the job working directory.
 
 ### 9. Record insights
 
-If you discovered anything through trial-and-error — authentication workarounds, repo slug mismatches, environment quirks, API behavior that differs from documentation — call `mcp__coro__add_insight` with the category, a one-line summary, and full context. The Evaluator will review these and decide whether to create a self-improvement proposal.
+Call `mcp__coro__add_insight` in the same turn the discovery clicks (don't batch them at the end). You must record if ANY of these triggers fired during planning:
+
+- You retried the same operation **3+ times** before it worked.
+- You spent **>5 minutes wall-clock** on a single read / search / API call.
+- You hit a **sandbox or toolchain quirk** that wasn't documented in the prompt or memory (network-allowlist, filesystem-write-block, package cache, repo-slug ambiguity, auth handshake).
+- You used a **workaround that bypasses the documented happy path** (inline-URL git ops, raw curl/python after an MCP tool failed, custom config files).
+- A failure left you **guessing for >2 turns** about whose fault it was.
+
+Use one of these `category` values so the Evaluator and downstream siblings can group them: `sandbox-quirk`, `toolchain-pitfall`, `auth-friction`, `provider-bug`, `spec-ambiguity`, `intelligence-gap`, `workaround`. Put the **exact, copy-pasteable recipe** in `suggestion` — config snippet, command line, env var. Vague insights waste tokens; the Evaluator will discard them.
+
+If `params.campaignChildName` is set, your insights will automatically be inherited by sibling children dispatched after you complete. Spell the recipe out for them.
+
+### 10. Read sibling insights BEFORE planning (campaign children only)
+
+If `params.campaignSiblingInsights` is non-empty (or your job context includes "Insights from Upstream Agents" entries marked with a `sourceChildName`), **read them before drafting the plan**. They are fresher and more directly applicable than memory/known-pitfalls because they were just discovered against the same target repo and sandbox.
 
 ### 10. Log progress
 

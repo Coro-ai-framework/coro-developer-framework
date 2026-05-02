@@ -180,4 +180,17 @@ Procedure:
 - **The runner auto-advances** when you finish the phase — just end your turn. There is no "complete this phase" tool. If you need to re-enter the same phase or jump to a different one, call `goto_phase`. If you need additional developer input mid-phase, call `await_event({ eventName: "developer-input: <reason>" })`. Do not use `await_event` for a normal workflow checkpoint when the workflow docs say the runner enforces that approval.
 - **Call `mcp__coro__escalate`** if anything blocks you that you cannot resolve.
 - **On persistent auth failures (401/403):** immediately escalate with the exact error. Do not retry more than twice.
-- **Call `mcp__coro__add_insight`** when you discover a workaround, hit an unexpected error, or learn something that future runs should know.
+- **Call `mcp__coro__add_insight` aggressively — every wasted turn is a future-run tax.** Do NOT wait until you finish to look back; record the insight in the SAME turn the workaround clicks. Trigger ANY of these and you must record:
+  - You retried the same operation **3 or more times** before it worked (different flags, different paths, different env vars — all count as the "same op" if the goal is identical).
+  - You spent **more than 5 minutes of wall-clock** on a single operation (read the timestamps in your tool results).
+  - You discovered a **sandbox / toolchain quirk** the prompt didn't tell you about — anything network-allowlist, filesystem-write-block, package-cache, design-time-host, build-graph, or git-config related.
+  - You used a **workaround that bypasses the documented happy path** (e.g. inline-URL `git push` instead of `git remote add`, raw curl/python after an MCP tool failed, custom NuGet/pip/npm config to escape the global one).
+  - You hit a **failure that left you guessing** for >2 turns about whether it was a Coro bug, a sandbox restriction, or your own mistake.
+
+  Use `category` from this set so the Evaluator can group them: `sandbox-quirk`, `toolchain-pitfall`, `auth-friction`, `provider-bug`, `intelligence-gap` (memory or skill should have warned me but didn't), `workaround`. The `suggestion` field should be **the exact recipe** — config snippet, command line, env var — that the next agent can copy-paste. Vague insights ("be careful with NuGet") are worse than no insight; the Evaluator will discard them.
+
+  In a campaign, your `params.campaignChildName` is set — meaning a future sibling child will inherit your insights via `params.campaignSiblingInsights`. Spell the recipe out for them.
+
+### 17. Read sibling insights BEFORE diving in (campaign children only)
+
+If `params.campaignSiblingInsights` is non-empty (or your job context includes "Insights from Upstream Agents" entries marked with a `sourceChildName`), **stop and read them in full before step 1**. These are recipes that earlier campaign siblings recorded — they're fresher and more applicable than `memory/known-pitfalls.md` because they were just discovered against the same target repo and sandbox you're running in. Treat them as binding instructions, not optional reading.

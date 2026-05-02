@@ -209,6 +209,111 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
   })
 
+  // ── Insight rendering ──────────────────────────────────────────────────
+  //
+  // Coverage for the campaign sibling-insight carry-over: when a child job
+  // is dispatched with insights inherited from earlier siblings, those
+  // insights MUST surface in the prompt with clear sibling provenance so
+  // the agent can tell its own findings apart from the pre-loaded ones.
+
+  describe('insight rendering', () => {
+    it('omits the insights section entirely when none are present', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(makeJob({ insights: [] }), INTELLIGENCE_DIR, noopLogger)
+      expect(prompt).not.toContain('Insights from Upstream Agents')
+    })
+
+    it('renders own-job insights without sibling provenance', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [{
+            phase: 'coding',
+            category: 'workaround',
+            summary: 'Used inline-URL git push',
+            detail: 'Sandbox blocks .git/config writes.',
+            suggestion: 'git push "https://x-access-token:$GH_TOKEN@github.com/$GH_OWNER/$REPO.git" $BRANCH',
+          }],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      expect(prompt).toContain('Insights from Upstream Agents')
+      expect(prompt).toContain('[coding] workaround')
+      expect(prompt).not.toContain('[campaign sibling:')
+    })
+
+    it('renders sibling-inherited insights with explicit provenance and a fresher-than-memory lead', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [
+            {
+              phase: 'coding',
+              category: 'sandbox-quirk',
+              summary: 'dotnet restore hangs without --configfile',
+              detail: 'Sandbox blocks api.nuget.org; restore silently spins.',
+              suggestion: 'dotnet restore --configfile NuGet.Config',
+              sourceChildName: 'db-infrastructure',
+            },
+            {
+              phase: 'coding',
+              category: 'toolchain-pitfall',
+              summary: 'Solution-level dotnet build hangs',
+              detail: 'Per-project build works.',
+              suggestion: 'dotnet build src/<proj>/<proj>.csproj',
+              sourceChildName: 'db-infrastructure',
+            },
+          ],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      expect(prompt).toContain('[campaign sibling: db-infrastructure · coding] sandbox-quirk')
+      expect(prompt).toContain('[campaign sibling: db-infrastructure · coding] toolchain-pitfall')
+      expect(prompt).toContain('fresher than memory')
+      expect(prompt).toContain('dotnet restore --configfile NuGet.Config')
+    })
+
+    it('uses the standard lead when own-job and sibling insights are mixed (sibling provenance still wins line-by-line)', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [
+            {
+              phase: 'planning',
+              category: 'spec-ambiguity',
+              summary: 'Ambiguous reviewer mapping',
+              detail: 'No alias for "ops".',
+            },
+            {
+              phase: 'coding',
+              category: 'sandbox-quirk',
+              summary: 'dotnet restore hang',
+              detail: 'Inherited recipe',
+              sourceChildName: 'db-infrastructure',
+            },
+          ],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      // Mixed mode → fresher-than-memory lead is shown because at least one
+      // sibling insight is present; the agent should still process the
+      // own-job entry, which is rendered without the sibling marker.
+      expect(prompt).toContain('fresher than memory')
+      expect(prompt).toContain('[planning] spec-ambiguity')
+      expect(prompt).toContain('[campaign sibling: db-infrastructure · coding] sandbox-quirk')
+    })
+  })
+
   describe('resilience', () => {
     it('continues when workflow file is missing', async () => {
       setupFs({})

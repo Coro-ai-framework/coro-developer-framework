@@ -98,6 +98,14 @@ export interface Insight {
   summary: string
   detail: string
   suggestion?: string
+  /**
+   * Set when this insight was inherited from an earlier sibling in the
+   * same campaign. The dispatcher tags every insight it carries from a
+   * completed child onto a freshly-dispatched sibling so the agent can
+   * tell its own findings apart from upstream ones in the prompt.
+   * Empty / undefined for insights produced by the current job.
+   */
+  sourceChildName?: string
 }
 
 // ── Campaign coordination ────────────────────────────────────────────────────
@@ -263,6 +271,19 @@ export interface Job {
    * child-stopped transitions.
    */
   campaignParentId?: string
+
+  /**
+   * Insights collected from completed campaign children, kept on the parent
+   * campaign job. The dispatcher appends to this list every time a child
+   * reaches a terminal status, then seeds freshly-dispatched siblings with
+   * its contents (via {@link JobInput.initialInsights}) so each new child
+   * inherits everything earlier siblings learned. Each entry has its
+   * `sourceChildName` set to the originating child. The full PR-merge-pull
+   * memory cycle still runs at campaign end via the campaign-evaluator —
+   * this aggregator is the *in-flight* mechanism that lets sibling N+1
+   * benefit from sibling N's discoveries before any human review happens.
+   */
+  campaignAggregatedInsights?: Insight[]
 }
 
 // ── Convenience accessors ─────────────────────────────────────────────────────
@@ -296,6 +317,15 @@ export interface JobInput {
   workflowPath?: string
   triggerSource?: 'cli' | 'jira' | 'internal'
   params: Record<string, unknown>
+  /**
+   * Optional seed for the new job's `insights` array. Today the only
+   * caller setting this is the campaign dispatcher, which forwards the
+   * parent's `campaignAggregatedInsights` so a freshly-dispatched sibling
+   * can read what earlier siblings learned without waiting on the
+   * campaign-evaluator's PR-merge cycle. Empty / undefined means start
+   * with no insights, as before.
+   */
+  initialInsights?: Insight[]
 }
 
 // ── Proposals ─────────────────────────────────────────────────────────────────

@@ -183,7 +183,11 @@ export async function buildJobRecord(
     prMappings,
     interactive: input.params['interactive'] === true,
     artifacts: [],
-    insights: [],
+    // Seed insights from the input when supplied — currently only the
+    // campaign dispatcher uses this, to carry sibling insights forward
+    // across child boundaries without going through the slower
+    // PR-merge-pull memory cycle. Default is an empty list as before.
+    insights: Array.isArray(input.initialInsights) ? [...input.initialInsights] : [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],
     createdAt: now,

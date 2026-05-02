@@ -2,6 +2,7 @@ import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   Artifact,
   CampaignChild,
+  Insight,
   Job,
   JobInput,
   STATUS_AWAITING_CHILDREN,
@@ -445,11 +446,33 @@ export class Dispatcher {
       completedAt: new Date().toISOString(),
     }
 
+    // In-flight insight carry-over: aggregate the just-finished child's *own*
+    // insights onto the parent so siblings dispatched after this point can
+    // read them. We deliberately exclude any insight that already carries a
+    // `sourceChildName` — those were inherited from earlier siblings via the
+    // dispatcher's seeding path, and re-aggregating them would duplicate
+    // entries every hop.
+    const aggregatedSoFar = parent.campaignAggregatedInsights ?? []
+    const ownInsights = (child.insights ?? []).filter(i => !i.sourceChildName)
+    const settledChildName = updated[idx].name
+    const newAggregated: Insight[] = [
+      ...aggregatedSoFar,
+      ...ownInsights.map(i => ({ ...i, sourceChildName: settledChildName })),
+    ]
+
     const reconciled = reconcileReady(updated)
-    await this.ctx.stateBackend.updateJob(parent.id, { campaignChildren: reconciled })
+    await this.ctx.stateBackend.updateJob(parent.id, {
+      campaignChildren: reconciled,
+      ...(newAggregated.length !== aggregatedSoFar.length
+        ? { campaignAggregatedInsights: newAggregated }
+        : {}),
+    })
     await this.ctx.stateBackend.appendLog(
       parent.id,
-      `[campaign] Child "${updated[idx].name}" reached ${mapped} (job ${child.id}); ` +
+      `[campaign] Child "${settledChildName}" reached ${mapped} (job ${child.id}); ` +
+        `${ownInsights.length > 0
+          ? `aggregated ${ownInsights.length} insight${ownInsights.length === 1 ? '' : 's'} for siblings; `
+          : ''}` +
         `re-running coordinator sweep`,
     )
 
@@ -467,6 +490,15 @@ export class Dispatcher {
       if (parent.params[key] !== undefined) inherited[key] = parent.params[key]
     }
 
+    // Seed the new child with everything earlier siblings learned. The
+    // prompt builder already renders `job.insights` under "Insights from
+    // Upstream Agents", so the agent sees these as part of its turn-1
+    // context — no extra wiring needed at the prompt layer. Each carried
+    // insight retains its `sourceChildName` so the agent (and the
+    // campaign-evaluator at end of campaign) can tell sibling-inherited
+    // insights apart from the child's own findings.
+    const siblingInsights = parent.campaignAggregatedInsights ?? []
+
     const childInput: JobInput = {
       type: 'job',
       workflowPath: CHILD_WORKFLOW_PATH,
@@ -480,6 +512,7 @@ export class Dispatcher {
         campaignChildName: spec.name,
         ...(spec.trackerRef ? { trackerRef: spec.trackerRef } : {}),
       },
+      ...(siblingInsights.length > 0 ? { initialInsights: siblingInsights } : {}),
     }
 
     const child = await this.ctx.stateBackend.createJob(childInput)

@@ -170,17 +170,34 @@ function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext): string {
   ]
 
   if (job.insights && job.insights.length > 0) {
-    const insightLines = job.insights.map((ins, i) =>
-      `### ${i + 1}. [${ins.phase}] ${ins.category}\n` +
-      `**Summary:** ${ins.summary}\n` +
-      `**Detail:** ${ins.detail}` +
-      (ins.suggestion ? `\n**Suggestion:** ${ins.suggestion}` : ''),
-    )
+    // Surface sibling provenance prominently so the agent can tell
+    // sibling-inherited insights apart from this job's own. Sibling
+    // insights are *fresher and more directly applicable* than memory
+    // entries because they were discovered against the same target
+    // repo, sandbox, and tenant minutes earlier — agents are
+    // instructed to read them before consulting memory/known-pitfalls.
+    const insightLines = job.insights.map((ins, i) => {
+      const provenance = ins.sourceChildName
+        ? `[campaign sibling: ${ins.sourceChildName} · ${ins.phase}]`
+        : `[${ins.phase}]`
+      return (
+        `### ${i + 1}. ${provenance} ${ins.category}\n` +
+        `**Summary:** ${ins.summary}\n` +
+        `**Detail:** ${ins.detail}` +
+        (ins.suggestion ? `\n**Suggestion:** ${ins.suggestion}` : '')
+      )
+    })
+    const hasSiblingInsights = job.insights.some(i => i.sourceChildName)
+    const lead = hasSiblingInsights
+      ? 'The following learnings were recorded by earlier campaign siblings AND by upstream phases on this job. ' +
+        'Sibling-inherited entries (marked `[campaign sibling: …]`) are fresher than memory and apply directly to ' +
+        'this exact campaign — read them before doing anything else, and follow the recipes literally. '
+      : 'The following learnings were recorded by agents during earlier phases. '
     parts.push(
       '\n\n## Insights from Upstream Agents\n\n' +
-      'The following learnings were recorded by agents during earlier phases. ' +
-      'Review these carefully — each represents a discovery, workaround, or pattern ' +
-      'that may warrant a self-improvement proposal via `propose_change`.\n\n' +
+      lead +
+      'Each represents a discovery, workaround, or pattern that may warrant a self-improvement ' +
+      'proposal via `propose_change`.\n\n' +
       insightLines.join('\n\n'),
     )
   }
