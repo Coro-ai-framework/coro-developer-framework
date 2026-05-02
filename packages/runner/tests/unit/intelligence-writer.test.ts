@@ -24,6 +24,7 @@ function makeLogger() {
 
 interface GitMockOptions {
   defaultBranch?: string | null
+  remoteHeads?: string[]
   remoteUrl?: string
   /** Files reported as modified after `add` — used to drive the empty-diff path. */
   emptyDiff?: boolean
@@ -35,11 +36,19 @@ interface GitMockOptions {
 function makeGitMock(opts: GitMockOptions = {}) {
   const calls: Array<{ method: string; args: unknown[] }> = []
 
+  const initialHeads =
+    opts.remoteHeads !== undefined ? [...opts.remoteHeads] : ['main']
+
+  /** Mutable remote heads (`for-each-ref`); bootstrap `push` can add names. */
+  let simulatedRemoteHeads = [...initialHeads]
+
   const clone = vi.fn(async (...args: unknown[]) => {
     calls.push({ method: 'clone', args })
     if (opts.failClone) throw new Error('clone failed')
   })
-  const fetch = vi.fn(async (...args: unknown[]) => { calls.push({ method: 'fetch', args }) })
+  const fetch = vi.fn(async (...args: unknown[]) => {
+    calls.push({ method: 'fetch', args })
+  })
   const checkout = vi.fn(async (...args: unknown[]) => { calls.push({ method: 'checkout', args }) })
   const reset = vi.fn(async (...args: unknown[]) => { calls.push({ method: 'reset', args }) })
   const add = vi.fn(async (...args: unknown[]) => { calls.push({ method: 'add', args }) })
@@ -50,6 +59,12 @@ function makeGitMock(opts: GitMockOptions = {}) {
   const push = vi.fn(async (...args: unknown[]) => {
     calls.push({ method: 'push', args })
     if (opts.failPush) throw new Error('push failed')
+    const r0 = args[0]
+    const r1 = args[1]
+    if (r0 === 'origin' && typeof r1 === 'string' && !simulatedRemoteHeads.includes(r1)) {
+      simulatedRemoteHeads.push(r1)
+      simulatedRemoteHeads.sort()
+    }
   })
   const branchLocal = vi.fn(async () => ({ all: opts.branchesLocal ?? [], current: 'main' }))
   const status = vi.fn(async () => ({
@@ -60,9 +75,17 @@ function makeGitMock(opts: GitMockOptions = {}) {
   }))
   const getConfig = vi.fn(async () => ({ value: opts.remoteUrl ?? 'git@github.com:acme/intel.git' }))
   const raw = vi.fn(async (cmd: string[]) => {
+    if (cmd[0] === 'for-each-ref') {
+      if (simulatedRemoteHeads.length === 0) return ''
+      return simulatedRemoteHeads.map(h => `origin/${h}`).join('\n') + '\n'
+    }
     if (cmd[0] === 'symbolic-ref' && cmd.includes('refs/remotes/origin/HEAD')) {
       if (opts.defaultBranch === null) throw new Error('no symbolic ref')
-      return `origin/${opts.defaultBranch ?? 'main'}\n`
+      const branch = opts.defaultBranch ?? simulatedRemoteHeads[0] ?? 'main'
+      return `origin/${branch}\n`
+    }
+    if (cmd[0] === 'checkout' && cmd[1] === '--orphan') {
+      return ''
     }
     return ''
   })
@@ -182,6 +205,7 @@ describe('prepareTenantWriter', () => {
       'git@github.com:acme/intel.git',
       path.join(writerCacheRoot, 'team-acme', 'tenant'),
     )
+    expect(git.fetch).toHaveBeenCalledWith('origin')
     // No --depth or --single-branch — full clone for branch creation.
     const cloneArgs = git.clone.mock.calls[0]
     expect(cloneArgs).toHaveLength(2)
@@ -205,7 +229,7 @@ describe('prepareTenantWriter', () => {
 
     expect(result.dir).toBe(dir)
     expect(git.clone).not.toHaveBeenCalled()
-    expect(git.fetch).toHaveBeenCalledWith('origin', 'main')
+    expect(git.fetch).toHaveBeenCalledWith('origin')
     expect(git.reset).toHaveBeenCalledWith(['--hard', 'origin/main'])
   })
 
@@ -215,7 +239,7 @@ describe('prepareTenantWriter', () => {
     await fs.mkdir(path.join(dir, '.git'), { recursive: true })
 
     const logger = makeLogger()
-    const git = makeGitMock({ branchesLocal: [] })
+    const git = makeGitMock({ branchesLocal: [], remoteHeads: ['develop'] })
 
     await prepareTenantWriter({
       url: 'git@github.com:acme/intel.git',
@@ -249,6 +273,70 @@ describe('prepareTenantWriter', () => {
         logger: makeLogger(),
       }),
     ).rejects.toThrow('tenantId is required')
+  })
+
+  it('uses master when origin has no main and ref is omitted', async () => {
+    const writerCacheRoot = path.join(root, 'writers')
+    const logger = makeLogger()
+    const git = makeGitMock({
+      branchesLocal: [],
+      remoteHeads: ['master'],
+      defaultBranch: 'master',
+    })
+
+    const result = await prepareTenantWriter({
+      url: 'git@github.com:acme/intel.git',
+      tenantId: 'team-legacy',
+      writerCacheRoot,
+      logger,
+      gitFactory: git.factory,
+    })
+
+    expect(result.baseRef).toBe('master')
+    expect(git.reset).toHaveBeenCalledWith(['--hard', 'origin/master'])
+  })
+
+  it('bootstraps an empty remote with an initial commit on main', async () => {
+    const writerCacheRoot = path.join(root, 'writers')
+    const tenantDir = path.join(writerCacheRoot, 'solo-empty', 'tenant')
+    await fs.mkdir(path.join(tenantDir, '.git'), { recursive: true })
+
+    const logger = makeLogger()
+    const git = makeGitMock({ branchesLocal: [], remoteHeads: [] })
+
+    const result = await prepareTenantWriter({
+      url: 'git@github.com:acme/empty-intel.git',
+      tenantId: 'solo-empty',
+      writerCacheRoot,
+      logger,
+      gitFactory: git.factory,
+    })
+
+    expect(result.baseRef).toBe('main')
+    expect(git.clone).not.toHaveBeenCalled()
+    expect(git.raw).toHaveBeenCalledWith(['checkout', '--orphan', 'main'])
+    expect(git.commit).toHaveBeenCalledWith('chore(coro): bootstrap empty tenant intelligence repository')
+    expect(git.push).toHaveBeenCalledWith('origin', 'main', ['--set-upstream'])
+    const gitkeep = path.join(tenantDir, '.gitkeep')
+    expect(await fs.readFile(gitkeep, 'utf-8')).toBe('')
+  })
+
+  it('throws when an explicit ref is not on origin', async () => {
+    const writerCacheRoot = path.join(root, 'writers')
+    await fs.mkdir(path.join(writerCacheRoot, 'team-x', 'tenant', '.git'), { recursive: true })
+
+    const git = makeGitMock({ branchesLocal: [], remoteHeads: ['develop'] })
+
+    await expect(
+      prepareTenantWriter({
+        url: 'git@github.com:acme/intel.git',
+        ref: 'main',
+        tenantId: 'team-x',
+        writerCacheRoot,
+        logger: makeLogger(),
+        gitFactory: git.factory,
+      }),
+    ).rejects.toThrow('Tenant overlay ref "main" does not exist on origin')
   })
 })
 
