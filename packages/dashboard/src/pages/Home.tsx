@@ -1,24 +1,23 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-
-// ── First-run detection ──────────────────────────────────────────────────────
-//
-// We hit GET /config (the same endpoint the Settings page uses) and decide
-// whether the user has finished onboarding. Three states:
-//
-//   • loading        — request in flight; render nothing extra so we don't
-//                      flash a misleading "you're not set up" banner.
-//   • not-configured — `config === null` (no `~/.coro/config.json` yet).
-//   • partial        — file exists but at least one essential field is
-//                      empty. The Settings page can land in a half-set
-//                      state if the user navigates away mid-flow.
-//   • configured     — Anthropic auth + git creds present; banner hidden.
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, ArrowRight, Bot, FolderKanban, PlayCircle, Settings2 } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import PageHeader from '../components/common/page-header'
+import StatCard from '../components/common/stat-card'
+import StatusBadge from '../components/StatusBadge'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Skeleton } from '../components/ui/skeleton'
+import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
+import { requestJson } from '../lib/http'
+import { deriveJobDescription, deriveJobTitle, isCampaignJob, sortJobsByUpdatedAt } from '../lib/jobs'
+import { isTerminalStatus } from '../lib/status'
+import { useJobs } from '../hooks/useJobs'
+import type { Job } from '../types'
 
 interface ConfigSnapshot {
   config: {
     anthropic?: { method?: string; apiKey?: string; oauthToken?: string }
     git?: { provider?: string; username?: string; token?: string }
-    intelligence?: { dir?: string }
   } | null
 }
 
@@ -33,120 +32,160 @@ function summariseConfig(snapshot: ConfigSnapshot | null): SetupSummary {
   if (snapshot === null) return { state: 'loading', missing: [] }
   if (snapshot.config === null) return { state: 'not-configured', missing: [] }
 
-  const { anthropic, git } = snapshot.config
   const missing: string[] = []
+  const { anthropic, git } = snapshot.config
+  const hasAnthropicCreds = anthropic?.method === 'claudeLogin' || Boolean(anthropic?.apiKey) || Boolean(anthropic?.oauthToken)
 
-  // The redacted shape from /config still includes the `method` tag and
-  // empty / "" strings for absent secrets, so we can detect "no auth set"
-  // without exposing the actual values to the dashboard.
-  const hasAnthropicCreds =
-    anthropic?.method === 'claudeLogin' ||
-    Boolean(anthropic?.apiKey) ||
-    Boolean(anthropic?.oauthToken)
   if (!hasAnthropicCreds) missing.push('Anthropic credentials')
-
   if (!git?.provider) missing.push('Git provider')
   if (!git?.username || !git?.token) missing.push('Git credentials')
 
-  if (missing.length === 0) return { state: 'configured', missing }
-  return { state: 'partial', missing }
+  return missing.length === 0 ? { state: 'configured', missing } : { state: 'partial', missing }
+}
+
+function OverviewList({ title, jobs, emptyLabel }: { title: string; jobs: Job[]; emptyLabel: string }) {
+  return (
+    <Card>
+      <CardHeader className="border-b border-white/8 pb-4">
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent className="pt-5">
+        {jobs.length === 0 ? (
+          <p className="text-sm text-slate-500">{emptyLabel}</p>
+        ) : (
+          <div className="space-y-3">
+            {jobs.map(job => {
+              const detailPath = isCampaignJob(job) ? `/campaigns/${job.id}` : `/jobs/${job.id}`
+
+              return (
+                <Link key={job.id} to={detailPath} className="flex items-start justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 transition-colors hover:border-white/14 hover:bg-white/[0.05]">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate text-sm font-medium text-white">{deriveJobTitle(job)}</div>
+                      <StatusBadge status={job.status} />
+                    </div>
+                    <div className="truncate text-xs uppercase tracking-[0.16em] text-slate-500">{job.id}</div>
+                    {deriveJobDescription(job) ? <div className="line-clamp-1 text-sm text-slate-400">{deriveJobDescription(job)}</div> : null}
+                  </div>
+                  <div className="shrink-0 text-right text-xs text-slate-500">{formatRelativeTime(job.updatedAt)}</div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function SetupBanner({ setup }: { setup: SetupSummary }) {
+  const isFirstRun = setup.state === 'not-configured'
+  const title = isFirstRun ? 'Finish runner setup' : 'Runner setup is incomplete'
+  const description = isFirstRun
+    ? 'The workbench is ready, but the runner still needs authentication and git settings before it can dispatch real work.'
+    : 'One or more essentials are missing. Finish configuration so jobs and campaigns can run cleanly.'
+
+  return (
+    <Card className="border-amber-500/25 bg-amber-500/10">
+      <CardContent className="flex flex-col gap-4 pt-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="rounded-2xl border border-amber-500/25 bg-amber-500/12 p-3 text-amber-100">
+            <AlertTriangle className="size-5" />
+          </div>
+          <div className="space-y-1.5">
+            <div className="text-base font-semibold text-amber-50">{title}</div>
+            <p className="max-w-2xl text-sm text-amber-100/80">{description}</p>
+            {setup.missing.length > 0 ? (
+              <div className="text-sm text-amber-100/80">Missing: {setup.missing.join(', ')}</div>
+            ) : null}
+          </div>
+        </div>
+        <Button asChild variant="outline" className="border-amber-400/30 bg-amber-400/10 text-amber-50 hover:bg-amber-400/15">
+          <Link to="/settings">Open Settings</Link>
+        </Button>
+      </CardContent>
+    </Card>
+  )
 }
 
 export default function Home() {
-  const [jobId, setJobId] = useState('')
+  const { jobs, loading, error } = useJobs()
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null)
-  const navigate = useNavigate()
 
   useEffect(() => {
     let cancelled = false
-    fetch('/config')
-      .then(r => (r.ok ? r.json() : Promise.resolve({ config: null })))
-      .then((data: ConfigSnapshot) => {
+    void requestJson<ConfigSnapshot>('/config')
+      .then(data => {
         if (!cancelled) setSnapshot(data)
       })
       .catch(() => {
         if (!cancelled) setSnapshot({ config: null })
       })
+
     return () => {
       cancelled = true
     }
   }, [])
 
   const setup = summariseConfig(snapshot)
-
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault()
-    const trimmed = jobId.trim()
-    if (trimmed) navigate(`/jobs/${trimmed}`)
-  }
+  const sortedJobs = useMemo(() => sortJobsByUpdatedAt(jobs), [jobs])
+  const activeJobs = sortedJobs.filter(job => !isCampaignJob(job) && !isTerminalStatus(job.status))
+  const activeCampaigns = sortedJobs.filter(job => isCampaignJob(job) && !isTerminalStatus(job.status))
+  const awaitingInput = sortedJobs.filter(job => job.status === 'awaiting-developer-input')
+  const recentHistory = sortedJobs.filter(job => isTerminalStatus(job.status)).slice(0, 5)
+  const liveSpend = sortedJobs.filter(job => !isTerminalStatus(job.status)).reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[calc(100vh-56px)] px-4">
-      <div className="w-full max-w-lg">
-        {/* ── Welcome banner (only when setup is incomplete) ──────────── */}
-        {(setup.state === 'not-configured' || setup.state === 'partial') && (
-          <WelcomeBanner setup={setup} />
-        )}
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Operator Overview"
+        title="Live workbench"
+        description="A production view of runner activity: what is live, what needs attention, and what just finished."
+        actions={
+          <>
+            <Button asChild variant="outline">
+              <Link to="/settings">
+                <Settings2 />
+                Settings
+              </Link>
+            </Button>
+            <Button asChild>
+              <Link to="/jobs/new">
+                Dispatch work
+                <ArrowRight />
+              </Link>
+            </Button>
+          </>
+        }
+      />
 
-        {/* ── Branding + job lookup ─────────────────────────────────── */}
-        <div className="text-center">
-          <div className="w-12 h-12 rounded-xl bg-indigo-500 flex items-center justify-center text-white text-base font-bold mx-auto mb-5">
-            Coro
-          </div>
-          <h1 className="text-2xl font-semibold text-white mb-1">Agent Job Viewer</h1>
-          <p className="text-sm text-zinc-400 mb-8">
-            Enter a job ID to view its live streaming logs.
-          </p>
+      {setup.state !== 'configured' ? <SetupBanner setup={setup} /> : null}
 
-          <form onSubmit={handleSubmit} className="flex gap-2">
-            <input
-              type="text"
-              value={jobId}
-              onChange={e => setJobId(e.target.value)}
-              placeholder="e.g. my-service-job-1712345678"
-              autoFocus
-              className="flex-1 px-4 py-2.5 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors font-mono"
-            />
-            <button
-              type="submit"
-              disabled={!jobId.trim()}
-              className="px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              View Logs
-            </button>
-          </form>
-        </div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Active Jobs" value={activeJobs.length.toString()} description="Non-campaign work items currently running or parked." icon={PlayCircle} tone="indigo" />
+        <StatCard label="Active Campaigns" value={activeCampaigns.length.toString()} description="Campaigns coordinating child jobs right now." icon={FolderKanban} tone="violet" />
+        <StatCard label="Needs Input" value={awaitingInput.length.toString()} description="Jobs currently waiting for developer approval or answers." icon={AlertTriangle} tone="amber" />
+        <StatCard label="Live Spend" value={formatPreciseCurrency(liveSpend)} description="Accumulated spend across non-terminal runs." icon={Bot} tone="cyan" />
       </div>
-    </div>
-  )
-}
 
-function WelcomeBanner({ setup }: { setup: SetupSummary }) {
-  const isFirstRun = setup.state === 'not-configured'
-  const title = isFirstRun ? 'Welcome to Coro' : 'Finish setting up Coro'
-  const body = isFirstRun
-    ? 'No configuration found yet. Coro is the dashboard you\u2019re looking at — finish a one-time setup and you\u2019re ready to launch agent jobs.'
-    : 'A few essentials are still missing before Coro can run jobs.'
+      {error ? (
+        <div className="rounded-2xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+          Failed to load jobs: {error}
+        </div>
+      ) : null}
 
-  return (
-    <div className="mb-8 rounded-xl border border-indigo-500/40 bg-indigo-500/10 p-5">
-      <h2 className="text-base font-semibold text-indigo-100 mb-1">{title}</h2>
-      <p className="text-sm text-indigo-200/90 mb-3">{body}</p>
-
-      {setup.missing.length > 0 && (
-        <ul className="text-sm text-indigo-200/80 mb-4 list-disc list-inside space-y-0.5">
-          {setup.missing.map(m => (
-            <li key={m}>{m}</li>
-          ))}
-        </ul>
+      {loading ? (
+        <div className="grid gap-4 xl:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-72 w-full" />)}
+        </div>
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-2">
+          <OverviewList title="Active jobs" jobs={activeJobs.slice(0, 5)} emptyLabel="No active jobs. Dispatch work from the Jobs page or the quick action above." />
+          <OverviewList title="Campaigns in motion" jobs={activeCampaigns.slice(0, 5)} emptyLabel="No campaigns are active right now." />
+          <OverviewList title="Awaiting your input" jobs={awaitingInput.slice(0, 5)} emptyLabel="Nothing is parked for approval or a response." />
+          <OverviewList title="Recent history" jobs={recentHistory} emptyLabel="Completed and failed runs will appear here once work starts flowing." />
+        </div>
       )}
-
-      <Link
-        to="/settings"
-        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-400 transition-colors"
-      >
-        {isFirstRun ? 'Start setup \u2192' : 'Open Settings \u2192'}
-      </Link>
     </div>
   )
 }

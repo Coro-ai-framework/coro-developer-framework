@@ -1,6 +1,8 @@
-import { Routes, Route } from 'react-router-dom'
+import { Route, Routes } from 'react-router-dom'
 import Layout from './components/Layout'
 import Home from './pages/Home'
+import Campaigns from './pages/Campaigns'
+import History from './pages/History'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
 import CreateJob from './pages/CreateJob'
@@ -12,8 +14,11 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<Home />} />
         <Route path="/jobs" element={<JobList />} />
+        <Route path="/campaigns" element={<Campaigns />} />
+        <Route path="/history" element={<History />} />
         <Route path="/jobs/new" element={<CreateJob />} />
         <Route path="/jobs/:jobId" element={<JobDetail />} />
+        <Route path="/campaigns/:jobId" element={<JobDetail />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>
