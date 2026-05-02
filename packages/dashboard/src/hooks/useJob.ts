@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { requestJson } from '../lib/http'
 import type { Job } from '../types'
 
 export function useJob(jobId: string | undefined) {
@@ -9,9 +10,7 @@ export function useJob(jobId: string | undefined) {
   const fetchJob = useCallback(async () => {
     if (!jobId) return
     try {
-      const res = await fetch(`/jobs/${jobId}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json() as Job
+      const data = await requestJson<Job>(`/jobs/${jobId}`)
       setJob(data)
       setError(null)
     } catch (err) {

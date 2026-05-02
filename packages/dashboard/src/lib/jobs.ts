@@ -3,8 +3,30 @@ import { isTerminalStatus } from './status'
 
 export const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
 
+function startCase(value: string): string {
+  return value
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ')
+}
+
 export function isCampaignJob(job: Pick<Job, 'workflowPath' | 'campaignChildren'>): boolean {
   return job.workflowPath === CAMPAIGN_WORKFLOW_PATH || Array.isArray(job.campaignChildren)
+}
+
+export function getRunKindLabel(job: Pick<Job, 'workflowPath' | 'campaignChildren'>): 'Job' | 'Campaign' {
+  return isCampaignJob(job) ? 'Campaign' : 'Job'
+}
+
+export function deriveWorkflowLabel(workflowPath: string): string {
+  const segments = workflowPath.split('/').filter(Boolean)
+  const workflowSlug = segments.length >= 2 ? segments[segments.length - 2] : segments[segments.length - 1]
+  return workflowSlug ? startCase(workflowSlug) : 'Workflow'
+}
+
+export function getRunDetailPath(job: Pick<Job, 'id'>): string {
+  return `/jobs/${job.id}`
 }
 
 export function deriveJobTitle(job: Pick<Job, 'id' | 'params'>): string {

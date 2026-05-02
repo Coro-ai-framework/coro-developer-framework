@@ -77,9 +77,14 @@ export function useWorkspaceTabs() {
 
 export function useRegisterWorkspaceTab(tab: Omit<WorkspaceTab, 'updatedAt'> | null) {
   const { upsertTab } = useWorkspaceTabs()
+  const id = tab?.id
+  const kind = tab?.kind
+  const path = tab?.path
+  const title = tab?.title
+  const subtitle = tab?.subtitle
 
   useEffect(() => {
-    if (!tab) return
-    upsertTab(tab)
-  }, [tab, upsertTab])
+    if (!id || !kind || !path || !title) return
+    upsertTab({ id, kind, path, title, subtitle })
+  }, [id, kind, path, subtitle, title, upsertTab])
 }

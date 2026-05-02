@@ -69,7 +69,7 @@ export default function Campaigns() {
       <PageHeader
         eyebrow="Campaign Control"
         title="Campaigns"
-        description="Track multi-work-item campaigns, dependency progress, and child execution without leaving the operator workspace."
+        description="Track campaign progress, child execution, and blockers in one place."
         actions={
           <Button asChild>
             <Link to="/jobs/new">

@@ -29,7 +29,6 @@
 
 :root {
   color-scheme: dark;
-  --surface-glow: radial-gradient(circle at top, rgba(97, 114, 255, 0.12), transparent 28%), radial-gradient(circle at 80% 20%, rgba(34, 211, 238, 0.08), transparent 24%);
 }
 
 * {
@@ -43,28 +42,11 @@ html {
 body {
   min-height: 100vh;
   margin: 0;
-  background:
-    var(--surface-glow),
-    linear-gradient(180deg, rgba(8, 13, 23, 0.86) 0%, rgba(4, 9, 16, 0.98) 100%),
-    linear-gradient(120deg, rgba(97, 114, 255, 0.05), transparent 42%),
-    var(--color-canvas-950);
+  background: #08111c;
   color: #f8fafc;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
-  background-size: 28px 28px;
-  mask-image: radial-gradient(circle at top, black 30%, transparent 85%);
-  opacity: 0.35;
 }
 
 a {
@@ -155,16 +137,3 @@ select {
   animation: pulse-slow 2.7s ease-in-out infinite;
 }
 
-.noise-mask {
-  position: relative;
-}
-
-.noise-mask::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image: radial-gradient(rgba(255, 255, 255, 0.035) 0.6px, transparent 0.6px);
-  background-size: 12px 12px;
-  opacity: 0.18;
-}

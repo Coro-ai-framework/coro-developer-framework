@@ -55,7 +55,7 @@ export default function History() {
       <PageHeader
         eyebrow="Run Archive"
         title="History"
-        description="Review completed, failed, and escalated work across jobs and campaigns without leaving the operator shell."
+        description="Review completed, failed, and escalated work across jobs and campaigns."
       />
 
       <div className="grid gap-4 md:grid-cols-3">

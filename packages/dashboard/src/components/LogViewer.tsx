@@ -1,25 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LogLine, LogLineType } from '../hooks/useJobStream'
+import { Button } from './ui/button'
+import { cn } from '../lib/utils'
 
 interface LogViewerProps {
   lines: LogLine[]
   className?: string
 }
 
-const LINE_STYLES: Record<LogLineType, { textClass: string; icon: string; dimmed?: boolean }> = {
-  text:           { textClass: 'text-zinc-100', icon: '' },
-  tool_use:       { textClass: 'text-cyan-400', icon: '' },
-  tool_summary:   { textClass: 'text-zinc-400', icon: '', dimmed: true },
-  thinking:       { textClass: 'text-zinc-500', icon: '💭', dimmed: true },
-  tool_progress:  { textClass: 'text-zinc-500', icon: '', dimmed: true },
-  error:          { textClass: 'text-rose-400', icon: '' },
-  result:         { textClass: 'text-emerald-300', icon: '' },
-  phase:          { textClass: 'text-indigo-300', icon: '' },
-  insight:        { textClass: 'text-violet-300', icon: '' },
-  session_reset:  { textClass: 'text-amber-400', icon: '' },
-  webhook:        { textClass: 'text-amber-400', icon: '' },
-  human:          { textClass: 'text-sky-300', icon: '' },
-  system:         { textClass: 'text-zinc-600', icon: '', dimmed: true },
+const LINE_STYLES: Record<LogLineType, { textClass: string; accentClass: string; label?: string; dimmed?: boolean }> = {
+  text:           { textClass: 'text-slate-100', accentClass: 'bg-slate-600' },
+  tool_use:       { textClass: 'text-cyan-100', accentClass: 'bg-cyan-400', label: 'Tool' },
+  tool_summary:   { textClass: 'text-slate-400', accentClass: 'bg-slate-500', label: 'Summary', dimmed: true },
+  thinking:       { textClass: 'text-slate-400', accentClass: 'bg-violet-400', label: 'Thinking', dimmed: true },
+  tool_progress:  { textClass: 'text-slate-400', accentClass: 'bg-cyan-500', label: 'Progress', dimmed: true },
+  error:          { textClass: 'text-rose-100', accentClass: 'bg-rose-400', label: 'Error' },
+  result:         { textClass: 'text-emerald-100', accentClass: 'bg-emerald-400', label: 'Result' },
+  phase:          { textClass: 'text-indigo-100', accentClass: 'bg-indigo-400', label: 'Phase' },
+  insight:        { textClass: 'text-violet-100', accentClass: 'bg-violet-400', label: 'Insight' },
+  session_reset:  { textClass: 'text-amber-100', accentClass: 'bg-amber-400', label: 'Reset' },
+  webhook:        { textClass: 'text-amber-100', accentClass: 'bg-amber-400', label: 'Webhook' },
+  human:          { textClass: 'text-sky-100', accentClass: 'bg-sky-400', label: 'Developer' },
+  system:         { textClass: 'text-slate-500', accentClass: 'bg-slate-500', label: 'System', dimmed: true },
 }
 
 function formatTimestamp(ts: string): string {
@@ -38,19 +40,19 @@ function LineContent({ line }: { line: LogLine }) {
 
   if (line.lineType === 'phase') {
     return (
-      <div className="flex items-center gap-2 py-1.5 my-1">
-        <div className="h-px flex-1 bg-indigo-800/50" />
-        <span className="text-xs font-semibold text-indigo-400 uppercase tracking-wider px-2">
+      <div className="flex items-center gap-3 py-2.5 my-2">
+        <div className="h-px flex-1 bg-indigo-400/20" />
+        <span className="rounded-full border border-indigo-400/20 bg-indigo-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-100">
           {content}
         </span>
-        <div className="h-px flex-1 bg-indigo-800/50" />
+        <div className="h-px flex-1 bg-indigo-400/20" />
       </div>
     )
   }
 
   if (line.lineType === 'error') {
     return (
-      <div className="bg-rose-950/30 border-l-2 border-rose-500 pl-3 py-1 my-0.5 rounded-r">
+      <div className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 my-1">
         <span className={style.textClass}>{content}</span>
       </div>
     )
@@ -58,7 +60,7 @@ function LineContent({ line }: { line: LogLine }) {
 
   if (line.lineType === 'result') {
     return (
-      <div className="bg-emerald-950/20 border-l-2 border-emerald-500 pl-3 py-1 my-0.5 rounded-r">
+      <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-2.5 my-1">
         <span className={style.textClass}>{content}</span>
       </div>
     )
@@ -67,8 +69,8 @@ function LineContent({ line }: { line: LogLine }) {
   if (line.lineType === 'human') {
     const msg = content.replace(/^\[human\]\s*/, '')
     return (
-      <div className="bg-sky-950/20 border-l-2 border-sky-500 pl-3 py-1 my-0.5 rounded-r">
-        <span className="text-sky-400 text-xs font-medium mr-2">Developer</span>
+      <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-2.5 my-1">
+        <span className="text-sky-200 text-xs font-semibold uppercase tracking-[0.14em] mr-2">Developer</span>
         <span className={style.textClass}>{msg}</span>
       </div>
     )
@@ -88,9 +90,13 @@ function LineContent({ line }: { line: LogLine }) {
   }
 
   return (
-    <span className={`${style.textClass} ${style.dimmed ? 'opacity-60' : ''}`}>
-      {style.icon ? `${style.icon} ` : ''}{content}
-    </span>
+    <div className="flex items-start gap-3">
+      <span className={cn('mt-1 size-2 rounded-full shrink-0', style.accentClass, style.dimmed ? 'opacity-55' : '')} />
+      <span className={`${style.textClass} ${style.dimmed ? 'opacity-65' : ''}`}>
+        {style.label ? <span className="mr-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{style.label}</span> : null}
+        {content}
+      </span>
+    </div>
   )
 }
 
@@ -169,32 +175,34 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
   })
 
   return (
-    <div className={`flex flex-col bg-zinc-900 rounded-lg border border-zinc-800 overflow-hidden ${className}`}>
+    <div className={`flex flex-col overflow-hidden rounded-2xl border border-white/8 bg-slate-950/92 ${className}`}>
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-2 bg-zinc-900 border-b border-zinc-800">
+      <div className="flex items-center justify-between gap-3 border-b border-white/8 px-4 py-3">
         <div className="flex items-center gap-1">
           {(['all', 'main', 'tools'] as const).map(f => (
-            <button
+            <Button
               key={f}
               onClick={() => setFilter(f)}
-              className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+              variant={filter === f ? 'secondary' : 'ghost'}
+              size="sm"
+              className={`h-8 rounded-full px-3 text-xs ${
                 filter === f
-                  ? 'bg-zinc-700 text-white'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                  ? 'bg-white/10 text-white'
+                  : 'text-slate-400 hover:text-slate-100'
               }`}
             >
               {f === 'all' ? 'All' : f === 'main' ? 'Agent' : 'Tools'}
-            </button>
+            </Button>
           ))}
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs uppercase tracking-[0.14em] text-slate-500">
             {filteredLines.length} / {lines.length} lines
           </span>
 
           {!autoScroll && (
-            <button
+            <Button
               type="button"
               onClick={() => {
                 autoScrollRef.current = true
@@ -204,10 +212,10 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
                   scrollLogContainerToBottom(containerRef.current, 'smooth')
                 }
               }}
-              className="px-2 py-1 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
+              size="sm"
             >
               ↓ Follow
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -216,10 +224,10 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
       <div
         ref={containerRef}
         onScroll={updateAutoScrollFromScroll}
-        className="flex-1 overflow-y-auto font-mono text-[13px] leading-relaxed p-3 min-h-[200px] max-h-[calc(100vh-280px)]"
+        className="flex-1 overflow-y-auto p-4 font-mono text-[13px] leading-relaxed min-h-[280px] max-h-[calc(100vh-280px)]"
       >
         {filteredLines.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-zinc-600 text-sm">
+          <div className="flex h-32 items-center justify-center text-sm text-slate-500">
             Waiting for log output...
           </div>
         ) : (
@@ -227,11 +235,11 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
             <div
               key={i}
               className={`flex gap-3 animate-fade-in ${
-                line.lineType === 'phase' ? '' : 'py-[1px] hover:bg-zinc-800/50 rounded px-1 -mx-1'
+                line.lineType === 'phase' ? '' : 'rounded-xl px-2 py-1.5 hover:bg-white/[0.035]'
               }`}
             >
               {line.lineType !== 'phase' && (
-                <span className="text-zinc-600 select-none shrink-0 tabular-nums text-xs leading-relaxed pt-[1px]">
+                <span className="select-none shrink-0 pt-0.5 text-xs leading-relaxed tabular-nums text-slate-600">
                   {formatTimestamp(line.timestamp)}
                 </span>
               )}

@@ -1,13 +1,27 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+import { GitBranch, KeyRound, RefreshCcw, ShieldCheck, Ticket, Waypoints } from 'lucide-react'
+import PageHeader from '../components/common/page-header'
+import StatCard from '../components/common/stat-card'
+import Field from '../components/forms/field'
+import SectionCard from '../components/forms/section-card'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import { Select } from '../components/ui/select'
+import { Separator } from '../components/ui/separator'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
+import { ApiError, jsonRequest, requestJson } from '../lib/http'
+import { cn } from '../lib/utils'
 
 type AnthropicMethod = 'apiKey' | 'claudeLogin' | 'oauth'
+type TrackerProvider = 'none' | 'jira' | 'github' | 'linear'
+type SettingsTab = 'anthropic' | 'git' | 'tracker' | 'paths'
 
 interface ClaudeAccountInfo {
   email?: string
   organization?: string
   subscriptionType?: string
   tokenSource?: string
-  apiKeySource?: string
   apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws'
 }
 
@@ -20,8 +34,6 @@ interface ClaudeLoginState {
   startedAt?: string
   completedAt?: string
 }
-
-type TrackerProvider = 'none' | 'jira' | 'github' | 'linear'
 
 interface ConfigResponse {
   config: {
@@ -48,17 +60,10 @@ interface ConfigResponse {
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
-  // `resolved` is always present and reflects what the runner will use right
-  // now: saved values when set, `~/.coro/...` defaults otherwise. The
-  // dashboard renders these as placeholders for the corresponding inputs so
-  // leaving a path field blank visibly means "use this default".
   resolved: {
     intelligenceDir: string
     workingDir: string
   }
-  // Surfaced when the on-disk config file fails schema validation (e.g.
-  // it was written before the fail-fast PUT validation existed). The
-  // dashboard renders a banner so the user can re-save and recover.
   configError?: string
   rawConfig?: unknown
 }
@@ -91,8 +96,6 @@ interface LegacyOauthResponse {
   requestedScopes?: string[] | null
   scopeRequestSupported?: boolean
   forcedReauth?: boolean
-  tokenKind?: string
-  mcpCompatible?: boolean
   limitation?: string
   recommendation?: string
 }
@@ -118,50 +121,58 @@ const EMPTY_FORM: SettingsForm = {
 
 const EMPTY_CLAUDE_LOGIN_STATE: ClaudeLoginState = { status: 'idle' }
 
-function labelClass() {
-  return 'block text-xs font-medium text-zinc-400 mb-1'
-}
-
-function inputClass() {
-  return 'w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors'
-}
-
-function authTabClass(active: boolean) {
-  return `flex-1 px-3 py-2 rounded-lg border text-sm transition-colors ${
-    active
-      ? 'bg-indigo-950/50 border-indigo-600 text-indigo-200'
-      : 'bg-zinc-900 border-zinc-700 text-zinc-400 hover:text-zinc-200'
-  }`
-}
-
-function statusBadgeClass(status: ClaudeLoginState['status']) {
-  switch (status) {
-    case 'connected':
-      return 'bg-emerald-900/50 text-emerald-300 border border-emerald-800'
-    case 'authorizing':
-      return 'bg-indigo-900/50 text-indigo-300 border border-indigo-800'
-    case 'error':
-      return 'bg-rose-900/50 text-rose-300 border border-rose-800'
-    default:
-      return 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+function Notice({ tone, children }: { tone: 'rose' | 'emerald' | 'amber'; children: ReactNode }) {
+  const toneClasses = {
+    rose: 'border-rose-500/25 bg-rose-500/10 text-rose-100',
+    emerald: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100',
+    amber: 'border-amber-500/25 bg-amber-500/10 text-amber-100',
   }
+
+  return <div className={cn('rounded-2xl border px-4 py-3 text-sm', toneClasses[tone])}>{children}</div>
 }
 
-function statusLabel(status: ClaudeLoginState['status']) {
-  switch (status) {
-    case 'connected':
-      return 'Connected'
-    case 'authorizing':
-      return 'Waiting for browser login'
-    case 'error':
-      return 'Needs attention'
-    default:
-      return 'Not connected'
+function ChoiceButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'rounded-2xl border px-4 py-3 text-left text-sm transition-colors',
+        active
+          ? 'border-indigo-400/30 bg-indigo-500/10 text-white'
+          : 'border-white/8 bg-white/[0.03] text-slate-400 hover:border-white/14 hover:text-slate-100',
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+function StatusPill({ status }: { status: ClaudeLoginState['status'] }) {
+  const classes = {
+    connected: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200',
+    authorizing: 'border-indigo-500/20 bg-indigo-500/10 text-indigo-200',
+    error: 'border-rose-500/20 bg-rose-500/10 text-rose-200',
+    idle: 'border-white/8 bg-white/[0.03] text-slate-300',
   }
+
+  const labels = {
+    connected: 'Connected',
+    authorizing: 'Waiting for browser login',
+    error: 'Needs attention',
+    idle: 'Not connected',
+  }
+
+  return <span className={cn('rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]', classes[status])}>{labels[status]}</span>
 }
 
-function FieldHint({ children }: { children: ReactNode }) {
-  return <p className="mt-1 text-xs text-zinc-500">{children}</p>
+function AccountFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{label}</div>
+      <div className="mt-1 text-sm text-white">{value}</div>
+    </div>
+  )
 }
 
 function formatProvider(provider: ClaudeAccountInfo['apiProvider']) {
@@ -208,11 +219,18 @@ function parseClaudeCallbackInput(rawInput: string, fallbackState: string) {
 
 export default function Settings() {
   const [form, setForm] = useState<SettingsForm>(EMPTY_FORM)
+  const [activeTab, setActiveTab] = useState<SettingsTab>('anthropic')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
-  const [meta, setMeta] = useState<{ configPath: string; mode: string; resolved: ConfigResponse['resolved'] } | null>(null)
+  const [meta, setMeta] = useState<{
+    configPath: string
+    mode: ConfigResponse['mode']
+    resolved: ConfigResponse['resolved']
+    configError?: string
+    rawConfig?: unknown
+  } | null>(null)
 
   const [claudeLoginState, setClaudeLoginState] = useState<ClaudeLoginState>(EMPTY_CLAUDE_LOGIN_STATE)
   const [claudeLoginAccount, setClaudeLoginAccount] = useState<ClaudeAccountInfo | null>(null)
@@ -230,14 +248,25 @@ export default function Settings() {
   const claudeLoginReady = claudeLoginState.status === 'connected' || !!effectiveClaudeAccount
   const claudeLoginUrl = claudeLoginState.automaticUrl ?? claudeLoginState.manualUrl ?? null
 
+  const authSummary =
+    form.anthropicMethod === 'claudeLogin'
+      ? claudeLoginReady
+        ? 'Claude login connected'
+        : 'Claude login pending'
+      : form.anthropicMethod === 'apiKey'
+        ? form.apiKey
+          ? 'API key configured'
+          : 'API key missing'
+        : form.oauthToken
+          ? 'Legacy token configured'
+          : 'Legacy token missing'
+
   useEffect(() => {
     void loadConfig()
   }, [])
 
   useEffect(() => {
-    if (claudeLoginState.status !== 'authorizing') {
-      return
-    }
+    if (claudeLoginState.status !== 'authorizing') return
 
     const timer = window.setInterval(() => {
       void refreshClaudeLoginStatus()
@@ -251,23 +280,23 @@ export default function Settings() {
   async function loadConfig() {
     try {
       setLoading(true)
-      const res = await fetch('/config')
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json() as ConfigResponse
+      const data = await requestJson<ConfigResponse>('/config')
 
-      setMeta({ configPath: data.configPath, mode: data.mode, resolved: data.resolved })
+      setMeta({
+        configPath: data.configPath,
+        mode: data.mode,
+        resolved: data.resolved,
+        configError: data.configError,
+        rawConfig: data.rawConfig,
+      })
 
       const anthropic = data.config?.anthropic
       const savedAccount = anthropic?.account ?? null
       setClaudeLoginAccount(savedAccount)
-      setClaudeLoginState(prev => {
-        if (prev.status === 'authorizing') {
-          return prev
-        }
+      setClaudeLoginState(previous => {
+        if (previous.status === 'authorizing') return previous
         if (anthropic?.method === 'claudeLogin') {
-          return savedAccount
-            ? { status: 'connected', account: savedAccount }
-            : { status: 'connected' }
+          return savedAccount ? { status: 'connected', account: savedAccount } : { status: 'connected' }
         }
         return EMPTY_CLAUDE_LOGIN_STATE
       })
@@ -292,8 +321,8 @@ export default function Settings() {
           linearTeamKey: data.config.tracker?.linear?.teamKey ?? '',
         })
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+    } catch (loadIssue) {
+      setError(loadIssue instanceof Error ? loadIssue.message : String(loadIssue))
     } finally {
       setLoading(false)
     }
@@ -301,16 +330,8 @@ export default function Settings() {
 
   async function refreshClaudeLoginStatus() {
     try {
-      const res = await fetch('/config/anthropic/claude-login/status')
-      const data = await res.json().catch(() => ({})) as ClaudeLoginState & { error?: string }
-
-      if (!res.ok) {
-        throw new Error(data.error ?? `HTTP ${res.status}`)
-      }
-
-      if (data.status === 'idle') {
-        return
-      }
+      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/status')
+      if (data.status === 'idle') return
 
       setClaudeLoginState(data)
       if (data.account) {
@@ -318,7 +339,7 @@ export default function Settings() {
       }
 
       if (data.status === 'connected') {
-        setForm(prev => ({ ...prev, anthropicMethod: 'claudeLogin' }))
+        setForm(previous => ({ ...previous, anthropicMethod: 'claudeLogin' }))
         setSuccess('Claude account connected. The runner will use Claude Code\'s local login session, including MCP permissions.')
         setError(null)
         setClaudeLoginCallbackInput('')
@@ -326,18 +347,18 @@ export default function Settings() {
       } else if (data.status === 'error') {
         setError(data.error ?? 'Claude login failed.')
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+    } catch (refreshIssue) {
+      setError(refreshIssue instanceof Error ? refreshIssue.message : String(refreshIssue))
     }
   }
 
-  function handleChange(e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) {
-    setForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
+  function handleChange(event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) {
+    setForm(previous => ({ ...previous, [event.target.name]: event.target.value }))
     setSuccess(null)
   }
 
   function setAnthropicMethod(method: AnthropicMethod) {
-    setForm(prev => ({ ...prev, anthropicMethod: method }))
+    setForm(previous => ({ ...previous, anthropicMethod: method }))
     setSuccess(null)
     setOauthStatus(null)
     setOauthAuthUrl(null)
@@ -349,18 +370,13 @@ export default function Settings() {
     setSuccess(null)
 
     try {
-      const res = await fetch('/config/anthropic/claude-login/start', { method: 'POST' })
-      const data = await res.json().catch(() => ({})) as ClaudeLoginState & { error?: string }
-
-      if (!res.ok) {
-        throw new Error(data.error ?? `HTTP ${res.status}`)
-      }
-
+      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/start', { method: 'POST' })
       setClaudeLoginState(data)
       if (data.account) {
         setClaudeLoginAccount(data.account)
       }
-      setForm(prev => ({ ...prev, anthropicMethod: 'claudeLogin' }))
+
+      setForm(previous => ({ ...previous, anthropicMethod: 'claudeLogin' }))
 
       if (data.status === 'connected') {
         setSuccess('Claude account connected. Configuration was updated to use Claude Code\'s local session.')
@@ -384,8 +400,8 @@ export default function Settings() {
       if (data.status === 'error') {
         throw new Error(data.error ?? 'Claude login failed to start.')
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+    } catch (loginIssue) {
+      setError(loginIssue instanceof Error ? loginIssue.message : String(loginIssue))
     } finally {
       setClaudeLoginConnecting(false)
     }
@@ -398,16 +414,7 @@ export default function Settings() {
 
     try {
       const callback = parseClaudeCallbackInput(claudeLoginCallbackInput, claudeLoginCallbackState)
-      const res = await fetch('/config/anthropic/claude-login/callback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(callback),
-      })
-
-      const data = await res.json().catch(() => ({})) as ClaudeLoginState & { error?: string }
-      if (!res.ok) {
-        throw new Error(data.error ?? `HTTP ${res.status}`)
-      }
+      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/callback', jsonRequest(callback, { method: 'POST' }))
 
       setClaudeLoginState(data)
       if (data.account) {
@@ -418,12 +425,12 @@ export default function Settings() {
         throw new Error(data.error ?? 'Claude login did not complete.')
       }
 
-      setForm(prev => ({ ...prev, anthropicMethod: 'claudeLogin' }))
+      setForm(previous => ({ ...previous, anthropicMethod: 'claudeLogin' }))
       setClaudeLoginCallbackInput('')
       setClaudeLoginCallbackState('')
       setSuccess('Claude account connected. Configuration was updated to use Claude Code\'s local session.')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+    } catch (callbackIssue) {
+      setError(callbackIssue instanceof Error ? callbackIssue.message : String(callbackIssue))
     } finally {
       setClaudeLoginSubmittingCallback(false)
     }
@@ -436,69 +443,68 @@ export default function Settings() {
     setError(null)
 
     try {
-      const res = await fetch('/config/anthropic/generate-oauth-token', { method: 'POST' })
-      const data = await res.json().catch(() => ({})) as LegacyOauthResponse
-
+      const data = await requestJson<LegacyOauthResponse>('/config/anthropic/generate-oauth-token', { method: 'POST' })
       if (data.authUrl) setOauthAuthUrl(data.authUrl)
 
-      if (!res.ok) {
-        if (data.error === 'CLI_NOT_FOUND') {
-          setOauthCliMissing(true)
-          setError(data.message ?? 'Could not find a Claude Code CLI on the runner host. Reinstall the runner or paste a token generated elsewhere.')
-        } else if (data.error === 'IN_PROGRESS') {
-          setError('Another token setup is already running on this runner.')
-        } else if (data.error === 'TIMEOUT') {
-          setError(
-            data.authUrl
-              ? 'Token setup timed out. If a browser did not open automatically, use the sign-in link below and try again.'
-              : 'Token setup timed out after 120 seconds. Try again.',
-          )
-        } else if (data.error === 'NO_CONTROLLING_TTY') {
-          setError(data.message ?? 'The runner has no controlling terminal. Start the runner from a terminal and retry, or paste a token manually.')
-        } else if (data.error === 'PLATFORM_UNSUPPORTED') {
-          setOauthCliMissing(true)
-          setError(data.message ?? 'Automatic token generation is only supported on macOS and Linux. Run `claude setup-token` in a terminal and paste the token below.')
-        } else {
-          setError(data.message ?? data.stderr ?? data.error ?? `HTTP ${res.status}`)
-        }
-        setOauthStatus(null)
-        return
-      }
-
       if (data.token) {
-        const tok = data.token
-        const looksValid = /^sk-ant-oat\d+-/.test(tok) || /^sk-ant-/.test(tok)
-        const scopeMsg = data.scopeRequestSupported
-          ? (data.requestedScopes?.length
-              ? ` Requested scopes: ${data.requestedScopes.join(', ')}.`
-              : '')
+        const token = data.token
+        const looksValid = /^sk-ant-oat\d+-/.test(token) || /^sk-ant-/.test(token)
+        const scopeMessage = data.scopeRequestSupported
+          ? data.requestedScopes?.length
+            ? ` Requested scopes: ${data.requestedScopes.join(', ')}.`
+            : ''
           : ' Your installed Claude CLI did not expose scope flags, so token scopes were not explicitly requested.'
-        const reauthMsg = data.forcedReauth
-          ? ' Forced re-auth was requested to avoid cached older-scope tokens.'
-          : ''
-        const limitationMsg = data.limitation ? ` ${data.limitation}` : ''
-        const recommendationMsg = data.recommendation ? ` ${data.recommendation}` : ''
-        setForm(prev => ({ ...prev, oauthToken: tok, anthropicMethod: 'oauth' }))
+        const reauthMessage = data.forcedReauth ? ' Forced re-auth was requested to avoid cached older-scope tokens.' : ''
+        const limitationMessage = data.limitation ? ` ${data.limitation}` : ''
+        const recommendationMessage = data.recommendation ? ` ${data.recommendation}` : ''
+
+        setForm(previous => ({ ...previous, oauthToken: token, anthropicMethod: 'oauth' }))
         setOauthStatus(
           looksValid
-            ? `Token generated (${tok.slice(0, 16)}…).${scopeMsg}${reauthMsg}${limitationMsg}${recommendationMsg} Click Save to persist it.`
-            : `Captured value does not look like an Anthropic OAuth token (got "${tok.slice(0, 24)}…").${scopeMsg}${reauthMsg}${limitationMsg}${recommendationMsg} Regenerate or paste a token manually.`,
+            ? `Token generated (${token.slice(0, 16)}…).${scopeMessage}${reauthMessage}${limitationMessage}${recommendationMessage} Click Save to persist it.`
+            : `Captured value does not look like an Anthropic OAuth token (got "${token.slice(0, 24)}…").${scopeMessage}${reauthMessage}${limitationMessage}${recommendationMessage} Regenerate or paste a token manually.`,
         )
         setOauthAuthUrl(null)
       } else {
         setError('Token generation returned no token.')
         setOauthStatus(null)
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+    } catch (oauthIssue) {
+      if (oauthIssue instanceof ApiError) {
+        const payload = oauthIssue.payload as LegacyOauthResponse | null
+        if (payload?.authUrl) setOauthAuthUrl(payload.authUrl)
+
+        if (payload?.error === 'CLI_NOT_FOUND') {
+          setOauthCliMissing(true)
+          setError(payload.message ?? 'Could not find a Claude Code CLI on the runner host. Reinstall the runner or paste a token generated elsewhere.')
+        } else if (payload?.error === 'IN_PROGRESS') {
+          setError('Another token setup is already running on this runner.')
+        } else if (payload?.error === 'TIMEOUT') {
+          setError(
+            payload.authUrl
+              ? 'Token setup timed out. If a browser did not open automatically, use the sign-in link below and try again.'
+              : 'Token setup timed out after 120 seconds. Try again.',
+          )
+        } else if (payload?.error === 'NO_CONTROLLING_TTY') {
+          setError(payload.message ?? 'The runner has no controlling terminal. Start the runner from a terminal and retry, or paste a token manually.')
+        } else if (payload?.error === 'PLATFORM_UNSUPPORTED') {
+          setOauthCliMissing(true)
+          setError(payload.message ?? 'Automatic token generation is only supported on macOS and Linux. Run `claude setup-token` in a terminal and paste the token below.')
+        } else {
+          setError(payload?.message ?? payload?.stderr ?? oauthIssue.message)
+        }
+      } else {
+        setError(oauthIssue instanceof Error ? oauthIssue.message : String(oauthIssue))
+      }
+
       setOauthStatus(null)
     } finally {
       setOauthGenerating(false)
     }
   }
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault()
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault()
     setError(null)
     setSuccess(null)
     setSaving(true)
@@ -515,10 +521,7 @@ export default function Settings() {
             ? { method: 'oauth' as const, oauthToken: form.oauthToken }
             : { method: 'apiKey' as const, apiKey: form.apiKey }
 
-      // Build the tracker payload only when the user picked a real
-      // provider. `provider: 'none'` is sent through deliberately so the
-      // server can prune any previously-saved credentials.
-      const trackerPayload =
+      const tracker =
         form.trackerProvider === 'jira'
           ? {
               provider: 'jira' as const,
@@ -546,536 +549,391 @@ export default function Settings() {
           dir: form.intelligenceDir || undefined,
           gitRemote: form.intelligenceRemote || undefined,
         },
-        paths: { workingDir: form.workingDir || undefined },
-        git: form.gitUsername ? {
-          provider: form.gitProvider,
-          username: form.gitUsername,
-          token: form.gitToken,
-          workspace: form.gitWorkspace || undefined,
-        } : undefined,
-        tracker: trackerPayload,
+        paths: {
+          workingDir: form.workingDir || undefined,
+        },
+        git: form.gitUsername
+          ? {
+              provider: form.gitProvider,
+              username: form.gitUsername,
+              token: form.gitToken,
+              workspace: form.gitWorkspace || undefined,
+            }
+          : undefined,
+        tracker,
       }
 
-      const res = await fetch('/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`)
-      }
-
+      await requestJson('/config', jsonRequest(body, { method: 'PUT' }))
       setSuccess(
         form.anthropicMethod === 'claudeLogin'
           ? 'Configuration saved. The runner will use Claude Code\'s local login session.'
           : 'Configuration saved. Restart the runner for changes to take effect.',
       )
       await loadConfig()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+    } catch (saveIssue) {
+      setError(saveIssue instanceof Error ? saveIssue.message : String(saveIssue))
     } finally {
       setSaving(false)
     }
   }
 
   if (loading) {
-    return (
-      <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="text-zinc-400 text-sm">Loading configuration...</div>
-      </div>
-    )
+    return <div className="py-10 text-sm text-slate-400">Loading configuration…</div>
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      <div className="mb-8">
-        <h1 className="text-xl font-semibold text-white">Settings</h1>
-        <p className="text-sm text-zinc-400 mt-1">Configure the Coro runner. Changes are saved to the local config file.</p>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Runner Configuration"
+        title="Settings"
+        description="Manage auth, git, trackers, and runner paths."
+        actions={
+          <Button variant="outline" onClick={() => void loadConfig()}>
+            <RefreshCcw />
+            Reload config
+          </Button>
+        }
+      />
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Mode" value={meta?.mode ?? '—'} description="Current runner operating mode." icon={Waypoints} tone={meta?.mode === 'hybrid' ? 'indigo' : meta?.mode === 'local' ? 'emerald' : 'amber'} />
+        <StatCard label="Auth" value={authSummary} description="Active Anthropic authentication strategy." icon={ShieldCheck} tone={form.anthropicMethod === 'claudeLogin' ? 'cyan' : form.anthropicMethod === 'apiKey' ? 'violet' : 'amber'} />
+        <StatCard label="Git" value={form.gitProvider} description={form.gitUsername ? `Configured for ${form.gitUsername}.` : 'Credentials not configured yet.'} icon={GitBranch} tone="neutral" />
+        <StatCard label="Tracker" value={form.trackerProvider === 'none' ? 'Disabled' : form.trackerProvider} description="Campaign issue creation provider." icon={Ticket} tone={form.trackerProvider === 'none' ? 'neutral' : 'indigo'} />
       </div>
 
-      {meta && (
-        <div className="mb-6 p-4 rounded-lg bg-zinc-900 border border-zinc-800 space-y-2">
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Mode</span>
-            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
-              meta.mode === 'local'
-                ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-800'
-                : meta.mode === 'hybrid'
-                  ? 'bg-indigo-900/50 text-indigo-400 border border-indigo-800'
-                  : 'bg-amber-900/50 text-amber-400 border border-amber-800'
-            }`}>
-              {meta.mode}
-            </span>
-          </div>
-          <div className="text-xs text-zinc-500">
-            Config: <span className="text-zinc-400 font-mono">{meta.configPath}</span>
-          </div>
-          {meta.resolved && (
-            <>
-              <div className="text-xs text-zinc-500">
-                Intelligence: <span className="text-zinc-400 font-mono">{meta.resolved.intelligenceDir}</span>
-              </div>
-              <div className="text-xs text-zinc-500">
-                Working dir: <span className="text-zinc-400 font-mono">{meta.resolved.workingDir}</span>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {meta?.configError ? (
+        <Notice tone="amber">
+          The current config file failed schema validation. Save the form once to rewrite it into the current format.
+          {meta.rawConfig ? (
+            <details className="mt-3 overflow-hidden rounded-xl border border-amber-500/20 bg-black/15">
+              <summary className="cursor-pointer px-3 py-2 text-xs uppercase tracking-[0.16em] text-amber-100/80">View raw config</summary>
+              <Separator />
+              <pre className="max-h-64 overflow-auto p-3 text-xs whitespace-pre-wrap break-words text-amber-50/90">{JSON.stringify(meta.rawConfig, null, 2)}</pre>
+            </details>
+          ) : null}
+        </Notice>
+      ) : null}
 
-      {error && (
-        <div className="mb-6 p-3 rounded-lg bg-rose-950/50 border border-rose-900 text-sm text-rose-300">
-          {error}
-        </div>
-      )}
+      {error ? <Notice tone="rose">{error}</Notice> : null}
+      {success ? <Notice tone="emerald">{success}</Notice> : null}
 
-      {success && (
-        <div className="mb-6 p-3 rounded-lg bg-emerald-950/50 border border-emerald-900 text-sm text-emerald-300">
-          {success}
-        </div>
-      )}
+      <form onSubmit={handleSubmit} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="space-y-6">
+          <Tabs value={activeTab} onValueChange={value => setActiveTab(value as SettingsTab)} className="space-y-6">
+            <TabsList className="h-auto flex-wrap">
+              <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
+              <TabsTrigger value="git">Git</TabsTrigger>
+              <TabsTrigger value="tracker">Tracker</TabsTrigger>
+              <TabsTrigger value="paths">Paths</TabsTrigger>
+            </TabsList>
 
-      <form onSubmit={handleSubmit} className="space-y-8">
-        <section>
-          <h2 className="text-sm font-semibold text-zinc-300 mb-4 pb-2 border-b border-zinc-800">Anthropic</h2>
-
-          <div className="mb-5 flex flex-col sm:flex-row gap-2" role="radiogroup" aria-label="Anthropic auth method">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={form.anthropicMethod === 'claudeLogin'}
-              onClick={() => setAnthropicMethod('claudeLogin')}
-              className={authTabClass(form.anthropicMethod === 'claudeLogin')}
-            >
-              Claude login
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={form.anthropicMethod === 'apiKey'}
-              onClick={() => setAnthropicMethod('apiKey')}
-              className={authTabClass(form.anthropicMethod === 'apiKey')}
-            >
-              API key
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={form.anthropicMethod === 'oauth'}
-              onClick={() => setAnthropicMethod('oauth')}
-              className={authTabClass(form.anthropicMethod === 'oauth')}
-            >
-              OAuth token (legacy)
-            </button>
-          </div>
-
-          {form.anthropicMethod === 'claudeLogin' ? (
-            <div className="space-y-4">
-              <div className="rounded-lg bg-zinc-900 border border-zinc-800 p-4 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-                  <div className="space-y-2">
-                    <div className="text-xs font-medium text-zinc-500 uppercase tracking-wide">Recommended authentication</div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`px-2 py-0.5 rounded text-xs font-semibold ${statusBadgeClass(claudeLoginState.status)}`}>
-                        {statusLabel(claudeLoginState.status)}
-                      </span>
-                      {effectiveClaudeAccount?.email && (
-                        <span className="text-sm text-zinc-200">{effectiveClaudeAccount.email}</span>
-                      )}
-                    </div>
-                    <FieldHint>
-                      Uses Claude Code&apos;s own local login session, including MCP permissions and session refresh. No copy-pasted token is stored in Coro.
-                    </FieldHint>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleStartClaudeLogin}
-                    disabled={claudeLoginConnecting}
-                    className="px-3 py-2 rounded-lg bg-indigo-600 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {claudeLoginConnecting
-                      ? 'Starting Claude login…'
-                      : claudeLoginReady
-                        ? 'Reconnect Claude'
-                        : 'Connect Claude'}
-                  </button>
+            <TabsContent value="anthropic" className="space-y-6">
+              <SectionCard title="Authentication Method" description="Pick the authentication strategy the runner should use for model access.">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <ChoiceButton active={form.anthropicMethod === 'claudeLogin'} onClick={() => setAnthropicMethod('claudeLogin')}>
+                    <div className="font-medium text-white">Claude login</div>
+                    <div className="mt-1 text-slate-400">Uses Claude Code's local session and preserves MCP-capable auth context.</div>
+                  </ChoiceButton>
+                  <ChoiceButton active={form.anthropicMethod === 'apiKey'} onClick={() => setAnthropicMethod('apiKey')}>
+                    <div className="font-medium text-white">API key</div>
+                    <div className="mt-1 text-slate-400">Best for direct Anthropic billing with explicit service credentials.</div>
+                  </ChoiceButton>
+                  <ChoiceButton active={form.anthropicMethod === 'oauth'} onClick={() => setAnthropicMethod('oauth')}>
+                    <div className="font-medium text-white">Legacy OAuth token</div>
+                    <div className="mt-1 text-slate-400">Fallback only. Stores a raw token without session refresh.</div>
+                  </ChoiceButton>
                 </div>
+              </SectionCard>
 
-                {effectiveClaudeAccount && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-lg bg-zinc-950/70 border border-zinc-800 px-3 py-2">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1">Provider</div>
-                      <div className="text-zinc-200">{formatProvider(effectiveClaudeAccount.apiProvider)}</div>
-                    </div>
-                    <div className="rounded-lg bg-zinc-950/70 border border-zinc-800 px-3 py-2">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1">Organization</div>
-                      <div className="text-zinc-200">{effectiveClaudeAccount.organization ?? 'Not reported'}</div>
-                    </div>
-                    <div className="rounded-lg bg-zinc-950/70 border border-zinc-800 px-3 py-2">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1">Plan</div>
-                      <div className="text-zinc-200">{effectiveClaudeAccount.subscriptionType ?? 'Not reported'}</div>
-                    </div>
-                    <div className="rounded-lg bg-zinc-950/70 border border-zinc-800 px-3 py-2">
-                      <div className="text-xs uppercase tracking-wide text-zinc-500 mb-1">Token source</div>
-                      <div className="text-zinc-200">{effectiveClaudeAccount.tokenSource ?? 'Not reported'}</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {claudeLoginState.status === 'authorizing' && (
-                <div className="space-y-3">
-                  <div className="p-3 rounded-lg bg-zinc-900 border border-zinc-800 text-sm text-zinc-300">
-                    The runner is waiting for the Claude browser login to finish. This page polls for completion automatically.
-                  </div>
-
-                  {claudeLoginUrl && (
-                    <div className="p-3 rounded-lg bg-zinc-900 border border-zinc-800 text-sm text-zinc-400 space-y-2">
-                      <div>If the browser did not open automatically, continue the sign-in flow here:</div>
-                      <a
-                        href={claudeLoginUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="break-all text-indigo-400 hover:text-indigo-300 underline"
-                      >
-                        {claudeLoginUrl}
-                      </a>
-                    </div>
-                  )}
-
-                  <div className="rounded-lg bg-zinc-900 border border-zinc-800 p-4 space-y-3">
-                    <div>
-                      <label className={labelClass()}>Callback URL or Authorization Code</label>
-                      <input
-                        value={claudeLoginCallbackInput}
-                        onChange={e => setClaudeLoginCallbackInput(e.target.value)}
-                        placeholder="Paste the redirected URL or the code parameter"
-                        className={inputClass()}
-                      />
-                      <FieldHint>
-                        Use this only if automatic completion fails. Pasting the full redirected URL is preferred because it includes the OAuth state value.
-                      </FieldHint>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end">
-                      <div>
-                        <label className={labelClass()}>State Override</label>
-                        <input
-                          value={claudeLoginCallbackState}
-                          onChange={e => setClaudeLoginCallbackState(e.target.value)}
-                          placeholder="Optional if you pasted a raw authorization code"
-                          className={inputClass()}
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleSubmitClaudeLoginCallback}
-                        disabled={claudeLoginSubmittingCallback}
-                        className="px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-sm font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {claudeLoginSubmittingCallback ? 'Completing…' : 'Complete login manually'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {claudeLoginState.status === 'error' && claudeLoginState.error && (
-                <div className="p-3 rounded-lg bg-rose-950/50 border border-rose-900 text-sm text-rose-300">
-                  {claudeLoginState.error}
-                </div>
-              )}
-            </div>
-          ) : form.anthropicMethod === 'apiKey' ? (
-            <div>
-              <label className={labelClass()}>API Key <span className="text-rose-400">*</span></label>
-              <input
-                name="apiKey"
-                type="password"
-                value={form.apiKey}
-                onChange={handleChange}
-                placeholder="sk-ant-..."
-                className={inputClass()}
-              />
-              <FieldHint>Anthropic API key from console.anthropic.com — billed per token.</FieldHint>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div>
-                <label className={labelClass()}>OAuth Token <span className="text-rose-400">*</span></label>
-                <input
-                  name="oauthToken"
-                  type="password"
-                  value={form.oauthToken}
-                  onChange={handleChange}
-                  placeholder="sk-ant-oat01-..."
-                  className={inputClass()}
-                />
-                <FieldHint>
-                  Legacy fallback only. This stores a single raw OAuth token value and does not preserve Claude Code&apos;s richer session state or MCP-capable login context.
-                </FieldHint>
-                <FieldHint>
-                  If you need MCP-enabled workflows in this app, prefer Claude login or an API key. OAuth tokens remain personal-use only per Anthropic&apos;s ToS.
-                </FieldHint>
-              </div>
-
-              {!oauthCliMissing && (
-                <button
-                  type="button"
-                  onClick={handleGenerateOauthToken}
-                  disabled={oauthGenerating}
-                  className="px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-xs font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              {form.anthropicMethod === 'claudeLogin' ? (
+                <SectionCard
+                  title="Claude Login"
+                  description="Recommended. Connect the runner to Claude Code's local login session instead of storing a separate token."
+                  action={
+                    <Button type="button" onClick={() => void handleStartClaudeLogin()} disabled={claudeLoginConnecting}>
+                      {claudeLoginConnecting ? 'Starting…' : claudeLoginReady ? 'Reconnect Claude' : 'Connect Claude'}
+                    </Button>
+                  }
                 >
-                  {oauthGenerating ? 'Generating legacy token…' : 'Generate legacy token via claude setup-token'}
-                </button>
-              )}
+                  <div className="space-y-5">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <StatusPill status={claudeLoginState.status} />
+                      {effectiveClaudeAccount?.email ? <div className="text-sm text-slate-300">{effectiveClaudeAccount.email}</div> : null}
+                    </div>
 
-              {oauthStatus && (
-                <div className="p-2 rounded bg-zinc-900 border border-zinc-800 text-xs text-zinc-400">
-                  {oauthStatus}
-                </div>
-              )}
+                    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
+                      Uses Claude Code's own local login session, including MCP permissions and session refresh. No copy-pasted token is stored in Coro.
+                    </div>
 
-              {oauthAuthUrl && (
-                <div className="p-2 rounded bg-zinc-900 border border-zinc-800 text-xs text-zinc-400 space-y-1">
-                  <div>If the browser did not open automatically, sign in here:</div>
-                  <a
-                    href={oauthAuthUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="break-all text-indigo-400 hover:text-indigo-300 underline"
-                  >
-                    {oauthAuthUrl}
-                  </a>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
+                    {effectiveClaudeAccount ? (
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <AccountFact label="Provider" value={formatProvider(effectiveClaudeAccount.apiProvider)} />
+                        <AccountFact label="Organization" value={effectiveClaudeAccount.organization ?? 'Not reported'} />
+                        <AccountFact label="Plan" value={effectiveClaudeAccount.subscriptionType ?? 'Not reported'} />
+                        <AccountFact label="Token source" value={effectiveClaudeAccount.tokenSource ?? 'Not reported'} />
+                      </div>
+                    ) : null}
 
-        <section>
-          <h2 className="text-sm font-semibold text-zinc-300 mb-4 pb-2 border-b border-zinc-800">Git Provider</h2>
-          <div className="space-y-4">
-            <div>
-              <label className={labelClass()}>Provider</label>
-              <select
-                name="gitProvider"
-                value={form.gitProvider}
-                onChange={handleChange}
-                className={inputClass()}
-              >
-                <option value="github">GitHub</option>
-                <option value="bitbucket">BitBucket</option>
-                <option value="gitlab">GitLab</option>
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className={labelClass()}>Username</label>
-                <input
-                  name="gitUsername"
-                  value={form.gitUsername}
-                  onChange={handleChange}
-                  placeholder="your-username"
-                  className={inputClass()}
-                />
-              </div>
-              <div>
-                <label className={labelClass()}>
-                  {form.gitProvider === 'github' ? 'Personal Access Token' : 'App Password'}
-                </label>
-                <input
-                  name="gitToken"
-                  type="password"
-                  value={form.gitToken}
-                  onChange={handleChange}
-                  placeholder={form.gitProvider === 'github' ? 'ghp_...' : 'Token'}
-                  className={inputClass()}
-                />
-              </div>
-            </div>
-            <div>
-              <label className={labelClass()}>
-                {form.gitProvider === 'bitbucket' ? 'Workspace slug' : 'Organization / Owner'}
-              </label>
-              <input
-                name="gitWorkspace"
-                value={form.gitWorkspace}
-                onChange={handleChange}
-                placeholder={form.gitProvider === 'bitbucket' ? 'my-workspace' : 'my-org'}
-                className={inputClass()}
-              />
-            </div>
-          </div>
-        </section>
+                    {claudeLoginState.status === 'authorizing' ? (
+                      <div className="space-y-4">
+                        <Notice tone="amber">The runner is waiting for the Claude browser login to finish. This page polls for completion automatically.</Notice>
 
-        <section>
-          <h2 className="text-sm font-semibold text-zinc-300 mb-4 pb-2 border-b border-zinc-800">Issue Tracker</h2>
-          <div className="space-y-4">
-            <div>
-              <label className={labelClass()}>Provider</label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="radiogroup" aria-label="Issue tracker provider">
-                {(['none', 'jira', 'github', 'linear'] as TrackerProvider[]).map(p => (
-                  <button
-                    key={p}
-                    type="button"
-                    role="radio"
-                    aria-checked={form.trackerProvider === p}
-                    onClick={() => {
-                      setForm(prev => ({ ...prev, trackerProvider: p }))
-                      setSuccess(null)
-                    }}
-                    className={authTabClass(form.trackerProvider === p)}
-                  >
-                    {p === 'none' ? 'None' : p === 'jira' ? 'Jira' : p === 'github' ? 'GitHub Issues' : 'Linear'}
-                  </button>
-                ))}
-              </div>
-              <FieldHint>
-                The campaign workflow uses this tracker to file an epic and per-child issues. Pick <span className="font-medium text-zinc-300">None</span> to run campaigns without tracker round-trips — children still execute normally.
-              </FieldHint>
-            </div>
+                        {claudeLoginUrl ? (
+                          <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
+                            <div>If the browser did not open automatically, continue the sign-in flow here:</div>
+                            <a href={claudeLoginUrl} target="_blank" rel="noopener noreferrer" className="mt-2 block break-all text-cyan-300 hover:text-cyan-200">
+                              {claudeLoginUrl}
+                            </a>
+                          </div>
+                        ) : null}
 
-            {form.trackerProvider === 'jira' && (
-              <div className="space-y-3 rounded-lg bg-zinc-900/40 border border-zinc-800 p-3">
-                <div>
-                  <label className={labelClass()}>Base URL</label>
-                  <input
-                    name="jiraBaseUrl"
-                    value={form.jiraBaseUrl}
-                    onChange={handleChange}
-                    placeholder="https://your-org.atlassian.net"
-                    className={inputClass()}
-                  />
-                  <FieldHint>Your Jira Cloud or Server site, including the protocol.</FieldHint>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className={labelClass()}>Username (email)</label>
-                    <input
-                      name="jiraUsername"
-                      value={form.jiraUsername}
-                      onChange={handleChange}
-                      placeholder="you@company.com"
-                      className={inputClass()}
-                    />
+                        <div className="grid gap-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                          <Field label="Callback URL or Authorization Code" hint="Use this only if automatic completion fails. Pasting the full redirected URL is preferred because it includes the OAuth state value.">
+                            <Input
+                              value={claudeLoginCallbackInput}
+                              onChange={event => setClaudeLoginCallbackInput(event.target.value)}
+                              placeholder="Paste the redirected URL or the code parameter"
+                            />
+                          </Field>
+
+                          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                            <Field label="State Override" hint="Optional if you pasted a raw authorization code.">
+                              <Input
+                                value={claudeLoginCallbackState}
+                                onChange={event => setClaudeLoginCallbackState(event.target.value)}
+                                placeholder="Optional state"
+                              />
+                            </Field>
+                            <Button type="button" variant="secondary" onClick={() => void handleSubmitClaudeLoginCallback()} disabled={claudeLoginSubmittingCallback}>
+                              {claudeLoginSubmittingCallback ? 'Completing…' : 'Complete manually'}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
-                  <div>
-                    <label className={labelClass()}>API token</label>
-                    <input
-                      name="jiraApiToken"
-                      type="password"
-                      value={form.jiraApiToken}
-                      onChange={handleChange}
-                      placeholder="From id.atlassian.com/manage-profile/security/api-tokens"
-                      className={inputClass()}
-                    />
+                </SectionCard>
+              ) : null}
+
+              {form.anthropicMethod === 'apiKey' ? (
+                <SectionCard title="Anthropic API Key" description="Use a first-party Anthropic API key billed per token.">
+                  <Field label="API Key" required hint="Anthropic API key from console.anthropic.com.">
+                    <Input name="apiKey" type="password" value={form.apiKey} onChange={handleChange} placeholder="sk-ant-…" />
+                  </Field>
+                </SectionCard>
+              ) : null}
+
+              {form.anthropicMethod === 'oauth' ? (
+                <SectionCard title="Legacy OAuth Token" description="Fallback only. This does not preserve Claude Code's richer local session state.">
+                  <div className="space-y-4">
+                    <Field label="OAuth Token" required hint="Legacy fallback only. Prefer Claude login whenever possible.">
+                      <Input name="oauthToken" type="password" value={form.oauthToken} onChange={handleChange} placeholder="sk-ant-oat01-…" />
+                    </Field>
+
+                    {!oauthCliMissing ? (
+                      <Button type="button" variant="secondary" onClick={() => void handleGenerateOauthToken()} disabled={oauthGenerating}>
+                        <KeyRound />
+                        {oauthGenerating ? 'Generating…' : 'Generate via claude setup-token'}
+                      </Button>
+                    ) : null}
+
+                    {oauthStatus ? <Notice tone="emerald">{oauthStatus}</Notice> : null}
+                    {oauthAuthUrl ? (
+                      <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
+                        <div>If the browser did not open automatically, sign in here:</div>
+                        <a href={oauthAuthUrl} target="_blank" rel="noopener noreferrer" className="mt-2 block break-all text-cyan-300 hover:text-cyan-200">
+                          {oauthAuthUrl}
+                        </a>
+                      </div>
+                    ) : null}
                   </div>
+                </SectionCard>
+              ) : null}
+            </TabsContent>
+
+            <TabsContent value="git" className="space-y-6">
+              <SectionCard title="Git Provider" description="Credentials used for clone, branch, PR, and review operations.">
+                <div className="space-y-4">
+                  <Field label="Provider">
+                    <Select name="gitProvider" value={form.gitProvider} onChange={handleChange}>
+                      <option value="github">GitHub</option>
+                      <option value="bitbucket">BitBucket</option>
+                      <option value="gitlab">GitLab</option>
+                    </Select>
+                  </Field>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field label="Username" hint="The account used to authenticate with the git provider.">
+                      <Input name="gitUsername" value={form.gitUsername} onChange={handleChange} placeholder="your-username" />
+                    </Field>
+                    <Field label={form.gitProvider === 'github' ? 'Personal Access Token' : 'App Password'} hint="Stored in the local runner config file.">
+                      <Input
+                        name="gitToken"
+                        type="password"
+                        value={form.gitToken}
+                        onChange={handleChange}
+                        placeholder={form.gitProvider === 'github' ? 'ghp_…' : 'Token'}
+                      />
+                    </Field>
+                  </div>
+
+                  <Field label={form.gitProvider === 'bitbucket' ? 'Workspace Slug' : 'Organization / Owner'} hint="Optional, but required by most hosted providers for PR and issue APIs.">
+                    <Input
+                      name="gitWorkspace"
+                      value={form.gitWorkspace}
+                      onChange={handleChange}
+                      placeholder={form.gitProvider === 'bitbucket' ? 'my-workspace' : 'my-org'}
+                    />
+                  </Field>
                 </div>
-              </div>
-            )}
+              </SectionCard>
+            </TabsContent>
 
-            {form.trackerProvider === 'github' && (
-              <div className="rounded-lg bg-zinc-900/40 border border-zinc-800 p-3 text-xs text-zinc-400">
-                {form.gitProvider === 'github' && form.gitToken ? (
-                  <>
-                    The campaign-planner will reuse the GitHub Personal Access Token you configured under <span className="font-medium text-zinc-200">Git Provider</span>{' '}
-                    (owner: <span className="font-mono text-zinc-300">{form.gitWorkspace || '—'}</span>). Make sure the token has{' '}
-                    <span className="font-mono">issues:write</span> + <span className="font-mono">repo</span> scopes.
-                  </>
-                ) : (
-                  <>
-                    Set the Git Provider above to <span className="font-medium text-zinc-200">GitHub</span> and fill in the token + organisation; the tracker reuses those credentials.
-                  </>
-                )}
-              </div>
-            )}
+            <TabsContent value="tracker" className="space-y-6">
+              <SectionCard title="Issue Tracker" description="Used by campaigns when they need to create an epic and child issues.">
+                <div className="space-y-5">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    {(['none', 'jira', 'github', 'linear'] as TrackerProvider[]).map(provider => (
+                      <ChoiceButton
+                        key={provider}
+                        active={form.trackerProvider === provider}
+                        onClick={() => {
+                          setForm(previous => ({ ...previous, trackerProvider: provider }))
+                          setSuccess(null)
+                        }}
+                      >
+                        <div className="font-medium text-white">{provider === 'none' ? 'None' : provider === 'github' ? 'GitHub Issues' : provider.charAt(0).toUpperCase() + provider.slice(1)}</div>
+                        <div className="mt-1 text-slate-400">
+                          {provider === 'none'
+                            ? 'Run campaigns without tracker round-trips.'
+                            : provider === 'jira'
+                              ? 'Create issues through Jira.'
+                              : provider === 'github'
+                                ? 'Reuse GitHub credentials for issue creation.'
+                                : 'Create issues through Linear.'}
+                        </div>
+                      </ChoiceButton>
+                    ))}
+                  </div>
 
-            {form.trackerProvider === 'linear' && (
-              <div className="space-y-3 rounded-lg bg-zinc-900/40 border border-zinc-800 p-3">
-                <div>
-                  <label className={labelClass()}>API key</label>
-                  <input
-                    name="linearApiKey"
-                    type="password"
-                    value={form.linearApiKey}
-                    onChange={handleChange}
-                    placeholder="lin_api_..."
-                    className={inputClass()}
-                  />
-                  <FieldHint>
-                    Personal API key from <span className="font-mono">linear.app/settings/api</span>. Sent verbatim in the Authorization header.
-                  </FieldHint>
+                  {form.trackerProvider === 'jira' ? (
+                    <div className="grid gap-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                      <Field label="Base URL" hint="Your Jira Cloud or Server site, including protocol.">
+                        <Input name="jiraBaseUrl" value={form.jiraBaseUrl} onChange={handleChange} placeholder="https://your-org.atlassian.net" />
+                      </Field>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <Field label="Username (email)">
+                          <Input name="jiraUsername" value={form.jiraUsername} onChange={handleChange} placeholder="you@company.com" />
+                        </Field>
+                        <Field label="API token">
+                          <Input name="jiraApiToken" type="password" value={form.jiraApiToken} onChange={handleChange} placeholder="Atlassian API token" />
+                        </Field>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {form.trackerProvider === 'github' ? (
+                    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
+                      {form.gitProvider === 'github' && form.gitToken
+                        ? `The campaign planner will reuse the configured GitHub token for ${form.gitWorkspace || 'the current owner'}. Make sure it includes repo and issues write scopes.`
+                        : 'Set the Git provider to GitHub and fill in the token plus organization. The tracker will reuse those credentials.'}
+                    </div>
+                  ) : null}
+
+                  {form.trackerProvider === 'linear' ? (
+                    <div className="grid gap-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                      <Field label="API key" hint="Personal API key from linear.app/settings/api.">
+                        <Input name="linearApiKey" type="password" value={form.linearApiKey} onChange={handleChange} placeholder="lin_api_…" />
+                      </Field>
+                      <Field label="Default team key" hint="Used when the campaign planner does not override the target team.">
+                        <Input name="linearTeamKey" value={form.linearTeamKey} onChange={handleChange} placeholder="ENG" />
+                      </Field>
+                    </div>
+                  ) : null}
                 </div>
-                <div>
-                  <label className={labelClass()}>Default team key</label>
-                  <input
-                    name="linearTeamKey"
-                    value={form.linearTeamKey}
-                    onChange={handleChange}
-                    placeholder="ENG"
-                    className={inputClass()}
-                  />
-                  <FieldHint>Used when the campaign-planner doesn't override per-issue (e.g. <span className="font-mono">ENG</span>).</FieldHint>
+              </SectionCard>
+            </TabsContent>
+
+            <TabsContent value="paths" className="space-y-6">
+              <SectionCard title="Paths" description="Filesystem locations the runner uses for intelligence materialization and working repositories.">
+                <div className="space-y-4">
+                  <Field label="Intelligence Directory" hint="Leave blank to use the resolved default shown in the sidebar.">
+                    <Input name="intelligenceDir" value={form.intelligenceDir} onChange={handleChange} placeholder={meta?.resolved.intelligenceDir ?? '~/.coro/intelligence'} />
+                  </Field>
+                  <Field label="Intelligence Git Remote" hint="Optional remote used to pull intelligence updates.">
+                    <Input name="intelligenceRemote" value={form.intelligenceRemote} onChange={handleChange} placeholder="https://github.com/org/coro-intelligence.git" />
+                  </Field>
+                  <Field label="Working Directory" hint="Where repositories are cloned during job execution.">
+                    <Input name="workingDir" value={form.workingDir} onChange={handleChange} placeholder={meta?.resolved.workingDir ?? '~/.coro/working'} />
+                  </Field>
                 </div>
+              </SectionCard>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        <div className="space-y-6 xl:sticky xl:top-6 xl:self-start">
+          <Card>
+            <CardHeader>
+              <CardTitle>Runner Summary</CardTitle>
+              <CardDescription>What the runner will use right now, including defaults resolved from the host environment.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Config path</div>
+                <div className="mt-1 break-all font-mono text-slate-200">{meta?.configPath ?? '—'}</div>
               </div>
-            )}
-          </div>
-        </section>
+              <Separator />
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Resolved intelligence dir</div>
+                <div className="mt-1 break-all font-mono text-slate-200">{meta?.resolved.intelligenceDir ?? '—'}</div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Resolved working dir</div>
+                <div className="mt-1 break-all font-mono text-slate-200">{meta?.resolved.workingDir ?? '—'}</div>
+              </div>
+              <Separator />
+              <div className="space-y-2 text-slate-400">
+                <div className="flex items-center justify-between"><span>Auth method</span><span className="text-slate-100">{form.anthropicMethod}</span></div>
+                <div className="flex items-center justify-between"><span>Claude session</span><span className="text-slate-100">{claudeLoginReady ? 'Ready' : 'Not ready'}</span></div>
+                <div className="flex items-center justify-between"><span>Tracker</span><span className="text-slate-100">{form.trackerProvider}</span></div>
+              </div>
+            </CardContent>
+          </Card>
 
-        <section>
-          <h2 className="text-sm font-semibold text-zinc-300 mb-4 pb-2 border-b border-zinc-800">Paths</h2>
-          <div className="space-y-4">
-            <div>
-              <label className={labelClass()}>Intelligence directory</label>
-              <input
-                name="intelligenceDir"
-                value={form.intelligenceDir}
-                onChange={handleChange}
-                placeholder={meta?.resolved.intelligenceDir ?? '~/.coro/intelligence'}
-                className={inputClass()}
-              />
-              <FieldHint>
-                Directory containing agents/, workflows/, skills/, and memory/. Leave blank to use the default shown above.
-              </FieldHint>
-            </div>
-            <div>
-              <label className={labelClass()}>Intelligence git remote</label>
-              <input
-                name="intelligenceRemote"
-                value={form.intelligenceRemote}
-                onChange={handleChange}
-                placeholder="https://github.com/org/coro-intelligence.git (optional)"
-                className={inputClass()}
-              />
-              <FieldHint>Git remote to pull intelligence updates from</FieldHint>
-            </div>
-            <div>
-              <label className={labelClass()}>Working directory</label>
-              <input
-                name="workingDir"
-                value={form.workingDir}
-                onChange={handleChange}
-                placeholder={meta?.resolved.workingDir ?? '~/.coro/working'}
-                className={inputClass()}
-              />
-              <FieldHint>
-                Where repos are cloned during job execution. Leave blank to use the default shown above.
-              </FieldHint>
-            </div>
-          </div>
-        </section>
+          <Card>
+            <CardHeader>
+              <CardTitle>Save Changes</CardTitle>
+              <CardDescription>
+                {form.anthropicMethod === 'claudeLogin'
+                  ? 'Claude login must be connected before this auth mode can be saved.'
+                  : 'Most changes take effect after the runner restarts.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Button type="submit" size="lg" className="w-full" disabled={saving || (form.anthropicMethod === 'claudeLogin' && !claudeLoginReady)}>
+                {saving ? 'Saving…' : 'Save configuration'}
+              </Button>
+              <Button type="button" variant="outline" className="w-full" onClick={() => void loadConfig()}>
+                Reload from disk
+              </Button>
+            </CardContent>
+          </Card>
 
-        <div className="pt-4 border-t border-zinc-800">
-          <button
-            type="submit"
-            disabled={saving || (form.anthropicMethod === 'claudeLogin' && !claudeLoginReady)}
-            className="px-5 py-2.5 rounded-lg bg-indigo-600 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {saving ? 'Saving...' : 'Save Configuration'}
-          </button>
+          {effectiveClaudeAccount ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Connected Claude Account</CardTitle>
+                <CardDescription>Session metadata reported by Claude Code.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {effectiveClaudeAccount.email ? <AccountFact label="Email" value={effectiveClaudeAccount.email} /> : null}
+                <AccountFact label="Provider" value={formatProvider(effectiveClaudeAccount.apiProvider)} />
+                <AccountFact label="Plan" value={effectiveClaudeAccount.subscriptionType ?? 'Not reported'} />
+              </CardContent>
+            </Card>
+          ) : null}
         </div>
       </form>
     </div>

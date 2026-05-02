@@ -12,8 +12,8 @@ import {
 } from '../ui/dropdown-menu'
 import { cn } from '../../lib/utils'
 
-function fallbackRoute(path: string) {
-  return path.startsWith('/campaigns/') ? '/campaigns' : '/jobs'
+function fallbackRoute() {
+  return '/jobs'
 }
 
 export default function WorkspaceTabsBar() {
@@ -52,7 +52,7 @@ export default function WorkspaceTabsBar() {
                     onClick={() => {
                       const wasActive = activePath === tab.path
                       closeTab(tab.path)
-                      if (wasActive) navigate(fallbackRoute(tab.path))
+                      if (wasActive) navigate(fallbackRoute())
                     }}
                     className="rounded-full p-1 text-slate-500 transition-colors hover:bg-white/8 hover:text-white"
                     aria-label={`Close ${tab.title}`}

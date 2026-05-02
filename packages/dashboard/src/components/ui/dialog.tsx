@@ -22,7 +22,7 @@ function DialogContent({ className, children, ...props }: React.ComponentProps<t
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
-        className={cn('fixed left-1/2 top-1/2 z-50 grid w-[min(920px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-3xl border border-white/10 bg-[linear-gradient(180deg,rgba(14,21,33,0.98),rgba(7,12,20,0.98))] p-0 shadow-[0_40px_140px_-48px_rgba(2,6,23,0.95)]', className)}
+        className={cn('fixed left-1/2 top-1/2 z-50 grid w-[min(920px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-3xl border border-white/8 bg-slate-950 p-0 shadow-[0_28px_90px_-42px_rgba(2,6,23,0.92)]', className)}
         {...props}
       >
         {children}

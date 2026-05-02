@@ -1,25 +1,23 @@
-import { AppWindowMac, FolderKanban, Gauge, History, Plus, Settings2, Workflow } from 'lucide-react'
+import { AppWindowMac, Gauge, History, Plus, Settings2, Workflow } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { Button } from './ui/button'
 import WorkspaceTabsBar from './layout/workspace-tabs-bar'
 
 interface NavigationItem {
   label: string
-  description: string
   to: string
   icon: typeof Gauge
 }
 
 const PRIMARY_NAV: NavigationItem[] = [
-  { label: 'Overview', description: 'Live operator summary', to: '/', icon: Gauge },
-  { label: 'Jobs', description: 'Single-run work items', to: '/jobs', icon: Workflow },
-  { label: 'Campaigns', description: 'Coordinated work', to: '/campaigns', icon: FolderKanban },
-  { label: 'History', description: 'Archived runs', to: '/history', icon: History },
+  { label: 'Overview', to: '/', icon: Gauge },
+  { label: 'Runs', to: '/jobs', icon: Workflow },
+  { label: 'History', to: '/history', icon: History },
 ]
 
 const SECONDARY_NAV: NavigationItem[] = [
-  { label: 'New Job', description: 'Dispatch work', to: '/jobs/new', icon: Plus },
-  { label: 'Settings', description: 'Runner configuration', to: '/settings', icon: Settings2 },
+  { label: 'New Run', to: '/jobs/new', icon: Plus },
+  { label: 'Settings', to: '/settings', icon: Settings2 },
 ]
 
 function SidebarLink({ item }: { item: NavigationItem }) {
@@ -36,10 +34,7 @@ function SidebarLink({ item }: { item: NavigationItem }) {
       <div className="rounded-xl border border-white/8 bg-white/6 p-2.5 text-slate-200">
         <item.icon className="size-4" />
       </div>
-      <div className="min-w-0 space-y-0.5">
-        <div className="text-sm font-medium">{item.label}</div>
-        <div className="text-xs text-slate-500">{item.description}</div>
-      </div>
+      <div className="min-w-0 text-sm font-medium">{item.label}</div>
     </NavLink>
   )
 }
@@ -50,17 +45,13 @@ export default function Layout() {
       <aside className="hidden border-r border-white/8 bg-slate-950/55 px-5 py-5 backdrop-blur-xl lg:flex lg:flex-col lg:gap-6">
         <div className="space-y-4">
           <div className="flex items-center gap-3">
-            <div className="flex size-11 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-400 via-indigo-500 to-cyan-400 text-sm font-semibold tracking-[0.16em] text-slate-950 shadow-[0_20px_45px_-28px_rgba(97,114,255,0.9)]">
+            <div className="flex size-11 items-center justify-center rounded-2xl border border-indigo-400/20 bg-indigo-500/10 text-sm font-semibold tracking-[0.16em] text-indigo-100">
               C
             </div>
             <div>
               <div className="text-base font-semibold text-white">Coro Workbench</div>
               <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Runner Operator Console</div>
             </div>
-          </div>
-
-          <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4 text-sm text-slate-400">
-            Electron-ready UI focused on high-density job monitoring, campaign control, and fast drill-down workflows.
           </div>
         </div>
 
@@ -78,14 +69,9 @@ export default function Layout() {
           </nav>
         </div>
 
-        <div className="mt-auto rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-white">
-            <AppWindowMac className="size-4 text-cyan-300" />
-            Desktop-first shell
-          </div>
-          <p className="mt-2 text-sm text-slate-400">
-            The layout is optimized for the later Electron shell: persistent navigation, fast switching, and multi-tasking through workspace tabs.
-          </p>
+        <div className="mt-auto flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-slate-500">
+          <AppWindowMac className="size-4" />
+          Desktop shell ready
         </div>
       </aside>
 
@@ -97,7 +83,7 @@ export default function Layout() {
                 <div className="text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500">Operator Workspace</div>
                 <div>
                   <h1 className="text-2xl font-semibold text-white sm:text-[2rem]">Coro Dashboard</h1>
-                  <p className="text-sm text-slate-400 sm:text-base">Monitor jobs, coordinate campaigns, inspect history, and keep multiple workspaces open at once.</p>
+                  <p className="text-sm text-slate-500 sm:text-base">Monitor runs, inspect history, and switch context quickly.</p>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -105,7 +91,7 @@ export default function Layout() {
                   <NavLink to="/settings">Settings</NavLink>
                 </Button>
                 <Button asChild>
-                  <NavLink to="/jobs/new">New Job</NavLink>
+                  <NavLink to="/jobs/new">New Run</NavLink>
                 </Button>
               </div>
             </div>

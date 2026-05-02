@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { requestJson } from '../lib/http'
-import { deriveJobDescription, deriveJobTitle, isCampaignJob, sortJobsByUpdatedAt } from '../lib/jobs'
+import { deriveJobDescription, deriveJobTitle, getRunDetailPath, isCampaignJob, sortJobsByUpdatedAt } from '../lib/jobs'
 import { isTerminalStatus } from '../lib/status'
 import { useJobs } from '../hooks/useJobs'
 import type { Job } from '../types'
@@ -55,7 +55,7 @@ function OverviewList({ title, jobs, emptyLabel }: { title: string; jobs: Job[];
         ) : (
           <div className="space-y-3">
             {jobs.map(job => {
-              const detailPath = isCampaignJob(job) ? `/campaigns/${job.id}` : `/jobs/${job.id}`
+              const detailPath = getRunDetailPath(job)
 
               return (
                 <Link key={job.id} to={detailPath} className="flex items-start justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 transition-colors hover:border-white/14 hover:bg-white/[0.05]">
@@ -140,7 +140,7 @@ export default function Home() {
       <PageHeader
         eyebrow="Operator Overview"
         title="Live workbench"
-        description="A production view of runner activity: what is live, what needs attention, and what just finished."
+        description="What is live, what needs input, and what just finished."
         actions={
           <>
             <Button asChild variant="outline">
@@ -151,7 +151,7 @@ export default function Home() {
             </Button>
             <Button asChild>
               <Link to="/jobs/new">
-                Dispatch work
+                Dispatch run
                 <ArrowRight />
               </Link>
             </Button>

@@ -1,5 +1,8 @@
 import { useState } from 'react'
+import { CheckCircle2, MessageSquareReply } from 'lucide-react'
 import type { Job } from '../types'
+import { Button } from './ui/button'
+import { Textarea } from './ui/textarea'
 
 interface ApprovalBoxProps {
   job: Job
@@ -42,18 +45,16 @@ export default function ApprovalBox({ job, onSend }: ApprovalBoxProps) {
   }
 
   return (
-    <div className="rounded-xl border border-amber-800 bg-amber-950/20 p-4 space-y-3">
+    <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 p-5 space-y-4">
       <div className="flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-amber-900/40 border border-amber-700 flex items-center justify-center shrink-0">
-          <svg className="w-4 h-4 text-amber-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl border border-amber-500/25 bg-amber-500/12 text-amber-100">
+          <MessageSquareReply className="size-4.5" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-amber-200">
+          <div className="text-base font-semibold text-amber-50">
             {isMidPhase ? 'Agent paused for your input' : 'Approval needed to continue'}
           </div>
-          <div className="text-xs text-amber-300/80 mt-0.5">
+          <div className="text-sm text-amber-100/80 mt-1">
             {isMidPhase ? (
               <>
                 Mid-phase in <span className="font-mono">{job.phase}</span>
@@ -72,16 +73,17 @@ export default function ApprovalBox({ job, onSend }: ApprovalBoxProps) {
       </div>
 
       {!isMidPhase && (
-        <div className="flex items-center gap-2">
-          <button
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
             type="button"
             onClick={() => void handle(APPROVE_MESSAGE)}
             disabled={sending}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            variant="success"
           >
+            <CheckCircle2 />
             {sending ? 'Sending…' : '✓ Approve & continue'}
-          </button>
-          <span className="text-xs text-zinc-500">or ask for changes below</span>
+          </Button>
+          <span className="text-sm text-amber-100/75">or send the agent back with changes below</span>
         </div>
       )}
 
@@ -89,33 +91,34 @@ export default function ApprovalBox({ job, onSend }: ApprovalBoxProps) {
         onSubmit={e => { e.preventDefault(); if (message.trim()) void handle(message.trim()) }}
         className="space-y-2"
       >
-        <textarea
-          rows={3}
+        <Textarea
+          rows={4}
           value={message}
           onChange={e => setMessage(e.target.value)}
           placeholder={
             isMidPhase
-              ? 'Answer the agent\'s question or provide the info it\'s waiting on…'
-              : 'Request changes: "Modify the plan to include rate limiting on /api/users too"…'
+              ? 'Answer the agent or provide the missing detail it asked for…'
+              : 'Request changes, clarify the plan, or send additional guidance…'
           }
           disabled={sending}
-          className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 disabled:opacity-50 transition-colors resize-none"
+          className="border-amber-500/20 bg-slate-950/70 focus-visible:ring-amber-400/70"
         />
         <div className="flex items-center justify-between">
           {error ? (
-            <span className="text-xs text-rose-300">{error}</span>
+            <span className="text-sm text-rose-200">{error}</span>
           ) : (
-            <span className="text-xs text-zinc-500">
+            <span className="text-sm text-amber-100/75">
               The agent will do the work and re-park for approval.
             </span>
           )}
-          <button
+          <Button
             type="submit"
             disabled={sending || !message.trim()}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            variant="outline"
+            className="border-amber-500/30 bg-amber-500/10 text-amber-50 hover:bg-amber-500/15"
           >
             {sending ? 'Sending…' : 'Send message'}
-          </button>
+          </Button>
         </div>
       </form>
     </div>

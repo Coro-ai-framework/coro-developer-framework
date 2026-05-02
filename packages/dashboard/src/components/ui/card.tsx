@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils'
 function Card({ className, ...props }: React.ComponentProps<'section'>) {
   return (
     <section
-      className={cn('rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(14,21,33,0.92),rgba(7,12,20,0.94))] shadow-[0_24px_70px_-48px_rgba(15,23,42,0.95)] backdrop-blur', className)}
+      className={cn('rounded-2xl border border-white/8 bg-slate-950/88 shadow-[0_14px_38px_-34px_rgba(2,6,23,0.9)] backdrop-blur-sm', className)}
       {...props}
     />
   )
@@ -19,7 +19,7 @@ function CardTitle({ className, ...props }: React.ComponentProps<'h2'>) {
 }
 
 function CardDescription({ className, ...props }: React.ComponentProps<'p'>) {
-  return <p className={cn('text-sm text-slate-400', className)} {...props} />
+  return <p className={cn('max-w-2xl text-[13px] leading-5 text-slate-500', className)} {...props} />
 }
 
 function CardContent({ className, ...props }: React.ComponentProps<'div'>) {

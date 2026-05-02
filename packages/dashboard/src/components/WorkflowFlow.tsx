@@ -43,18 +43,18 @@ export function computePhaseState(
 }
 
 function phaseStateClasses(state: PhaseState, selected: boolean): string {
-  const base = 'relative flex-1 min-w-[140px] rounded-lg border px-3 py-2.5 text-left transition-all cursor-pointer'
-  const ring = selected ? 'ring-2 ring-indigo-500 ring-offset-2 ring-offset-zinc-950' : ''
+  const base = 'relative flex-1 min-w-[160px] rounded-2xl border px-4 py-3 text-left transition-all cursor-pointer backdrop-blur'
+  const ring = selected ? 'ring-2 ring-indigo-400/80 ring-offset-2 ring-offset-slate-950' : ''
   switch (state) {
     case 'complete':
-      return `${base} ${ring} bg-emerald-950/30 border-emerald-800/60 hover:border-emerald-700`
+      return `${base} ${ring} border-emerald-500/25 bg-emerald-500/10 hover:border-emerald-400/35`
     case 'in-progress':
-      return `${base} ${ring} bg-indigo-950/30 border-indigo-700 hover:border-indigo-500 shadow-[0_0_0_1px_rgb(99_102_241/0.3)]`
+      return `${base} ${ring} border-indigo-500/30 bg-indigo-500/12 hover:border-indigo-400/40 shadow-[0_12px_36px_-24px_rgba(99,102,241,0.95)]`
     case 'awaiting-input':
-      return `${base} ${ring} bg-amber-950/30 border-amber-700 hover:border-amber-500 animate-pulse-slow`
+      return `${base} ${ring} border-amber-500/30 bg-amber-500/12 hover:border-amber-400/40 animate-pulse-slow`
     case 'pending':
     default:
-      return `${base} ${ring} bg-zinc-900/40 border-zinc-800 hover:border-zinc-700`
+      return `${base} ${ring} border-white/8 bg-white/[0.03] hover:border-white/14`
   }
 }
 
@@ -95,7 +95,7 @@ function stateLabel(state: PhaseState): string {
 export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase }: WorkflowFlowProps) {
   if (phases.length === 0) {
     return (
-      <div className="text-xs text-zinc-500 italic px-2 py-3">No workflow phases defined for this job.</div>
+      <div className="px-2 py-3 text-sm italic text-slate-500">No workflow phases defined for this job.</div>
     )
   }
 
@@ -108,7 +108,7 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
 
   return (
     <div className="w-full overflow-x-auto">
-      <div className="flex items-stretch gap-2 min-w-max pb-1">
+      <div className="flex min-w-max items-stretch gap-3 pb-1">
         {phases.map((phase, i) => {
           const state = computePhaseState(phase.name, phases, job)
           const selected = selectedPhase === phase.name
@@ -123,28 +123,28 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
               >
                 <div className="flex items-center gap-2">
                   {stateIcon(state)}
-                  <span className="text-sm font-medium text-zinc-100 truncate">{phase.name}</span>
+                  <span className="truncate text-sm font-medium text-white">{phase.name}</span>
                   {phase.interactiveCheckpoint && job.interactive && (
                     <span
                       title="Interactive checkpoint — the job will park here for developer approval"
-                      className="text-[10px] px-1 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800"
+                      className="rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-100"
                     >
                       ✋
                     </span>
                   )}
                 </div>
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider">{stateLabel(state)}</span>
+                  <span className="text-[10px] uppercase tracking-[0.16em] text-slate-500">{stateLabel(state)}</span>
                   {artifacts.length > 0 && (
-                    <span className="text-[10px] text-indigo-300 bg-indigo-950/50 border border-indigo-800/60 px-1.5 py-0.5 rounded-full">
-                      {artifacts.length} artefact{artifacts.length === 1 ? '' : 's'}
+                    <span className="rounded-full border border-indigo-500/20 bg-indigo-500/10 px-1.5 py-0.5 text-[10px] text-indigo-100">
+                      {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
                     </span>
                   )}
                 </div>
               </button>
 
               {i < phases.length - 1 && (
-                <div className="flex items-center px-1 text-zinc-700 shrink-0" aria-hidden>
+                <div className="flex items-center px-1 text-slate-600 shrink-0" aria-hidden>
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
