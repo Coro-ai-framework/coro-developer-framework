@@ -11,7 +11,10 @@ const DialogClose = DialogPrimitive.Close
 function DialogOverlay({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
     <DialogPrimitive.Overlay
-      className={cn('fixed inset-0 z-50 bg-slate-950/78 backdrop-blur-sm data-[state=open]:animate-[fade-in_180ms_ease-out] data-[state=closed]:animate-[fade-out_120ms_ease-in]', className)}
+      className={cn(
+        'fixed inset-0 z-50 bg-canvas/80 backdrop-blur-sm data-[state=open]:animate-[fade-in_180ms_ease-out] data-[state=closed]:animate-[fade-out_120ms_ease-in]',
+        className,
+      )}
       {...props}
     />
   )
@@ -22,11 +25,14 @@ function DialogContent({ className, children, ...props }: React.ComponentProps<t
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
-        className={cn('fixed left-1/2 top-1/2 z-50 grid w-[min(920px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-3xl border border-white/8 bg-slate-950 p-0 shadow-[0_28px_90px_-42px_rgba(2,6,23,0.92)]', className)}
+        className={cn(
+          'fixed left-1/2 top-1/2 z-50 grid w-[min(920px,calc(100vw-2rem))] max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-3xl border border-line-strong bg-panel p-0 shadow-[var(--shadow-elevated)]',
+          className,
+        )}
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-full p-2 text-slate-500 transition-colors hover:bg-white/6 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/70">
+        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-full p-2 text-fg-subtle transition-colors hover:bg-overlay hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60">
           <X className="size-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
@@ -36,15 +42,15 @@ function DialogContent({ className, children, ...props }: React.ComponentProps<t
 }
 
 function DialogHeader({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div className={cn('flex flex-col gap-1.5 border-b border-white/8 px-6 py-5', className)} {...props} />
+  return <div className={cn('flex flex-col gap-1.5 border-b border-line px-6 py-5', className)} {...props} />
 }
 
 function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
-  return <DialogPrimitive.Title className={cn('text-lg font-semibold text-white', className)} {...props} />
+  return <DialogPrimitive.Title className={cn('text-lg font-semibold text-fg', className)} {...props} />
 }
 
 function DialogDescription({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Description>) {
-  return <DialogPrimitive.Description className={cn('text-sm text-slate-400', className)} {...props} />
+  return <DialogPrimitive.Description className={cn('text-sm text-fg-muted', className)} {...props} />
 }
 
 function DialogBody({ className, ...props }: React.ComponentProps<'div'>) {

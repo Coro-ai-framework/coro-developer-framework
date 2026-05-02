@@ -25,10 +25,10 @@ export default function WorkspaceTabsBar() {
   }
 
   return (
-    <div className="border-b border-white/8 bg-slate-950/72 backdrop-blur-xl">
-      <div className="flex items-end gap-2 px-3 pt-2 lg:px-5">
+    <div className="border-b border-line bg-panel/55 backdrop-blur-xl">
+      <div className="flex items-end gap-1.5 px-3 pt-2 lg:px-6">
         <ScrollArea className="min-w-0 flex-1 whitespace-nowrap">
-          <div className="flex items-end gap-1 pr-3">
+          <div className="flex items-end gap-0.5 pr-3">
             {tabs.map(tab => {
               const active = activePath === tab.path
 
@@ -36,15 +36,20 @@ export default function WorkspaceTabsBar() {
                 <div
                   key={tab.path}
                   className={cn(
-                    'group -mb-px flex min-w-[220px] max-w-[320px] items-center gap-2 rounded-t-xl border border-b-0 px-3 py-2.5 transition-colors',
+                    'group -mb-px flex min-w-[180px] max-w-[260px] items-center gap-2 rounded-t-lg border border-b-0 px-3 py-2 transition-colors',
                     active
-                      ? 'border-white/12 bg-slate-950 text-white shadow-[0_-1px_0_rgba(255,255,255,0.04)]'
-                      : 'border-transparent bg-white/[0.02] text-slate-400 hover:bg-white/[0.04] hover:text-white',
+                      ? 'border-line-strong bg-canvas text-fg'
+                      : 'border-transparent text-fg-muted hover:bg-overlay/50 hover:text-fg',
                   )}
                 >
                   <Link to={tab.path} className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{tab.title}</div>
-                    <div className={cn('truncate text-[11px] uppercase tracking-[0.16em]', active ? 'text-slate-500' : 'text-slate-600 group-hover:text-slate-500')}>
+                    <div className="truncate text-[13px] font-medium">{tab.title}</div>
+                    <div
+                      className={cn(
+                        'truncate text-[10px] uppercase tracking-[0.16em]',
+                        active ? 'text-fg-subtle' : 'text-fg-subtle/80',
+                      )}
+                    >
                       {tab.kind}
                     </div>
                   </Link>
@@ -56,10 +61,10 @@ export default function WorkspaceTabsBar() {
                       closeTab(tab.path)
                       if (wasActive) navigate(fallbackRoute())
                     }}
-                    className="rounded-full p-1 text-slate-600 transition-colors hover:bg-white/8 hover:text-white"
+                    className="rounded-full p-0.5 text-fg-subtle transition-colors hover:bg-overlay hover:text-fg"
                     aria-label={`Close ${tab.title}`}
                   >
-                    <X className="size-3.5" />
+                    <X className="size-3" />
                   </button>
                 </div>
               )
@@ -69,7 +74,7 @@ export default function WorkspaceTabsBar() {
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="mb-1 text-slate-400">
+            <Button variant="ghost" size="icon" className="mb-1 h-7 w-7 text-fg-subtle">
               <MoreHorizontal />
             </Button>
           </DropdownMenuTrigger>

@@ -2,29 +2,72 @@
 @import "@fontsource/jetbrains-mono";
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Coro Dashboard design tokens
+
+   The design system uses a tight, semantic palette declared inside `@theme`
+   so Tailwind 4 generates utilities for it natively (e.g. `bg-canvas`,
+   `text-fg-muted`, `border-line`, `bg-accent-500/10`).
+
+     surfaces
+       canvas         page background
+       panel          cards, sidebars, sticky chrome
+       overlay        hover state, inputs, secondary buttons
+
+     lines
+       line           hairlines between sibling blocks
+       line-strong    edges that need to read as a real boundary
+
+     foreground
+       fg             primary text, headings
+       fg-muted       body copy, descriptions
+       fg-subtle      eyebrows, metadata, placeholders
+
+     signal palette
+       accent         primary brand action / "live" running state
+       success        completed, healthy
+       warning        needs attention, awaiting input
+       danger         failed, escalated, destructive
+
+   Phase identity (planning, coding, testing, …) is communicated by the
+   label, not by a unique color per phase. This is intentional — the old
+   per-phase color soup made every list read as a candy box and diluted
+   the meaning of the real signal colors.
+   ───────────────────────────────────────────────────────────────────────────── */
+
 @theme {
-  --font-sans: "Space Grotesk Variable", "Avenir Next", sans-serif;
+  --font-sans: "Space Grotesk Variable", "Inter", "Avenir Next", sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", monospace;
 
-  --color-canvas-950: #050b14;
-  --color-canvas-900: #09111d;
-  --color-panel-900: #101a29;
-  --color-panel-850: #132033;
-  --color-panel-800: #18263a;
-  --color-line-700: #22324c;
-  --color-line-600: #31415d;
-  --color-indigo-500: #6172ff;
-  --color-indigo-400: #8791ff;
-  --color-cyan-500: #22d3ee;
-  --color-cyan-400: #67e8f9;
-  --color-violet-500: #8b5cf6;
-  --color-violet-400: #a78bfa;
-  --color-emerald-500: #10b981;
-  --color-emerald-400: #34d399;
-  --color-amber-500: #f59e0b;
-  --color-amber-400: #fbbf24;
-  --color-rose-500: #f43f5e;
-  --color-rose-400: #fb7185;
+  /* Surfaces */
+  --color-canvas: #07101a;
+  --color-panel: #0f1c2c;
+  --color-panel-raised: #142537;
+  --color-overlay: #1a2e44;
+
+  /* Lines */
+  --color-line: rgba(255, 255, 255, 0.06);
+  --color-line-strong: rgba(255, 255, 255, 0.10);
+
+  /* Foreground */
+  --color-fg: #f1f5fb;
+  --color-fg-muted: #a5b3c7;
+  --color-fg-subtle: #6b7a93;
+
+  /* Signal palette */
+  --color-accent-500: #6172ff;
+  --color-accent-400: #8791ff;
+  --color-accent-300: #a8b0ff;
+  --color-success-500: #10b981;
+  --color-success-400: #34d399;
+  --color-warning-500: #f59e0b;
+  --color-warning-400: #fbbf24;
+  --color-danger-500: #f43f5e;
+  --color-danger-400: #fb7185;
+
+  /* Effects */
+  --shadow-card: 0 24px 48px -32px rgba(2, 6, 23, 0.85);
+  --shadow-elevated: 0 32px 64px -32px rgba(2, 6, 23, 0.95);
 }
 
 :root {
@@ -35,16 +78,17 @@
   box-sizing: border-box;
 }
 
-html {
-  background: var(--color-canvas-950);
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-fg);
 }
 
 body {
   min-height: 100vh;
   margin: 0;
-  background: #08111c;
-  color: #f8fafc;
   font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -59,6 +103,7 @@ input,
 textarea,
 select {
   font: inherit;
+  color: inherit;
 }
 
 #root {
@@ -66,8 +111,8 @@ select {
 }
 
 ::selection {
-  background: rgba(97, 114, 255, 0.35);
-  color: #f8fafc;
+  background: rgba(97, 114, 255, 0.32);
+  color: var(--color-fg);
 }
 
 ::-webkit-scrollbar {
@@ -87,7 +132,7 @@ select {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.28);
+  background: rgba(148, 163, 184, 0.30);
   background-clip: padding-box;
 }
 
@@ -110,7 +155,7 @@ select {
 @keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
 
   to {
@@ -136,4 +181,3 @@ select {
 .animate-pulse-slow {
   animation: pulse-slow 2.7s ease-in-out infinite;
 }
-

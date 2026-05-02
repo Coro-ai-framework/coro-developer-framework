@@ -21,11 +21,13 @@ export default function ConnectionIndicator({ status, lastHeartbeat }: Connectio
   const meta = getConnectionMeta(status)
 
   return (
-    <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${toneClasses(meta.tone)}`}>
-      <span className={`size-2 rounded-full ${toneDotClasses(meta.tone)} ${meta.pulse ? 'animate-pulse-dot' : ''}`} />
+    <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] ${toneClasses(meta.tone)}`}>
+      <span className={`size-1.5 rounded-full ${toneDotClasses(meta.tone)} ${meta.pulse ? 'animate-pulse-dot' : ''}`} />
       <span className="font-medium uppercase tracking-[0.16em]">{meta.label}</span>
       {status === 'connected' && elapsed > 0 ? (
-        <span className="text-slate-400">last activity {formatRelativeTime(new Date(Date.now() - elapsed * 1000))}</span>
+        <span className="text-fg-muted normal-case tracking-normal">
+          · {formatRelativeTime(new Date(Date.now() - elapsed * 1000))}
+        </span>
       ) : null}
     </div>
   )

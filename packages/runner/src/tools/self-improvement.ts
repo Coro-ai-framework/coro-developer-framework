@@ -300,8 +300,9 @@ export async function proposeChange(
     const overlay = ctx.tenantContext.overlay
     if (overlay.kind !== 'gitRemote' || !overlay.url) {
       throw new Error(
-        `Cannot ship a tenant-layer proposal: tenant.overlay must be configured with kind="gitRemote" and a url ` +
-          `(currently: ${overlay.kind}). Configure tenant.overlay.gitRemote in ~/.coro/config.json.`,
+        `Cannot ship a tenant-layer proposal: the tenant overlay must be a git remote (currently: ${overlay.kind}). ` +
+          `Set intelligence.gitRemote in ~/.coro/config.json (dashboard: Settings → Paths → Intelligence Git Remote), ` +
+          `or set tenant.overlay to { kind: "gitRemote", url: "<repo>" }. Local-dir overlays cannot open PRs.`,
       )
     }
     const writer = await prepareTenantWriter({

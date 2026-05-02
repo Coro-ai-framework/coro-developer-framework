@@ -45,51 +45,52 @@ export default function ApprovalBox({ job, onSend }: ApprovalBoxProps) {
   }
 
   return (
-    <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 p-5 space-y-4">
+    <div className="space-y-4 rounded-2xl border border-warning-500/25 bg-warning-500/8 p-5">
       <div className="flex items-start gap-3">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl border border-amber-500/25 bg-amber-500/12 text-amber-100">
-          <MessageSquareReply className="size-4.5" />
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-warning-500/25 bg-warning-500/10 text-warning-400">
+          <MessageSquareReply className="size-4" />
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-base font-semibold text-amber-50">
+        <div className="min-w-0 flex-1">
+          <div className="text-[15px] font-semibold text-fg">
             {isMidPhase ? 'Agent paused for your input' : 'Approval needed to continue'}
           </div>
-          <div className="text-sm text-amber-100/80 mt-1">
+          <div className="mt-0.5 text-sm text-fg-muted">
             {isMidPhase ? (
               <>
-                Mid-phase in <span className="font-mono">{job.phase}</span>
+                Mid-phase in <span className="font-mono text-fg">{job.phase}</span>
                 {reason ? <> — <span className="italic">{reason}</span></> : null}
               </>
             ) : (
               <>
-                After phase <span className="font-mono">{job.phase}</span>
-                {job.awaitingNextPhase && (
-                  <> → next: <span className="font-mono">{job.awaitingNextPhase}</span></>
-                )}
+                After phase <span className="font-mono text-fg">{job.phase}</span>
+                {job.awaitingNextPhase ? (
+                  <> → next: <span className="font-mono text-fg">{job.awaitingNextPhase}</span></>
+                ) : null}
               </>
             )}
           </div>
         </div>
       </div>
 
-      {!isMidPhase && (
+      {!isMidPhase ? (
         <div className="flex flex-wrap items-center gap-3">
           <Button
             type="button"
             onClick={() => void handle(APPROVE_MESSAGE)}
             disabled={sending}
             variant="success"
+            size="sm"
           >
             <CheckCircle2 />
-            {sending ? 'Sending…' : '✓ Approve & continue'}
+            {sending ? 'Sending…' : 'Approve & continue'}
           </Button>
-          <span className="text-sm text-amber-100/75">or send the agent back with changes below</span>
+          <span className="text-sm text-fg-muted">or send the agent back with changes below</span>
         </div>
-      )}
+      ) : null}
 
       <form
         onSubmit={e => { e.preventDefault(); if (message.trim()) void handle(message.trim()) }}
-        className="space-y-2"
+        className="space-y-3"
       >
         <Textarea
           rows={4}
@@ -101,21 +102,21 @@ export default function ApprovalBox({ job, onSend }: ApprovalBoxProps) {
               : 'Request changes, clarify the plan, or send additional guidance…'
           }
           disabled={sending}
-          className="border-amber-500/20 bg-slate-950/70 focus-visible:ring-amber-400/70"
+          className="border-warning-500/20 focus-visible:ring-warning-500/40"
         />
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           {error ? (
-            <span className="text-sm text-rose-200">{error}</span>
+            <span className="text-sm text-danger-400">{error}</span>
           ) : (
-            <span className="text-sm text-amber-100/75">
+            <span className="text-xs text-fg-muted">
               The agent will do the work and re-park for approval.
             </span>
           )}
           <Button
             type="submit"
             disabled={sending || !message.trim()}
-            variant="outline"
-            className="border-amber-500/30 bg-amber-500/10 text-amber-50 hover:bg-amber-500/15"
+            variant="secondary"
+            size="sm"
           >
             {sending ? 'Sending…' : 'Send message'}
           </Button>

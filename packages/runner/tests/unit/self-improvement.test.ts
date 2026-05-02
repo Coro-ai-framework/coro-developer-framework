@@ -345,7 +345,7 @@ describe('proposeChange', () => {
         },
         ctx,
       ),
-    ).rejects.toThrow('tenant.overlay must be configured')
+    ).rejects.toThrow(/tenant overlay must be a git remote/)
   })
 
   it('throws when the job has no repoSlug but a repo proposal is filed', async () => {

@@ -6,7 +6,7 @@ function Separator({ className, orientation = 'horizontal', decorative = true, .
     <SeparatorPrimitive.Root
       decorative={decorative}
       orientation={orientation}
-      className={cn('shrink-0 bg-white/8', orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px', className)}
+      className={cn('shrink-0 bg-line', orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px', className)}
       {...props}
     />
   )

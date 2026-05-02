@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowRight, Bot, FolderKanban, PlayCircle, Settings2 } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowRight,
+  Bot,
+  FolderKanban,
+  Inbox,
+  PlayCircle,
+  Settings2,
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/common/page-header'
 import StatCard from '../components/common/stat-card'
+import ErrorState from '../components/common/error-state'
 import StatusBadge from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -43,31 +53,52 @@ function summariseConfig(snapshot: ConfigSnapshot | null): SetupSummary {
   return missing.length === 0 ? { state: 'configured', missing } : { state: 'partial', missing }
 }
 
-function OverviewList({ title, jobs, emptyLabel }: { title: string; jobs: Job[]; emptyLabel: string }) {
+interface OverviewListProps {
+  title: string
+  jobs: Job[]
+  emptyLabel: string
+  icon: LucideIcon
+}
+
+function OverviewList({ title, jobs, emptyLabel, icon: Icon }: OverviewListProps) {
   return (
     <Card>
-      <CardHeader className="border-b border-white/8 pb-4">
+      <CardHeader className="flex-row items-center justify-between gap-3 border-b border-line pb-4">
         <CardTitle>{title}</CardTitle>
+        <span className="rounded-md border border-line bg-overlay px-2 py-0.5 text-[11px] tabular-nums text-fg-muted">
+          {jobs.length}
+        </span>
       </CardHeader>
-      <CardContent className="pt-5">
+      <CardContent className="pt-3">
         {jobs.length === 0 ? (
-          <p className="text-sm text-slate-500">{emptyLabel}</p>
+          <div className="flex items-center gap-3 px-1 py-6 text-sm text-fg-subtle">
+            <Icon className="size-4 shrink-0" />
+            <span>{emptyLabel}</span>
+          </div>
         ) : (
-          <div className="space-y-3">
+          <div className="-mx-1">
             {jobs.map(job => {
               const detailPath = getRunDetailPath(job)
-
               return (
-                <Link key={job.id} to={detailPath} className="flex items-start justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 transition-colors hover:border-white/14 hover:bg-white/[0.05]">
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="truncate text-sm font-medium text-white">{deriveJobTitle(job)}</div>
+                <Link
+                  key={job.id}
+                  to={detailPath}
+                  className="group flex items-start gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-overlay/60"
+                >
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-fg">{deriveJobTitle(job)}</span>
                       <StatusBadge status={job.status} />
                     </div>
-                    <div className="truncate text-xs uppercase tracking-[0.16em] text-slate-500">{job.id}</div>
-                    {deriveJobDescription(job) ? <div className="line-clamp-1 text-sm text-slate-400">{deriveJobDescription(job)}</div> : null}
+                    {deriveJobDescription(job) ? (
+                      <div className="line-clamp-1 text-[13px] text-fg-muted">
+                        {deriveJobDescription(job)}
+                      </div>
+                    ) : null}
                   </div>
-                  <div className="shrink-0 text-right text-xs text-slate-500">{formatRelativeTime(job.updatedAt)}</div>
+                  <div className="shrink-0 pt-1 text-[11px] text-fg-subtle">
+                    {formatRelativeTime(job.updatedAt)}
+                  </div>
                 </Link>
               )
             })}
@@ -86,25 +117,28 @@ function SetupBanner({ setup }: { setup: SetupSummary }) {
     : 'One or more essentials are missing. Finish configuration so jobs and campaigns can run cleanly.'
 
   return (
-    <Card className="border-amber-500/25 bg-amber-500/10">
-      <CardContent className="flex flex-col gap-4 pt-5 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="rounded-2xl border border-amber-500/25 bg-amber-500/12 p-3 text-amber-100">
-            <AlertTriangle className="size-5" />
-          </div>
-          <div className="space-y-1.5">
-            <div className="text-base font-semibold text-amber-50">{title}</div>
-            <p className="max-w-2xl text-sm text-amber-100/80">{description}</p>
-            {setup.missing.length > 0 ? (
-              <div className="text-sm text-amber-100/80">Missing: {setup.missing.join(', ')}</div>
-            ) : null}
-          </div>
+    <div className="flex flex-col gap-4 rounded-2xl border border-warning-500/25 bg-warning-500/8 p-5 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex items-start gap-3">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-warning-500/25 bg-warning-500/10 text-warning-400">
+          <AlertTriangle className="size-4" />
         </div>
-        <Button asChild variant="outline" className="border-amber-400/30 bg-amber-400/10 text-amber-50 hover:bg-amber-400/15">
-          <Link to="/settings">Open Settings</Link>
-        </Button>
-      </CardContent>
-    </Card>
+        <div className="space-y-1">
+          <div className="text-[15px] font-semibold text-fg">{title}</div>
+          <p className="max-w-2xl text-sm text-fg-muted">{description}</p>
+          {setup.missing.length > 0 ? (
+            <div className="text-sm text-fg-muted">
+              Missing: <span className="text-fg">{setup.missing.join(', ')}</span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <Button asChild variant="secondary">
+        <Link to="/settings">
+          <Settings2 />
+          Open settings
+        </Link>
+      </Button>
+    </div>
   )
 }
 
@@ -133,57 +167,96 @@ export default function Home() {
   const activeCampaigns = sortedJobs.filter(job => isCampaignJob(job) && !isTerminalStatus(job.status))
   const awaitingInput = sortedJobs.filter(job => job.status === 'awaiting-developer-input')
   const recentHistory = sortedJobs.filter(job => isTerminalStatus(job.status)).slice(0, 5)
-  const liveSpend = sortedJobs.filter(job => !isTerminalStatus(job.status)).reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
+  const liveSpend = sortedJobs
+    .filter(job => !isTerminalStatus(job.status))
+    .reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
 
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Operator Overview"
-        title="Live workbench"
-        description="What is live, what needs input, and what just finished."
+        title="Overview"
+        description="What's live, what needs you, and what just finished."
         actions={
-          <>
-            <Button asChild variant="outline">
-              <Link to="/settings">
-                <Settings2 />
-                Settings
-              </Link>
-            </Button>
-            <Button asChild>
-              <Link to="/jobs/new">
-                Dispatch run
-                <ArrowRight />
-              </Link>
-            </Button>
-          </>
+          <Button asChild>
+            <Link to="/jobs/new">
+              New run
+              <ArrowRight />
+            </Link>
+          </Button>
         }
       />
 
-      {setup.state !== 'configured' ? <SetupBanner setup={setup} /> : null}
+      {setup.state !== 'configured' && setup.state !== 'loading' ? (
+        <SetupBanner setup={setup} />
+      ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Active Jobs" value={activeJobs.length.toString()} description="Non-campaign work items currently running or parked." icon={PlayCircle} tone="indigo" />
-        <StatCard label="Active Campaigns" value={activeCampaigns.length.toString()} description="Campaigns coordinating child jobs right now." icon={FolderKanban} tone="violet" />
-        <StatCard label="Needs Input" value={awaitingInput.length.toString()} description="Jobs currently waiting for developer approval or answers." icon={AlertTriangle} tone="amber" />
-        <StatCard label="Live Spend" value={formatPreciseCurrency(liveSpend)} description="Accumulated spend across non-terminal runs." icon={Bot} tone="cyan" />
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Active jobs"
+          value={activeJobs.length.toString()}
+          description="Non-campaign work running or parked"
+          icon={PlayCircle}
+          tone="accent"
+        />
+        <StatCard
+          label="Active campaigns"
+          value={activeCampaigns.length.toString()}
+          description="Campaigns coordinating child jobs"
+          icon={FolderKanban}
+          tone="accent"
+        />
+        <StatCard
+          label="Needs input"
+          value={awaitingInput.length.toString()}
+          description="Waiting on developer approval"
+          icon={AlertTriangle}
+          tone={awaitingInput.length > 0 ? 'warning' : 'neutral'}
+        />
+        <StatCard
+          label="Live spend"
+          value={formatPreciseCurrency(liveSpend)}
+          description="Across non-terminal runs"
+          icon={Bot}
+          tone="neutral"
+        />
       </div>
 
       {error ? (
-        <div className="rounded-2xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-          Failed to load jobs: {error}
-        </div>
+        <ErrorState title="Could not load jobs" message={error} />
       ) : null}
 
       {loading ? (
         <div className="grid gap-4 xl:grid-cols-2">
-          {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-72 w-full" />)}
+          {Array.from({ length: 4 }).map((_, index) => (
+            <Skeleton key={index} className="h-72 w-full" />
+          ))}
         </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
-          <OverviewList title="Active jobs" jobs={activeJobs.slice(0, 5)} emptyLabel="No active jobs. Dispatch work from the Jobs page or the quick action above." />
-          <OverviewList title="Campaigns in motion" jobs={activeCampaigns.slice(0, 5)} emptyLabel="No campaigns are active right now." />
-          <OverviewList title="Awaiting your input" jobs={awaitingInput.slice(0, 5)} emptyLabel="Nothing is parked for approval or a response." />
-          <OverviewList title="Recent history" jobs={recentHistory} emptyLabel="Completed and failed runs will appear here once work starts flowing." />
+          <OverviewList
+            title="Active jobs"
+            jobs={activeJobs.slice(0, 5)}
+            emptyLabel="No active jobs. Dispatch one from the New run button."
+            icon={PlayCircle}
+          />
+          <OverviewList
+            title="Campaigns in motion"
+            jobs={activeCampaigns.slice(0, 5)}
+            emptyLabel="No campaigns are active right now."
+            icon={FolderKanban}
+          />
+          <OverviewList
+            title="Awaiting your input"
+            jobs={awaitingInput.slice(0, 5)}
+            emptyLabel="Nothing parked for approval or a response."
+            icon={Inbox}
+          />
+          <OverviewList
+            title="Recently finished"
+            jobs={recentHistory}
+            emptyLabel="Completed and failed runs will appear here."
+            icon={Bot}
+          />
         </div>
       )}
     </div>

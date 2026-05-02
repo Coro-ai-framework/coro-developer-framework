@@ -13,8 +13,8 @@ interface SectionCardProps {
 export default function SectionCard({ title, description, action, className, children }: SectionCardProps) {
   return (
     <Card className={className}>
-      <CardHeader className={cn('gap-4 border-b border-white/8 pb-4', action ? 'sm:flex-row sm:items-start sm:justify-between' : '')}>
-        <div className="space-y-1.5">
+      <CardHeader className={cn('gap-3 border-b border-line pb-4', action ? 'sm:flex-row sm:items-start sm:justify-between' : '')}>
+        <div className="space-y-1">
           <CardTitle>{title}</CardTitle>
           {description ? <CardDescription>{description}</CardDescription> : null}
         </div>

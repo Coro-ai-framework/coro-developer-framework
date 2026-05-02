@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowRight, CirclePause, Layers3, ListFilter, PlayCircle } from 'lucide-react'
+import { ArrowRight, Layers3, PlayCircle, Search } from 'lucide-react'
 import { Link, useLocation } from 'react-router-dom'
 import PageHeader from '../components/common/page-header'
-import StatCard from '../components/common/stat-card'
 import EmptyState from '../components/common/empty-state'
+import ErrorState from '../components/common/error-state'
 import StatusBadge from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Card, CardContent } from '../components/ui/card'
 import { Input } from '../components/ui/input'
+import SegmentedControl from '../components/ui/segmented-control'
 import { Skeleton } from '../components/ui/skeleton'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import {
@@ -17,7 +18,6 @@ import {
   getCurrentWorkItem,
   getRepoSlug,
   getRunDetailPath,
-  getRunKindLabel,
   isCampaignJob,
   sortJobsByUpdatedAt,
 } from '../lib/jobs'
@@ -28,8 +28,18 @@ import type { Job } from '../types'
 type StatusFilter = 'active' | 'waiting' | 'all' | 'terminal'
 type KindFilter = 'all' | 'job' | 'campaign'
 
-const STATUS_FILTERS: StatusFilter[] = ['active', 'waiting', 'all', 'terminal']
-const KIND_FILTERS: KindFilter[] = ['all', 'job', 'campaign']
+const STATUS_FILTERS = [
+  { value: 'active' as const, label: 'Active' },
+  { value: 'waiting' as const, label: 'Awaiting' },
+  { value: 'terminal' as const, label: 'Finished' },
+  { value: 'all' as const, label: 'All' },
+]
+
+const KIND_FILTERS = [
+  { value: 'all' as const, label: 'All' },
+  { value: 'job' as const, label: 'Jobs' },
+  { value: 'campaign' as const, label: 'Campaigns' },
+]
 
 interface CampaignProgress {
   total: number
@@ -40,25 +50,25 @@ interface CampaignProgress {
 
 function getCampaignProgress(job: Job): CampaignProgress {
   const children = job.campaignChildren ?? []
-
-  return children.reduce<CampaignProgress>((acc, child) => {
-    acc.total += 1
-    if (child.status === 'complete' || child.status === 'skipped') acc.done += 1
-    if (child.status === 'ready' || child.status === 'dispatched') acc.active += 1
-    if (child.status === 'failed' || child.status === 'escalated') acc.blocked += 1
-    return acc
-  }, { total: 0, done: 0, active: 0, blocked: 0 })
+  return children.reduce<CampaignProgress>(
+    (acc, child) => {
+      acc.total += 1
+      if (child.status === 'complete' || child.status === 'skipped') acc.done += 1
+      if (child.status === 'ready' || child.status === 'dispatched') acc.active += 1
+      if (child.status === 'failed' || child.status === 'escalated') acc.blocked += 1
+      return acc
+    },
+    { total: 0, done: 0, active: 0, blocked: 0 },
+  )
 }
 
 function getRunFocus(job: Job): string {
-  if (!isCampaignJob(job)) {
-    return getCurrentWorkItem(job)
-  }
+  if (!isCampaignJob(job)) return getCurrentWorkItem(job)
 
   const progress = getCampaignProgress(job)
   if (progress.total === 0) return 'Planning child graph'
 
-  const segments = [`${progress.done}/${progress.total} complete`]
+  const segments = [`${progress.done}/${progress.total} done`]
   if (progress.active > 0) segments.push(`${progress.active} active`)
   if (progress.blocked > 0) segments.push(`${progress.blocked} blocked`)
   return segments.join(' · ')
@@ -110,140 +120,153 @@ export default function JobList() {
 
   const activeCount = runs.filter(job => !isTerminalStatus(job.status)).length
   const waitingCount = runs.filter(job => isWaitingStatus(job.status)).length
-  const campaignCount = runs.filter(isCampaignJob).length
-  const totalSpend = runs.reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
+
+  const isCampaignsRoute = location.pathname.startsWith('/campaigns')
+  const pageTitle = isCampaignsRoute ? 'Campaigns' : 'Runs'
+  const pageDescription = isCampaignsRoute
+    ? 'Campaigns currently scheduled, in motion, or finished.'
+    : 'All jobs and campaigns in one place. Filter to change the lens.'
 
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Run Inventory"
-        title="Runs"
-        description="One registry for jobs and campaigns, with filters to change the lens instead of the entity."
+        title={pageTitle}
+        description={pageDescription}
         actions={
           <Button asChild>
             <Link to="/jobs/new">
-              New Run
+              New run
               <ArrowRight />
             </Link>
           </Button>
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <StatCard label="Active Runs" value={activeCount.toString()} description="All non-terminal runs across jobs and campaigns." icon={PlayCircle} tone="indigo" />
-        <StatCard label="Awaiting" value={waitingCount.toString()} description="Runs waiting for people, plans, merges, or external events." icon={CirclePause} tone="amber" />
-        <StatCard label="Campaign Runs" value={campaignCount.toString()} description={`${formatPreciseCurrency(totalSpend)} total spend across all runs.`} icon={Layers3} tone="cyan" />
-      </div>
-
       <Card>
-        <CardHeader className="gap-4 border-b border-white/8 pb-4">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-3">
-              <CardTitle>Run Registry</CardTitle>
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/4 p-1">
-                  {KIND_FILTERS.map(item => (
-                    <button
-                      key={item}
-                      type="button"
-                      onClick={() => setKindFilter(item)}
-                      className={`rounded-full px-3 py-1.5 text-sm capitalize transition-colors ${kindFilter === item ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-white'}`}
-                    >
-                      {item === 'campaign' ? 'campaigns' : item}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/4 p-1">
-                  {STATUS_FILTERS.map(item => (
-                    <button
-                      key={item}
-                      type="button"
-                      onClick={() => setStatusFilter(item)}
-                      className={`rounded-full px-3 py-1.5 text-sm capitalize transition-colors ${statusFilter === item ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-white'}`}
-                    >
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex w-full flex-col gap-3 xl:w-[360px] xl:items-end">
-              <Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search by run, repo, workflow, or work item" />
-              <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-slate-500">
-                <ListFilter className="size-3.5" />
-                {visibleRuns.length} visible
-              </div>
-            </div>
+        <div className="flex flex-col gap-4 border-b border-line p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              options={KIND_FILTERS}
+              value={kindFilter}
+              onChange={setKindFilter}
+              size="sm"
+              ariaLabel="Filter by kind"
+            />
+            <SegmentedControl
+              options={STATUS_FILTERS}
+              value={statusFilter}
+              onChange={setStatusFilter}
+              size="sm"
+              ariaLabel="Filter by status"
+            />
           </div>
-        </CardHeader>
 
-        <CardContent className="pt-5">
+          <div className="flex items-center gap-3">
+            <div className="relative w-full lg:w-72">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-fg-subtle" />
+              <Input
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="Search runs"
+                className="h-9 pl-9 text-[13px]"
+              />
+            </div>
+            <span className="hidden whitespace-nowrap text-[11px] uppercase tracking-[0.14em] text-fg-subtle sm:inline">
+              {visibleRuns.length} / {runs.length}
+              <span className="ml-2 text-fg-subtle/70">
+                · {activeCount} active · {waitingCount} awaiting
+              </span>
+            </span>
+          </div>
+        </div>
+
+        <CardContent className="p-0">
           {error ? (
-            <div className="rounded-2xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-              Failed to load runs: {error}
+            <div className="p-4">
+              <ErrorState title="Could not load runs" message={error} />
             </div>
           ) : loading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-20 w-full" />)}
+            <div className="space-y-2 p-4">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <Skeleton key={index} className="h-14 w-full" />
+              ))}
             </div>
           ) : visibleRuns.length === 0 ? (
-            <EmptyState
-              icon={PlayCircle}
-              title="No runs match the current view"
-              description="Create a run or widen the filters to bring more work into view."
-              action={<Button asChild><Link to="/jobs/new">Create run</Link></Button>}
-            />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1120px] table-fixed border-separate border-spacing-y-2">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-[0.16em] text-slate-500">
-                    <th className="pb-2 font-medium">Run</th>
-                    <th className="pb-2 font-medium">Type</th>
-                    <th className="pb-2 font-medium">Status</th>
-                    <th className="pb-2 font-medium">Workflow</th>
-                    <th className="pb-2 font-medium">Phase</th>
-                    <th className="pb-2 font-medium">Focus</th>
-                    <th className="pb-2 font-medium">Updated</th>
-                    <th className="pb-2 font-medium">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleRuns.map(job => (
-                    <tr key={job.id} className="rounded-2xl bg-white/[0.03] text-sm text-slate-200">
-                      <td className="rounded-l-2xl border-y border-l border-white/8 px-4 py-3">
-                        <Link to={getRunDetailPath(job)} className="block space-y-1 hover:text-white">
-                          <div className="font-medium text-white">{deriveJobTitle(job)}</div>
-                          <div className="truncate text-xs uppercase tracking-[0.14em] text-slate-500">{job.id}</div>
-                          {deriveJobDescription(job) ? <div className="line-clamp-1 text-sm text-slate-400">{deriveJobDescription(job)}</div> : null}
-                        </Link>
-                      </td>
-                      <td className="border-y border-white/8 px-4 py-3">
-                        <span className="inline-flex rounded-full border border-white/8 bg-white/4 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-slate-300">
-                          {getRunKindLabel(job)}
-                        </span>
-                      </td>
-                      <td className="border-y border-white/8 px-4 py-3"><StatusBadge status={job.status} /></td>
-                      <td className="border-y border-white/8 px-4 py-3">
-                        <div className="space-y-1">
-                          <div className="text-slate-100">{deriveWorkflowLabel(job.workflowPath)}</div>
-                          <div className="truncate text-xs text-slate-500">{getRepoSlug(job) ?? job.workflowPath}</div>
-                        </div>
-                      </td>
-                      <td className="border-y border-white/8 px-4 py-3 text-slate-300">{job.phase}</td>
-                      <td className="border-y border-white/8 px-4 py-3 text-slate-300">{getRunFocus(job)}</td>
-                      <td className="border-y border-white/8 px-4 py-3 text-slate-300">{formatRelativeTime(job.updatedAt)}</td>
-                      <td className="rounded-r-2xl border-y border-r border-white/8 px-4 py-3 text-slate-300">{formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="p-4">
+              <EmptyState
+                icon={PlayCircle}
+                title="No runs match the current view"
+                description="Create a run or widen the filters to bring more work into view."
+                action={
+                  <Button asChild>
+                    <Link to="/jobs/new">Create run</Link>
+                  </Button>
+                }
+              />
             </div>
+          ) : (
+            <RunsTable runs={visibleRuns} />
           )}
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function RunsTable({ runs }: { runs: Job[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[860px] text-sm">
+        <thead>
+          <tr className="border-b border-line text-left text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
+            <th className="px-4 py-3 font-medium">Run</th>
+            <th className="px-4 py-3 font-medium">Status</th>
+            <th className="px-4 py-3 font-medium">Working on</th>
+            <th className="px-4 py-3 font-medium">Updated</th>
+            <th className="px-4 py-3 text-right font-medium">Cost</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {runs.map(job => (
+            <tr key={job.id} className="group transition-colors hover:bg-overlay/40">
+              <td className="px-4 py-3">
+                <Link to={getRunDetailPath(job)} className="block min-w-0 space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium text-fg group-hover:text-accent-300">
+                      {deriveJobTitle(job)}
+                    </span>
+                    {isCampaignJob(job) ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md border border-line bg-overlay px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-fg-muted"
+                        title="Campaign"
+                      >
+                        <Layers3 className="size-2.5" />
+                        Campaign
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="truncate text-[12px] text-fg-subtle">
+                    {[deriveWorkflowLabel(job.workflowPath), getRepoSlug(job)].filter(Boolean).join(' · ')}
+                  </div>
+                </Link>
+              </td>
+              <td className="px-4 py-3 align-top">
+                <StatusBadge status={job.status} />
+              </td>
+              <td className="px-4 py-3 align-top text-fg-muted">
+                <div className="line-clamp-1 text-[13px]">{getRunFocus(job)}</div>
+                <div className="text-[11px] text-fg-subtle">phase: {job.phase}</div>
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 align-top text-[13px] text-fg-muted">
+                {formatRelativeTime(job.updatedAt)}
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 align-top text-right tabular-nums text-fg-muted">
+                {formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

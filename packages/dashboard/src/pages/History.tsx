@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
-import { History as HistoryIcon, ListFilter, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { History as HistoryIcon, Search } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import PageHeader from '../components/common/page-header'
-import StatCard from '../components/common/stat-card'
 import EmptyState from '../components/common/empty-state'
+import ErrorState from '../components/common/error-state'
 import StatusBadge from '../components/StatusBadge'
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Card, CardContent } from '../components/ui/card'
 import { Input } from '../components/ui/input'
+import SegmentedControl from '../components/ui/segmented-control'
 import { Skeleton } from '../components/ui/skeleton'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { deriveJobDescription, deriveJobTitle, isCampaignJob, sortJobsByUpdatedAt } from '../lib/jobs'
@@ -16,8 +17,18 @@ import { useJobs } from '../hooks/useJobs'
 type ScopeFilter = 'all' | 'jobs' | 'campaigns'
 type OutcomeFilter = 'all' | 'complete' | 'failed' | 'escalated'
 
-const SCOPE_FILTERS: ScopeFilter[] = ['all', 'jobs', 'campaigns']
-const OUTCOME_FILTERS: OutcomeFilter[] = ['all', 'complete', 'failed', 'escalated']
+const SCOPE_FILTERS = [
+  { value: 'all' as const, label: 'All' },
+  { value: 'jobs' as const, label: 'Jobs' },
+  { value: 'campaigns' as const, label: 'Campaigns' },
+]
+
+const OUTCOME_FILTERS = [
+  { value: 'all' as const, label: 'All outcomes' },
+  { value: 'complete' as const, label: 'Complete' },
+  { value: 'failed' as const, label: 'Failed' },
+  { value: 'escalated' as const, label: 'Escalated' },
+]
 
 export default function History() {
   const { jobs, loading, error } = useJobs()
@@ -25,7 +36,10 @@ export default function History() {
   const [scope, setScope] = useState<ScopeFilter>('all')
   const [outcome, setOutcome] = useState<OutcomeFilter>('all')
 
-  const terminalJobs = useMemo(() => sortJobsByUpdatedAt(jobs.filter(job => isTerminalStatus(job.status))), [jobs])
+  const terminalJobs = useMemo(
+    () => sortJobsByUpdatedAt(jobs.filter(job => isTerminalStatus(job.status))),
+    [jobs],
+  )
 
   const visibleJobs = useMemo(() => {
     const search = query.trim().toLowerCase()
@@ -53,103 +67,103 @@ export default function History() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Run Archive"
         title="History"
-        description="Review completed, failed, and escalated work across jobs and campaigns."
+        description={`Completed, failed, and escalated work. ${completedCount} done · ${failedCount} failed · ${escalatedCount} escalated.`}
       />
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <StatCard label="Completed" value={completedCount.toString()} description="Successful runs across all workflows." icon={ShieldCheck} tone="emerald" />
-        <StatCard label="Failed" value={failedCount.toString()} description="Runs that stopped on a failure." icon={TriangleAlert} tone="rose" />
-        <StatCard label="Archived" value={terminalJobs.length.toString()} description={`${escalatedCount} ended with escalation.`} icon={HistoryIcon} tone="neutral" />
-      </div>
-
       <Card>
-        <CardHeader className="gap-4 border-b border-white/8 pb-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div className="space-y-1.5">
-              <CardTitle>Terminal Runs</CardTitle>
-              <p className="text-sm text-slate-400">History is filtered entirely client-side from the current jobs API, keeping the view frontend-only.</p>
-            </div>
-            <div className="w-full lg:w-80">
-              <Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search archived work" />
-            </div>
+        <div className="flex flex-col gap-4 border-b border-line p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              options={SCOPE_FILTERS}
+              value={scope}
+              onChange={setScope}
+              size="sm"
+              ariaLabel="Filter by scope"
+            />
+            <SegmentedControl
+              options={OUTCOME_FILTERS}
+              value={outcome}
+              onChange={setOutcome}
+              size="sm"
+              ariaLabel="Filter by outcome"
+            />
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/4 p-1">
-              {SCOPE_FILTERS.map(item => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setScope(item)}
-                  className={`rounded-full px-3 py-1.5 text-sm capitalize transition-colors ${scope === item ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-white'}`}
-                >
-                  {item}
-                </button>
-              ))}
+
+          <div className="flex items-center gap-3">
+            <div className="relative w-full lg:w-72">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-fg-subtle" />
+              <Input
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="Search archived work"
+                className="h-9 pl-9 text-[13px]"
+              />
             </div>
-            <div className="flex items-center gap-2 rounded-full border border-white/8 bg-white/4 p-1">
-              {OUTCOME_FILTERS.map(item => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setOutcome(item)}
-                  className={`rounded-full px-3 py-1.5 text-sm capitalize transition-colors ${outcome === item ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-white'}`}
-                >
-                  {item}
-                </button>
-              ))}
-            </div>
-            <div className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-slate-500">
-              <ListFilter className="size-3.5" />
-              {visibleJobs.length} visible
-            </div>
+            <span className="hidden whitespace-nowrap text-[11px] uppercase tracking-[0.14em] text-fg-subtle sm:inline">
+              {visibleJobs.length} / {terminalJobs.length}
+            </span>
           </div>
-        </CardHeader>
-        <CardContent className="pt-5">
+        </div>
+
+        <CardContent className="p-0">
           {error ? (
-            <div className="rounded-2xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-              Failed to load history: {error}
+            <div className="p-4">
+              <ErrorState title="Could not load history" message={error} />
             </div>
           ) : loading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-20 w-full" />)}
+            <div className="space-y-2 p-4">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <Skeleton key={index} className="h-14 w-full" />
+              ))}
             </div>
           ) : visibleJobs.length === 0 ? (
-            <EmptyState
-              icon={HistoryIcon}
-              title="No archived runs match the current filters"
-              description="Adjust the filters or wait for current work to finish and it will appear here automatically."
-            />
+            <div className="p-4">
+              <EmptyState
+                icon={HistoryIcon}
+                title="No archived runs match the current filters"
+                description="Adjust the filters or wait for current work to finish."
+              />
+            </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[820px] table-fixed border-separate border-spacing-y-2">
+              <table className="w-full min-w-[680px] text-sm">
                 <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-[0.16em] text-slate-500">
-                    <th className="pb-2 font-medium">Run</th>
-                    <th className="pb-2 font-medium">Outcome</th>
-                    <th className="pb-2 font-medium">Phase</th>
-                    <th className="pb-2 font-medium">Updated</th>
-                    <th className="pb-2 font-medium">Cost</th>
+                  <tr className="border-b border-line text-left text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
+                    <th className="px-4 py-3 font-medium">Run</th>
+                    <th className="px-4 py-3 font-medium">Outcome</th>
+                    <th className="px-4 py-3 font-medium">Phase</th>
+                    <th className="px-4 py-3 font-medium">Updated</th>
+                    <th className="px-4 py-3 text-right font-medium">Cost</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-line">
                   {visibleJobs.map(job => {
                     const detailPath = isCampaignJob(job) ? `/campaigns/${job.id}` : `/jobs/${job.id}`
-
                     return (
-                      <tr key={job.id} className="rounded-2xl bg-white/[0.03] text-sm text-slate-200">
-                        <td className="rounded-l-2xl border-y border-l border-white/8 px-4 py-3">
-                          <Link to={detailPath} className="block space-y-1 hover:text-white">
-                            <div className="font-medium text-white">{deriveJobTitle(job)}</div>
-                            <div className="truncate text-xs uppercase tracking-[0.14em] text-slate-500">{job.id}</div>
-                            {deriveJobDescription(job) ? <div className="line-clamp-1 text-sm text-slate-400">{deriveJobDescription(job)}</div> : null}
+                      <tr key={job.id} className="group transition-colors hover:bg-overlay/40">
+                        <td className="px-4 py-3">
+                          <Link to={detailPath} className="block min-w-0 space-y-0.5">
+                            <div className="truncate font-medium text-fg group-hover:text-accent-300">
+                              {deriveJobTitle(job)}
+                            </div>
+                            {deriveJobDescription(job) ? (
+                              <div className="line-clamp-1 text-[12px] text-fg-subtle">
+                                {deriveJobDescription(job)}
+                              </div>
+                            ) : null}
                           </Link>
                         </td>
-                        <td className="border-y border-white/8 px-4 py-3"><StatusBadge status={job.status} /></td>
-                        <td className="border-y border-white/8 px-4 py-3 text-slate-300">{job.phase}</td>
-                        <td className="border-y border-white/8 px-4 py-3 text-slate-300">{formatRelativeTime(job.updatedAt)}</td>
-                        <td className="rounded-r-2xl border-y border-r border-white/8 px-4 py-3 text-slate-300">{formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}</td>
+                        <td className="px-4 py-3 align-top">
+                          <StatusBadge status={job.status} />
+                        </td>
+                        <td className="px-4 py-3 align-top text-[13px] text-fg-muted">{job.phase}</td>
+                        <td className="whitespace-nowrap px-4 py-3 align-top text-[13px] text-fg-muted">
+                          {formatRelativeTime(job.updatedAt)}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 align-top text-right tabular-nums text-fg-muted">
+                          {formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
+                        </td>
                       </tr>
                     )
                   })}

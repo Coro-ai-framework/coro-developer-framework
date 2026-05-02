@@ -2,6 +2,7 @@ import { useEffect, useState, type ChangeEvent, type FormEvent, type ReactNode }
 import { GitBranch, KeyRound, RefreshCcw, ShieldCheck, Ticket, Waypoints } from 'lucide-react'
 import PageHeader from '../components/common/page-header'
 import StatCard from '../components/common/stat-card'
+import ErrorState from '../components/common/error-state'
 import Field from '../components/forms/field'
 import SectionCard from '../components/forms/section-card'
 import { Button } from '../components/ui/button'
@@ -9,9 +10,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
 import { Separator } from '../components/ui/separator'
+import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { ApiError, jsonRequest, requestJson } from '../lib/http'
 import { cn } from '../lib/utils'
+import { toneClasses, type Tone } from '../lib/status'
 
 type AnthropicMethod = 'apiKey' | 'claudeLogin' | 'oauth'
 type TrackerProvider = 'none' | 'jira' | 'github' | 'linear'
@@ -121,17 +124,21 @@ const EMPTY_FORM: SettingsForm = {
 
 const EMPTY_CLAUDE_LOGIN_STATE: ClaudeLoginState = { status: 'idle' }
 
-function Notice({ tone, children }: { tone: 'rose' | 'emerald' | 'amber'; children: ReactNode }) {
-  const toneClasses = {
-    rose: 'border-rose-500/25 bg-rose-500/10 text-rose-100',
-    emerald: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100',
-    amber: 'border-amber-500/25 bg-amber-500/10 text-amber-100',
-  }
-
-  return <div className={cn('rounded-2xl border px-4 py-3 text-sm', toneClasses[tone])}>{children}</div>
+function Notice({ tone, children }: { tone: Tone; children: ReactNode }) {
+  return (
+    <div className={cn('rounded-2xl border px-4 py-3 text-sm', toneClasses(tone))}>
+      {children}
+    </div>
+  )
 }
 
-function ChoiceButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+interface ChoiceButtonProps {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}
+
+function ChoiceButton({ active, onClick, children }: ChoiceButtonProps) {
   return (
     <button
       type="button"
@@ -139,8 +146,8 @@ function ChoiceButton({ active, onClick, children }: { active: boolean; onClick:
       className={cn(
         'rounded-2xl border px-4 py-3 text-left text-sm transition-colors',
         active
-          ? 'border-indigo-400/30 bg-indigo-500/10 text-white'
-          : 'border-white/8 bg-white/[0.03] text-slate-400 hover:border-white/14 hover:text-slate-100',
+          ? 'border-accent-500/35 bg-accent-500/8 text-fg'
+          : 'border-line bg-overlay/40 text-fg-muted hover:border-line-strong hover:text-fg',
       )}
     >
       {children}
@@ -149,11 +156,11 @@ function ChoiceButton({ active, onClick, children }: { active: boolean; onClick:
 }
 
 function StatusPill({ status }: { status: ClaudeLoginState['status'] }) {
-  const classes = {
-    connected: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200',
-    authorizing: 'border-indigo-500/20 bg-indigo-500/10 text-indigo-200',
-    error: 'border-rose-500/20 bg-rose-500/10 text-rose-200',
-    idle: 'border-white/8 bg-white/[0.03] text-slate-300',
+  const toneMap: Record<ClaudeLoginState['status'], Tone> = {
+    connected: 'success',
+    authorizing: 'accent',
+    error: 'danger',
+    idle: 'neutral',
   }
 
   const labels = {
@@ -163,14 +170,23 @@ function StatusPill({ status }: { status: ClaudeLoginState['status'] }) {
     idle: 'Not connected',
   }
 
-  return <span className={cn('rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]', classes[status])}>{labels[status]}</span>
+  return (
+    <span
+      className={cn(
+        'rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]',
+        toneClasses(toneMap[status]),
+      )}
+    >
+      {labels[status]}
+    </span>
+  )
 }
 
 function AccountFact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
-      <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">{label}</div>
-      <div className="mt-1 text-sm text-white">{value}</div>
+    <div className="rounded-xl border border-line bg-overlay/40 px-3 py-2.5">
+      <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">{label}</div>
+      <div className="mt-1 text-sm text-fg">{value}</div>
     </div>
   )
 }
@@ -215,6 +231,33 @@ function parseClaudeCallbackInput(rawInput: string, fallbackState: string) {
     authorizationCode: trimmed,
     state: fallbackState.trim() || undefined,
   }
+}
+
+function SettingsLoading() {
+  return (
+    <div className="space-y-6">
+      <div className="space-y-2">
+        <Skeleton className="h-9 w-40" />
+        <Skeleton className="h-4 w-72" />
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-24 w-full" />
+        ))}
+      </div>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="space-y-4">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-48 w-full" />
+        </div>
+        <div className="space-y-4">
+          <Skeleton className="h-56 w-full" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export default function Settings() {
@@ -267,11 +310,9 @@ export default function Settings() {
 
   useEffect(() => {
     if (claudeLoginState.status !== 'authorizing') return
-
     const timer = window.setInterval(() => {
       void refreshClaudeLoginStatus()
     }, 2000)
-
     return () => {
       window.clearInterval(timer)
     }
@@ -334,13 +375,11 @@ export default function Settings() {
       if (data.status === 'idle') return
 
       setClaudeLoginState(data)
-      if (data.account) {
-        setClaudeLoginAccount(data.account)
-      }
+      if (data.account) setClaudeLoginAccount(data.account)
 
       if (data.status === 'connected') {
         setForm(previous => ({ ...previous, anthropicMethod: 'claudeLogin' }))
-        setSuccess('Claude account connected. The runner will use Claude Code\'s local login session, including MCP permissions.')
+        setSuccess("Claude account connected. The runner will use Claude Code's local login session, including MCP permissions.")
         setError(null)
         setClaudeLoginCallbackInput('')
         setClaudeLoginCallbackState('')
@@ -372,14 +411,12 @@ export default function Settings() {
     try {
       const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/start', { method: 'POST' })
       setClaudeLoginState(data)
-      if (data.account) {
-        setClaudeLoginAccount(data.account)
-      }
+      if (data.account) setClaudeLoginAccount(data.account)
 
       setForm(previous => ({ ...previous, anthropicMethod: 'claudeLogin' }))
 
       if (data.status === 'connected') {
-        setSuccess('Claude account connected. Configuration was updated to use Claude Code\'s local session.')
+        setSuccess("Claude account connected. Configuration was updated to use Claude Code's local session.")
         return
       }
 
@@ -414,12 +451,13 @@ export default function Settings() {
 
     try {
       const callback = parseClaudeCallbackInput(claudeLoginCallbackInput, claudeLoginCallbackState)
-      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/callback', jsonRequest(callback, { method: 'POST' }))
+      const data = await requestJson<ClaudeLoginState>(
+        '/config/anthropic/claude-login/callback',
+        jsonRequest(callback, { method: 'POST' }),
+      )
 
       setClaudeLoginState(data)
-      if (data.account) {
-        setClaudeLoginAccount(data.account)
-      }
+      if (data.account) setClaudeLoginAccount(data.account)
 
       if (data.status !== 'connected') {
         throw new Error(data.error ?? 'Claude login did not complete.')
@@ -428,7 +466,7 @@ export default function Settings() {
       setForm(previous => ({ ...previous, anthropicMethod: 'claudeLogin' }))
       setClaudeLoginCallbackInput('')
       setClaudeLoginCallbackState('')
-      setSuccess('Claude account connected. Configuration was updated to use Claude Code\'s local session.')
+      setSuccess("Claude account connected. Configuration was updated to use Claude Code's local session.")
     } catch (callbackIssue) {
       setError(callbackIssue instanceof Error ? callbackIssue.message : String(callbackIssue))
     } finally {
@@ -438,7 +476,9 @@ export default function Settings() {
 
   async function handleGenerateOauthToken() {
     setOauthGenerating(true)
-    setOauthStatus('Launching Claude Code login. Complete the sign-in in your browser; the legacy token will be filled in automatically if the CLI can extract it.')
+    setOauthStatus(
+      'Launching Claude Code login. Complete the sign-in in your browser; the legacy token will be filled in automatically if the CLI can extract it.',
+    )
     setOauthAuthUrl(null)
     setError(null)
 
@@ -566,7 +606,7 @@ export default function Settings() {
       await requestJson('/config', jsonRequest(body, { method: 'PUT' }))
       setSuccess(
         form.anthropicMethod === 'claudeLogin'
-          ? 'Configuration saved. The runner will use Claude Code\'s local login session.'
+          ? "Configuration saved. The runner will use Claude Code's local login session."
           : 'Configuration saved. Restart the runner for changes to take effect.',
       )
       await loadConfig()
@@ -578,13 +618,21 @@ export default function Settings() {
   }
 
   if (loading) {
-    return <div className="py-10 text-sm text-slate-400">Loading configuration…</div>
+    return <SettingsLoading />
   }
+
+  const authStatCardTone: Tone =
+    form.anthropicMethod === 'claudeLogin' && claudeLoginReady
+      ? 'success'
+      : form.anthropicMethod === 'apiKey' && form.apiKey
+        ? 'success'
+        : form.anthropicMethod === 'oauth' && form.oauthToken
+          ? 'success'
+          : 'warning'
 
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Runner Configuration"
         title="Settings"
         description="Manage auth, git, trackers, and runner paths."
         actions={
@@ -595,33 +643,70 @@ export default function Settings() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Mode" value={meta?.mode ?? '—'} description="Current runner operating mode." icon={Waypoints} tone={meta?.mode === 'hybrid' ? 'indigo' : meta?.mode === 'local' ? 'emerald' : 'amber'} />
-        <StatCard label="Auth" value={authSummary} description="Active Anthropic authentication strategy." icon={ShieldCheck} tone={form.anthropicMethod === 'claudeLogin' ? 'cyan' : form.anthropicMethod === 'apiKey' ? 'violet' : 'amber'} />
-        <StatCard label="Git" value={form.gitProvider} description={form.gitUsername ? `Configured for ${form.gitUsername}.` : 'Credentials not configured yet.'} icon={GitBranch} tone="neutral" />
-        <StatCard label="Tracker" value={form.trackerProvider === 'none' ? 'Disabled' : form.trackerProvider} description="Campaign issue creation provider." icon={Ticket} tone={form.trackerProvider === 'none' ? 'neutral' : 'indigo'} />
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Mode"
+          value={meta?.mode ?? '—'}
+          description="Current runner operating mode."
+          icon={Waypoints}
+          tone={meta?.mode === 'hybrid' ? 'accent' : meta?.mode === 'local' ? 'success' : 'warning'}
+        />
+        <StatCard
+          label="Auth"
+          value={authSummary}
+          description="Active Anthropic authentication strategy."
+          icon={ShieldCheck}
+          tone={authStatCardTone}
+        />
+        <StatCard
+          label="Git"
+          value={form.gitProvider}
+          description={
+            form.gitUsername
+              ? `Configured for ${form.gitUsername}.`
+              : 'Credentials not configured yet.'
+          }
+          icon={GitBranch}
+          tone={form.gitUsername ? 'success' : 'warning'}
+        />
+        <StatCard
+          label="Tracker"
+          value={form.trackerProvider === 'none' ? 'Disabled' : form.trackerProvider}
+          description="Campaign issue creation provider."
+          icon={Ticket}
+          tone={form.trackerProvider === 'none' ? 'neutral' : 'accent'}
+        />
       </div>
 
       {meta?.configError ? (
-        <Notice tone="amber">
-          The current config file failed schema validation. Save the form once to rewrite it into the current format.
+        <Notice tone="warning">
+          The current config file failed schema validation. Save the form once to rewrite it into the
+          current format.
           {meta.rawConfig ? (
-            <details className="mt-3 overflow-hidden rounded-xl border border-amber-500/20 bg-black/15">
-              <summary className="cursor-pointer px-3 py-2 text-xs uppercase tracking-[0.16em] text-amber-100/80">View raw config</summary>
+            <details className="mt-3 overflow-hidden rounded-xl border border-warning-500/20 bg-canvas/50">
+              <summary className="cursor-pointer px-3 py-2 text-xs uppercase tracking-[0.16em] text-fg-subtle">
+                View raw config
+              </summary>
               <Separator />
-              <pre className="max-h-64 overflow-auto p-3 text-xs whitespace-pre-wrap break-words text-amber-50/90">{JSON.stringify(meta.rawConfig, null, 2)}</pre>
+              <pre className="max-h-64 overflow-auto p-3 text-xs whitespace-pre-wrap break-words text-fg-muted">
+                {JSON.stringify(meta.rawConfig, null, 2)}
+              </pre>
             </details>
           ) : null}
         </Notice>
       ) : null}
 
-      {error ? <Notice tone="rose">{error}</Notice> : null}
-      {success ? <Notice tone="emerald">{success}</Notice> : null}
+      {error ? <ErrorState message={error} /> : null}
+      {success ? <Notice tone="success">{success}</Notice> : null}
 
-      <form onSubmit={handleSubmit} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <form onSubmit={handleSubmit} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-6">
-          <Tabs value={activeTab} onValueChange={value => setActiveTab(value as SettingsTab)} className="space-y-6">
-            <TabsList className="h-auto flex-wrap">
+          <Tabs
+            value={activeTab}
+            onValueChange={value => setActiveTab(value as SettingsTab)}
+            className="space-y-6"
+          >
+            <TabsList>
               <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
               <TabsTrigger value="git">Git</TabsTrigger>
               <TabsTrigger value="tracker">Tracker</TabsTrigger>
@@ -629,45 +714,75 @@ export default function Settings() {
             </TabsList>
 
             <TabsContent value="anthropic" className="space-y-6">
-              <SectionCard title="Authentication Method" description="Pick the authentication strategy the runner should use for model access.">
+              <SectionCard
+                title="Authentication method"
+                description="Pick the authentication strategy the runner should use for model access."
+              >
                 <div className="grid gap-3 md:grid-cols-3">
-                  <ChoiceButton active={form.anthropicMethod === 'claudeLogin'} onClick={() => setAnthropicMethod('claudeLogin')}>
-                    <div className="font-medium text-white">Claude login</div>
-                    <div className="mt-1 text-slate-400">Uses Claude Code's local session and preserves MCP-capable auth context.</div>
+                  <ChoiceButton
+                    active={form.anthropicMethod === 'claudeLogin'}
+                    onClick={() => setAnthropicMethod('claudeLogin')}
+                  >
+                    <div className="font-medium text-fg">Claude login</div>
+                    <div className="mt-1 text-fg-muted">
+                      Uses Claude Code's local session and preserves MCP-capable auth context.
+                    </div>
                   </ChoiceButton>
-                  <ChoiceButton active={form.anthropicMethod === 'apiKey'} onClick={() => setAnthropicMethod('apiKey')}>
-                    <div className="font-medium text-white">API key</div>
-                    <div className="mt-1 text-slate-400">Best for direct Anthropic billing with explicit service credentials.</div>
+                  <ChoiceButton
+                    active={form.anthropicMethod === 'apiKey'}
+                    onClick={() => setAnthropicMethod('apiKey')}
+                  >
+                    <div className="font-medium text-fg">API key</div>
+                    <div className="mt-1 text-fg-muted">
+                      Best for direct Anthropic billing with explicit service credentials.
+                    </div>
                   </ChoiceButton>
-                  <ChoiceButton active={form.anthropicMethod === 'oauth'} onClick={() => setAnthropicMethod('oauth')}>
-                    <div className="font-medium text-white">Legacy OAuth token</div>
-                    <div className="mt-1 text-slate-400">Fallback only. Stores a raw token without session refresh.</div>
+                  <ChoiceButton
+                    active={form.anthropicMethod === 'oauth'}
+                    onClick={() => setAnthropicMethod('oauth')}
+                  >
+                    <div className="font-medium text-fg">Legacy OAuth token</div>
+                    <div className="mt-1 text-fg-muted">
+                      Fallback only. Stores a raw token without session refresh.
+                    </div>
                   </ChoiceButton>
                 </div>
               </SectionCard>
 
               {form.anthropicMethod === 'claudeLogin' ? (
                 <SectionCard
-                  title="Claude Login"
+                  title="Claude login"
                   description="Recommended. Connect the runner to Claude Code's local login session instead of storing a separate token."
                   action={
-                    <Button type="button" onClick={() => void handleStartClaudeLogin()} disabled={claudeLoginConnecting}>
-                      {claudeLoginConnecting ? 'Starting…' : claudeLoginReady ? 'Reconnect Claude' : 'Connect Claude'}
+                    <Button
+                      type="button"
+                      onClick={() => void handleStartClaudeLogin()}
+                      disabled={claudeLoginConnecting}
+                      size="sm"
+                    >
+                      {claudeLoginConnecting
+                        ? 'Starting…'
+                        : claudeLoginReady
+                          ? 'Reconnect'
+                          : 'Connect Claude'}
                     </Button>
                   }
                 >
                   <div className="space-y-5">
                     <div className="flex flex-wrap items-center gap-3">
                       <StatusPill status={claudeLoginState.status} />
-                      {effectiveClaudeAccount?.email ? <div className="text-sm text-slate-300">{effectiveClaudeAccount.email}</div> : null}
+                      {effectiveClaudeAccount?.email ? (
+                        <div className="text-sm text-fg-muted">{effectiveClaudeAccount.email}</div>
+                      ) : null}
                     </div>
 
-                    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
-                      Uses Claude Code's own local login session, including MCP permissions and session refresh. No copy-pasted token is stored in Coro.
+                    <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
+                      Uses Claude Code's own local login session, including MCP permissions and session
+                      refresh. No copy-pasted token is stored in Coro.
                     </div>
 
                     {effectiveClaudeAccount ? (
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-2 sm:grid-cols-2">
                         <AccountFact label="Provider" value={formatProvider(effectiveClaudeAccount.apiProvider)} />
                         <AccountFact label="Organization" value={effectiveClaudeAccount.organization ?? 'Not reported'} />
                         <AccountFact label="Plan" value={effectiveClaudeAccount.subscriptionType ?? 'Not reported'} />
@@ -677,19 +792,30 @@ export default function Settings() {
 
                     {claudeLoginState.status === 'authorizing' ? (
                       <div className="space-y-4">
-                        <Notice tone="amber">The runner is waiting for the Claude browser login to finish. This page polls for completion automatically.</Notice>
+                        <Notice tone="warning">
+                          The runner is waiting for the Claude browser login to finish. This page polls
+                          for completion automatically.
+                        </Notice>
 
                         {claudeLoginUrl ? (
-                          <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
+                          <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
                             <div>If the browser did not open automatically, continue the sign-in flow here:</div>
-                            <a href={claudeLoginUrl} target="_blank" rel="noopener noreferrer" className="mt-2 block break-all text-cyan-300 hover:text-cyan-200">
+                            <a
+                              href={claudeLoginUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-2 block break-all text-accent-300 hover:text-accent-400"
+                            >
                               {claudeLoginUrl}
                             </a>
                           </div>
                         ) : null}
 
-                        <div className="grid gap-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                          <Field label="Callback URL or Authorization Code" hint="Use this only if automatic completion fails. Pasting the full redirected URL is preferred because it includes the OAuth state value.">
+                        <div className="grid gap-4 rounded-2xl border border-line bg-overlay/40 p-4">
+                          <Field
+                            label="Callback URL or authorization code"
+                            hint="Use this only if automatic completion fails. Pasting the full redirected URL is preferred because it includes the OAuth state value."
+                          >
                             <Input
                               value={claudeLoginCallbackInput}
                               onChange={event => setClaudeLoginCallbackInput(event.target.value)}
@@ -698,14 +824,22 @@ export default function Settings() {
                           </Field>
 
                           <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                            <Field label="State Override" hint="Optional if you pasted a raw authorization code.">
+                            <Field
+                              label="State override"
+                              hint="Optional if you pasted a raw authorization code."
+                            >
                               <Input
                                 value={claudeLoginCallbackState}
                                 onChange={event => setClaudeLoginCallbackState(event.target.value)}
                                 placeholder="Optional state"
                               />
                             </Field>
-                            <Button type="button" variant="secondary" onClick={() => void handleSubmitClaudeLoginCallback()} disabled={claudeLoginSubmittingCallback}>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={() => void handleSubmitClaudeLoginCallback()}
+                              disabled={claudeLoginSubmittingCallback}
+                            >
                               {claudeLoginSubmittingCallback ? 'Completing…' : 'Complete manually'}
                             </Button>
                           </div>
@@ -717,32 +851,65 @@ export default function Settings() {
               ) : null}
 
               {form.anthropicMethod === 'apiKey' ? (
-                <SectionCard title="Anthropic API Key" description="Use a first-party Anthropic API key billed per token.">
-                  <Field label="API Key" required hint="Anthropic API key from console.anthropic.com.">
-                    <Input name="apiKey" type="password" value={form.apiKey} onChange={handleChange} placeholder="sk-ant-…" />
+                <SectionCard
+                  title="Anthropic API key"
+                  description="Use a first-party Anthropic API key billed per token."
+                >
+                  <Field label="API key" required hint="Anthropic API key from console.anthropic.com.">
+                    <Input
+                      name="apiKey"
+                      type="password"
+                      value={form.apiKey}
+                      onChange={handleChange}
+                      placeholder="sk-ant-…"
+                    />
                   </Field>
                 </SectionCard>
               ) : null}
 
               {form.anthropicMethod === 'oauth' ? (
-                <SectionCard title="Legacy OAuth Token" description="Fallback only. This does not preserve Claude Code's richer local session state.">
+                <SectionCard
+                  title="Legacy OAuth token"
+                  description="Fallback only. This does not preserve Claude Code's richer local session state."
+                >
                   <div className="space-y-4">
-                    <Field label="OAuth Token" required hint="Legacy fallback only. Prefer Claude login whenever possible.">
-                      <Input name="oauthToken" type="password" value={form.oauthToken} onChange={handleChange} placeholder="sk-ant-oat01-…" />
+                    <Field
+                      label="OAuth token"
+                      required
+                      hint="Legacy fallback only. Prefer Claude login whenever possible."
+                    >
+                      <Input
+                        name="oauthToken"
+                        type="password"
+                        value={form.oauthToken}
+                        onChange={handleChange}
+                        placeholder="sk-ant-oat01-…"
+                      />
                     </Field>
 
                     {!oauthCliMissing ? (
-                      <Button type="button" variant="secondary" onClick={() => void handleGenerateOauthToken()} disabled={oauthGenerating}>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => void handleGenerateOauthToken()}
+                        disabled={oauthGenerating}
+                        size="sm"
+                      >
                         <KeyRound />
                         {oauthGenerating ? 'Generating…' : 'Generate via claude setup-token'}
                       </Button>
                     ) : null}
 
-                    {oauthStatus ? <Notice tone="emerald">{oauthStatus}</Notice> : null}
+                    {oauthStatus ? <Notice tone="success">{oauthStatus}</Notice> : null}
                     {oauthAuthUrl ? (
-                      <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
+                      <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
                         <div>If the browser did not open automatically, sign in here:</div>
-                        <a href={oauthAuthUrl} target="_blank" rel="noopener noreferrer" className="mt-2 block break-all text-cyan-300 hover:text-cyan-200">
+                        <a
+                          href={oauthAuthUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-2 block break-all text-accent-300 hover:text-accent-400"
+                        >
                           {oauthAuthUrl}
                         </a>
                       </div>
@@ -753,21 +920,32 @@ export default function Settings() {
             </TabsContent>
 
             <TabsContent value="git" className="space-y-6">
-              <SectionCard title="Git Provider" description="Credentials used for clone, branch, PR, and review operations.">
+              <SectionCard
+                title="Git provider"
+                description="Credentials used for clone, branch, PR, and review operations."
+              >
                 <div className="space-y-4">
                   <Field label="Provider">
                     <Select name="gitProvider" value={form.gitProvider} onChange={handleChange}>
                       <option value="github">GitHub</option>
-                      <option value="bitbucket">BitBucket</option>
+                      <option value="bitbucket">Bitbucket</option>
                       <option value="gitlab">GitLab</option>
                     </Select>
                   </Field>
 
                   <div className="grid gap-4 sm:grid-cols-2">
                     <Field label="Username" hint="The account used to authenticate with the git provider.">
-                      <Input name="gitUsername" value={form.gitUsername} onChange={handleChange} placeholder="your-username" />
+                      <Input
+                        name="gitUsername"
+                        value={form.gitUsername}
+                        onChange={handleChange}
+                        placeholder="your-username"
+                      />
                     </Field>
-                    <Field label={form.gitProvider === 'github' ? 'Personal Access Token' : 'App Password'} hint="Stored in the local runner config file.">
+                    <Field
+                      label={form.gitProvider === 'github' ? 'Personal access token' : 'App password'}
+                      hint="Stored in the local runner config file."
+                    >
                       <Input
                         name="gitToken"
                         type="password"
@@ -778,7 +956,10 @@ export default function Settings() {
                     </Field>
                   </div>
 
-                  <Field label={form.gitProvider === 'bitbucket' ? 'Workspace Slug' : 'Organization / Owner'} hint="Optional, but required by most hosted providers for PR and issue APIs.">
+                  <Field
+                    label={form.gitProvider === 'bitbucket' ? 'Workspace slug' : 'Organization / owner'}
+                    hint="Optional, but required by most hosted providers for PR and issue APIs."
+                  >
                     <Input
                       name="gitWorkspace"
                       value={form.gitWorkspace}
@@ -791,7 +972,10 @@ export default function Settings() {
             </TabsContent>
 
             <TabsContent value="tracker" className="space-y-6">
-              <SectionCard title="Issue Tracker" description="Used by campaigns when they need to create an epic and child issues.">
+              <SectionCard
+                title="Issue tracker"
+                description="Used by campaigns when they need to create an epic and child issues."
+              >
                 <div className="space-y-5">
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                     {(['none', 'jira', 'github', 'linear'] as TrackerProvider[]).map(provider => (
@@ -803,8 +987,14 @@ export default function Settings() {
                           setSuccess(null)
                         }}
                       >
-                        <div className="font-medium text-white">{provider === 'none' ? 'None' : provider === 'github' ? 'GitHub Issues' : provider.charAt(0).toUpperCase() + provider.slice(1)}</div>
-                        <div className="mt-1 text-slate-400">
+                        <div className="font-medium text-fg">
+                          {provider === 'none'
+                            ? 'None'
+                            : provider === 'github'
+                              ? 'GitHub Issues'
+                              : provider.charAt(0).toUpperCase() + provider.slice(1)}
+                        </div>
+                        <div className="mt-1 text-fg-muted">
                           {provider === 'none'
                             ? 'Run campaigns without tracker round-trips.'
                             : provider === 'jira'
@@ -818,23 +1008,39 @@ export default function Settings() {
                   </div>
 
                   {form.trackerProvider === 'jira' ? (
-                    <div className="grid gap-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                    <div className="grid gap-4 rounded-2xl border border-line bg-overlay/40 p-4">
                       <Field label="Base URL" hint="Your Jira Cloud or Server site, including protocol.">
-                        <Input name="jiraBaseUrl" value={form.jiraBaseUrl} onChange={handleChange} placeholder="https://your-org.atlassian.net" />
+                        <Input
+                          name="jiraBaseUrl"
+                          value={form.jiraBaseUrl}
+                          onChange={handleChange}
+                          placeholder="https://your-org.atlassian.net"
+                        />
                       </Field>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <Field label="Username (email)">
-                          <Input name="jiraUsername" value={form.jiraUsername} onChange={handleChange} placeholder="you@company.com" />
+                          <Input
+                            name="jiraUsername"
+                            value={form.jiraUsername}
+                            onChange={handleChange}
+                            placeholder="you@company.com"
+                          />
                         </Field>
                         <Field label="API token">
-                          <Input name="jiraApiToken" type="password" value={form.jiraApiToken} onChange={handleChange} placeholder="Atlassian API token" />
+                          <Input
+                            name="jiraApiToken"
+                            type="password"
+                            value={form.jiraApiToken}
+                            onChange={handleChange}
+                            placeholder="Atlassian API token"
+                          />
                         </Field>
                       </div>
                     </div>
                   ) : null}
 
                   {form.trackerProvider === 'github' ? (
-                    <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
+                    <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
                       {form.gitProvider === 'github' && form.gitToken
                         ? `The campaign planner will reuse the configured GitHub token for ${form.gitWorkspace || 'the current owner'}. Make sure it includes repo and issues write scopes.`
                         : 'Set the Git provider to GitHub and fill in the token plus organization. The tracker will reuse those credentials.'}
@@ -842,12 +1048,26 @@ export default function Settings() {
                   ) : null}
 
                   {form.trackerProvider === 'linear' ? (
-                    <div className="grid gap-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                    <div className="grid gap-4 rounded-2xl border border-line bg-overlay/40 p-4">
                       <Field label="API key" hint="Personal API key from linear.app/settings/api.">
-                        <Input name="linearApiKey" type="password" value={form.linearApiKey} onChange={handleChange} placeholder="lin_api_…" />
+                        <Input
+                          name="linearApiKey"
+                          type="password"
+                          value={form.linearApiKey}
+                          onChange={handleChange}
+                          placeholder="lin_api_…"
+                        />
                       </Field>
-                      <Field label="Default team key" hint="Used when the campaign planner does not override the target team.">
-                        <Input name="linearTeamKey" value={form.linearTeamKey} onChange={handleChange} placeholder="ENG" />
+                      <Field
+                        label="Default team key"
+                        hint="Used when the campaign planner does not override the target team."
+                      >
+                        <Input
+                          name="linearTeamKey"
+                          value={form.linearTeamKey}
+                          onChange={handleChange}
+                          placeholder="ENG"
+                        />
                       </Field>
                     </div>
                   ) : null}
@@ -856,16 +1076,43 @@ export default function Settings() {
             </TabsContent>
 
             <TabsContent value="paths" className="space-y-6">
-              <SectionCard title="Paths" description="Filesystem locations the runner uses for intelligence materialization and working repositories.">
+              <SectionCard
+                title="Paths"
+                description="Filesystem locations the runner uses for intelligence materialization and working repositories."
+              >
                 <div className="space-y-4">
-                  <Field label="Intelligence Directory" hint="Leave blank to use the resolved default shown in the sidebar.">
-                    <Input name="intelligenceDir" value={form.intelligenceDir} onChange={handleChange} placeholder={meta?.resolved.intelligenceDir ?? '~/.coro/intelligence'} />
+                  <Field
+                    label="Intelligence directory"
+                    hint="Leave blank to use the resolved default shown in the sidebar."
+                  >
+                    <Input
+                      name="intelligenceDir"
+                      value={form.intelligenceDir}
+                      onChange={handleChange}
+                      placeholder={meta?.resolved.intelligenceDir ?? '~/.coro/intelligence'}
+                    />
                   </Field>
-                  <Field label="Intelligence Git Remote" hint="Optional remote used to pull intelligence updates.">
-                    <Input name="intelligenceRemote" value={form.intelligenceRemote} onChange={handleChange} placeholder="https://github.com/org/coro-intelligence.git" />
+                  <Field
+                    label="Intelligence git remote"
+                    hint="URL of your tenant intelligence Git repository. Used when merging overlays and for tenant-layer propose_change PRs — you do not need a separate tenant.overlay block. An empty remote on the server is fine; the runner clones it on first proposal."
+                  >
+                    <Input
+                      name="intelligenceRemote"
+                      value={form.intelligenceRemote}
+                      onChange={handleChange}
+                      placeholder="https://github.com/org/coro-intelligence.git"
+                    />
                   </Field>
-                  <Field label="Working Directory" hint="Where repositories are cloned during job execution.">
-                    <Input name="workingDir" value={form.workingDir} onChange={handleChange} placeholder={meta?.resolved.workingDir ?? '~/.coro/working'} />
+                  <Field
+                    label="Working directory"
+                    hint="Where repositories are cloned during job execution."
+                  >
+                    <Input
+                      name="workingDir"
+                      value={form.workingDir}
+                      onChange={handleChange}
+                      placeholder={meta?.resolved.workingDir ?? '~/.coro/working'}
+                    />
                   </Field>
                 </div>
               </SectionCard>
@@ -873,38 +1120,39 @@ export default function Settings() {
           </Tabs>
         </div>
 
-        <div className="space-y-6 xl:sticky xl:top-6 xl:self-start">
+        <div className="space-y-4 xl:sticky xl:top-6 xl:self-start">
           <Card>
             <CardHeader>
-              <CardTitle>Runner Summary</CardTitle>
-              <CardDescription>What the runner will use right now, including defaults resolved from the host environment.</CardDescription>
+              <CardTitle>Runner summary</CardTitle>
+              <CardDescription>
+                What the runner will use right now, including defaults resolved from the host environment.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-sm">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Config path</div>
-                <div className="mt-1 break-all font-mono text-slate-200">{meta?.configPath ?? '—'}</div>
-              </div>
+              <SummaryField label="Config path" value={meta?.configPath ?? '—'} mono />
               <Separator />
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Resolved intelligence dir</div>
-                <div className="mt-1 break-all font-mono text-slate-200">{meta?.resolved.intelligenceDir ?? '—'}</div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Resolved working dir</div>
-                <div className="mt-1 break-all font-mono text-slate-200">{meta?.resolved.workingDir ?? '—'}</div>
-              </div>
+              <SummaryField
+                label="Resolved intelligence dir"
+                value={meta?.resolved.intelligenceDir ?? '—'}
+                mono
+              />
+              <SummaryField
+                label="Resolved working dir"
+                value={meta?.resolved.workingDir ?? '—'}
+                mono
+              />
               <Separator />
-              <div className="space-y-2 text-slate-400">
-                <div className="flex items-center justify-between"><span>Auth method</span><span className="text-slate-100">{form.anthropicMethod}</span></div>
-                <div className="flex items-center justify-between"><span>Claude session</span><span className="text-slate-100">{claudeLoginReady ? 'Ready' : 'Not ready'}</span></div>
-                <div className="flex items-center justify-between"><span>Tracker</span><span className="text-slate-100">{form.trackerProvider}</span></div>
+              <div className="space-y-2 text-fg-muted">
+                <SummaryRow label="Auth method" value={form.anthropicMethod} />
+                <SummaryRow label="Claude session" value={claudeLoginReady ? 'Ready' : 'Not ready'} />
+                <SummaryRow label="Tracker" value={form.trackerProvider} />
               </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Save Changes</CardTitle>
+              <CardTitle>Save changes</CardTitle>
               <CardDescription>
                 {form.anthropicMethod === 'claudeLogin'
                   ? 'Claude login must be connected before this auth mode can be saved.'
@@ -912,10 +1160,20 @@ export default function Settings() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button type="submit" size="lg" className="w-full" disabled={saving || (form.anthropicMethod === 'claudeLogin' && !claudeLoginReady)}>
+              <Button
+                type="submit"
+                size="lg"
+                className="w-full"
+                disabled={saving || (form.anthropicMethod === 'claudeLogin' && !claudeLoginReady)}
+              >
                 {saving ? 'Saving…' : 'Save configuration'}
               </Button>
-              <Button type="button" variant="outline" className="w-full" onClick={() => void loadConfig()}>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => void loadConfig()}
+              >
                 Reload from disk
               </Button>
             </CardContent>
@@ -924,18 +1182,44 @@ export default function Settings() {
           {effectiveClaudeAccount ? (
             <Card>
               <CardHeader>
-                <CardTitle>Connected Claude Account</CardTitle>
+                <CardTitle>Connected Claude account</CardTitle>
                 <CardDescription>Session metadata reported by Claude Code.</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
-                {effectiveClaudeAccount.email ? <AccountFact label="Email" value={effectiveClaudeAccount.email} /> : null}
-                <AccountFact label="Provider" value={formatProvider(effectiveClaudeAccount.apiProvider)} />
-                <AccountFact label="Plan" value={effectiveClaudeAccount.subscriptionType ?? 'Not reported'} />
+              <CardContent className="space-y-2">
+                {effectiveClaudeAccount.email ? (
+                  <AccountFact label="Email" value={effectiveClaudeAccount.email} />
+                ) : null}
+                <AccountFact
+                  label="Provider"
+                  value={formatProvider(effectiveClaudeAccount.apiProvider)}
+                />
+                <AccountFact
+                  label="Plan"
+                  value={effectiveClaudeAccount.subscriptionType ?? 'Not reported'}
+                />
               </CardContent>
             </Card>
           ) : null}
         </div>
       </form>
+    </div>
+  )
+}
+
+function SummaryField({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">{label}</div>
+      <div className={cn('mt-1 break-all text-fg', mono && 'font-mono text-[12px]')}>{value}</div>
+    </div>
+  )
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{label}</span>
+      <span className="text-fg">{value}</span>
     </div>
   )
 }

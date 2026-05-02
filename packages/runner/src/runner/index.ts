@@ -65,6 +65,7 @@ import {
   detectMode,
   resolveIntelligenceDir,
   resolveProposalsConfig,
+  resolveTenantOverlaySource,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
@@ -261,7 +262,7 @@ export async function startLocalRunner(
   // (typically `localDir` or `gitRemote`).
   const tenantContext = synthesizeSoloTenant({
     displayName: effectiveConfig.tenant?.displayName,
-    overlay: effectiveConfig.tenant?.overlay,
+    overlay: resolveTenantOverlaySource(effectiveConfig),
   })
   logger.info(
     {
@@ -354,7 +355,7 @@ export async function startHybridRunner(
   // `wireCloudJobDispatch`'s initial `runner_hello` response.
   const tenantContext = tenantFromTeamId(teamId, {
     displayName: config.tenant?.displayName,
-    overlay: config.tenant?.overlay,
+    overlay: resolveTenantOverlaySource(config),
   })
   logger.info(
     {

@@ -9,7 +9,10 @@ function Tabs({ className, ...props }: React.ComponentProps<typeof TabsPrimitive
 function TabsList({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.List>) {
   return (
     <TabsPrimitive.List
-      className={cn('inline-flex h-10 items-center gap-1 rounded-xl border border-white/8 bg-black/20 p-1 text-slate-400', className)}
+      className={cn(
+        'inline-flex h-10 items-center gap-1 rounded-xl border border-line bg-overlay/60 p-1 text-fg-muted',
+        className,
+      )}
       {...props}
     />
   )
@@ -18,7 +21,10 @@ function TabsList({ className, ...props }: React.ComponentProps<typeof TabsPrimi
 function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.Trigger>) {
   return (
     <TabsPrimitive.Trigger
-      className={cn('inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-sm font-medium transition-[color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/70 data-[state=active]:bg-white/10 data-[state=active]:text-white data-[state=active]:shadow-[0_10px_24px_-18px_rgba(15,23,42,0.9)]', className)}
+      className={cn(
+        'inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-sm font-medium transition-[color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 data-[state=active]:bg-panel-raised data-[state=active]:text-fg data-[state=active]:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]',
+        className,
+      )}
       {...props}
     />
   )

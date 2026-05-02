@@ -12,12 +12,12 @@ interface FieldProps {
 export default function Field({ label, required, hint, className, children }: FieldProps) {
   return (
     <div className={cn('space-y-2', className)}>
-      <label className="block text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">
+      <label className="block text-[11px] font-medium uppercase tracking-[0.16em] text-fg-subtle">
         {label}
-        {required ? <span className="ml-1 text-rose-300">*</span> : null}
+        {required ? <span className="ml-1 text-danger-400">*</span> : null}
       </label>
       {children}
-      {hint ? <div className="text-xs leading-5 text-slate-500">{hint}</div> : null}
+      {hint ? <div className="text-xs leading-5 text-fg-subtle">{hint}</div> : null}
     </div>
   )
 }

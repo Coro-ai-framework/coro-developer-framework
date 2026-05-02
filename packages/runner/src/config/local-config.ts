@@ -9,6 +9,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { z } from 'zod'
+import type { TenantOverlaySource } from '../intelligence/tenant-context'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -53,11 +54,12 @@ const anthropicConfigSchema = z
   )
 
 // Both fields are optional individually — `resolveIntelligenceDir`
-// already falls back to `defaultIntelligenceDir()` when `dir` is unset,
-// and `gitRemote` is meaningful on its own (it drives the tenant
-// overlay even when the local materialisation lives at the default
-// path). A user entering only one of the two fields in the dashboard
-// must round-trip through GET /config without disappearing.
+// already falls back to `defaultIntelligenceDir()` when `dir` is unset.
+// When `tenant.overlay` is omitted, `resolveTenantOverlaySource()`
+// maps a non-empty `intelligence.gitRemote` to a `gitRemote` tenant overlay
+// so `propose_change` and the resolver see the same repo the dashboard
+// “Intelligence Git Remote” field configures. A user entering only one
+// field must round-trip through GET /config without disappearing.
 const intelligenceConfigSchema = z.object({
   dir: z.string().min(1).optional(),
   gitRemote: z.string().min(1).optional(),
@@ -351,4 +353,29 @@ export function resolveProposalsConfig(config: LocalConfig | null): ResolvedProp
       strategy: config?.proposals?.routing?.strategy ?? 'path',
     },
   }
+}
+
+/**
+ * Effective tenant overlay for this runner process.
+ *
+ * - If `tenant.overlay` is set (including `{ kind: 'none' }`), it wins.
+ * - Otherwise, a non-empty `intelligence.gitRemote` is treated as
+ *   `{ kind: 'gitRemote', url }` — matching the dashboard “Intelligence
+ *   Git Remote” field and `coro init`.
+ * - Otherwise `{ kind: 'none' }`.
+ *
+ * This closes the gap where users configured the intelligence repo URL
+ * but never added a separate `tenant.overlay` block; `propose_change`
+ * requires a `gitRemote` overlay to open tenant-layer PRs.
+ */
+export function resolveTenantOverlaySource(config: LocalConfig | null): TenantOverlaySource {
+  const explicit = config?.tenant?.overlay
+  if (explicit !== undefined) return explicit
+
+  const url = typeof config?.intelligence?.gitRemote === 'string' ? config.intelligence.gitRemote.trim() : ''
+  if (url.length > 0) {
+    return { kind: 'gitRemote', url }
+  }
+
+  return { kind: 'none' }
 }
