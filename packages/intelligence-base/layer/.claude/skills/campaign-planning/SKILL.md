@@ -60,13 +60,12 @@ Example: campaign `payments-v2` → child `db-schema` → branch `coro/payments-
 
 ## Tracker hygiene
 
-When the tracker is configured:
+The job context's `tracker` block is the source of truth for whether to talk to a tracker:
 
-- Always create an epic first; every child issue is `parentKey`-linked to it. Otherwise the epic's child list is empty in the tracker UI.
-- Reflect every `dependsOn` in the tracker via `tracker_link_issues` with `relation: "Blocks"`. The link reads "fromKey is blocked by toKey", which matches the dispatcher's dependsOn semantics.
-- Use a consistent label (`coro-campaign`, `coro-campaign-child`) so a JQL query can find every Coro-managed campaign at a glance.
+- `tracker.available === true` → call `tracker_create_epic` first, then one `tracker_create_issue` per child (linked via `parentKey`), then mirror `dependsOn` edges with `tracker_link_issues({ relation: "Blocks" })`. Use consistent labels (`coro-campaign`, `coro-campaign-child`) so a single JQL / GitHub query surfaces every Coro-managed campaign.
+- `tracker.available === false` or `tracker.provider === 'none'` → **do not call any tracker tool**. Continue without a tracker; the campaign still works, you just lose tracker correlation. Note the absence in the campaign plan markdown so the human reader isn't surprised.
 
-When the tracker reports `available: false`, **do not call any other tracker tools** in that turn. Continue without a tracker; the campaign still works, you just lose tracker correlation. Note the absence in the campaign plan markdown so the human reader isn't surprised.
+Never use a tracker mutation tool (`tracker_create_epic`, `tracker_create_issue`, etc.) as a probe — they have side effects on success. The `tracker.available` flag is computed on every phase boundary specifically so you don't have to.
 
 ## Failure handling expectations
 

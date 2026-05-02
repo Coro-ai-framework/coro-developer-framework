@@ -185,12 +185,18 @@ export class SqliteStateBackend implements StateBackend {
     const existing = await this.getJob(jobId)
     if (!existing) throw new Error(`Job not found: ${jobId}`)
 
+    // `id`, `type`, and `createdAt` are part of a job's identity and must not
+    // be rewritten by a patch. `workflowPath` is intentionally NOT pinned —
+    // `convert_to_campaign` flips it from the regular job workflow to the
+    // campaign workflow as part of an atomic phase/status transition. Pinning
+    // it here in the past silently dropped that change and produced jobs whose
+    // persisted `phase` (e.g. `campaign-planning`) no longer matched their
+    // persisted `workflowPath`.
     const updated: Job = {
       ...existing,
       ...patch,
       id: existing.id,
       type: existing.type,
-      workflowPath: existing.workflowPath,
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),
     }

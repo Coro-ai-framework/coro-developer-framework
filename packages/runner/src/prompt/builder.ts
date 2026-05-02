@@ -1,8 +1,73 @@
 import fs from 'fs/promises'
 import path from 'path'
 import { Logger } from 'pino'
+import type { Settings } from '../config/settings'
+import type { TrackerClient, TrackerProvider } from '../clients/tracker'
 import { Job } from '../jobs/types'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
+
+// ── Tracker prompt context ────────────────────────────────────────────────────
+//
+// Surfaced into the system prompt so agents — chiefly the campaign-planner —
+// have a deterministic signal for whether to call the `tracker_*` tools. Prior
+// to this, the prompt carried no tracker information at all and the agent
+// could only discover availability by issuing a *destructive* call
+// (`tracker_create_epic` would actually create an epic on success), so it
+// played safe and skipped the tracker branch even when the tenant had wired
+// up GitHub Issues / Jira / Linear. See campaign-planner.md §3 for the
+// agent-side decision rule that keys off this struct.
+
+export interface TrackerPromptContext {
+  /**
+   * Effective tracker provider as the user sees it. Mirrors
+   * `settings.tracker.provider` when set explicitly; falls back to
+   * `'none'` when no tracker is wired up so the agent never has to
+   * reason about the JiraTrackerClient stub the factory returns when
+   * everything is empty.
+   */
+  provider: TrackerProvider | 'none'
+  /** True when `trackerClient.isAvailable()` — i.e. tool calls will hit a real backend. */
+  available: boolean
+  /**
+   * Provider-specific defaults the agent can plug straight into tool args.
+   * Keys are intentionally provider-specific (`owner` for GitHub,
+   * `teamKey` for Linear) so the agent prompt can read the value
+   * unambiguously without per-provider branches in code.
+   */
+  defaults?: Record<string, string>
+}
+
+/**
+ * Build the prompt-side view of the tracker stack from the runtime
+ * `Settings` + the constructed `TrackerClient`. Pure — safe to call
+ * once per phase without I/O.
+ */
+export function computeTrackerPromptContext(
+  settings: Settings,
+  trackerClient: TrackerClient,
+): TrackerPromptContext {
+  const available = trackerClient.isAvailable()
+  // `settings.tracker.provider` is the user's explicit choice from the
+  // dashboard. When unset we trust the client's `provider` field only if
+  // it actually resolved to a usable backend; otherwise we report `'none'`
+  // so the agent doesn't see a misleading `'jira'` from the empty stub.
+  const provider: TrackerProvider | 'none' = settings.tracker?.provider
+    ?? (available ? trackerClient.provider : 'none')
+
+  const defaults: Record<string, string> = {}
+  if (provider === 'github' && settings.github.owner) {
+    defaults['owner'] = settings.github.owner
+  }
+  if (provider === 'linear' && settings.linear?.teamKey) {
+    defaults['teamKey'] = settings.linear.teamKey
+  }
+
+  return {
+    provider,
+    available,
+    ...(Object.keys(defaults).length > 0 ? { defaults } : {}),
+  }
+}
 
 // ── Builder ───────────────────────────────────────────────────────────────────
 
@@ -34,6 +99,7 @@ export async function buildSystemPrompt(
   job: Job,
   intelligenceDir: string,
   logger: Logger,
+  trackerInfo?: TrackerPromptContext,
 ): Promise<string> {
   const sections: string[] = []
 
@@ -58,15 +124,15 @@ export async function buildSystemPrompt(
     }
   }
 
-  sections.push(buildJobContext(job))
+  sections.push(buildJobContext(job, trackerInfo))
 
   return sections.join('\n\n---\n\n')
 }
 
 // ── Job context ───────────────────────────────────────────────────────────────
 
-function buildJobContext(job: Job): string {
-  const context = {
+function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext): string {
+  const context: Record<string, unknown> = {
     jobId: job.id,
     type: job.type,
     workflowPath: job.workflowPath,
@@ -84,6 +150,14 @@ function buildJobContext(job: Job): string {
     awaitingNextPhase: job.awaitingNextPhase ?? null,
     approvedAdvanceFromPhase: job.approvedAdvanceFromPhase ?? null,
     escalationMessage: job.escalationMessage ?? null,
+  }
+
+  // Surface tracker availability so agents (campaign-planner today, others
+  // later) get a deterministic signal instead of having to probe with
+  // destructive tool calls. We only set the key when the runner has computed
+  // a context — tests that exercise the builder in isolation may skip it.
+  if (trackerInfo) {
+    context['tracker'] = trackerInfo
   }
 
   const parts = [

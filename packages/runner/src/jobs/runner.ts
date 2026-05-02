@@ -26,7 +26,7 @@ import {
   type ResolvedIntelligence,
 } from '../intelligence/resolver'
 import type { TenantContext } from '../intelligence/tenant-context'
-import { buildSystemPrompt } from '../prompt/builder'
+import { buildSystemPrompt, computeTrackerPromptContext } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
@@ -295,7 +295,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         )
       }
 
-      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger)
+      // Recompute every phase: the tracker client itself is constructed once
+      // at runner bootstrap, but `isAvailable()` reads its captured settings
+      // and we want the prompt to reflect any tenant-overlay config refresh
+      // between phases.
+      const trackerInfo = computeTrackerPromptContext(settings, ctx.trackerClient)
+      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo)
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },

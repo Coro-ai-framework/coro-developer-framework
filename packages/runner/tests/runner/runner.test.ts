@@ -16,6 +16,11 @@ import type { Settings } from '../../src/config/settings'
 
 vi.mock('../../src/prompt/builder', () => ({
   buildSystemPrompt: vi.fn().mockResolvedValue('# Mock system prompt for runner tests'),
+  // The runner now calls this once per phase to assemble the tracker block
+  // before delegating to `buildSystemPrompt`. We mock it as a no-op pure
+  // function so the runner's call site stays exercised without forcing
+  // every test to wire up a real Settings + TrackerClient pair.
+  computeTrackerPromptContext: vi.fn().mockReturnValue({ provider: 'none', available: false }),
 }))
 
 vi.mock('../../src/claude-code-path', () => ({
@@ -138,7 +143,15 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
     lokiClient: {} as RunnerContext['lokiClient'],
     tempoClient: {} as RunnerContext['tempoClient'],
     jiraClient: {} as RunnerContext['jiraClient'],
-    trackerClient: {} as RunnerContext['trackerClient'],
+    // The runner now calls `trackerClient.isAvailable()` and reads `.provider`
+    // every phase to assemble the prompt's tracker block — supply a tiny stub
+    // so the mock context is a faithful shape rather than a TypeScript-only
+    // assertion. Tests that exercise tracker behaviour explicitly should
+    // override this with a richer mock.
+    trackerClient: {
+      provider: 'jira',
+      isAvailable: () => false,
+    } as unknown as RunnerContext['trackerClient'],
     logger: {
       debug: vi.fn(),
       info: vi.fn(),

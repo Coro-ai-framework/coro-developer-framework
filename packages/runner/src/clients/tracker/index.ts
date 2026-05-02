@@ -12,7 +12,7 @@ import { GitHubTrackerClient } from './github'
 import { LinearTrackerClient } from './linear'
 import type { TrackerClient, TrackerProvider } from './types'
 
-export type { TrackerClient } from './types'
+export type { TrackerClient, TrackerProvider } from './types'
 export { JiraTrackerClient } from './jira'
 export { GitHubTrackerClient } from './github'
 export { LinearTrackerClient } from './linear'

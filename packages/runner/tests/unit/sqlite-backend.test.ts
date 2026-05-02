@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { SqliteStateBackend } from '../../src/state/sqlite-backend'
-import { JobType } from '../../src/jobs/types'
+import { JobType, type Job } from '../../src/jobs/types'
 import { resolveIntelligenceRoot } from '../integration/repo-root'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -159,6 +159,57 @@ describe('SqliteStateBackend', () => {
     it('throws when job does not exist', async () => {
       await expect(backend.updateJob('nope', { status: 'coding' }))
         .rejects.toThrow('Job not found')
+    })
+
+    it('honours workflowPath in the patch (convert_to_campaign scenario)', async () => {
+      // Regression test: previously updateJob pinned `workflowPath` to the
+      // existing value, silently dropping it from any patch. That broke
+      // `convert_to_campaign`, which atomically flips workflowPath +
+      // phase + status — leaving jobs whose persisted phase
+      // (`campaign-planning`) didn't match their persisted workflowPath
+      // (`workflows/job/workflow.md`), tripping the runner's startup
+      // guard on the next resume.
+      const job = await backend.createJob({
+        type: 'job',
+        params: { serviceName: 'svc' },
+      })
+      expect(job.workflowPath).toBe('workflows/job/workflow.md')
+
+      const updated = await backend.updateJob(job.id, {
+        workflowPath: 'workflows/campaign/workflow.md',
+        phase: 'campaign-planning',
+        status: 'campaign-planning',
+      })
+
+      expect(updated.workflowPath).toBe('workflows/campaign/workflow.md')
+      expect(updated.phase).toBe('campaign-planning')
+      expect(updated.status).toBe('campaign-planning')
+
+      const reloaded = await backend.getJob(job.id)
+      expect(reloaded?.workflowPath).toBe('workflows/campaign/workflow.md')
+      expect(reloaded?.phase).toBe('campaign-planning')
+    })
+
+    it('does not allow id, type, or createdAt to be rewritten', async () => {
+      const job = await backend.createJob({
+        type: 'job',
+        params: { serviceName: 'svc' },
+      })
+
+      const updated = await backend.updateJob(job.id, {
+        // The immutability guard is enforced at runtime in updateJob; the
+        // patch is typed as Partial<Job> so these fields are accepted by
+        // the type system but ignored by the implementation.
+        id: 'tampered-id',
+        type: 'self-update' as Job['type'],
+        createdAt: '1970-01-01T00:00:00.000Z',
+        status: 'coding',
+      })
+
+      expect(updated.id).toBe(job.id)
+      expect(updated.type).toBe(job.type)
+      expect(updated.createdAt).toBe(job.createdAt)
+      expect(updated.status).toBe('coding')
     })
   })
 

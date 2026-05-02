@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
-import { buildSystemPrompt } from '../../src/prompt/builder'
+import { buildSystemPrompt, computeTrackerPromptContext } from '../../src/prompt/builder'
+import type { Settings } from '../../src/config/settings'
+import type { TrackerClient, TrackerProvider } from '../../src/clients/tracker'
 import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -264,4 +266,161 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(agentIdx).toBeLessThan(jobIdx)
     })
   })
+
+  // ── Tracker context ──────────────────────────────────────────────────────
+  //
+  // Regression coverage for the campaign-planner outage where the agent had
+  // no signal that the tracker was configured and silently skipped every
+  // tracker_* call. The fix surfaces a `tracker` block on the job context
+  // so the agent can branch deterministically; these tests pin the wire
+  // shape so future refactors don't drop it.
+
+  describe('tracker context', () => {
+    it('omits the tracker key when no trackerInfo is supplied', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['tracker']).toBeUndefined()
+    })
+
+    it('renders tracker.available=true with provider-specific defaults', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        { provider: 'github', available: true, defaults: { owner: 'emreertugrul' } },
+      )
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['tracker']).toEqual({
+        provider: 'github',
+        available: true,
+        defaults: { owner: 'emreertugrul' },
+      })
+    })
+
+    it('renders tracker.available=false so the agent skips tracker tools', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        { provider: 'none', available: false },
+      )
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['tracker']).toEqual({ provider: 'none', available: false })
+    })
+  })
 })
+
+// ── computeTrackerPromptContext ───────────────────────────────────────────────
+//
+// Pure helper consumed by the runner before each phase. Lives in the prompt
+// builder so the same module owns both halves of the wire contract — the
+// shape produced AND the shape consumed.
+
+describe('computeTrackerPromptContext', () => {
+  it('reports available=true for a configured GitHub tracker and exposes the owner default', () => {
+    const settings = makeSettings({
+      tracker: { provider: 'github' },
+      github: { token: 'gh-pat', owner: 'emreertugrul' },
+    })
+    const tracker = makeTrackerClient({ provider: 'github', available: true })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'github', available: true, defaults: { owner: 'emreertugrul' } })
+  })
+
+  it('preserves the user\'s explicit provider choice even when the client is unavailable', () => {
+    // Surfacing the user's intent (rather than hiding it as `none`) lets the
+    // dashboard / agent prompt explain *why* the tracker is unusable.
+    const settings = makeSettings({
+      tracker: { provider: 'github' },
+      github: { token: '', owner: '' },
+    })
+    const tracker = makeTrackerClient({ provider: 'github', available: false })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'github', available: false })
+  })
+
+  it('reports provider=none when no tracker is configured (avoids the JiraTrackerClient stub leak)', () => {
+    // The factory falls back to an empty JiraTrackerClient when nothing is
+    // wired up; without this normalisation the agent would see `provider:
+    // 'jira'` even though the user never picked Jira.
+    const settings = makeSettings({})
+    const tracker = makeTrackerClient({ provider: 'jira', available: false })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'none', available: false })
+  })
+
+  it('emits the linear teamKey default when configured', () => {
+    const settings = makeSettings({
+      tracker: { provider: 'linear' },
+      linear: { apiKey: 'k', teamKey: 'ENG' },
+    })
+    const tracker = makeTrackerClient({ provider: 'linear', available: true })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'linear', available: true, defaults: { teamKey: 'ENG' } })
+  })
+
+  it('omits defaults when no provider-specific data is available', () => {
+    const settings = makeSettings({ tracker: { provider: 'jira' } })
+    const tracker = makeTrackerClient({ provider: 'jira', available: true })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'jira', available: true })
+  })
+})
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function parseJobContext(prompt: string): Record<string, unknown> {
+  const jsonStart = prompt.indexOf('```json\n') + 8
+  const jsonEnd = prompt.indexOf('\n```', jsonStart)
+  return JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
+}
+
+interface MakeSettingsArgs {
+  tracker?: { provider?: 'none' | 'jira' | 'github' | 'linear' }
+  github?: { token?: string; owner?: string }
+  linear?: { apiKey?: string; teamKey?: string }
+}
+
+function makeSettings(args: MakeSettingsArgs): Settings {
+  // Cast through unknown — the prompt-builder helper only reads a small
+  // slice of `Settings`, so we don't bother fully populating the shape.
+  // If new fields are added that the helper actually depends on the
+  // related test will fail loudly via undefined access.
+  return {
+    tracker: args.tracker,
+    github: {
+      token: args.github?.token ?? '',
+      owner: args.github?.owner ?? '',
+      baseUrl: 'https://api.github.com',
+    },
+    ...(args.linear ? { linear: args.linear } : {}),
+  } as unknown as Settings
+}
+
+function makeTrackerClient(args: { provider: TrackerProvider; available: boolean }): TrackerClient {
+  return {
+    provider: args.provider,
+    isAvailable: () => args.available,
+    createEpic: vi.fn(),
+    createIssue: vi.fn(),
+    linkIssues: vi.fn(),
+    getIssue: vi.fn(),
+    listChildren: vi.fn(),
+    transitionIssue: vi.fn(),
+    commentIssue: vi.fn(),
+  } as unknown as TrackerClient
+}
