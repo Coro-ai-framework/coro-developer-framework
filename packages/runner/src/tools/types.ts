@@ -6,6 +6,7 @@ import { GitClient } from '../clients/git'
 import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
+import type { TrackerClient } from '../clients/tracker'
 import { Settings } from '../config/settings'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { StateBackend } from '../state/backend'
@@ -42,6 +43,13 @@ export interface ToolContext {
   lokiClient: LokiClient
   tempoClient: TempoClient
   jiraClient: JiraClient
+  /**
+   * Provider-agnostic issue-tracker client used by the campaign-planner.
+   * Resolved at runner bootstrap from `settings.tracker.provider` (default:
+   * Jira when configured, otherwise a stub that reports `available=false`
+   * from every method).
+   */
+  trackerClient: TrackerClient
   logger: Logger
   runningServices: Map<string, ChildProcess>
 }

@@ -1,23 +1,123 @@
+@import "@fontsource-variable/space-grotesk";
+@import "@fontsource/jetbrains-mono";
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Coro Dashboard design tokens
+
+   The design system uses a tight, semantic palette declared inside `@theme`
+   so Tailwind 4 generates utilities for it natively (e.g. `bg-canvas`,
+   `text-fg-muted`, `border-line`, `bg-accent-500/10`).
+
+     surfaces
+       canvas         page background
+       panel          cards, sidebars, sticky chrome
+       overlay        hover state, inputs, secondary buttons
+
+     lines
+       line           hairlines between sibling blocks
+       line-strong    edges that need to read as a real boundary
+
+     foreground
+       fg             primary text, headings
+       fg-muted       body copy, descriptions
+       fg-subtle      eyebrows, metadata, placeholders
+
+     signal palette
+       accent         primary brand action / "live" running state
+       success        completed, healthy
+       warning        needs attention, awaiting input
+       danger         failed, escalated, destructive
+
+   Phase identity (planning, coding, testing, …) is communicated by the
+   label, not by a unique color per phase. This is intentional — the old
+   per-phase color soup made every list read as a candy box and diluted
+   the meaning of the real signal colors.
+   ───────────────────────────────────────────────────────────────────────────── */
+
 @theme {
-  --color-indigo-950: #1e1b4b;
-  --color-indigo-900: #312e81;
-  --color-indigo-500: #6366f1;
-  --color-indigo-400: #818cf8;
-  --color-emerald-500: #10b981;
-  --color-emerald-400: #34d399;
-  --color-amber-500: #f59e0b;
-  --color-amber-400: #fbbf24;
-  --color-rose-500: #f43f5e;
-  --color-rose-400: #fb7185;
-  --color-cyan-400: #22d3ee;
-  --color-violet-400: #a78bfa;
+  --font-sans: "Space Grotesk Variable", "Inter", "Avenir Next", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", monospace;
+
+  /* Surfaces */
+  --color-canvas: #07101a;
+  --color-panel: #0f1c2c;
+  --color-panel-raised: #142537;
+  --color-overlay: #1a2e44;
+
+  /* Lines */
+  --color-line: rgba(255, 255, 255, 0.06);
+  --color-line-strong: rgba(255, 255, 255, 0.10);
+
+  /* Foreground */
+  --color-fg: #f1f5fb;
+  --color-fg-muted: #a5b3c7;
+  --color-fg-subtle: #6b7a93;
+
+  /* Signal palette */
+  --color-accent-500: #6172ff;
+  --color-accent-400: #8791ff;
+  --color-accent-300: #a8b0ff;
+  --color-success-500: #10b981;
+  --color-success-400: #34d399;
+  --color-warning-500: #f59e0b;
+  --color-warning-400: #fbbf24;
+  --color-danger-500: #f43f5e;
+  --color-danger-400: #fb7185;
+
+  /* Effects */
+  --shadow-card: 0 24px 48px -32px rgba(2, 6, 23, 0.85);
+  --shadow-elevated: 0 32px 64px -32px rgba(2, 6, 23, 0.95);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-fg);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(97, 114, 255, 0.32);
+  color: var(--color-fg);
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -25,37 +125,59 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
-  border-radius: 3px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: rgba(148, 163, 184, 0.30);
+  background-clip: padding-box;
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.88);
+  }
 }
 
 .animate-pulse-dot {
-  animation: pulse-dot 2s ease-in-out infinite;
+  animation: pulse-dot 1.9s ease-in-out infinite;
 }
 
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .animate-fade-in {
-  animation: fade-in 0.15s ease-out;
+  animation: fade-in 0.18s ease-out;
 }
 
 @keyframes pulse-slow {
-  0%, 100% { box-shadow: 0 0 0 0 rgb(245 158 11 / 0.35); }
-  50% { box-shadow: 0 0 0 6px rgb(245 158 11 / 0); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.26);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(251, 191, 36, 0);
+  }
 }
 
 .animate-pulse-slow {
-  animation: pulse-slow 2.5s ease-in-out infinite;
+  animation: pulse-slow 2.7s ease-in-out infinite;
 }

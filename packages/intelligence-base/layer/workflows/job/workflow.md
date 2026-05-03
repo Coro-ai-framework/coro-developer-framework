@@ -21,20 +21,14 @@ phases:
     interactive_checkpoint: true
     subagents:
       - name: code-reviewer
-        agent: agents/pr-reviewer.md
+        agent: agents/code-reviewer.md
         model: coding
-        tools: [Read, Glob, Grep, mcp__coro__bb_get_pr_comments, mcp__coro__bb_post_pr_comment, mcp__coro__gh_get_pr_comments, mcp__coro__gh_post_pr_comment, mcp__coro__log]
+        tools: [Read, Glob, Grep, Bash, mcp__coro__bb_get_pr_comments, mcp__coro__bb_post_pr_comment, mcp__coro__gh_get_pr_comments, mcp__coro__gh_post_pr_comment, mcp__coro__log]
 
   - name: review
     agent: agents/pr-reviewer.md
     model: coding
     status: reviewing
-    interactive_checkpoint: true
-
-  - name: testing
-    agent: agents/tester.md
-    model: coding
-    status: testing
     interactive_checkpoint: true
 
   - name: evaluation
@@ -82,6 +76,20 @@ The Planner agent detects the repository's language (from `go.mod`, `package.jso
 
 Work-item state is tracked on the Job object via `workItems[]`. The Planner calls `set_work_items` to register the ordered work-item list. The Evaluator manages the work-item loop — if multiple work items exist, it uses `goto_phase("coding")` and `request_new_session` to cycle through them.
 
+## Workflow shape
+
+The job pipeline is intentionally tight: each phase has a distinct decision to make, and we avoid running the same checks in two places.
+
+| Phase | Who | What is unique to this phase |
+|---|---|---|
+| `spec-writing` (Jira only) | spec-writer | Translate the ticket into a concrete spec |
+| `planning` | planner | Decide scope, sequence, language; produce work items |
+| `coding` | coder + `code-reviewer` subagent | Implement, build, test locally, self-review the diff against conventions/plan, open the PR |
+| `review` | pr-reviewer (merge gatekeeper) | Coordinate with humans, route fix requests back to coder, merge when approved |
+| `evaluation` | evaluator | Verify the merged result against acceptance criteria, manage the work-item loop, capture memory and self-improvement proposals |
+
+The convention/plan/test-coverage review happens **once**, inside the coding phase, via the `code-reviewer` subagent. The standalone `review` phase does **not** re-review the diff — it focuses on the human-coordination and merge actions that the coder must not perform on its own work. Acceptance-criteria verification, build/test re-run on the merged commit, and Loki/Tempo error scans live in `evaluation`.
+
 ## Phases
 
 > **Checkpoint reminder:** Phases flagged `interactive_checkpoint: true` are enforced by the runner when `job.interactive` is `true`. Finish the phase normally; the runner will park for developer approval before advancing. Use `await_event({ eventName: "developer-input: <reason>" })` only for an additional mid-phase question or clarification.
@@ -117,6 +125,7 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 ### Phase 2: Coding
 
 **Agent:** Coder (`agents/coder.md`)
+**Subagent:** `code-reviewer` (`agents/code-reviewer.md`) — invoked by the coder before opening the PR
 **Skills:** Agent invokes the relevant language conventions skill for the target language
 
 1. Call `get_work_items` to find the current work item
@@ -125,44 +134,40 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 4. Create a work-item branch
 5. Implement the changes following the injected conventions
 6. Write tests
-7. Open a PR with a detailed description
+7. Build, run the test suite, and fix any failures locally
+8. Invoke the `code-reviewer` subagent on the staged diff. Address any blocking findings before pushing. Carry the subagent's verdict into the PR description so human reviewers can see it.
+9. Open the PR with a detailed description that includes the subagent's review summary
 
 ---
 
-### Phase 3: Review
+### Phase 3: Review (merge gatekeeper)
 
 **Agent:** PR Reviewer (`agents/pr-reviewer.md`)
-**Skills:** Agent invokes the relevant language conventions skill for code review
 
-1. Post a structured code review against conventions and plan
-2. Monitor for human reviewer comments
-3. Coordinate fixes with the coder agent
-4. Wait for human approval and merge
+This phase does **not** re-review the diff — that already happened in coding via the `code-reviewer` subagent. The agent here is a thin merge gatekeeper that:
 
----
-
-### Phase 4: Testing
-
-**Agent:** Tester (`agents/tester.md`)
-**Skills:** Agent invokes `feature-testing` for implementation acceptance verification heuristics
-
-1. Build the service
-2. Run the test suite
-3. Verify acceptance criteria
-4. Output test results
+1. Reads the latest PR state and any human comments
+2. Routes blocking human change requests back to the coder via `goto_phase("coding")`
+3. Waits for human approval (`await_event` on `pr:approved`)
+4. Merges the PR when approval and CI conditions are met
+5. Records cross-PR feedback patterns to memory
 
 ---
 
-### Phase 5: Evaluation
+### Phase 4: Evaluation (verify + loop control)
 
 **Agent:** Evaluator (`agents/evaluator.md`)
+**Skills:** Agent invokes `feature-testing` for acceptance verification heuristics
 
-1. Classify any failures
-2. Write new knowledge to memory
-3. Decision:
+1. Check out the merged branch and confirm the build/test suite still passes (`build_status`, `existing_tests_status`)
+2. Verify each acceptance criterion from the implementation plan and record pass/fail with diffs
+3. Query Loki for runtime errors logged during verification (when applicable)
+4. Triage failures, classify root causes, write to memory for new findings
+5. Decision:
    - **Work item complete:** call `update_work_item(name, status: "complete")`. If more work items remain, call `request_new_session` then `goto_phase("coding")`. Otherwise finish.
    - **Fix needed:** call `update_work_item(name, incrementLoop: true)`, check loop count, and `goto_phase("coding")` with a fix brief.
    - **Escalate:** if loop count >= 5 or blocker found.
+6. Review upstream insights and consolidate self-improvement proposals (one `propose_change` per target layer)
 
 ---
 

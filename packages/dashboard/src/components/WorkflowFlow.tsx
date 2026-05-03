@@ -1,5 +1,7 @@
 import type React from 'react'
+import { Check, ChevronRight, Hand, Hourglass } from 'lucide-react'
 import type { Artifact, Job, WorkflowPhase } from '../types'
+import { cn } from '../lib/utils'
 
 export type PhaseState = 'complete' | 'in-progress' | 'awaiting-input' | 'pending'
 
@@ -8,6 +10,14 @@ interface WorkflowFlowProps {
   phases: WorkflowPhase[]
   selectedPhase: string | null
   onSelectPhase: (phase: string) => void
+}
+
+/** Matches phase names from the job/workflow payloads (exact, then case-insensitive). */
+function phaseIndex(phases: WorkflowPhase[], phaseName: string): number {
+  const exact = phases.findIndex(p => p.name === phaseName)
+  if (exact !== -1) return exact
+  const target = phaseName.toLowerCase()
+  return phases.findIndex(p => p.name.toLowerCase() === target)
 }
 
 /**
@@ -23,8 +33,8 @@ export function computePhaseState(
   phases: WorkflowPhase[],
   job: Job,
 ): PhaseState {
-  const currentIdx = phases.findIndex(p => p.name === job.phase)
-  const thisIdx = phases.findIndex(p => p.name === phaseName)
+  const currentIdx = phaseIndex(phases, job.phase)
+  const thisIdx = phaseIndex(phases, phaseName)
   const hasUsage = (job.phaseUsage ?? []).some(p => p.phase === phaseName)
 
   if (thisIdx === -1) return 'pending'
@@ -42,60 +52,54 @@ export function computePhaseState(
   return 'pending'
 }
 
-function phaseStateClasses(state: PhaseState, selected: boolean): string {
-  const base = 'relative flex-1 min-w-[140px] rounded-lg border px-3 py-2.5 text-left transition-all cursor-pointer'
-  const ring = selected ? 'ring-2 ring-indigo-500 ring-offset-2 ring-offset-zinc-950' : ''
+function nodeClasses(state: PhaseState, selected: boolean): string {
+  const base = 'relative flex-1 min-w-[150px] rounded-xl border px-3.5 py-2.5 text-left transition-colors cursor-pointer'
+  const ring = selected ? 'ring-2 ring-accent-400/60 ring-offset-2 ring-offset-canvas' : ''
   switch (state) {
     case 'complete':
-      return `${base} ${ring} bg-emerald-950/30 border-emerald-800/60 hover:border-emerald-700`
+      return cn(base, ring, 'border-success-500/25 bg-success-500/8 hover:border-success-500/40')
     case 'in-progress':
-      return `${base} ${ring} bg-indigo-950/30 border-indigo-700 hover:border-indigo-500 shadow-[0_0_0_1px_rgb(99_102_241/0.3)]`
+      return cn(base, ring, 'border-accent-500/30 bg-accent-500/10 hover:border-accent-500/45')
     case 'awaiting-input':
-      return `${base} ${ring} bg-amber-950/30 border-amber-700 hover:border-amber-500 animate-pulse-slow`
+      return cn(base, ring, 'border-warning-500/30 bg-warning-500/10 hover:border-warning-500/45 animate-pulse-slow')
     case 'pending':
     default:
-      return `${base} ${ring} bg-zinc-900/40 border-zinc-800 hover:border-zinc-700`
+      return cn(base, ring, 'border-line bg-overlay/40 hover:border-line-strong')
   }
 }
 
-function stateIcon(state: PhaseState): React.ReactElement {
+function StateIcon({ state }: { state: PhaseState }): React.ReactElement {
   switch (state) {
     case 'complete':
-      return (
-        <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-        </svg>
-      )
+      return <Check className="size-3.5 text-success-400" strokeWidth={2.5} />
     case 'in-progress':
-      return (
-        <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse-dot" />
-      )
+      return <span className="size-1.5 rounded-full bg-accent-400 animate-pulse-dot" aria-hidden />
     case 'awaiting-input':
-      return (
-        <svg className="w-3.5 h-3.5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-      )
+      return <Hourglass className="size-3.5 text-warning-400" />
     default:
-      return (
-        <span className="w-2 h-2 rounded-full bg-zinc-600" />
-      )
+      return <span className="size-1.5 rounded-full bg-fg-subtle/60" aria-hidden />
   }
 }
 
 function stateLabel(state: PhaseState): string {
   switch (state) {
-    case 'complete':       return 'Complete'
-    case 'in-progress':    return 'Running'
-    case 'awaiting-input': return 'Awaiting input'
-    case 'pending':        return 'Pending'
+    case 'complete':
+      return 'Complete'
+    case 'in-progress':
+      return 'Running'
+    case 'awaiting-input':
+      return 'Awaiting input'
+    case 'pending':
+      return 'Pending'
   }
 }
 
 export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase }: WorkflowFlowProps) {
   if (phases.length === 0) {
     return (
-      <div className="text-xs text-zinc-500 italic px-2 py-3">No workflow phases defined for this job.</div>
+      <div className="px-2 py-3 text-sm italic text-fg-subtle">
+        No workflow phases defined for this job.
+      </div>
     )
   }
 
@@ -108,7 +112,7 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
 
   return (
     <div className="w-full overflow-x-auto">
-      <div className="flex items-stretch gap-2 min-w-max pb-1">
+      <div className="flex min-w-max items-stretch gap-2 pb-1">
         {phases.map((phase, i) => {
           const state = computePhaseState(phase.name, phases, job)
           const selected = selectedPhase === phase.name
@@ -119,37 +123,42 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
               <button
                 type="button"
                 onClick={() => onSelectPhase(phase.name)}
-                className={phaseStateClasses(state, selected)}
+                className={nodeClasses(state, selected)}
               >
                 <div className="flex items-center gap-2">
-                  {stateIcon(state)}
-                  <span className="text-sm font-medium text-zinc-100 truncate">{phase.name}</span>
-                  {phase.interactiveCheckpoint && job.interactive && (
+                  <span className="flex size-4 items-center justify-center">
+                    <StateIcon state={state} />
+                  </span>
+                  <span className="truncate text-[13px] font-medium text-fg">{phase.name}</span>
+                  {phase.interactiveCheckpoint && job.interactive ? (
                     <span
                       title="Interactive checkpoint — the job will park here for developer approval"
-                      className="text-[10px] px-1 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800"
+                      className="inline-flex items-center rounded-full border border-warning-500/25 bg-warning-500/10 px-1 py-0.5 text-warning-400"
                     >
-                      ✋
+                      <Hand className="size-3" />
                     </span>
-                  )}
+                  ) : null}
                 </div>
-                <div className="flex items-center justify-between mt-1">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider">{stateLabel(state)}</span>
-                  {artifacts.length > 0 && (
-                    <span className="text-[10px] text-indigo-300 bg-indigo-950/50 border border-indigo-800/60 px-1.5 py-0.5 rounded-full">
-                      {artifacts.length} artefact{artifacts.length === 1 ? '' : 's'}
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
+                    {stateLabel(state)}
+                  </span>
+                  {artifacts.length > 0 ? (
+                    <span className="rounded-full border border-line bg-overlay/60 px-1.5 py-0.5 text-[10px] text-fg-muted">
+                      {artifacts.length}
                     </span>
-                  )}
+                  ) : null}
                 </div>
               </button>
 
-              {i < phases.length - 1 && (
-                <div className="flex items-center px-1 text-zinc-700 shrink-0" aria-hidden>
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
+              {i < phases.length - 1 ? (
+                <div
+                  className="flex shrink-0 items-center px-1 text-fg-subtle/60"
+                  aria-hidden
+                >
+                  <ChevronRight className="size-4" />
                 </div>
-              )}
+              ) : null}
             </div>
           )
         })}

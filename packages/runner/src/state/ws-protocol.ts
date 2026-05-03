@@ -173,6 +173,12 @@ export interface WsJobListByType {
   jobType: string
 }
 
+export interface WsJobListChildren {
+  type: 'job:listChildren'
+  messageId: string
+  parentJobId: string
+}
+
 /** Union of all runner → cloud messages */
 export type RunnerMessage =
   | WsRunnerRegister
@@ -182,6 +188,7 @@ export type RunnerMessage =
   | WsJobUpdate
   | WsJobList
   | WsJobListByType
+  | WsJobListChildren
   | WsJobDelete
   | WsJobLog
   | WsJobLogGet

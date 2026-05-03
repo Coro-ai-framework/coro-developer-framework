@@ -160,7 +160,16 @@ export async function buildJobRecord(
 
   const prMappings = buildPrMappings(input.params, now)
 
-  return {
+  // Hoist the campaign back-pointer from params to a top-level field so the
+  // dispatcher's coordinator hook and webhook resolvers can find it without
+  // poking into the params bag. The runner injects `campaignParentId` into
+  // `params` when spawning a campaign child; we lift it here so reads stay
+  // simple downstream.
+  const campaignParentId = typeof input.params['campaignParentId'] === 'string'
+    ? input.params['campaignParentId'] as string
+    : undefined
+
+  const job: Job = {
     id,
     type: jobType,
     workflowPath,
@@ -174,12 +183,20 @@ export async function buildJobRecord(
     prMappings,
     interactive: input.params['interactive'] === true,
     artifacts: [],
-    insights: [],
+    // Seed insights from the input when supplied — currently only the
+    // campaign dispatcher uses this, to carry sibling insights forward
+    // across child boundaries without going through the slower
+    // PR-merge-pull memory cycle. Default is an empty list as before.
+    insights: Array.isArray(input.initialInsights) ? [...input.initialInsights] : [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],
     createdAt: now,
     updatedAt: now,
   }
+
+  if (campaignParentId) job.campaignParentId = campaignParentId
+
+  return job
 }
 
 export function resolveWorkflowPath(input: JobInput, fallback: string): string {

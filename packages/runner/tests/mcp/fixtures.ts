@@ -6,6 +6,7 @@ import type { BitBucketClient } from '../../src/clients/bitbucket'
 import type { LokiClient } from '../../src/clients/loki'
 import type { TempoClient } from '../../src/clients/tempo'
 import type { JiraClient } from '../../src/clients/jira'
+import type { TrackerClient } from '../../src/clients/tracker'
 import type { StateBackend } from '../../src/state/backend'
 
 export function makeMockJob(overrides: Record<string, unknown> = {}) {
@@ -88,6 +89,18 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
     transitionIssue: vi.fn().mockResolvedValue(null),
   } as unknown as JiraClient
 
+  const trackerClient = {
+    provider: 'jira' as const,
+    isAvailable: () => false,
+    createEpic: vi.fn().mockResolvedValue({ available: false, reason: 'mock' }),
+    createIssue: vi.fn().mockResolvedValue({ available: false, reason: 'mock' }),
+    linkIssues: vi.fn().mockResolvedValue({ available: false, reason: 'mock' }),
+    getIssue: vi.fn().mockResolvedValue({ available: false, reason: 'mock' }),
+    listChildren: vi.fn().mockResolvedValue({ available: false, reason: 'mock' }),
+    transitionIssue: vi.fn().mockResolvedValue({ available: false, reason: 'mock' }),
+    commentIssue: vi.fn().mockResolvedValue({ available: false, reason: 'mock' }),
+  } as unknown as TrackerClient
+
   return {
     job: makeMockJob(),
     stateBackend,
@@ -109,6 +122,7 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
     lokiClient,
     tempoClient,
     jiraClient,
+    trackerClient,
     logger: {
       debug: vi.fn(),
       info: vi.fn(),

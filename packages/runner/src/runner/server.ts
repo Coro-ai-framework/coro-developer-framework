@@ -27,6 +27,7 @@ import {
 } from '../config/local-config'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
+import type { Job, CampaignChild } from '../jobs/types'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { ClaudeLoginManager } from './claude-login'
 
@@ -123,6 +124,45 @@ function pruneEmptyConfigSections(config: Record<string, unknown>): Record<strin
     const hasUrl = typeof cloud.url === 'string' && cloud.url.length > 0
     const hasToken = typeof cloud.token === 'string' && cloud.token.length > 0
     if (!hasUrl || !hasToken) delete out.cloud
+  }
+
+  // Tracker block: keep only the section relevant to the chosen provider
+  // so we never persist stale Jira creds after the user switches to Linear
+  // (and vice-versa). When provider is `none` or unset we drop the whole
+  // block — the factory falls back to inference, which is what the user
+  // expects when they intentionally clear the form.
+  const tracker = out.tracker as
+    | {
+        provider?: unknown
+        jira?: { baseUrl?: unknown; username?: unknown; apiToken?: unknown } | undefined
+        linear?: { apiKey?: unknown; teamKey?: unknown } | undefined
+      }
+    | undefined
+  if (tracker) {
+    const provider = typeof tracker.provider === 'string' ? tracker.provider : ''
+    const cleaned: Record<string, unknown> = {}
+    if (provider) cleaned['provider'] = provider
+
+    if (provider === 'jira' && tracker.jira) {
+      const jira: Record<string, string> = {}
+      if (typeof tracker.jira.baseUrl === 'string' && tracker.jira.baseUrl.length > 0) jira['baseUrl'] = tracker.jira.baseUrl
+      if (typeof tracker.jira.username === 'string' && tracker.jira.username.length > 0) jira['username'] = tracker.jira.username
+      if (typeof tracker.jira.apiToken === 'string' && tracker.jira.apiToken.length > 0) jira['apiToken'] = tracker.jira.apiToken
+      if (Object.keys(jira).length > 0) cleaned['jira'] = jira
+    }
+
+    if (provider === 'linear' && tracker.linear) {
+      const linear: Record<string, string> = {}
+      if (typeof tracker.linear.apiKey === 'string' && tracker.linear.apiKey.length > 0) linear['apiKey'] = tracker.linear.apiKey
+      if (typeof tracker.linear.teamKey === 'string' && tracker.linear.teamKey.length > 0) linear['teamKey'] = tracker.linear.teamKey
+      if (Object.keys(linear).length > 0) cleaned['linear'] = linear
+    }
+
+    if (Object.keys(cleaned).length === 0 || provider === 'none') {
+      delete out.tracker
+    } else {
+      out.tracker = cleaned
+    }
   }
 
   return out
@@ -239,6 +279,73 @@ function detectSetupTokenForceFlag(cliCmd: string, cliArgs: string[], logger: Lo
   }
 }
 
+/**
+ * Hydrate a campaign job's `campaignChildren[]` with a small summary of
+ * each dispatched child Job. Inline so the dashboard's campaign view can
+ * render phase / status / token totals / PR links without N additional
+ * round-trips. Children that have not been dispatched yet (`jobId`
+ * missing) or whose Job has been pruned are returned with `summary: null`.
+ *
+ * Keep this projection narrow — `Job` carries logs, work-item history,
+ * insights, etc. that the campaign overview doesn't need. Returning the
+ * full child Job here would dwarf the parent's payload.
+ */
+async function enrichCampaignChildren(stateBackend: StateBackend, job: Job): Promise<Job & {
+  campaignChildren: (CampaignChild & {
+    summary: {
+      jobId: string
+      type: string
+      status: string
+      phase: string
+      workflowPath: string
+      tokenUsage: Job['tokenUsage']
+      prMappings: Job['prMappings']
+      createdAt: string
+      updatedAt: string
+    } | null
+  })[]
+}> {
+  const children = job.campaignChildren ?? []
+  const enriched = await Promise.all(children.map(async child => {
+    if (!child.jobId) return { ...child, summary: null }
+    try {
+      const childJob = await stateBackend.getJob(child.jobId)
+      if (!childJob) return { ...child, summary: null }
+      return {
+        ...child,
+        summary: {
+          jobId: childJob.id,
+          type: childJob.type,
+          status: childJob.status,
+          phase: childJob.phase,
+          workflowPath: childJob.workflowPath,
+          tokenUsage: childJob.tokenUsage,
+          prMappings: childJob.prMappings,
+          createdAt: childJob.createdAt,
+          updatedAt: childJob.updatedAt,
+        },
+      }
+    } catch {
+      return { ...child, summary: null }
+    }
+  }))
+  return { ...job, campaignChildren: enriched } as Job & {
+    campaignChildren: (CampaignChild & {
+      summary: {
+        jobId: string
+        type: string
+        status: string
+        phase: string
+        workflowPath: string
+        tokenUsage: Job['tokenUsage']
+        prMappings: Job['prMappings']
+        createdAt: string
+        updatedAt: string
+      } | null
+    })[]
+  }
+}
+
 /** Best-effort MIME type inference for the artefact-content endpoint. */
 function mimeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
@@ -313,8 +420,20 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   // ── Job CRUD ────────────────────────────────────────────────────────────
 
-  app.get('/jobs', async (_req: Request, res: Response) => {
+  app.get('/jobs', async (req: Request, res: Response) => {
     try {
+      const parentId = typeof req.query.campaignParentId === 'string' && req.query.campaignParentId.length > 0
+        ? req.query.campaignParentId
+        : null
+      if (parentId) {
+        // Filter to children of a single campaign. The state backend has
+        // a tailored query (Postgres uses an indexed lookup; SQLite/Redis
+        // scan + filter) so the dashboard's campaign view doesn't have to
+        // rehydrate every job in the system.
+        const children = await stateBackend.listChildJobs(parentId)
+        res.json(children)
+        return
+      }
       const jobs = await stateBackend.listJobs()
       res.json(jobs)
     } catch (err) {
@@ -327,9 +446,69 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
       const job = await stateBackend.getJob(jobId)
       if (!job) { res.status(404).json({ error: 'Job not found' }); return }
+      // For campaign parent jobs, enrich each registered child's entry
+      // with a cheap summary of the dispatched child Job (phase, status,
+      // tokens, PRs). Saves the dashboard a fan-out when rendering the
+      // campaign detail page. Non-campaign jobs return unchanged.
+      if (Array.isArray(job.campaignChildren) && job.campaignChildren.length > 0) {
+        const enriched = await enrichCampaignChildren(stateBackend, job)
+        res.json(enriched)
+        return
+      }
       res.json(job)
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // ── Campaign child mutations ────────────────────────────────────────────
+  //
+  // Live-control endpoints forwarded to the dispatcher's coordinator. Each
+  // mutates `campaignChildren[]` on the parent (skip / reset / cancel),
+  // re-runs the coordinator sweep, and optionally interrupts the underlying
+  // child Job. They are POSTs (not PATCHes) because the dispatcher may
+  // dispatch new children as a side effect — the result is not idempotent
+  // in the request-replay sense.
+
+  app.post('/jobs/:jobId/children/:name/skip', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const name = Array.isArray(req.params.name) ? req.params.name[0] : req.params.name
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+      await dispatcher.campaignSkipChild(jobId, name, reason)
+      res.json({ ok: true, action: 'skip', child: name })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
+    }
+  })
+
+  app.post('/jobs/:jobId/children/:name/rerun', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const name = Array.isArray(req.params.name) ? req.params.name[0] : req.params.name
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+      await dispatcher.campaignRerunChild(jobId, name, reason)
+      res.json({ ok: true, action: 'rerun', child: name })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
+    }
+  })
+
+  app.post('/jobs/:jobId/children/:name/cancel', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const name = Array.isArray(req.params.name) ? req.params.name[0] : req.params.name
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+      await dispatcher.campaignCancelChild(jobId, name, reason)
+      res.json({ ok: true, action: 'cancel', child: name })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
     }
   })
 
@@ -565,6 +744,23 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             ? `${config.git.token.slice(0, 6)}...${config.git.token.slice(-4)}`
             : '',
         } : undefined,
+        // Tracker creds round-trip with the same `...` redaction
+        // convention as anthropic + git so the dashboard can display a
+        // hint that the secret is set without ever shipping it to the
+        // browser. PUT /config restores the on-disk value when it sees
+        // a `...`-redacted string come back.
+        tracker: config.tracker ? {
+          provider: config.tracker.provider,
+          jira: config.tracker.jira ? {
+            baseUrl: config.tracker.jira.baseUrl,
+            username: config.tracker.jira.username,
+            apiToken: redactSecret(config.tracker.jira.apiToken),
+          } : undefined,
+          linear: config.tracker.linear ? {
+            apiKey: redactSecret(config.tracker.linear.apiKey),
+            teamKey: config.tracker.linear.teamKey,
+          } : undefined,
+        } : undefined,
       } : null
 
       // `resolved` mirrors what the runner will actually use on disk:
@@ -676,6 +872,40 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       // Respect local mode — strip cloud if not explicitly set
       if (!updates.cloud) {
         delete (merged as Record<string, unknown>).cloud
+      }
+
+      // Tracker block. Treat redacted secrets the same way the anthropic
+      // branch does: when the dashboard echoes a `...` value back we
+      // preserve whatever is already on disk. Switching providers wipes
+      // the inactive credential sub-blocks on save (handled by
+      // `pruneEmptyConfigSections` below) so we don't accumulate stale
+      // tokens.
+      if (updates.tracker) {
+        const incoming = updates.tracker as {
+          provider?: 'none' | 'jira' | 'github' | 'linear'
+          jira?: { baseUrl?: string; username?: string; apiToken?: string }
+          linear?: { apiKey?: string; teamKey?: string }
+        }
+        const next: NonNullable<LocalConfig['tracker']> = {}
+        if (incoming.provider) next.provider = incoming.provider
+        if (incoming.jira) {
+          next.jira = {
+            ...(incoming.jira.baseUrl !== undefined ? { baseUrl: incoming.jira.baseUrl } : {}),
+            ...(incoming.jira.username !== undefined ? { username: incoming.jira.username } : {}),
+            apiToken: isRedacted(incoming.jira.apiToken)
+              ? existing.tracker?.jira?.apiToken
+              : incoming.jira.apiToken ?? existing.tracker?.jira?.apiToken,
+          }
+        }
+        if (incoming.linear) {
+          next.linear = {
+            apiKey: isRedacted(incoming.linear.apiKey)
+              ? existing.tracker?.linear?.apiKey
+              : incoming.linear.apiKey ?? existing.tracker?.linear?.apiKey,
+            ...(incoming.linear.teamKey !== undefined ? { teamKey: incoming.linear.teamKey } : {}),
+          }
+        }
+        merged.tracker = next
       }
 
       // Drop empty sub-objects (e.g. `{ paths: {}, intelligence: {} }`) so the

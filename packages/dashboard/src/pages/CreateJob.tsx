@@ -1,15 +1,29 @@
-import { useState, type FormEvent, type ChangeEvent } from 'react'
+import { useMemo, useState, type FormEvent, type ChangeEvent } from 'react'
+import { ArrowLeft, ArrowRight, Check } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import PageHeader from '../components/common/page-header'
+import ErrorState from '../components/common/error-state'
+import Field from '../components/forms/field'
+import SectionCard from '../components/forms/section-card'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import { Select } from '../components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
+import { Textarea } from '../components/ui/textarea'
+import { jsonRequest, requestJson } from '../lib/http'
 import { IMPLEMENTATION_WORKFLOWS } from '../workflows'
+import { cn } from '../lib/utils'
 
 type GitProvider = 'bitbucket' | 'github'
+type SourceMode = 'jira' | 'manual'
 
 interface JobForm {
   repo: string
   serviceName: string
   description: string
-  reviewers: string       // comma-separated
-  jiraTicketId: string    // optional Jira trigger (mutually exclusive with above)
+  reviewers: string
+  jiraTicketId: string
   gitProvider: GitProvider
 }
 
@@ -22,18 +36,6 @@ const EMPTY_JOB: JobForm = {
   gitProvider: 'bitbucket',
 }
 
-function labelClass() {
-  return 'block text-xs font-medium text-zinc-400 mb-1'
-}
-
-function inputClass() {
-  return 'w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-colors'
-}
-
-function FieldHint({ children }: { children: React.ReactNode }) {
-  return <p className="mt-1 text-xs text-zinc-500">{children}</p>
-}
-
 export default function CreateJob() {
   const navigate = useNavigate()
   const [jobForm, setJobForm] = useState<JobForm>(EMPTY_JOB)
@@ -41,14 +43,41 @@ export default function CreateJob() {
   const [interactive, setInteractive] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [mode, setMode] = useState<SourceMode>('manual')
 
   function handleJobChange(e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) {
     setJobForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
+  function handleModeChange(next: string) {
+    const nextMode = next as SourceMode
+    setMode(nextMode)
+    setJobForm(previous =>
+      nextMode === 'jira'
+        ? { ...previous, jiraTicketId: previous.jiraTicketId || 'ENG-' }
+        : { ...previous, jiraTicketId: '' },
+    )
+  }
+
   function splitCsv(val: string): string[] {
     return val.split(',').map(s => s.trim()).filter(Boolean)
   }
+
+  const workflow = IMPLEMENTATION_WORKFLOWS.find(item => item.workflowPath === workflowPath) ?? IMPLEMENTATION_WORKFLOWS[0]
+  const hasMultipleWorkflows = IMPLEMENTATION_WORKFLOWS.length > 1
+
+  const reviewSummary = useMemo(() => {
+    if (mode === 'jira') {
+      return {
+        title: jobForm.jiraTicketId.trim() || 'Jira ticket required',
+        description: 'Tracker-driven run',
+      }
+    }
+    return {
+      title: jobForm.serviceName.trim() || 'Service name required',
+      description: jobForm.description.trim() || 'Manual run',
+    }
+  }, [jobForm.description, jobForm.jiraTicketId, jobForm.serviceName, mode])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -60,7 +89,7 @@ export default function CreateJob() {
         throw new Error('Select a workflow before dispatching the job')
       }
 
-      const body = jobForm.jiraTicketId.trim()
+      const body = mode === 'jira'
         ? {
             type: 'job',
             workflowPath,
@@ -78,18 +107,7 @@ export default function CreateJob() {
             interactive,
           }
 
-      const res = await fetch('/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`)
-      }
-
-      const data = await res.json() as { jobId: string }
+      const data = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
       navigate(`/jobs/${data.jobId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -97,189 +115,239 @@ export default function CreateJob() {
     }
   }
 
-  const isJiraMode = jobForm.jiraTicketId.trim().length > 0
-
   return (
-    <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      <div className="mb-8">
-        <h1 className="text-xl font-semibold text-white">New Implementation</h1>
-        <p className="text-sm text-zinc-400 mt-1">Select a workflow, then dispatch an implementation job to the agent runtime.</p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="New run"
+        description="Choose the workflow, source context, and operator mode."
+        actions={
+          <Button variant="outline" onClick={() => navigate('/jobs')}>
+            <ArrowLeft />
+            Back to runs
+          </Button>
+        }
+      />
 
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
-          <div className="mb-3">
-            <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Workflow</h2>
-            <p className="text-sm text-zinc-500 mt-1">This list is static for now. The selected workflow path is sent with the job request.</p>
-          </div>
+      <form onSubmit={handleSubmit} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-6">
+          <SectionCard
+            title="Workflow"
+            description={hasMultipleWorkflows ? 'Choose the workflow for this dispatch.' : undefined}
+          >
+            {hasMultipleWorkflows ? (
+              <div className="grid gap-2">
+                {IMPLEMENTATION_WORKFLOWS.map(item => {
+                  const selected = item.workflowPath === workflowPath
+                  return (
+                    <label
+                      key={item.id}
+                      className={cn(
+                        'cursor-pointer rounded-2xl border px-4 py-3.5 transition-colors',
+                        selected
+                          ? 'border-accent-500/35 bg-accent-500/8'
+                          : 'border-line bg-overlay/40 hover:border-line-strong hover:bg-overlay/60',
+                      )}
+                    >
+                      <div className="flex items-start gap-3">
+                        <span
+                          className={cn(
+                            'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors',
+                            selected
+                              ? 'border-accent-400 bg-accent-500 text-white'
+                              : 'border-line-strong bg-overlay',
+                          )}
+                          aria-hidden
+                        >
+                          {selected ? <Check className="size-3" strokeWidth={3} /> : null}
+                        </span>
+                        <input
+                          type="radio"
+                          name="workflowPath"
+                          value={item.workflowPath}
+                          checked={selected}
+                          onChange={() => setWorkflowPath(item.workflowPath)}
+                          className="sr-only"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[15px] font-medium text-fg">{item.name}</div>
+                          <div className="mt-0.5 text-sm text-fg-muted">{item.description}</div>
+                          <div className="mt-1 font-mono text-[11px] text-fg-subtle">
+                            {item.workflowPath}
+                          </div>
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : workflow ? (
+              <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
+                <div className="text-[15px] font-medium text-fg">{workflow.name}</div>
+                <div className="mt-0.5 text-sm text-fg-muted">{workflow.description}</div>
+                <div className="mt-1 font-mono text-[11px] text-fg-subtle">{workflow.workflowPath}</div>
+              </div>
+            ) : null}
+          </SectionCard>
 
-          <div className="space-y-3">
-            {IMPLEMENTATION_WORKFLOWS.map(workflow => {
-              const selected = workflow.workflowPath === workflowPath
+          <SectionCard
+            title="Source context"
+            description="Use a tracker ticket or enter the run inputs directly."
+          >
+            <Tabs value={mode} onValueChange={handleModeChange} className="space-y-4">
+              <TabsList>
+                <TabsTrigger value="manual">Manual details</TabsTrigger>
+                <TabsTrigger value="jira">Jira ticket</TabsTrigger>
+              </TabsList>
 
-              return (
-                <label
-                  key={workflow.id}
-                  className={`flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${
-                    selected
-                      ? 'border-indigo-500 bg-indigo-950/30'
-                      : 'border-zinc-800 bg-zinc-950/60 hover:border-zinc-700'
-                  }`}
+              <TabsContent value="jira" className="space-y-4">
+                <Field
+                  label="Jira ticket ID"
+                  required
+                  hint="Tracker context overrides the manual fields."
                 >
-                  <input
-                    type="radio"
-                    name="workflowPath"
-                    value={workflow.workflowPath}
-                    checked={selected}
-                    onChange={() => setWorkflowPath(workflow.workflowPath)}
-                    className="mt-1 h-4 w-4 border-zinc-600 bg-zinc-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
+                  <Input
+                    name="jiraTicketId"
+                    value={jobForm.jiraTicketId}
+                    onChange={handleJobChange}
+                    placeholder="ENG-1234"
                   />
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-zinc-100">{workflow.name}</div>
-                    <div className="mt-1 text-sm text-zinc-400">{workflow.description}</div>
-                    <div className="mt-2 text-[11px] font-mono text-zinc-500">{workflow.workflowPath}</div>
-                  </div>
-                </label>
-              )
-            })}
-          </div>
+                </Field>
+              </TabsContent>
+
+              <TabsContent value="manual" className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Git provider" hint="Repository host.">
+                    <Select
+                      name="gitProvider"
+                      value={jobForm.gitProvider}
+                      onChange={handleJobChange}
+                    >
+                      <option value="bitbucket">Bitbucket</option>
+                      <option value="github">GitHub</option>
+                    </Select>
+                  </Field>
+                  <Field
+                    label="Repository slug"
+                    required
+                    hint={jobForm.gitProvider === 'github' ? 'GitHub repository name.' : 'Bitbucket slug.'}
+                  >
+                    <Input
+                      name="repo"
+                      value={jobForm.repo}
+                      onChange={handleJobChange}
+                      required={mode === 'manual'}
+                      placeholder="my-service"
+                    />
+                  </Field>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Service name" required hint="Shown in the workbench.">
+                    <Input
+                      name="serviceName"
+                      value={jobForm.serviceName}
+                      onChange={handleJobChange}
+                      required={mode === 'manual'}
+                      placeholder="Billing API"
+                    />
+                  </Field>
+                  <Field
+                    label="Reviewers"
+                    required
+                    hint={
+                      jobForm.gitProvider === 'github'
+                        ? 'Comma-separated GitHub usernames.'
+                        : 'Comma-separated Bitbucket usernames.'
+                    }
+                  >
+                    <Input
+                      name="reviewers"
+                      value={jobForm.reviewers}
+                      onChange={handleJobChange}
+                      required={mode === 'manual'}
+                      placeholder="alice, bob"
+                    />
+                  </Field>
+                </div>
+
+                <Field
+                  label="Implementation description"
+                  required
+                  hint="Planner prompt. Keep it specific."
+                >
+                  <Textarea
+                    name="description"
+                    value={jobForm.description}
+                    onChange={handleJobChange}
+                    required={mode === 'manual'}
+                    rows={5}
+                    placeholder="Add rate limiting to /api/users and return clear retry-after headers."
+                  />
+                </Field>
+              </TabsContent>
+            </Tabs>
+          </SectionCard>
+
+          <SectionCard title="Run options" description="Choose whether the run pauses at checkpoints.">
+            <label className="flex items-center justify-between gap-4 rounded-2xl border border-line bg-overlay/40 p-4">
+              <div className="space-y-1">
+                <div className="text-[15px] font-medium text-fg">Interactive mode</div>
+                <p className="text-[12px] leading-5 text-fg-subtle">
+                  Pause at interactive checkpoints for approval.
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                name="interactive"
+                checked={interactive}
+                onChange={event => setInteractive(event.target.checked)}
+                className="size-4"
+              />
+            </label>
+          </SectionCard>
         </div>
 
-        <>
-          <div className="rounded-lg border border-zinc-800 p-4 space-y-3 bg-zinc-900/40">
-            <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Option A — Jira ticket</p>
-            <div>
-              <label className={labelClass()}>Jira ticket ID</label>
-              <input
-                name="jiraTicketId"
-                value={jobForm.jiraTicketId}
-                onChange={handleJobChange}
-                placeholder="ENG-1234"
-                className={inputClass()}
-              />
-              <FieldHint>If provided, the agent will fetch the spec from Jira. Fields below are ignored.</FieldHint>
-            </div>
-          </div>
+        <div className="space-y-4 xl:sticky xl:top-6 xl:self-start">
+          <Card>
+            <CardHeader className="border-b border-line pb-4">
+              <CardTitle>Dispatch</CardTitle>
+              <CardDescription>Final check before sending the run to the runner.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-5 text-sm">
+              <SummaryRow label="Target" value={reviewSummary.title} />
+              <SummaryRow label="Workflow" value={workflow?.name ?? '—'} />
+              <SummaryRow label="Mode" value={mode === 'jira' ? 'Jira ticket' : 'Manual details'} />
+              <SummaryRow label="Provider" value={jobForm.gitProvider === 'github' ? 'GitHub' : 'Bitbucket'} />
+              <SummaryRow label="Interactive" value={interactive ? 'Yes' : 'No'} />
 
-          <div className="flex items-center gap-3">
-            <div className="flex-1 h-px bg-zinc-800" />
-            <span className="text-xs text-zinc-600 uppercase tracking-wider">or</span>
-            <div className="flex-1 h-px bg-zinc-800" />
-          </div>
-
-          <div className={`space-y-5 transition-opacity ${isJiraMode ? 'opacity-30 pointer-events-none' : ''}`}>
-            <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider -mb-2">Option B — Manual</p>
-
-            <div>
-              <label className={labelClass()}>Git provider</label>
-              <select
-                name="gitProvider"
-                value={jobForm.gitProvider}
-                onChange={handleJobChange}
-                className={inputClass()}
-              >
-                <option value="bitbucket">BitBucket</option>
-                <option value="github">GitHub</option>
-              </select>
-              <FieldHint>Where the repository is hosted</FieldHint>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className={labelClass()}>Repository slug {!isJiraMode && <span className="text-rose-400">*</span>}</label>
-                <input
-                  name="repo"
-                  value={jobForm.repo}
-                  onChange={handleJobChange}
-                  required={!isJiraMode}
-                  placeholder="my-service"
-                  className={inputClass()}
-                />
-                <FieldHint>{jobForm.gitProvider === 'github' ? 'GitHub repo name' : 'BitBucket repo slug'}</FieldHint>
+              <div className="rounded-xl border border-line bg-overlay/40 px-3 py-2.5 text-[12px] leading-5 text-fg-muted">
+                {reviewSummary.description}
               </div>
-              <div>
-                <label className={labelClass()}>Service name {!isJiraMode && <span className="text-rose-400">*</span>}</label>
-                <input
-                  name="serviceName"
-                  value={jobForm.serviceName}
-                  onChange={handleJobChange}
-                  required={!isJiraMode}
-                  placeholder="MyService"
-                  className={inputClass()}
-                />
+
+              {error ? <ErrorState message={error} /> : null}
+
+              <div className="flex flex-col gap-2 pt-1">
+                <Button type="submit" size="lg" disabled={submitting}>
+                  {submitting ? 'Dispatching…' : 'Dispatch run'}
+                  <ArrowRight />
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => navigate('/jobs')}>
+                  Cancel
+                </Button>
               </div>
-            </div>
-
-            <div>
-              <label className={labelClass()}>Description {!isJiraMode && <span className="text-rose-400">*</span>}</label>
-              <textarea
-                name="description"
-                value={jobForm.description}
-                onChange={handleJobChange}
-                required={!isJiraMode}
-                rows={3}
-                placeholder="Add rate limiting to /api/users"
-                className={`${inputClass()} resize-none`}
-              />
-            </div>
-
-            <div>
-              <label className={labelClass()}>Reviewers {!isJiraMode && <span className="text-rose-400">*</span>}</label>
-              <input
-                name="reviewers"
-                value={jobForm.reviewers}
-                onChange={handleJobChange}
-                required={!isJiraMode}
-                placeholder="alice, bob"
-                className={inputClass()}
-              />
-              <FieldHint>{jobForm.gitProvider === 'github' ? 'Comma-separated GitHub usernames' : 'Comma-separated BitBucket usernames'}</FieldHint>
-            </div>
-          </div>
-        </>
-        {/* Interactive mode toggle — shared by both workflows */}
-        <div className="rounded-lg border border-zinc-800 p-4 bg-zinc-900/40">
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              name="interactive"
-              checked={interactive}
-              onChange={e => setInteractive(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
-            />
-            <div>
-              <div className="text-sm font-medium text-zinc-200">Interactive mode</div>
-              <div className="text-xs text-zinc-500 mt-0.5">
-                Pause for my approval between phases. The job will park after each interactive
-                checkpoint and wait until I either approve it or send a message asking for changes.
-              </div>
-            </div>
-          </label>
-        </div>
-
-        {error && (
-          <div className="p-3 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-sm">
-            {error}
-          </div>
-        )}
-
-        <div className="flex items-center justify-between pt-2">
-          <button
-            type="button"
-            onClick={() => navigate('/jobs')}
-            className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="px-6 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {submitting ? 'Dispatching…' : 'Dispatch job'}
-          </button>
+            </CardContent>
+          </Card>
         </div>
       </form>
+    </div>
+  )
+}
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{label}</span>
+      <span className="text-right text-fg">{value}</span>
     </div>
   )
 }

@@ -65,6 +65,7 @@ import {
   detectMode,
   resolveIntelligenceDir,
   resolveProposalsConfig,
+  resolveTenantOverlaySource,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
@@ -84,6 +85,7 @@ import { createGitHubClient } from '../clients/github'
 import { createJiraClient } from '../clients/jira'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
+import { createTrackerClient } from '../clients/tracker'
 import { wireCloudJobDispatch } from './hybrid-dispatcher'
 import { createRunnerServer } from './server'
 
@@ -157,11 +159,30 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       apiKey: process.env.TEMPO_API_KEY ?? '',
     },
     jira: {
-      baseUrl: process.env.JIRA_BASE_URL ?? '',
-      username: process.env.JIRA_USERNAME ?? '',
-      apiToken: process.env.JIRA_API_TOKEN ?? '',
+      // Local config wins so the dashboard's Tracker section is the
+      // single source of truth; env vars stay as a no-config fallback
+      // for headless deployments that drove the runner before the
+      // dashboard existed.
+      baseUrl: config.tracker?.jira?.baseUrl ?? process.env.JIRA_BASE_URL ?? '',
+      username: config.tracker?.jira?.username ?? process.env.JIRA_USERNAME ?? '',
+      apiToken: config.tracker?.jira?.apiToken ?? process.env.JIRA_API_TOKEN ?? '',
       pollIntervalSeconds: 60,
     },
+    // The campaign workflow consults `tracker.provider` to pick a client.
+    // When the user leaves the dashboard field unset we infer from
+    // available credentials at the factory layer, so saving a partial
+    // config never crashes the runner.
+    ...(config.tracker?.provider
+      ? { tracker: { provider: config.tracker.provider } }
+      : {}),
+    ...(config.tracker?.linear?.apiKey
+      ? {
+          linear: {
+            apiKey: config.tracker.linear.apiKey,
+            ...(config.tracker.linear.teamKey ? { teamKey: config.tracker.linear.teamKey } : {}),
+          },
+        }
+      : {}),
     ngrok: {
       authToken: '',
       staticDomain: '',
@@ -216,6 +237,7 @@ export async function startLocalRunner(
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
   const jiraClient = createJiraClient(settings)
+  const trackerClient = createTrackerClient(settings)
 
   // Determine which PR poller to use based on git provider
   const gitProvider = effectiveConfig.git?.provider ?? 'github'
@@ -240,7 +262,7 @@ export async function startLocalRunner(
   // (typically `localDir` or `gitRemote`).
   const tenantContext = synthesizeSoloTenant({
     displayName: effectiveConfig.tenant?.displayName,
-    overlay: effectiveConfig.tenant?.overlay,
+    overlay: resolveTenantOverlaySource(effectiveConfig),
   })
   logger.info(
     {
@@ -264,6 +286,7 @@ export async function startLocalRunner(
     lokiClient,
     tempoClient,
     jiraClient,
+    trackerClient,
     logger,
   }
 
@@ -332,7 +355,7 @@ export async function startHybridRunner(
   // `wireCloudJobDispatch`'s initial `runner_hello` response.
   const tenantContext = tenantFromTeamId(teamId, {
     displayName: config.tenant?.displayName,
-    overlay: config.tenant?.overlay,
+    overlay: resolveTenantOverlaySource(config),
   })
   logger.info(
     {
@@ -355,6 +378,7 @@ export async function startHybridRunner(
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
   const jiraClient = createJiraClient(settings)
+  const trackerClient = createTrackerClient(settings)
 
   // Build runner context
   const runnerCtx: RunnerContext = {
@@ -369,6 +393,7 @@ export async function startHybridRunner(
     lokiClient,
     tempoClient,
     jiraClient,
+    trackerClient,
     logger,
   }
 

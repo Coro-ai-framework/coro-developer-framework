@@ -4,8 +4,9 @@
 > One product, two deployment shapes: **solo** (everything on your laptop) and
 > **team** (shared SaaS control plane + per-developer runner).
 
-Coro turns plain markdown into specialised AI engineers — planners, coders,
-testers, reviewers — that work together on real PRs against your real
+Coro turns plain markdown into specialised AI engineers — a planner, a
+coder with a built-in code-reviewer subagent, a merge gatekeeper, and an
+evaluator — that work together on real PRs against your real
 repositories. Customise their behaviour by dropping markdown into a folder;
 extend them with MCP tools when you need new capabilities.
 
@@ -126,9 +127,11 @@ it opens a PR against your target repo.
 
 ## What you get
 
-- **Multi-agent orchestration** — a planner decomposes the spec, coders
-implement, testers verify, a reviewer critiques. All agents are plain
-markdown in `agents/` (or your overlay).
+- **Multi-agent orchestration** — a planner decomposes the spec, the
+coder implements (with a `code-reviewer` subagent that critiques the
+diff before the PR is opened), a merge gatekeeper coordinates with
+human reviewers, and an evaluator verifies the merged result. All
+agents are plain markdown in `agents/` (or your overlay).
 - **Workflow phases** — the runner advances through user-defined phases
 (`workflows/job/phase-*.md`); each phase can spawn subagents and re-resolve
 intelligence.

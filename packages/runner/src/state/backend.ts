@@ -30,6 +30,13 @@ export interface StateBackend {
   updateJob(jobId: string, patch: Partial<Job>): Promise<Job>
   listJobs(): Promise<Job[]>
   listJobsByType(type: JobType): Promise<Job[]>
+  /**
+   * List all jobs whose `campaignParentId` matches the given parent. Used
+   * by the dispatcher's coordinator hook to enrich the parent's
+   * `campaignChildren[]` view, by webhook resolvers, and by the dashboard's
+   * campaign view.
+   */
+  listChildJobs(parentJobId: string): Promise<Job[]>
   deleteJob(jobId: string): Promise<void>
 
   // ── Log streaming ──────────────────────────────────────────────────────────

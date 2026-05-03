@@ -8,7 +8,7 @@ description: >-
 
 # Implementation Testing Guide
 
-Domain-specific guidance for testing generic implementation jobs. Supplements the generic Tester agent instructions with acceptance verification and regression-check methodology for work-item-based execution.
+Domain-specific guidance for testing generic implementation jobs. Used by the Evaluator agent (which now owns build/test verification on the merged commit) and by the Coder when designing tests for a work item — supplements the agent procedures with acceptance verification and regression-check methodology.
 
 ## Core approach: build verification + acceptance criteria
 

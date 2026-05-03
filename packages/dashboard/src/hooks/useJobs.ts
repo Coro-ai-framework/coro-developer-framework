@@ -1,16 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { JobSummary } from '../types'
+import { requestJson } from '../lib/http'
+import type { Job } from '../types'
 
 export function useJobs(pollIntervalMs = 5000) {
-  const [jobs, setJobs] = useState<JobSummary[]>([])
+  const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const fetchJobs = useCallback(async () => {
     try {
-      const res = await fetch('/jobs')
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json() as JobSummary[]
+      const data = await requestJson<Job[]>('/jobs')
       setJobs(data)
       setError(null)
     } catch (err) {

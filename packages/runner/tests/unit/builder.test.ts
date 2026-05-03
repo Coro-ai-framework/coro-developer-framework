@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
-import { buildSystemPrompt } from '../../src/prompt/builder'
+import { buildSystemPrompt, computeTrackerPromptContext } from '../../src/prompt/builder'
+import type { Settings } from '../../src/config/settings'
+import type { TrackerClient, TrackerProvider } from '../../src/clients/tracker'
 import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -207,6 +209,111 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
   })
 
+  // ── Insight rendering ──────────────────────────────────────────────────
+  //
+  // Coverage for the campaign sibling-insight carry-over: when a child job
+  // is dispatched with insights inherited from earlier siblings, those
+  // insights MUST surface in the prompt with clear sibling provenance so
+  // the agent can tell its own findings apart from the pre-loaded ones.
+
+  describe('insight rendering', () => {
+    it('omits the insights section entirely when none are present', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(makeJob({ insights: [] }), INTELLIGENCE_DIR, noopLogger)
+      expect(prompt).not.toContain('Insights from Upstream Agents')
+    })
+
+    it('renders own-job insights without sibling provenance', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [{
+            phase: 'coding',
+            category: 'workaround',
+            summary: 'Used inline-URL git push',
+            detail: 'Sandbox blocks .git/config writes.',
+            suggestion: 'git push "https://x-access-token:$GH_TOKEN@github.com/$GH_OWNER/$REPO.git" $BRANCH',
+          }],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      expect(prompt).toContain('Insights from Upstream Agents')
+      expect(prompt).toContain('[coding] workaround')
+      expect(prompt).not.toContain('[campaign sibling:')
+    })
+
+    it('renders sibling-inherited insights with explicit provenance and a fresher-than-memory lead', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [
+            {
+              phase: 'coding',
+              category: 'sandbox-quirk',
+              summary: 'dotnet restore hangs without --configfile',
+              detail: 'Sandbox blocks api.nuget.org; restore silently spins.',
+              suggestion: 'dotnet restore --configfile NuGet.Config',
+              sourceChildName: 'db-infrastructure',
+            },
+            {
+              phase: 'coding',
+              category: 'toolchain-pitfall',
+              summary: 'Solution-level dotnet build hangs',
+              detail: 'Per-project build works.',
+              suggestion: 'dotnet build src/<proj>/<proj>.csproj',
+              sourceChildName: 'db-infrastructure',
+            },
+          ],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      expect(prompt).toContain('[campaign sibling: db-infrastructure · coding] sandbox-quirk')
+      expect(prompt).toContain('[campaign sibling: db-infrastructure · coding] toolchain-pitfall')
+      expect(prompt).toContain('fresher than memory')
+      expect(prompt).toContain('dotnet restore --configfile NuGet.Config')
+    })
+
+    it('uses the standard lead when own-job and sibling insights are mixed (sibling provenance still wins line-by-line)', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [
+            {
+              phase: 'planning',
+              category: 'spec-ambiguity',
+              summary: 'Ambiguous reviewer mapping',
+              detail: 'No alias for "ops".',
+            },
+            {
+              phase: 'coding',
+              category: 'sandbox-quirk',
+              summary: 'dotnet restore hang',
+              detail: 'Inherited recipe',
+              sourceChildName: 'db-infrastructure',
+            },
+          ],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      // Mixed mode → fresher-than-memory lead is shown because at least one
+      // sibling insight is present; the agent should still process the
+      // own-job entry, which is rendered without the sibling marker.
+      expect(prompt).toContain('fresher than memory')
+      expect(prompt).toContain('[planning] spec-ambiguity')
+      expect(prompt).toContain('[campaign sibling: db-infrastructure · coding] sandbox-quirk')
+    })
+  })
+
   describe('resilience', () => {
     it('continues when workflow file is missing', async () => {
       setupFs({})
@@ -264,4 +371,161 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(agentIdx).toBeLessThan(jobIdx)
     })
   })
+
+  // ── Tracker context ──────────────────────────────────────────────────────
+  //
+  // Regression coverage for the campaign-planner outage where the agent had
+  // no signal that the tracker was configured and silently skipped every
+  // tracker_* call. The fix surfaces a `tracker` block on the job context
+  // so the agent can branch deterministically; these tests pin the wire
+  // shape so future refactors don't drop it.
+
+  describe('tracker context', () => {
+    it('omits the tracker key when no trackerInfo is supplied', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['tracker']).toBeUndefined()
+    })
+
+    it('renders tracker.available=true with provider-specific defaults', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        { provider: 'github', available: true, defaults: { owner: 'emreertugrul' } },
+      )
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['tracker']).toEqual({
+        provider: 'github',
+        available: true,
+        defaults: { owner: 'emreertugrul' },
+      })
+    })
+
+    it('renders tracker.available=false so the agent skips tracker tools', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        { provider: 'none', available: false },
+      )
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['tracker']).toEqual({ provider: 'none', available: false })
+    })
+  })
 })
+
+// ── computeTrackerPromptContext ───────────────────────────────────────────────
+//
+// Pure helper consumed by the runner before each phase. Lives in the prompt
+// builder so the same module owns both halves of the wire contract — the
+// shape produced AND the shape consumed.
+
+describe('computeTrackerPromptContext', () => {
+  it('reports available=true for a configured GitHub tracker and exposes the owner default', () => {
+    const settings = makeSettings({
+      tracker: { provider: 'github' },
+      github: { token: 'gh-pat', owner: 'emreertugrul' },
+    })
+    const tracker = makeTrackerClient({ provider: 'github', available: true })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'github', available: true, defaults: { owner: 'emreertugrul' } })
+  })
+
+  it('preserves the user\'s explicit provider choice even when the client is unavailable', () => {
+    // Surfacing the user's intent (rather than hiding it as `none`) lets the
+    // dashboard / agent prompt explain *why* the tracker is unusable.
+    const settings = makeSettings({
+      tracker: { provider: 'github' },
+      github: { token: '', owner: '' },
+    })
+    const tracker = makeTrackerClient({ provider: 'github', available: false })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'github', available: false })
+  })
+
+  it('reports provider=none when no tracker is configured (avoids the JiraTrackerClient stub leak)', () => {
+    // The factory falls back to an empty JiraTrackerClient when nothing is
+    // wired up; without this normalisation the agent would see `provider:
+    // 'jira'` even though the user never picked Jira.
+    const settings = makeSettings({})
+    const tracker = makeTrackerClient({ provider: 'jira', available: false })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'none', available: false })
+  })
+
+  it('emits the linear teamKey default when configured', () => {
+    const settings = makeSettings({
+      tracker: { provider: 'linear' },
+      linear: { apiKey: 'k', teamKey: 'ENG' },
+    })
+    const tracker = makeTrackerClient({ provider: 'linear', available: true })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'linear', available: true, defaults: { teamKey: 'ENG' } })
+  })
+
+  it('omits defaults when no provider-specific data is available', () => {
+    const settings = makeSettings({ tracker: { provider: 'jira' } })
+    const tracker = makeTrackerClient({ provider: 'jira', available: true })
+
+    const out = computeTrackerPromptContext(settings, tracker)
+    expect(out).toEqual({ provider: 'jira', available: true })
+  })
+})
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function parseJobContext(prompt: string): Record<string, unknown> {
+  const jsonStart = prompt.indexOf('```json\n') + 8
+  const jsonEnd = prompt.indexOf('\n```', jsonStart)
+  return JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
+}
+
+interface MakeSettingsArgs {
+  tracker?: { provider?: 'none' | 'jira' | 'github' | 'linear' }
+  github?: { token?: string; owner?: string }
+  linear?: { apiKey?: string; teamKey?: string }
+}
+
+function makeSettings(args: MakeSettingsArgs): Settings {
+  // Cast through unknown — the prompt-builder helper only reads a small
+  // slice of `Settings`, so we don't bother fully populating the shape.
+  // If new fields are added that the helper actually depends on the
+  // related test will fail loudly via undefined access.
+  return {
+    tracker: args.tracker,
+    github: {
+      token: args.github?.token ?? '',
+      owner: args.github?.owner ?? '',
+      baseUrl: 'https://api.github.com',
+    },
+    ...(args.linear ? { linear: args.linear } : {}),
+  } as unknown as Settings
+}
+
+function makeTrackerClient(args: { provider: TrackerProvider; available: boolean }): TrackerClient {
+  return {
+    provider: args.provider,
+    isAvailable: () => args.available,
+    createEpic: vi.fn(),
+    createIssue: vi.fn(),
+    linkIssues: vi.fn(),
+    getIssue: vi.fn(),
+    listChildren: vi.fn(),
+    transitionIssue: vi.fn(),
+    commentIssue: vi.fn(),
+  } as unknown as TrackerClient
+}

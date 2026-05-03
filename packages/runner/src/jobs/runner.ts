@@ -18,6 +18,7 @@ import { GitClient } from '../clients/git'
 import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
+import type { TrackerClient } from '../clients/tracker'
 import { Settings } from '../config/settings'
 import { defaultLoaderCacheRoot } from '../config/local-config'
 import {
@@ -25,7 +26,7 @@ import {
   type ResolvedIntelligence,
 } from '../intelligence/resolver'
 import type { TenantContext } from '../intelligence/tenant-context'
-import { buildSystemPrompt } from '../prompt/builder'
+import { buildSystemPrompt, computeTrackerPromptContext } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
@@ -40,9 +41,12 @@ import {
   Job,
   STATUS_COMPLETE,
   STATUS_FAILED,
+  STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_PLAN_APPROVAL,
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_DEVELOPER_INPUT,
+  isCampaignJob,
+  isParkingStatus,
   isTerminalStatus,
   TokenUsage,
   PhaseUsage,
@@ -73,6 +77,12 @@ export interface RunnerContext {
   lokiClient: LokiClient
   tempoClient: TempoClient
   jiraClient: JiraClient
+  /**
+   * Active issue-tracker client (Jira today; GitHub Issues / Linear later).
+   * Always present — falls back to a stub that reports `available=false`
+   * from every method when no provider is configured.
+   */
+  trackerClient: TrackerClient
   logger: Logger
 }
 
@@ -228,6 +238,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     lokiClient: ctx.lokiClient,
     tempoClient: ctx.tempoClient,
     jiraClient: ctx.jiraClient,
+    trackerClient: ctx.trackerClient,
     logger,
     runningServices,
   }
@@ -284,7 +295,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         )
       }
 
-      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger)
+      // Recompute every phase: the tracker client itself is constructed once
+      // at runner bootstrap, but `isAvailable()` reads its captured settings
+      // and we want the prompt to reflect any tenant-overlay config refresh
+      // between phases.
+      const trackerInfo = computeTrackerPromptContext(settings, ctx.trackerClient)
+      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo)
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
@@ -361,6 +377,44 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const phaseStatus = phaseConf?.status ?? liveJob.phase
       liveJob = await syncJob(stateBackend, liveJob, { status: phaseStatus })
       toolCtx.job = liveJob
+
+      // Agent-less parking phase short-circuit. When a workflow phase has
+      // no agent AND its mapped status is a parking state, there is
+      // nothing for an LLM to do — running query() would just burn
+      // planning-tier tokens against a prompt with no role section. The
+      // canonical examples are:
+      //   - self-update workflow's `tracking` phase
+      //     (status: awaiting-pr-merge — webhook resumes it)
+      //   - campaign workflow's `coordinating` phase
+      //     (status: awaiting-children — dispatcher resumes it)
+      //
+      // We park immediately and break the runner loop. The dispatcher's
+      // coordinator hook (for campaigns) or webhook handler (for
+      // self-update) takes responsibility for the next resume.
+      if (!phaseConf?.agent && phaseConf && isParkingStatus(phaseConf.status)) {
+        const isCampaign = isCampaignJob(liveJob) && phaseConf.status === STATUS_AWAITING_CHILDREN
+        const awaiting = isCampaign
+          ? 'campaign-children-complete'
+          : `phase-${liveJob.phase}-event`
+
+        liveJob = await syncJob(stateBackend, liveJob, {
+          awaitingEvent: awaiting,
+        })
+        toolCtx.job = liveJob
+
+        logger.info(
+          { jobId: liveJob.id, phase: liveJob.phase, status: phaseStatus, isCampaign },
+          'Agent-less parking phase — runner stopping until external resume',
+        )
+        await stateBackend.appendLog(
+          liveJob.id,
+          `Phase ${liveJob.phase} has no agent — parked at ${phaseStatus}. ` +
+            `${isCampaign
+              ? 'Dispatcher coordinator will dispatch ready children and resume the parent on completion.'
+              : 'External event resumes the job.'}`,
+        )
+        break
+      }
 
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, model },

@@ -9,6 +9,7 @@ import {
   detectMode,
   resolveIntelligenceDir,
   resolveProposalsConfig,
+  resolveTenantOverlaySource,
   resolveWorkingDir,
   type LocalConfig,
 } from '../../src/config/local-config'
@@ -270,6 +271,55 @@ describe('local-config', () => {
         }),
       )
       expect(() => loadLocalConfig(configPath)).toThrow()
+    })
+  })
+
+  describe('resolveTenantOverlaySource', () => {
+    it('defaults to none when overlay and gitRemote are absent', () => {
+      expect(resolveTenantOverlaySource({ anthropic: { method: 'apiKey', apiKey: 'sk-1' } })).toEqual({
+        kind: 'none',
+      })
+      expect(resolveTenantOverlaySource(null)).toEqual({ kind: 'none' })
+    })
+
+    it('uses intelligence.gitRemote when tenant.overlay is omitted', () => {
+      expect(
+        resolveTenantOverlaySource({
+          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
+          intelligence: { gitRemote: 'https://github.com/org/intel.git' },
+        }),
+      ).toEqual({ kind: 'gitRemote', url: 'https://github.com/org/intel.git' })
+    })
+
+    it('trims intelligence.gitRemote', () => {
+      expect(
+        resolveTenantOverlaySource({
+          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
+          intelligence: { gitRemote: '  https://github.com/org/x.git  ' },
+        }),
+      ).toEqual({ kind: 'gitRemote', url: 'https://github.com/org/x.git' })
+    })
+
+    it('honours explicit tenant.overlay over intelligence.gitRemote', () => {
+      expect(
+        resolveTenantOverlaySource({
+          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
+          intelligence: { gitRemote: 'https://github.com/other.git' },
+          tenant: {
+            overlay: { kind: 'gitRemote', url: 'https://github.com/canonical/other.git', ref: 'main' },
+          },
+        }),
+      ).toEqual({ kind: 'gitRemote', url: 'https://github.com/canonical/other.git', ref: 'main' })
+    })
+
+    it('honours explicit tenant.overlay.none and does not fall back to gitRemote', () => {
+      expect(
+        resolveTenantOverlaySource({
+          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
+          intelligence: { gitRemote: 'https://github.com/org/intel.git' },
+          tenant: { overlay: { kind: 'none' } },
+        }),
+      ).toEqual({ kind: 'none' })
     })
   })
 })

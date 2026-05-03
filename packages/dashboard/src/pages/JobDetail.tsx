@@ -1,234 +1,811 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ArrowLeft,
+  ChevronDown,
+  GitPullRequest,
+  RefreshCcw,
+  Send,
+} from 'lucide-react'
+import { Link, useLocation, useParams } from 'react-router-dom'
+import ApprovalBox from '../components/ApprovalBox'
+import ArtifactLink from '../components/ArtifactLink'
+import CampaignView from '../components/CampaignView'
+import ConnectionIndicator from '../components/ConnectionIndicator'
+import LogViewer from '../components/LogViewer'
+import StatusBadge from '../components/StatusBadge'
+import WorkflowFlow from '../components/WorkflowFlow'
+import ErrorState from '../components/common/error-state'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
+import { Select } from '../components/ui/select'
+import { Separator } from '../components/ui/separator'
+import { Skeleton } from '../components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
+import { Textarea } from '../components/ui/textarea'
+import { Badge } from '../components/ui/badge'
+import { cn } from '../lib/utils'
+import { formatDateTime, formatDuration, formatPreciseCurrency, formatRelativeTime, formatTokens } from '../lib/format'
+import {
+  deriveJobDescription,
+  deriveJobTitle,
+  deriveWorkflowLabel,
+  getCurrentWorkItem,
+  getRepoSlug,
+  getReviewers,
+  getRunDetailPath,
+  getRunKindLabel,
+  isCampaignJob,
+} from '../lib/jobs'
+import { jsonRequest, requestJson } from '../lib/http'
 import { useJob } from '../hooks/useJob'
 import { useJobStream } from '../hooks/useJobStream'
-import LogViewer from '../components/LogViewer'
-import ConnectionIndicator from '../components/ConnectionIndicator'
-import StatusBadge from '../components/StatusBadge'
-import WorkflowFlow, { computePhaseState } from '../components/WorkflowFlow'
-import ArtifactLink from '../components/ArtifactLink'
-import ApprovalBox from '../components/ApprovalBox'
-import type { TokenUsage, PhaseUsage, WorkflowPhase } from '../types'
+import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
+import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
+import type { Tone } from '../lib/status'
+import { isTerminalStatus } from '../lib/status'
 
-function timeAgo(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (seconds < 60) return `${seconds}s ago`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return `${days}d ago`
+type DetailTab = 'activity' | 'work' | 'diagnostics'
+
+const RESUMABLE_STATUSES = new Set([
+  'failed',
+  'escalated',
+  'awaiting-plan-approval',
+  'awaiting-pr-merge',
+  'queued',
+  'planning',
+  'coding',
+  'reviewing',
+  'testing',
+  'evaluating',
+  'spec-writing',
+  'analysis',
+  'repo-setup',
+  'reporting',
+  'campaign-planning',
+  'coordinating',
+  'aggregating',
+])
+
+const NON_RUNNING_STATUSES = new Set([
+  'complete',
+  'failed',
+  'escalated',
+  'awaiting-plan-approval',
+  'awaiting-pr-merge',
+])
+
+function deriveWorkflowPhases(job: Job | null): WorkflowPhase[] {
+  if (!job) return []
+  if (job.workflowPhases && job.workflowPhases.length > 0) return job.workflowPhases
+
+  const seen = new Set<string>()
+  const phases: WorkflowPhase[] = []
+  for (const phase of job.phaseUsage ?? []) {
+    if (!seen.has(phase.phase)) {
+      seen.add(phase.phase)
+      phases.push({ name: phase.phase, status: phase.phase })
+    }
+  }
+  if (!seen.has(job.phase)) {
+    phases.push({ name: job.phase, status: job.phase })
+  }
+  return phases
 }
 
-function WorkItemProgress({ workItems }: { workItems: { name: string; status: string; loopCount: number }[] }) {
-  if (workItems.length === 0) return null
+/* ─── Header ─────────────────────────────────────────────────────────────── */
 
-  const statusColor: Record<string, string> = {
-    'pending': 'bg-zinc-700',
-    'in-progress': 'bg-indigo-500',
-    'complete': 'bg-emerald-500',
-    'escalated': 'bg-rose-500',
+function HeaderSummary({ job }: { job: Job }) {
+  const repoSlug = getRepoSlug(job)
+  const description = deriveJobDescription(job)
+
+  return (
+    <div className="space-y-4">
+      <Link
+        to="/jobs"
+        className="inline-flex items-center gap-1.5 text-sm text-fg-muted transition-colors hover:text-fg"
+      >
+        <ArrowLeft className="size-4" />
+        Back to runs
+      </Link>
+
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-[1.75rem] font-semibold tracking-tight text-fg sm:text-[2rem]">
+            {deriveJobTitle(job)}
+          </h1>
+          <StatusBadge status={job.status} />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-fg-subtle">
+          <span className="rounded-md border border-line bg-overlay px-1.5 py-0.5 uppercase tracking-[0.14em]">
+            {getRunKindLabel(job).toLowerCase()}
+          </span>
+          <span className="rounded-md border border-line bg-overlay px-1.5 py-0.5 uppercase tracking-[0.14em]">
+            {job.interactive ? 'interactive' : 'autonomous'}
+          </span>
+          <span className="font-mono">{job.id}</span>
+          {repoSlug ? <span>· {repoSlug}</span> : null}
+          <span>· updated {formatRelativeTime(job.updatedAt)}</span>
+        </div>
+
+        {description ? (
+          <p className="line-clamp-2 max-w-3xl text-sm text-fg-muted">{description}</p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function HeaderMetricStrip({ job }: { job: Job }) {
+  return (
+    <div className="grid gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-2 xl:grid-cols-4">
+      <HeaderMetric label="Workflow" value={deriveWorkflowLabel(job.workflowPath)} detail={job.workflowPath} mono />
+      <HeaderMetric label="Phase" value={job.phase} detail={`Started ${formatDateTime(job.createdAt)}`} />
+      <HeaderMetric
+        label="Working on"
+        value={getCurrentWorkItem(job)}
+        detail={job.awaitingEvent ?? 'Live execution'}
+      />
+      <HeaderMetric
+        label="Spend"
+        value={formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
+        detail={`${job.prMappings?.length ?? 0} PR mappings`}
+      />
+    </div>
+  )
+}
+
+function HeaderMetric({
+  label,
+  value,
+  detail,
+  mono = false,
+}: {
+  label: string
+  value: string
+  detail?: string
+  mono?: boolean
+}) {
+  return (
+    <div className="bg-panel p-4">
+      <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">{label}</div>
+      <div className={cn('mt-1 line-clamp-2 text-sm text-fg', mono ? 'font-mono' : 'font-medium')}>
+        {value}
+      </div>
+      {detail ? <div className="mt-1 line-clamp-2 text-[11px] text-fg-subtle">{detail}</div> : null}
+    </div>
+  )
+}
+
+/* ─── Tab content blocks ─────────────────────────────────────────────────── */
+
+function MetricTile({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="rounded-xl border border-line bg-overlay/40 p-4">
+      <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">{label}</div>
+      <div className="mt-1 text-xl font-semibold text-fg">{value}</div>
+      {detail ? <div className="mt-1 text-[12px] text-fg-muted">{detail}</div> : null}
+    </div>
+  )
+}
+
+function AlertCard({
+  title,
+  tone,
+  children,
+}: {
+  title: string
+  tone: Tone
+  children: React.ReactNode
+}) {
+  const toneMap: Record<Tone, string> = {
+    neutral: 'border-line bg-overlay/40 text-fg',
+    accent: 'border-accent-500/25 bg-accent-500/8 text-fg',
+    success: 'border-success-500/25 bg-success-500/8 text-fg',
+    warning: 'border-warning-500/25 bg-warning-500/8 text-fg',
+    danger: 'border-danger-500/25 bg-danger-500/8 text-fg',
   }
 
   return (
-    <div className="space-y-1.5">
-      <h4 className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Work Items</h4>
-      <div className="space-y-1">
-        {workItems.map(f => (
-          <div key={f.name} className="flex items-center gap-2 text-xs">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${statusColor[f.status] ?? 'bg-zinc-600'}`} />
-            <span className="text-zinc-300 flex-1 truncate">{f.name}</span>
-            <span className="text-zinc-500">{f.status}</span>
-            {f.loopCount > 1 && <span className="text-zinc-600">×{f.loopCount}</span>}
-          </div>
-        ))}
-      </div>
+    <div className={cn('rounded-2xl border p-4', toneMap[tone])}>
+      <div className="text-sm font-semibold text-fg">{title}</div>
+      <div className="mt-1 text-sm text-fg-muted">{children}</div>
     </div>
   )
 }
 
-function CollapsibleJson({ label, data, defaultOpen = false }: { label: string; data: unknown; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen)
+function WorkItemsCard({ job }: { job: Job }) {
+  if (!job.workItems || job.workItems.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Work items</CardTitle>
+          <CardDescription>No explicit work item breakdown was posted for this run.</CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
+
+  const toneFor = (status: string): Tone => {
+    if (status === 'complete') return 'success'
+    if (status === 'in-progress') return 'accent'
+    if (status === 'escalated') return 'danger'
+    return 'neutral'
+  }
+  const dotFor = (tone: Tone): string => ({
+    neutral: 'bg-fg-subtle',
+    accent: 'bg-accent-400',
+    success: 'bg-success-400',
+    warning: 'bg-warning-400',
+    danger: 'bg-danger-400',
+  }[tone])
 
   return (
-    <div className="rounded-lg border border-zinc-800 overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-3 py-2 bg-zinc-900 hover:bg-zinc-800/80 transition-colors text-left"
-      >
-        <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">{label}</span>
-        <svg
-          className={`w-4 h-4 text-zinc-500 transition-transform ${open ? 'rotate-180' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {open && (
-        <pre className="p-3 text-xs font-mono text-zinc-300 bg-zinc-950 overflow-x-auto max-h-96 overflow-y-auto whitespace-pre-wrap break-words">
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      )}
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Work items</CardTitle>
+        <CardDescription>Planner-defined units of work and their loop counts.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {job.workItems.map(item => {
+          const tone = toneFor(item.status)
+          return (
+            <div
+              key={item.name}
+              className="flex items-center gap-3 rounded-xl border border-line bg-overlay/40 px-4 py-2.5"
+            >
+              <span className={cn('size-2 rounded-full', dotFor(tone), item.status === 'in-progress' && 'animate-pulse-dot')} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-fg">{item.name}</div>
+                <div className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{item.status}</div>
+              </div>
+              <div className="text-[12px] text-fg-muted">loop {item.loopCount}</div>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
   )
 }
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return n.toLocaleString()
-}
+function TokenUsagePanel({ usage }: { usage?: TokenUsage }) {
+  if (!usage) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Token usage</CardTitle>
+          <CardDescription>
+            Token usage will populate once this job has run through at least one model turn.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
 
-function formatDuration(ms: number): string {
-  if (ms === 0) return '—'
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`
-  const hours = Math.floor(minutes / 60)
-  const remainingMinutes = minutes % 60
-  return `${hours}h ${remainingMinutes}m`
-}
-
-function TokenUsageCard({ usage }: { usage: TokenUsage }) {
   const totalTokens = usage.inputTokens + usage.outputTokens
-  const cacheHitRate = usage.inputTokens > 0
-    ? ((usage.cacheReadInputTokens / (usage.inputTokens + usage.cacheCreationInputTokens)) * 100)
-    : 0
+  const cacheBase = usage.inputTokens + usage.cacheCreationInputTokens
+  const cacheHitRate = cacheBase > 0 ? (usage.cacheReadInputTokens / cacheBase) * 100 : 0
 
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
-      <h3 className="text-xs font-medium text-zinc-400 uppercase tracking-wider mb-3">Token Usage</h3>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div>
-          <div className="text-xs text-zinc-500">Total Tokens</div>
-          <div className="text-lg font-semibold text-zinc-100">{formatTokens(totalTokens)}</div>
-        </div>
-        <div>
-          <div className="text-xs text-zinc-500">Input / Output</div>
-          <div className="text-sm font-medium text-zinc-200">
-            {formatTokens(usage.inputTokens)} <span className="text-zinc-600">/</span> {formatTokens(usage.outputTokens)}
-          </div>
-        </div>
-        <div>
-          <div className="text-xs text-zinc-500">Cache Read / Write</div>
-          <div className="text-sm font-medium text-zinc-200">
-            {formatTokens(usage.cacheReadInputTokens)} <span className="text-zinc-600">/</span> {formatTokens(usage.cacheCreationInputTokens)}
-          </div>
-        </div>
-        <div>
-          <div className="text-xs text-zinc-500">Cache Hit Rate</div>
-          <div className="text-sm font-medium text-zinc-200">
-            {cacheHitRate > 0 ? `${cacheHitRate.toFixed(0)}%` : '—'}
-          </div>
-        </div>
-      </div>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Token usage</CardTitle>
+        <CardDescription>Token footprint, cache efficiency, and spend for the full run.</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricTile
+          label="Total"
+          value={formatTokens(totalTokens)}
+          detail={`${formatTokens(usage.inputTokens)} in / ${formatTokens(usage.outputTokens)} out`}
+        />
+        <MetricTile
+          label="Cache read"
+          value={formatTokens(usage.cacheReadInputTokens)}
+          detail={`${formatTokens(usage.cacheCreationInputTokens)} cache writes`}
+        />
+        <MetricTile
+          label="Hit rate"
+          value={cacheHitRate > 0 ? `${cacheHitRate.toFixed(0)}%` : '—'}
+          detail="Across cache-eligible requests"
+        />
+        <MetricTile
+          label="Spend"
+          value={formatPreciseCurrency(usage.totalCostUsd)}
+          detail="USD across all turns"
+        />
+      </CardContent>
+    </Card>
   )
 }
 
 function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
-  if (phases.length === 0) return null
+  if (!phases.length) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Usage by phase</CardTitle>
+          <CardDescription>No phase-level usage snapshots have been recorded yet.</CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
 
   return (
-    <div className="rounded-lg border border-zinc-800 overflow-hidden">
-      <div className="px-3 py-2 bg-zinc-900">
-        <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Usage by Phase</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
+    <Card>
+      <CardHeader>
+        <CardTitle>Usage by phase</CardTitle>
+        <CardDescription>Per-phase token consumption, wall time, and model selection.</CardDescription>
+      </CardHeader>
+      <CardContent className="overflow-x-auto">
+        <table className="w-full min-w-[680px] text-sm">
           <thead>
-            <tr className="border-b border-zinc-800 text-zinc-500">
-              <th className="text-left px-3 py-2 font-medium">Phase</th>
-              <th className="text-right px-3 py-2 font-medium">Input</th>
-              <th className="text-right px-3 py-2 font-medium">Output</th>
-              <th className="text-right px-3 py-2 font-medium">Cache Read</th>
-              <th className="text-right px-3 py-2 font-medium">Duration</th>
-              <th className="text-right px-3 py-2 font-medium">Turns</th>
-              <th className="text-left px-3 py-2 font-medium">Model</th>
+            <tr className="border-b border-line text-left text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
+              <th className="px-2 py-2 font-medium">Phase</th>
+              <th className="px-2 py-2 text-right font-medium">Input</th>
+              <th className="px-2 py-2 text-right font-medium">Output</th>
+              <th className="px-2 py-2 text-right font-medium">Duration</th>
+              <th className="px-2 py-2 text-right font-medium">Turns</th>
+              <th className="px-2 py-2 text-right font-medium">Cost</th>
+              <th className="px-2 py-2 font-medium">Model</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-zinc-800/50">
-            {phases.map((p, i) => (
-              <tr key={`${p.phase}-${i}`} className="text-zinc-300 hover:bg-zinc-800/30 transition-colors">
-                <td className="px-3 py-2 font-medium text-zinc-200">{p.phase}</td>
-                <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.inputTokens)}</td>
-                <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.outputTokens)}</td>
-                <td className="text-right px-3 py-2 tabular-nums">{formatTokens(p.cacheReadInputTokens)}</td>
-                <td className="text-right px-3 py-2 tabular-nums">{formatDuration(p.durationMs)}</td>
-                <td className="text-right px-3 py-2 tabular-nums">{p.numTurns}</td>
-                <td className="px-3 py-2 text-zinc-400 truncate max-w-[140px]">{p.model}</td>
+          <tbody className="divide-y divide-line text-fg">
+            {phases.map((phase, index) => (
+              <tr key={`${phase.phase}-${index}`}>
+                <td className="px-2 py-3 font-medium text-fg">{phase.phase}</td>
+                <td className="px-2 py-3 text-right tabular-nums">{formatTokens(phase.inputTokens)}</td>
+                <td className="px-2 py-3 text-right tabular-nums">{formatTokens(phase.outputTokens)}</td>
+                <td className="px-2 py-3 text-right tabular-nums">{formatDuration(phase.durationMs)}</td>
+                <td className="px-2 py-3 text-right tabular-nums">{phase.numTurns}</td>
+                <td className="px-2 py-3 text-right tabular-nums">{formatPreciseCurrency(phase.costUsd)}</td>
+                <td className="px-2 py-3 text-fg-muted">{phase.model}</td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function WorkflowSnapshotCard({
+  job,
+  selectedPhase,
+  phases,
+  onSelectPhase,
+}: {
+  job: Job
+  selectedPhase: string | null
+  phases: WorkflowPhase[]
+  onSelectPhase: (phase: string) => void
+}) {
+  const selectedPhaseName = selectedPhase ?? job.phase
+  const selectedPhaseArtifacts = (job.artifacts ?? []).filter(artifact => artifact.phase === selectedPhaseName)
+  const phaseUsage = (job.phaseUsage ?? []).find(phase => phase.phase === selectedPhaseName)
+
+  return (
+    <Card>
+      <CardHeader className="border-b border-line pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>{deriveWorkflowLabel(job.workflowPath)}</CardTitle>
+            <CardDescription>{phases.length} phases · click any to inspect</CardDescription>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+            <span>current</span>
+            <Badge variant="neutral" className="border-line bg-overlay text-fg">
+              {job.phase}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5 pt-5">
+        <WorkflowFlow
+          job={job}
+          phases={phases}
+          selectedPhase={selectedPhase}
+          onSelectPhase={onSelectPhase}
+        />
+
+        <div className="rounded-2xl border border-line bg-overlay/30 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <div className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+                Selected phase
+              </div>
+              <div className="text-base font-semibold text-fg">{selectedPhaseName}</div>
+            </div>
+            {phaseUsage ? (
+              <div className="flex flex-wrap gap-4 text-[12px] text-fg-muted">
+                <span><span className="text-fg-subtle">in</span> <span className="tabular-nums text-fg">{formatTokens(phaseUsage.inputTokens)}</span></span>
+                <span><span className="text-fg-subtle">out</span> <span className="tabular-nums text-fg">{formatTokens(phaseUsage.outputTokens)}</span></span>
+                <span><span className="text-fg-subtle">turns</span> <span className="tabular-nums text-fg">{phaseUsage.numTurns}</span></span>
+                <span><span className="text-fg-subtle">duration</span> <span className="tabular-nums text-fg">{formatDuration(phaseUsage.durationMs)}</span></span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-3">
+            <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+              Phase artifacts
+            </div>
+            {selectedPhaseArtifacts.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-line px-4 py-3 text-[13px] text-fg-subtle">
+                No artifacts have been posted for this phase yet.
+              </div>
+            ) : (
+              <div className="grid gap-2 xl:grid-cols-2">
+                {selectedPhaseArtifacts.map(artifact => (
+                  <ArtifactLink key={artifact.id} jobId={job.id} artifact={artifact} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MessageComposer({
+  value,
+  onChange,
+  onSend,
+  sending,
+  error,
+}: {
+  value: string
+  onChange: (value: string) => void
+  onSend: () => Promise<void>
+  sending: boolean
+  error: string | null
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Send message</CardTitle>
+        <CardDescription>
+          Send additional guidance into the live run. Multiple messages are allowed.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error ? <ErrorState message={error} /> : null}
+        <Textarea
+          rows={4}
+          value={value}
+          onChange={event => onChange(event.target.value)}
+          placeholder="Tell the agent what changed, what to prioritize, or where to look next…"
+        />
+        <div className="flex justify-end">
+          <Button onClick={() => void onSend()} disabled={sending || !value.trim()} size="sm">
+            <Send />
+            {sending ? 'Sending…' : 'Send message'}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function ArtifactsBoard({ job, phases }: { job: Job; phases: WorkflowPhase[] }) {
+  const order = phases.map(phase => phase.name)
+  const grouped = new Map<string, typeof job.artifacts>()
+
+  for (const artifact of job.artifacts ?? []) {
+    const bucket = grouped.get(artifact.phase) ?? []
+    bucket.push(artifact)
+    grouped.set(artifact.phase, bucket)
+  }
+
+  const orderedPhases = Array.from(new Set([...order, ...Array.from(grouped.keys())]))
+
+  if (orderedPhases.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Artifacts</CardTitle>
+          <CardDescription>No artifacts have been posted to this job yet.</CardDescription>
+        </CardHeader>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader className="border-b border-line pb-4">
+        <CardTitle>Artifacts</CardTitle>
+        <CardDescription>All artifacts grouped by their workflow phase.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5 pt-5">
+        {orderedPhases.map(phase => {
+          const artifacts = grouped.get(phase) ?? []
+          return (
+            <div key={phase} className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{phase}</div>
+                <div className="text-[11px] text-fg-subtle">
+                  {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
+                </div>
+              </div>
+              {artifacts.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-line px-4 py-3 text-[13px] text-fg-subtle">
+                  No artifacts in this phase.
+                </div>
+              ) : (
+                <div className="grid gap-2 xl:grid-cols-2">
+                  {artifacts.map(artifact => (
+                    <ArtifactLink key={artifact.id} jobId={job.id} artifact={artifact} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
+function JsonPanel({ label, data, defaultOpen = false }: { label: string; data: unknown; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="overflow-hidden rounded-2xl border border-line bg-overlay/30">
+      <button
+        type="button"
+        onClick={() => setOpen(prev => !prev)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-overlay/60"
+      >
+        <span className="text-sm font-medium text-fg">{label}</span>
+        <ChevronDown className={cn('size-4 text-fg-subtle transition-transform', open && 'rotate-180')} />
+      </button>
+      {open ? (
+        <pre className="max-h-[420px] overflow-auto border-t border-line p-4 font-mono text-[12px] text-fg whitespace-pre-wrap break-words">
+          {JSON.stringify(data, null, 2)}
+        </pre>
+      ) : null}
     </div>
   )
 }
 
-const RESUMABLE_STATUSES = new Set([
-  'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge', 'queued',
-  // Phase statuses — job may be stuck here after a server restart or crash
-  'planning', 'coding', 'reviewing', 'testing', 'evaluating',
-  'spec-writing', 'analysis', 'repo-setup', 'reporting',
-])
+function ContextPanel({ job }: { job: Job }) {
+  const reviewers = getReviewers(job)
+  const repoSlug = getRepoSlug(job)
 
-const NON_RUNNING_STATUSES = new Set([
-  'complete', 'failed', 'escalated', 'awaiting-plan-approval', 'awaiting-pr-merge', 'queued',
-])
+  const rows: Array<{ label: string; value: React.ReactNode }> = []
+  rows.push({ label: 'Type', value: getRunKindLabel(job) })
+  rows.push({ label: 'Phase', value: job.phase })
+  if (repoSlug) rows.push({ label: 'Repository', value: repoSlug })
+  if (reviewers.length > 0) rows.push({ label: 'Reviewers', value: reviewers.join(', ') })
+  if (job.campaignParentId) {
+    rows.push({
+      label: 'Parent campaign',
+      value: (
+        <Link
+          to={getRunDetailPath({ id: job.campaignParentId })}
+          className="font-mono text-accent-300 hover:text-accent-400"
+        >
+          {job.campaignParentId}
+        </Link>
+      ),
+    })
+  }
+  if (job.prMappings && job.prMappings.length > 0) {
+    rows.push({
+      label: 'Pull requests',
+      value: (
+        <div className="flex items-center gap-1.5 text-fg-muted">
+          <GitPullRequest className="size-3.5" />
+          {job.prMappings.length} mapping{job.prMappings.length === 1 ? '' : 's'}
+        </div>
+      ),
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Context</CardTitle>
+        <CardDescription>Run metadata and coordination signals.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {rows.map((row, idx) => (
+          <div key={idx} className="flex items-baseline justify-between gap-3">
+            <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{row.label}</span>
+            <span className="text-right text-fg">{row.value}</span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ActionPanel({
+  job,
+  workflowPhases,
+  resuming,
+  resumePhase,
+  clearSession,
+  resumeError,
+  onResumePhaseChange,
+  onClearSessionChange,
+  onResume,
+  onRefresh,
+}: {
+  job: Job
+  workflowPhases: WorkflowPhase[]
+  resuming: boolean
+  resumePhase: string
+  clearSession: boolean
+  resumeError: string | null
+  onResumePhaseChange: (value: string) => void
+  onClearSessionChange: (value: boolean) => void
+  onResume: (fromPhase?: string, shouldClearSession?: boolean) => Promise<void>
+  onRefresh: () => Promise<void>
+}) {
+  const canResume = RESUMABLE_STATUSES.has(job.status)
+
+  return (
+    <Card>
+      <CardHeader className="gap-1 border-b border-line pb-4">
+        <CardTitle>Controls</CardTitle>
+        <CardDescription>Refresh or resume this run.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 pt-5">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button variant="secondary" size="sm" onClick={() => void onRefresh()}>
+            <RefreshCcw />
+            Refresh
+          </Button>
+          {canResume ? (
+            <Button
+              size="sm"
+              onClick={() => void onResume(resumePhase || undefined, clearSession)}
+              disabled={resuming}
+            >
+              {resuming ? 'Resuming…' : 'Resume'}
+            </Button>
+          ) : null}
+        </div>
+
+        {canResume ? (
+          <div className="space-y-3 rounded-xl border border-line bg-overlay/40 p-3">
+            <div>
+              <label className="mb-1.5 block text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+                Resume from phase
+              </label>
+              <Select
+                value={resumePhase}
+                onChange={event => onResumePhaseChange(event.target.value)}
+              >
+                <option value="">Current phase ({job.phase})</option>
+                {workflowPhases.map(phase => (
+                  <option key={phase.name} value={phase.name}>
+                    {phase.name}
+                    {phase.name === job.phase ? ' (current)' : ''}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <label className="flex items-start gap-2 text-[13px] text-fg-muted">
+              <input
+                type="checkbox"
+                checked={clearSession}
+                onChange={event => onClearSessionChange(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Start with a fresh session.
+                <span className="block text-[11px] text-fg-subtle">
+                  Use this when the current conversation history is no longer useful.
+                </span>
+              </span>
+            </label>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-line px-3 py-2.5 text-[13px] text-fg-subtle">
+            This run can't be resumed from its current state.
+          </div>
+        )}
+
+        {resumeError ? (
+          <ErrorState title="Resume failed" message={resumeError} />
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+/* ─── Page ───────────────────────────────────────────────────────────────── */
 
 export default function JobDetail() {
   const { jobId } = useParams<{ jobId: string }>()
+  const location = useLocation()
+  const campaignRoute = location.pathname.startsWith('/campaigns/')
+
   const { job, loading, error, refetch } = useJob(jobId)
-  const { lines, status: connStatus, lastHeartbeat } = useJobStream(jobId)
+  const { lines, status: connectionStatus, lastHeartbeat } = useJobStream(jobId)
+
+  /** Last `job.phase` from the server — used to detect "following" vs user-pinned phase inspection. */
+  const prevServerPhaseRef = useRef<string | undefined>(undefined)
+  /** How many stream lines we've already scanned for phase events (per job). */
+  const streamLinesProcessedRef = useRef(0)
+
+  const [activeTab, setActiveTab] = useState<DetailTab>('activity')
+  const [selectedPhase, setSelectedPhase] = useState<string | null>(null)
+  const [resumePhase, setResumePhase] = useState('')
+  const [clearSession, setClearSession] = useState(false)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
-  const [showResumeOptions, setShowResumeOptions] = useState(false)
-  const [resumePhase, setResumePhase] = useState<string>('')
-  const [clearSession, setClearSession] = useState(false)
   const [messageText, setMessageText] = useState('')
-  const [sendingMessage, setSendingMessage] = useState(false)
   const [messageError, setMessageError] = useState<string | null>(null)
-  const [selectedPhase, setSelectedPhase] = useState<string | null>(null)
+  const [sendingMessage, setSendingMessage] = useState(false)
 
-  // When the job's live phase changes (auto-advance, resume, etc.), follow it
-  // in the flowchart so the selected panel reflects the current work.
+  const campaignMode = job ? isCampaignJob(job) : campaignRoute
+
+  useRegisterWorkspaceTab(jobId
+    ? {
+        id: jobId,
+        kind: campaignMode ? 'campaign' : 'job',
+        path: location.pathname,
+        title: job ? deriveJobTitle(job) : jobId,
+        subtitle: job?.phase,
+      }
+    : null)
+
+  useEffect(() => {
+    prevServerPhaseRef.current = undefined
+    streamLinesProcessedRef.current = 0
+    setSelectedPhase(null)
+  }, [jobId])
+
   useEffect(() => {
     if (!job) return
-    setSelectedPhase(prev => (prev === null ? job.phase : prev))
-  }, [job])
+    const prevServer = prevServerPhaseRef.current
+    prevServerPhaseRef.current = job.phase
 
-  // Auto-refresh the job object periodically so artefact posts and status
-  // transitions show up without a manual reload. Cheap — single GET.
+    setSelectedPhase(userSelection => {
+      if (userSelection === null) return job.phase
+
+      // First REST snapshot after load / navigation: align with server
+      if (prevServer === undefined) return job.phase
+
+      // Selection tracked the phase the server reported on the prior tick → keep following progress
+      if (userSelection === prevServer) return job.phase
+
+      // User pinned a different phase than the active one for inspection → keep pinned
+      return userSelection
+    })
+  }, [job?.id, job?.phase])
+
+  // Refetch promptly when logs report a phase boundary (SSE is ahead of polling).
+  useEffect(() => {
+    if (lines.length <= streamLinesProcessedRef.current) {
+      streamLinesProcessedRef.current = lines.length
+      return
+    }
+    const batch = lines.slice(streamLinesProcessedRef.current)
+    streamLinesProcessedRef.current = lines.length
+    if (batch.some(line => line.lineType === 'phase')) {
+      void refetch()
+    }
+  }, [lines, refetch])
+
   useEffect(() => {
     if (!job) return
-    if (NON_RUNNING_STATUSES.has(job.status) && job.status !== 'awaiting-developer-input') return
-    const interval = setInterval(() => { void refetch() }, 4000)
-    return () => clearInterval(interval)
-  }, [job, refetch])
+    if (isTerminalStatus(job.status)) return
 
-  const workflowPhases: WorkflowPhase[] = useMemo(() => {
-    if (job?.workflowPhases && job.workflowPhases.length > 0) return job.workflowPhases
-    // Fallback: derive from the phaseUsage timeline + current phase.
-    if (!job) return []
-    const seen: WorkflowPhase[] = []
-    const names = new Set<string>()
-    for (const p of job.phaseUsage ?? []) {
-      if (!names.has(p.phase)) { names.add(p.phase); seen.push({ name: p.phase, status: p.phase }) }
-    }
-    if (!names.has(job.phase)) {
-      seen.push({ name: job.phase, status: job.phase })
-    }
-    return seen
-  }, [job])
+    const interval = window.setInterval(() => {
+      void refetch()
+    }, 4_000)
 
-  const handleResume = async (fromPhase?: string, shouldClearSession = false) => {
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [job?.id, job?.status, refetch])
+
+  const workflowPhases = useMemo(() => deriveWorkflowPhases(job ?? null), [job])
+
+  async function handleResume(fromPhase?: string, shouldClearSession = false) {
     if (!jobId) return
     setResuming(true)
     setResumeError(null)
@@ -236,61 +813,44 @@ export default function JobDetail() {
       const body: Record<string, unknown> = {}
       if (fromPhase) body.fromPhase = fromPhase
       if (shouldClearSession) body.clearSession = true
-
-      const res = await fetch(`/jobs/${jobId}/resume`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      if (!res.ok) {
-        const data = await res.json() as { error?: string }
-        throw new Error(data.error ?? `HTTP ${res.status}`)
-      }
-      setShowResumeOptions(false)
+      await requestJson(`/jobs/${jobId}/resume`, jsonRequest(body, { method: 'POST' }))
       await refetch()
-    } catch (err) {
-      setResumeError(err instanceof Error ? err.message : 'Resume failed')
+    } catch (resumeIssue) {
+      setResumeError(resumeIssue instanceof Error ? resumeIssue.message : 'Resume failed')
     } finally {
       setResuming(false)
     }
   }
 
-  const postMessage = async (text: string): Promise<void> => {
-    if (!jobId) throw new Error('No job ID')
-    const res = await fetch(`/jobs/${jobId}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
-    })
-    if (!res.ok) {
-      const data = await res.json() as { error?: string }
-      throw new Error(data.error ?? `HTTP ${res.status}`)
-    }
+  async function postMessage(message: string) {
+    if (!jobId) throw new Error('No job id')
+    await requestJson(`/jobs/${jobId}/message`, jsonRequest({ message }, { method: 'POST' }))
     await refetch()
   }
 
-  const handleSendMessage = async () => {
-    if (!jobId || !messageText.trim()) return
+  async function handleSendMessage() {
+    if (!messageText.trim()) return
     setSendingMessage(true)
     setMessageError(null)
     try {
       await postMessage(messageText.trim())
       setMessageText('')
-    } catch (err) {
-      setMessageError(err instanceof Error ? err.message : 'Failed to send')
+    } catch (sendIssue) {
+      setMessageError(sendIssue instanceof Error ? sendIssue.message : 'Failed to send message')
     } finally {
       setSendingMessage(false)
     }
   }
 
-  const canSendMessage = job && !NON_RUNNING_STATUSES.has(job.status)
-
   if (loading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="animate-pulse space-y-4">
-          <div className="h-8 w-48 bg-zinc-800 rounded" />
-          <div className="h-64 bg-zinc-900 rounded-lg border border-zinc-800" />
+      <div className="space-y-5">
+        <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-20 w-full" />
+        <Skeleton className="h-12 w-full" />
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <Skeleton className="h-[520px] w-full" />
+          <Skeleton className="h-[420px] w-full" />
         </div>
       </div>
     )
@@ -298,327 +858,155 @@ export default function JobDetail() {
 
   if (error || !job) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="p-6 rounded-lg bg-rose-950/30 border border-rose-800 text-center">
-          <p className="text-rose-300 mb-2">{error ?? 'Job not found'}</p>
-          <Link to="/" className="text-sm text-indigo-400 hover:text-indigo-300">
-            ← Enter another job ID
-          </Link>
-        </div>
-      </div>
+      <Card>
+        <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <div className="text-lg font-semibold text-fg">{error ?? 'Job not found'}</div>
+          <p className="max-w-md text-sm text-fg-muted">
+            The run could not be loaded. It may have been deleted or the runner could not reach its
+            backing state store.
+          </p>
+          <Button asChild variant="secondary">
+            <Link to="/jobs">Back to runs</Link>
+          </Button>
+        </CardContent>
+      </Card>
     )
   }
 
-  const currentPhaseName = selectedPhase ?? job.phase
-  const phaseArtifacts = (job.artifacts ?? []).filter(a => a.phase === currentPhaseName)
-  const phaseUsageForSelected = (job.phaseUsage ?? []).find(p => p.phase === currentPhaseName)
-  const phaseState = workflowPhases.length > 0
-    ? computePhaseState(currentPhaseName, workflowPhases, job)
-    : 'pending'
+  const canSendLiveMessage = !NON_RUNNING_STATUSES.has(job.status) && connectionStatus !== 'disconnected'
+  const canSendMessage = canSendLiveMessage || job.status === 'awaiting-developer-input'
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      {/* Breadcrumb + header */}
-      <div className="mb-5">
-        <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
-          ← Back
-        </Link>
+    <div className="space-y-6">
+      <HeaderSummary job={job} />
+      <HeaderMetricStrip job={job} />
 
-        <div className="flex items-start justify-between mt-2">
-          <div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-lg font-semibold text-white">
-                {job.params['serviceName'] as string ?? job.id}
-              </h1>
-              <StatusBadge status={job.status} />
-              {job.interactive ? (
-                <span
-                  title="This job pauses between phases for developer approval"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-950/40 text-amber-300 border border-amber-800"
-                >
-                  ✋ Interactive
-                </span>
-              ) : (
-                <span
-                  title="This job runs autonomously without developer approval checkpoints"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-zinc-900 text-zinc-400 border border-zinc-700"
-                >
-                  ▶ Non-interactive
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-zinc-500 mt-1 font-mono">{job.id}</p>
-          </div>
+      <WorkflowSnapshotCard
+        job={job}
+        selectedPhase={selectedPhase}
+        phases={workflowPhases}
+        onSelectPhase={setSelectedPhase}
+      />
 
-          <div className="flex items-center gap-2">
-            {RESUMABLE_STATUSES.has(job.status) && (
-              <div className="relative">
-                <div className="flex">
-                  <button
-                    onClick={() => void handleResume()}
-                    disabled={resuming}
-                    className="px-3 py-1.5 rounded-l-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {resuming ? 'Resuming...' : `▶ Resume (${job.phase})`}
-                  </button>
-                  <button
-                    onClick={() => setShowResumeOptions(prev => !prev)}
-                    disabled={resuming}
-                    className="px-1.5 py-1.5 rounded-r-md text-xs font-medium bg-indigo-700 text-white hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors border-l border-indigo-500"
-                    title="Resume options"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-                </div>
+      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>
+        <TabsList>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
+          <TabsTrigger value="work">Work</TabsTrigger>
+          <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
+        </TabsList>
 
-                {showResumeOptions && (
-                  <div className="absolute right-0 top-full mt-1 w-72 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl z-20 p-3 space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-400 mb-1">Resume from phase</label>
-                      <select
-                        value={resumePhase}
-                        onChange={(e) => setResumePhase(e.target.value)}
-                        className="w-full px-2.5 py-1.5 rounded-md bg-zinc-800 border border-zinc-700 text-xs text-zinc-200 focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="">Current phase ({job.phase})</option>
-                        {workflowPhases.map(p => (
-                          <option key={p.name} value={p.name}>{p.name}{p.name === job.phase ? ' (current)' : ''}</option>
-                        ))}
-                      </select>
-                    </div>
+        <TabsContent value="activity" className="space-y-5">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="space-y-5">
+              {job.status === 'awaiting-developer-input' ? (
+                <ApprovalBox job={job} onSend={postMessage} />
+              ) : null}
 
-                    <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={clearSession}
-                        onChange={(e) => setClearSession(e.target.checked)}
-                        className="rounded bg-zinc-800 border-zinc-600 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
-                      />
-                      Fresh session (discard conversation history)
-                    </label>
-
-                    <div className="flex items-center justify-between pt-1 border-t border-zinc-800">
-                      <button
-                        onClick={() => setShowResumeOptions(false)}
-                        className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={() => void handleResume(resumePhase || undefined, clearSession)}
-                        disabled={resuming}
-                        className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors"
-                      >
-                        {resuming ? 'Resuming...' : 'Resume'}
-                      </button>
-                    </div>
+              <Card>
+                <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <CardTitle>Live console</CardTitle>
+                    <CardDescription>
+                      Streaming runner output, tool execution summaries, and developer interventions.
+                    </CardDescription>
                   </div>
-                )}
-              </div>
-            )}
-            <button
-              onClick={() => void refetch()}
-              className="px-3 py-1.5 rounded-md text-xs font-medium text-zinc-400 bg-zinc-800 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
-            >
-              Refresh
-            </button>
-          </div>
-        </div>
-      </div>
+                  <ConnectionIndicator status={connectionStatus} lastHeartbeat={lastHeartbeat} />
+                </CardHeader>
+                <CardContent className="pt-5">
+                  <LogViewer lines={lines} />
+                </CardContent>
+              </Card>
 
-      {/* Resume error */}
-      {resumeError && (
-        <div className="mb-4 p-3 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-sm flex items-center justify-between">
-          <span>Resume failed: {resumeError}</span>
-          <button onClick={() => setResumeError(null)} className="text-rose-400 hover:text-rose-200 text-xs">dismiss</button>
-        </div>
-      )}
-
-      {/* Workflow flowchart */}
-      <div className="bg-zinc-900/40 border border-zinc-800 rounded-lg p-3 mb-5">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Workflow</h3>
-          <span className="text-xs text-zinc-500">Tap a phase to see its artefacts and logs</span>
-        </div>
-        <WorkflowFlow
-          job={job}
-          phases={workflowPhases}
-          selectedPhase={selectedPhase}
-          onSelectPhase={setSelectedPhase}
-        />
-      </div>
-
-      {/* Approval + rework UI — only when parked waiting for developer */}
-      {job.status === 'awaiting-developer-input' && (
-        <div className="mb-5">
-          <ApprovalBox job={job} onSend={postMessage} />
-        </div>
-      )}
-
-      {/* Selected phase panel */}
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4 mb-5">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <div className="text-xs text-zinc-500 uppercase tracking-wider">Phase</div>
-            <div className="text-base font-semibold text-zinc-100">{currentPhaseName}</div>
-          </div>
-          <div className="text-right">
-            <div className="text-xs text-zinc-500 uppercase tracking-wider">State</div>
-            <div className="text-sm font-medium text-zinc-200 capitalize">{phaseState.replace('-', ' ')}</div>
-          </div>
-        </div>
-
-        <div>
-          <h4 className="text-xs font-medium text-zinc-400 uppercase tracking-wider mb-2">
-            Artefacts{phaseArtifacts.length > 0 && ` (${phaseArtifacts.length})`}
-          </h4>
-          {phaseArtifacts.length === 0 ? (
-            <p className="text-xs text-zinc-500 italic">
-              No artefacts posted for this phase yet.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {phaseArtifacts.map(a => (
-                <ArtifactLink key={a.id} jobId={job.id} artifact={a} />
-              ))}
+              {canSendMessage ? (
+                <MessageComposer
+                  value={messageText}
+                  onChange={setMessageText}
+                  onSend={handleSendMessage}
+                  sending={sendingMessage}
+                  error={messageError}
+                />
+              ) : null}
             </div>
-          )}
-        </div>
 
-        {phaseUsageForSelected && (
-          <div className="mt-4 pt-3 border-t border-zinc-800 grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div>
-              <div className="text-xs text-zinc-500">Input</div>
-              <div className="text-sm text-zinc-200 tabular-nums">{formatTokens(phaseUsageForSelected.inputTokens)}</div>
-            </div>
-            <div>
-              <div className="text-xs text-zinc-500">Output</div>
-              <div className="text-sm text-zinc-200 tabular-nums">{formatTokens(phaseUsageForSelected.outputTokens)}</div>
-            </div>
-            <div>
-              <div className="text-xs text-zinc-500">Duration</div>
-              <div className="text-sm text-zinc-200 tabular-nums">{formatDuration(phaseUsageForSelected.durationMs)}</div>
-            </div>
-            <div>
-              <div className="text-xs text-zinc-500">Turns</div>
-              <div className="text-sm text-zinc-200 tabular-nums">{phaseUsageForSelected.numTurns}</div>
+            <div className="space-y-4">
+              {job.campaignParentId ? (
+                <AlertCard title="Spawned by campaign" tone="accent">
+                  This job is part of campaign{' '}
+                  <Link
+                    to={getRunDetailPath({ id: job.campaignParentId })}
+                    className="font-mono text-accent-300 underline underline-offset-2"
+                  >
+                    {job.campaignParentId}
+                  </Link>
+                  {typeof job.params['campaignChildName'] === 'string'
+                    ? ` as child ${job.params['campaignChildName'] as string}.`
+                    : '.'}
+                </AlertCard>
+              ) : null}
+
+              {job.awaitingEvent && job.status !== 'awaiting-developer-input' ? (
+                <AlertCard title="Awaiting external event" tone="warning">
+                  {job.awaitingEvent}
+                  {job.awaitingPrId ? ` (PR #${job.awaitingPrId})` : ''}
+                </AlertCard>
+              ) : null}
+
+              {job.escalationMessage ? (
+                <AlertCard title="Escalation message" tone="danger">
+                  {job.escalationMessage}
+                </AlertCard>
+              ) : null}
+
+              <ContextPanel job={job} />
+
+              <ActionPanel
+                job={job}
+                workflowPhases={workflowPhases}
+                resuming={resuming}
+                resumePhase={resumePhase}
+                clearSession={clearSession}
+                resumeError={resumeError}
+                onResumePhaseChange={setResumePhase}
+                onClearSessionChange={setClearSession}
+                onResume={handleResume}
+                onRefresh={refetch}
+              />
             </div>
           </div>
-        )}
-      </div>
+        </TabsContent>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-          <div className="text-xs text-zinc-500 mb-0.5">Type</div>
-          <div className="text-sm font-medium text-zinc-200 capitalize">{job.type}</div>
-        </div>
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-          <div className="text-xs text-zinc-500 mb-0.5">Current phase</div>
-          <div className="text-sm font-medium text-zinc-200">{job.phase}</div>
-        </div>
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-          <div className="text-xs text-zinc-500 mb-0.5">Created</div>
-          <div className="text-sm font-medium text-zinc-200">{timeAgo(job.createdAt)}</div>
-        </div>
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3">
-          <div className="text-xs text-zinc-500 mb-0.5">Updated</div>
-          <div className="text-sm font-medium text-zinc-200">{timeAgo(job.updatedAt)}</div>
-        </div>
-      </div>
+        <TabsContent value="work" className="space-y-5">
+          <WorkItemsCard job={job} />
+          {campaignMode ? <CampaignView job={job} onMutated={() => void refetch()} /> : null}
+          <ArtifactsBoard job={job} phases={workflowPhases} />
+        </TabsContent>
 
-      {/* Work items */}
-      {job.workItems?.length > 0 && (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-5">
-          <WorkItemProgress workItems={job.workItems} />
-        </div>
-      )}
+        <TabsContent value="diagnostics" className="space-y-5">
+          <TokenUsagePanel usage={job.tokenUsage} />
+          <PhaseUsageTable phases={job.phaseUsage ?? []} />
 
-      {/* Escalation message */}
-      {job.escalationMessage && (
-        <div className="mb-5 p-3 rounded-lg bg-rose-950/30 border border-rose-800">
-          <div className="text-xs text-rose-400 font-medium mb-1">Escalation</div>
-          <p className="text-sm text-rose-200 whitespace-pre-wrap">{job.escalationMessage}</p>
-        </div>
-      )}
+          <Card>
+            <CardHeader className="border-b border-line pb-4">
+              <CardTitle>Raw state</CardTitle>
+              <CardDescription>
+                Inspect the underlying job object, parameters, insights, and PR mappings.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 pt-5">
+              <JsonPanel label="Job parameters" data={job.params} defaultOpen />
+              <JsonPanel label="Full job object" data={job} />
+              {job.insights?.length > 0 ? (
+                <JsonPanel label={`Insights (${job.insights.length})`} data={job.insights} />
+              ) : null}
+              {job.prMappings?.length > 0 ? (
+                <JsonPanel label={`PR mappings (${job.prMappings.length})`} data={job.prMappings} />
+              ) : null}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
-      {/* Awaiting event — show non-interactive waits here; interactive is handled by ApprovalBox above */}
-      {job.awaitingEvent && job.status !== 'awaiting-developer-input' && (
-        <div className="mb-5 p-3 rounded-lg bg-amber-950/30 border border-amber-800">
-          <div className="text-xs text-amber-400 font-medium mb-1">Awaiting Event</div>
-          <p className="text-sm text-amber-200">{job.awaitingEvent}</p>
-          {job.awaitingPrId && <p className="text-xs text-amber-300 mt-1">PR #{job.awaitingPrId}</p>}
-        </div>
-      )}
-
-      {/* Log stream */}
-      <div className="mb-5">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-semibold text-zinc-300">Live Logs</h2>
-          <ConnectionIndicator status={connStatus} lastHeartbeat={lastHeartbeat} />
-        </div>
-        <LogViewer lines={lines} />
-      </div>
-
-      {/* Free-form message to a running agent (not parked) */}
-      {canSendMessage && job.status !== 'awaiting-developer-input' && (
-        <div className="mb-5">
-          {messageError && (
-            <div className="mb-2 p-2 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-xs flex items-center justify-between">
-              <span>{messageError}</span>
-              <button onClick={() => setMessageError(null)} className="text-rose-400 hover:text-rose-200 text-xs ml-2">dismiss</button>
-            </div>
-          )}
-          <form
-            onSubmit={(e) => { e.preventDefault(); void handleSendMessage() }}
-            className="flex gap-2"
-          >
-            <input
-              type="text"
-              value={messageText}
-              onChange={(e) => setMessageText(e.target.value)}
-              placeholder="Send a message to the agent..."
-              disabled={sendingMessage}
-              className="flex-1 px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 disabled:opacity-50 transition-colors"
-            />
-            <button
-              type="submit"
-              disabled={sendingMessage || !messageText.trim()}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
-            >
-              {sendingMessage ? 'Sending...' : 'Send'}
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* Token usage — collapsed by default at the bottom */}
-      {job.tokenUsage && (job.tokenUsage.inputTokens > 0 || job.tokenUsage.outputTokens > 0) && (
-        <div className="mb-5">
-          <TokenUsageCard usage={job.tokenUsage} />
-        </div>
-      )}
-
-      {/* Phase usage breakdown */}
-      {job.phaseUsage && job.phaseUsage.length > 0 && (
-        <div className="mb-5">
-          <PhaseUsageTable phases={job.phaseUsage} />
-        </div>
-      )}
-
-      {/* Collapsible sections */}
-      <div className="space-y-3">
-        <CollapsibleJson label="Job Parameters" data={job.params} />
-        <CollapsibleJson label="Full Job Object" data={job} />
-        {job.insights?.length > 0 && (
-          <CollapsibleJson label={`Insights (${job.insights.length})`} data={job.insights} />
-        )}
-        {job.prMappings?.length > 0 && (
-          <CollapsibleJson label={`PR Mappings (${job.prMappings.length})`} data={job.prMappings} />
-        )}
-      </div>
+      <Separator className="opacity-0" />
     </div>
   )
 }

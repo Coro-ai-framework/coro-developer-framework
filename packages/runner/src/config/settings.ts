@@ -96,6 +96,26 @@ export interface Settings {
     apiToken: string
     pollIntervalSeconds: number
   }
+  /**
+   * Issue tracker selection for the campaign workflow. Optional — when
+   * absent the tracker factory infers Jira if `jira.baseUrl` is set,
+   * otherwise the campaign-planner runs in tracker-less mode (it can
+   * still register children without a tracker round-trip).
+   */
+  tracker?: {
+    provider: 'jira' | 'github' | 'linear' | 'none'
+  }
+  /**
+   * Linear API credentials. Linear uses a single personal API key (no
+   * username) issued from the user's settings page; the key is sent
+   * verbatim in the `Authorization` header. Optional — present only
+   * when the tenant has chosen Linear as its tracker.
+   */
+  linear?: {
+    apiKey: string
+    /** Linear team key (e.g. "ENG") used as the default `projectKey` for new issues. */
+    teamKey?: string
+  }
   ngrok: {
     authToken: string
     staticDomain: string

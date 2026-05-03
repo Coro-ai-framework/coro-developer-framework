@@ -37,6 +37,13 @@ import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
 import type { BitBucketClient, CreatePrOptions, PullRequest } from '../clients/bitbucket'
 import type { GitHubClient } from '../clients/github'
 
+import {
+  DEFAULT_OVERLAY_REF,
+  detectOriginDefaultBranch,
+  listOriginRemoteHeads,
+  resolveOverlayBaseRef,
+} from './git-ref-resolve'
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type ProposalLayer = 'tenant' | 'repo'
@@ -107,7 +114,9 @@ export interface OpenedProposalPr {
 
 // ── Tenant writer ────────────────────────────────────────────────────────────
 
-const DEFAULT_REF = 'main'
+const DEFAULT_REF = DEFAULT_OVERLAY_REF
+
+const BOOTSTRAP_COMMIT_MSG = 'chore(coro): bootstrap empty tenant intelligence repository'
 
 /**
  * Ensure a full working clone of the tenant overlay exists at
@@ -117,8 +126,12 @@ const DEFAULT_REF = 'main'
  * Strategy (kept simple on purpose):
  *   - First call:    `git clone <url> <dir>` (full clone — no `--depth`,
  *                    no `--single-branch`)
- *   - Subsequent:    `git fetch origin <ref>` + checkout + reset to
- *                    `origin/<ref>` (any local proposal branches from
+ *   - Subsequent:    `git fetch origin` + checkout + reset to
+ *                    `origin/<baseRef>` where `baseRef` is the configured
+ *                    ref if present, otherwise the remote default /
+ *                    `main` / `master`. Empty remotes get a one-time
+ *                    orphan bootstrap commit + push on `baseRef`.
+ *                    (Any local proposal branches from
  *                    earlier jobs are left alone — they live in
  *                    `coro/proposal/...` namespace and never collide
  *                    with `main` or peers).
@@ -130,7 +143,7 @@ export async function prepareTenantWriter(
   args: PrepareTenantWriterArgs,
 ): Promise<WriterClone> {
   const { url, tenantId, writerCacheRoot, logger } = args
-  const ref = args.ref ?? DEFAULT_REF
+  const explicitRef = args.ref
   const factory = args.gitFactory ?? defaultGitFactory
 
   if (!url) throw new Error('prepareTenantWriter: url is required')
@@ -149,27 +162,41 @@ export async function prepareTenantWriter(
     logger.info({ tenantId, url, dir }, 'Cloned tenant overlay (writer)')
   }
 
-  // Refresh + checkout target ref.
+  // Refresh remotes (all heads), resolve baseRef, optionally bootstrap an empty repo.
   const git = factory(dir)
+  let baseRef: string
   try {
-    await git.fetch('origin', ref)
-    // checkoutBranch handles "branch exists locally" via a plain checkout;
-    // if it doesn't, we create it tracking origin/<ref>.
-    const branches = await git.branchLocal()
-    if (branches.all.includes(ref)) {
-      await git.checkout(ref)
-    } else {
-      await git.checkout(['-b', ref, `origin/${ref}`])
+    await git.fetch('origin')
+
+    let heads = await listOriginRemoteHeads(git)
+    if (heads.length === 0) {
+      const bootstrapRef = explicitRef ?? DEFAULT_REF
+      await bootstrapEmptyTenantRemote(dir, git, bootstrapRef, logger)
+      await git.fetch('origin')
+      heads = await listOriginRemoteHeads(git)
+      if (heads.length === 0) {
+        throw new Error('remote still has no branches after bootstrap push')
+      }
     }
-    await git.reset(['--hard', `origin/${ref}`])
+
+    baseRef = await resolveOverlayBaseRef(git, heads, explicitRef)
+
+    const branches = await git.branchLocal()
+    if (branches.all.includes(baseRef)) {
+      await git.checkout(baseRef)
+    } else {
+      await git.checkout(['-b', baseRef, `origin/${baseRef}`])
+    }
+    await git.reset(['--hard', `origin/${baseRef}`])
   } catch (err) {
-    logger.error({ err, tenantId, url, ref }, 'Failed to refresh tenant writer clone')
+    const refLabel = explicitRef ?? '(auto)'
+    logger.error({ err, tenantId, url, ref: refLabel }, 'Failed to refresh tenant writer clone')
     throw new Error(
-      `Failed to refresh tenant writer clone at ${dir} (ref=${ref}): ${(err as Error).message}`,
+      `Failed to refresh tenant writer clone at ${dir} (ref=${refLabel}): ${(err as Error).message}`,
     )
   }
 
-  return { dir, baseRef: ref, remoteUrl: url }
+  return { dir, baseRef, remoteUrl: url }
 }
 
 // ── Repo writer ──────────────────────────────────────────────────────────────
@@ -205,7 +232,7 @@ export async function prepareRepoWriter(
   }
 
   const git = factory(repoCheckoutDir)
-  const baseRef = args.baseRef ?? (await detectDefaultBranch(git)) ?? DEFAULT_REF
+  const baseRef = args.baseRef ?? (await detectOriginDefaultBranch(git)) ?? DEFAULT_REF
 
   let remoteUrl = ''
   try {
@@ -395,26 +422,30 @@ export function parseRepoUrl(url: string): { host: string; owner: string; repoSl
 
 // ── Internals ────────────────────────────────────────────────────────────────
 
+async function bootstrapEmptyTenantRemote(
+  dir: string,
+  git: SimpleGit,
+  ref: string,
+  logger: Logger,
+): Promise<void> {
+  await git.raw(['checkout', '--orphan', ref])
+
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    if (entry.name === '.git') continue
+    await fs.rm(path.join(dir, entry.name), { recursive: true, force: true })
+  }
+
+  await fs.writeFile(path.join(dir, '.gitkeep'), '', 'utf-8')
+  await git.add('.')
+  await git.commit(BOOTSTRAP_COMMIT_MSG)
+  await git.push('origin', ref, ['--set-upstream'])
+  logger.info({ ref }, 'Bootstrapped empty tenant overlay remote')
+}
+
 async function isGitRepo(dir: string): Promise<boolean> {
   const stat = await fs.stat(path.join(dir, '.git')).catch(() => null)
   return stat?.isDirectory() ?? false
-}
-
-/**
- * Best-effort detection of the default branch by asking origin.
- * Returns `null` if the symbolic ref isn't readable; callers should
- * fall back to `main`.
- */
-async function detectDefaultBranch(git: SimpleGit): Promise<string | null> {
-  try {
-    // `origin/HEAD` resolves to the default branch on origin.
-    const result = await git.raw(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-    const trimmed = (result ?? '').trim()
-    if (trimmed.startsWith('origin/')) return trimmed.slice('origin/'.length)
-  } catch {
-    // Fall through to null.
-  }
-  return null
 }
 
 // Force non-interactive git: `GIT_TERMINAL_PROMPT=0` blocks the

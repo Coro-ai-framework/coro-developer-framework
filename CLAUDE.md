@@ -165,16 +165,20 @@ The system is fully language-agnostic. No language-specific defaults are hardcod
 
 ## Agents
 
-| Agent file | Phase(s) | Used by workflows |
-|-----------|----------|------------------|
-| `agents/planner.md` | planning, reporting | job |
+| Agent file | Phase(s) / role | Used by workflows |
+|-----------|----------------|------------------|
+| `agents/planner.md` | planning | job |
 | `agents/coder.md` | coding | job |
-| `agents/tester.md` | testing | job |
-| `agents/evaluator.md` | evaluation | job |
-| `agents/pr-reviewer.md` | review | job |
+| `agents/code-reviewer.md` | `code-reviewer` subagent invoked by the coder pre-PR-open | job |
+| `agents/pr-reviewer.md` | review (merge gatekeeper) | job |
+| `agents/evaluator.md` | evaluation (verify build/tests/acceptance criteria + loop control) | job |
 | `agents/spec-writer.md` | spec-writing | job (Jira-triggered) |
+| `agents/campaign-planner.md` | campaign-planning | campaign |
+| `agents/campaign-evaluator.md` | aggregation | campaign |
 
 Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go, .NET, and TypeScript projects — the invoked skills change, not the agent.
+
+The implementation-job pipeline is intentionally tight: the convention/plan/test-coverage **review** happens once, inside the coding phase, via the `code-reviewer` subagent. The standalone `review` phase is a thin merge gatekeeper that handles human coordination + merge. **Build/test verification and acceptance-criteria checks** are owned by the evaluator (which runs them on the merged commit). Earlier versions had separate `review` and `testing` phases that re-did the same work — that has been consolidated to keep token cost and wall-clock time down without losing any robustness.
 
 ---
 

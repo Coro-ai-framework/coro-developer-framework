@@ -10,6 +10,7 @@ import { messageCommand } from './commands/message'
 import { loginCommand } from './commands/login'
 import { initCommand } from './commands/init'
 import { runnerCommand, startCommand } from './commands/runner'
+import { campaignCommand } from './commands/campaign'
 
 const program = new Command()
 
@@ -36,5 +37,6 @@ program.addCommand(messageCommand)
 program.addCommand(loginCommand)
 program.addCommand(initCommand)
 program.addCommand(runnerCommand)
+program.addCommand(campaignCommand)
 
 program.parse()

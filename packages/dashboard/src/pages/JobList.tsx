@@ -1,109 +1,272 @@
-import { Link } from 'react-router-dom'
-import { useJobs } from '../hooks/useJobs'
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowRight, Layers3, PlayCircle, Search } from 'lucide-react'
+import { Link, useLocation } from 'react-router-dom'
+import PageHeader from '../components/common/page-header'
+import EmptyState from '../components/common/empty-state'
+import ErrorState from '../components/common/error-state'
 import StatusBadge from '../components/StatusBadge'
+import { Button } from '../components/ui/button'
+import { Card, CardContent } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import SegmentedControl from '../components/ui/segmented-control'
+import { Skeleton } from '../components/ui/skeleton'
+import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
+import {
+  deriveJobDescription,
+  deriveJobTitle,
+  deriveWorkflowLabel,
+  getCurrentWorkItem,
+  getRepoSlug,
+  getRunDetailPath,
+  isCampaignJob,
+  sortJobsByUpdatedAt,
+} from '../lib/jobs'
+import { isTerminalStatus, isWaitingStatus } from '../lib/status'
+import { useJobs } from '../hooks/useJobs'
+import type { Job } from '../types'
 
-function timeAgo(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (seconds < 60) return `${seconds}s ago`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  return `${days}d ago`
+type StatusFilter = 'active' | 'waiting' | 'all' | 'terminal'
+type KindFilter = 'all' | 'job' | 'campaign'
+
+const STATUS_FILTERS = [
+  { value: 'active' as const, label: 'Active' },
+  { value: 'waiting' as const, label: 'Awaiting' },
+  { value: 'terminal' as const, label: 'Finished' },
+  { value: 'all' as const, label: 'All' },
+]
+
+const KIND_FILTERS = [
+  { value: 'all' as const, label: 'All' },
+  { value: 'job' as const, label: 'Jobs' },
+  { value: 'campaign' as const, label: 'Campaigns' },
+]
+
+interface CampaignProgress {
+  total: number
+  done: number
+  active: number
+  blocked: number
 }
 
-const TYPE_STYLES: Record<string, string> = {
-  job: 'bg-cyan-950 text-cyan-300',
-  'self-update': 'bg-zinc-800 text-zinc-300',
+function getCampaignProgress(job: Job): CampaignProgress {
+  const children = job.campaignChildren ?? []
+  return children.reduce<CampaignProgress>(
+    (acc, child) => {
+      acc.total += 1
+      if (child.status === 'complete' || child.status === 'skipped') acc.done += 1
+      if (child.status === 'ready' || child.status === 'dispatched') acc.active += 1
+      if (child.status === 'failed' || child.status === 'escalated') acc.blocked += 1
+      return acc
+    },
+    { total: 0, done: 0, active: 0, blocked: 0 },
+  )
+}
+
+function getRunFocus(job: Job): string {
+  if (!isCampaignJob(job)) return getCurrentWorkItem(job)
+
+  const progress = getCampaignProgress(job)
+  if (progress.total === 0) return 'Planning child graph'
+
+  const segments = [`${progress.done}/${progress.total} done`]
+  if (progress.active > 0) segments.push(`${progress.active} active`)
+  if (progress.blocked > 0) segments.push(`${progress.blocked} blocked`)
+  return segments.join(' · ')
 }
 
 export default function JobList() {
+  const location = useLocation()
   const { jobs, loading, error } = useJobs()
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
+  const defaultKind = location.pathname.startsWith('/campaigns') ? 'campaign' : 'all'
+  const [kindFilter, setKindFilter] = useState<KindFilter>(defaultKind)
+
+  useEffect(() => {
+    setKindFilter(defaultKind)
+  }, [defaultKind])
+
+  const runs = useMemo(() => sortJobsByUpdatedAt(jobs), [jobs])
+  const visibleRuns = useMemo(() => {
+    const search = query.trim().toLowerCase()
+
+    return runs.filter(job => {
+      if (kindFilter === 'job' && isCampaignJob(job)) return false
+      if (kindFilter === 'campaign' && !isCampaignJob(job)) return false
+
+      if (statusFilter === 'active' && isTerminalStatus(job.status)) return false
+      if (statusFilter === 'waiting' && !isWaitingStatus(job.status)) return false
+      if (statusFilter === 'terminal' && !isTerminalStatus(job.status)) return false
+
+      if (!search) return true
+
+      const haystack = [
+        job.id,
+        deriveJobTitle(job),
+        deriveJobDescription(job),
+        getRepoSlug(job),
+        job.phase,
+        getRunFocus(job),
+        deriveWorkflowLabel(job.workflowPath),
+        job.workflowPath,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+
+      return haystack.includes(search)
+    })
+  }, [runs, query, statusFilter, kindFilter])
+
+  const activeCount = runs.filter(job => !isTerminalStatus(job.status)).length
+  const waitingCount = runs.filter(job => isWaitingStatus(job.status)).length
+
+  const isCampaignsRoute = location.pathname.startsWith('/campaigns')
+  const pageTitle = isCampaignsRoute ? 'Campaigns' : 'Runs'
+  const pageDescription = isCampaignsRoute
+    ? 'Campaigns currently scheduled, in motion, or finished.'
+    : 'All jobs and campaigns in one place. Filter to change the lens.'
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-semibold text-white">Jobs</h1>
-          <p className="text-sm text-zinc-400 mt-0.5">
-            {jobs.length} job{jobs.length !== 1 ? 's' : ''} tracked
-          </p>
-        </div>
-        <Link
-          to="/jobs/new"
-          className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
-        >
-          + New Job
-        </Link>
-      </div>
-
-      {error && (
-        <div className="mb-4 p-3 rounded-lg bg-rose-950/30 border border-rose-800 text-rose-300 text-sm">
-          Failed to load jobs: {error}
-        </div>
-      )}
-
-      {loading ? (
-        <div className="space-y-3">
-          {[1, 2, 3].map(i => (
-            <div key={i} className="h-20 rounded-lg bg-zinc-900 border border-zinc-800 animate-pulse" />
-          ))}
-        </div>
-      ) : jobs.length === 0 ? (
-        <div className="text-center py-16 text-zinc-500">
-          <p className="text-lg">No jobs yet</p>
-          <p className="text-sm mt-1">Jobs will appear here when dispatched via the CLI or webhooks.</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {jobs.map(job => (
-            <Link
-              key={job.id}
-              to={`/jobs/${job.id}`}
-              className="block rounded-lg bg-zinc-900 border border-zinc-800 p-4 hover:border-zinc-700 hover:bg-zinc-900/80 transition-all group"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2.5 mb-1.5">
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${TYPE_STYLES[job.type] ?? TYPE_STYLES['self-update']}`}>
-                      {job.type}
-                    </span>
-                    <h3 className="text-sm font-medium text-zinc-200 truncate group-hover:text-white transition-colors">
-                      {job.serviceName ?? job.id}
-                    </h3>
-                  </div>
-
-                  <div className="flex items-center gap-3 text-xs text-zinc-500">
-                    <span title={job.id} className="truncate max-w-[280px]">{job.id}</span>
-                    <span>·</span>
-                    <span>phase: {job.phase}</span>
-                    {job.currentWorkItem && (
-                      <>
-                        <span>·</span>
-                        <span className="text-zinc-400">{job.currentWorkItem}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-col items-end gap-1.5 shrink-0">
-                  <StatusBadge status={job.status} />
-                  <div className="flex items-center gap-2 text-xs text-zinc-500">
-                    {typeof job.totalCostUsd === 'number' && job.totalCostUsd > 0 && (
-                      <span className="text-emerald-500">${job.totalCostUsd < 0.01 ? job.totalCostUsd.toFixed(4) : job.totalCostUsd.toFixed(2)}</span>
-                    )}
-                    {job.prCount > 0 && (
-                      <span>{job.prCount} PR{job.prCount !== 1 ? 's' : ''}</span>
-                    )}
-                    <span title={job.updatedAt}>{timeAgo(job.updatedAt)}</span>
-                  </div>
-                </div>
-              </div>
+    <div className="space-y-6">
+      <PageHeader
+        title={pageTitle}
+        description={pageDescription}
+        actions={
+          <Button asChild>
+            <Link to="/jobs/new">
+              New run
+              <ArrowRight />
             </Link>
-          ))}
+          </Button>
+        }
+      />
+
+      <Card>
+        <div className="flex flex-col gap-4 border-b border-line p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              options={KIND_FILTERS}
+              value={kindFilter}
+              onChange={setKindFilter}
+              size="sm"
+              ariaLabel="Filter by kind"
+            />
+            <SegmentedControl
+              options={STATUS_FILTERS}
+              value={statusFilter}
+              onChange={setStatusFilter}
+              size="sm"
+              ariaLabel="Filter by status"
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="relative w-full lg:w-72">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-fg-subtle" />
+              <Input
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="Search runs"
+                className="h-9 pl-9 text-[13px]"
+              />
+            </div>
+            <span className="hidden whitespace-nowrap text-[11px] uppercase tracking-[0.14em] text-fg-subtle sm:inline">
+              {visibleRuns.length} / {runs.length}
+              <span className="ml-2 text-fg-subtle/70">
+                · {activeCount} active · {waitingCount} awaiting
+              </span>
+            </span>
+          </div>
         </div>
-      )}
+
+        <CardContent className="p-0">
+          {error ? (
+            <div className="p-4">
+              <ErrorState title="Could not load runs" message={error} />
+            </div>
+          ) : loading ? (
+            <div className="space-y-2 p-4">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <Skeleton key={index} className="h-14 w-full" />
+              ))}
+            </div>
+          ) : visibleRuns.length === 0 ? (
+            <div className="p-4">
+              <EmptyState
+                icon={PlayCircle}
+                title="No runs match the current view"
+                description="Create a run or widen the filters to bring more work into view."
+                action={
+                  <Button asChild>
+                    <Link to="/jobs/new">Create run</Link>
+                  </Button>
+                }
+              />
+            </div>
+          ) : (
+            <RunsTable runs={visibleRuns} />
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function RunsTable({ runs }: { runs: Job[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[860px] text-sm">
+        <thead>
+          <tr className="border-b border-line text-left text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
+            <th className="px-4 py-3 font-medium">Run</th>
+            <th className="px-4 py-3 font-medium">Status</th>
+            <th className="px-4 py-3 font-medium">Working on</th>
+            <th className="px-4 py-3 font-medium">Updated</th>
+            <th className="px-4 py-3 text-right font-medium">Cost</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {runs.map(job => (
+            <tr key={job.id} className="group transition-colors hover:bg-overlay/40">
+              <td className="px-4 py-3">
+                <Link to={getRunDetailPath(job)} className="block min-w-0 space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium text-fg group-hover:text-accent-300">
+                      {deriveJobTitle(job)}
+                    </span>
+                    {isCampaignJob(job) ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md border border-line bg-overlay px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-fg-muted"
+                        title="Campaign"
+                      >
+                        <Layers3 className="size-2.5" />
+                        Campaign
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="truncate text-[12px] text-fg-subtle">
+                    {[deriveWorkflowLabel(job.workflowPath), getRepoSlug(job)].filter(Boolean).join(' · ')}
+                  </div>
+                </Link>
+              </td>
+              <td className="px-4 py-3 align-top">
+                <StatusBadge status={job.status} />
+              </td>
+              <td className="px-4 py-3 align-top text-fg-muted">
+                <div className="line-clamp-1 text-[13px]">{getRunFocus(job)}</div>
+                <div className="text-[11px] text-fg-subtle">phase: {job.phase}</div>
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 align-top text-[13px] text-fg-muted">
+                {formatRelativeTime(job.updatedAt)}
+              </td>
+              <td className="whitespace-nowrap px-4 py-3 align-top text-right tabular-nums text-fg-muted">
+                {formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

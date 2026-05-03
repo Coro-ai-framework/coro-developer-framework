@@ -166,16 +166,37 @@ export class SqliteStateBackend implements StateBackend {
     return rows.map(r => JSON.parse(r.data) as Job)
   }
 
+  async listChildJobs(parentJobId: string): Promise<Job[]> {
+    // SQLite has no dedicated index on campaignParentId; the field lives in
+    // the JSON blob. For tree sizes we expect (≤ a few dozen children)
+    // a scan + filter is fast enough. We can switch to a generated column
+    // + index later if profiles say otherwise.
+    const rows = this.db.prepare('SELECT data FROM jobs ORDER BY created_at DESC')
+      .all() as Array<{ data: string }>
+    const out: Job[] = []
+    for (const r of rows) {
+      const job = JSON.parse(r.data) as Job
+      if (job.campaignParentId === parentJobId) out.push(job)
+    }
+    return out
+  }
+
   async updateJob(jobId: string, patch: Partial<Job>): Promise<Job> {
     const existing = await this.getJob(jobId)
     if (!existing) throw new Error(`Job not found: ${jobId}`)
 
+    // `id`, `type`, and `createdAt` are part of a job's identity and must not
+    // be rewritten by a patch. `workflowPath` is intentionally NOT pinned —
+    // `convert_to_campaign` flips it from the regular job workflow to the
+    // campaign workflow as part of an atomic phase/status transition. Pinning
+    // it here in the past silently dropped that change and produced jobs whose
+    // persisted `phase` (e.g. `campaign-planning`) no longer matched their
+    // persisted `workflowPath`.
     const updated: Job = {
       ...existing,
       ...patch,
       id: existing.id,
       type: existing.type,
-      workflowPath: existing.workflowPath,
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),
     }

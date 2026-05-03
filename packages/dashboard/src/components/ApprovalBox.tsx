@@ -1,5 +1,8 @@
 import { useState } from 'react'
+import { CheckCircle2, MessageSquareReply } from 'lucide-react'
 import type { Job } from '../types'
+import { Button } from './ui/button'
+import { Textarea } from './ui/textarea'
 
 interface ApprovalBoxProps {
   job: Job
@@ -42,80 +45,81 @@ export default function ApprovalBox({ job, onSend }: ApprovalBoxProps) {
   }
 
   return (
-    <div className="rounded-xl border border-amber-800 bg-amber-950/20 p-4 space-y-3">
+    <div className="space-y-4 rounded-2xl border border-warning-500/25 bg-warning-500/8 p-5">
       <div className="flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-amber-900/40 border border-amber-700 flex items-center justify-center shrink-0">
-          <svg className="w-4 h-4 text-amber-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-warning-500/25 bg-warning-500/10 text-warning-400">
+          <MessageSquareReply className="size-4" />
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-amber-200">
+        <div className="min-w-0 flex-1">
+          <div className="text-[15px] font-semibold text-fg">
             {isMidPhase ? 'Agent paused for your input' : 'Approval needed to continue'}
           </div>
-          <div className="text-xs text-amber-300/80 mt-0.5">
+          <div className="mt-0.5 text-sm text-fg-muted">
             {isMidPhase ? (
               <>
-                Mid-phase in <span className="font-mono">{job.phase}</span>
+                Mid-phase in <span className="font-mono text-fg">{job.phase}</span>
                 {reason ? <> — <span className="italic">{reason}</span></> : null}
               </>
             ) : (
               <>
-                After phase <span className="font-mono">{job.phase}</span>
-                {job.awaitingNextPhase && (
-                  <> → next: <span className="font-mono">{job.awaitingNextPhase}</span></>
-                )}
+                After phase <span className="font-mono text-fg">{job.phase}</span>
+                {job.awaitingNextPhase ? (
+                  <> → next: <span className="font-mono text-fg">{job.awaitingNextPhase}</span></>
+                ) : null}
               </>
             )}
           </div>
         </div>
       </div>
 
-      {!isMidPhase && (
-        <div className="flex items-center gap-2">
-          <button
+      {!isMidPhase ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
             type="button"
             onClick={() => void handle(APPROVE_MESSAGE)}
             disabled={sending}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            variant="success"
+            size="sm"
           >
-            {sending ? 'Sending…' : '✓ Approve & continue'}
-          </button>
-          <span className="text-xs text-zinc-500">or ask for changes below</span>
+            <CheckCircle2 />
+            {sending ? 'Sending…' : 'Approve & continue'}
+          </Button>
+          <span className="text-sm text-fg-muted">or send the agent back with changes below</span>
         </div>
-      )}
+      ) : null}
 
       <form
         onSubmit={e => { e.preventDefault(); if (message.trim()) void handle(message.trim()) }}
-        className="space-y-2"
+        className="space-y-3"
       >
-        <textarea
-          rows={3}
+        <Textarea
+          rows={4}
           value={message}
           onChange={e => setMessage(e.target.value)}
           placeholder={
             isMidPhase
-              ? 'Answer the agent\'s question or provide the info it\'s waiting on…'
-              : 'Request changes: "Modify the plan to include rate limiting on /api/users too"…'
+              ? 'Answer the agent or provide the missing detail it asked for…'
+              : 'Request changes, clarify the plan, or send additional guidance…'
           }
           disabled={sending}
-          className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-700 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 disabled:opacity-50 transition-colors resize-none"
+          className="border-warning-500/20 focus-visible:ring-warning-500/40"
         />
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           {error ? (
-            <span className="text-xs text-rose-300">{error}</span>
+            <span className="text-sm text-danger-400">{error}</span>
           ) : (
-            <span className="text-xs text-zinc-500">
+            <span className="text-xs text-fg-muted">
               The agent will do the work and re-park for approval.
             </span>
           )}
-          <button
+          <Button
             type="submit"
             disabled={sending || !message.trim()}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            variant="secondary"
+            size="sm"
           >
             {sending ? 'Sending…' : 'Send message'}
-          </button>
+          </Button>
         </div>
       </form>
     </div>

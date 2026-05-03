@@ -102,6 +102,60 @@ describe('buildJobRecord (workflow resolution)', () => {
     ).rejects.toThrow(/non-empty workflowPath/)
   })
 
+  // Regression coverage for the campaign sibling-insight carry-over.
+  // When the dispatcher seeds a freshly-dispatched campaign child with
+  // `initialInsights`, those entries MUST land in the new job's
+  // `insights[]` so the prompt builder picks them up under "Insights from
+  // Upstream Agents". This is the *in-flight* path that complements the
+  // (slower) campaign-evaluator → propose_change → memory PR cycle.
+  it('seeds insights from input.initialInsights when supplied', async () => {
+    await fs.writeFile(
+      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      `---\ninitial_phase: planning\nphases:\n  - name: planning\n    model: planning\n    status: planning\n---\n`,
+    )
+
+    const job = await buildJobRecord(
+      {
+        type: 'job',
+        triggerSource: 'internal',
+        params: { campaignChildName: 'data-service' },
+        initialInsights: [
+          {
+            phase: 'coding',
+            category: 'sandbox-quirk',
+            summary: 'dotnet restore hangs without --configfile NuGet.Config',
+            detail: 'The sandbox blocks api.nuget.org; restore silently spins.',
+            suggestion: 'dotnet restore --configfile NuGet.Config',
+            sourceChildName: 'db-infrastructure',
+          },
+        ],
+      },
+      JobType.Job,
+      'workflows/job/workflow.md',
+      { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
+    )
+
+    expect(job.insights).toHaveLength(1)
+    expect(job.insights[0]?.sourceChildName).toBe('db-infrastructure')
+    expect(job.insights[0]?.suggestion).toBe('dotnet restore --configfile NuGet.Config')
+  })
+
+  it('defaults insights to [] when initialInsights is omitted', async () => {
+    await fs.writeFile(
+      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      `---\ninitial_phase: planning\nphases:\n  - name: planning\n    model: planning\n    status: planning\n---\n`,
+    )
+
+    const job = await buildJobRecord(
+      { type: 'job', triggerSource: 'cli', params: {} },
+      JobType.Job,
+      'workflows/job/workflow.md',
+      { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
+    )
+
+    expect(job.insights).toEqual([])
+  })
+
   it('honours trigger-source overrides (e.g. jira → spec-writing)', async () => {
     await fs.writeFile(
       path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
