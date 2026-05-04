@@ -1,6 +1,9 @@
 import type { Job } from '../types'
 import { isTerminalStatus } from './status'
 
+// Runtime-shape helper kept for internal detection (does this Job currently
+// host sub-runs?). User-facing labels and routing now live in
+// `lib/run-labels.ts`; consumers should prefer those exports.
 export const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
 
 function startCase(value: string): string {
@@ -11,12 +14,14 @@ function startCase(value: string): string {
     .join(' ')
 }
 
+/**
+ * Runtime detection helper: does this Job carry the workflow shape that
+ * hosts sub-runs? Today this matches the campaign workflow + presence of
+ * `campaignChildren`; once the runner exposes a workflow-extension surface
+ * (plan B), this becomes a workflow-metadata lookup.
+ */
 export function isCampaignJob(job: Pick<Job, 'workflowPath' | 'campaignChildren'>): boolean {
   return job.workflowPath === CAMPAIGN_WORKFLOW_PATH || Array.isArray(job.campaignChildren)
-}
-
-export function getRunKindLabel(job: Pick<Job, 'workflowPath' | 'campaignChildren'>): 'Job' | 'Campaign' {
-  return isCampaignJob(job) ? 'Campaign' : 'Job'
 }
 
 export function deriveWorkflowLabel(workflowPath: string): string {

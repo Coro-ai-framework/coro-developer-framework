@@ -9,6 +9,7 @@ import { Badge } from './ui/badge'
 import { requestJson, jsonRequest } from '../lib/http'
 import { formatCompactNumber, formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { cn } from '../lib/utils'
+import { SUB_RUN_NOUN } from '../lib/run-labels'
 import { toneClasses, toneDotClasses, type Tone } from '../lib/status'
 
 const CHILD_TONE: Record<CampaignChildStatus, Tone> = {
@@ -242,9 +243,9 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Campaign children</CardTitle>
+          <CardTitle>{SUB_RUN_NOUN.plural}</CardTitle>
           <CardDescription>
-            No child jobs registered yet. The campaign planner is still defining the execution graph.
+            {`No ${SUB_RUN_NOUN.pluralLower} registered yet. The campaign planner is still defining the execution graph.`}
           </CardDescription>
         </CardHeader>
       </Card>
@@ -260,8 +261,8 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
       <CardHeader className="gap-4 border-b border-line pb-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
-            <CardTitle>Campaign children</CardTitle>
-            <CardDescription>Dependency-aware execution view with child-level controls.</CardDescription>
+            <CardTitle>{SUB_RUN_NOUN.plural}</CardTitle>
+            <CardDescription>{`Dependency-aware execution view with per-${SUB_RUN_NOUN.singularLower} controls.`}</CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {(Object.keys(counts) as CampaignChildStatus[])
@@ -284,17 +285,17 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
           <MetricCell
             label="Tokens"
             value={formatTokens(usage.inputTokens + usage.outputTokens)}
-            detail="Across all children"
+            detail={`Across all ${SUB_RUN_NOUN.pluralLower}`}
           />
           <MetricCell
             label="Cost"
             value={formatPreciseCurrency(usage.totalCostUsd)}
-            detail="Aggregate child spend"
+            detail={`Aggregate ${SUB_RUN_NOUN.singularLower} spend`}
           />
           <MetricCell
             label="Pull requests"
             value={totalPrs.toString()}
-            detail="Opened across children"
+            detail={`Opened across ${SUB_RUN_NOUN.pluralLower}`}
           />
         </div>
 
@@ -355,7 +356,11 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
                     </td>
                     <td className="px-3 py-2.5">
                       {c.jobId ? (
-                        <Link to={`/jobs/${c.jobId}`} className="font-mono text-[11px] text-accent-300 hover:text-accent-400">
+                        <Link
+                          to={`/jobs/${c.jobId}`}
+                          className="font-mono text-[11px] text-accent-300 hover:text-accent-400"
+                          title={`Open ${SUB_RUN_NOUN.singularLower} detail`}
+                        >
                           {c.jobId.slice(0, 18)}…
                         </Link>
                       ) : (
@@ -380,7 +385,7 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
           <Stat label="Tokens in / out" value={`${formatTokens(usage.inputTokens)} / ${formatTokens(usage.outputTokens)}`} />
           <Stat label="Cache read" value={formatTokens(usage.cacheReadInputTokens)} />
           <Stat label="Latest update" value={formatRelativeTime(job.updatedAt)} />
-          <Stat label="Running children" value={(counts.dispatched + counts.ready).toString()} />
+          <Stat label={`Running ${SUB_RUN_NOUN.pluralLower}`} value={(counts.dispatched + counts.ready).toString()} />
         </div>
       </CardContent>
     </Card>

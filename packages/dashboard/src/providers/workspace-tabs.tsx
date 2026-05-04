@@ -4,7 +4,12 @@ import { useLocalStorage } from '../hooks/use-local-storage'
 
 export interface WorkspaceTab {
   id: string
-  kind: 'job' | 'campaign'
+  /**
+   * Workspace tabs are now uniformly tagged 'run' to match the unified Runs
+   * surface. The legacy 'job' and 'campaign' values are accepted on read so
+   * persisted localStorage entries from older sessions don't break.
+   */
+  kind: 'run' | 'job' | 'campaign'
   path: string
   title: string
   subtitle?: string

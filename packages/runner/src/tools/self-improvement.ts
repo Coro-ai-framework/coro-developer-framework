@@ -44,6 +44,46 @@ import type {
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
+/**
+ * Structured memory-entry schema — preferred over hand-composing markdown
+ * when proposing additions to `memory/known-pitfalls.md` or
+ * `memory/successful-patterns.md`. The runner serialises each entry into
+ * the canonical short-form layout, enforces hard length budgets, and
+ * appends to the existing file content.
+ *
+ * Budgets are deliberately tight; the cost of self-improvement is paid
+ * forever by every future job that loads memory, so brevity wins.
+ */
+export interface MemoryEntryInput {
+  /**
+   * Which memory file this entry belongs to. Must be inside the
+   * tenant `memory/` (or the repo `.coro/memory/`) tree. The runner
+   * groups entries by file and appends each group atomically.
+   */
+  file: string
+  /**
+   * Entry shape:
+   *   - `pitfall`  → ## <title> + Symptom / Root cause / Recipe (≤ 8 lines).
+   *   - `pattern`  → ## <title> + When to use / Code skeleton / Anti-pattern (≤ 10 lines).
+   */
+  kind: 'pitfall' | 'pattern'
+  /** Short heading — one line. */
+  title: string
+  /** One-line description of the surfaced symptom (pitfall) or use case (pattern). */
+  symptom?: string
+  /** One-line root-cause statement. Pitfalls only. */
+  rootCause?: string
+  /**
+   * Copy-pasteable recipe (pitfall) or code skeleton (pattern).
+   * Multi-line allowed; the runner enforces the per-kind budget.
+   */
+  recipe?: string
+  /** One-line anti-pattern note. Patterns only. */
+  antiPattern?: string
+  /** When to use it. Patterns only. */
+  whenToUse?: string
+}
+
 export interface ProposeChangeInput {
   type: ProposalType
   title: string
@@ -55,6 +95,14 @@ export interface ProposeChangeInput {
    * one call so each (job, layer) produces at most one PR.
    */
   files?: ProposalFile[]
+  /**
+   * Optional structured memory entries. The runner serialises these
+   * into the canonical short-form layout and merges them into `files`
+   * (creating or appending to the named files) before validation.
+   * Use this for `memory-update` proposals to save prompt tokens and
+   * mechanically enforce the per-entry length budgets.
+   */
+  entries?: MemoryEntryInput[]
   /** Single-file legacy shim. Normalised into `files` if present. */
   targetFile?: string
   proposedContent?: string
@@ -151,6 +199,133 @@ export function routeFile(
   return inferred
 }
 
+// ── Length budgets for self-improvement output ───────────────────────────────
+//
+// Memory grows monotonically across the lifetime of a tenant — every
+// future job pays the token tax for every line we keep. These caps are
+// rules, not suggestions. The numbers come from the plan's Bottleneck 3
+// guidance.
+
+export const MEMORY_LENGTH_BUDGETS = {
+  pitfall: 8,           // ## title + Symptom + Root cause + Recipe
+  pattern: 10,          // ## title + When to use + Code skeleton + Anti-pattern
+  skillSection: 15,     // per added section in a skill amendment
+} as const
+
+const SKILL_SECTION_RE = /^##\s+/m
+
+/**
+ * Best-effort length cap for skill amendments: the runner counts lines
+ * per `##` section in any skill file in the proposal payload and rejects
+ * sections that exceed the per-section budget. Skill *creates* are not
+ * capped (a new skill may legitimately be longer than a single section
+ * amendment), but skill *updates* must respect the cap on every section
+ * they introduce or modify.
+ */
+function enforceSkillSectionBudget(file: ProposalFile): void {
+  const text = file.content
+  // Split by `## ` headings, ignore prologue.
+  const sections = text.split(/^##\s+/m).slice(1)
+  for (const sec of sections) {
+    const heading = sec.split('\n', 1)[0].trim()
+    const lineCount = sec.split('\n').length
+    if (lineCount > MEMORY_LENGTH_BUDGETS.skillSection) {
+      throw new Error(
+        `Skill section "${heading}" in "${file.path}" is ${lineCount} lines — exceeds the ` +
+          `${MEMORY_LENGTH_BUDGETS.skillSection}-line budget for skill amendments. ` +
+          `Tighten the prose or split into a sub-skill before retrying.`,
+      )
+    }
+  }
+}
+
+// ── Memory-entry serialisation ───────────────────────────────────────────────
+//
+// Take the structured entries shipped by the agent and render them in the
+// canonical short-form layout. Each kind has a fixed shape so memory stays
+// scannable and small.
+
+function renderPitfall(entry: MemoryEntryInput): string {
+  const title = (entry.title ?? '').trim() || 'Untitled pitfall'
+  const symptom = (entry.symptom ?? '').trim()
+  const rootCause = (entry.rootCause ?? '').trim()
+  const recipe = (entry.recipe ?? '').trim()
+
+  const lines: string[] = [`## ${title}`]
+  if (symptom) lines.push(`- Symptom: ${symptom}`)
+  if (rootCause) lines.push(`- Root cause: ${rootCause}`)
+  if (recipe) {
+    lines.push('- Recipe:')
+    for (const line of recipe.split('\n')) lines.push(`    ${line}`)
+  }
+  return lines.join('\n')
+}
+
+function renderPattern(entry: MemoryEntryInput): string {
+  const title = (entry.title ?? '').trim() || 'Untitled pattern'
+  const whenToUse = (entry.whenToUse ?? '').trim()
+  const recipe = (entry.recipe ?? '').trim()
+  const antiPattern = (entry.antiPattern ?? '').trim()
+
+  const lines: string[] = [`## ${title}`]
+  if (whenToUse) lines.push(`- When to use: ${whenToUse}`)
+  if (recipe) {
+    lines.push('- Code skeleton:')
+    for (const line of recipe.split('\n')) lines.push(`    ${line}`)
+  }
+  if (antiPattern) lines.push(`- Anti-pattern: ${antiPattern}`)
+  return lines.join('\n')
+}
+
+/** Render one entry, enforcing the per-kind line budget. */
+function renderEntry(entry: MemoryEntryInput): string {
+  const rendered = entry.kind === 'pattern' ? renderPattern(entry) : renderPitfall(entry)
+  const cap = entry.kind === 'pattern' ? MEMORY_LENGTH_BUDGETS.pattern : MEMORY_LENGTH_BUDGETS.pitfall
+  const lineCount = rendered.split('\n').length
+  if (lineCount > cap) {
+    throw new Error(
+      `Memory ${entry.kind} entry "${entry.title}" rendered to ${lineCount} lines — exceeds the ` +
+        `${cap}-line budget. Tighten the recipe to a copy-paste minimum, or split into two entries.`,
+    )
+  }
+  return rendered
+}
+
+/**
+ * Merge structured entries into the proposal's `files[]`. Multiple entries
+ * for the same file are concatenated under that file's payload; the runner
+ * records the rendered content as the proposed change. Existing inline
+ * `files[]` content for the same path takes precedence (the agent can
+ * always opt out of structured rendering by supplying raw markdown).
+ */
+function applyMemoryEntries(
+  files: ProposalFile[],
+  entries: MemoryEntryInput[] | undefined,
+): ProposalFile[] {
+  if (!entries || entries.length === 0) return files
+
+  const inlinePaths = new Set(files.map(f => f.path))
+  const grouped = new Map<string, string[]>()
+  for (const entry of entries) {
+    if (!entry.file.startsWith('memory/') && !entry.file.startsWith('.coro/memory/')) {
+      throw new Error(
+        `Memory entry for "${entry.file}" must live under memory/ (tenant) or .coro/memory/ (repo).`,
+      )
+    }
+    const rendered = renderEntry(entry)
+    const bucket = grouped.get(entry.file) ?? []
+    bucket.push(rendered)
+    grouped.set(entry.file, bucket)
+  }
+
+  const out: ProposalFile[] = [...files]
+  for (const [filePath, blocks] of grouped) {
+    if (inlinePaths.has(filePath)) continue // explicit content wins
+    out.push({ path: filePath, content: blocks.join('\n\n') + '\n' })
+  }
+  return out
+}
+
 // ── Per-type format validation ───────────────────────────────────────────────
 //
 // These checks run inline before we touch git. They are intentionally
@@ -199,6 +374,13 @@ export function validateProposalFiles(
           if (!/^\s*description\s*:\s*\S+/m.test(fm)) {
             throw new Error(`Skill file "${f.path}" frontmatter is missing a non-empty "description".`)
           }
+        }
+      }
+      // Skill amendments must respect the per-section line budget.
+      // skill-create skips this — a brand-new skill may be larger.
+      if (type === 'skill-update' && SKILL_SECTION_RE.test(files.map(f => f.content).join('\n'))) {
+        for (const f of files) {
+          if (f.path.endsWith('SKILL.md')) enforceSkillSectionBudget(f)
         }
       }
       break
@@ -275,7 +457,7 @@ export async function proposeChange(
   input: ProposeChangeInput,
   ctx: ToolContext,
 ): Promise<ProposeChangeResult> {
-  const files = normaliseFiles(input)
+  const files = applyMemoryEntries(normaliseFiles(input), input.entries)
   validateProposalFiles(input.type, files)
 
   const strategy = ctx.settings.proposals.routing.strategy
@@ -287,6 +469,25 @@ export async function proposeChange(
       `All files in a single propose_change call must target the same layer. ` +
         `Got mixed: ${files.map((f, i) => `${f.path}=${layers[i]}`).join(', ')}. ` +
         `Make one call per layer.`,
+    )
+  }
+
+  // Runtime constraint: at most one proposal per (jobId, layer). The plan
+  // calls for the runner to reject duplicate bundles so the agent cannot
+  // accidentally split a knowledge update into multiple PRs. Reject when a
+  // prior proposal exists for the same job + layer regardless of its
+  // terminal status — once the agent has shipped its bundle for a layer,
+  // the cycle is closed for this job.
+  const existing = await ctx.stateBackend.listProposals(ctx.tenantContext.tenantId)
+  const dupe = existing.find(
+    p => p.jobId === ctx.job.id && p.targetLayer === targetLayer,
+  )
+  if (dupe) {
+    throw new Error(
+      `propose_change already shipped for this job + layer ` +
+        `(proposal ${dupe.id}, branch ${dupe.branch ?? '<unknown>'}, PR ${dupe.prUrl ?? '<unknown>'}, status ${dupe.status}). ` +
+        `Bundle every file change for the ${targetLayer} layer into ONE propose_change call. ` +
+        `If you need to amend, push to the existing branch by hand instead of opening a second PR.`,
     )
   }
 

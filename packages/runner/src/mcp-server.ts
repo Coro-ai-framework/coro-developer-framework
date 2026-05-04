@@ -443,7 +443,7 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'propose_change',
-        'Ship a self-improvement as a PR against the tenant intelligence repo or the project repo\'s .coro/ overlay. Bundle every file change for a given target layer into ONE call — splitting produces multiple PRs. The tool validates, branches, commits, pushes, opens a PR, and returns its URL.',
+        'Ship a self-improvement as a PR against the tenant intelligence repo or the project repo\'s .coro/ overlay. ONE call per (job, layer) — the runner rejects a second call. Prefer the `entries` field for memory updates: it serialises into the canonical short-form layout and enforces hard line budgets (pitfall ≤ 8 lines, pattern ≤ 10 lines).',
         {
           type: z.enum([
             'new-tool', 'modify-tool', 'new-workflow', 'modify-workflow',
@@ -451,10 +451,21 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
             'skill-create', 'skill-update', 'claude-md-update',
           ]),
           title: z.string().describe('Short, human-readable title; becomes the PR title.'),
-          rationale: z.string().describe('Why this change is worth merging — drives the PR description and future list_proposals previews.'),
-          description: z.string().describe('Implementation details / what the diff does.'),
+          rationale: z.string().describe('Why this change is worth merging — drives the PR description and future list_proposals previews. Two sentences max.'),
+          description: z.string().describe('Implementation details / what the diff does. Be terse.'),
           files: z.array(z.object({ path: z.string(), content: z.string() })).optional()
             .describe('Multi-file payload. Paths are relative to the target layer\'s root.'),
+          entries: z.array(z.object({
+            file: z.string().describe('Memory file the entry lands in (memory/* or .coro/memory/*).'),
+            kind: z.enum(['pitfall', 'pattern']),
+            title: z.string().describe('One-line ## heading.'),
+            symptom: z.string().optional().describe('Pitfall: one-line symptom.'),
+            rootCause: z.string().optional().describe('Pitfall: one-line root cause.'),
+            recipe: z.string().optional().describe('Copy-paste recipe (pitfall) or code skeleton (pattern). Multi-line allowed within the budget.'),
+            antiPattern: z.string().optional().describe('Pattern: one-line anti-pattern note.'),
+            whenToUse: z.string().optional().describe('Pattern: one-line "when to use" note.'),
+          })).optional()
+            .describe('Structured memory entries. Preferred over hand-composed markdown for memory-update proposals — saves prompt tokens and enforces brevity caps.'),
           targetFile: z.string().optional().describe('Single-file shim. Use `files` for multi-file proposals.'),
           proposedContent: z.string().optional(),
           targetLayer: z.enum(['tenant', 'repo']).optional()

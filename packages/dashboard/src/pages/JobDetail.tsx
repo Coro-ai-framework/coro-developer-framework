@@ -33,9 +33,18 @@ import {
   getRepoSlug,
   getReviewers,
   getRunDetailPath,
-  getRunKindLabel,
   isCampaignJob,
 } from '../lib/jobs'
+import {
+  PAGE_TITLES,
+  RUN_NOUN,
+  RUNS_LIST_PATH,
+  SUB_RUN_NOUN,
+  getParentRunBreadcrumbLabel,
+  getParentRunId,
+  getRunWorkflowTag,
+  hostsSubRuns,
+} from '../lib/run-labels'
 import { jsonRequest, requestJson } from '../lib/http'
 import { useJob } from '../hooks/useJob'
 import { useJobStream } from '../hooks/useJobStream'
@@ -97,16 +106,29 @@ function deriveWorkflowPhases(job: Job | null): WorkflowPhase[] {
 function HeaderSummary({ job }: { job: Job }) {
   const repoSlug = getRepoSlug(job)
   const description = deriveJobDescription(job)
+  const parentRunId = getParentRunId(job)
 
   return (
     <div className="space-y-4">
-      <Link
-        to="/jobs"
-        className="inline-flex items-center gap-1.5 text-sm text-fg-muted transition-colors hover:text-fg"
-      >
-        <ArrowLeft className="size-4" />
-        Back to runs
-      </Link>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <Link
+          to={RUNS_LIST_PATH}
+          className="inline-flex items-center gap-1.5 text-fg-muted transition-colors hover:text-fg"
+        >
+          <ArrowLeft className="size-4" />
+          {PAGE_TITLES.backToRuns}
+        </Link>
+        {parentRunId ? (
+          <Link
+            to={getRunDetailPath({ id: parentRunId })}
+            className="inline-flex items-center gap-1.5 text-fg-muted transition-colors hover:text-fg"
+          >
+            <ArrowLeft className="size-4 opacity-60" />
+            {getParentRunBreadcrumbLabel()}{' '}
+            <span className="font-mono text-[12px]">{parentRunId}</span>
+          </Link>
+        ) : null}
+      </div>
 
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -117,9 +139,20 @@ function HeaderSummary({ job }: { job: Job }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-fg-subtle">
-          <span className="rounded-md border border-line bg-overlay px-1.5 py-0.5 uppercase tracking-[0.14em]">
-            {getRunKindLabel(job).toLowerCase()}
+          <span
+            className="rounded-md border border-line bg-overlay px-1.5 py-0.5 uppercase tracking-[0.14em]"
+            title="Workflow"
+          >
+            {getRunWorkflowTag(job)}
           </span>
+          {hostsSubRuns(job) ? (
+            <span
+              className="rounded-md border border-line bg-overlay px-1.5 py-0.5 uppercase tracking-[0.14em]"
+              title={`Hosts ${SUB_RUN_NOUN.pluralLower}`}
+            >
+              {SUB_RUN_NOUN.pluralLower}
+            </span>
+          ) : null}
           <span className="rounded-md border border-line bg-overlay px-1.5 py-0.5 uppercase tracking-[0.14em]">
             {job.interactive ? 'interactive' : 'autonomous'}
           </span>
@@ -570,21 +603,22 @@ function JsonPanel({ label, data, defaultOpen = false }: { label: string; data: 
 function ContextPanel({ job }: { job: Job }) {
   const reviewers = getReviewers(job)
   const repoSlug = getRepoSlug(job)
+  const parentRunId = getParentRunId(job)
 
   const rows: Array<{ label: string; value: React.ReactNode }> = []
-  rows.push({ label: 'Type', value: getRunKindLabel(job) })
+  rows.push({ label: 'Workflow', value: getRunWorkflowTag(job) })
   rows.push({ label: 'Phase', value: job.phase })
   if (repoSlug) rows.push({ label: 'Repository', value: repoSlug })
   if (reviewers.length > 0) rows.push({ label: 'Reviewers', value: reviewers.join(', ') })
-  if (job.campaignParentId) {
+  if (parentRunId) {
     rows.push({
-      label: 'Parent campaign',
+      label: getParentRunBreadcrumbLabel(),
       value: (
         <Link
-          to={getRunDetailPath({ id: job.campaignParentId })}
+          to={getRunDetailPath({ id: parentRunId })}
           className="font-mono text-accent-300 hover:text-accent-400"
         >
-          {job.campaignParentId}
+          {parentRunId}
         </Link>
       ),
     })
@@ -605,7 +639,7 @@ function ContextPanel({ job }: { job: Job }) {
     <Card>
       <CardHeader>
         <CardTitle>Context</CardTitle>
-        <CardDescription>Run metadata and coordination signals.</CardDescription>
+        <CardDescription>{`${RUN_NOUN.singular} metadata and coordination signals.`}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         {rows.map((row, idx) => (
@@ -648,7 +682,7 @@ function ActionPanel({
     <Card>
       <CardHeader className="gap-1 border-b border-line pb-4">
         <CardTitle>Controls</CardTitle>
-        <CardDescription>Refresh or resume this run.</CardDescription>
+        <CardDescription>{`Refresh or resume this ${RUN_NOUN.singularLower}.`}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4 pt-5">
         <div className="grid gap-2 sm:grid-cols-2">
@@ -703,7 +737,7 @@ function ActionPanel({
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-line px-3 py-2.5 text-[13px] text-fg-subtle">
-            This run can't be resumed from its current state.
+            {`This ${RUN_NOUN.singularLower} can't be resumed from its current state.`}
           </div>
         )}
 
@@ -720,7 +754,6 @@ function ActionPanel({
 export default function JobDetail() {
   const { jobId } = useParams<{ jobId: string }>()
   const location = useLocation()
-  const campaignRoute = location.pathname.startsWith('/campaigns/')
 
   const { job, loading, error, refetch } = useJob(jobId)
   const { lines, status: connectionStatus, lastHeartbeat } = useJobStream(jobId)
@@ -740,12 +773,12 @@ export default function JobDetail() {
   const [messageError, setMessageError] = useState<string | null>(null)
   const [sendingMessage, setSendingMessage] = useState(false)
 
-  const campaignMode = job ? isCampaignJob(job) : campaignRoute
+  const carriesSubRuns = job ? isCampaignJob(job) : false
 
   useRegisterWorkspaceTab(jobId
     ? {
         id: jobId,
-        kind: campaignMode ? 'campaign' : 'job',
+        kind: 'run',
         path: location.pathname,
         title: job ? deriveJobTitle(job) : jobId,
         subtitle: job?.phase,
@@ -860,13 +893,14 @@ export default function JobDetail() {
     return (
       <Card>
         <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
-          <div className="text-lg font-semibold text-fg">{error ?? 'Job not found'}</div>
+          <div className="text-lg font-semibold text-fg">
+            {error ?? `${RUN_NOUN.singular} not found`}
+          </div>
           <p className="max-w-md text-sm text-fg-muted">
-            The run could not be loaded. It may have been deleted or the runner could not reach its
-            backing state store.
+            {`The ${RUN_NOUN.singularLower} could not be loaded. It may have been deleted or the runner could not reach its backing state store.`}
           </p>
           <Button asChild variant="secondary">
-            <Link to="/jobs">Back to runs</Link>
+            <Link to={RUNS_LIST_PATH}>{PAGE_TITLES.backToRuns}</Link>
           </Button>
         </CardContent>
       </Card>
@@ -929,17 +963,17 @@ export default function JobDetail() {
             </div>
 
             <div className="space-y-4">
-              {job.campaignParentId ? (
-                <AlertCard title="Spawned by campaign" tone="accent">
-                  This job is part of campaign{' '}
+              {getParentRunId(job) ? (
+                <AlertCard title={`Dispatched as a ${SUB_RUN_NOUN.singularLower}`} tone="accent">
+                  {`This ${RUN_NOUN.singularLower} runs as a ${SUB_RUN_NOUN.singularLower} of `}
                   <Link
-                    to={getRunDetailPath({ id: job.campaignParentId })}
+                    to={getRunDetailPath({ id: getParentRunId(job) ?? '' })}
                     className="font-mono text-accent-300 underline underline-offset-2"
                   >
-                    {job.campaignParentId}
+                    {getParentRunId(job)}
                   </Link>
                   {typeof job.params['campaignChildName'] === 'string'
-                    ? ` as child ${job.params['campaignChildName'] as string}.`
+                    ? ` (named ${job.params['campaignChildName'] as string}).`
                     : '.'}
                 </AlertCard>
               ) : null}
@@ -977,7 +1011,7 @@ export default function JobDetail() {
 
         <TabsContent value="work" className="space-y-5">
           <WorkItemsCard job={job} />
-          {campaignMode ? <CampaignView job={job} onMutated={() => void refetch()} /> : null}
+          {carriesSubRuns ? <CampaignView job={job} onMutated={() => void refetch()} /> : null}
           <ArtifactsBoard job={job} phases={workflowPhases} />
         </TabsContent>
 

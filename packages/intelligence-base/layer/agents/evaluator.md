@@ -148,6 +148,16 @@ For every **new** finding (not already in memory):
 - Update `memory/MEMORY.md` index if new entries were added
 - Never overwrite existing memory — append or create new entries
 
+**Hard length budgets — these are rules, not suggestions.** Memory is loaded by every job for the rest of this tenant's life; brevity wins. Use the structured `entries[]` field on `propose_change` (see step 9) so the runner can render and length-cap each entry for you.
+
+| Entry kind                | Max lines | Required fields                                                  |
+|---------------------------|-----------|------------------------------------------------------------------|
+| Pitfall (`known-pitfalls.md`) | **8 lines** | `## Title`, **Symptom** (1 line), **Root cause** (1 line), **Recipe** (≤ 4 lines, copy-paste only) |
+| Pattern (`successful-patterns.md`) | **10 lines** | `## Pattern`, **When to use** (1 line), **Code skeleton** (≤ 6 lines), **Anti-pattern** (1 line) |
+| Skill section (in a skill amendment) | **15 lines** | per added `##` section (the runner rejects longer ones) |
+
+If a finding wants to exceed these budgets it is **either two findings or already documented** — split or dedupe before writing. Background prose, full reproduction transcripts, and speculative recommendations belong in the evaluation report, not in memory.
+
 ### 9. Review upstream insights and propose improvements
 
 The job context includes an **Insights from Upstream Agents** section — learnings recorded by the planner, coder, merge gatekeeper, and (for campaign children) earlier siblings. Each insight may carry a `sourceChildName` indicating it was inherited from an earlier sibling in the same campaign. Before proposing, invoke the `self-improvement-guide` skill for file structure, proposal types, and target-layer routing rules.
@@ -163,16 +173,36 @@ You are the **grooming agent** for self-improvement: review every insight, decid
 
 If you also see triggers that should have fired but didn't (e.g. coder retried 5+ times but recorded no insight), call `mcp__coro__add_insight` yourself in category `intelligence-gap` so the next campaign's siblings still get the recipe even before the memory PR merges.
 
-**Consolidation rule (mandatory):** Make at most ONE `propose_change` call per target layer per job — one for the tenant intelligence repo and, if needed, one for the project repo's `.coro/` overlay. Bundle every related file change for a layer into a single multi-file payload. Two proposals to the same layer means two PRs and twice the human review time.
+**Consolidation rule (runtime-enforced):** ONE `propose_change` call per target layer per job. The runner rejects a second call for the same `(jobId, layer)` with a structured error — bundle every file change for a layer into a single multi-file (or single `entries[]`) payload. Two proposals to the same layer means two PRs and twice the human review time.
 
 Steps:
 
-1. Call `mcp__coro__list_proposals({ status: "pending" })` to check for in-flight PRs that already cover the same ground — skip duplicates.
-2. Group your durable changes by target layer (path-prefix routing):
+1. **Pre-flight dedupe.** Before composing anything, call `mcp__coro__list_proposals({ status: "pending" })` and scan `memory/MEMORY.md` for the same symptom keyword. Near-duplicates ⇒ **skip** or **append a one-line cross-reference** to the existing entry; do not author a new section.
+2. **Group durable changes by target layer** (path-prefix routing):
    - `.coro/...` → repo layer
    - everything else (`memory/`, `agents/`, `workflows/`, `.claude/CLAUDE.md`, `.claude/skills/`) → tenant layer
-3. For each layer that has changes, make exactly one `mcp__coro__propose_change` call with a `files: []` array. The tool returns the PR URL synchronously; record it in your evaluation report.
-4. If validation fails, the tool throws a structured error — fix the input (path, frontmatter, layer mismatch) and retry.
+3. **Prefer the structured `entries[]` schema for memory updates.** It saves prompt tokens (you don't compose markdown by hand) and the runner mechanically enforces the per-kind line budget:
+   ```jsonc
+   {
+     "type": "memory-update",
+     "title": "Capture cgo build failure on macOS arm64",
+     "rationale": "Recurring failure observed in two jobs this week.",
+     "description": "Adds one short pitfall entry.",
+     "entries": [
+       {
+         "file": "memory/known-pitfalls.md",
+         "kind": "pitfall",
+         "title": "cgo build fails on macOS arm64 inside the runner sandbox",
+         "symptom": "go build ./... exits with `ld: framework not found CoreFoundation`",
+         "rootCause": "CGO_ENABLED is on but the sandbox lacks the macOS SDK headers",
+         "recipe": "export CGO_ENABLED=0\\ngo build ./..."
+       }
+     ]
+   }
+   ```
+4. For non-memory changes, use `files: [{ path, content }]`. Skill amendments must respect the 15-lines-per-section budget — the runner rejects oversize sections.
+5. For each layer that has changes, make **exactly one** `mcp__coro__propose_change` call. The tool returns the PR URL synchronously; record it in your evaluation report.
+6. If validation fails, the tool throws a structured error — fix the input (path, frontmatter, layer mismatch, length budget) and retry. Do **not** open a second PR.
 
 ### 10. Write the evaluation report
 
@@ -250,6 +280,7 @@ Use `mcp__coro__log` to report: build/test verdict, evaluation decision, work-it
 - Write to memory even when declaring complete, if any new patterns were discovered
 - Never overwrite an existing memory entry — append or create new entries
 - Memory is permanent knowledge; keep it precise and actionable
+- **Honour the entry-length budgets in step 8.** If a finding feels too big for a budgeted entry, it is either two findings or already documented — split or dedupe instead of growing the entry. The recipe is the most valuable part; lead with it and drop the prose.
 
 ## Important rules
 

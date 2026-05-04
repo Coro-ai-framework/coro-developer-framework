@@ -72,7 +72,44 @@ If validation fails, the tool throws — **no commit, no push, no PR**. Fix the 
 
 ## How to file a proposal (Evaluator and PR Reviewer)
 
-**Bundle every file change for a layer into one call.** Calling `propose_change` twice for the same layer in one job opens two PRs — duplicate review work and harder-to-merge diffs. Prefer one call per layer per job; in the rare case where you need both, that is at most two calls per job (one tenant, one repo).
+**Bundle every file change for a layer into one call.** The runner enforces this: a second `propose_change` for the same `(jobId, layer)` is rejected with a structured error citing the prior proposal's branch and PR URL. Prefer one call per layer per job; in the rare case where you need both, that is at most two calls per job (one tenant, one repo).
+
+### Memory entries: prefer the structured `entries[]` schema
+
+Memory grows monotonically and is loaded by every future job. Brevity wins. The runner exposes a structured schema that **renders** entries into the canonical short-form layout and **rejects** entries that exceed the per-kind line budget.
+
+```
+propose_change({
+  type: "memory-update",
+  title: "Capture cgo build failure on macOS arm64",
+  rationale: "Recurring failure; cheap recipe to dodge it.",
+  description: "Adds one short pitfall.",
+  entries: [
+    {
+      file: "memory/known-pitfalls.md",
+      kind: "pitfall",
+      title: "cgo build fails on macOS arm64 inside the runner sandbox",
+      symptom: "go build ./... exits with `ld: framework not found CoreFoundation`",
+      rootCause: "CGO_ENABLED is on but the sandbox lacks the macOS SDK headers",
+      recipe: "export CGO_ENABLED=0\\ngo build ./..."
+    }
+  ]
+})
+```
+
+Length budgets the runner mechanically enforces:
+
+| Kind                         | Max lines | Required fields                                                  |
+|------------------------------|-----------|------------------------------------------------------------------|
+| `pitfall`                    | **8**     | `title`, `symptom`, `rootCause`, `recipe` (≤ 4 lines, copy-paste only) |
+| `pattern`                    | **10**    | `title`, `whenToUse`, `recipe` (≤ 6 lines), `antiPattern`        |
+| Skill section (`skill-update`) | **15**    | per added `##` section in any SKILL.md you touch                 |
+
+If a finding wants to exceed these budgets it is **either two findings or already documented** — split or dedupe. Background storytelling, full reproductions, and speculative "consider also …" text belong in the evaluation report, not in memory.
+
+### Mixed bundles still work
+
+For non-memory changes, or when you need to ship a memory entry alongside other intelligence in the same layer, use `files: []`:
 
 ```
 propose_change({
@@ -88,7 +125,16 @@ propose_change({
 })
 ```
 
-Before proposing, call `list_proposals({ status: "pending" })` to check for an in-flight PR that already covers the same ground.
+You can also combine `entries[]` and `files[]` in the same call — `entries[]` is the recommended shape for new memory additions, `files[]` for skill / agent / workflow changes.
+
+### Pre-flight dedupe (mandatory)
+
+Before composing anything:
+
+1. Call `list_proposals({ status: "pending" })` to check for in-flight PRs that already cover the same ground.
+2. Scan `memory/MEMORY.md` and the relevant memory files for the same symptom keyword.
+
+Near-duplicates ⇒ **skip** or **append a one-line cross-reference** to the existing entry; do not author a new section.
 
 ## Skill file format
 

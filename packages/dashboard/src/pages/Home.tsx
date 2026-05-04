@@ -19,7 +19,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { requestJson } from '../lib/http'
-import { deriveJobDescription, deriveJobTitle, getRunDetailPath, isCampaignJob, sortJobsByUpdatedAt } from '../lib/jobs'
+import { deriveJobDescription, deriveJobTitle, getRunDetailPath, sortJobsByUpdatedAt } from '../lib/jobs'
+import {
+  PAGE_TITLES,
+  RUN_LIST_LABELS,
+  RUN_NOUN,
+  SUB_RUN_NOUN,
+  getRunWorkflowTag,
+  hostsSubRuns,
+} from '../lib/run-labels'
 import { isTerminalStatus } from '../lib/status'
 import { useJobs } from '../hooks/useJobs'
 import type { Job } from '../types'
@@ -86,8 +94,11 @@ function OverviewList({ title, jobs, emptyLabel, icon: Icon }: OverviewListProps
                   className="group flex items-start gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-overlay/60"
                 >
                   <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate text-sm font-medium text-fg">{deriveJobTitle(job)}</span>
+                      <span className="inline-flex items-center rounded-md border border-line bg-overlay px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-fg-muted">
+                        {getRunWorkflowTag(job)}
+                      </span>
                       <StatusBadge status={job.status} />
                     </div>
                     {deriveJobDescription(job) ? (
@@ -114,7 +125,7 @@ function SetupBanner({ setup }: { setup: SetupSummary }) {
   const title = isFirstRun ? 'Finish runner setup' : 'Runner setup is incomplete'
   const description = isFirstRun
     ? 'The workbench is ready, but the runner still needs authentication and git settings before it can dispatch real work.'
-    : 'One or more essentials are missing. Finish configuration so jobs and campaigns can run cleanly.'
+    : `One or more essentials are missing. Finish configuration so ${RUN_NOUN.pluralLower} can run cleanly.`
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-warning-500/25 bg-warning-500/8 p-5 lg:flex-row lg:items-center lg:justify-between">
@@ -163,23 +174,22 @@ export default function Home() {
 
   const setup = summariseConfig(snapshot)
   const sortedJobs = useMemo(() => sortJobsByUpdatedAt(jobs), [jobs])
-  const activeJobs = sortedJobs.filter(job => !isCampaignJob(job) && !isTerminalStatus(job.status))
-  const activeCampaigns = sortedJobs.filter(job => isCampaignJob(job) && !isTerminalStatus(job.status))
+  const activeRuns = sortedJobs.filter(job => !isTerminalStatus(job.status))
+  const activeSoloRuns = activeRuns.filter(job => !hostsSubRuns(job))
+  const activeWithSubRuns = activeRuns.filter(job => hostsSubRuns(job))
   const awaitingInput = sortedJobs.filter(job => job.status === 'awaiting-developer-input')
   const recentHistory = sortedJobs.filter(job => isTerminalStatus(job.status)).slice(0, 5)
-  const liveSpend = sortedJobs
-    .filter(job => !isTerminalStatus(job.status))
-    .reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
+  const liveSpend = activeRuns.reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Overview"
+        title={PAGE_TITLES.overview}
         description="What's live, what needs you, and what just finished."
         actions={
           <Button asChild>
             <Link to="/jobs/new">
-              New run
+              {PAGE_TITLES.newRun}
               <ArrowRight />
             </Link>
           </Button>
@@ -192,16 +202,16 @@ export default function Home() {
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="Active jobs"
-          value={activeJobs.length.toString()}
-          description="Non-campaign work running or parked"
+          label={`Active ${RUN_NOUN.pluralLower}`}
+          value={activeRuns.length.toString()}
+          description={`Across all workflows`}
           icon={PlayCircle}
           tone="accent"
         />
         <StatCard
-          label="Active campaigns"
-          value={activeCampaigns.length.toString()}
-          description="Campaigns coordinating child jobs"
+          label={`Hosting ${SUB_RUN_NOUN.pluralLower}`}
+          value={activeWithSubRuns.length.toString()}
+          description={`${RUN_NOUN.plural} coordinating ${SUB_RUN_NOUN.pluralLower}`}
           icon={FolderKanban}
           tone="accent"
         />
@@ -215,14 +225,14 @@ export default function Home() {
         <StatCard
           label="Live spend"
           value={formatPreciseCurrency(liveSpend)}
-          description="Across non-terminal runs"
+          description={`Across non-terminal ${RUN_NOUN.pluralLower}`}
           icon={Bot}
           tone="neutral"
         />
       </div>
 
       {error ? (
-        <ErrorState title="Could not load jobs" message={error} />
+        <ErrorState title={`Could not load ${RUN_NOUN.pluralLower}`} message={error} />
       ) : null}
 
       {loading ? (
@@ -234,27 +244,27 @@ export default function Home() {
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
           <OverviewList
-            title="Active jobs"
-            jobs={activeJobs.slice(0, 5)}
-            emptyLabel="No active jobs. Dispatch one from the New run button."
+            title={RUN_LIST_LABELS.activeRuns}
+            jobs={activeSoloRuns.slice(0, 5)}
+            emptyLabel={RUN_LIST_LABELS.emptyActive}
             icon={PlayCircle}
           />
           <OverviewList
-            title="Campaigns in motion"
-            jobs={activeCampaigns.slice(0, 5)}
-            emptyLabel="No campaigns are active right now."
+            title={RUN_LIST_LABELS.activeWithSubRuns}
+            jobs={activeWithSubRuns.slice(0, 5)}
+            emptyLabel={RUN_LIST_LABELS.emptyWithSubRuns}
             icon={FolderKanban}
           />
           <OverviewList
-            title="Awaiting your input"
+            title={RUN_LIST_LABELS.awaitingInput}
             jobs={awaitingInput.slice(0, 5)}
-            emptyLabel="Nothing parked for approval or a response."
+            emptyLabel={RUN_LIST_LABELS.emptyAwaiting}
             icon={Inbox}
           />
           <OverviewList
-            title="Recently finished"
+            title={RUN_LIST_LABELS.recentlyFinished}
             jobs={recentHistory}
-            emptyLabel="Completed and failed runs will appear here."
+            emptyLabel={RUN_LIST_LABELS.emptyHistory}
             icon={Bot}
           />
         </div>

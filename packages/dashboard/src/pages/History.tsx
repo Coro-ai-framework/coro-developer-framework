@@ -10,18 +10,18 @@ import { Input } from '../components/ui/input'
 import SegmentedControl from '../components/ui/segmented-control'
 import { Skeleton } from '../components/ui/skeleton'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
-import { deriveJobDescription, deriveJobTitle, isCampaignJob, sortJobsByUpdatedAt } from '../lib/jobs'
+import { deriveJobDescription, deriveJobTitle, getRunDetailPath, sortJobsByUpdatedAt } from '../lib/jobs'
+import {
+  PAGE_TITLES,
+  RUN_NOUN,
+  deriveWorkflowFilterOptions,
+  getRunWorkflowTag,
+  getWorkflowSlug,
+} from '../lib/run-labels'
 import { isTerminalStatus } from '../lib/status'
 import { useJobs } from '../hooks/useJobs'
 
-type ScopeFilter = 'all' | 'jobs' | 'campaigns'
 type OutcomeFilter = 'all' | 'complete' | 'failed' | 'escalated'
-
-const SCOPE_FILTERS = [
-  { value: 'all' as const, label: 'All' },
-  { value: 'jobs' as const, label: 'Jobs' },
-  { value: 'campaigns' as const, label: 'Campaigns' },
-]
 
 const OUTCOME_FILTERS = [
   { value: 'all' as const, label: 'All outcomes' },
@@ -33,7 +33,7 @@ const OUTCOME_FILTERS = [
 export default function History() {
   const { jobs, loading, error } = useJobs()
   const [query, setQuery] = useState('')
-  const [scope, setScope] = useState<ScopeFilter>('all')
+  const [workflowFilter, setWorkflowFilter] = useState<string>('all')
   const [outcome, setOutcome] = useState<OutcomeFilter>('all')
 
   const terminalJobs = useMemo(
@@ -41,12 +41,13 @@ export default function History() {
     [jobs],
   )
 
+  const workflowOptions = useMemo(() => deriveWorkflowFilterOptions(terminalJobs), [terminalJobs])
+
   const visibleJobs = useMemo(() => {
     const search = query.trim().toLowerCase()
 
     return terminalJobs.filter(job => {
-      if (scope === 'jobs' && isCampaignJob(job)) return false
-      if (scope === 'campaigns' && !isCampaignJob(job)) return false
+      if (workflowFilter !== 'all' && getWorkflowSlug(job.workflowPath) !== workflowFilter) return false
       if (outcome !== 'all' && job.status !== outcome) return false
 
       if (!search) return true
@@ -58,7 +59,7 @@ export default function History() {
 
       return haystack.includes(search)
     })
-  }, [terminalJobs, query, scope, outcome])
+  }, [terminalJobs, query, workflowFilter, outcome])
 
   const completedCount = terminalJobs.filter(job => job.status === 'complete').length
   const failedCount = terminalJobs.filter(job => job.status === 'failed').length
@@ -67,19 +68,19 @@ export default function History() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="History"
-        description={`Completed, failed, and escalated work. ${completedCount} done · ${failedCount} failed · ${escalatedCount} escalated.`}
+        title={PAGE_TITLES.history}
+        description={`Completed, failed, and escalated ${RUN_NOUN.pluralLower}. ${completedCount} done · ${failedCount} failed · ${escalatedCount} escalated.`}
       />
 
       <Card>
         <div className="flex flex-col gap-4 border-b border-line p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-2">
             <SegmentedControl
-              options={SCOPE_FILTERS}
-              value={scope}
-              onChange={setScope}
+              options={workflowOptions}
+              value={workflowFilter}
+              onChange={setWorkflowFilter}
               size="sm"
-              ariaLabel="Filter by scope"
+              ariaLabel="Filter by workflow"
             />
             <SegmentedControl
               options={OUTCOME_FILTERS}
@@ -96,7 +97,7 @@ export default function History() {
               <Input
                 value={query}
                 onChange={event => setQuery(event.target.value)}
-                placeholder="Search archived work"
+                placeholder={`Search archived ${RUN_NOUN.pluralLower}`}
                 className="h-9 pl-9 text-[13px]"
               />
             </div>
@@ -121,16 +122,17 @@ export default function History() {
             <div className="p-4">
               <EmptyState
                 icon={HistoryIcon}
-                title="No archived runs match the current filters"
+                title={`No archived ${RUN_NOUN.pluralLower} match the current filters`}
                 description="Adjust the filters or wait for current work to finish."
               />
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[680px] text-sm">
+              <table className="w-full min-w-[760px] text-sm">
                 <thead>
                   <tr className="border-b border-line text-left text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
-                    <th className="px-4 py-3 font-medium">Run</th>
+                    <th className="px-4 py-3 font-medium">{RUN_NOUN.singular}</th>
+                    <th className="px-4 py-3 font-medium">Workflow</th>
                     <th className="px-4 py-3 font-medium">Outcome</th>
                     <th className="px-4 py-3 font-medium">Phase</th>
                     <th className="px-4 py-3 font-medium">Updated</th>
@@ -139,7 +141,7 @@ export default function History() {
                 </thead>
                 <tbody className="divide-y divide-line">
                   {visibleJobs.map(job => {
-                    const detailPath = isCampaignJob(job) ? `/campaigns/${job.id}` : `/jobs/${job.id}`
+                    const detailPath = getRunDetailPath(job)
                     return (
                       <tr key={job.id} className="group transition-colors hover:bg-overlay/40">
                         <td className="px-4 py-3">
@@ -153,6 +155,11 @@ export default function History() {
                               </div>
                             ) : null}
                           </Link>
+                        </td>
+                        <td className="px-4 py-3 align-top">
+                          <span className="inline-flex items-center rounded-md border border-line bg-overlay px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-fg-muted">
+                            {getRunWorkflowTag(job)}
+                          </span>
                         </td>
                         <td className="px-4 py-3 align-top">
                           <StatusBadge status={job.status} />

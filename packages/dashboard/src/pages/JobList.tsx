@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Layers3, PlayCircle, Search } from 'lucide-react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import PageHeader from '../components/common/page-header'
 import EmptyState from '../components/common/empty-state'
 import ErrorState from '../components/common/error-state'
@@ -21,12 +21,20 @@ import {
   isCampaignJob,
   sortJobsByUpdatedAt,
 } from '../lib/jobs'
+import {
+  PAGE_TITLES,
+  RUN_NOUN,
+  SUB_RUN_NOUN,
+  deriveWorkflowFilterOptions,
+  getRunWorkflowTag,
+  getWorkflowSlug,
+  hostsSubRuns,
+} from '../lib/run-labels'
 import { isTerminalStatus, isWaitingStatus } from '../lib/status'
 import { useJobs } from '../hooks/useJobs'
 import type { Job } from '../types'
 
 type StatusFilter = 'active' | 'waiting' | 'all' | 'terminal'
-type KindFilter = 'all' | 'job' | 'campaign'
 
 const STATUS_FILTERS = [
   { value: 'active' as const, label: 'Active' },
@@ -35,22 +43,16 @@ const STATUS_FILTERS = [
   { value: 'all' as const, label: 'All' },
 ]
 
-const KIND_FILTERS = [
-  { value: 'all' as const, label: 'All' },
-  { value: 'job' as const, label: 'Jobs' },
-  { value: 'campaign' as const, label: 'Campaigns' },
-]
-
-interface CampaignProgress {
+interface SubRunProgress {
   total: number
   done: number
   active: number
   blocked: number
 }
 
-function getCampaignProgress(job: Job): CampaignProgress {
-  const children = job.campaignChildren ?? []
-  return children.reduce<CampaignProgress>(
+function getSubRunProgress(job: Job): SubRunProgress {
+  const subRuns = job.campaignChildren ?? []
+  return subRuns.reduce<SubRunProgress>(
     (acc, child) => {
       acc.total += 1
       if (child.status === 'complete' || child.status === 'skipped') acc.done += 1
@@ -63,10 +65,10 @@ function getCampaignProgress(job: Job): CampaignProgress {
 }
 
 function getRunFocus(job: Job): string {
-  if (!isCampaignJob(job)) return getCurrentWorkItem(job)
+  if (!hostsSubRuns(job)) return getCurrentWorkItem(job)
 
-  const progress = getCampaignProgress(job)
-  if (progress.total === 0) return 'Planning child graph'
+  const progress = getSubRunProgress(job)
+  if (progress.total === 0) return `Planning ${SUB_RUN_NOUN.singularLower} graph`
 
   const segments = [`${progress.done}/${progress.total} done`]
   if (progress.active > 0) segments.push(`${progress.active} active`)
@@ -75,24 +77,44 @@ function getRunFocus(job: Job): string {
 }
 
 export default function JobList() {
-  const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { jobs, loading, error } = useJobs()
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
-  const defaultKind = location.pathname.startsWith('/campaigns') ? 'campaign' : 'all'
-  const [kindFilter, setKindFilter] = useState<KindFilter>(defaultKind)
-
-  useEffect(() => {
-    setKindFilter(defaultKind)
-  }, [defaultKind])
 
   const runs = useMemo(() => sortJobsByUpdatedAt(jobs), [jobs])
+  const workflowOptions = useMemo(() => deriveWorkflowFilterOptions(runs), [runs])
+
+  const initialWorkflow = searchParams.get('workflow') ?? 'all'
+  const [workflowFilter, setWorkflowFilter] = useState<string>(initialWorkflow)
+
+  // Sync the workflow filter into the URL so /campaigns redirect targets
+  // (?workflow=campaign) and external deep-links keep working without UI
+  // duplication.
+  useEffect(() => {
+    const current = searchParams.get('workflow') ?? 'all'
+    if (current !== workflowFilter) {
+      const next = new URLSearchParams(searchParams)
+      if (workflowFilter === 'all') next.delete('workflow')
+      else next.set('workflow', workflowFilter)
+      setSearchParams(next, { replace: true })
+    }
+  }, [workflowFilter, searchParams, setSearchParams])
+
+  // If the URL changes (e.g. via /campaigns alias redirect), reflect it.
+  useEffect(() => {
+    const current = searchParams.get('workflow') ?? 'all'
+    if (current !== workflowFilter) {
+      setWorkflowFilter(current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
   const visibleRuns = useMemo(() => {
     const search = query.trim().toLowerCase()
 
     return runs.filter(job => {
-      if (kindFilter === 'job' && isCampaignJob(job)) return false
-      if (kindFilter === 'campaign' && !isCampaignJob(job)) return false
+      if (workflowFilter !== 'all' && getWorkflowSlug(job.workflowPath) !== workflowFilter) return false
 
       if (statusFilter === 'active' && isTerminalStatus(job.status)) return false
       if (statusFilter === 'waiting' && !isWaitingStatus(job.status)) return false
@@ -116,26 +138,20 @@ export default function JobList() {
 
       return haystack.includes(search)
     })
-  }, [runs, query, statusFilter, kindFilter])
+  }, [runs, query, statusFilter, workflowFilter])
 
   const activeCount = runs.filter(job => !isTerminalStatus(job.status)).length
   const waitingCount = runs.filter(job => isWaitingStatus(job.status)).length
 
-  const isCampaignsRoute = location.pathname.startsWith('/campaigns')
-  const pageTitle = isCampaignsRoute ? 'Campaigns' : 'Runs'
-  const pageDescription = isCampaignsRoute
-    ? 'Campaigns currently scheduled, in motion, or finished.'
-    : 'All jobs and campaigns in one place. Filter to change the lens.'
-
   return (
     <div className="space-y-6">
       <PageHeader
-        title={pageTitle}
-        description={pageDescription}
+        title={PAGE_TITLES.runsList}
+        description={PAGE_TITLES.runsListDescription}
         actions={
           <Button asChild>
             <Link to="/jobs/new">
-              New run
+              {PAGE_TITLES.newRun}
               <ArrowRight />
             </Link>
           </Button>
@@ -146,11 +162,11 @@ export default function JobList() {
         <div className="flex flex-col gap-4 border-b border-line p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-2">
             <SegmentedControl
-              options={KIND_FILTERS}
-              value={kindFilter}
-              onChange={setKindFilter}
+              options={workflowOptions}
+              value={workflowFilter}
+              onChange={setWorkflowFilter}
               size="sm"
-              ariaLabel="Filter by kind"
+              ariaLabel="Filter by workflow"
             />
             <SegmentedControl
               options={STATUS_FILTERS}
@@ -167,7 +183,7 @@ export default function JobList() {
               <Input
                 value={query}
                 onChange={event => setQuery(event.target.value)}
-                placeholder="Search runs"
+                placeholder={`Search ${RUN_NOUN.pluralLower}`}
                 className="h-9 pl-9 text-[13px]"
               />
             </div>
@@ -183,7 +199,7 @@ export default function JobList() {
         <CardContent className="p-0">
           {error ? (
             <div className="p-4">
-              <ErrorState title="Could not load runs" message={error} />
+              <ErrorState title={`Could not load ${RUN_NOUN.pluralLower}`} message={error} />
             </div>
           ) : loading ? (
             <div className="space-y-2 p-4">
@@ -195,11 +211,11 @@ export default function JobList() {
             <div className="p-4">
               <EmptyState
                 icon={PlayCircle}
-                title="No runs match the current view"
-                description="Create a run or widen the filters to bring more work into view."
+                title={`No ${RUN_NOUN.pluralLower} match the current view`}
+                description={`Create a ${RUN_NOUN.singularLower} or widen the filters to bring more work into view.`}
                 action={
                   <Button asChild>
-                    <Link to="/jobs/new">Create run</Link>
+                    <Link to="/jobs/new">{`Create ${RUN_NOUN.singularLower}`}</Link>
                   </Button>
                 }
               />
@@ -216,10 +232,11 @@ export default function JobList() {
 function RunsTable({ runs }: { runs: Job[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[860px] text-sm">
+      <table className="w-full min-w-[920px] text-sm">
         <thead>
           <tr className="border-b border-line text-left text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
-            <th className="px-4 py-3 font-medium">Run</th>
+            <th className="px-4 py-3 font-medium">{RUN_NOUN.singular}</th>
+            <th className="px-4 py-3 font-medium">Workflow</th>
             <th className="px-4 py-3 font-medium">Status</th>
             <th className="px-4 py-3 font-medium">Working on</th>
             <th className="px-4 py-3 font-medium">Updated</th>
@@ -227,44 +244,53 @@ function RunsTable({ runs }: { runs: Job[] }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-line">
-          {runs.map(job => (
-            <tr key={job.id} className="group transition-colors hover:bg-overlay/40">
-              <td className="px-4 py-3">
-                <Link to={getRunDetailPath(job)} className="block min-w-0 space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium text-fg group-hover:text-accent-300">
-                      {deriveJobTitle(job)}
-                    </span>
-                    {isCampaignJob(job) ? (
-                      <span
-                        className="inline-flex items-center gap-1 rounded-md border border-line bg-overlay px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-fg-muted"
-                        title="Campaign"
-                      >
-                        <Layers3 className="size-2.5" />
-                        Campaign
+          {runs.map(job => {
+            const workflowTag = getRunWorkflowTag(job)
+            const carriesSubRuns = isCampaignJob(job)
+            return (
+              <tr key={job.id} className="group transition-colors hover:bg-overlay/40">
+                <td className="px-4 py-3">
+                  <Link to={getRunDetailPath(job)} className="block min-w-0 space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate font-medium text-fg group-hover:text-accent-300">
+                        {deriveJobTitle(job)}
                       </span>
-                    ) : null}
-                  </div>
-                  <div className="truncate text-[12px] text-fg-subtle">
-                    {[deriveWorkflowLabel(job.workflowPath), getRepoSlug(job)].filter(Boolean).join(' · ')}
-                  </div>
-                </Link>
-              </td>
-              <td className="px-4 py-3 align-top">
-                <StatusBadge status={job.status} />
-              </td>
-              <td className="px-4 py-3 align-top text-fg-muted">
-                <div className="line-clamp-1 text-[13px]">{getRunFocus(job)}</div>
-                <div className="text-[11px] text-fg-subtle">phase: {job.phase}</div>
-              </td>
-              <td className="whitespace-nowrap px-4 py-3 align-top text-[13px] text-fg-muted">
-                {formatRelativeTime(job.updatedAt)}
-              </td>
-              <td className="whitespace-nowrap px-4 py-3 align-top text-right tabular-nums text-fg-muted">
-                {formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
-              </td>
-            </tr>
-          ))}
+                      {carriesSubRuns ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-md border border-line bg-overlay px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-fg-muted"
+                          title={`Hosts ${SUB_RUN_NOUN.pluralLower}`}
+                        >
+                          <Layers3 className="size-2.5" />
+                          {SUB_RUN_NOUN.plural.toLowerCase()}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="truncate text-[12px] text-fg-subtle">
+                      {[getRepoSlug(job)].filter(Boolean).join(' · ') || job.id}
+                    </div>
+                  </Link>
+                </td>
+                <td className="px-4 py-3 align-top">
+                  <span className="inline-flex items-center rounded-md border border-line bg-overlay px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-fg-muted">
+                    {workflowTag}
+                  </span>
+                </td>
+                <td className="px-4 py-3 align-top">
+                  <StatusBadge status={job.status} />
+                </td>
+                <td className="px-4 py-3 align-top text-fg-muted">
+                  <div className="line-clamp-1 text-[13px]">{getRunFocus(job)}</div>
+                  <div className="text-[11px] text-fg-subtle">phase: {job.phase}</div>
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top text-[13px] text-fg-muted">
+                  {formatRelativeTime(job.updatedAt)}
+                </td>
+                <td className="whitespace-nowrap px-4 py-3 align-top text-right tabular-nums text-fg-muted">
+                  {formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
