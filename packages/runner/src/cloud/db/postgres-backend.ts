@@ -281,13 +281,18 @@ export class PostgresStateBackend implements StateBackend {
   }
 
   // ── PR mappings ───────────────────────────────────────────────────────────
+  //
+  // All PR-mapping operations are scoped to `this.teamId` so two teams
+  // sharing the cloud DB never alias PR ids across repos. The composite
+  // PK `(teamId, prId)` enforces this at the storage level — see the
+  // schema for the rationale.
 
   async mapPrToJob(prId: number, jobId: string): Promise<void> {
     await this.db
       .insert(schema.prMappings)
       .values({ prId, jobId, teamId: this.teamId })
       .onConflictDoUpdate({
-        target: schema.prMappings.prId,
+        target: [schema.prMappings.teamId, schema.prMappings.prId],
         set: { jobId },
       })
   }
@@ -296,7 +301,10 @@ export class PostgresStateBackend implements StateBackend {
     const rows = await this.db
       .select({ jobId: schema.prMappings.jobId })
       .from(schema.prMappings)
-      .where(eq(schema.prMappings.prId, prId))
+      .where(and(
+        eq(schema.prMappings.teamId, this.teamId),
+        eq(schema.prMappings.prId, prId),
+      ))
       .limit(1)
 
     if (!rows[0]) return null
@@ -323,13 +331,16 @@ export class PostgresStateBackend implements StateBackend {
   }
 
   // ── Jira mappings ─────────────────────────────────────────────────────────
+  //
+  // Team-scoped via composite PK `(teamId, ticketId)` for the same reason
+  // as `prMappings` — keep multi-tenant data isolation at the storage layer.
 
   async mapJiraTicketToJob(ticketId: string, jobId: string): Promise<void> {
     await this.db
       .insert(schema.jiraMappings)
       .values({ ticketId, jobId, teamId: this.teamId })
       .onConflictDoUpdate({
-        target: schema.jiraMappings.ticketId,
+        target: [schema.jiraMappings.teamId, schema.jiraMappings.ticketId],
         set: { jobId },
       })
   }
@@ -338,7 +349,10 @@ export class PostgresStateBackend implements StateBackend {
     const rows = await this.db
       .select({ jobId: schema.jiraMappings.jobId })
       .from(schema.jiraMappings)
-      .where(eq(schema.jiraMappings.ticketId, ticketId))
+      .where(and(
+        eq(schema.jiraMappings.teamId, this.teamId),
+        eq(schema.jiraMappings.ticketId, ticketId),
+      ))
       .limit(1)
 
     if (!rows[0]) return null

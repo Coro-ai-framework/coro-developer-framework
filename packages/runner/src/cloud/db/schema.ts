@@ -7,6 +7,7 @@ import {
   uniqueIndex,
   index,
   pgEnum,
+  primaryKey,
   real,
 } from 'drizzle-orm/pg-core'
 
@@ -155,20 +156,36 @@ export const proposals = pgTable('proposals', {
 ])
 
 // ── PR mappings ───────────────────────────────────────────────────────────────
+//
+// Primary key is composite `(teamId, prId)` so two teams sharing the cloud
+// DB can map the same numeric PR id (across different repositories) to
+// different jobs without collision. Earlier revisions used `prId` as the
+// global PK which caused cross-team aliasing — see plan/team-mode P1/G6.
 
 export const prMappings = pgTable('pr_mappings', {
-  prId: integer('pr_id').primaryKey(),
+  prId: integer('pr_id').notNull(),
   jobId: text('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
   teamId: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
-})
+}, (t) => [
+  primaryKey({ name: 'pr_mappings_pk', columns: [t.teamId, t.prId] }),
+  index('pr_mappings_team_idx').on(t.teamId),
+])
 
 // ── Jira mappings ─────────────────────────────────────────────────────────────
+//
+// Same rationale as `prMappings`: composite PK `(teamId, ticketId)` so
+// two teams using the same Jira keyspace don't overwrite each other's
+// mappings. The cross-team risk is lower than for PR ids (Jira keys are
+// usually unique per company), but the schema treats both consistently.
 
 export const jiraMappings = pgTable('jira_mappings', {
-  ticketId: text('ticket_id').primaryKey(),
+  ticketId: text('ticket_id').notNull(),
   jobId: text('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
   teamId: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
-})
+}, (t) => [
+  primaryKey({ name: 'jira_mappings_pk', columns: [t.teamId, t.ticketId] }),
+  index('jira_mappings_team_idx').on(t.teamId),
+])
 
 // ── Webhook configs ───────────────────────────────────────────────────────────
 

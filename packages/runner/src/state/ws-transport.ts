@@ -291,10 +291,9 @@ export class WebSocketTransport implements EventTransport {
         return
 
       case 'event:resume':
-        // Treat resume as an inbound event for the dispatcher
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket', // Resume events don't have a source
+            source: 'cloud',
             eventKey: 'job:resume',
             payload: { jobId: msg.jobId, prompt: msg.prompt },
             receivedAt: new Date().toISOString(),
@@ -307,7 +306,7 @@ export class WebSocketTransport implements EventTransport {
       case 'event:message':
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket',
+            source: 'cloud',
             eventKey: 'job:message',
             payload: { jobId: msg.jobId, message: msg.message },
             receivedAt: new Date().toISOString(),
@@ -320,7 +319,7 @@ export class WebSocketTransport implements EventTransport {
       case 'proposal:apply':
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket',
+            source: 'cloud',
             eventKey: 'proposal:apply',
             payload: { proposalId: msg.proposalId, files: msg.files },
             receivedAt: new Date().toISOString(),
@@ -333,7 +332,7 @@ export class WebSocketTransport implements EventTransport {
       case 'event:dispatch':
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket',
+            source: 'cloud',
             eventKey: 'job:dispatch',
             payload: { jobId: msg.jobId },
             receivedAt: new Date().toISOString(),

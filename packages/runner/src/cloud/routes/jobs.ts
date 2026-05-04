@@ -142,18 +142,58 @@ export function jobRoutes(db: CloudDb, config: CloudConfig, gateway?: WsGateway)
       return
     }
 
-    const sent = gateway.sendToTeam(teamId, {
+    // Prefer the runner that already owns this job's session; fall back to
+    // any connected team runner. If the team has no online runner, the
+    // event is queued for the next reconnect — surface that as 503 so the
+    // caller can retry or explain to the user.
+    const result = gateway.sendToJobOrTeam(teamId, jobId, {
       type: 'event:resume',
       jobId,
       prompt,
     })
 
-    if (!sent) {
-      res.status(503).json({ error: 'No runner connected for this team' })
+    if (!result.delivered) {
+      res.status(503).json({ error: 'No runner connected for this team — resume queued' })
       return
     }
 
-    res.json({ resumed: true, jobId })
+    res.json({ resumed: true, jobId, route: result.route })
+  })
+
+  // ── Send developer message to a running job ───────────────────────────────
+
+  router.post('/:jobId/message', auth, member, async (req: Request, res: Response) => {
+    const teamId = p(req, 'teamId')
+    const jobId = p(req, 'jobId')
+    const { message } = req.body ?? {}
+
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      res.status(400).json({ error: 'message (non-empty string) is required' })
+      return
+    }
+
+    if (!gateway) {
+      res.status(503).json({ error: 'WebSocket gateway not available' })
+      return
+    }
+
+    // Same routing as resume: target the runner that's running the job
+    // first, fall back to any team runner. The runner-side dispatcher
+    // either streams the message into the live agent (if running) or
+    // resumes the parked-developer-input checkpoint with the message
+    // baked into the next prompt.
+    const result = gateway.sendToJobOrTeam(teamId, jobId, {
+      type: 'event:message',
+      jobId,
+      message,
+    })
+
+    if (!result.delivered) {
+      res.status(503).json({ error: 'No runner connected for this team — message dropped' })
+      return
+    }
+
+    res.status(202).json({ accepted: true, jobId, route: result.route })
   })
 
   // ── Append log ────────────────────────────────────────────────────────────

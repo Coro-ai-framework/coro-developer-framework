@@ -21,6 +21,8 @@ import {
 } from '../tools/campaign'
 import { runJob, RunnerContext } from './runner'
 import type { EventTransport } from '../state/transport'
+import type { InboundEventSource } from '../state/events'
+import { extractBbPrId, extractJiraTicketId } from './webhook-payload'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
 const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
@@ -194,14 +196,80 @@ export class Dispatcher {
   // ── Webhook events ──────────────────────────────────────────────────────────
 
   async handleWebhookEvent(
-    source: 'bitbucket' | 'jira',
+    source: InboundEventSource,
     eventKey: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    if (source === 'bitbucket') {
-      await this.handleBitBucketEvent(eventKey, payload)
-    } else {
-      await this.handleJiraEvent(eventKey, payload)
+    switch (source) {
+      case 'bitbucket':
+        await this.handleBitBucketEvent(eventKey, payload)
+        return
+      case 'jira':
+        await this.handleJiraEvent(eventKey, payload)
+        return
+      case 'cloud':
+        await this.handleCloudEvent(eventKey, payload)
+        return
+    }
+  }
+
+  // ── Cloud-initiated control events ─────────────────────────────────────────
+  //
+  // These events arrive from the cloud control plane (dashboard / REST) over
+  // the WebSocket transport. Unlike provider webhooks, the payload always
+  // carries an explicit `jobId` — there is no PR/issue lookup. We delegate
+  // to the same `resumeJob` / `sendMessage` paths used by the local HTTP
+  // server so behaviour is identical regardless of which surface initiated
+  // the action.
+
+  private async handleCloudEvent(
+    eventKey: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const jobId = typeof payload['jobId'] === 'string' ? payload['jobId'] : null
+    if (!jobId) {
+      this.ctx.logger.warn({ eventKey, payload }, 'Cloud event missing jobId — skipping')
+      return
+    }
+
+    switch (eventKey) {
+      case 'job:resume': {
+        const prompt = typeof payload['prompt'] === 'string' ? payload['prompt'] : undefined
+        try {
+          // `prompt` arrives as an optional phase override today (mirrors the
+          // local POST /jobs/:id/resume contract). Pass it through to
+          // `resumeJob` which interprets a string as `fromPhase`.
+          await this.resumeJob(jobId, prompt)
+        } catch (err) {
+          this.ctx.logger.warn({ err, jobId }, 'Cloud resume failed — job state may have changed')
+        }
+        return
+      }
+      case 'job:message': {
+        const message = typeof payload['message'] === 'string' ? payload['message'] : null
+        if (!message) {
+          this.ctx.logger.warn({ jobId }, 'Cloud message event missing message text — skipping')
+          return
+        }
+        try {
+          await this.sendMessage(jobId, message)
+        } catch (err) {
+          this.ctx.logger.warn({ err, jobId }, 'Cloud message injection failed')
+        }
+        return
+      }
+      // `job:dispatch` and `proposal:apply` are intercepted earlier by
+      // `wireCloudJobDispatch` (see `runner/hybrid-dispatcher.ts`). They
+      // reach this branch only if hybrid wiring is missing — log loudly.
+      case 'job:dispatch':
+      case 'proposal:apply':
+        this.ctx.logger.warn(
+          { eventKey, jobId },
+          'Cloud event reached base dispatcher — hybrid wiring may be missing',
+        )
+        return
+      default:
+        this.ctx.logger.debug({ eventKey, jobId }, 'Unknown cloud event key — ignoring')
     }
   }
 
@@ -872,25 +940,6 @@ export function buildWebhookMessage(eventKey: string, payload: Record<string, un
   lines.push('Please continue your work based on this event. Refer to your current phase instructions.')
 
   return lines.join('\n')
-}
-
-// ── Payload extraction helpers ────────────────────────────────────────────────
-
-function extractBbPrId(payload: Record<string, unknown>): number | null {
-  const pr = payload['pullrequest'] as Record<string, unknown> | undefined
-  const id = pr?.['id']
-  if (typeof id === 'number') return id
-  if (typeof id === 'string') {
-    const n = parseInt(id, 10)
-    return isNaN(n) ? null : n
-  }
-  return null
-}
-
-function extractJiraTicketId(payload: Record<string, unknown>): string | null {
-  const issue = payload['issue'] as Record<string, unknown> | undefined
-  const key = issue?.['key']
-  return typeof key === 'string' ? key : null
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
