@@ -191,6 +191,8 @@ post_artifact({
 
 Phases flagged `interactive_checkpoint: true` are enforced by the runner when `job.interactive` is `true`. Finish the phase normally; the runner will park for developer approval before advancing.
 
+> The `interactive` flag is **live-mutable** — a developer can flip it on or off at any time from the dashboard or `PATCH /jobs/:jobId/interactive`. Your behaviour does not need to change: keep finishing phases normally and let the runner enforce (or not) at boundaries based on the latest value. Toggling OFF while the job is parked at a checkpoint auto-advances past that park.
+
 Use `await_event({ eventName: "developer-input: <short reason>" })` only when you need additional developer input that is not the standard workflow checkpoint, for example:
 
 - an ambiguous spec or requirement
@@ -237,7 +239,14 @@ When any agent calls `propose_change`, the Coro Runner synchronously:
 
 **Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the next job's intelligence resolver pulls the merged change automatically.
 
-Each call produces exactly one PR. Bundle every file change for a layer into one `propose_change` call — splitting creates duplicate PRs and harder-to-merge diffs. See the `self-improvement-guide` skill for the full reference.
+**ONE call per `(jobId, layer)` — runtime-enforced.** Bundle every file change for a layer into one `propose_change` call. The runner rejects a second call for the same layer with a structured error citing the prior proposal's branch and PR.
+
+**Be terse when you propose.** Memory is loaded by every future job for the rest of this tenant's life — verbose entries tax every run forever. Honour the entry-length budgets:
+- **Pitfall:** ≤ 8 lines (title + symptom + root cause + recipe).
+- **Pattern:** ≤ 10 lines (title + when to use + skeleton + anti-pattern).
+- **Skill amendment:** ≤ 15 lines per added `##` section.
+
+The recipe is the most valuable part — copy-paste only, no narrative. Prefer the structured `entries[]` field on `propose_change` for memory updates: it serialises into the canonical layout and the runner mechanically enforces these caps. If a finding wants to exceed a budget, it is either two findings or already documented — split or dedupe before writing. See the `self-improvement-guide` skill for the full reference.
 
 ## Working directory
 

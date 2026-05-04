@@ -894,6 +894,30 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
+      // Re-read `interactive` from state right before the boundary check so
+      // a dashboard / API toggle that lands mid-phase is honoured on this
+      // transition, not the next one. We only refresh this one field
+      // (cheap, O(1) read) — full job state already trickles back via the
+      // syncJob calls earlier in the loop.
+      try {
+        const fresh = await stateBackend.getJob(liveJob.id)
+        if (fresh && fresh.interactive !== liveJob.interactive) {
+          logger.info(
+            { jobId: liveJob.id, was: liveJob.interactive, now: fresh.interactive },
+            'Interactive flag changed mid-phase — honouring new value at checkpoint',
+          )
+          liveJob = { ...liveJob, interactive: fresh.interactive }
+          toolCtx.job = liveJob
+        }
+      } catch (refreshErr) {
+        // Soft-fail: if the state read fails we fall back to the in-memory
+        // value so the runner keeps making progress.
+        logger.warn(
+          { err: refreshErr, jobId: liveJob.id },
+          'Failed to refresh interactive flag at boundary — using in-memory value',
+        )
+      }
+
       const checkpointApproved = liveJob.approvedAdvanceFromPhase === liveJob.phase
       if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved) {
         const waitingFor = `developer-input: approval after ${liveJob.phase}`

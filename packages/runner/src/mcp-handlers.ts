@@ -483,6 +483,21 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       rationale: string
       description: string
       files?: Array<{ path: string; content: string }>
+      /**
+       * Structured short-form memory entries. Preferred for memory-update
+       * proposals — the runner serialises each entry into a fixed layout
+       * and rejects entries that exceed the per-kind line budget.
+       */
+      entries?: Array<{
+        file: string
+        kind: 'pitfall' | 'pattern'
+        title: string
+        symptom?: string
+        rootCause?: string
+        recipe?: string
+        antiPattern?: string
+        whenToUse?: string
+      }>
       targetFile?: string
       proposedContent?: string
       targetLayer?: 'tenant' | 'repo'
@@ -495,6 +510,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
           rationale: args.rationale,
           description: args.description,
           files: args.files,
+          entries: args.entries,
           targetFile: args.targetFile,
           proposedContent: args.proposedContent,
           targetLayer: args.targetLayer,

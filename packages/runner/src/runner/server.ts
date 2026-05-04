@@ -614,6 +614,36 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     })
   })
 
+  // ── Live job controls ───────────────────────────────────────────────────
+  //
+  // Toggle the `interactive` flag on a running or parked job. Going ON has
+  // no immediate effect; the next workflow phase boundary that carries
+  // `interactive_checkpoint: true` will park for approval. Going OFF on a
+  // job currently parked at an interactive checkpoint auto-releases the
+  // park and advances to the next phase.
+
+  app.patch('/jobs/:jobId/interactive', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const body = req.body as { interactive?: unknown } | undefined
+      if (typeof body?.interactive !== 'boolean') {
+        res.status(400).json({ error: '`interactive` (boolean) is required in the body' })
+        return
+      }
+      const updated = await dispatcher.setJobInteractive(jobId, body.interactive)
+      res.json({
+        jobId: updated.id,
+        interactive: updated.interactive,
+        status: updated.status,
+        phase: updated.phase,
+      })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
+    }
+  })
+
   // ── Resume ──────────────────────────────────────────────────────────────
 
   app.post('/jobs/:jobId/resume', async (req: Request, res: Response) => {

@@ -2,7 +2,7 @@
 
 **Audience:** Engineers, stakeholders, engineering managers
 **Status:** Active implementation
-**Last updated:** 2026-04-26
+**Last updated:** 2026-05-04
 
 ---
 
@@ -17,10 +17,18 @@ tools. The same product ships in two deployment shapes:
 - **Team mode (hybrid)** — local runner per developer + shared cloud
   control plane (Postgres, WebSocket gateway, dashboard).
 
-Two job classes exist today:
+Three workflow classes exist today, all running on the same `Job`
+record type (the dashboard surfaces them uniformly as **Runs**):
 
 - **Implementation jobs** for scoped changes in an existing repository
   (`workflows/job/workflow.md`).
+- **Campaigns** for multi-issue features that decompose into several
+  dependent implementation jobs
+  (`workflows/campaign/workflow.md`). A campaign is a normal `Job` whose
+  `workflowPath` points at the campaign workflow; it dispatches each
+  child issue as another `Job` running `workflows/job/workflow.md`.
+  In dashboard terminology these dispatched children are called
+  **sub-runs**.
 - **Self-update jobs** for improving the agent intelligence stack itself
   (triggered by `propose_change` calls).
 
@@ -188,11 +196,13 @@ type:         JobType         // 'job' | 'self-update' | …
 workflowPath: string          // relative to the resolved intelligence dir
 ```
 
-| Trigger source                           | JobType       | workflowPath                          |
-| ---------------------------------------- | ------------- | ------------------------------------- |
-| `coro job` (CLI or dashboard)            | `job`         | `workflows/job/workflow.md`           |
-| Jira ticket assigned to the agent        | `job`         | `workflows/job/workflow.md`           |
-| Internal proposal flow (`propose_change`)| `self-update` | inline (no workflow file)             |
+| Trigger source                                                   | JobType       | workflowPath                          |
+| ---------------------------------------------------------------- | ------------- | ------------------------------------- |
+| `coro job` (CLI or dashboard)                                    | `job`         | `workflows/job/workflow.md`           |
+| Jira ticket assigned to the agent                                | `job`         | `workflows/job/workflow.md`           |
+| Planner promotes a job in place via `convert_to_campaign`        | `job`         | `workflows/campaign/workflow.md`      |
+| Sub-run dispatched by a campaign coordinator                     | `job`         | `workflows/job/workflow.md`           |
+| Internal proposal flow (`propose_change`)                        | `self-update` | inline (no workflow file)             |
 
 ### 6.2 Workflow definitions
 
@@ -254,6 +264,85 @@ verifies acceptance criteria, queries Loki for runtime errors, and
 decides whether to loop, move forward, escalate, or finish. The runner
 only honours the agent's tool calls (`set_work_items`,
 `update_work_item`, `goto_phase`, `await_event`) and phase signals.
+
+### 6.4 Campaigns and sub-runs
+
+A **campaign** is a workflow variant on the same `Job` primitive, used
+when a feature is too large for one PR and decomposes into several
+self-contained tracker issues. The data model never grows a second
+table — a campaign is just a `Job` whose `workflowPath` is
+`workflows/campaign/workflow.md`. Sub-runs (the dispatched child Jobs)
+are normal Runs that execute `workflows/job/workflow.md`, linked to
+their parent via `parentJobId` and registered on the parent's child
+list.
+
+```text
+                     ┌─────────────────────────┐
+                     │ Run (job/workflow.md)   │
+                     └────────────┬────────────┘
+                                  │ planner triages "campaign"
+                                  ▼
+        ┌────────────── convert_to_campaign ───────────────┐
+        │ flips workflowPath, resets phase, seeds children │
+        └──────────────────────┬───────────────────────────┘
+                               ▼
+                ┌─────────────────────────────────┐
+                │ Run (campaign/workflow.md)      │
+                │  · campaign-planning            │
+                │  · coordinating (parked)        │
+                │  · aggregation                  │
+                └──────────────┬──────────────────┘
+                               │ dispatcher coordinator hook
+                               ▼
+   ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+   │ Sub-run (job)    │ │ Sub-run (job)    │ │ Sub-run (job)    │
+   │ parentJobId=…    │ │ parentJobId=…    │ │ parentJobId=…    │
+   └──────────────────┘ └──────────────────┘ └──────────────────┘
+```
+
+Three things happen on the runner side:
+
+1. **In-place promotion.** The planner of a regular implementation Run
+   may decide the work is too big for a single PR. It calls
+   `convert_to_campaign` (only when `params.epicAllowed !== false`),
+   which atomically flips the same `Job`'s `workflowPath` to the
+   campaign workflow, resets the phase, and seeds an empty children
+   list. No new row is created.
+2. **Coordinator-driven sub-runs.** The campaign-planner registers each
+   child via `campaign_register_child` (with explicit `dependsOn`
+   relations and seed `params`), then ends its phase. The dispatcher's
+   coordinator hook spawns each ready child as a normal Run, watches
+   for terminal child status, and resumes the parent into `aggregation`
+   once every child has reached a terminal state. Children dispatched
+   from a campaign carry `params.epicAllowed = false` so they cannot
+   recursively become campaigns — campaign trees stay one level deep.
+3. **Live control.** Operators (and the campaign-evaluator) can
+   `campaign_skip_child`, `campaign_rerun_child`, or
+   `campaign_cancel_child` against the parent; the dispatcher
+   re-evaluates the dependency graph and continues.
+
+In dashboard copy this all surfaces as **Runs** with a **Workflow**
+attribute (`job`, `campaign`, …). A Run that hosts dependents shows its
+**sub-runs** in an expandable section under the parent; sub-run detail
+pages show a parent-Run breadcrumb. The detail surface is uniform
+(`/jobs/:id` for everything); `/campaigns` is preserved as a deep-link
+alias that filters the unified Runs list to the campaign workflow.
+Internally the dashboard has a single `lib/run-labels.ts` util that
+owns every user-facing string in this surface, so a future re-brand is
+a one-file change.
+
+### 6.5 Workflow extensibility (planned)
+
+Adding a new workflow today still requires non-trivial changes inside
+`packages/runner` (dispatcher constants, campaign-named MCP tools,
+state-shape fields). The target contract — a generic
+`SubRunSpec`/`parentJobId` model on `Job`, a coordinator hook driven by
+workflow front matter, generic `register_sub_run`/`convert_to_workflow`
+MCP tools, and a `GET /workflows` discovery API the dashboard renders
+from — is specified in
+[docs/workflow-extension-contract.md](./workflow-extension-contract.md).
+The migration is staged so the existing campaign flow keeps working at
+every step.
 
 ---
 
@@ -528,10 +617,14 @@ Key rules:
 
 | Term              | Meaning                                                                                  |
 | ----------------- | ---------------------------------------------------------------------------------------- |
-| Job               | A unit of work executed by a runner.                                                     |
-| Work item         | A tracked slice of work inside a job, produced by the planner.                           |
+| Job               | The persistent record type for any unit of work. Internal name; the dashboard renders these as Runs. |
+| Run               | The user-facing label for a Job. Every Job is a Run regardless of its workflow.          |
+| Sub-run           | A Run dispatched as a dependent of another Run. Today this means a campaign child.       |
+| Parent Run        | The Run that hosts one or more sub-runs.                                                 |
+| Campaign          | A workflow variant for multi-issue features. Implemented as a Run with `workflowPath = workflows/campaign/workflow.md`. |
+| Work item         | A tracked slice of work inside a single Run, produced by the planner.                    |
 | Workflow          | A markdown document defining ordered phases and agent assignments.                       |
-| `workflowPath`    | Path (relative to the resolved intelligence dir) to the workflow markdown for a job.     |
+| `workflowPath`    | Path (relative to the resolved intelligence dir) to the workflow markdown for a Run.     |
 | Agent             | A markdown-defined procedure for a specific phase role.                                  |
 | Skill             | On-demand guidance loaded by an agent for a domain or language.                          |
 | Tenant            | A solo developer (`solo-<host>`) or a team (`team-<teamId>`) that owns intelligence and state. |
@@ -539,4 +632,4 @@ Key rules:
 | Repo overlay      | A markdown layer that lives inside a target repo's `.coro/` directory.                   |
 | Resolver          | The component that materialises the per-job intelligence overlay.                        |
 | Park              | Stop active execution while waiting for an external event.                               |
-| Resume            | Continue a parked job after the awaited event arrives.                                   |
+| Resume            | Continue a parked Run after the awaited event arrives.                                   |
