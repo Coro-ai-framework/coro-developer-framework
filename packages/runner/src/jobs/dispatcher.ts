@@ -123,6 +123,74 @@ export class Dispatcher {
     this.fireAndForget(jobId)
   }
 
+  // ── Live interactive toggle ─────────────────────────────────────────────────
+
+  /**
+   * Flip the `interactive` flag on a running (or parked) job. Persists the
+   * new value and, when the toggle goes OFF while the job is parked at a
+   * runner-enforced interactive checkpoint, releases the park so the job
+   * advances autonomously.
+   *
+   * Detection of "parked at an interactive checkpoint" relies on the exact
+   * signal the runner writes when it parks (`runner.ts` ~line 898):
+   *   - status === STATUS_AWAITING_DEVELOPER_INPUT
+   *   - awaitingEvent matches `developer-input: approval after <phase>`
+   *   - awaitingNextPhase is set to the next workflow phase
+   *
+   * Other parks (PR merge, campaign halted, manual escalations) carry their
+   * own awaitingEvent / awaitingNextPhase shape and are intentionally NOT
+   * auto-released — flipping the flag should not trigger merges or skip
+   * over real wait conditions.
+   *
+   * Returns the patch that was applied so callers can echo the new state.
+   */
+  async setJobInteractive(jobId: string, value: boolean): Promise<Job> {
+    const job = await this.ctx.stateBackend.getJob(jobId)
+    if (!job) throw new Error(`Job not found: ${jobId}`)
+
+    if (isStoppedStatus(job.status)) {
+      throw new Error(
+        `Cannot toggle interactive on a ${job.status} job — only running or parked jobs accept the live toggle.`,
+      )
+    }
+
+    if (job.interactive === value) {
+      // No-op: state already matches. Returning the unmodified job keeps the
+      // PATCH endpoint idempotent.
+      return job
+    }
+
+    const isCheckpointPark =
+      value === false
+      && job.status === STATUS_AWAITING_DEVELOPER_INPUT
+      && typeof job.awaitingEvent === 'string'
+      && /^developer-input:\s*approval after\s/i.test(job.awaitingEvent)
+      && typeof job.awaitingNextPhase === 'string'
+      && job.awaitingNextPhase.length > 0
+
+    const updated = await this.ctx.stateBackend.updateJob(jobId, { interactive: value })
+
+    await this.ctx.stateBackend.appendLog(
+      jobId,
+      `[control] Interactive mode ${value ? 'enabled' : 'disabled'}`,
+    )
+
+    if (isCheckpointPark) {
+      await this.ctx.stateBackend.appendLog(
+        jobId,
+        `[control] Auto-releasing checkpoint park — advancing to ${updated.awaitingNextPhase}`,
+      )
+      // resumeJob clears awaitingEvent/awaitingNextPhase, moves the phase
+      // forward, and fires the runner. The runner's next phase-boundary
+      // check sees interactive=false and will not park again.
+      await this.resumeJob(jobId, updated.awaitingNextPhase)
+      const refreshed = await this.ctx.stateBackend.getJob(jobId)
+      if (refreshed) return refreshed
+    }
+
+    return updated
+  }
+
   // ── Webhook events ──────────────────────────────────────────────────────────
 
   async handleWebhookEvent(

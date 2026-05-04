@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   ChevronDown,
   GitPullRequest,
-  RefreshCcw,
   Send,
 } from 'lucide-react'
 import { Link, useLocation, useParams } from 'react-router-dom'
@@ -11,13 +10,13 @@ import ApprovalBox from '../components/ApprovalBox'
 import ArtifactLink from '../components/ArtifactLink'
 import CampaignView from '../components/CampaignView'
 import ConnectionIndicator from '../components/ConnectionIndicator'
+import JobControlBar from '../components/JobControlBar'
 import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
 import WorkflowFlow from '../components/WorkflowFlow'
 import ErrorState from '../components/common/error-state'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
-import { Select } from '../components/ui/select'
 import { Separator } from '../components/ui/separator'
 import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
@@ -54,26 +53,6 @@ import type { Tone } from '../lib/status'
 import { isTerminalStatus } from '../lib/status'
 
 type DetailTab = 'activity' | 'work' | 'diagnostics'
-
-const RESUMABLE_STATUSES = new Set([
-  'failed',
-  'escalated',
-  'awaiting-plan-approval',
-  'awaiting-pr-merge',
-  'queued',
-  'planning',
-  'coding',
-  'reviewing',
-  'testing',
-  'evaluating',
-  'spec-writing',
-  'analysis',
-  'repo-setup',
-  'reporting',
-  'campaign-planning',
-  'coordinating',
-  'aggregating',
-])
 
 const NON_RUNNING_STATUSES = new Set([
   'complete',
@@ -153,9 +132,6 @@ function HeaderSummary({ job }: { job: Job }) {
               {SUB_RUN_NOUN.pluralLower}
             </span>
           ) : null}
-          <span className="rounded-md border border-line bg-overlay px-1.5 py-0.5 uppercase tracking-[0.14em]">
-            {job.interactive ? 'interactive' : 'autonomous'}
-          </span>
           <span className="font-mono">{job.id}</span>
           {repoSlug ? <span>· {repoSlug}</span> : null}
           <span>· updated {formatRelativeTime(job.updatedAt)}</span>
@@ -653,102 +629,6 @@ function ContextPanel({ job }: { job: Job }) {
   )
 }
 
-function ActionPanel({
-  job,
-  workflowPhases,
-  resuming,
-  resumePhase,
-  clearSession,
-  resumeError,
-  onResumePhaseChange,
-  onClearSessionChange,
-  onResume,
-  onRefresh,
-}: {
-  job: Job
-  workflowPhases: WorkflowPhase[]
-  resuming: boolean
-  resumePhase: string
-  clearSession: boolean
-  resumeError: string | null
-  onResumePhaseChange: (value: string) => void
-  onClearSessionChange: (value: boolean) => void
-  onResume: (fromPhase?: string, shouldClearSession?: boolean) => Promise<void>
-  onRefresh: () => Promise<void>
-}) {
-  const canResume = RESUMABLE_STATUSES.has(job.status)
-
-  return (
-    <Card>
-      <CardHeader className="gap-1 border-b border-line pb-4">
-        <CardTitle>Controls</CardTitle>
-        <CardDescription>{`Refresh or resume this ${RUN_NOUN.singularLower}.`}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4 pt-5">
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Button variant="secondary" size="sm" onClick={() => void onRefresh()}>
-            <RefreshCcw />
-            Refresh
-          </Button>
-          {canResume ? (
-            <Button
-              size="sm"
-              onClick={() => void onResume(resumePhase || undefined, clearSession)}
-              disabled={resuming}
-            >
-              {resuming ? 'Resuming…' : 'Resume'}
-            </Button>
-          ) : null}
-        </div>
-
-        {canResume ? (
-          <div className="space-y-3 rounded-xl border border-line bg-overlay/40 p-3">
-            <div>
-              <label className="mb-1.5 block text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-                Resume from phase
-              </label>
-              <Select
-                value={resumePhase}
-                onChange={event => onResumePhaseChange(event.target.value)}
-              >
-                <option value="">Current phase ({job.phase})</option>
-                {workflowPhases.map(phase => (
-                  <option key={phase.name} value={phase.name}>
-                    {phase.name}
-                    {phase.name === job.phase ? ' (current)' : ''}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <label className="flex items-start gap-2 text-[13px] text-fg-muted">
-              <input
-                type="checkbox"
-                checked={clearSession}
-                onChange={event => onClearSessionChange(event.target.checked)}
-                className="mt-0.5"
-              />
-              <span>
-                Start with a fresh session.
-                <span className="block text-[11px] text-fg-subtle">
-                  Use this when the current conversation history is no longer useful.
-                </span>
-              </span>
-            </label>
-          </div>
-        ) : (
-          <div className="rounded-xl border border-dashed border-line px-3 py-2.5 text-[13px] text-fg-subtle">
-            {`This ${RUN_NOUN.singularLower} can't be resumed from its current state.`}
-          </div>
-        )}
-
-        {resumeError ? (
-          <ErrorState title="Resume failed" message={resumeError} />
-        ) : null}
-      </CardContent>
-    </Card>
-  )
-}
-
 /* ─── Page ───────────────────────────────────────────────────────────────── */
 
 export default function JobDetail() {
@@ -772,6 +652,10 @@ export default function JobDetail() {
   const [messageText, setMessageText] = useState('')
   const [messageError, setMessageError] = useState<string | null>(null)
   const [sendingMessage, setSendingMessage] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  /** Optimistic override for `job.interactive` while a PATCH is in flight.
+   *  Cleared once the server-side value catches up. */
+  const [interactiveOverride, setInteractiveOverride] = useState<boolean | undefined>(undefined)
 
   const carriesSubRuns = job ? isCampaignJob(job) : false
 
@@ -855,6 +739,23 @@ export default function JobDetail() {
     }
   }
 
+  async function handleRefresh() {
+    setRefreshing(true)
+    try {
+      await refetch()
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  // Drop the optimistic override once the server-side value matches.
+  useEffect(() => {
+    if (!job) return
+    if (interactiveOverride !== undefined && interactiveOverride === job.interactive) {
+      setInteractiveOverride(undefined)
+    }
+  }, [job?.interactive, interactiveOverride])
+
   async function postMessage(message: string) {
     if (!jobId) throw new Error('No job id')
     await requestJson(`/jobs/${jobId}/message`, jsonRequest({ message }, { method: 'POST' }))
@@ -913,6 +814,23 @@ export default function JobDetail() {
   return (
     <div className="space-y-6">
       <HeaderSummary job={job} />
+
+      <JobControlBar
+        job={job}
+        workflowPhases={workflowPhases}
+        refreshing={refreshing}
+        onRefresh={handleRefresh}
+        resuming={resuming}
+        resumeError={resumeError}
+        resumePhase={resumePhase}
+        clearSession={clearSession}
+        onResumePhaseChange={setResumePhase}
+        onClearSessionChange={setClearSession}
+        onResume={handleResume}
+        interactiveOverride={interactiveOverride}
+        onInteractiveChange={setInteractiveOverride}
+      />
+
       <HeaderMetricStrip job={job} />
 
       <WorkflowSnapshotCard
@@ -992,19 +910,6 @@ export default function JobDetail() {
               ) : null}
 
               <ContextPanel job={job} />
-
-              <ActionPanel
-                job={job}
-                workflowPhases={workflowPhases}
-                resuming={resuming}
-                resumePhase={resumePhase}
-                clearSession={clearSession}
-                resumeError={resumeError}
-                onResumePhaseChange={setResumePhase}
-                onClearSessionChange={setClearSession}
-                onResume={handleResume}
-                onRefresh={refetch}
-              />
             </div>
           </div>
         </TabsContent>

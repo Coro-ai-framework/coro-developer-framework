@@ -191,6 +191,8 @@ post_artifact({
 
 Phases flagged `interactive_checkpoint: true` are enforced by the runner when `job.interactive` is `true`. Finish the phase normally; the runner will park for developer approval before advancing.
 
+> The `interactive` flag is **live-mutable** — a developer can flip it on or off at any time from the dashboard or `PATCH /jobs/:jobId/interactive`. Your behaviour does not need to change: keep finishing phases normally and let the runner enforce (or not) at boundaries based on the latest value. Toggling OFF while the job is parked at a checkpoint auto-advances past that park.
+
 Use `await_event({ eventName: "developer-input: <short reason>" })` only when you need additional developer input that is not the standard workflow checkpoint, for example:
 
 - an ambiguous spec or requirement
