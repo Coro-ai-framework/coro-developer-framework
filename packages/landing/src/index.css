@@ -1,0 +1,112 @@
+@import "@fontsource-variable/space-grotesk";
+@import "@fontsource/jetbrains-mono";
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk Variable", "Inter", "Avenir Next", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", monospace;
+
+  --color-canvas: #07101a;
+  --color-canvas-deep: #030712;
+  --color-panel: #0f1c2c;
+  --color-panel-raised: #142537;
+  --color-overlay: #1a2e44;
+
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-line-strong: rgba(255, 255, 255, 0.14);
+
+  --color-fg: #f1f5fb;
+  --color-fg-muted: #a5b3c7;
+  --color-fg-subtle: #6b7a93;
+
+  --color-accent-500: #6172ff;
+  --color-accent-400: #8791ff;
+  --color-accent-300: #a8b0ff;
+  --color-cyan-400: #22d3ee;
+  --color-violet-400: #a78bfa;
+  --color-success-500: #10b981;
+  --color-warning-500: #f59e0b;
+  --color-danger-400: #fb7185;
+
+  --shadow-card: 0 24px 48px -32px rgba(2, 6, 23, 0.85);
+  --shadow-glow: 0 0 80px rgba(97, 114, 255, 0.28);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(97, 114, 255, 0.24), transparent 34rem),
+    radial-gradient(circle at 85% 15%, rgba(34, 211, 238, 0.14), transparent 28rem),
+    linear-gradient(180deg, #07101a 0%, #050914 46%, #030712 100%);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(97, 114, 255, 0.32);
+  color: var(--color-fg);
+}
+
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), transparent 78%);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, #f8fbff 0%, #a8b0ff 42%, #22d3ee 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.animate-float {
+  animation: float 7s ease-in-out infinite;
+}
