@@ -13,6 +13,7 @@ import {
   JobType,
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_AWAITING_PR_MERGE,
+  STATUS_CANCELLED,
   STATUS_CODING,
   emptyTokenUsage,
   type Job,
@@ -234,6 +235,50 @@ describe('Dispatcher cloud control events', () => {
       expect(logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({ jobId: job.id }),
         expect.stringContaining('Cloud message injection failed'),
+      )
+    })
+  })
+
+  describe('event:cancel → job:cancel', () => {
+    it('marks the job cancelled and clears wake-up metadata', async () => {
+      const job = makeJob({ status: STATUS_AWAITING_PR_MERGE, awaitingPrId: 42 })
+      const { deliver, updateJob, appendLog } = buildDispatcher(job)
+
+      await deliver({
+        source: 'cloud',
+        eventKey: 'job:cancel',
+        payload: { jobId: job.id, reason: 'developer request' },
+        receivedAt: new Date().toISOString(),
+      })
+
+      expect(updateJob).toHaveBeenCalledWith(
+        job.id,
+        expect.objectContaining({
+          status: STATUS_CANCELLED,
+          awaitingEvent: undefined,
+          awaitingPrId: undefined,
+        }),
+      )
+      expect(appendLog).toHaveBeenCalledWith(
+        job.id,
+        expect.stringContaining('Job cancelled: developer request'),
+      )
+    })
+
+    it('does not crash the transport when cancelJob throws', async () => {
+      const job = makeJob({ status: 'complete' })
+      const { deliver, logger } = buildDispatcher(job)
+
+      await expect(deliver({
+        source: 'cloud',
+        eventKey: 'job:cancel',
+        payload: { jobId: job.id },
+        receivedAt: new Date().toISOString(),
+      })).resolves.toBeUndefined()
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId: job.id }),
+        expect.stringContaining('Cloud cancel failed'),
       )
     })
   })

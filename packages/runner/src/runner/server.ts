@@ -30,7 +30,7 @@ import { z } from 'zod'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
-import type { Job, CampaignChild } from '../jobs/types'
+import { isStoppedStatus, type Job, type CampaignChild } from '../jobs/types'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { ClaudeLoginManager } from './claude-login'
 import { listBuiltinPluginMetadata } from '../plugins/builtin'
@@ -786,7 +786,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
         // Check if job is done
         const currentJob = await stateBackend.getJob(jobId)
-        if (currentJob && (currentJob.status === 'complete' || currentJob.status === 'failed')) {
+        if (currentJob && isStoppedStatus(currentJob.status)) {
           res.write(`event: done\ndata: ${currentJob.status}\n\n`)
           clearInterval(interval)
           res.end()
@@ -841,6 +841,19 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ resumed: jobId })
     } catch (err) {
       res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
+  app.post('/jobs/:jobId/cancel', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+      const updated = await dispatcher.cancelJob(jobId, reason)
+      res.json({ cancelled: updated.id, status: updated.status })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
     }
   })
 

@@ -358,6 +358,19 @@ export class WebSocketTransport implements EventTransport {
         }
         return
 
+      case 'event:cancel':
+        if (this.eventHandler) {
+          this.eventHandler({
+            source: 'cloud',
+            eventKey: 'job:cancel',
+            payload: { jobId: msg.jobId, reason: msg.reason },
+            receivedAt: new Date().toISOString(),
+          }).catch(err => {
+            this.config.logger.error({ err }, 'Error handling cancel event')
+          })
+        }
+        return
+
       case 'event:message':
         if (this.eventHandler) {
           this.eventHandler({

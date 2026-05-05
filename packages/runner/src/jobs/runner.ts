@@ -45,6 +45,7 @@ import {
 import type { StateBackend } from '../state/backend'
 import {
   Job,
+  STATUS_CANCELLED,
   STATUS_COMPLETE,
   STATUS_FAILED,
   STATUS_AWAITING_CHILDREN,
@@ -292,7 +293,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
+    let shouldStopLoop = false
     while (!isTerminalStatus(liveJob.status)) {
+      ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+        stateBackend,
+        liveJob,
+        logger,
+        'phase-start',
+      ))
+      toolCtx.job = liveJob
+      if (shouldStopLoop) break
+
       // Reset signals and create a fresh MCP server for each phase.
       // Reusing the MCP server across phases can leave the transport in a
       // broken state if the previous Claude Code subprocess exited uncleanly.
@@ -441,6 +452,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // coordinator hook (for campaigns) or webhook handler (for
       // self-update) takes responsibility for the next resume.
       if (!phaseConf?.agent && phaseConf && isParkingStatus(phaseConf.status)) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'agentless-park',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         const isCampaign = isCampaignJob(liveJob) && phaseConf.status === STATUS_AWAITING_CHILDREN
         const awaiting = isCampaign
           ? 'campaign-children-complete'
@@ -909,6 +929,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         toolCtx.job = liveJob
       }
 
+      ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+        stateBackend,
+        liveJob,
+        logger,
+        'post-query',
+      ))
+      toolCtx.job = liveJob
+      if (shouldStopLoop) break
+
       // ── Post-query signal processing ───────────────────────────────────────
       //
       // Priority order:
@@ -929,6 +958,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       if (signals.awaitingEvent) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'before-awaiting-event-park',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         const evt = signals.awaitingEvent
         const awaitStatus = evt.startsWith('developer-input')
           ? STATUS_AWAITING_DEVELOPER_INPUT
@@ -968,6 +1006,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
 
       if (!nextPhase) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'before-complete',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         liveJob = await syncJob(stateBackend, liveJob, { status: STATUS_COMPLETE })
         await stateBackend.appendLog(liveJob.id, 'All phases complete — job finished successfully')
         logger.info({ jobId: liveJob.id }, 'Job completed')
@@ -1000,6 +1047,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const checkpointApproved = liveJob.approvedAdvanceFromPhase === liveJob.phase
       if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'before-interactive-park',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         const waitingFor = `developer-input: approval after ${liveJob.phase}`
 
         liveJob = await syncJob(stateBackend, liveJob, {
@@ -1020,6 +1076,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         )
         break
       }
+
+      ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+        stateBackend,
+        liveJob,
+        logger,
+        'before-phase-advance',
+      ))
+      toolCtx.job = liveJob
+      if (shouldStopLoop) break
 
       liveJob = await syncJob(stateBackend, liveJob, {
         phase: nextPhase,
@@ -1086,6 +1151,33 @@ async function syncJob(
   patch: Partial<Job>,
 ): Promise<Job> {
   return stateBackend.updateJob(job.id, patch)
+}
+
+async function refreshJobForBoundary(
+  stateBackend: StateBackend,
+  job: Job,
+  logger: Logger,
+  boundary: string,
+): Promise<{ job: Job; shouldStop: boolean }> {
+  const fresh = await stateBackend.getJob(job.id)
+  if (!fresh || !isTerminalStatus(fresh.status)) {
+    return {
+      job,
+      shouldStop: false,
+    }
+  }
+
+  if (fresh.status === STATUS_CANCELLED && job.status !== STATUS_CANCELLED) {
+    logger.info(
+      { jobId: fresh.id, phase: fresh.phase, boundary },
+      'Job cancelled externally — stopping runner at safe boundary',
+    )
+  }
+
+  return {
+    job: fresh,
+    shouldStop: true,
+  }
 }
 
 function resetSignals(s: PhaseSignals): void {

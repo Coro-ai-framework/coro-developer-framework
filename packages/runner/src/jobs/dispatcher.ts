@@ -7,11 +7,14 @@ import {
   JobInput,
   STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_DEVELOPER_INPUT,
+  STATUS_CANCELLED,
   STATUS_CODING,
-  STATUS_COMPLETE,
   STATUS_FAILED,
+  cancelledJobPatch,
+  isCancellableStatus,
   isCampaignJob,
   isParkingStatus,
+  isResumableStatus,
   isStoppedStatus,
   isTerminalChildStatus,
 } from './types'
@@ -74,6 +77,40 @@ export class Dispatcher {
     return job
   }
 
+  async cancelJob(jobId: string, reason?: string): Promise<Job> {
+    const job = await this.requireJob(jobId)
+    if (!isCancellableStatus(job.status)) {
+      if (job.status === STATUS_CANCELLED) {
+        this.eventQueue.delete(jobId)
+        if (this.activeJobs.has(jobId)) {
+          await this.ctx.stateBackend.appendLog(
+            jobId,
+            '[control] Cancellation will take effect at the next safe boundary',
+          )
+        }
+        return job
+      }
+      throw new Error(`Job ${jobId} is already complete`)
+    }
+
+    const wasActive = this.activeJobs.has(jobId)
+    const updated = await this.ctx.stateBackend.updateJob(jobId, cancelledJobPatch())
+
+    this.eventQueue.delete(jobId)
+
+    const reasonSuffix = reason ? `: ${reason}` : ''
+    await this.ctx.stateBackend.appendLog(jobId, `[control] Job cancelled${reasonSuffix}`)
+    if (wasActive) {
+      await this.ctx.stateBackend.appendLog(
+        jobId,
+        '[control] Cancellation requested during an active run — the current agent turn will stop at the next safe boundary',
+      )
+    }
+
+    this.ctx.logger.info({ jobId, wasActive, reason }, 'Job cancelled')
+    return updated
+  }
+
   // ── Manual resume ───────────────────────────────────────────────────────────
 
   /**
@@ -91,15 +128,14 @@ export class Dispatcher {
    * compatibility and simply wipes `sessionId` from state when set.
    */
   async resumeJob(jobId: string, fromPhase?: string, clearSession = false): Promise<void> {
-    const job = await this.ctx.stateBackend.getJob(jobId)
-    if (!job) throw new Error(`Job not found: ${jobId}`)
+    const job = await this.requireJob(jobId)
 
     if (this.activeJobs.has(jobId)) {
       throw new Error(`Job ${jobId} is already running`)
     }
 
-    if (job.status === STATUS_COMPLETE) {
-      throw new Error(`Job ${jobId} is already complete`)
+    if (!isResumableStatus(job.status)) {
+      throw new Error(`Job ${jobId} is already ${job.status}`)
     }
 
     const phaseChanged = fromPhase && fromPhase !== job.phase
@@ -148,8 +184,7 @@ export class Dispatcher {
    * Returns the patch that was applied so callers can echo the new state.
    */
   async setJobInteractive(jobId: string, value: boolean): Promise<Job> {
-    const job = await this.ctx.stateBackend.getJob(jobId)
-    if (!job) throw new Error(`Job not found: ${jobId}`)
+    const job = await this.requireJob(jobId)
 
     if (isStoppedStatus(job.status)) {
       throw new Error(
@@ -289,6 +324,15 @@ export class Dispatcher {
         }
         return
       }
+      case 'job:cancel': {
+        const reason = typeof payload['reason'] === 'string' ? payload['reason'] : undefined
+        try {
+          await this.cancelJob(jobId, reason)
+        } catch (err) {
+          this.ctx.logger.warn({ err, jobId }, 'Cloud cancel failed — job state may have changed')
+        }
+        return
+      }
       // `job:dispatch` and `proposal:apply` are intercepted earlier by
       // `wireCloudJobDispatch` (see `runner/hybrid-dispatcher.ts`). They
       // reach this branch only if hybrid wiring is missing — log loudly.
@@ -332,17 +376,24 @@ export class Dispatcher {
       return
     }
 
+    if (!isResumableStatus(job.status)) {
+      this.ctx.logger.debug(
+        { jobId: job.id, status: job.status, eventKey: event.eventKey, ref },
+        'Job is terminal — skipping webhook event',
+      )
+      return
+    }
+
     // If the job is actively running, queue the event immediately — don't wait for it to park.
     // The runner's finally() handler will replay queued events once the phase completes.
     // This prevents the race where a webhook arrives just before await_event is called.
     if (this.activeJobs.has(job.id)) {
-      this.ctx.logger.debug(
+      this.queueEvent(
+        job.id,
+        { eventKey: event.eventKey, payload: event.payload, receivedAt: event.receivedAt },
         { jobId: job.id, eventKey: event.eventKey, ref },
         'Job is active — queueing webhook event for after park',
       )
-      const queue = this.eventQueue.get(job.id) ?? []
-      queue.push({ eventKey: event.eventKey, payload: event.payload, receivedAt: event.receivedAt })
-      this.eventQueue.set(job.id, queue)
       return
     }
 
@@ -371,10 +422,7 @@ export class Dispatcher {
     const event: WebhookEvent = { eventKey, payload, receivedAt: new Date().toISOString() }
 
     if (this.activeJobs.has(jobId)) {
-      this.ctx.logger.debug({ jobId, eventKey }, 'Job is active — queueing webhook event')
-      const queue = this.eventQueue.get(jobId) ?? []
-      queue.push(event)
-      this.eventQueue.set(jobId, queue)
+      this.queueEvent(jobId, event, { jobId, eventKey }, 'Job is active — queueing webhook event')
       return
     }
 
@@ -384,6 +432,13 @@ export class Dispatcher {
   private async injectAndResume(jobId: string, event: WebhookEvent): Promise<void> {
     const job = await this.ctx.stateBackend.getJob(jobId)
     if (!job) return
+    if (!isParkingStatus(job.status)) {
+      this.ctx.logger.debug(
+        { jobId, status: job.status, eventKey: event.eventKey },
+        'Job is no longer parked — dropping queued webhook event',
+      )
+      return
+    }
 
     const pendingPrompt = buildWebhookMessage(event.eventKey, event.payload)
 
@@ -416,6 +471,11 @@ export class Dispatcher {
    * Any other status (complete, failed, queued without a live query) throws.
    */
   async sendMessage(jobId: string, message: string): Promise<void> {
+    const job = await this.requireJob(jobId)
+    if (job.status === STATUS_CANCELLED) {
+      throw new Error(`Cannot send message to cancelled job ${jobId}`)
+    }
+
     const q = this.activeQueries.get(jobId)
 
     if (q) {
@@ -447,9 +507,6 @@ export class Dispatcher {
     }
 
     // No live query — check if the job is parked waiting for developer input.
-    const job = await this.ctx.stateBackend.getJob(jobId)
-    if (!job) throw new Error(`Job not found: ${jobId}`)
-
     if (job.status !== STATUS_AWAITING_DEVELOPER_INPUT) {
       throw new Error(
         `Cannot send message to job with status "${job.status}" — ` +
@@ -885,6 +942,24 @@ export class Dispatcher {
 
         await this.injectAndResume(jobId, next)
       })
+  }
+
+  private async requireJob(jobId: string): Promise<Job> {
+    const job = await this.ctx.stateBackend.getJob(jobId)
+    if (!job) throw new Error(`Job not found: ${jobId}`)
+    return job
+  }
+
+  private queueEvent(
+    jobId: string,
+    event: WebhookEvent,
+    context: Record<string, unknown>,
+    message: string,
+  ): void {
+    this.ctx.logger.debug(context, message)
+    const queue = this.eventQueue.get(jobId) ?? []
+    queue.push(event)
+    this.eventQueue.set(jobId, queue)
   }
 }
 

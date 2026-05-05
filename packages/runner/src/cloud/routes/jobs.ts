@@ -4,7 +4,14 @@ import type { CloudConfig } from '../config'
 import type { WsGateway } from '../ws/gateway'
 import { PostgresStateBackend } from '../db/postgres-backend'
 import { requireAuth, requireTeamMember } from '../auth/middleware'
-import { JobInput, isStoppedStatus, ProposalStatus } from '../../jobs/types'
+import {
+  JobInput,
+  ProposalStatus,
+  STATUS_CANCELLED,
+  cancelledJobPatch,
+  isCancellableStatus,
+  isStoppedStatus,
+} from '../../jobs/types'
 import { createJobInput, type CreateJobRequest } from '../../jobs/creation'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -158,6 +165,44 @@ export function jobRoutes(db: CloudDb, config: CloudConfig, gateway?: WsGateway)
     }
 
     res.json({ resumed: true, jobId, route: result.route })
+  })
+
+  // ── Cancel job on runner / backend ───────────────────────────────────────
+
+  router.post('/:jobId/cancel', auth, member, async (req: Request, res: Response) => {
+    const teamId = p(req, 'teamId')
+    const jobId = p(req, 'jobId')
+    const backend = backendFor(db, teamId)
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+
+    const job = await backend.getJob(jobId)
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' })
+      return
+    }
+
+    if (!isCancellableStatus(job.status)) {
+      if (job.status === STATUS_CANCELLED) {
+        res.json({ cancelled: true, jobId, status: STATUS_CANCELLED })
+        return
+      }
+
+      res.status(400).json({ error: `Job ${jobId} is already complete` })
+      return
+    }
+
+    await backend.updateJob(jobId, cancelledJobPatch())
+    await backend.appendLog(jobId, `[control] Job cancelled${reason ? `: ${reason}` : ''}`)
+
+    if (gateway) {
+      gateway.sendToJob(jobId, {
+        type: 'event:cancel',
+        jobId,
+        ...(reason ? { reason } : {}),
+      })
+    }
+
+    res.json({ cancelled: true, jobId, status: STATUS_CANCELLED })
   })
 
   // ── Send developer message to a running job ───────────────────────────────

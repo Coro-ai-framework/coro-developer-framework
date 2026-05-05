@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { z } from 'zod'
 import { reattachDynamicMcpServers, runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
 import {
+  STATUS_CANCELLED,
   JobType,
   STATUS_COMPLETE,
   STATUS_ESCALATED,
@@ -124,6 +125,16 @@ function createMockStateBackend(initial: Job) {
     appendLog: vi.fn().mockResolvedValue(undefined),
   }
 }
+
+const cancellationPatch = {
+  status: STATUS_CANCELLED,
+  awaitingEvent: undefined,
+  awaitingPrId: undefined,
+  awaitingNextPhase: undefined,
+  approvedAdvanceFromPhase: undefined,
+  pendingPrompt: undefined,
+  escalationMessage: undefined,
+} as const
 
 type MockStateBackend = ReturnType<typeof createMockStateBackend>
 
@@ -443,6 +454,64 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(call).toBe(2)
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
     expect(stateBackend.current.phase).toBe('beta')
+  })
+
+  it('stops at a safe boundary when the job is cancelled during the live turn', async () => {
+    const queryImpl = () =>
+      (async function* () {
+        await stateBackend.updateJob('runner-job-1', { ...cancellationPatch, phase: 'only' })
+        yield { type: 'system', session_id: 'sess-cancelled' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
+    expect(stateBackend.current.phase).toBe('only')
+    expect(stateBackend.appendLog).not.toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.stringContaining('All phases complete'),
+    )
+  })
+
+  it('does not park a cancelled job even if the agent already requested await_event', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        await stateBackend.updateJob('runner-job-1', cancellationPatch)
+        inv.signals.awaitingEvent = 'pr:merged'
+        inv.signals.awaitingPrId = 99
+        yield { type: 'system', session_id: 'sess-cancelled-await' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
+    expect(stateBackend.current.awaitingEvent).toBeUndefined()
+    expect(stateBackend.current.awaitingPrId).toBeUndefined()
+  })
+
+  it('does not overwrite a cancelled job with failed when the active turn crashes', async () => {
+    const queryImpl = () =>
+      (async function* () {
+        await stateBackend.updateJob('runner-job-1', cancellationPatch)
+        throw new Error('query crashed after cancel')
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
+    expect(stateBackend.updateJob).not.toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.objectContaining({ status: STATUS_FAILED }),
+    )
   })
 
   it('persists sessionId from system messages', async () => {

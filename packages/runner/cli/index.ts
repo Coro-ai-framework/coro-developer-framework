@@ -6,6 +6,7 @@ import { statusCommand } from './commands/status'
 import { jobsCommand } from './commands/jobs'
 import { logsCommand } from './commands/logs'
 import { resumeCommand } from './commands/resume'
+import { cancelCommand } from './commands/cancel'
 import { messageCommand } from './commands/message'
 import { loginCommand } from './commands/login'
 import { initCommand } from './commands/init'
@@ -34,6 +35,7 @@ program.addCommand(statusCommand)
 program.addCommand(jobsCommand)
 program.addCommand(logsCommand)
 program.addCommand(resumeCommand)
+program.addCommand(cancelCommand)
 program.addCommand(messageCommand)
 program.addCommand(loginCommand)
 program.addCommand(initCommand)

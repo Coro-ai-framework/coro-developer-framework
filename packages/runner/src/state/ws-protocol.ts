@@ -280,6 +280,12 @@ export interface WsEventResume {
   prompt?: string
 }
 
+export interface WsEventCancel {
+  type: 'event:cancel'
+  jobId: string
+  reason?: string
+}
+
 export interface WsEventMessage {
   type: 'event:message'
   jobId: string
@@ -307,6 +313,7 @@ export type CloudMessage =
   | WsEventWebhook
   | WsEventPluginWebhook
   | WsEventResume
+  | WsEventCancel
   | WsEventMessage
   | WsEventDispatch
   | WsProposalApply

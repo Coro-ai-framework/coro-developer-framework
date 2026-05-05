@@ -15,6 +15,7 @@ import {
   JobType,
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_DEVELOPER_INPUT,
+  STATUS_CANCELLED,
   STATUS_CODING,
   emptyTokenUsage,
   type Job,
@@ -220,6 +221,29 @@ describe('Dispatcher plugin webhook events (P4)', () => {
     expect(logger.debug).toHaveBeenCalledWith(
       expect.objectContaining({ jobId: job.id, status: STATUS_CODING }),
       expect.stringContaining('not parked'),
+    )
+  })
+
+  it('does not queue webhook events for a cancelled job, even if the runner is still active', async () => {
+    const job = makeJob({ status: STATUS_CANCELLED })
+    const { dispatcher, deliver, updateJob, logger } = buildDispatcher({ job })
+
+    ;(dispatcher as unknown as { activeJobs: Set<string> }).activeJobs.add(job.id)
+
+    await deliver({
+      source: 'plugin',
+      pluginId: 'github',
+      ref: prRef('42'),
+      eventKey: 'pr.commented',
+      payload: {},
+      receivedAt: new Date().toISOString(),
+    })
+
+    expect(updateJob).not.toHaveBeenCalled()
+    expect((dispatcher as unknown as { eventQueue: Map<string, unknown[]> }).eventQueue.has(job.id)).toBe(false)
+    expect(logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: job.id, status: STATUS_CANCELLED }),
+      expect.stringContaining('terminal'),
     )
   })
 

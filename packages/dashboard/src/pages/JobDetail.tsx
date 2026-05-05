@@ -50,17 +50,9 @@ import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
-import { isTerminalStatus } from '../lib/status'
+import { isRunningStatus, isTerminalStatus } from '../lib/status'
 
 type DetailTab = 'activity' | 'work' | 'diagnostics'
-
-const NON_RUNNING_STATUSES = new Set([
-  'complete',
-  'failed',
-  'escalated',
-  'awaiting-plan-approval',
-  'awaiting-pr-merge',
-])
 
 function deriveWorkflowPhases(job: Job | null): WorkflowPhase[] {
   if (!job) return []
@@ -647,6 +639,8 @@ export default function JobDetail() {
   const [selectedPhase, setSelectedPhase] = useState<string | null>(null)
   const [resumePhase, setResumePhase] = useState('')
   const [clearSession, setClearSession] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [messageText, setMessageText] = useState('')
@@ -739,6 +733,24 @@ export default function JobDetail() {
     }
   }
 
+  async function handleCancel() {
+    if (!jobId) return
+    if (!window.confirm('Cancel this run? It will stop at the next safe boundary and will not auto-resume.')) {
+      return
+    }
+
+    setCancelling(true)
+    setCancelError(null)
+    try {
+      await requestJson(`/jobs/${jobId}/cancel`, jsonRequest({}, { method: 'POST' }))
+      await refetch()
+    } catch (cancelIssue) {
+      setCancelError(cancelIssue instanceof Error ? cancelIssue.message : 'Cancel failed')
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   async function handleRefresh() {
     setRefreshing(true)
     try {
@@ -808,7 +820,7 @@ export default function JobDetail() {
     )
   }
 
-  const canSendLiveMessage = !NON_RUNNING_STATUSES.has(job.status) && connectionStatus !== 'disconnected'
+  const canSendLiveMessage = isRunningStatus(job.status) && connectionStatus !== 'disconnected'
   const canSendMessage = canSendLiveMessage || job.status === 'awaiting-developer-input'
 
   return (
@@ -820,6 +832,9 @@ export default function JobDetail() {
         workflowPhases={workflowPhases}
         refreshing={refreshing}
         onRefresh={handleRefresh}
+        cancelling={cancelling}
+        cancelError={cancelError}
+        onCancel={handleCancel}
         resuming={resuming}
         resumeError={resumeError}
         resumePhase={resumePhase}
