@@ -119,6 +119,14 @@ ops below work the same regardless of the active SCM plugin:
 
 Each tool accepts an optional `pluginId` to override the resolved default — use it when the job needs to talk to a non-default plugin (rare).
 
+The current job context may include an `scm` block describing the resolved SCM state:
+
+```json
+{ "available": true, "resolved": "github", "requested": "github", "default": "github", "installed": ["github"] }
+```
+
+If `scm.available` is `false` or `scm.resolved === "none"`, do not probe the filesystem for a repo copy and do not search the user's machine. Stop and escalate the configuration problem.
+
 **Everything else** — repo creation, threaded comment replies, PR
 approvals, PR change-detection polls, branch protection, releases,
 workflows, … — comes from the upstream MCP server attached by the
@@ -296,6 +304,7 @@ the active plugin handles the rest:
   installed, that one wins; otherwise the runner aborts the job with a clear
   error.
 - `params.tracker` / `defaults.tracker` work the same way for issue trackers.
+- The job context's `scm` block tells you which SCM plugin actually resolved for this run. Treat it as authoritative.
 - The plugin's own intelligence snippets (loaded automatically into the
   per-job intelligence overlay) document its tokens, identifier shapes, and
   webhook configuration. Read them via `read_memory({ file: "snippets/<id>.md" })`

@@ -32,7 +32,7 @@ import {
 } from '../intelligence/resolver'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
-import { buildSystemPrompt, computeTrackerPromptContext } from '../prompt/builder'
+import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
@@ -58,6 +58,7 @@ import {
   PhaseUsage,
   emptyTokenUsage,
 } from './types'
+import { assertJobPluginRequirements } from './plugin-preflight'
 import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
 
 // ── Runner context ────────────────────────────────────────────────────────────
@@ -273,6 +274,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     'Job runner started',
   )
 
+  try {
+    assertJobPluginRequirements(liveJob, ctx.plugins)
+  } catch (err) {
+    const message = (err as Error).message
+    logger.error({ jobId: liveJob.id, phase: liveJob.phase }, message)
+    await stateBackend.appendLog(liveJob.id, `[error] ${message}`)
+    await stateBackend.updateJob(liveJob.id, { status: STATUS_FAILED, escalationMessage: message })
+    return
+  }
+
   /** Bundled Claude Code entrypoint; npm ships it as non-executable — we chmod if needed. */
   const claudeCodeCliPath = resolveClaudeCodeCliPath()
   ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
@@ -317,7 +328,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // and we want the prompt to reflect any tenant-overlay config refresh
       // between phases.
       const trackerInfo = computeTrackerPromptContext(settings, ctx.trackerClient)
-      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo)
+      const scmInfo = computeScmPromptContext(liveJob, ctx.plugins)
+      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo, scmInfo)
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
@@ -1521,6 +1533,17 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
       }
     }
 
+    if (toolName === 'Bash') {
+      const command = toolInput['command']
+      if (typeof command === 'string' && command.trim().length > 0) {
+        const denialReason = getBashPathDenialReason(command, opts.workingDir, memoryRoot)
+        if (denialReason) {
+          opts.logger.warn({ phase: opts.liveJobRef().phase, command }, denialReason)
+          return deny(denialReason)
+        }
+      }
+    }
+
     return {}
   }
 
@@ -1533,4 +1556,108 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
 function isInside(candidate: string, root: string): boolean {
   const rel = path.relative(root, candidate)
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+function getBashPathDenialReason(command: string, workingDir: string, memoryRoot: string): string | null {
+  for (const rawToken of tokenizeShellCommand(command)) {
+    const candidate = extractPathCandidate(rawToken)
+    if (!candidate) continue
+
+    if (candidate === '~' || candidate.startsWith('~/')) {
+      return bashPathReason(command, candidate, 'home-relative path', workingDir, memoryRoot)
+    }
+
+    if (
+      candidate.includes('$HOME') || candidate.includes('${HOME}') ||
+      candidate.includes('$OLDPWD') || candidate.includes('${OLDPWD}')
+    ) {
+      return bashPathReason(command, candidate, 'home-directory environment reference', workingDir, memoryRoot)
+    }
+
+    const pwdExpanded = expandPwdPath(candidate, workingDir)
+    if (pwdExpanded) {
+      if (!isInside(pwdExpanded, workingDir) && !isInside(pwdExpanded, memoryRoot)) {
+        return bashPathReason(command, candidate, `path ${pwdExpanded}`, workingDir, memoryRoot)
+      }
+      continue
+    }
+
+    if (hasParentTraversal(candidate)) {
+      return bashPathReason(command, candidate, 'parent-directory traversal', workingDir, memoryRoot)
+    }
+
+    if (candidate.startsWith('/')) {
+      const abs = path.resolve(candidate)
+      if (!isInside(abs, workingDir) && !isInside(abs, memoryRoot)) {
+        return bashPathReason(command, candidate, `path ${abs}`, workingDir, memoryRoot)
+      }
+    }
+  }
+
+  return null
+}
+
+function tokenizeShellCommand(command: string): string[] {
+  return command.match(/'[^']*'|"[^"]*"|`[^`]*`|\S+/g) ?? []
+}
+
+function extractPathCandidate(token: string): string | null {
+  const unquoted = stripShellQuotes(token)
+  const value = extractAssignmentValue(unquoted)
+  if (!looksLikePathReference(value)) return null
+  return value
+}
+
+function stripShellQuotes(token: string): string {
+  if (token.length >= 2) {
+    const first = token[0]
+    const last = token[token.length - 1]
+    if ((first === '"' || first === '\'' || first === '`') && first === last) {
+      return token.slice(1, -1)
+    }
+  }
+  return token
+}
+
+function extractAssignmentValue(token: string): string {
+  const envMatch = token.match(/^[A-Za-z_][A-Za-z0-9_]*=(.+)$/)
+  if (envMatch) return envMatch[1]
+
+  const flagMatch = token.match(/^--[^=]+=(.+)$/)
+  if (flagMatch) return flagMatch[1]
+
+  return token
+}
+
+function looksLikePathReference(token: string): boolean {
+  return token === '~' || token === '..' || token === '-' ||
+    token.startsWith('~/') || token.startsWith('../') || token.startsWith('./') ||
+    token.startsWith('/') || token.startsWith('$HOME') || token.startsWith('${HOME}') ||
+    token.startsWith('$OLDPWD') || token.startsWith('${OLDPWD}') ||
+    token.startsWith('$PWD/') || token.startsWith('${PWD}/') ||
+    token.includes('/..') || token.includes('../')
+}
+
+function hasParentTraversal(token: string): boolean {
+  return /(^|\/)(\.\.)(\/|$)/.test(token)
+}
+
+function expandPwdPath(token: string, workingDir: string): string | null {
+  if (token === '$PWD' || token === '${PWD}') return workingDir
+  if (token.startsWith('$PWD/')) return path.resolve(workingDir, token.slice('$PWD/'.length))
+  if (token.startsWith('${PWD}/')) return path.resolve(workingDir, token.slice('${PWD}/'.length))
+  return null
+}
+
+function bashPathReason(
+  command: string,
+  matched: string,
+  kind: string,
+  workingDir: string,
+  memoryRoot: string,
+): string {
+  return (
+    `Blocked Bash: command "${command}" references ${kind} via "${matched}". ` +
+    `Shell access must stay inside ${workingDir}/** or ${memoryRoot}/**.`
+  )
 }

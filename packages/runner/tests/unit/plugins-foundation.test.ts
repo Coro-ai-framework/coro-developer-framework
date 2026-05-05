@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest'
 import pino from 'pino'
 import { z } from 'zod'
 import {
+  listBuiltinPluginMetadata,
   PluginRegistry,
   PluginResolutionError,
   isScmPlugin,
@@ -21,6 +22,8 @@ import {
   resolvePluginsConfig,
   type LocalConfig,
 } from '../../src/config/local-config'
+import { getJobPluginRequirementIssues } from '../../src/jobs/plugin-preflight'
+import { BUILTIN_PLUGIN_IDS_BY_KIND } from '../../src/plugins/builtin'
 
 // ── Fake plugin runtimes ─────────────────────────────────────────────────────
 
@@ -306,5 +309,45 @@ describe('resolvePluginsConfig', () => {
       git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
     }
     expect(resolvePluginsConfig(cfg).installed['github']).toBeDefined()
+  })
+})
+
+describe('listBuiltinPluginMetadata', () => {
+  it('describes every shipped builtin plugin with activation guidance', () => {
+    const logger = pino({ level: 'silent' })
+    const got = listBuiltinPluginMetadata(logger)
+    const ids = got.map(entry => entry.manifest.id).sort()
+
+    expect(ids).toEqual([
+      ...BUILTIN_PLUGIN_IDS_BY_KIND['scm'],
+      ...BUILTIN_PLUGIN_IDS_BY_KIND['tracker'],
+    ].sort())
+    for (const entry of got) {
+      expect(entry.manifest.displayName.length).toBeGreaterThan(0)
+      expect(entry.activationHint.length).toBeGreaterThan(0)
+    }
+  })
+})
+
+describe('getJobPluginRequirementIssues', () => {
+  it('reports missing scm setup before a repo job starts', () => {
+    const issues = getJobPluginRequirementIssues({ params: { repoSlug: 'weather-service' } }, new PluginRegistry())
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.message).toMatch(/SCM setup incomplete/)
+    expect(issues[0]?.message).toMatch(/Settings > Git/)
+  })
+
+  it('reports missing tracker setup before a tracker-driven job starts', () => {
+    const issues = getJobPluginRequirementIssues({ params: { jiraTicketId: 'ENG-1234' } }, new PluginRegistry())
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.message).toMatch(/Tracker setup incomplete/)
+    expect(issues[0]?.message).toMatch(/Settings > Tracker/)
+  })
+
+  it('passes when the required scm plugin can be resolved', () => {
+    const registry = new PluginRegistry()
+    registry.register(fakeScm('github'))
+    const issues = getJobPluginRequirementIssues({ params: { repoSlug: 'weather-service' } }, registry)
+    expect(issues).toEqual([])
   })
 })

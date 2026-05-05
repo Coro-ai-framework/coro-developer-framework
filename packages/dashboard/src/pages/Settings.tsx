@@ -51,6 +51,10 @@ interface PluginsResponse {
   plugins: {
     manifest: PluginManifestSummary
     installed: boolean
+    configured?: boolean
+    active?: boolean
+    available?: boolean
+    activationHint?: string
     source?: 'builtin' | 'dropin'
     mcpServer?: PluginMcpServerSummary | null
   }[]
@@ -232,6 +236,26 @@ function StatusPill({ status }: { status: ClaudeLoginState['status'] }) {
       {labels[status]}
     </span>
   )
+}
+
+type PluginEntry = PluginsResponse['plugins'][number]
+
+function pluginConfigured(plugin: PluginEntry): boolean {
+  return plugin.configured ?? plugin.installed
+}
+
+function pluginStatus(plugin: PluginEntry): { label: string; tone: Tone } {
+  if (pluginConfigured(plugin) && plugin.active) return { label: 'enabled', tone: 'success' }
+  if (pluginConfigured(plugin)) return { label: 'configured', tone: 'warning' }
+  if (plugin.source === 'builtin') return { label: 'built in', tone: 'neutral' }
+  return { label: 'installed', tone: 'neutral' }
+}
+
+function pluginSortValue(plugin: PluginEntry): number {
+  if (pluginConfigured(plugin) && plugin.active) return 0
+  if (pluginConfigured(plugin)) return 1
+  if (plugin.source === 'builtin') return 2
+  return 3
 }
 
 function AccountFact({ label, value }: { label: string; value: string }) {
@@ -1143,7 +1167,11 @@ export default function Settings() {
               >
                 <form onSubmit={installPlugin} className="space-y-3">
                   <div className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
-                    <Field label="npm spec" htmlFor="plugin-install-spec">
+                    <Field
+                      label="npm spec"
+                      htmlFor="plugin-install-spec"
+                      hint="Coro ships with built-in provider plugins. Configure credentials in the Git and Tracker tabs to enable them, or install optional drop-ins here. Defaults below decide which enabled plugin a job uses when its params don't pin one."
+                    >
                       <Input
                         id="plugin-install-spec"
                         value={installSpec}
@@ -1157,25 +1185,24 @@ export default function Settings() {
                         id="plugin-install-id"
                         value={installId}
                         onChange={(e: ChangeEvent<HTMLInputElement>) => setInstallId(e.target.value)}
-                        placeholder="auto"
+                        placeholder="gitlab"
                         disabled={installing}
                       />
                     </Field>
-                    <Button type="submit" disabled={installing}>
+                    <Button type="submit" disabled={installing || !installSpec.trim()}>
                       <PackagePlus />
                       {installing ? 'Installing…' : 'Install'}
                     </Button>
                   </div>
-                  {installError ? (
-                    <div className="rounded-2xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
-                      {installError}
-                    </div>
-                  ) : null}
+                  {installError ? <Notice tone="danger">{installError}</Notice> : null}
                   {installNotice ? (
                     <div className="rounded-2xl border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
                       {installNotice}
                     </div>
                   ) : null}
+                  <Notice tone="neutral">
+                    GitLab is not built in. Install a GitLab-compatible drop-in plugin here if you need GitLab SCM.
+                  </Notice>
                   <p className="text-[12px] text-fg-muted">
                     Examples: <code>@coro/plugin-gitlab</code>, <code>coro-plugin-jenkins@1.2.0</code>,{' '}
                     <code>github:my-org/coro-plugin-acme</code>. Restart the runner after installing so the new
@@ -1205,114 +1232,137 @@ export default function Settings() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
                         <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">Default SCM</div>
-                        <div className="mt-1 text-sm text-fg">{pluginsState.defaults.scm ?? '— (single-installed wins)'}</div>
+                        <div className="mt-1 text-sm text-fg">{pluginsState.defaults.scm ?? '— (single enabled plugin wins)'}</div>
                       </div>
                       <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
                         <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">Default tracker</div>
-                        <div className="mt-1 text-sm text-fg">{pluginsState.defaults.tracker ?? '— (single-installed wins)'}</div>
+                        <div className="mt-1 text-sm text-fg">{pluginsState.defaults.tracker ?? '— (single enabled plugin wins)'}</div>
                       </div>
                     </div>
 
+                    {pluginsState.plugins.some(plugin => pluginConfigured(plugin) && plugin.active) ? null : (
+                      <Notice tone="warning">
+                        No plugins are enabled yet. Coro already ships with GitHub, Bitbucket, Jira, Linear, and
+                        GitHub Issues. Configure credentials in the Git or Tracker tabs, then restart the runner.
+                      </Notice>
+                    )}
+
                     {pluginsState.plugins.length === 0 ? (
                       <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
-                        No plugins loaded. Configure credentials under the Git or Tracker tabs and the
-                        runner will register the matching plugins automatically (legacy compatibility).
-                        For a forward-looking config, add a `plugins` block to <code>~/.coro/config.json</code>.
+                        No plugins discovered. Configure credentials under the Git or Tracker tabs and the runner
+                        will expose the matching built-ins automatically. For a forward-looking config, add a
+                        <code>plugins</code> block to <code>~/.coro/config.json</code>.
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {pluginsState.plugins.map(({ manifest, installed, source, mcpServer }) => (
-                          <div
-                            key={manifest.id}
-                            className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <Plug className="size-4 text-fg-subtle" />
-                                  <div className="text-[15px] font-medium text-fg">
-                                    {manifest.displayName}
+                        {[...pluginsState.plugins]
+                          .sort((left, right) => {
+                            const bucket = pluginSortValue(left) - pluginSortValue(right)
+                            if (bucket !== 0) return bucket
+                            return left.manifest.displayName.localeCompare(right.manifest.displayName)
+                          })
+                          .map(plugin => {
+                            const { manifest, source, mcpServer, activationHint } = plugin
+                            const status = pluginStatus(plugin)
+                            return (
+                              <div
+                                key={manifest.id}
+                                className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <Plug className="size-4 text-fg-subtle" />
+                                      <div className="text-[15px] font-medium text-fg">{manifest.displayName}</div>
+                                      <span className="font-mono text-[11px] text-fg-subtle">{manifest.id}</span>
+                                      {source === 'dropin' ? (
+                                        <span className="rounded-full border border-line bg-overlay/60 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-fg-muted">
+                                          drop-in
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-1 text-[12px] text-fg-muted">
+                                      kind: <span className="font-mono text-fg">{manifest.kind}</span>
+                                      {' · '}
+                                      v{manifest.version}
+                                      {' · '}
+                                      host {manifest.hostCompatibility}
+                                    </div>
+                                    {manifest.webhook ? (
+                                      <div className="mt-2 text-[11px] text-fg-muted">
+                                        Webhook: <span className="font-mono">{manifest.webhook.algorithm}</span>
+                                        {' via '}
+                                        <span className="font-mono">{manifest.webhook.header}</span>
+                                        {pluginsState.webhookBaseUrl ? (
+                                          <>
+                                            {' · '}
+                                            <span className="font-mono break-all">
+                                              {pluginsState.webhookBaseUrl}/&lt;teamId&gt;/{manifest.id}
+                                            </span>
+                                          </>
+                                        ) : null}
+                                      </div>
+                                    ) : null}
+                                    {mcpServer ? (
+                                      <div className="mt-2 text-[11px] text-fg-muted">
+                                        Attached MCP server: <span className="font-mono">{mcpServer.type}</span>
+                                        {mcpServer.type === 'stdio' && mcpServer.command ? (
+                                          <>
+                                            {' · '}
+                                            <span className="font-mono break-all">
+                                              {mcpServer.command}
+                                              {mcpServer.args && mcpServer.args.length > 0
+                                                ? ' ' + mcpServer.args.join(' ')
+                                                : ''}
+                                            </span>
+                                          </>
+                                        ) : null}
+                                        {(mcpServer.type === 'http' || mcpServer.type === 'sse') && mcpServer.url ? (
+                                          <>
+                                            {' · '}
+                                            <span className="font-mono break-all">{mcpServer.url}</span>
+                                          </>
+                                        ) : null}
+                                        {' · agents see tools as '}
+                                        <span className="font-mono">mcp__{manifest.id}__*</span>
+                                      </div>
+                                    ) : null}
+                                    {!pluginConfigured(plugin) && activationHint ? (
+                                      <div className="mt-2 text-[12px] leading-5 text-fg-muted">{activationHint}</div>
+                                    ) : null}
+                                    {pluginConfigured(plugin) && !plugin.active ? (
+                                      <div className="mt-2 text-[12px] leading-5 text-warning-300">
+                                        Configured, but not active in the current runner process. Recheck the provider
+                                        settings and restart the runner.
+                                      </div>
+                                    ) : null}
                                   </div>
-                                  <span className="font-mono text-[11px] text-fg-subtle">{manifest.id}</span>
-                                  {source === 'dropin' ? (
-                                    <span className="rounded-full border border-line bg-overlay/60 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-fg-muted">
-                                      drop-in
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={cn(
+                                        'rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]',
+                                        toneClasses(status.tone),
+                                      )}
+                                    >
+                                      {status.label}
                                     </span>
-                                  ) : null}
-                                </div>
-                                <div className="mt-1 text-[12px] text-fg-muted">
-                                  kind: <span className="font-mono text-fg">{manifest.kind}</span>
-                                  {' · '}
-                                  v{manifest.version}
-                                  {' · '}
-                                  host {manifest.hostCompatibility}
-                                </div>
-                                {manifest.webhook ? (
-                                  <div className="mt-2 text-[11px] text-fg-muted">
-                                    Webhook: <span className="font-mono">{manifest.webhook.algorithm}</span>
-                                    {' via '}
-                                    <span className="font-mono">{manifest.webhook.header}</span>
-                                    {pluginsState.webhookBaseUrl ? (
-                                      <>
-                                        {' · '}
-                                        <span className="font-mono break-all">
-                                          {pluginsState.webhookBaseUrl}/&lt;teamId&gt;/{manifest.id}
-                                        </span>
-                                      </>
+                                    {source === 'dropin' ? (
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => void uninstallPlugin(manifest.id, manifest.displayName)}
+                                        disabled={removingId === manifest.id}
+                                      >
+                                        <Trash2 />
+                                        {removingId === manifest.id ? 'Removing…' : 'Uninstall'}
+                                      </Button>
                                     ) : null}
                                   </div>
-                                ) : null}
-                                {mcpServer ? (
-                                  <div className="mt-2 text-[11px] text-fg-muted">
-                                    Attached MCP server:{' '}
-                                    <span className="font-mono">{mcpServer.type}</span>
-                                    {mcpServer.type === 'stdio' && mcpServer.command ? (
-                                      <>
-                                        {' · '}
-                                        <span className="font-mono break-all">
-                                          {mcpServer.command}
-                                          {mcpServer.args && mcpServer.args.length > 0
-                                            ? ' ' + mcpServer.args.join(' ')
-                                            : ''}
-                                        </span>
-                                      </>
-                                    ) : null}
-                                    {(mcpServer.type === 'http' || mcpServer.type === 'sse') && mcpServer.url ? (
-                                      <>
-                                        {' · '}
-                                        <span className="font-mono break-all">{mcpServer.url}</span>
-                                      </>
-                                    ) : null}
-                                    {' · agents see tools as '}
-                                    <span className="font-mono">mcp__{manifest.id}__*</span>
-                                  </div>
-                                ) : null}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-2">
-                                <span
-                                  className={cn(
-                                    'rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]',
-                                    toneClasses(installed ? 'success' : 'warning'),
-                                  )}
-                                >
-                                  {installed ? 'enabled' : 'disabled'}
-                                </span>
-                                {source === 'dropin' ? (
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => void uninstallPlugin(manifest.id, manifest.displayName)}
-                                    disabled={removingId === manifest.id}
-                                  >
-                                    <Trash2 />
-                                    {removingId === manifest.id ? 'Removing…' : 'Uninstall'}
-                                  </Button>
-                                ) : null}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                            )
+                          })}
                       </div>
                     )}
                   </div>
@@ -1514,7 +1564,13 @@ export default function Settings() {
 
                   <Field
                     label={form.gitProvider === 'bitbucket' ? 'Workspace slug' : 'Organization / owner'}
-                    hint="Optional, but required by most hosted providers for PR and issue APIs."
+                    hint={
+                      form.gitProvider === 'bitbucket'
+                        ? 'Required to enable the built-in Bitbucket plugin and for PR APIs.'
+                        : form.gitProvider === 'github'
+                          ? 'Required to enable the built-in GitHub plugin and for repo/PR APIs.'
+                          : 'Used by GitLab-compatible drop-in plugins. GitLab is not built in.'
+                    }
                   >
                     <Input
                       name="gitWorkspace"
@@ -1523,6 +1579,13 @@ export default function Settings() {
                       placeholder={form.gitProvider === 'bitbucket' ? 'my-workspace' : 'my-org'}
                     />
                   </Field>
+
+                  {form.gitProvider === 'gitlab' ? (
+                    <Notice tone="warning">
+                      GitLab is not a built-in Coro plugin. Install a GitLab-compatible drop-in plugin from the
+                      Plugins tab before using GitLab for jobs.
+                    </Notice>
+                  ) : null}
                 </div>
               </SectionCard>
             </TabsContent>

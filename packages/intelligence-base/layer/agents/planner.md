@@ -75,7 +75,8 @@ If `convert_to_campaign` is refused (e.g. `epicAllowed=false`, or the job is alr
 **Before cloning, reading, or querying anything on the repo**, confirm which SCM plugin will execute the generic `scm_*` tools for this job:
 
 - The runner resolves the active SCM plugin from `params.scm` (job-level), then `defaults.scm` (tenant-level), then "the only installed SCM plugin" if exactly one is available. The resolved plugin id is exposed in the job context.
-- If no plugin can be resolved, the runner already aborted; if you are reading this, an SCM plugin **is** active. You don't pick — you just use the generic tools.
+- The job context includes an `scm` block with `available`, `resolved`, `requested`, `default`, and `installed`. Read it before touching the repo.
+- If `scm.available` is `false` or `scm.resolved === "none"`, stop immediately and escalate. Do **not** search the filesystem, the working tree parent, or the user's home directory for a repository copy.
 - If you need confirmation about which plugin is active (e.g. ambiguous tenant, dry-run job), `mcp__coro__log` the resolved plugin id and continue. If something looks wrong, escalate.
 
 Use `mcp__coro__scm_get_clone_info({ repo: params.repoSlug })` to fetch the credentialed clone URL plus git env vars — never construct provider-specific clone URLs in your own logic. Log the resolved plugin id so it's visible in `coro logs`.

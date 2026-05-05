@@ -17,3 +17,8 @@ export {
   type DropinPluginFactory,
   type LoadDropinPluginsArgs,
 } from './loader'
+export {
+  BUILTIN_PLUGIN_IDS_BY_KIND,
+  listBuiltinPluginMetadata,
+  type BuiltinPluginMetadata,
+} from './builtin'

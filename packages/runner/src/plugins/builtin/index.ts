@@ -8,7 +8,7 @@
 import type { Logger } from 'pino'
 import type { PluginsConfig } from '../../config/plugins-config'
 import { PluginRegistry } from '../registry'
-import type { PluginRuntime } from '../types'
+import type { PluginManifest, PluginRuntime } from '../types'
 import { buildDropinFactoryMap, type DropinPluginFactory } from '../loader'
 import { createBitBucketScmPlugin } from './bitbucket'
 import { createGitHubScmPlugin } from './github'
@@ -49,6 +49,38 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
 export const BUILTIN_PLUGIN_IDS_BY_KIND: Readonly<Record<'scm' | 'tracker', readonly string[]>> = {
   scm: ['bitbucket', 'github'],
   tracker: ['jira', 'linear', 'github-issues'],
+}
+
+export interface BuiltinPluginMetadata {
+  manifest: PluginManifest
+  activationHint: string
+}
+
+const BUILTIN_PLUGIN_ACTIVATION_HINTS: Readonly<Record<string, string>> = {
+  bitbucket:
+    'Built in. Configure Settings > Git with provider Bitbucket, workspace slug, username, and app password to enable it.',
+  github:
+    'Built in. Configure Settings > Git with provider GitHub, organization/owner, and personal access token to enable it.',
+  jira:
+    'Built in. Configure Settings > Tracker with provider Jira, base URL, username, and API token to enable it.',
+  linear:
+    'Built in. Configure Settings > Tracker with provider Linear and an API key to enable it.',
+  'github-issues':
+    'Built in. Configure Settings > Tracker with provider GitHub and complete the GitHub settings to enable GitHub Issues.',
+}
+
+/**
+ * Describe the built-in plugins that ship with the runner, even when they are
+ * not yet configured for the current tenant. Used by the dashboard so fresh
+ * installs can distinguish "built in but not enabled yet" from "not present".
+ */
+export function listBuiltinPluginMetadata(logger: Logger): BuiltinPluginMetadata[] {
+  return Object.entries(BUILTIN_PLUGIN_FACTORIES).map(([id, factory]) => ({
+    manifest: factory({ config: {}, logger }).manifest,
+    activationHint:
+      BUILTIN_PLUGIN_ACTIVATION_HINTS[id]
+      ?? 'Built in. Configure this plugin in Settings before using it in a job.',
+  }))
 }
 
 // ── Bootstrap helper ─────────────────────────────────────────────────────────

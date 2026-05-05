@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { z } from 'zod'
 import { reattachDynamicMcpServers, runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
 import {
   JobType,
@@ -14,9 +15,11 @@ import type { Job } from '../../src/jobs/types'
 import type { WorkflowConfig } from '../../src/workflow-parser'
 import type { Settings } from '../../src/config/settings'
 import { PluginRegistry } from '../../src/plugins/registry'
+import type { ScmPluginRuntime } from '../../src/plugins'
 
 vi.mock('../../src/prompt/builder', () => ({
   buildSystemPrompt: vi.fn().mockResolvedValue('# Mock system prompt for runner tests'),
+  computeScmPromptContext: vi.fn().mockReturnValue({ available: true, resolved: 'github', installed: ['github'] }),
   // The runner now calls this once per phase to assemble the tracker block
   // before delegating to `buildSystemPrompt`. We mock it as a no-op pure
   // function so the runner's call site stays exercised without forcing
@@ -125,6 +128,9 @@ function createMockStateBackend(initial: Job) {
 type MockStateBackend = ReturnType<typeof createMockStateBackend>
 
 function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
+  const plugins = new PluginRegistry()
+  plugins.register(fakeScmPlugin('github'))
+
   return {
     stateBackend: stateBackend as unknown as RunnerContext['stateBackend'],
     settings: makeSettings(),
@@ -153,7 +159,7 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
       provider: 'jira',
       isAvailable: () => false,
     } as unknown as RunnerContext['trackerClient'],
-    plugins: new PluginRegistry(),
+    plugins,
     logger: {
       debug: vi.fn(),
       info: vi.fn(),
@@ -161,6 +167,51 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
       error: vi.fn(),
     } as unknown as RunnerContext['logger'],
   }
+}
+
+function fakeScmPlugin(id: string): ScmPluginRuntime {
+  return {
+    manifest: {
+      id,
+      kind: 'scm',
+      version: '0.0.1',
+      displayName: id,
+      hostCompatibility: '*',
+      configSchema: z.object({}),
+    },
+    kind: 'scm',
+    init: async () => {},
+    healthcheck: async () => ({ ok: true }),
+    dispose: async () => {},
+    cloneInfo: () => ({ url: 'fake', envForGit: {} }),
+    createPr: async () => ({ kind: 'pull_request', pluginId: id, repoKey: 'repo', externalId: '1' }),
+    getPrStatus: async () => ({ state: 'open', approvalCount: 0 }),
+    listPrComments: async () => [],
+    postPrComment: async (_ref, body) => ({ id: '1', body, createdAt: '', updatedAt: '' }),
+    replyToComment: async (_ref, parentId, body) => ({ id: '2', body, createdAt: '', updatedAt: '', parentId }),
+    pollPr: async () => ({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] }),
+    normalizeInbound: () => null,
+    matchesRemote: () => false,
+  }
+}
+
+async function capturePreToolUseHook(ctx: RunnerContext): Promise<(input: Record<string, unknown>) => Promise<unknown>> {
+  let hooks: Record<string, Array<{ hooks: Array<(input: Record<string, unknown>) => Promise<unknown>> }>> | undefined
+
+  await runJob(makeJob({ phase: 'only', status: 'queued' }), ctx, {
+    queryImpl: (inv) =>
+      (async function* () {
+        hooks = inv.options['hooks'] as typeof hooks
+        yield { type: 'system', session_id: 'hook-capture' }
+      })(),
+    workflowConfigOverride: workflowSingle,
+  })
+
+  const preToolUse = hooks?.PreToolUse?.[0]?.hooks?.[0]
+  if (!preToolUse) {
+    throw new Error('PreToolUse hook was not attached to the query options')
+  }
+  return preToolUse
 }
 
 describe('runJob (mocked Agent SDK query)', () => {
@@ -506,6 +557,54 @@ describe('runJob (mocked Agent SDK query)', () => {
       'runner-job-1',
       expect.stringContaining('ZERO mcp__coro__* calls'),
     )
+  })
+
+  it('allows Bash commands that stay within the workspace', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    await expect(
+      preToolUse({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git status' },
+      }),
+    ).resolves.toEqual({})
+  })
+
+  it('denies Bash commands that probe the user home', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'find ~/src -maxdepth 2' },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('home-relative path'),
+      },
+    })
+  })
+
+  it('denies Bash commands that escape via parent traversal', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'cd .. && ls' },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('parent-directory traversal'),
+      },
+    })
   })
 
   it('stops when escalated signal is set (after stateBackend update)', async () => {

@@ -29,9 +29,11 @@ import {
 import { z } from 'zod'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
+import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
 import type { Job, CampaignChild } from '../jobs/types'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { ClaudeLoginManager } from './claude-login'
+import { listBuiltinPluginMetadata } from '../plugins/builtin'
 
 export interface RunnerServerOptions {
   port: number
@@ -419,10 +421,21 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const resolved = resolvePluginsConfig(config)
 
       const dropinIds = listDropinPluginIds()
+      const builtinMetadata = listBuiltinPluginMetadata(logger)
+      const builtinById = new Map(builtinMetadata.map(entry => [entry.manifest.id, entry]))
 
       const runtimes = plugins?.all() ?? []
-      const manifests = runtimes.map(runtime => {
-        const m = runtime.manifest
+      const runtimesById = new Map(runtimes.map(runtime => [runtime.manifest.id, runtime]))
+      const pluginIds = new Set<string>([
+        ...builtinById.keys(),
+        ...runtimesById.keys(),
+      ])
+
+      const manifests = Array.from(pluginIds).map(id => {
+        const runtime = runtimesById.get(id)
+        const builtin = builtinById.get(id)
+        const m = runtime?.manifest ?? builtin?.manifest
+        if (!m) return null
         // zod 4 exposes .toJSONSchema() / z.toJSONSchema(); older zod
         // versions don't. We swallow the throw so the dashboard at
         // least gets the manifest header even when JSON-schema
@@ -444,7 +457,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         // env / headers are redacted — the dashboard only needs the
         // shape, not the credentials.
         let mcpServer: unknown = null
-        if (typeof runtime.mcpServer === 'function') {
+        if (runtime && typeof runtime.mcpServer === 'function') {
           try {
             const desc = runtime.mcpServer()
             if (desc) mcpServer = redactPluginMcpServer(desc)
@@ -452,6 +465,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             logger.warn({ err, pluginId: m.id }, 'Plugin mcpServer() threw during /plugins enumeration')
           }
         }
+
+        const configured = resolved.installed[m.id]?.enabled ?? false
+        const active = runtimesById.has(m.id)
+
         return {
           manifest: {
             id: m.id,
@@ -470,14 +487,22 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             } : {}),
             configSchema: configSchemaJson,
           },
-          installed: resolved.installed[m.id]?.enabled ?? false,
+          installed: configured,
+          configured,
+          active,
+          available: true,
           // Tells the dashboard whether the user can call `DELETE
           // /plugins/:id` on this entry. Built-in plugins ship with
           // the runner and can't be removed at runtime.
-          source: dropinIds.has(m.id) ? ('dropin' as const) : ('builtin' as const),
+          source: builtinById.has(m.id) ? ('builtin' as const) : ('dropin' as const),
+          activationHint:
+            builtin?.activationHint
+            ?? (dropinIds.has(m.id)
+              ? 'Drop-in plugin detected on disk. Add it to the plugins config to enable it for jobs.'
+              : undefined),
           mcpServer,
         }
-      })
+      }).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
 
       res.json({
         plugins: manifests,
@@ -564,6 +589,9 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       }
 
       const input = createJobInput(body as CreateJobRequest)
+      if (plugins) {
+        assertJobPluginRequirements(input, plugins)
+      }
       const job = await dispatcher.dispatch(input)
       res.status(201).json({
         jobId: job.id,
