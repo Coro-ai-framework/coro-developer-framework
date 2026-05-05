@@ -21,6 +21,7 @@
 // `list_proposals` reads from the state backend so agents can de-dup
 // against pending PRs from this job, prior jobs, or peers in team mode.
 
+import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
 import type { ToolContext } from './types'
@@ -98,7 +99,8 @@ export interface ProposeChangeInput {
   /**
    * Optional structured memory entries. The runner serialises these
    * into the canonical short-form layout and merges them into `files`
-   * (creating or appending to the named files) before validation.
+   * as append snippets. The final merge against the writable tenant/repo
+   * source clone happens later in `proposeChange`.
    * Use this for `memory-update` proposals to save prompt tokens and
    * mechanically enforce the per-entry length budgets.
    */
@@ -300,10 +302,11 @@ function renderEntry(entry: MemoryEntryInput): string {
 
 /**
  * Merge structured entries into the proposal's `files[]`. Multiple entries
- * for the same file are concatenated under that file's payload; the runner
- * records the rendered content as the proposed change. Existing inline
- * `files[]` content for the same path takes precedence (the agent can
- * always opt out of structured rendering by supplying raw markdown).
+ * for the same file are concatenated under that file's payload as append
+ * snippets; `proposeChange` later merges those snippets into the writable
+ * source clone. Existing inline `files[]` content for the same path takes
+ * precedence (the agent can always opt out of structured rendering by
+ * supplying raw markdown).
  */
 function applyMemoryEntries(
   files: ProposalFile[],
@@ -464,17 +467,17 @@ export async function proposeChange(
   input: ProposeChangeInput,
   ctx: ToolContext,
 ): Promise<ProposeChangeResult> {
-  const files = applyMemoryEntries(normaliseFiles(input), input.entries)
-  validateProposalFiles(input.type, files)
+  const requestedFiles = applyMemoryEntries(normaliseFiles(input), input.entries)
+  validateProposalFiles(input.type, requestedFiles)
 
   const strategy = ctx.settings.proposals.routing.strategy
   // Route every file. If they disagree, we cannot ship them together.
-  const layers = files.map(f => routeFile(f.path, strategy, input.targetLayer))
+  const layers = requestedFiles.map(f => routeFile(f.path, strategy, input.targetLayer))
   const targetLayer = layers[0]
   if (!layers.every(l => l === targetLayer)) {
     throw new Error(
       `All files in a single propose_change call must target the same layer. ` +
-        `Got mixed: ${files.map((f, i) => `${f.path}=${layers[i]}`).join(', ')}. ` +
+        `Got mixed: ${requestedFiles.map((f, i) => `${f.path}=${layers[i]}`).join(', ')}. ` +
         `Make one call per layer.`,
     )
   }
@@ -536,6 +539,12 @@ export async function proposeChange(
     baseRef = writer.baseRef
     remoteUrl = writer.remoteUrl
   }
+
+  const files = await materializeProposalFiles({
+    type: input.type,
+    files: requestedFiles,
+    writerDir,
+  })
 
   // Branch + commit + push.
   const slug = toSlug(input.title)
@@ -694,6 +703,86 @@ function normaliseFiles(input: ProposeChangeInput): ProposalFile[] {
     out.push({ path: input.targetFile, content: input.proposedContent })
   }
   return out
+}
+
+async function materializeProposalFiles(args: {
+  type: ProposalType
+  files: ProposalFile[]
+  writerDir: string
+}): Promise<ProposalFile[]> {
+  if (args.type !== 'memory-update') return args.files
+
+  const out: ProposalFile[] = []
+  for (const file of args.files) {
+    if (!isAppendOnlyMemoryPath(file.path)) {
+      out.push({ ...file, content: ensureTrailingNewline(file.content) })
+      continue
+    }
+
+    const existing = await readWriterFile(args.writerDir, file.path)
+    if (!existing) {
+      out.push({ ...file, content: ensureTrailingNewline(file.content) })
+      continue
+    }
+
+    if (proposedContentAlreadyIncludesExisting(existing, file.content)) {
+      out.push({ ...file, content: ensureTrailingNewline(file.content) })
+      continue
+    }
+
+    out.push({
+      ...file,
+      content: appendMemoryContent(existing, file.content),
+    })
+  }
+
+  return out
+}
+
+function isAppendOnlyMemoryPath(filePath: string): boolean {
+  const normalised = filePath.replace(/^\.\//, '')
+  const isMemoryPath = normalised.startsWith('memory/') || normalised.startsWith('.coro/memory/')
+  if (!isMemoryPath) return false
+  return !normalised.endsWith('/MEMORY.md')
+}
+
+async function readWriterFile(writerDir: string, filePath: string): Promise<string | null> {
+  const abs = path.resolve(writerDir, filePath)
+  const rel = path.relative(writerDir, abs)
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Proposal path "${filePath}" escapes the writer directory.`)
+  }
+
+  try {
+    return await fs.readFile(abs, 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
+function proposedContentAlreadyIncludesExisting(existing: string, proposed: string): boolean {
+  const existingNormalised = normalizeNewlines(existing).trim()
+  const proposedNormalised = normalizeNewlines(proposed).trim()
+  if (!existingNormalised) return false
+  return proposedNormalised.includes(existingNormalised)
+}
+
+function appendMemoryContent(existing: string, proposed: string): string {
+  const left = normalizeNewlines(existing).trimEnd()
+  const right = normalizeNewlines(proposed).trim()
+  if (!left) return ensureTrailingNewline(right)
+  if (!right) return ensureTrailingNewline(left)
+  return `${left}\n\n${right}\n`
+}
+
+function ensureTrailingNewline(content: string): string {
+  const normalised = normalizeNewlines(content)
+  return normalised.endsWith('\n') ? normalised : `${normalised}\n`
+}
+
+function normalizeNewlines(content: string): string {
+  return content.replace(/\r\n/g, '\n')
 }
 
 function toSlug(title: string): string {

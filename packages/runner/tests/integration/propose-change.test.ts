@@ -94,6 +94,11 @@ beforeEach(async () => {
   await seedGit.addConfig('user.email', 'integration@coro.test', false, 'local')
   await seedGit.addConfig('user.name', 'Coro Integration', false, 'local')
   await fs.writeFile(path.join(seedDir, 'README.md'), '# Tenant intelligence\n')
+  await fs.mkdir(path.join(seedDir, 'memory'), { recursive: true })
+  await fs.writeFile(
+    path.join(seedDir, 'memory', 'known-pitfalls.md'),
+    '## Existing remote pitfall\n- Symptom: from remote base\n',
+  )
   await seedGit.add('.')
   await seedGit.commit('init')
   // Force the branch to be `main` (some git installs default to `master`).
@@ -249,4 +254,39 @@ describe('propose_change end-to-end', () => {
     expect(list.proposals[0].prUrl).toBe(result.prUrl)
     expect(list.proposals[0].targetLayer).toBe('tenant')
   }, 30000) // git operations on disk can take a moment in CI
+
+  it('appends memory snippets from the tenant writer clone rather than replacing from _intelligence', async () => {
+    await fs.mkdir(path.join(root, 'intel', 'memory'), { recursive: true })
+    await fs.writeFile(
+      path.join(root, 'intel', 'memory', 'known-pitfalls.md'),
+      '## Constructed overlay pitfall\n- Symptom: should not appear\n',
+      'utf-8',
+    )
+
+    const ctx = makeCtx()
+
+    const result = await proposeChange(
+      {
+        type: 'memory-update',
+        title: 'Append remote pitfall',
+        rationale: 'Preserve existing remote memory while adding a new entry.',
+        description: 'Append one more known pitfall.',
+        files: [
+          { path: 'memory/known-pitfalls.md', content: '## New appended pitfall\n- Symptom: from proposal\n' },
+        ],
+      },
+      ctx,
+    )
+
+    const verifyDir = path.join(root, 'verify-append')
+    await simpleGit(root).clone(bareRemoteDir, 'verify-append')
+    const verifyGit = simpleGit(verifyDir)
+    await verifyGit.fetch('origin', result.branch)
+    await verifyGit.checkout(result.branch)
+
+    const pitfall = await fs.readFile(path.join(verifyDir, 'memory/known-pitfalls.md'), 'utf-8')
+    expect(pitfall).toContain('## Existing remote pitfall')
+    expect(pitfall).toContain('## New appended pitfall')
+    expect(pitfall).not.toContain('## Constructed overlay pitfall')
+  }, 30000)
 })

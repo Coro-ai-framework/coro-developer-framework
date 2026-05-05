@@ -1,3 +1,7 @@
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 import {
@@ -334,6 +338,108 @@ describe('proposeChange', () => {
     expect(writerMock.prepareTenantWriter).not.toHaveBeenCalled()
   })
 
+  it('appends structured memory entries using the writer clone, not jobIntelligenceDir', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-self-improvement-'))
+    try {
+      const writerDir = path.join(root, 'writer')
+      const intelligenceDir = path.join(root, '_intelligence')
+      await fs.mkdir(path.join(writerDir, 'memory'), { recursive: true })
+      await fs.mkdir(path.join(intelligenceDir, 'memory'), { recursive: true })
+      await fs.writeFile(
+        path.join(writerDir, 'memory', 'known-pitfalls.md'),
+        '## Existing pitfall\n- Symptom: from writer clone\n',
+        'utf-8',
+      )
+      await fs.writeFile(
+        path.join(intelligenceDir, 'memory', 'known-pitfalls.md'),
+        '## Constructed overlay\n- Symptom: should not be used\n',
+        'utf-8',
+      )
+
+      vi.mocked(writerMock.prepareTenantWriter).mockResolvedValueOnce({
+        dir: writerDir,
+        baseRef: 'main',
+        remoteUrl: 'git@github.com:acme/intel.git',
+      })
+
+      const ctx = makeCtx()
+      ctx.jobIntelligenceDir = intelligenceDir
+
+      await proposeChange(
+        {
+          type: 'memory-update',
+          title: 'Add appended entry',
+          rationale: 'r',
+          description: 'd',
+          entries: [{
+            file: 'memory/known-pitfalls.md',
+            kind: 'pitfall',
+            title: 'New pitfall',
+            symptom: 'new symptom',
+            rootCause: 'new root cause',
+            recipe: 'do the thing',
+          }],
+        },
+        ctx,
+      )
+
+      expect(writerMock.commitAndPush).toHaveBeenCalledWith(expect.objectContaining({
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            path: 'memory/known-pitfalls.md',
+            content: expect.stringContaining('## Existing pitfall'),
+          }),
+        ]),
+      }))
+
+      const files = vi.mocked(writerMock.commitAndPush).mock.calls[0][0].files
+      const pitfall = files.find(file => file.path === 'memory/known-pitfalls.md')
+      expect(pitfall).toBeDefined()
+      expect(pitfall!.content).toContain('## Existing pitfall')
+      expect(pitfall!.content).toContain('## New pitfall')
+      expect(pitfall!.content).not.toContain('## Constructed overlay')
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps explicit MEMORY.md updates as authored instead of appending them', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-self-improvement-'))
+    try {
+      const writerDir = path.join(root, 'writer')
+      await fs.mkdir(path.join(writerDir, 'memory'), { recursive: true })
+      await fs.writeFile(
+        path.join(writerDir, 'memory', 'MEMORY.md'),
+        '# Memory\n- Old index\n',
+        'utf-8',
+      )
+
+      vi.mocked(writerMock.prepareTenantWriter).mockResolvedValueOnce({
+        dir: writerDir,
+        baseRef: 'main',
+        remoteUrl: 'git@github.com:acme/intel.git',
+      })
+
+      await proposeChange(
+        {
+          type: 'memory-update',
+          title: 'Refresh index',
+          rationale: 'r',
+          description: 'd',
+          files: [{ path: 'memory/MEMORY.md', content: '# Memory\n- New index\n' }],
+        },
+        makeCtx(),
+      )
+
+      const files = vi.mocked(writerMock.commitAndPush).mock.calls[0][0].files
+      const memoryIndex = files.find(file => file.path === 'memory/MEMORY.md')
+      expect(memoryIndex).toBeDefined()
+      expect(memoryIndex!.content).toBe('# Memory\n- New index\n')
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('throws when tenant overlay is not configured but a tenant proposal is filed', async () => {
     const ctx = makeCtx({ overlay: { kind: 'none' } })
     await expect(
@@ -422,7 +528,7 @@ describe('proposeChange', () => {
 
     expect(writerMock.commitAndPush).toHaveBeenCalledWith(expect.objectContaining({
       files: expect.arrayContaining([
-        expect.objectContaining({ path: 'memory/legacy.md', content: '## legacy' }),
+        expect.objectContaining({ path: 'memory/legacy.md', content: '## legacy\n' }),
       ]),
     }))
   })

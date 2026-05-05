@@ -795,7 +795,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             phaseTokens.cacheCreationInputTokens = Number(resultUsage['cache_creation_input_tokens'] ?? phaseTokens.cacheCreationInputTokens)
           }
 
-          const phaseCostUsd = typeof message['total_cost_usd'] === 'number' ? message['total_cost_usd'] as number : 0
+          const phaseCostUsd = derivePhaseCostUsd({
+            reportedTotalCostUsd: message['total_cost_usd'],
+            phaseTokens,
+            prePhaseCostUsd: prePhaseUsage.totalCostUsd,
+            resumedSessionId: resumeSessionId,
+          })
           phaseTokens.totalCostUsd = phaseCostUsd
 
           const phaseSnapshot: PhaseUsage = {
@@ -1205,6 +1210,37 @@ function mergeTokenUsage(base: TokenUsage, phase: TokenUsage): TokenUsage {
     cacheCreationInputTokens: base.cacheCreationInputTokens + phase.cacheCreationInputTokens,
     totalCostUsd: base.totalCostUsd + phase.totalCostUsd,
   }
+}
+
+/**
+ * Claude Code reports `total_cost_usd` on the result frame, but on resumed
+ * sessions that value is cumulative for the whole session, not a phase-local
+ * delta. We store per-phase costs, so resumed sessions must subtract the job's
+ * pre-phase cost baseline. We also never book non-zero cost for phases with no
+ * billable token usage.
+ */
+function derivePhaseCostUsd(args: {
+  reportedTotalCostUsd: unknown
+  phaseTokens: Pick<TokenUsage, 'inputTokens' | 'outputTokens' | 'cacheReadInputTokens' | 'cacheCreationInputTokens'>
+  prePhaseCostUsd: number
+  resumedSessionId?: string
+}): number {
+  const rawCostUsd = typeof args.reportedTotalCostUsd === 'number' && Number.isFinite(args.reportedTotalCostUsd)
+    ? Math.max(args.reportedTotalCostUsd, 0)
+    : 0
+
+  const hasBillableTokens = args.phaseTokens.inputTokens > 0
+    || args.phaseTokens.outputTokens > 0
+    || args.phaseTokens.cacheReadInputTokens > 0
+    || args.phaseTokens.cacheCreationInputTokens > 0
+
+  if (!hasBillableTokens) return 0
+  if (!args.resumedSessionId) return rawCostUsd
+
+  const deltaCostUsd = rawCostUsd - args.prePhaseCostUsd
+  if (deltaCostUsd >= 0) return deltaCostUsd
+
+  return rawCostUsd
 }
 
 function selectModel(

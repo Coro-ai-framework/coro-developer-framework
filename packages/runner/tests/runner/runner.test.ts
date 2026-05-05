@@ -960,6 +960,125 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.tokenUsage.totalCostUsd).toBe(1.2345)
   })
 
+  it('uses a delta from cumulative SDK cost when resuming an existing session', async () => {
+    stateBackend = createMockStateBackend(makeJob({
+      phase: 'only',
+      status: 'queued',
+      sessionId: 'resume-phase-cost',
+      tokenUsage: {
+        inputTokens: 1200,
+        outputTokens: 300,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        totalCostUsd: 1.99,
+      },
+      phaseUsage: [{
+        phase: 'planning',
+        inputTokens: 1200,
+        outputTokens: 300,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 1.99,
+        durationMs: 12_000,
+        durationApiMs: 9_000,
+        numTurns: 6,
+        model: 'plan-model',
+      }],
+    }))
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = () =>
+      (async function* () {
+        yield {
+          type: 'result',
+          result: 'Resumed phase complete',
+          usage: {
+            input_tokens: 1800,
+            output_tokens: 450,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          total_cost_usd: 2.49,
+          duration_ms: 10_000,
+          duration_api_ms: 8_000,
+          num_turns: 2,
+        }
+        yield { type: 'system', session_id: 'resume-phase-cost' }
+      })()
+
+    await runJob(makeJob({ phase: 'only', sessionId: 'resume-phase-cost' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    const onlyUsage = stateBackend.current.phaseUsage.at(-1)
+    expect(onlyUsage).toBeDefined()
+    expect(onlyUsage!.phase).toBe('only')
+    expect(onlyUsage!.costUsd).toBeCloseTo(0.5)
+    expect(stateBackend.current.tokenUsage.totalCostUsd).toBeCloseTo(2.49)
+  })
+
+  it('does not re-book cumulative SDK cost when a resumed session returns zero new tokens', async () => {
+    stateBackend = createMockStateBackend(makeJob({
+      phase: 'only',
+      status: 'queued',
+      sessionId: 'resume-no-usage',
+      tokenUsage: {
+        inputTokens: 2100,
+        outputTokens: 500,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        totalCostUsd: 1.99,
+      },
+      phaseUsage: [{
+        phase: 'evaluation',
+        inputTokens: 2100,
+        outputTokens: 500,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 1.99,
+        durationMs: 20_000,
+        durationApiMs: 18_000,
+        numTurns: 8,
+        model: 'plan-model',
+      }],
+    }))
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = () =>
+      (async function* () {
+        yield {
+          type: 'result',
+          is_error: true,
+          errors: ['Credits exhausted'],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          total_cost_usd: 1.99,
+          duration_ms: 0,
+          duration_api_ms: 0,
+          num_turns: 1,
+        }
+        yield { type: 'system', session_id: 'resume-no-usage' }
+      })()
+
+    await runJob(makeJob({ phase: 'only', sessionId: 'resume-no-usage' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    const onlyUsage = stateBackend.current.phaseUsage.at(-1)
+    expect(onlyUsage).toBeDefined()
+    expect(onlyUsage!.phase).toBe('only')
+    expect(onlyUsage!.inputTokens).toBe(0)
+    expect(onlyUsage!.outputTokens).toBe(0)
+    expect(onlyUsage!.costUsd).toBe(0)
+    expect(stateBackend.current.tokenUsage.totalCostUsd).toBe(1.99)
+  })
+
   it('accumulates PhaseUsage entries across multiple phases', async () => {
     let call = 0
     const queryImpl = () =>
