@@ -21,6 +21,8 @@ You are language-agnostic and provider-agnostic. The active SCM plugin (BitBucke
 - Code changes committed to a work-item branch
 - A pull request on whichever SCM the active plugin manages
 
+When you need to inspect output from a long-running Bash command, redirect it to a file inside the current job working directory and read that file afterward. Do not poll or read Claude runtime temp files such as `/private/tmp/claude-*/tasks/*.output`.
+
 ## MCP tools for this agent
 
 These are the MCP tools most relevant in this phase. Call them with the `mcp__coro__` prefix (e.g., `mcp__coro__log`). Prefer these directly for predictable execution; use ToolSearch only if you cannot identify the right tool.
@@ -92,6 +94,8 @@ Run the build and test commands specified in the implementation plan. If not spe
 - **C#/.NET:** `dotnet build` and `dotnet test`
 
 If the build fails, fix the errors before proceeding. If you cannot fix them, call `mcp__coro__escalate` with the full build output.
+
+If a command is likely to exceed a short inline timeout, run it with workspace-local output capture first so you can inspect the result deterministically, for example `dotnet test > test-output.txt 2>&1; echo "EXIT:$?" >> test-output.txt`.
 
 ### 7. Commit (do not push yet)
 

@@ -195,7 +195,10 @@ function fakeScmPlugin(id: string): ScmPluginRuntime {
   }
 }
 
-async function capturePreToolUseHook(ctx: RunnerContext): Promise<(input: Record<string, unknown>) => Promise<unknown>> {
+async function capturePreToolUseHook(
+  ctx: RunnerContext,
+  workflowConfig: WorkflowConfig = workflowSingle,
+): Promise<(input: Record<string, unknown>) => Promise<unknown>> {
   let hooks: Record<string, Array<{ hooks: Array<(input: Record<string, unknown>) => Promise<unknown>> }>> | undefined
 
   await runJob(makeJob({ phase: 'only', status: 'queued' }), ctx, {
@@ -204,7 +207,7 @@ async function capturePreToolUseHook(ctx: RunnerContext): Promise<(input: Record
         hooks = inv.options['hooks'] as typeof hooks
         yield { type: 'system', session_id: 'hook-capture' }
       })(),
-    workflowConfigOverride: workflowSingle,
+    workflowConfigOverride: workflowConfig,
   })
 
   const preToolUse = hooks?.PreToolUse?.[0]?.hooks?.[0]
@@ -571,6 +574,37 @@ describe('runJob (mocked Agent SDK query)', () => {
     ).resolves.toEqual({})
   })
 
+  it('denies tools outside an explicit phase whitelist', async () => {
+    const restrictedWorkflow: WorkflowConfig = {
+      initialPhase: 'only',
+      initialStatus: 'queued',
+      phases: [{
+        name: 'only',
+        agent: null,
+        model: 'planning',
+        status: 'running-only',
+        tools: ['Read', 'mcp__coro__log'],
+      }],
+      overrides: {},
+    }
+
+    const preToolUse = await capturePreToolUseHook(ctx, restrictedWorkflow)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'git status' },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('only allows Read, mcp__coro__log'),
+      },
+    })
+  })
+
   it('denies Bash commands that probe the user home', async () => {
     const preToolUse = await capturePreToolUseHook(ctx)
 
@@ -603,6 +637,68 @@ describe('runJob (mocked Agent SDK query)', () => {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: expect.stringContaining('parent-directory traversal'),
+      },
+    })
+  })
+
+  it('denies Bash commands that read Claude runtime task output files', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'cat /private/tmp/claude-501/example-session/tasks/abc123.output',
+      },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('/private/tmp/claude-*/tasks/*.output'),
+      },
+    })
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecisionReason: expect.stringContaining('workspace file instead'),
+      },
+    })
+  })
+
+  it('passes subagent tool whitelists into SDK agent definitions', async () => {
+    const workflowWithSubagent: WorkflowConfig = {
+      initialPhase: 'only',
+      initialStatus: 'queued',
+      phases: [{
+        name: 'only',
+        agent: null,
+        model: 'planning',
+        status: 'running-only',
+        subagents: [{
+          name: 'reviewer',
+          model: 'planning',
+          tools: ['Read', 'Bash', 'mcp__coro__log'],
+        }],
+      }],
+      overrides: {},
+    }
+
+    let capturedAgents: Record<string, unknown> | undefined
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        capturedAgents = inv.options['agents'] as Record<string, unknown>
+        yield { type: 'system', session_id: 'subagent-tools' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowWithSubagent,
+    })
+
+    expect(capturedAgents).toMatchObject({
+      reviewer: {
+        tools: ['Read', 'Bash', 'mcp__coro__log'],
       },
     })
   })

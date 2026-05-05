@@ -479,6 +479,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         liveJobRef: () => liveJob,
         workingDir,
         coroIntelligenceDir: jobIntelligenceDir,
+        allowedTools: phaseConf?.tools,
         logger,
       })
 
@@ -1423,6 +1424,7 @@ function buildSubagentDefinitions(
     defs[sa.name] = {
       description: `Subagent: ${sa.name}`,
       prompt: agentPrompt,
+      ...(sa.tools && sa.tools.length > 0 ? { tools: sa.tools } : {}),
       model: sa.model === 'coding'
         ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
         : (sa.model ?? 'inherit'),
@@ -1496,11 +1498,16 @@ interface BuildHookOpts {
   workingDir: string
   /** Absolute path to the Coro intelligence dir. */
   coroIntelligenceDir: string
+  /** Optional exact tool whitelist for this phase. */
+  allowedTools?: ReadonlyArray<string>
   logger: Logger
 }
 
 function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
   const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
+  const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
+    ? new Set(opts.allowedTools)
+    : null
 
   const deny = (reason: string): HookJSONOutput => ({
     hookSpecificOutput: {
@@ -1514,6 +1521,16 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
     if (input.hook_event_name !== 'PreToolUse') return {}
     const toolName = input.tool_name
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
+
+    if (allowedTools && !allowedTools.has(toolName)) {
+      const reason =
+        `Blocked ${toolName}: phase ${opts.liveJobRef().phase} only allows ` +
+        `${Array.from(allowedTools).join(', ')}. Update the workflow if this phase ` +
+        `needs broader tool access.`
+      opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
+      return deny(reason)
+    }
+
     // Guard rail: Write/Edit must stay inside working dir or memory/.
     // Bash commands with obvious write intent (e.g. `rm -rf /`) are harder
     // to validate generically, so we do the simple path check and rely on
@@ -1565,6 +1582,15 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
     const candidate = extractPathCandidate(rawToken)
     if (!candidate) continue
 
+    if (isClaudeTaskOutputPath(candidate)) {
+      return (
+        `Blocked Bash: command "${command}" references Claude runtime task output ` +
+        `via "${candidate}". Do not poll or read /private/tmp/claude-*/tasks/*.output ` +
+        `directly. Rerun the underlying command with output redirected to a file inside ` +
+        `${workingDir}/** and read that workspace file instead.`
+      )
+    }
+
     if (candidate === '~' || candidate.startsWith('~/')) {
       return bashPathReason(command, candidate, 'home-relative path', workingDir, memoryRoot)
     }
@@ -1597,6 +1623,12 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
   }
 
   return null
+}
+
+function isClaudeTaskOutputPath(token: string): boolean {
+  return token.startsWith('/private/tmp/claude-')
+    && token.includes('/tasks/')
+    && token.endsWith('.output')
 }
 
 function tokenizeShellCommand(command: string): string[] {

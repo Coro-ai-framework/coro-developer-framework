@@ -41,6 +41,8 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 11. **Do not manually park normal workflow checkpoints.** If a phase is marked `interactive_checkpoint: true` and the workflow docs say the runner enforces it, finish the phase normally and let the runner park for approval. Use `await_event({ eventName: "developer-input: <reason>" })` only for extra mid-phase questions, clarifications, or external waits the runner cannot infer.
 
+12. **Treat Claude runtime temp task files as off-limits.** Do not poll or read paths like `/private/tmp/claude-*/tasks/*.output`. When you need output from a long-running Bash command, redirect stdout/stderr to a file under the current job working directory and read that workspace file instead.
+
 ## Tenant context
 
 This base layer is **company-agnostic**. The tenant overlay (a tenant repo,
