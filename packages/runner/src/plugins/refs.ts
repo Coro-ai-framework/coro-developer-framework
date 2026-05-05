@@ -124,7 +124,8 @@ export async function resolveJobByExternalRef(
   ref: ExternalRef,
 ): Promise<Job | null> {
   if (backend.getJobByExternalRef) {
-    return backend.getJobByExternalRef(ref)
+    const exact = await backend.getJobByExternalRef(ref)
+    if (exact) return exact
   }
   switch (ref.kind) {
     case 'pull_request': {

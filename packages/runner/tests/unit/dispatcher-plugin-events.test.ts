@@ -266,4 +266,50 @@ describe('Dispatcher plugin webhook events (P4)', () => {
     expect(getJobByExternalRef).toHaveBeenCalledWith(ref)
     expect(updateJob).toHaveBeenCalled()
   })
+
+  it('falls back to legacy getJobByPr when getJobByExternalRef returns null', async () => {
+    const job = makeJob()
+    const getJobByExternalRef = vi.fn(async () => null)
+    const getJobByPr = vi.fn(async () => job)
+
+    const updateJob = vi.fn(async (_id: string, patch: Partial<Job>) => ({ ...job, ...patch }))
+    const appendLog = vi.fn(async () => undefined)
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+
+    let onEventHandler: ((e: InboundEvent) => Promise<void>) | undefined
+    const transport: EventTransport = {
+      connect: vi.fn(async () => undefined),
+      disconnect: vi.fn(async () => undefined),
+      isConnected: vi.fn(() => true),
+      onEvent: vi.fn((h) => { onEventHandler = h }),
+      emit: vi.fn(async () => undefined),
+    }
+
+    new Dispatcher(
+      {
+        stateBackend: {
+          getJob: vi.fn(async () => job),
+          updateJob,
+          appendLog,
+          getJobByExternalRef,
+          getJobByPr,
+        },
+        logger,
+      } as never,
+      transport,
+    )
+
+    await onEventHandler!({
+      source: 'plugin',
+      pluginId: 'github',
+      ref: prRef('42', 'github', 'svc'),
+      eventKey: 'pullrequest:fulfilled',
+      payload: {},
+      receivedAt: new Date().toISOString(),
+    })
+
+    expect(getJobByExternalRef).toHaveBeenCalledWith(prRef('42', 'github', 'svc'))
+    expect(getJobByPr).toHaveBeenCalledWith(42)
+    expect(updateJob).toHaveBeenCalled()
+  })
 })
