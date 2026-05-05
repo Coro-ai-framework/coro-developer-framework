@@ -28,6 +28,7 @@ import { SqliteStateBackend } from '../../src/state/sqlite-backend'
 import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
 import * as writerMock from '../../src/intelligence/writer'
+import { PluginRegistry } from '../../src/plugins/registry'
 
 // We mock only `openProposalPr` so the writer can use our local `file://`
 // bare repo without needing a real GitHub host. The rest of the writer
@@ -162,6 +163,7 @@ function makeCtx(): ToolContext {
     tempoClient: {} as ToolContext['tempoClient'],
     jiraClient: {} as ToolContext['jiraClient'],
     trackerClient: {} as ToolContext['trackerClient'],
+    plugins: new PluginRegistry(),
     runningServices: new Map(),
   }
 }

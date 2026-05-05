@@ -26,6 +26,7 @@ import {
   type ResolvedIntelligence,
 } from '../intelligence/resolver'
 import type { TenantContext } from '../intelligence/tenant-context'
+import type { PluginRegistry } from '../plugins/registry'
 import { buildSystemPrompt, computeTrackerPromptContext } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
@@ -83,6 +84,14 @@ export interface RunnerContext {
    * from every method when no provider is configured.
    */
   trackerClient: TrackerClient
+  /**
+   * Resolved plugin registry. Owns the `scm_*` / `tracker_*` MCP
+   * surface and all webhook normalisation. The legacy `bbCoder` /
+   * `ghClient` / `jiraClient` / `trackerClient` fields stay populated
+   * from the registry's built-in plugins for back-compat — they are
+   * scheduled for removal at N+2 (see plan/§6/Phase 9).
+   */
+  plugins: PluginRegistry
   logger: Logger
 }
 
@@ -239,6 +248,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     tempoClient: ctx.tempoClient,
     jiraClient: ctx.jiraClient,
     trackerClient: ctx.trackerClient,
+    plugins: ctx.plugins,
     logger,
     runningServices,
   }

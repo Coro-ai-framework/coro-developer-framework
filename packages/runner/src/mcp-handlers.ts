@@ -1,5 +1,8 @@
 import { ToolContext, PhaseSignals } from './tools/types'
 import { Artifact, WorkItem, Insight, Job } from './jobs/types'
+import type { ExternalRef } from './plugins/refs'
+import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
+import { PluginResolutionError } from './plugins/registry'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -9,6 +12,73 @@ export function mcpText(data: unknown) {
 
 export function mcpError(msg: string) {
   return { content: [{ type: 'text' as const, text: msg }], isError: true as const }
+}
+
+// ── Plugin resolution helpers ────────────────────────────────────────────────
+//
+// `scm_*` and `tracker_*` handlers all need the same boilerplate: pick
+// the per-job-or-explicit plugin, surface a structured MCP error when
+// resolution fails so the agent can re-call with a corrected
+// `pluginId`. Centralised here so each tool stays a one-liner that
+// just dispatches to the chosen plugin's method.
+
+function resolveScm(
+  ctx: ToolContext,
+  pluginId?: string,
+): { ok: true; scm: ScmPluginRuntime } | { ok: false; error: ReturnType<typeof mcpError> } {
+  try {
+    const requested = pluginId ?? (typeof ctx.job.params['scm'] === 'string' ? (ctx.job.params['scm'] as string) : undefined)
+    const scm = ctx.plugins.resolveScm(requested ? { scm: requested } : {})
+    return { ok: true, scm }
+  } catch (err) {
+    if (err instanceof PluginResolutionError) {
+      return { ok: false, error: mcpError(`scm plugin resolution failed: ${err.message}`) }
+    }
+    return { ok: false, error: mcpError(`scm plugin resolution error: ${(err as Error).message}`) }
+  }
+}
+
+function resolveTracker(
+  ctx: ToolContext,
+  pluginId?: string,
+): { ok: true; tracker: TrackerPluginRuntime } | { ok: false; error: ReturnType<typeof mcpError> } {
+  try {
+    const requested = pluginId ?? (typeof ctx.job.params['tracker'] === 'string' ? (ctx.job.params['tracker'] as string) : undefined)
+    const tracker = ctx.plugins.resolveTracker(requested ? { tracker: requested } : {})
+    return { ok: true, tracker }
+  } catch (err) {
+    if (err instanceof PluginResolutionError) {
+      return { ok: false, error: mcpError(`tracker plugin resolution failed: ${err.message}`) }
+    }
+    return { ok: false, error: mcpError(`tracker plugin resolution error: ${(err as Error).message}`) }
+  }
+}
+
+/**
+ * Build an `ExternalRef` for a PR from the args MCP tools accept.
+ * Stringifies the PR id (PRs are numbers in most providers but the
+ * ref is provider-neutral string).
+ */
+function prRef(scm: ScmPluginRuntime, repo: string, prId: number | string): ExternalRef {
+  return {
+    kind: 'pull_request',
+    pluginId: scm.manifest.id,
+    repoKey: repo,
+    externalId: String(prId),
+  }
+}
+
+/**
+ * Single deprecation log line per call. Used by the back-compat
+ * `bb_*` / `gh_*` / `jira_*` wrappers so workflow markdown that still
+ * names the legacy tools keeps working through one full release cycle
+ * but the operator sees the call out.
+ */
+function logDeprecation(ctx: ToolContext, oldName: string, newName: string, extra?: Record<string, unknown>): void {
+  ctx.logger.warn(
+    { tool: oldName, replacement: newName, jobId: ctx.job.id, ...extra },
+    `MCP tool ${oldName} is deprecated — agents should call ${newName}`,
+  )
 }
 
 /**
@@ -56,11 +126,291 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     return text({ workItems: job.workItems, currentWorkItem: job.currentWorkItem })
   }
 
+  // ── Generic SCM tools ──────────────────────────────────────────────────
+  //
+  // These delegate to whichever SCM plugin the registry resolves for
+  // the job. Every provider (BitBucket, GitHub, future Gitea/GitLab)
+  // implements the same shape, so workflow markdown can stop hard-
+  // coding `bb_*`/`gh_*`. The legacy wrappers below now forward to
+  // these.
+
+  const scm_create_repo = async (args: {
+    pluginId?: string; repoSlug: string; description?: string; isPrivate?: boolean; defaultBranch?: string
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.scm.createRepo) return error(`scm plugin "${r.scm.manifest.id}" does not support createRepo`)
+    const ref = await r.scm.createRepo({
+      repoSlug: args.repoSlug,
+      ...(args.description ? { description: args.description } : {}),
+      ...(args.isPrivate !== undefined ? { isPrivate: args.isPrivate } : {}),
+      ...(args.defaultBranch ? { defaultBranch: args.defaultBranch } : {}),
+    })
+    return text({ pluginId: ref.pluginId, fullName: ref.externalId, url: ref.url ?? null })
+  }
+
+  const scm_create_pr = async (args: {
+    pluginId?: string
+    repo: string
+    title: string
+    description?: string
+    sourceBranch: string
+    targetBranch?: string
+    reviewers?: string[]
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const { jobReviewers } = await import('./jobs/types')
+    const ref = await r.scm.createPr({
+      repoSlug: args.repo,
+      title: args.title,
+      ...(args.description ? { description: args.description } : {}),
+      sourceBranch: args.sourceBranch,
+      targetBranch: args.targetBranch ?? 'main',
+      reviewers: args.reviewers ?? jobReviewers(ctx.job),
+    })
+
+    const prIdNumber = Number(ref.externalId)
+    if (Number.isFinite(prIdNumber)) {
+      // Legacy `prMappings` table still records numeric PR ids per job.
+      // P5 introduces `external_ref_mappings` and this branch becomes
+      // a translation step around `mapExternalRef`.
+      await ctx.stateBackend.addPrMapping(ctx.job.id, {
+        prId: prIdNumber,
+        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
+        repoSlug: args.repo,
+        openedAt: new Date().toISOString(),
+      })
+    }
+
+    return text({
+      pluginId: ref.pluginId,
+      prId: prIdNumber,
+      externalId: ref.externalId,
+      url: ref.url ?? null,
+    })
+  }
+
+  const scm_get_pr_status = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const status = await r.scm.getPrStatus(prRef(r.scm, args.repo, args.prId))
+    return text(status)
+  }
+
+  const scm_list_pr_comments = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const comments = await r.scm.listPrComments(prRef(r.scm, args.repo, args.prId))
+    return text(comments)
+  }
+
+  const scm_post_pr_comment = async (args: {
+    pluginId?: string; repo: string; prId: number | string; body: string
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const comment = await r.scm.postPrComment(prRef(r.scm, args.repo, args.prId), args.body)
+    return text(comment)
+  }
+
+  const scm_reply_to_comment = async (args: {
+    pluginId?: string; repo: string; prId: number | string; parentId: string | number; body: string
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const comment = await r.scm.replyToComment(prRef(r.scm, args.repo, args.prId), String(args.parentId), args.body)
+    return text(comment)
+  }
+
+  const scm_approve_pr = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.scm.approvePr) return error(`scm plugin "${r.scm.manifest.id}" does not support approvePr`)
+    await r.scm.approvePr(prRef(r.scm, args.repo, args.prId))
+    return text({ approved: true })
+  }
+
+  const scm_merge_pr = async (args: {
+    pluginId?: string; repo: string; prId: number | string; message?: string; strategy?: 'merge' | 'squash' | 'rebase'
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.scm.mergePr) return error(`scm plugin "${r.scm.manifest.id}" does not support mergePr`)
+    await r.scm.mergePr(
+      prRef(r.scm, args.repo, args.prId),
+      {
+        ...(args.message ? { message: args.message } : {}),
+        ...(args.strategy ? { strategy: args.strategy } : {}),
+      },
+    )
+    return text({ merged: true })
+  }
+
+  const scm_get_clone_info = async (args: { pluginId?: string; repo: string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const info = r.scm.cloneInfo({ repo: args.repo })
+    return text({ pluginId: r.scm.manifest.id, ...info })
+  }
+
+  const scm_poll_pr = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const snap = await r.scm.pollPr(prRef(r.scm, args.repo, args.prId))
+    return text(snap)
+  }
+
+  // ── Generic Tracker tools ──────────────────────────────────────────────
+  //
+  // Same idea as scm_*: every tracker plugin implements the same
+  // surface; the registry picks one. The legacy `tracker_*` handlers
+  // (which went through `ctx.trackerClient`) are replaced by these.
+
+  const tracker_get_issue = async (args: { pluginId?: string; key: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    try {
+      const issue = await r.tracker.getIssue(args.key)
+      return text(issue)
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_list_children = async (args: { pluginId?: string; parentKey: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.listChildren) return error(`tracker plugin "${r.tracker.manifest.id}" does not support listChildren`)
+    try {
+      const issues = await r.tracker.listChildren(args.parentKey)
+      return text(issues)
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_comment_issue = async (args: { pluginId?: string; key: string; body: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    try {
+      await r.tracker.commentIssue({ key: args.key, body: args.body })
+      return text({ commented: true, key: args.key })
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_transition_issue = async (args: { pluginId?: string; key: string; status: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    try {
+      await r.tracker.transitionIssue({ key: args.key, status: args.status })
+      return text({ transitioned: true, key: args.key, status: args.status })
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_create_issue = async (args: {
+    pluginId?: string
+    projectKey: string
+    summary: string
+    description: string
+    issueType?: string
+    parentKey?: string
+    labels?: string[]
+  }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.createIssue) return error(`tracker plugin "${r.tracker.manifest.id}" does not support createIssue`)
+    try {
+      const issue = await r.tracker.createIssue({
+        projectKey: args.projectKey,
+        summary: args.summary,
+        description: args.description,
+        ...(args.issueType ? { issueType: args.issueType } : {}),
+        ...(args.parentKey ? { parentKey: args.parentKey } : {}),
+        ...(args.labels ? { labels: args.labels } : {}),
+      })
+      return text(issue)
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_create_epic = async (args: {
+    pluginId?: string
+    projectKey: string
+    summary: string
+    description: string
+    labels?: string[]
+  }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.createEpic) return error(`tracker plugin "${r.tracker.manifest.id}" does not support createEpic`)
+    try {
+      const epic = await r.tracker.createEpic({
+        projectKey: args.projectKey,
+        summary: args.summary,
+        description: args.description,
+        ...(args.labels ? { labels: args.labels } : {}),
+      })
+      return text(epic)
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_link_issues = async (args: {
+    pluginId?: string; fromKey: string; toKey: string; relation?: string
+  }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.linkIssues) return error(`tracker plugin "${r.tracker.manifest.id}" does not support linkIssues`)
+    try {
+      await r.tracker.linkIssues({
+        fromKey: args.fromKey,
+        toKey: args.toKey,
+        relation: args.relation ?? 'Blocks',
+      })
+      return text({ linked: true, fromKey: args.fromKey, toKey: args.toKey })
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
   return {
-    // BitBucket — coder
+    // ── Generic surface (preferred) ────────────────────────────────────
+    scm_create_repo,
+    scm_create_pr,
+    scm_get_pr_status,
+    scm_list_pr_comments,
+    scm_post_pr_comment,
+    scm_reply_to_comment,
+    scm_approve_pr,
+    scm_merge_pr,
+    scm_get_clone_info,
+    scm_poll_pr,
+
+    tracker_get_issue,
+    tracker_list_children,
+    tracker_comment_issue,
+    tracker_transition_issue,
+    tracker_create_issue,
+    tracker_create_epic,
+    tracker_link_issues,
+
+    // ── BitBucket back-compat shims (DEPRECATED) ─────────────────────
+    //
+    // These delegate straight through to the generic handlers above
+    // with `pluginId: 'bitbucket'`. Each call emits a single
+    // deprecation log line so operators can see how often legacy
+    // markdown still gets used. P9 turns these into MCP errors at
+    // N+1 and removes them at N+2.
     bb_create_repo: async ({ repoSlug, description }: { repoSlug: string; description?: string }) => {
-      const repo = await ctx.bbCoder.createRepo({ repoSlug, description, isPrivate: true })
-      return text({ fullName: repo.full_name })
+      logDeprecation(ctx, 'bb_create_repo', 'scm_create_repo')
+      return scm_create_repo({ pluginId: 'bitbucket', repoSlug, ...(description ? { description } : {}), isPrivate: true })
     },
 
     bb_create_pr: async ({
@@ -73,69 +423,55 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       targetBranch?: string
       reviewerUsernames?: string[]
     }) => {
-      const { jobReviewers } = await import('./jobs/types')
-      const pr = await ctx.bbCoder.createPr({
-        repoSlug, title, description,
+      logDeprecation(ctx, 'bb_create_pr', 'scm_create_pr')
+      return scm_create_pr({
+        pluginId: 'bitbucket',
+        repo: repoSlug,
+        title,
+        ...(description ? { description } : {}),
         sourceBranch,
-        targetBranch: targetBranch ?? 'main',
-        reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
+        ...(targetBranch ? { targetBranch } : {}),
+        ...(reviewerUsernames ? { reviewers: reviewerUsernames } : {}),
       })
-
-      await ctx.stateBackend.addPrMapping(ctx.job.id, {
-        prId: pr.id,
-        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
-        repoSlug: repoSlug,
-        openedAt: new Date().toISOString(),
-      })
-
-      return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
     },
 
     bb_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      const status = await ctx.bbCoder.getPrStatus(repoSlug, prId)
-      return text(status)
+      logDeprecation(ctx, 'bb_get_pr_status', 'scm_get_pr_status')
+      return scm_get_pr_status({ pluginId: 'bitbucket', repo: repoSlug, prId })
     },
 
     // BitBucket — reviewer
     bb_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      const comments = await ctx.bbReviewer.getComments(repoSlug, prId)
-      const mapped = comments.map(c => ({
-        id: c.id,
-        content: c.content.raw,
-        parentId: c.parent?.id ?? null,
-        createdOn: c.created_on,
-        inline: c.inline ?? null,
-      }))
-      return text(mapped)
+      logDeprecation(ctx, 'bb_get_pr_comments', 'scm_list_pr_comments')
+      return scm_list_pr_comments({ pluginId: 'bitbucket', repo: repoSlug, prId })
     },
 
     bb_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
-      const comment = await ctx.bbReviewer.postComment(repoSlug, prId, content)
-      return text({ commentId: comment.id })
+      logDeprecation(ctx, 'bb_post_pr_comment', 'scm_post_pr_comment')
+      return scm_post_pr_comment({ pluginId: 'bitbucket', repo: repoSlug, prId, body: content })
     },
 
     bb_reply_to_comment: async ({
       repoSlug, prId, parentId, content,
     }: { repoSlug: string; prId: number; parentId: number; content: string }) => {
-      const comment = await ctx.bbReviewer.replyToComment(repoSlug, prId, parentId, content)
-      return text({ commentId: comment.id })
+      logDeprecation(ctx, 'bb_reply_to_comment', 'scm_reply_to_comment')
+      return scm_reply_to_comment({ pluginId: 'bitbucket', repo: repoSlug, prId, parentId, body: content })
     },
 
     bb_approve_pr: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      await ctx.bbReviewer.approvePr(repoSlug, prId)
-      return text({ approved: true })
+      logDeprecation(ctx, 'bb_approve_pr', 'scm_approve_pr')
+      return scm_approve_pr({ pluginId: 'bitbucket', repo: repoSlug, prId })
     },
 
     bb_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
-      const pr = await ctx.bbReviewer.mergePr(repoSlug, prId, message)
-      return text({ state: pr.state })
+      logDeprecation(ctx, 'bb_merge_pr', 'scm_merge_pr')
+      return scm_merge_pr({ pluginId: 'bitbucket', repo: repoSlug, prId, ...(message ? { message } : {}) })
     },
 
-    // GitHub — uses a single token for both coder and reviewer operations
+    // GitHub back-compat shims (DEPRECATED — see bb_* note above).
     gh_create_repo: async ({ repoSlug, description }: { repoSlug: string; description?: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
-      const repo = await ctx.ghClient.createRepo({ repoSlug, description, isPrivate: true })
-      return text({ fullName: repo.full_name })
+      logDeprecation(ctx, 'gh_create_repo', 'scm_create_repo')
+      return scm_create_repo({ pluginId: 'github', repoSlug, ...(description ? { description } : {}), isPrivate: true })
     },
 
     gh_create_pr: async ({
@@ -148,68 +484,48 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       targetBranch?: string
       reviewerUsernames?: string[]
     }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
-      const { jobReviewers } = await import('./jobs/types')
-      const pr = await ctx.ghClient.createPr({
-        repoSlug, title, description,
+      logDeprecation(ctx, 'gh_create_pr', 'scm_create_pr')
+      return scm_create_pr({
+        pluginId: 'github',
+        repo: repoSlug,
+        title,
+        ...(description ? { description } : {}),
         sourceBranch,
-        targetBranch: targetBranch ?? 'main',
-        reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
+        ...(targetBranch ? { targetBranch } : {}),
+        ...(reviewerUsernames ? { reviewers: reviewerUsernames } : {}),
       })
-
-      await ctx.stateBackend.addPrMapping(ctx.job.id, {
-        prId: pr.id,
-        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
-        repoSlug: repoSlug,
-        openedAt: new Date().toISOString(),
-      })
-
-      return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
     },
 
     gh_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const status = await ctx.ghClient.getPrStatus(repoSlug, prId)
-      return text(status)
+      logDeprecation(ctx, 'gh_get_pr_status', 'scm_get_pr_status')
+      return scm_get_pr_status({ pluginId: 'github', repo: repoSlug, prId })
     },
 
     gh_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const comments = await ctx.ghClient.getComments(repoSlug, prId)
-      const mapped = comments.map(c => ({
-        id: c.id,
-        content: c.content.raw,
-        parentId: c.parent?.id ?? null,
-        createdOn: c.created_on,
-        inline: c.inline ?? null,
-      }))
-      return text(mapped)
+      logDeprecation(ctx, 'gh_get_pr_comments', 'scm_list_pr_comments')
+      return scm_list_pr_comments({ pluginId: 'github', repo: repoSlug, prId })
     },
 
     gh_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const comment = await ctx.ghClient.postComment(repoSlug, prId, content)
-      return text({ commentId: comment.id })
+      logDeprecation(ctx, 'gh_post_pr_comment', 'scm_post_pr_comment')
+      return scm_post_pr_comment({ pluginId: 'github', repo: repoSlug, prId, body: content })
     },
 
     gh_reply_to_comment: async ({
       repoSlug, prId, parentId, content,
     }: { repoSlug: string; prId: number; parentId: number; content: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const comment = await ctx.ghClient.replyToComment(repoSlug, prId, parentId, content)
-      return text({ commentId: comment.id })
+      logDeprecation(ctx, 'gh_reply_to_comment', 'scm_reply_to_comment')
+      return scm_reply_to_comment({ pluginId: 'github', repo: repoSlug, prId, parentId, body: content })
     },
 
     gh_approve_pr: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      await ctx.ghClient.approvePr(repoSlug, prId)
-      return text({ approved: true })
+      logDeprecation(ctx, 'gh_approve_pr', 'scm_approve_pr')
+      return scm_approve_pr({ pluginId: 'github', repo: repoSlug, prId })
     },
 
     gh_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const pr = await ctx.ghClient.mergePr(repoSlug, prId, message)
-      return text({ state: pr.state })
+      logDeprecation(ctx, 'gh_merge_pr', 'scm_merge_pr')
+      return scm_merge_pr({ pluginId: 'github', repo: repoSlug, prId, ...(message ? { message } : {}) })
     },
 
     // Test harness
@@ -305,75 +621,33 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text(result)
     },
 
-    // Jira
+    // Jira back-compat shims (DEPRECATED).
+    //
+    // The tracker plugin's `transitionIssue` takes a *status name*
+    // (e.g. `"Done"`); the legacy Jira tool took a numeric Jira
+    // transition id (e.g. `"11"`). The plugin handles the lookup
+    // internally so the wrapper just renames the field — the semantic
+    // is identical for any modern Jira project (transition names map
+    // 1:1 to ids inside the plugin).
     jira_get_issue: async ({ ticketId }: { ticketId: string }) => {
-      const result = await ctx.jiraClient.getIssue(ticketId)
-      return text(result)
+      logDeprecation(ctx, 'jira_get_issue', 'tracker_get_issue')
+      return tracker_get_issue({ pluginId: 'jira', key: ticketId })
     },
 
     jira_post_comment: async ({ ticketId, body }: { ticketId: string; body: string }) => {
-      const result = await ctx.jiraClient.postComment(ticketId, body)
-      return text(result)
+      logDeprecation(ctx, 'jira_post_comment', 'tracker_comment_issue')
+      return tracker_comment_issue({ pluginId: 'jira', key: ticketId, body })
     },
 
     jira_transition_issue: async ({ ticketId, transitionId }: { ticketId: string; transitionId: string }) => {
-      const result = await ctx.jiraClient.transitionIssue(ticketId, transitionId)
-      return text(result ?? { transitioned: true })
-    },
-
-    // Provider-agnostic issue tracker. Resolves to whichever provider is
-    // configured at runner bootstrap (Jira today; GitHub Issues / Linear
-    // later). All methods short-circuit with a structured `available:false`
-    // response when no tracker is configured, letting the campaign-planner
-    // proceed in degraded mode rather than aborting the phase.
-    tracker_create_epic: async (args: {
-      projectKey: string; summary: string; description: string; labels?: string[]
-    }) => {
-      const result = await ctx.trackerClient.createEpic(args)
-      return text(result)
-    },
-
-    tracker_create_issue: async (args: {
-      projectKey: string
-      summary: string
-      description: string
-      issueType?: string
-      parentKey?: string
-      labels?: string[]
-    }) => {
-      const result = await ctx.trackerClient.createIssue(args)
-      return text(result)
-    },
-
-    tracker_link_issues: async (args: {
-      fromKey: string; toKey: string; relation?: string
-    }) => {
-      const result = await ctx.trackerClient.linkIssues({
-        fromKey: args.fromKey,
-        toKey: args.toKey,
-        relation: args.relation ?? 'Blocks',
-      })
-      return text(result)
-    },
-
-    tracker_get_issue: async ({ key }: { key: string }) => {
-      const result = await ctx.trackerClient.getIssue(key)
-      return text(result)
-    },
-
-    tracker_list_children: async ({ parentKey }: { parentKey: string }) => {
-      const result = await ctx.trackerClient.listChildren(parentKey)
-      return text(result)
-    },
-
-    tracker_transition_issue: async (args: { key: string; status: string }) => {
-      const result = await ctx.trackerClient.transitionIssue(args)
-      return text(result)
-    },
-
-    tracker_comment_issue: async (args: { key: string; body: string }) => {
-      const result = await ctx.trackerClient.commentIssue(args)
-      return text(result)
+      logDeprecation(ctx, 'jira_transition_issue', 'tracker_transition_issue')
+      // The legacy contract took a Jira transition *id*; the plugin's
+      // tracker contract takes a *status name*. Pass the value
+      // through as the status string — Jira projects with numeric
+      // transition ids in workflow markdown will need to migrate at
+      // P9, but the call still goes to Jira and the runner emits a
+      // structured tool error if Jira rejects an unknown transition.
+      return tracker_transition_issue({ pluginId: 'jira', key: ticketId, status: transitionId })
     },
 
     // Work-item tracking — pure state CRUD, zero orchestration logic

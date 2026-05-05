@@ -1,33 +1,42 @@
 // ── Polling Transport ─────────────────────────────────────────────────────────
 //
 // EventTransport implementation for fully local mode (Phase 5). Instead of
-// receiving webhook events in real-time, polls the BitBucket/GitHub API at a
+// receiving webhook events in real-time, polls the SCM provider's API at a
 // fixed interval to detect PR state changes (comments, approvals, merges).
 //
 // Latency: ~60 seconds (acceptable for jobs that take hours).
 // Used when: `coro init --local` → no cloud, no webhook endpoint.
 //
-// The transport checks all parked jobs that have `awaitingPrId` set, fetches
-// their current PR status and comment count, and delivers synthetic webhook
-// events when changes are detected.
+// Plugin-aware design (P1): the transport itself does not know how to
+// poll any specific provider. Every parked job's PR is owned by an SCM
+// plugin (resolved through the plugin registry); the transport calls
+// `pollPr(ref)` on that plugin and translates the returned snapshot
+// into synthetic InboundEvents.
+//
+// Resolution rules for the SCM plugin per parked job:
+//   1. The PR mapping's `pluginId` field, when present (preferred —
+//      future P5 will store this on `external_ref_mappings`).
+//   2. `params.scm` set on the job (agent-supplied via `set_job_params`).
+//   3. The registry's default SCM plugin (only one installed, or
+//      `defaults.scm` set in PluginsConfig).
+//
+// When resolution fails for a particular job we log a warning and skip
+// it — no global default is forced because forcing one silently picks
+// the wrong provider for cross-platform tenants.
 
 import type { EventTransport } from './transport'
 import type { InboundEvent, OutboundEvent } from './events'
 import type { StateBackend } from './backend'
 import type { Logger } from 'pino'
-import { isParkingStatus } from '../jobs/types'
-
-export interface PrPoller {
-  getPrStatus(repoSlug: string, prId: number): Promise<{ state: string; approvalCount: number }>
-  getComments(repoSlug: string, prId: number): Promise<Array<{ id: number; content: { raw: string }; created_on: string }>>
-}
+import type { PluginRegistry } from '../plugins/registry'
+import type { ExternalRef } from '../plugins/refs'
+import type { ScmPluginRuntime, ScmPollSnapshot } from '../plugins/types'
+import { isParkingStatus, type Job, type PrMapping } from '../jobs/types'
 
 export interface PollingTransportOptions {
   stateBackend: StateBackend
-  /** The git API client (BitBucket or GitHub) that can poll PR state. */
-  prPoller: PrPoller
-  /** Repo slug for PR API calls (for jobs that don't store it). */
-  defaultRepoSlug?: string
+  /** Plugin registry — used to resolve which SCM plugin owns each parked PR. */
+  plugins: PluginRegistry
   /** Poll interval in milliseconds. Default: 60000 (60s). */
   intervalMs?: number
   logger: Logger
@@ -35,7 +44,7 @@ export interface PollingTransportOptions {
 
 /** Snapshot of a PR's last-known state for change detection. */
 interface PrSnapshot {
-  state: string
+  state: ScmPollSnapshot['state']
   approvalCount: number
   commentCount: number
 }
@@ -48,17 +57,15 @@ export class PollingTransport implements EventTransport {
 
   private readonly intervalMs: number
   private readonly stateBackend: StateBackend
-  private readonly prPoller: PrPoller
-  private readonly defaultRepoSlug: string
+  private readonly plugins: PluginRegistry
   private readonly logger: Logger
 
-  /** Cache of last-seen PR state to detect changes. */
-  private readonly snapshots = new Map<number, PrSnapshot>()
+  /** Cache of last-seen PR state to detect changes. Keyed by `${pluginId}:${repoKey}:${externalId}`. */
+  private readonly snapshots = new Map<string, PrSnapshot>()
 
   constructor(opts: PollingTransportOptions) {
     this.stateBackend = opts.stateBackend
-    this.prPoller = opts.prPoller
-    this.defaultRepoSlug = opts.defaultRepoSlug ?? ''
+    this.plugins = opts.plugins
     this.intervalMs = opts.intervalMs ?? 60_000
     this.logger = opts.logger
   }
@@ -122,15 +129,26 @@ export class PollingTransport implements EventTransport {
 
       for (const job of parkedJobs) {
         const prId = job.awaitingPrId!
-        const repoSlug = this.resolveRepoSlug(job)
+        const ref = this.resolveRef(job, prId)
+        if (!ref) {
+          this.logger.warn(
+            { jobId: job.id, prId },
+            'Cannot poll PR — no repoKey/repoSlug found on job',
+          )
+          continue
+        }
 
-        if (!repoSlug) {
-          this.logger.warn({ jobId: job.id, prId }, 'Cannot poll PR — no repoSlug found')
+        const scm = this.resolveScm(job, ref)
+        if (!scm) {
+          this.logger.warn(
+            { jobId: job.id, prId, pluginId: ref.pluginId },
+            'Cannot poll PR — no matching SCM plugin installed',
+          )
           continue
         }
 
         try {
-          await this.checkPr(job.id, repoSlug, prId)
+          await this.checkPr(job.id, scm, ref)
         } catch (err) {
           this.logger.warn({ jobId: job.id, prId, err }, 'PR poll failed — will retry next cycle')
         }
@@ -142,83 +160,92 @@ export class PollingTransport implements EventTransport {
 
   // ── PR change detection ────────────────────────────────────────────────────
 
-  private async checkPr(jobId: string, repoSlug: string, prId: number): Promise<void> {
-    const [status, comments] = await Promise.all([
-      this.prPoller.getPrStatus(repoSlug, prId),
-      this.prPoller.getComments(repoSlug, prId),
-    ])
+  private async checkPr(jobId: string, scm: ScmPluginRuntime, ref: ExternalRef): Promise<void> {
+    const snap = await scm.pollPr(ref)
 
     const current: PrSnapshot = {
-      state: status.state,
-      approvalCount: status.approvalCount,
-      commentCount: comments.length,
+      state: snap.state,
+      approvalCount: snap.approvalCount,
+      commentCount: snap.commentCount,
     }
 
-    const previous = this.snapshots.get(prId)
-    this.snapshots.set(prId, current)
+    const key = snapshotKey(ref)
+    const previous = this.snapshots.get(key)
+    this.snapshots.set(key, current)
 
     // First poll — if the PR is already in a terminal or actionable state,
     // fire events immediately instead of silently caching. This handles the
     // cold-start case where the runner starts after a PR was already merged/approved.
     if (!previous) {
-      this.logger.debug({ prId, state: current.state }, 'Initial PR snapshot cached')
+      this.logger.debug({ jobId, ref, state: current.state }, 'Initial PR snapshot cached')
 
-      if (current.state === 'MERGED') {
-        await this.deliver(jobId, 'pullrequest:fulfilled', { prId, state: 'MERGED' })
-      } else if (current.state === 'DECLINED') {
-        await this.deliver(jobId, 'pullrequest:rejected', { prId, state: 'DECLINED' })
+      if (current.state === 'merged') {
+        await this.deliver(jobId, ref, 'pullrequest:fulfilled', { state: 'MERGED' })
+      } else if (current.state === 'declined') {
+        await this.deliver(jobId, ref, 'pullrequest:rejected', { state: 'DECLINED' })
       } else if (current.approvalCount > 0) {
-        await this.deliver(jobId, 'pullrequest:approved', { prId, approvalCount: current.approvalCount })
+        await this.deliver(jobId, ref, 'pullrequest:approved', { approvalCount: current.approvalCount })
       }
       return
     }
 
     // Detect state changes and deliver synthetic events
     if (current.state !== previous.state) {
-      if (current.state === 'MERGED') {
-        await this.deliver(jobId, 'pullrequest:fulfilled', { prId, state: 'MERGED' })
-      } else if (current.state === 'DECLINED') {
-        await this.deliver(jobId, 'pullrequest:rejected', { prId, state: 'DECLINED' })
+      if (current.state === 'merged') {
+        await this.deliver(jobId, ref, 'pullrequest:fulfilled', { state: 'MERGED' })
+      } else if (current.state === 'declined') {
+        await this.deliver(jobId, ref, 'pullrequest:rejected', { state: 'DECLINED' })
       } else {
-        await this.deliver(jobId, 'pullrequest:updated', { prId, state: current.state })
+        await this.deliver(jobId, ref, 'pullrequest:updated', { state: current.state })
       }
     }
 
     if (current.approvalCount > previous.approvalCount) {
-      await this.deliver(jobId, 'pullrequest:approved', {
-        prId,
+      await this.deliver(jobId, ref, 'pullrequest:approved', {
         approvalCount: current.approvalCount,
       })
     }
 
     if (current.commentCount > previous.commentCount) {
-      // Fetch the new comments to include in the event
-      const newComments = comments.slice(previous.commentCount)
+      // Slice the new comments off the snapshot. Plugins return the full
+      // comment list ordered by createdAt ASC so this slice is the
+      // delta between successive polls.
+      const newComments = snap.comments.slice(previous.commentCount)
       for (const comment of newComments) {
-        await this.deliver(jobId, 'pullrequest:comment_created', {
-          prId,
+        await this.deliver(jobId, ref, 'pullrequest:comment_created', {
           comment: {
             id: comment.id,
-            content: comment.content,
-            created_on: comment.created_on,
+            content: { raw: comment.body },
+            created_on: comment.createdAt,
           },
         })
       }
     }
   }
 
-  private async deliver(jobId: string, eventKey: string, payload: Record<string, unknown>): Promise<void> {
+  private async deliver(
+    jobId: string,
+    ref: ExternalRef,
+    eventKey: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
     if (!this.handler) return
 
-    this.logger.info({ jobId, eventKey }, 'Polling detected PR change — delivering event')
+    this.logger.info({ jobId, ref, eventKey }, 'Polling detected PR change — delivering event')
 
+    // Tag the event with `bitbucket` for back-compat with the existing
+    // dispatcher branch keyed off `InboundEventSource`. P4 will replace
+    // this enum with a generic plugin-driven path — until then, the
+    // BitBucket branch is the safe one because it does PR-id lookup
+    // and ignores the source string for routing.
     const event: InboundEvent = {
-      source: 'bitbucket',  // Works for both BB and GH — the dispatcher doesn't care
+      source: 'bitbucket',
       eventKey,
       payload: {
         ...payload,
+        prId: Number(ref.externalId),
         pullrequest: {
-          id: payload['prId'],
+          id: Number(ref.externalId),
           state: payload['state'],
         },
       },
@@ -228,14 +255,50 @@ export class PollingTransport implements EventTransport {
     await this.handler(event)
   }
 
-  private resolveRepoSlug(job: { params: Record<string, unknown>; prMappings: Array<{ repoSlug: string }> }): string {
-    // Try prMappings first (most reliable)
-    for (const pm of job.prMappings) {
-      if (pm.repoSlug) return pm.repoSlug
+  // ── Resolution helpers ─────────────────────────────────────────────────────
+
+  private resolveRef(job: Job, prId: number): ExternalRef | null {
+    const repoKey = pickRepoKey(job)
+    if (!repoKey) return null
+
+    // PR mappings will carry `pluginId` once P5 lands; for now, infer
+    // from the registry's default SCM plugin.
+    const defaultScm = this.plugins.default('scm')
+    const pluginId = defaultScm?.manifest.id ?? 'unknown'
+    return {
+      kind: 'pull_request',
+      pluginId,
+      repoKey,
+      externalId: String(prId),
     }
-    // Fall back to job params
-    if (job.params['repoSlug']) return job.params['repoSlug'] as string
-    if (job.params['repo']) return job.params['repo'] as string
-    return this.defaultRepoSlug
   }
+
+  private resolveScm(job: Job, ref: ExternalRef): ScmPluginRuntime | undefined {
+    // Prefer the plugin id baked into the ref. Falls back to the
+    // job's `params.scm`, then the registry default.
+    const byRefId = this.plugins.byId(ref.pluginId)
+    if (byRefId && byRefId.manifest.kind === 'scm') return byRefId as ScmPluginRuntime
+
+    const requested = typeof job.params['scm'] === 'string' ? (job.params['scm'] as string) : undefined
+    try {
+      return this.plugins.resolveScm(requested ? { scm: requested } : {})
+    } catch {
+      return undefined
+    }
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function snapshotKey(ref: ExternalRef): string {
+  return `${ref.pluginId}:${ref.repoKey ?? ''}:${ref.externalId}`
+}
+
+function pickRepoKey(job: { params: Record<string, unknown>; prMappings: PrMapping[] }): string {
+  for (const pm of job.prMappings) {
+    if (pm.repoSlug) return pm.repoSlug
+  }
+  if (typeof job.params['repoSlug'] === 'string') return job.params['repoSlug'] as string
+  if (typeof job.params['repo'] === 'string') return job.params['repo'] as string
+  return ''
 }

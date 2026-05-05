@@ -3,7 +3,13 @@ import * as cp from 'child_process'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
 import { STATUS_ESCALATED } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
-import { makeMockToolContext, makeMockJob } from './fixtures'
+import {
+  makeMockToolContext,
+  makeMockToolContextWithSpies,
+  makeMockJob,
+  type ScmStubSpies,
+  type TrackerStubSpies,
+} from './fixtures'
 
 vi.mock('fs/promises')
 
@@ -77,38 +83,47 @@ describe('createMcpToolHandlers — job control & signals', () => {
   })
 })
 
-describe('createMcpToolHandlers — BitBucket (coder)', () => {
-  let ctx: ReturnType<typeof makeMockToolContext>
+// ── Legacy bb_* shims ──────────────────────────────────────────────────────
+//
+// After the plugin refactor (P3) the `bb_*` MCP tools became thin
+// wrappers around the generic `scm_*` tools, which dispatch through
+// the plugin registry. So these tests assert that the call lands on
+// the registered `bitbucket` SCM plugin (and that a deprecation
+// warning gets logged), not that the bare BitBucket client got hit.
+
+describe('createMcpToolHandlers — BitBucket back-compat shims', () => {
+  let ctx: ToolContext
+  let scm: ScmStubSpies
 
   beforeEach(() => {
-    ctx = makeMockToolContext()
+    const built = makeMockToolContextWithSpies()
+    ctx = built.ctx
+    scm = built.scmSpies['bitbucket']
   })
 
-  it('bb_create_repo creates a private repo', async () => {
+  it('bb_create_repo dispatches to bitbucket SCM plugin and warns', async () => {
     const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.bb_create_repo({ repoSlug: 'my-svc', description: 'svc' })) as Record<
-      string,
-      unknown
-    >
-    expect(ctx.bbCoder.createRepo).toHaveBeenCalledWith({
+    const data = parseJson(await h.bb_create_repo({ repoSlug: 'my-svc', description: 'svc' })) as Record<string, unknown>
+    expect(scm.createRepo).toHaveBeenCalledWith({
       repoSlug: 'my-svc',
       description: 'svc',
       isPrivate: true,
     })
+    expect(data['pluginId']).toBe('bitbucket')
     expect(data['fullName']).toBe('ws/new-repo')
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: 'bb_create_repo', replacement: 'scm_create_repo' }),
+      expect.stringContaining('deprecated'),
+    )
   })
 
   it('bb_create_pr passes job reviewers when reviewers omitted', async () => {
     const h = createMcpToolHandlers(ctx, {})
-    await h.bb_create_pr({
-      repoSlug: 'r',
-      title: 'T',
-      sourceBranch: 'feat',
-    })
-    expect(ctx.bbCoder.createPr).toHaveBeenCalledWith(
+    await h.bb_create_pr({ repoSlug: 'r', title: 'T', sourceBranch: 'feat' })
+    expect(scm.createPr).toHaveBeenCalledWith(
       expect.objectContaining({
         repoSlug: 'r',
-        reviewerUsernames: ['reviewer-1'],
+        reviewers: ['reviewer-1'],
         targetBranch: 'main',
       }),
     )
@@ -122,55 +137,61 @@ describe('createMcpToolHandlers — BitBucket (coder)', () => {
       sourceBranch: 'feat',
       reviewerUsernames: ['alice'],
     })
-    expect(ctx.bbCoder.createPr).toHaveBeenCalledWith(
-      expect.objectContaining({ reviewerUsernames: ['alice'] }),
+    expect(scm.createPr).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewers: ['alice'] }),
     )
   })
 
-  it('bb_get_pr_status returns status payload', async () => {
+  it('bb_get_pr_status returns status payload from plugin', async () => {
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.bb_get_pr_status({ repoSlug: 'r', prId: 1 }))
-    expect(ctx.bbCoder.getPrStatus).toHaveBeenCalledWith('r', 1)
-    expect(data).toEqual({ state: 'OPEN', approvals: 1 })
+    expect(scm.getPrStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'pull_request',
+        pluginId: 'bitbucket',
+        repoKey: 'r',
+        externalId: '1',
+      }),
+    )
+    expect(data).toEqual({ state: 'open', approvalCount: 1 })
   })
-})
 
-describe('createMcpToolHandlers — BitBucket (reviewer)', () => {
-  let ctx: ReturnType<typeof makeMockToolContext>
-
-  beforeEach(() => {
-    ctx = makeMockToolContext()
-  })
-
-  it('bb_get_pr_comments maps comment shape', async () => {
+  it('bb_get_pr_comments returns comments via plugin', async () => {
     const h = createMcpToolHandlers(ctx, {})
     const data = parseJson(await h.bb_get_pr_comments({ repoSlug: 'r', prId: 1 })) as unknown[]
+    expect(scm.listPrComments).toHaveBeenCalled()
     expect(Array.isArray(data)).toBe(true)
-    expect(data[0]).toMatchObject({
-      id: 1,
-      content: 'hello',
-      parentId: null,
-    })
+    expect(data[0]).toMatchObject({ id: '1', body: 'hello' })
   })
 
-  it('bb_post_pr_comment, bb_reply_to_comment, bb_approve_pr, bb_merge_pr delegate to reviewer', async () => {
+  it('bb_post_pr_comment, bb_reply_to_comment, bb_approve_pr, bb_merge_pr delegate to plugin', async () => {
     const h = createMcpToolHandlers(ctx, {})
 
     await h.bb_post_pr_comment({ repoSlug: 'r', prId: 1, content: 'hi' })
-    expect(ctx.bbReviewer.postComment).toHaveBeenCalledWith('r', 1, 'hi')
+    expect(scm.postPrComment).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'pull_request', repoKey: 'r', externalId: '1' }),
+      'hi',
+    )
 
     await h.bb_reply_to_comment({ repoSlug: 'r', prId: 1, parentId: 9, content: 'reply' })
-    expect(ctx.bbReviewer.replyToComment).toHaveBeenCalledWith('r', 1, 9, 'reply')
+    expect(scm.replyToComment).toHaveBeenCalledWith(
+      expect.objectContaining({ repoKey: 'r', externalId: '1' }),
+      '9',
+      'reply',
+    )
 
     await h.bb_approve_pr({ repoSlug: 'r', prId: 2 })
-    expect(ctx.bbReviewer.approvePr).toHaveBeenCalledWith('r', 2)
+    expect(scm.approvePr).toHaveBeenCalled()
 
     await h.bb_merge_pr({ repoSlug: 'r', prId: 2, message: 'merge' })
-    expect(ctx.bbReviewer.mergePr).toHaveBeenCalledWith('r', 2, 'merge')
+    expect(scm.mergePr).toHaveBeenCalledWith(
+      expect.objectContaining({ repoKey: 'r', externalId: '2' }),
+      expect.objectContaining({ message: 'merge' }),
+    )
   })
 })
 
-describe('createMcpToolHandlers — observability & Jira', () => {
+describe('createMcpToolHandlers — observability', () => {
   let ctx: ReturnType<typeof makeMockToolContext>
 
   beforeEach(() => {
@@ -189,19 +210,39 @@ describe('createMcpToolHandlers — observability & Jira', () => {
     await h.tempo_search({ query: '{}', start: 's', end: 'e', limit: 5 })
     expect(ctx.tempoClient.search).toHaveBeenCalledWith('{}', 's', 'e', 5)
   })
+})
 
-  it('forwards Jira calls', async () => {
+describe('createMcpToolHandlers — Jira back-compat shims', () => {
+  let ctx: ToolContext
+  let tracker: TrackerStubSpies
+
+  beforeEach(() => {
+    const built = makeMockToolContextWithSpies()
+    ctx = built.ctx
+    tracker = built.trackerSpies['jira']
+  })
+
+  it('jira_get_issue dispatches to jira tracker plugin', async () => {
     const h = createMcpToolHandlers(ctx, {})
-
     await h.jira_get_issue({ ticketId: 'ABC-1' })
-    expect(ctx.jiraClient.getIssue).toHaveBeenCalledWith('ABC-1')
+    expect(tracker.getIssue).toHaveBeenCalledWith('ABC-1')
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: 'jira_get_issue', replacement: 'tracker_get_issue' }),
+      expect.stringContaining('deprecated'),
+    )
+  })
 
+  it('jira_post_comment dispatches to plugin', async () => {
+    const h = createMcpToolHandlers(ctx, {})
     await h.jira_post_comment({ ticketId: 'ABC-1', body: 'note' })
-    expect(ctx.jiraClient.postComment).toHaveBeenCalledWith('ABC-1', 'note')
+    expect(tracker.commentIssue).toHaveBeenCalledWith({ key: 'ABC-1', body: 'note' })
+  })
 
+  it('jira_transition_issue forwards transitionId as status', async () => {
+    const h = createMcpToolHandlers(ctx, {})
     const tr = parseJson(await h.jira_transition_issue({ ticketId: 'ABC-1', transitionId: '31' }))
-    expect(ctx.jiraClient.transitionIssue).toHaveBeenCalledWith('ABC-1', '31')
-    expect(tr).toEqual({ transitioned: true })
+    expect(tracker.transitionIssue).toHaveBeenCalledWith({ key: 'ABC-1', status: '31' })
+    expect(tr).toMatchObject({ transitioned: true, key: 'ABC-1' })
   })
 })
 

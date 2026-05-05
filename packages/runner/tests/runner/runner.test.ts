@@ -13,6 +13,7 @@ import {
 import type { Job } from '../../src/jobs/types'
 import type { WorkflowConfig } from '../../src/workflow-parser'
 import type { Settings } from '../../src/config/settings'
+import { PluginRegistry } from '../../src/plugins/registry'
 
 vi.mock('../../src/prompt/builder', () => ({
   buildSystemPrompt: vi.fn().mockResolvedValue('# Mock system prompt for runner tests'),
@@ -152,6 +153,7 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
       provider: 'jira',
       isAvailable: () => false,
     } as unknown as RunnerContext['trackerClient'],
+    plugins: new PluginRegistry(),
     logger: {
       debug: vi.fn(),
       info: vi.fn(),

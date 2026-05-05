@@ -766,6 +766,7 @@ export class Dispatcher {
       tempoClient: this.ctx.tempoClient,
       jiraClient: this.ctx.jiraClient,
       trackerClient: this.ctx.trackerClient,
+      plugins: this.ctx.plugins,
       logger: this.ctx.logger,
       runningServices: new Map(),
     }

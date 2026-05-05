@@ -9,6 +9,7 @@ import { TempoClient } from '../clients/tempo'
 import type { TrackerClient } from '../clients/tracker'
 import { Settings } from '../config/settings'
 import type { TenantContext } from '../intelligence/tenant-context'
+import type { PluginRegistry } from '../plugins/registry'
 import type { StateBackend } from '../state/backend'
 import { Job } from '../jobs/types'
 
@@ -50,6 +51,13 @@ export interface ToolContext {
    * from every method).
    */
   trackerClient: TrackerClient
+  /**
+   * Plugin registry shared with the runner. MCP tools dispatch
+   * `scm_*` / `tracker_*` calls through this; legacy `bb_*` /
+   * `gh_*` / `jira_*` wrappers also resolve through here so they
+   * behave identically.
+   */
+  plugins: PluginRegistry
   logger: Logger
   runningServices: Map<string, ChildProcess>
 }

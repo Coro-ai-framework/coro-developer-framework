@@ -9,6 +9,7 @@ import {
 import { JobType, emptyTokenUsage, type Job, type Proposal } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
 import * as writerMock from '../../src/intelligence/writer'
+import { PluginRegistry } from '../../src/plugins/registry'
 
 // ── Mock the writer module ───────────────────────────────────────────────────
 //
@@ -116,6 +117,7 @@ function makeCtx(opts: MakeCtxOpts = {}): ToolContext {
     tempoClient: {} as ToolContext['tempoClient'],
     jiraClient: {} as ToolContext['jiraClient'],
     trackerClient: {} as ToolContext['trackerClient'],
+    plugins: new PluginRegistry(),
     runningServices: new Map(),
   }
 }

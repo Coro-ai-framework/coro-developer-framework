@@ -10,6 +10,7 @@ import path from 'path'
 import os from 'os'
 import { z } from 'zod'
 import type { TenantOverlaySource } from '../intelligence/tenant-context'
+import { pluginsConfigSchema, type PluginsConfig } from './plugins-config'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -163,6 +164,13 @@ const localConfigSchema = z.object({
   tenant: tenantConfigSchema,
   proposals: proposalsConfigSchema,
   tracker: trackerConfigSchema,
+  /**
+   * Provider-plugin config — the new uniform shape replacing the
+   * per-provider blocks above. When `plugins` is absent the runner
+   * synthesises one via {@link legacyConfigToPlugins} so existing
+   * configs round-trip without manual edits.
+   */
+  plugins: pluginsConfigSchema.optional(),
 })
 
 export type LocalConfig = z.infer<typeof localConfigSchema>
@@ -319,9 +327,112 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
     tracker: patch.tracker !== undefined ? patch.tracker : existing.tracker,
+    plugins: patch.plugins !== undefined ? patch.plugins : existing.plugins,
   }
   saveLocalConfig(merged, configPath)
   return merged
+}
+
+// ── Legacy → PluginsConfig translator ────────────────────────────────────────
+//
+// v1 keeps the legacy `git`, `github`, `tracker.jira`, `tracker.linear`,
+// and `tracker.provider` blocks readable for one release. This translator
+// builds an equivalent PluginsConfig from those keys when `plugins` is
+// absent, so existing tenants don't have to migrate their config to
+// keep working.
+//
+// The translator is purely additive: it never overrides an explicit
+// `plugins` block. Set `installed[<id>].enabled = false` on the
+// generated config to opt out of a legacy provider while keeping its
+// credentials around for round-tripping.
+
+/**
+ * Convert legacy config blocks into a {@link PluginsConfig}. Leaves
+ * `defaults.scm` / `defaults.tracker` undefined when the choice is
+ * ambiguous so the registry surfaces a clear error rather than
+ * silently picking.
+ */
+export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig {
+  if (!config) return { installed: {} }
+
+  const installed: PluginsConfig['installed'] = {}
+
+  // ── SCM ──
+  if (config.git?.provider === 'bitbucket' && config.git?.workspace && config.git?.username && config.git?.token) {
+    installed['bitbucket'] = {
+      enabled: true,
+      config: {
+        workspace: config.git.workspace,
+        coderUsername: config.git.username,
+        coderToken: config.git.token,
+      },
+    }
+  }
+  if (config.git?.provider === 'github' && config.git?.workspace && config.git?.token) {
+    installed['github'] = {
+      enabled: true,
+      config: {
+        owner: config.git.workspace,
+        token: config.git.token,
+      },
+    }
+  }
+
+  // ── Tracker ──
+  if (config.tracker?.jira?.baseUrl && config.tracker.jira.username && config.tracker.jira.apiToken) {
+    installed['jira'] = {
+      enabled: true,
+      config: {
+        baseUrl: config.tracker.jira.baseUrl,
+        username: config.tracker.jira.username,
+        apiToken: config.tracker.jira.apiToken,
+      },
+    }
+  }
+  if (config.tracker?.linear?.apiKey) {
+    installed['linear'] = {
+      enabled: true,
+      config: {
+        apiKey: config.tracker.linear.apiKey,
+        ...(config.tracker.linear.teamKey ? { teamKey: config.tracker.linear.teamKey } : {}),
+      },
+    }
+  }
+  // Legacy `tracker.provider: 'github'` reuses the git creds for issues.
+  if (config.tracker?.provider === 'github' && config.git?.provider === 'github' && config.git?.token && config.git?.workspace) {
+    installed['github-issues'] = {
+      enabled: true,
+      config: {
+        token: config.git.token,
+        defaultOwner: config.git.workspace,
+      },
+    }
+  }
+
+  // ── Defaults ──
+  // Only set the default when the legacy config makes the choice
+  // unambiguous; otherwise leave it for the registry to fall back to
+  // "single installed plugin wins" or surface an error.
+  const defaults: PluginsConfig['defaults'] = {}
+  if (config.git?.provider === 'bitbucket' && installed['bitbucket']) defaults.scm = 'bitbucket'
+  else if (config.git?.provider === 'github' && installed['github']) defaults.scm = 'github'
+
+  if (config.tracker?.provider === 'jira' && installed['jira']) defaults.tracker = 'jira'
+  else if (config.tracker?.provider === 'linear' && installed['linear']) defaults.tracker = 'linear'
+  else if (config.tracker?.provider === 'github' && installed['github-issues']) defaults.tracker = 'github-issues'
+
+  const out: PluginsConfig = { installed }
+  if (defaults.scm || defaults.tracker) out.defaults = defaults
+  return out
+}
+
+/**
+ * Resolve the PluginsConfig for this runner: explicit `plugins` block
+ * wins, otherwise synthesised via {@link legacyConfigToPlugins}.
+ */
+export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
+  if (config?.plugins) return config.plugins
+  return legacyConfigToPlugins(config)
 }
 
 /**

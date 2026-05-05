@@ -65,10 +65,12 @@ import {
   detectMode,
   resolveIntelligenceDir,
   resolveProposalsConfig,
+  resolvePluginsConfig,
   resolveTenantOverlaySource,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
+import { buildBuiltinPluginRegistry } from '../plugins/builtin'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 import { Settings } from '../config/settings'
@@ -239,17 +241,20 @@ export async function startLocalRunner(
   const jiraClient = createJiraClient(settings)
   const trackerClient = createTrackerClient(settings)
 
-  // Determine which PR poller to use based on git provider
-  const gitProvider = effectiveConfig.git?.provider ?? 'github'
-  const prPoller = gitProvider === 'bitbucket'
-    ? bbCoder
-    : (ghClient ?? bbCoder)  // Fall back to bbCoder if GitHub not configured
+  // Build the plugin registry from the resolved PluginsConfig (legacy
+  // config blocks still supported via `legacyConfigToPlugins`). The
+  // registry is the new home for SCM/Tracker resolution; the legacy
+  // client fields above stay populated for back-compat MCP wrappers.
+  const pluginsConfig = resolvePluginsConfig(effectiveConfig)
+  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
 
-  // Create polling transport for PR event detection
+  // Create polling transport for PR event detection. Plugin-aware
+  // polling lives in the SCM plugins themselves (`pollPr`); the
+  // transport delegates to whichever SCM plugin owns each parked
+  // job's external_ref.
   const transport = new PollingTransport({
     stateBackend,
-    prPoller,
-    defaultRepoSlug: '',
+    plugins,
     intervalMs: 60_000,
     logger,
   })
@@ -287,6 +292,7 @@ export async function startLocalRunner(
     tempoClient,
     jiraClient,
     trackerClient,
+    plugins,
     logger,
   }
 
@@ -380,6 +386,10 @@ export async function startHybridRunner(
   const jiraClient = createJiraClient(settings)
   const trackerClient = createTrackerClient(settings)
 
+  // Build the plugin registry — same shape in hybrid mode.
+  const pluginsConfig = resolvePluginsConfig(config)
+  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
+
   // Build runner context
   const runnerCtx: RunnerContext = {
     stateBackend,
@@ -394,6 +404,7 @@ export async function startHybridRunner(
     tempoClient,
     jiraClient,
     trackerClient,
+    plugins,
     logger,
   }
 
