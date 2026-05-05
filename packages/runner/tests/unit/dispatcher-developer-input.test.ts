@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildDeveloperInputMessage } from '../../src/jobs/dispatcher'
+import { buildDeveloperInputMessage, buildEscalationResponseMessage } from '../../src/jobs/dispatcher'
 import type { Artifact } from '../../src/jobs/types'
 
 function art(partial: Partial<Artifact> = {}): Artifact {
@@ -74,5 +74,29 @@ describe('buildDeveloperInputMessage (developer-input resumes)', () => {
   it('instructs agent to record reusable guidance via add_insight', () => {
     const prompt = buildDeveloperInputMessage('x', 'planning', undefined, [])
     expect(prompt).toContain('add_insight')
+  })
+})
+
+describe('buildEscalationResponseMessage (escalation resumes)', () => {
+  it('includes the escalation reason and developer reply', () => {
+    const prompt = buildEscalationResponseMessage(
+      'Tell me how to update the settings, then wait for me.',
+      'coding',
+      'Need the developer to allowlist nuget.org in the sandbox.',
+      [],
+    )
+
+    expect(prompt).toContain('previously escalated during phase: coding')
+    expect(prompt).toContain('Your escalation reason was:')
+    expect(prompt).toContain('Need the developer to allowlist nuget.org in the sandbox.')
+    expect(prompt).toContain('Developer said:')
+    expect(prompt).toContain('Tell me how to update the settings, then wait for me.')
+  })
+
+  it('tells the agent to re-park with await_event when the developer still needs to act', () => {
+    const prompt = buildEscalationResponseMessage('give me the steps', 'coding', undefined, [])
+    expect(prompt).toContain('await_event({ eventName: "developer-input: <short reason>" })')
+    expect(prompt).toContain('job stays with you instead of auto-advancing')
+    expect(prompt).toContain('instructions, research, or any out-of-band action')
   })
 })

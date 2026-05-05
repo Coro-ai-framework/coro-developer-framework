@@ -1051,9 +1051,13 @@ export function buildEscalationResponseMessage(
     'Developer said:',
     `"${message}"`,
     '',
-    'Use the developer\'s reply to continue from the current phase. If the blocker is resolved, continue normally. ' +
-    'If you still cannot proceed, explain the remaining blocker and escalate again. If this reply contains a reusable ' +
-    'pattern or convention, record it via `add_insight` so the evaluator can review it.',
+    'Use the developer\'s reply to continue from the current phase. If the blocker is resolved, or the developer ' +
+    'explicitly chose a path that you can execute yourself, continue normally. If the developer is asking you for ' +
+    'instructions, research, or any out-of-band action they must perform themselves, answer clearly and then call ' +
+    '`await_event({ eventName: "developer-input: <short reason>" })` so the job stays with you instead of ' +
+    'auto-advancing to the next phase. If you still cannot proceed after that, explain the remaining blocker and ' +
+    'escalate again. If this reply contains a reusable pattern or convention, record it via `add_insight` so the ' +
+    'evaluator can review it.',
   )
 
   return lines.join('\n')
