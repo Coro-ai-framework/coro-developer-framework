@@ -9,6 +9,7 @@ import {
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_CANCELLED,
   STATUS_CODING,
+  STATUS_ESCALATED,
   STATUS_FAILED,
   cancelledJobPatch,
   isCancellableStatus,
@@ -463,10 +464,8 @@ export class Dispatcher {
    * Two paths:
    *   1. Job is actively running — inject via Query.streamInput() so the live
    *      agent sees the message mid-turn (zero session rebuild).
-  *   2. Job is parked waiting for developer input — build a framed prompt,
-  *      clear the awaiting* fields, and resume the job in the existing Claude
-  *      session. The runner re-registers the dynamic A5 MCP server before the
-  *      next turn so the agent keeps both transcript continuity and MCP tools.
+   *   2. Job is parked waiting for developer input or is escalated — build a
+   *      framed prompt, clear the parked/escalated fields, and resume the job.
    *
    * Any other status (complete, failed, queued without a live query) throws.
    */
@@ -506,11 +505,14 @@ export class Dispatcher {
       return
     }
 
-    // No live query — check if the job is parked waiting for developer input.
-    if (job.status !== STATUS_AWAITING_DEVELOPER_INPUT) {
+    // No live query — check if the job is parked waiting for human follow-up.
+    const awaitingDeveloperInput = job.status === STATUS_AWAITING_DEVELOPER_INPUT
+    const escalated = job.status === STATUS_ESCALATED
+
+    if (!awaitingDeveloperInput && !escalated) {
       throw new Error(
         `Cannot send message to job with status "${job.status}" — ` +
-        `only running jobs and jobs awaiting developer input accept messages.`,
+        `only running jobs, escalated jobs, and jobs awaiting developer input accept messages.`,
       )
     }
 
@@ -518,24 +520,26 @@ export class Dispatcher {
       throw new Error('Job is transitioning — try again in a moment')
     }
 
-    const pendingPrompt = buildDeveloperInputMessage(
-      message,
-      job.phase,
-      job.awaitingEvent,
-      (job.artifacts ?? []).filter(a => a.phase === job.phase),
-    )
+    const currentPhaseArtifacts = (job.artifacts ?? []).filter(a => a.phase === job.phase)
+    const pendingPrompt = escalated
+      ? buildEscalationResponseMessage(message, job.phase, job.escalationMessage, currentPhaseArtifacts)
+      : buildDeveloperInputMessage(message, job.phase, job.awaitingEvent, currentPhaseArtifacts)
 
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
+      escalationMessage: undefined,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
-      approvedAdvanceFromPhase: job.awaitingNextPhase ? job.phase : undefined,
+      approvedAdvanceFromPhase: awaitingDeveloperInput && job.awaitingNextPhase ? job.phase : undefined,
       pendingPrompt,
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
-    this.ctx.logger.info({ jobId, phase: job.phase }, 'Resuming parked job with developer message')
+    this.ctx.logger.info(
+      { jobId, phase: job.phase, escalated },
+      escalated ? 'Resuming escalated job with developer message' : 'Resuming parked job with developer message',
+    )
 
     this.fireAndForget(jobId)
   }
@@ -1014,6 +1018,42 @@ export function buildDeveloperInputMessage(
     'runner will auto-advance. If you need to revisit an earlier phase (e.g. rework after ' +
     'a review comment), call `goto_phase`. If this reply contains a reusable pattern or ' +
     'convention, record it via `add_insight` so the evaluator can review it.',
+  )
+
+  return lines.join('\n')
+}
+
+export function buildEscalationResponseMessage(
+  message: string,
+  phase: string,
+  escalationMessage: string | undefined,
+  currentPhaseArtifacts: Artifact[],
+): string {
+  const lines = [
+    '[DEVELOPER RESPONSE]',
+    '',
+    `You previously escalated during phase: ${phase}.`,
+  ]
+
+  if (escalationMessage) {
+    lines.push('', 'Your escalation reason was:', `"${escalationMessage}"`)
+  }
+
+  if (currentPhaseArtifacts.length > 0) {
+    lines.push('', 'Artefacts you posted this phase:')
+    for (const a of currentPhaseArtifacts.slice(-10)) {
+      lines.push(`  - ${a.kind}: ${a.title}`)
+    }
+  }
+
+  lines.push(
+    '',
+    'Developer said:',
+    `"${message}"`,
+    '',
+    'Use the developer\'s reply to continue from the current phase. If the blocker is resolved, continue normally. ' +
+    'If you still cannot proceed, explain the remaining blocker and escalate again. If this reply contains a reusable ' +
+    'pattern or convention, record it via `add_insight` so the evaluator can review it.',
   )
 
   return lines.join('\n')

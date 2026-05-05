@@ -33,6 +33,7 @@ import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
 import { isStoppedStatus, type Job, type CampaignChild } from '../jobs/types'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { ClaudeLoginManager } from './claude-login'
+import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata } from '../plugins/builtin'
 
 export interface RunnerServerOptions {
@@ -768,7 +769,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     // Send existing logs first
     const existingLogs = await stateBackend.getLog(jobId)
     for (const line of existingLogs) {
-      res.write(`data: ${line}\n\n`)
+      res.write(formatSseFrame(line))
     }
 
     // Poll for new logs (simple polling — could be improved with pub/sub)
@@ -779,7 +780,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         if (currentLen > lastLen) {
           const newLines = await stateBackend.getLog(jobId, lastLen)
           for (const line of newLines) {
-            res.write(`data: ${line}\n\n`)
+            res.write(formatSseFrame(line))
           }
           lastLen = currentLen
         }
@@ -787,7 +788,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         // Check if job is done
         const currentJob = await stateBackend.getJob(jobId)
         if (currentJob && isStoppedStatus(currentJob.status)) {
-          res.write(`event: done\ndata: ${currentJob.status}\n\n`)
+          res.write(formatSseFrame(currentJob.status, 'done'))
           clearInterval(interval)
           res.end()
         }

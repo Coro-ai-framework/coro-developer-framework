@@ -14,6 +14,7 @@ export type LogLineType =
   | 'thinking'
   | 'tool_progress'
   | 'error'
+  | 'warning'
   | 'result'
   | 'phase'
   | 'insight'
@@ -26,23 +27,40 @@ const TIMESTAMP_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+/
 
 export function classifyLine(raw: string): { content: string; lineType: LogLineType } {
   const content = raw.replace(TIMESTAMP_RE, '')
+  const normalized = content.toLowerCase()
 
   if (content.startsWith('→ '))            return { content, lineType: 'tool_use' }
   if (content.startsWith('[thinking]'))     return { content, lineType: 'thinking' }
   if (content.startsWith('[tool_summary]')) return { content, lineType: 'tool_summary' }
   if (content.startsWith('⏳'))             return { content, lineType: 'tool_progress' }
   if (content.startsWith('[error]'))        return { content, lineType: 'error' }
+  if (content.startsWith('[warning]'))      return { content, lineType: 'warning' }
   if (content.startsWith('[result]'))       return { content, lineType: 'result' }
   if (content.startsWith('[insight]'))      return { content, lineType: 'insight' }
   if (content.startsWith('[session-reset]'))return { content, lineType: 'session_reset' }
   if (content.startsWith('[webhook]'))      return { content, lineType: 'webhook' }
   if (content.startsWith('[human]'))        return { content, lineType: 'human' }
+  if (content.startsWith('[init]'))         return { content, lineType: 'system' }
+  if (content.startsWith('[usage]'))        return { content, lineType: 'system' }
+  if (content.startsWith('[phase-end]'))    return { content, lineType: 'system' }
+  if (content.startsWith('[artifact]'))     return { content, lineType: 'system' }
+  if (content.startsWith('[repo-cloned]'))  return { content, lineType: 'system' }
+  if (content.startsWith('[campaign]'))     return { content, lineType: 'system' }
+  if (content.startsWith('[control]'))      return { content, lineType: 'system' }
+  if (content.startsWith('[sdk-stderr]'))   return { content, lineType: 'system' }
   if (content.startsWith('[event:'))        return { content, lineType: 'system' }
+  if (content.startsWith('System prompt:')) return { content, lineType: 'system' }
   if (content.startsWith('Phase advanced')) return { content, lineType: 'phase' }
   if (content.startsWith('Runner started')) return { content, lineType: 'phase' }
   if (content.startsWith('Job parked'))     return { content, lineType: 'phase' }
   if (content.startsWith('All phases complete')) return { content, lineType: 'phase' }
   if (content.startsWith('Runner crashed')) return { content, lineType: 'error' }
+  if (normalized.includes("here's what was accomplished") || /\bphase (is )?complete\b/.test(normalized)) {
+    return { content, lineType: 'result' }
+  }
+  if (/\bphase started\b/.test(normalized)) {
+    return { content, lineType: 'phase' }
+  }
 
   return { content, lineType: 'text' }
 }

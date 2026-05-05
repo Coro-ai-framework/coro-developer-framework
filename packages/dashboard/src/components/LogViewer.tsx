@@ -1,5 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine } from 'lucide-react'
+import {
+  ArrowDownToLine,
+  ArrowRight,
+  Bot,
+  CheckCircle2,
+  GitBranch,
+  Layers3,
+  Loader2,
+  MessageSquareReply,
+  RefreshCcw,
+  Search,
+  Settings2,
+  TriangleAlert,
+  Waypoints,
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import type { LogLine, LogLineType } from '../hooks/useJobStream'
 import SegmentedControl from './ui/segmented-control'
 import { Button } from './ui/button'
@@ -15,20 +30,63 @@ interface LogViewerProps {
  * stay neutral; only signal lines (error/result/human/phase) carry color so
  * they stand out from the wash of regular output.
  */
-const LINE_STYLES: Record<LogLineType, { textClass: string; accentClass: string; label?: string; dimmed?: boolean }> = {
-  text:           { textClass: 'text-fg', accentClass: 'bg-fg-subtle' },
-  tool_use:       { textClass: 'text-fg', accentClass: 'bg-accent-400', label: 'Tool' },
-  tool_summary:   { textClass: 'text-fg-muted', accentClass: 'bg-fg-subtle', label: 'Summary', dimmed: true },
-  thinking:       { textClass: 'text-fg-muted', accentClass: 'bg-fg-subtle', label: 'Thinking', dimmed: true },
-  tool_progress:  { textClass: 'text-fg-muted', accentClass: 'bg-fg-subtle', label: 'Progress', dimmed: true },
-  error:          { textClass: 'text-danger-400', accentClass: 'bg-danger-400', label: 'Error' },
-  result:         { textClass: 'text-success-400', accentClass: 'bg-success-400', label: 'Result' },
-  phase:          { textClass: 'text-accent-300', accentClass: 'bg-accent-400', label: 'Phase' },
-  insight:        { textClass: 'text-accent-300', accentClass: 'bg-accent-400', label: 'Insight' },
-  session_reset:  { textClass: 'text-warning-400', accentClass: 'bg-warning-400', label: 'Reset' },
-  webhook:        { textClass: 'text-warning-400', accentClass: 'bg-warning-400', label: 'Webhook' },
-  human:          { textClass: 'text-fg', accentClass: 'bg-accent-400', label: 'Developer' },
-  system:         { textClass: 'text-fg-subtle', accentClass: 'bg-fg-subtle', label: 'System', dimmed: true },
+const LINE_STYLES: Record<LogLineType, {
+  textClass: string
+  iconClass: string
+  icon: LucideIcon
+  label?: string
+  dimmed?: boolean
+}> = {
+  text:           { textClass: 'text-fg', iconClass: 'text-fg-subtle', icon: Bot },
+  tool_use:       { textClass: 'text-fg', iconClass: 'text-accent-300', icon: ArrowRight, label: 'Tool' },
+  tool_summary:   { textClass: 'text-fg-muted', iconClass: 'text-fg-subtle', icon: Layers3, label: 'Summary', dimmed: true },
+  thinking:       { textClass: 'text-fg-muted', iconClass: 'text-fg-subtle', icon: Search, label: 'Thinking', dimmed: true },
+  tool_progress:  { textClass: 'text-fg-muted', iconClass: 'text-warning-400', icon: Loader2, label: 'Progress', dimmed: true },
+  error:          { textClass: 'text-danger-400', iconClass: 'text-danger-400', icon: TriangleAlert, label: 'Error' },
+  warning:        { textClass: 'text-warning-400', iconClass: 'text-warning-400', icon: TriangleAlert, label: 'Warning' },
+  result:         { textClass: 'text-success-400', iconClass: 'text-success-400', icon: CheckCircle2, label: 'Result' },
+  phase:          { textClass: 'text-accent-300', iconClass: 'text-accent-300', icon: GitBranch, label: 'Phase' },
+  insight:        { textClass: 'text-accent-300', iconClass: 'text-accent-300', icon: Bot, label: 'Insight' },
+  session_reset:  { textClass: 'text-warning-400', iconClass: 'text-warning-400', icon: RefreshCcw, label: 'Reset' },
+  webhook:        { textClass: 'text-warning-400', iconClass: 'text-warning-400', icon: Waypoints, label: 'Webhook' },
+  human:          { textClass: 'text-fg', iconClass: 'text-accent-300', icon: MessageSquareReply, label: 'Developer' },
+  system:         { textClass: 'text-fg-subtle', iconClass: 'text-fg-subtle', icon: Settings2, label: 'System', dimmed: true },
+}
+
+function displayContent(line: LogLine): string {
+  const content = line.content
+
+  if (line.lineType === 'tool_progress') {
+    return content.replace(/^⏳\s*/, '')
+  }
+
+  if (line.lineType === 'system' && content.startsWith('[event:')) {
+    return content.replace(/^\[event:([^\]]+)\]\s*/, '$1: ')
+  }
+
+  if (line.lineType === 'tool_use' || line.lineType === 'text' || line.lineType === 'phase') {
+    return content
+  }
+
+  return content.replace(/^\[[^\]]+\]\s*/, '')
+}
+
+function LineIcon({ lineType, className = '' }: { lineType: LogLineType; className?: string }) {
+  const style = LINE_STYLES[lineType]
+  const Icon = style.icon
+
+  return (
+    <Icon
+      className={cn(
+        'mt-0.5 size-3.5 shrink-0',
+        style.iconClass,
+        style.dimmed && 'opacity-60',
+        lineType === 'tool_progress' && 'animate-spin',
+        className,
+      )}
+      aria-hidden="true"
+    />
+  )
 }
 
 function formatTimestamp(ts: string): string {
@@ -43,13 +101,14 @@ function formatTimestamp(ts: string): string {
 
 function LineContent({ line }: { line: LogLine }) {
   const style = LINE_STYLES[line.lineType]
-  const content = line.content
+  const content = displayContent(line)
 
   if (line.lineType === 'phase') {
     return (
       <div className="my-2 flex items-center gap-3 py-1.5">
         <div className="h-px flex-1 bg-accent-500/20" />
-        <span className="rounded-full border border-accent-500/25 bg-accent-500/10 px-3 py-0.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent-300">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-accent-500/25 bg-accent-500/10 px-3 py-0.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent-300">
+          <LineIcon lineType={line.lineType} className="mt-0 size-3" />
           {content}
         </span>
         <div className="h-px flex-1 bg-accent-500/20" />
@@ -57,9 +116,15 @@ function LineContent({ line }: { line: LogLine }) {
     )
   }
 
-  if (line.lineType === 'error') {
+  if (line.lineType === 'error' || line.lineType === 'warning') {
     return (
-      <div className="my-1 rounded-xl border border-danger-500/25 bg-danger-500/8 px-4 py-2.5">
+      <div className={cn(
+        'my-1 flex items-start gap-3 rounded-xl px-4 py-2.5',
+        line.lineType === 'error'
+          ? 'border border-danger-500/25 bg-danger-500/8'
+          : 'border border-warning-500/25 bg-warning-500/8',
+      )}>
+        <LineIcon lineType={line.lineType} />
         <span className={style.textClass}>{content}</span>
       </div>
     )
@@ -67,18 +132,21 @@ function LineContent({ line }: { line: LogLine }) {
 
   if (line.lineType === 'result') {
     return (
-      <div className="my-1 rounded-xl border border-success-500/25 bg-success-500/8 px-4 py-2.5">
+      <div className="my-1 flex items-start gap-3 rounded-xl border border-success-500/25 bg-success-500/8 px-4 py-2.5">
+        <LineIcon lineType={line.lineType} />
         <span className={style.textClass}>{content}</span>
       </div>
     )
   }
 
   if (line.lineType === 'human') {
-    const msg = content.replace(/^\[human\]\s*/, '')
     return (
-      <div className="my-1 rounded-xl border border-accent-500/25 bg-accent-500/8 px-4 py-2.5">
-        <span className="mr-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-accent-300">Developer</span>
-        <span className="text-fg">{msg}</span>
+      <div className="my-1 flex items-start gap-3 rounded-xl border border-accent-500/25 bg-accent-500/8 px-4 py-2.5">
+        <LineIcon lineType={line.lineType} />
+        <div>
+          <span className="mr-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-accent-300">Developer</span>
+          <span className="text-fg">{content}</span>
+        </div>
       </div>
     )
   }
@@ -98,7 +166,7 @@ function LineContent({ line }: { line: LogLine }) {
 
   return (
     <div className="flex items-start gap-3">
-      <span className={cn('mt-1.5 size-1.5 rounded-full shrink-0', style.accentClass, style.dimmed ? 'opacity-50' : '')} />
+      <LineIcon lineType={line.lineType} />
       <span className={cn(style.textClass, style.dimmed && 'opacity-70')}>
         {style.label ? (
           <span className="mr-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-subtle">

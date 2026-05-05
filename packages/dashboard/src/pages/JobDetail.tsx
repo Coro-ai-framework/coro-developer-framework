@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Activity,
   ArrowLeft,
+  Briefcase,
+  Bug,
   ChevronDown,
   GitPullRequest,
   Send,
@@ -369,6 +372,46 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
   )
 }
 
+function JobAlerts({ job }: { job: Job }) {
+  const parentRunId = getParentRunId(job)
+
+  if (!parentRunId && !job.awaitingEvent && !job.escalationMessage) {
+    return null
+  }
+
+  return (
+    <div className="space-y-3">
+      {parentRunId ? (
+        <AlertCard title={`Dispatched as a ${SUB_RUN_NOUN.singularLower}`} tone="accent">
+          {`This ${RUN_NOUN.singularLower} runs as a ${SUB_RUN_NOUN.singularLower} of `}
+          <Link
+            to={getRunDetailPath({ id: parentRunId })}
+            className="font-mono text-accent-300 underline underline-offset-2"
+          >
+            {parentRunId}
+          </Link>
+          {typeof job.params['campaignChildName'] === 'string'
+            ? ` (named ${job.params['campaignChildName'] as string}).`
+            : '.'}
+        </AlertCard>
+      ) : null}
+
+      {job.awaitingEvent && job.status !== 'awaiting-developer-input' ? (
+        <AlertCard title="Awaiting external event" tone="warning">
+          {job.awaitingEvent}
+          {job.awaitingPrId ? ` (PR #${job.awaitingPrId})` : ''}
+        </AlertCard>
+      ) : null}
+
+      {job.escalationMessage ? (
+        <AlertCard title="Escalation message" tone="danger">
+          {job.escalationMessage}
+        </AlertCard>
+      ) : null}
+    </div>
+  )
+}
+
 function WorkflowSnapshotCard({
   job,
   selectedPhase,
@@ -449,12 +492,18 @@ function WorkflowSnapshotCard({
 }
 
 function MessageComposer({
+  title = 'Send message',
+  description = 'Send additional guidance into the live run. Multiple messages are allowed.',
+  submitLabel = 'Send message',
   value,
   onChange,
   onSend,
   sending,
   error,
 }: {
+  title?: string
+  description?: string
+  submitLabel?: string
   value: string
   onChange: (value: string) => void
   onSend: () => Promise<void>
@@ -463,24 +512,23 @@ function MessageComposer({
 }) {
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Send message</CardTitle>
-        <CardDescription>
-          Send additional guidance into the live run. Multiple messages are allowed.
-        </CardDescription>
+      <CardHeader className="gap-1.5 pb-4">
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2.5 pt-0">
         {error ? <ErrorState message={error} /> : null}
         <Textarea
-          rows={4}
+          rows={3}
           value={value}
           onChange={event => onChange(event.target.value)}
           placeholder="Tell the agent what changed, what to prioritize, or where to look next…"
+          className="min-h-24"
         />
         <div className="flex justify-end">
           <Button onClick={() => void onSend()} disabled={sending || !value.trim()} size="sm">
             <Send />
-            {sending ? 'Sending…' : 'Send message'}
+            {sending ? 'Sending…' : submitLabel}
           </Button>
         </div>
       </CardContent>
@@ -821,11 +869,13 @@ export default function JobDetail() {
   }
 
   const canSendLiveMessage = isRunningStatus(job.status) && connectionStatus !== 'disconnected'
-  const canSendMessage = canSendLiveMessage || job.status === 'awaiting-developer-input'
+  const canReplyToEscalation = job.status === 'escalated'
 
   return (
     <div className="space-y-6">
       <HeaderSummary job={job} />
+
+      <JobAlerts job={job} />
 
       <JobControlBar
         job={job}
@@ -857,9 +907,18 @@ export default function JobDetail() {
 
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>
         <TabsList>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
-          <TabsTrigger value="work">Work</TabsTrigger>
-          <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
+          <TabsTrigger value="activity" className="gap-1.5">
+            <Activity className="size-3.5 shrink-0" aria-hidden="true" />
+            Activity
+          </TabsTrigger>
+          <TabsTrigger value="work" className="gap-1.5">
+            <Briefcase className="size-3.5 shrink-0" aria-hidden="true" />
+            Work
+          </TabsTrigger>
+          <TabsTrigger value="diagnostics" className="gap-1.5">
+            <Bug className="size-3.5 shrink-0" aria-hidden="true" />
+            Diagnostics
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="activity" className="space-y-5">
@@ -867,6 +926,19 @@ export default function JobDetail() {
             <div className="space-y-5">
               {job.status === 'awaiting-developer-input' ? (
                 <ApprovalBox job={job} onSend={postMessage} />
+              ) : null}
+
+              {canReplyToEscalation ? (
+                <MessageComposer
+                  title="Reply to escalation"
+                  description="Send guidance back into the parked run. Your reply will resume the current phase in the existing job."
+                  submitLabel="Send reply"
+                  value={messageText}
+                  onChange={setMessageText}
+                  onSend={handleSendMessage}
+                  sending={sendingMessage}
+                  error={messageError}
+                />
               ) : null}
 
               <Card>
@@ -884,7 +956,7 @@ export default function JobDetail() {
                 </CardContent>
               </Card>
 
-              {canSendMessage ? (
+              {canSendLiveMessage ? (
                 <MessageComposer
                   value={messageText}
                   onChange={setMessageText}
@@ -896,34 +968,6 @@ export default function JobDetail() {
             </div>
 
             <div className="space-y-4">
-              {getParentRunId(job) ? (
-                <AlertCard title={`Dispatched as a ${SUB_RUN_NOUN.singularLower}`} tone="accent">
-                  {`This ${RUN_NOUN.singularLower} runs as a ${SUB_RUN_NOUN.singularLower} of `}
-                  <Link
-                    to={getRunDetailPath({ id: getParentRunId(job) ?? '' })}
-                    className="font-mono text-accent-300 underline underline-offset-2"
-                  >
-                    {getParentRunId(job)}
-                  </Link>
-                  {typeof job.params['campaignChildName'] === 'string'
-                    ? ` (named ${job.params['campaignChildName'] as string}).`
-                    : '.'}
-                </AlertCard>
-              ) : null}
-
-              {job.awaitingEvent && job.status !== 'awaiting-developer-input' ? (
-                <AlertCard title="Awaiting external event" tone="warning">
-                  {job.awaitingEvent}
-                  {job.awaitingPrId ? ` (PR #${job.awaitingPrId})` : ''}
-                </AlertCard>
-              ) : null}
-
-              {job.escalationMessage ? (
-                <AlertCard title="Escalation message" tone="danger">
-                  {job.escalationMessage}
-                </AlertCard>
-              ) : null}
-
               <ContextPanel job={job} />
             </div>
           </div>
