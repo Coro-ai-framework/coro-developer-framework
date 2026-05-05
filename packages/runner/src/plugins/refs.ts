@@ -91,3 +91,50 @@ export function externalIdString(value: unknown): string {
   }
   return String(value)
 }
+
+// ── Legacy adapter ───────────────────────────────────────────────────────────
+//
+// P5 introduces an `external_ref_mappings` table that owns lookups by
+// {@link ExternalRef}. Until then, callers (the dispatcher, the cloud
+// webhook router) need a single entry point that goes through the
+// existing per-shape methods on the StateBackend. Keeping the
+// adapter here means the migration in P5 only has to swap the body —
+// every caller already speaks {@link ExternalRef}.
+
+import type { Job } from '../jobs/types'
+import type { StateBackend } from '../state/backend'
+
+/**
+ * Resolve the job that owns a given {@link ExternalRef} using whichever
+ * lookup the underlying backend provides:
+ *
+ *   1. If the backend implements {@link StateBackend.getJobByExternalRef}
+ *      directly (P5+), call it.
+ *   2. Otherwise, dispatch on `ref.kind`:
+ *        - `pull_request` → {@link StateBackend.getJobByPr}
+ *        - `ticket`       → {@link StateBackend.getJobByJiraTicket}
+ *        - other kinds    → return `null`
+ *
+ * This adapter is the only place the dispatcher / cloud router cares
+ * about the per-kind storage shape, so P5 can replace its body
+ * without ripple.
+ */
+export async function resolveJobByExternalRef(
+  backend: StateBackend,
+  ref: ExternalRef,
+): Promise<Job | null> {
+  if (backend.getJobByExternalRef) {
+    return backend.getJobByExternalRef(ref)
+  }
+  switch (ref.kind) {
+    case 'pull_request': {
+      const id = Number(ref.externalId)
+      if (!Number.isFinite(id)) return null
+      return backend.getJobByPr(id)
+    }
+    case 'ticket':
+      return backend.getJobByJiraTicket(ref.externalId)
+    default:
+      return null
+  }
+}

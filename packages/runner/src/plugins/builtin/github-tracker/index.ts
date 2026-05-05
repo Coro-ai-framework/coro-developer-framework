@@ -4,6 +4,7 @@
 // so a tenant can run BB-as-SCM + GH-as-Tracker without conflict.
 
 import { z } from 'zod'
+import path from 'node:path'
 import type { Logger } from 'pino'
 import { GitHubTrackerClient } from '../../../clients/tracker/github'
 import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
@@ -58,6 +59,11 @@ const MANIFEST: PluginManifest = {
     header: 'X-Hub-Signature-256',
     format: 'sha256=<hex>',
   },
+  intelligence: {
+    snippets: [
+      { id: 'github-issues-keys', relativePath: 'snippets/github-issues-keys.md' },
+    ],
+  },
 }
 
 class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginConfig> {
@@ -81,6 +87,10 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
   }
 
   async dispose(): Promise<void> {}
+
+  intelligenceRoot(): string | undefined {
+    return path.join(__dirname, 'intelligence')
+  }
 
   async getIssue(key: string): Promise<TrackerIssue> {
     return unwrap(await this.client.getIssue(key))

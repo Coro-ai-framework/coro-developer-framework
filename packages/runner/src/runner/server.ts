@@ -14,6 +14,7 @@ import { spawn, spawnSync } from 'child_process'
 import { Logger } from 'pino'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { StateBackend } from '../state/backend'
+import type { PluginRegistry } from '../plugins/registry'
 import {
   loadLocalConfig,
   loadLocalConfigRaw,
@@ -25,6 +26,7 @@ import {
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
+import { z } from 'zod'
 import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import type { Job, CampaignChild } from '../jobs/types'
@@ -43,6 +45,13 @@ export interface RunnerServerOptions {
    * to know the synthesised solo-tenant id.
    */
   tenantId?: string
+  /**
+   * Active plugin registry — populated at bootstrap. The server's
+   * `/plugins` endpoint introspects it so the dashboard can render
+   * plugin lists, manifests, and config schemas without hardcoding
+   * provider names.
+   */
+  plugins?: PluginRegistry
 }
 
 /** Mask a secret for display: show enough prefix/suffix to recognise it, hide the middle. */
@@ -365,7 +374,7 @@ function mimeForPath(filePath: string): string {
  * CLI commands (`coro job`, `coro status`, etc.) talk to this.
  */
 export function createRunnerServer(opts: RunnerServerOptions): http.Server {
-  const { port, dispatcher, stateBackend, logger, mode = 'hybrid', tenantId } = opts
+  const { port, dispatcher, stateBackend, logger, mode = 'hybrid', tenantId, plugins } = opts
   const app = express()
   app.use(express.json())
   const claudeLoginManager = new ClaudeLoginManager({ logger })
@@ -392,6 +401,78 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', mode, version: '0.1.0' })
+  })
+
+  // ── Plugins ─────────────────────────────────────────────────────────────
+  //
+  // Provider-neutral introspection endpoint the dashboard uses to render
+  // plugin lists, defaults, and config forms. Returns a JSON-friendly
+  // view of every installed plugin's manifest + its current install
+  // entry from `PluginsConfig`. Secrets in `installed[id].config` are
+  // not redacted here because the runner never persists raw plugin
+  // config back through this endpoint — `PUT /config` (legacy) is the
+  // write path for v1; the plugin-aware writer arrives in P9.
+  app.get('/plugins', async (_req: Request, res: Response) => {
+    try {
+      const config = loadLocalConfig()
+      const { resolvePluginsConfig } = await import('../config/local-config')
+      const resolved = resolvePluginsConfig(config)
+
+      const runtimes = plugins?.all() ?? []
+      const manifests = runtimes.map(runtime => {
+        const m = runtime.manifest
+        // zod 4 exposes .toJSONSchema() / z.toJSONSchema(); older zod
+        // versions don't. We swallow the throw so the dashboard at
+        // least gets the manifest header even when JSON-schema
+        // serialisation is unavailable.
+        let configSchemaJson: unknown = null
+        try {
+          // Available in zod 4. Older zod versions don't ship this helper —
+          // swallow so the dashboard still gets the manifest header.
+          const toJSONSchema = (z as unknown as { toJSONSchema?: (s: unknown) => unknown }).toJSONSchema
+          if (typeof toJSONSchema === 'function') {
+            configSchemaJson = toJSONSchema(m.configSchema)
+          }
+        } catch {
+          configSchemaJson = null
+        }
+        return {
+          manifest: {
+            id: m.id,
+            kind: m.kind,
+            version: m.version,
+            displayName: m.displayName,
+            hostCompatibility: m.hostCompatibility,
+            capabilities: m.capabilities ?? {},
+            ...(m.webhook ? {
+              webhook: {
+                pathSuffix: m.webhook.pathSuffix,
+                algorithm: m.webhook.algorithm,
+                header: m.webhook.header,
+                format: m.webhook.format,
+              },
+            } : {}),
+            configSchema: configSchemaJson,
+          },
+          installed: resolved.installed[m.id]?.enabled ?? false,
+        }
+      })
+
+      res.json({
+        plugins: manifests,
+        defaults: resolved.defaults ?? {},
+        // Cloud webhook registration URL helper for the dashboard's
+        // "copy this URL into <provider>" action. Empty when running
+        // in pure local mode.
+        webhookBaseUrl:
+          mode === 'hybrid' && config?.cloud?.url
+            ? `${config.cloud.url.replace(/\/$/, '')}/webhook`
+            : null,
+      })
+    } catch (err) {
+      logger.error({ err }, 'GET /plugins failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
   })
 
   // ── Job dispatch ────────────────────────────────────────────────────────

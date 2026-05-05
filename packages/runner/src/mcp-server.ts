@@ -3,6 +3,14 @@ import { z } from 'zod'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { createMcpToolHandlers, mcpError, mcpText } from './mcp-handlers'
 
+// Legacy `bb_*` / `gh_*` / `jira_*` tools stay registered at every
+// deprecation stage; the *handler* surface (`mcp-handlers.ts`)
+// decides whether to log a warning (N), throw a structured error
+// (N+1), or refuse with the same error after registration is
+// hypothetically left over (N+2). Keeping registration unconditional
+// avoids fighting the SDK's tool-list shape and lets a single
+// `logDeprecation` site own all stage transitions.
+
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 /**

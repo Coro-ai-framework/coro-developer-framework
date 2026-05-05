@@ -1,4 +1,5 @@
 import { Job, JobInput, JobType, PrMapping, Proposal, ProposalStatus } from '../jobs/types'
+import type { ExternalRef } from '../plugins/refs'
 
 // ── State backend interface ───────────────────────────────────────────────────
 //
@@ -45,14 +46,38 @@ export interface StateBackend {
   getLog(jobId: string, start?: number, end?: number): Promise<string[]>
   logLength(jobId: string): Promise<number>
 
-  // ── PR mappings ────────────────────────────────────────────────────────────
+  // ── External-ref mapping (provider-neutral, P5+) ──────────────────────────
+  //
+  // Plugin-aware mappings are the canonical lookup primitive after
+  // P5. Every PR/ticket the runner cares about is recorded as an
+  // {@link ExternalRef} so the dispatcher and webhook router don't
+  // need to know which provider they're talking to.
+  //
+  // The legacy `mapPrToJob` / `getJobByPr` / `mapJiraTicketToJob` /
+  // `getJobByJiraTicket` methods below now delegate to these, but
+  // remain on the interface for one release while old callers
+  // migrate.
+
+  /**
+   * Persist a mapping from `ref` to `jobId`. Replaces any prior
+   * mapping for the same ref (insert-or-replace semantics).
+   */
+  mapExternalRef(ref: ExternalRef, jobId: string): Promise<void>
+
+  /**
+   * Look up the job that owns the given external reference. Returns
+   * `null` when no mapping exists.
+   */
+  getJobByExternalRef(ref: ExternalRef): Promise<Job | null>
+
+  // ── PR mappings (legacy, delegates to mapExternalRef) ─────────────────────
 
   mapPrToJob(prId: number, jobId: string): Promise<void>
   getJobByPr(prId: number): Promise<Job | null>
   addPrMapping(jobId: string, mapping: PrMapping): Promise<Job>
   markPrMerged(jobId: string, prId: number, mergedAt: string): Promise<Job>
 
-  // ── Jira mappings ──────────────────────────────────────────────────────────
+  // ── Jira mappings (legacy, delegates to mapExternalRef) ───────────────────
 
   mapJiraTicketToJob(ticketId: string, jobId: string): Promise<void>
   getJobByJiraTicket(ticketId: string): Promise<Job | null>

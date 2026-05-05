@@ -119,6 +119,25 @@ export class PluginRegistry {
   }
 
   /**
+   * Iterate every installed plugin runtime in registration order.
+   * Used by the dashboard's `/plugins` endpoint and the conformance
+   * harness — both want the full set without filtering by kind.
+   */
+  all(): PluginRuntime[] {
+    return Array.from(this.byIdMap.values()).map(e => e.runtime)
+  }
+
+  /**
+   * Read the registry's current default selections. Distinct from
+   * {@link default} so callers that need to render the *configured*
+   * defaults (vs the resolved fallback) can avoid the auto-pick
+   * behaviour.
+   */
+  getDefaults(): PluginResolutionDefaults {
+    return { ...this.defaults }
+  }
+
+  /**
    * Return the kind's default plugin. Falls back to the only
    * installed plugin of that kind when there's exactly one — that's
    * the common case for solo deployments and lets the user skip

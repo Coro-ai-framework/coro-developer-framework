@@ -10,6 +10,7 @@
 // gradually.
 
 import { z } from 'zod'
+import path from 'node:path'
 import type { Logger } from 'pino'
 import { JiraClient } from './legacy-client'
 import { JiraTrackerClient } from '../../../clients/tracker/jira'
@@ -78,6 +79,11 @@ const MANIFEST: PluginManifest = {
     header: 'authorization',
     format: '<plain>',
   },
+  intelligence: {
+    snippets: [
+      { id: 'jira-transitions', relativePath: 'snippets/jira-transitions.md' },
+    ],
+  },
 }
 
 // ── Runtime ──────────────────────────────────────────────────────────────────
@@ -100,6 +106,10 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
   }
 
   async dispose(): Promise<void> {}
+
+  intelligenceRoot(): string | undefined {
+    return path.join(__dirname, 'intelligence')
+  }
 
   /** @internal */
   unsafeTrackerClient(): JiraTrackerClient { return this.tracker }

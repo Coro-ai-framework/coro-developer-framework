@@ -3,6 +3,10 @@ import { Artifact, WorkItem, Insight, Job } from './jobs/types'
 import type { ExternalRef } from './plugins/refs'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
+import {
+  DeprecatedMcpToolError,
+  legacyMcpWrapperBehaviour,
+} from './plugins/deprecation'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -69,16 +73,33 @@ function prRef(scm: ScmPluginRuntime, repo: string, prId: number | string): Exte
 }
 
 /**
- * Single deprecation log line per call. Used by the back-compat
- * `bb_*` / `gh_*` / `jira_*` wrappers so workflow markdown that still
- * names the legacy tools keeps working through one full release cycle
- * but the operator sees the call out.
+ * Stage-aware deprecation gate for `bb_*` / `gh_*` / `jira_*`
+ * wrappers. The stage matrix lives in `plugins/deprecation.ts`:
+ *
+ *   N    → log a warning and let the wrapper proceed.
+ *   N+1  → throw {@link DeprecatedMcpToolError}; the wrapper body
+ *          never runs and the agent sees a structured MCP error
+ *          pointing at the new tool.
+ *   N+2  → wrapper not registered at all (mcp-server filters at
+ *          registration time); kept here as a guard in case a
+ *          stale code path still calls in.
+ *
+ * Every wrapper calls this as the first statement. If it returns,
+ * the legacy code path proceeds; otherwise it throws and the SDK
+ * surfaces the error to the model.
  */
 function logDeprecation(ctx: ToolContext, oldName: string, newName: string, extra?: Record<string, unknown>): void {
-  ctx.logger.warn(
-    { tool: oldName, replacement: newName, jobId: ctx.job.id, ...extra },
-    `MCP tool ${oldName} is deprecated — agents should call ${newName}`,
-  )
+  const stage = legacyMcpWrapperBehaviour()
+  if (stage === 'warn') {
+    ctx.logger.warn(
+      { tool: oldName, replacement: newName, jobId: ctx.job.id, ...extra },
+      `MCP tool ${oldName} is deprecated — agents should call ${newName}`,
+    )
+    return
+  }
+  // 'error' (N+1) and 'remove' (N+2 fallback) both surface the same
+  // structured error to the agent.
+  throw new DeprecatedMcpToolError(oldName, newName)
 }
 
 /**
@@ -172,9 +193,9 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
     const prIdNumber = Number(ref.externalId)
     if (Number.isFinite(prIdNumber)) {
-      // Legacy `prMappings` table still records numeric PR ids per job.
-      // P5 introduces `external_ref_mappings` and this branch becomes
-      // a translation step around `mapExternalRef`.
+      // Legacy `prMappings` table still records numeric PR ids per job
+      // for back-compat with consumers that haven't moved off the old
+      // shape (e.g. `markPrMerged` and the PR-merged work item watcher).
       await ctx.stateBackend.addPrMapping(ctx.job.id, {
         prId: prIdNumber,
         workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
@@ -182,6 +203,11 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         openedAt: new Date().toISOString(),
       })
     }
+    // Plugin-aware mapping in `external_ref_mappings`: this is the
+    // path resolveJobByExternalRef + the polling/webhook bridge use,
+    // and it carries enough provenance to disambiguate PR id 42 across
+    // repositories or providers.
+    await ctx.stateBackend.mapExternalRef(ref, ctx.job.id)
 
     return text({
       pluginId: ref.pluginId,

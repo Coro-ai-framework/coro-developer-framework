@@ -269,6 +269,32 @@ export class WsGateway {
         return
       }
 
+      // ── External-ref mappings (P5+) ──────────────────────────────────────
+      case 'job:mapExternalRef': {
+        await backend.mapExternalRef(
+          {
+            kind: msg.ref.kind as 'pull_request' | 'ticket' | 'repo' | 'issue',
+            pluginId: msg.ref.pluginId,
+            repoKey: msg.ref.repoKey,
+            externalId: msg.ref.externalId,
+          },
+          msg.jobId,
+        )
+        this.reply(ws, msg.messageId, { ok: true })
+        return
+      }
+
+      case 'job:byExternalRef': {
+        const job = await backend.getJobByExternalRef({
+          kind: msg.ref.kind as 'pull_request' | 'ticket' | 'repo' | 'issue',
+          pluginId: msg.ref.pluginId,
+          repoKey: msg.ref.repoKey,
+          externalId: msg.ref.externalId,
+        })
+        this.reply(ws, msg.messageId, job)
+        return
+      }
+
       // ── Repo mapping ─────────────────────────────────────────────────────
       case 'job:repoMapping': {
         await backend.mapRepoToJob(msg.repoSlug, msg.jobId)

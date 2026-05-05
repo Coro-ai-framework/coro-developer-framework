@@ -8,7 +8,15 @@ import {
   defaultWorkingDir,
   type LocalConfig,
 } from '../../src/config/local-config'
+import { BUILTIN_PLUGIN_IDS_BY_KIND } from '../../src/plugins/builtin'
 import { die } from '../http'
+
+// Built-in SCM plugin ids (`bitbucket`, `github`, …). Sourced from the
+// registry's static-id index so adding a new SCM plugin in
+// `plugins/builtin/` automatically appears in `--scm` validation here.
+function builtinScmIds(): readonly string[] {
+  return BUILTIN_PLUGIN_IDS_BY_KIND.scm
+}
 
 export const initCommand = new Command('init')
   .description(
@@ -19,17 +27,23 @@ export const initCommand = new Command('init')
   .option('--api-key <key>', 'Anthropic API key')
   .option('--intelligence-dir <dir>', 'Intelligence directory', defaultIntelligenceDir())
   .option('--working-dir <dir>', 'Working directory', defaultWorkingDir())
-  .option('--git-provider <provider>', 'Git provider (bitbucket, github, gitlab)', 'bitbucket')
+  // P6: --scm replaces --git-provider. We keep --git-provider as a
+  // hidden alias for one release so existing scripts don't break — the
+  // legacyConfigToPlugins translator maps `git.provider` to the right
+  // SCM plugin id at runtime.
+  .option('--scm <pluginId>', `SCM plugin id (one of: ${builtinScmIds().join(', ')})`)
+  .option('--git-provider <provider>', '[deprecated] alias for --scm; use --scm instead')
   .option('--git-username <username>', 'Git username')
   .option('--git-token <token>', 'Git access token')
-  .option('--git-workspace <workspace>', 'Git workspace/org (BitBucket workspace slug)')
+  .option('--git-workspace <workspace>', 'Git workspace/org')
   .option('--intelligence-remote <url>', 'Intelligence git remote URL')
   .action(async (opts: {
     local?: boolean
     apiKey?: string
     intelligenceDir: string
     workingDir: string
-    gitProvider: string
+    scm?: string
+    gitProvider?: string
     gitUsername?: string
     gitToken?: string
     gitWorkspace?: string
@@ -51,14 +65,27 @@ export const initCommand = new Command('init')
       ?? await ask('Anthropic API key', existingApiKey || process.env.ANTHROPIC_API_KEY || '')
     if (!apiKey) die('Anthropic API key is required')
 
-    // Git provider
-    const gitProvider = opts.gitProvider as 'bitbucket' | 'github' | 'gitlab'
+    // SCM plugin selection. --scm wins over --git-provider; both fall
+    // back to whatever the existing config has, otherwise we walk the
+    // built-in registry and prompt the user.
+    const scmIds = builtinScmIds()
+    if (opts.gitProvider && !opts.scm) {
+      console.warn('\x1b[33m⚠\x1b[0m  --git-provider is deprecated; use --scm instead.')
+    }
+    const requestedScm = opts.scm ?? opts.gitProvider ?? existing.git?.provider
+    let scmId = requestedScm
+    if (!scmId) {
+      scmId = await ask(`SCM plugin (${scmIds.join('/')})`, scmIds[0] ?? 'github')
+    }
+    if (scmId && !scmIds.includes(scmId)) {
+      die(`Unknown SCM plugin "${scmId}". Available: ${scmIds.join(', ')}.`)
+    }
 
     // Git credentials (interactive if not provided)
     const gitUsername = opts.gitUsername ?? await ask('Git username', existing.git?.username)
     const gitToken = opts.gitToken ?? await ask('Git access token', existing.git?.token)
     const gitWorkspace = opts.gitWorkspace ?? await ask(
-      `Git workspace${gitProvider === 'bitbucket' ? ' (BB workspace slug)' : ' (org name)'}`,
+      `Git workspace${scmId === 'bitbucket' ? ' (BB workspace slug)' : ' (org name)'}`,
       existing.git?.workspace,
     )
 
@@ -73,7 +100,15 @@ export const initCommand = new Command('init')
 
     rl.close()
 
-    // Build config
+    // Persist credentials in the legacy `git` block so the
+    // `legacyConfigToPlugins` translator picks the right SCM plugin
+    // at runner startup. The new top-level `plugins` block is left
+    // for advanced users to opt into manually until the dashboard
+    // grows full plugin-config write support.
+    const provider = scmId === 'bitbucket' || scmId === 'github' || scmId === 'gitlab'
+      ? scmId
+      : 'github'
+
     const config: LocalConfig = {
       ...existing,
       anthropic: { method: 'apiKey', apiKey },
@@ -83,7 +118,7 @@ export const initCommand = new Command('init')
       },
       paths: { workingDir: opts.workingDir.replace('~', os.homedir()) },
       git: gitUsername && gitToken ? {
-        provider: gitProvider,
+        provider,
         username: gitUsername,
         token: gitToken,
         ...(gitWorkspace ? { workspace: gitWorkspace } : {}),
@@ -102,7 +137,7 @@ export const initCommand = new Command('init')
     console.log()
     console.log(`  Intelligence: ${intelligenceDir}`)
     console.log(`  Working dir:  ${config.paths?.workingDir}`)
-    console.log(`  Git provider: ${gitProvider}`)
+    console.log(`  SCM plugin:   ${scmId}`)
     console.log(`  Mode:         ${config.cloud ? 'hybrid' : 'local'}`)
     console.log()
 

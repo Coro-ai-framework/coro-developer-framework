@@ -30,6 +30,21 @@ export interface WsTransportConfig {
   runnerId?: string
   /** Logger instance */
   logger: Logger
+  /**
+   * Translate a generic plugin webhook frame into a fully-formed
+   * {@link InboundEvent}. The hybrid bootstrap supplies this with a
+   * closure that has the {@link PluginRegistry}: it resolves the
+   * plugin by id, calls `normalizeInbound`, and packages the result.
+   *
+   * The transport itself stays plugin-unaware — when no normalizer
+   * is wired (e.g. a runner without any installed plugins) we log
+   * and drop the frame instead of crashing the WS connection.
+   */
+  normalizePluginWebhook?: (
+    pluginId: string,
+    headers: Record<string, string>,
+    rawBody: Buffer,
+  ) => InboundEvent | null
 }
 
 interface PendingRpc {
@@ -289,6 +304,46 @@ export class WebSocketTransport implements EventTransport {
           })
         }
         return
+
+      case 'event:pluginWebhook': {
+        if (!this.eventHandler) return
+        const normalize = this.config.normalizePluginWebhook
+        if (!normalize) {
+          this.config.logger.warn(
+            { pluginId: msg.pluginId },
+            'Plugin webhook received but no normalizer wired — dropping',
+          )
+          return
+        }
+        let event: InboundEvent | null
+        try {
+          event = normalize(
+            msg.pluginId,
+            msg.headers,
+            Buffer.from(msg.rawBodyBase64, 'base64'),
+          )
+        } catch (err) {
+          this.config.logger.error(
+            { err, pluginId: msg.pluginId },
+            'Plugin webhook normalisation threw',
+          )
+          return
+        }
+        if (!event) {
+          this.config.logger.debug(
+            { pluginId: msg.pluginId },
+            'Plugin returned null from normalizeInbound — skipping',
+          )
+          return
+        }
+        this.eventHandler(event).catch(err => {
+          this.config.logger.error(
+            { err, pluginId: msg.pluginId },
+            'Error handling plugin webhook event',
+          )
+        })
+        return
+      }
 
       case 'event:resume':
         if (this.eventHandler) {

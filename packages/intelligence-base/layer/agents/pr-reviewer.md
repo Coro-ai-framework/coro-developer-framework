@@ -25,8 +25,8 @@ The runner **auto-advances** to the next phase (`evaluation`) when you finish. Y
 | Situation | What to do |
 |-----------|------------|
 | Human reviewer posted a blocking comment | Call `mcp__coro__goto_phase("coding")` so the Coder addresses it |
-| Waiting for a **human** to approve | Call `mcp__coro__await_event` with `eventName: "pr:approved"` and the prId |
-| PR is approved, all checks green | Call the merge tool (`mcp__coro__bb_merge_pr` or `mcp__coro__gh_merge_pr`), record the merge, then end your turn |
+| Waiting for a **human** to approve | Call `mcp__coro__await_event` with `eventName: "pr:approved"` and the PR's `ExternalRef` |
+| PR is approved, all checks green | Call `mcp__coro__scm_merge_pr`, record the merge, then end your turn |
 | Something is broken you cannot resolve | Call `mcp__coro__escalate` with reason |
 
 ## MCP tools for this agent
@@ -34,11 +34,11 @@ The runner **auto-advances** to the next phase (`evaluation`) when you finish. Y
 | Tool | Purpose |
 |------|------|
 | `log` | Report review progress and decisions |
-| `bb_get_pr_status` / `gh_get_pr_status` | Check PR state, approval count, and CI status |
-| `bb_get_pr_comments` / `gh_get_pr_comments` | Read all comments on the PR |
-| `bb_reply_to_comment` / `gh_reply_to_comment` | Reply to existing comment threads |
-| `bb_approve_pr` / `gh_approve_pr` | Approve the PR (only after human sign-off) |
-| `bb_merge_pr` / `gh_merge_pr` | Merge the PR after approval |
+| `scm_get_pr_status` | Check PR state, approval count, and CI status |
+| `scm_get_pr_comments` | Read all comments on the PR |
+| `scm_reply_to_comment` | Reply to existing comment threads |
+| `scm_approve_pr` | Approve the PR (only after human sign-off) |
+| `scm_merge_pr` | Merge the PR after approval |
 | `goto_phase` | Send control back to coding when humans request changes |
 | `await_event` | Wait for human approval (NOT for coder fixes) |
 | `escalate` | Escalate unresolvable issues to human |
@@ -47,13 +47,13 @@ The runner **auto-advances** to the next phase (`evaluation`) when you finish. Y
 | `propose_change` | Suggest systemic improvements (use sparingly — the Evaluator owns the canonical proposal) |
 | `list_proposals` | Check past proposals before suggesting duplicates |
 
-**Use `bb_*` tools when `params.gitProvider` is `bitbucket` (or unset). Use `gh_*` tools when `params.gitProvider` is `github`.**
+All `scm_*` tools route to the active SCM plugin automatically — you do not branch on a provider name. If the active plugin registers extension-only tools (e.g. provider-specific approval rules) you'll find them documented in `memory/snippets/<pluginId>-*.md`.
 
 ## Step-by-step procedure
 
 ### 1. Read the current PR state
 
-Find the PR id from `job.prMappings`. Pull the latest comments and status. Note:
+Look up the PR's `ExternalRef` from the job context (artefacts and `job.prMappings` both record it; the `pr-link` artefact carries the canonical shape — `kind: 'pull_request'`, `pluginId`, `repoKey`, `externalId`). Pull the latest comments and status via `scm_get_pr_status` / `scm_get_pr_comments`. Note:
 - Did the Coder include the `code-reviewer` subagent's verdict in the PR description? (It should.)
 - Are there any human comments since the last time you checked?
 - Are there any approvals?
@@ -63,7 +63,7 @@ Find the PR id from `job.prMappings`. Pull the latest comments and status. Note:
 
 For each new human comment:
 - **Change request (blocking):** post a brief acknowledgement and call `mcp__coro__goto_phase("coding")`. The runner will wake the Coder; on the next push, the `pr:updated` webhook resumes you here.
-- **Question:** answer it directly via `bb_reply_to_comment` / `gh_reply_to_comment` if you can; otherwise `goto_phase("coding")` so the Coder can answer.
+- **Question:** answer it directly via `scm_reply_to_comment` if you can; otherwise `goto_phase("coding")` so the Coder can answer.
 - **Suggestion (non-blocking):** acknowledge and proceed; do not gate the merge on it.
 - **Approval:** record the reviewer and timestamp.
 
@@ -72,7 +72,7 @@ For each new human comment:
 If there are no blocking comments and not enough approvals yet, call:
 
 ```
-await_event({ eventName: "pr:approved", prId: <id> })
+await_event({ eventName: "pr:approved", externalRef: <pr-external-ref> })
 ```
 
 End your turn — the webhook will resume you when a human approves.
@@ -81,7 +81,7 @@ End your turn — the webhook will resume you when a human approves.
 
 When approval and CI conditions are met:
 
-1. Call the merge tool (`mcp__coro__bb_merge_pr` or `mcp__coro__gh_merge_pr`).
+1. Call `mcp__coro__scm_merge_pr` with the PR's `ExternalRef`.
 2. Verify the merge succeeded by re-checking PR status.
 3. Post a one-line confirmation comment on the PR.
 4. End your turn — the runner advances to `evaluation`, which verifies the merged result.
@@ -99,10 +99,11 @@ After finishing your gatekeeping cycle (either when you post a blocking handoff 
 ```
 post_artifact({
   kind: "review-summary",
-  title: "Gate of PR #{prId}",
+  title: "Gate of PR #{ref.externalId}",
   data: {
-    prId: {prId},
-    repoSlug: "{repo-slug}",
+    prId: "{ref.externalId}",
+    repoSlug: "{ref.repoKey}",
+    pluginId: "{ref.pluginId}",
     verdict: "blocking" | "merged" | "awaiting-human",
     summary: "One or two sentence overview of the gate result.",
     issueCount: {number of human change requests, if any}

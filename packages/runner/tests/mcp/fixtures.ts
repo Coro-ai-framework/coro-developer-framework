@@ -90,7 +90,7 @@ export function makeStubScmPlugin(id: string): { plugin: ScmPluginRuntime; spies
     pollPr: vi.fn().mockResolvedValue({ state: 'open', approvalCount: 1, commentCount: 0, comments: [] }),
   }
 
-  const plugin: ScmPluginRuntime = {
+  const plugin = {
     manifest: manifest(id, 'scm'),
     kind: 'scm',
     init: async () => {},
@@ -108,7 +108,7 @@ export function makeStubScmPlugin(id: string): { plugin: ScmPluginRuntime; spies
     pollPr: spies.pollPr,
     normalizeInbound: () => null,
     matchesRemote: () => true,
-  }
+  } as unknown as ScmPluginRuntime
 
   return { plugin, spies }
 }
@@ -134,7 +134,7 @@ export function makeStubTrackerPlugin(id: string): { plugin: TrackerPluginRuntim
     linkIssues: vi.fn().mockResolvedValue(undefined),
   }
 
-  const plugin: TrackerPluginRuntime = {
+  const plugin = {
     manifest: manifest(id, 'tracker'),
     kind: 'tracker',
     init: async () => {},
@@ -147,7 +147,7 @@ export function makeStubTrackerPlugin(id: string): { plugin: TrackerPluginRuntim
     createIssue: spies.createIssue,
     createEpic: spies.createEpic,
     linkIssues: spies.linkIssues,
-  }
+  } as unknown as TrackerPluginRuntime
 
   return { plugin, spies }
 }
@@ -230,6 +230,8 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
       prMappings: [mapping],
     })),
     mapPrToJob: vi.fn().mockResolvedValue(undefined),
+    mapExternalRef: vi.fn().mockResolvedValue(undefined),
+    getJobByExternalRef: vi.fn().mockResolvedValue(null),
   } as unknown as StateBackend
 
   const lokiClient = {

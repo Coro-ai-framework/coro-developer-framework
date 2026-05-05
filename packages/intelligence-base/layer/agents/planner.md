@@ -70,15 +70,15 @@ The runner switches the workflow to `workflows/campaign/workflow.md`, resets `ph
 
 If `convert_to_campaign` is refused (e.g. `epicAllowed=false`, or the job is already a campaign), continue as a task — the refusal is a signal, not an error.
 
-### 3. Confirm the git provider before touching the repo
+### 3. Confirm the active SCM plugin before touching the repo
 
-**Before cloning, reading, or querying anything on the repo**, check `params.gitProvider` in the job context:
+**Before cloning, reading, or querying anything on the repo**, confirm which SCM plugin will execute the generic `scm_*` tools for this job:
 
-- `params.gitProvider === "github"` → clone via GitHub (see Infrastructure section of your always-loaded context) and use `gh_*` tools later
-- `params.gitProvider === "bitbucket"` → clone via BitBucket and use `bb_*` tools later
-- `params.gitProvider` is missing or unset → **do not guess**. Call `mcp__coro__escalate` asking the developer to confirm the provider, or pause via `await_event({ eventName: "developer-input: confirm git provider" })`.
+- The runner resolves the active SCM plugin from `params.scm` (job-level), then `defaults.scm` (tenant-level), then "the only installed SCM plugin" if exactly one is available. The resolved plugin id is exposed in the job context.
+- If no plugin can be resolved, the runner already aborted; if you are reading this, an SCM plugin **is** active. You don't pick — you just use the generic tools.
+- If you need confirmation about which plugin is active (e.g. ambiguous tenant, dry-run job), `mcp__coro__log` the resolved plugin id and continue. If something looks wrong, escalate.
 
-Log which provider you selected so it's visible in `coro logs`.
+Use `mcp__coro__scm_get_clone_info({ repo: params.repoSlug })` to fetch the credentialed clone URL plus git env vars — never construct provider-specific clone URLs in your own logic. Log the resolved plugin id so it's visible in `coro logs`.
 
 ### 4. Analyze inputs
 - Read the workflow instructions first and identify which artifacts, specs, and domain skills this workflow expects in the planning phase.

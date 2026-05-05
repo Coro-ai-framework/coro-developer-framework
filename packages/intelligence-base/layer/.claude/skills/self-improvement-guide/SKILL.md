@@ -64,7 +64,7 @@ Each call is **synchronous** and produces exactly **one PR**:
 1. **Validate** — path is in the writable allowlist for the inferred layer; per-type format checks (skill frontmatter, agent headings, etc.).
 2. **Branch** — `coro/proposal/<jobId>-<layer>-<slug>` cut from the layer's default branch.
 3. **Commit** — every file in your `files: []` payload, in one atomic commit.
-4. **Push** + **open PR** via the configured git provider (GitHub or Bitbucket).
+4. **Push** + **open PR** via whichever SCM plugin is active for the layer (GitHub, Bitbucket, GitLab, …).
 5. **Record** in the state backend — surfaces in `list_proposals` and the dashboard.
 6. **Return** the PR URL. A human reviews and merges; the next job's resolver pulls the merged change automatically.
 

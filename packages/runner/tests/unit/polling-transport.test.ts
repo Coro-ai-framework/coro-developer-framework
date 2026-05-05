@@ -67,6 +67,8 @@ function makeMockBackend(jobs: Job[]): StateBackend {
     markPrMerged: vi.fn(),
     mapJiraTicketToJob: vi.fn(),
     getJobByJiraTicket: vi.fn(),
+    mapExternalRef: vi.fn(),
+    getJobByExternalRef: vi.fn(),
     mapRepoToJob: vi.fn(),
     createProposal: vi.fn(),
     listProposals: vi.fn(),

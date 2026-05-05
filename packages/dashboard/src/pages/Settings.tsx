@@ -1,5 +1,5 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
-import { GitBranch, KeyRound, RefreshCcw, ShieldCheck, Ticket, Waypoints } from 'lucide-react'
+import { GitBranch, KeyRound, Plug, RefreshCcw, ShieldCheck, Ticket, Waypoints } from 'lucide-react'
 import PageHeader from '../components/common/page-header'
 import StatCard from '../components/common/stat-card'
 import ErrorState from '../components/common/error-state'
@@ -18,7 +18,29 @@ import { toneClasses, type Tone } from '../lib/status'
 
 type AnthropicMethod = 'apiKey' | 'claudeLogin' | 'oauth'
 type TrackerProvider = 'none' | 'jira' | 'github' | 'linear'
-type SettingsTab = 'anthropic' | 'git' | 'tracker' | 'paths'
+type SettingsTab = 'anthropic' | 'plugins' | 'git' | 'tracker' | 'paths'
+
+interface PluginManifestSummary {
+  id: string
+  kind: 'scm' | 'tracker' | string
+  version: string
+  displayName: string
+  hostCompatibility: string
+  capabilities?: Record<string, boolean>
+  webhook?: {
+    pathSuffix: string
+    algorithm: string
+    header: string
+    format: string
+  }
+  configSchema: unknown
+}
+
+interface PluginsResponse {
+  plugins: { manifest: PluginManifestSummary; installed: boolean }[]
+  defaults: { scm?: string; tracker?: string }
+  webhookBaseUrl: string | null
+}
 
 interface ClaudeAccountInfo {
   email?: string
@@ -287,6 +309,9 @@ export default function Settings() {
   const [oauthStatus, setOauthStatus] = useState<string | null>(null)
   const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null)
 
+  const [pluginsState, setPluginsState] = useState<PluginsResponse | null>(null)
+  const [pluginsLoading, setPluginsLoading] = useState(false)
+
   const effectiveClaudeAccount = claudeLoginState.account ?? claudeLoginAccount
   const claudeLoginReady = claudeLoginState.status === 'connected' || !!effectiveClaudeAccount
   const claudeLoginUrl = claudeLoginState.automaticUrl ?? claudeLoginState.manualUrl ?? null
@@ -306,7 +331,22 @@ export default function Settings() {
 
   useEffect(() => {
     void loadConfig()
+    void loadPlugins()
   }, [])
+
+  async function loadPlugins() {
+    try {
+      setPluginsLoading(true)
+      const data = await requestJson<PluginsResponse>('/plugins')
+      setPluginsState(data)
+    } catch {
+      // The plugins endpoint is optional in older runners; suppress
+      // the error so the rest of Settings still renders.
+      setPluginsState(null)
+    } finally {
+      setPluginsLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (claudeLoginState.status !== 'authorizing') return
@@ -708,6 +748,7 @@ export default function Settings() {
           >
             <TabsList>
               <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
+              <TabsTrigger value="plugins">Plugins</TabsTrigger>
               <TabsTrigger value="git">Git</TabsTrigger>
               <TabsTrigger value="tracker">Tracker</TabsTrigger>
               <TabsTrigger value="paths">Paths</TabsTrigger>
@@ -917,6 +958,105 @@ export default function Settings() {
                   </div>
                 </SectionCard>
               ) : null}
+            </TabsContent>
+
+            <TabsContent value="plugins" className="space-y-6">
+              <SectionCard
+                title="Installed plugins"
+                description="Provider integrations the runner has loaded. Each plugin contributes its own MCP tools, webhook normaliser, and (optionally) intelligence snippets. Defaults below decide which plugin a job uses when its params don't pin one."
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadPlugins()}
+                    disabled={pluginsLoading}
+                  >
+                    <RefreshCcw />
+                    {pluginsLoading ? 'Refreshing…' : 'Refresh'}
+                  </Button>
+                }
+              >
+                {pluginsState ? (
+                  <div className="space-y-5">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
+                        <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">Default SCM</div>
+                        <div className="mt-1 text-sm text-fg">{pluginsState.defaults.scm ?? '— (single-installed wins)'}</div>
+                      </div>
+                      <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
+                        <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">Default tracker</div>
+                        <div className="mt-1 text-sm text-fg">{pluginsState.defaults.tracker ?? '— (single-installed wins)'}</div>
+                      </div>
+                    </div>
+
+                    {pluginsState.plugins.length === 0 ? (
+                      <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
+                        No plugins loaded. Configure credentials under the Git or Tracker tabs and the
+                        runner will register the matching plugins automatically (legacy compatibility).
+                        For a forward-looking config, add a `plugins` block to <code>~/.coro/config.json</code>.
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {pluginsState.plugins.map(({ manifest, installed }) => (
+                          <div
+                            key={manifest.id}
+                            className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <Plug className="size-4 text-fg-subtle" />
+                                  <div className="text-[15px] font-medium text-fg">
+                                    {manifest.displayName}
+                                  </div>
+                                  <span className="font-mono text-[11px] text-fg-subtle">{manifest.id}</span>
+                                </div>
+                                <div className="mt-1 text-[12px] text-fg-muted">
+                                  kind: <span className="font-mono text-fg">{manifest.kind}</span>
+                                  {' · '}
+                                  v{manifest.version}
+                                  {' · '}
+                                  host {manifest.hostCompatibility}
+                                </div>
+                                {manifest.webhook ? (
+                                  <div className="mt-2 text-[11px] text-fg-muted">
+                                    Webhook: <span className="font-mono">{manifest.webhook.algorithm}</span>
+                                    {' via '}
+                                    <span className="font-mono">{manifest.webhook.header}</span>
+                                    {pluginsState.webhookBaseUrl ? (
+                                      <>
+                                        {' · '}
+                                        <span className="font-mono break-all">
+                                          {pluginsState.webhookBaseUrl}/&lt;teamId&gt;/{manifest.id}
+                                        </span>
+                                      </>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <span
+                                className={cn(
+                                  'rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]',
+                                  toneClasses(installed ? 'success' : 'warning'),
+                                )}
+                              >
+                                {installed ? 'enabled' : 'disabled'}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
+                    {pluginsLoading
+                      ? 'Loading plugins…'
+                      : 'Plugin discovery is unavailable. The runner may be too old or returned an error.'}
+                  </div>
+                )}
+              </SectionCard>
             </TabsContent>
 
             <TabsContent value="git" className="space-y-6">

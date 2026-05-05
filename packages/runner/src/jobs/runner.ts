@@ -185,6 +185,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     workingRoot: settings.paths.workingDir,
     repoCheckoutDir,
     loaderCacheRoot,
+    plugins: ctx.plugins,
     logger,
   })
   // The materialised path is stable across re-resolves (it's a function
@@ -294,6 +295,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           workingRoot: settings.paths.workingDir,
           repoCheckoutDir,
           loaderCacheRoot,
+          plugins: ctx.plugins,
           logger,
         })
       } catch (err) {

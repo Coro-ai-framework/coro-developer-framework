@@ -6,6 +6,7 @@
 // GitHub and BitBucket clones side-by-side without per-host branches.
 
 import { z } from 'zod'
+import path from 'node:path'
 import type { Logger } from 'pino'
 import {
   GitHubClient,
@@ -59,6 +60,11 @@ const MANIFEST: PluginManifest = {
     header: 'X-Hub-Signature-256',
     format: 'sha256=<hex>',
   },
+  intelligence: {
+    snippets: [
+      { id: 'github-clone', relativePath: 'snippets/github-clone.md' },
+    ],
+  },
 }
 
 // ── Runtime ──────────────────────────────────────────────────────────────────
@@ -83,6 +89,10 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
   }
 
   async dispose(): Promise<void> {}
+
+  intelligenceRoot(): string | undefined {
+    return path.join(__dirname, 'intelligence')
+  }
 
   /** @internal */
   unsafeClient(): GitHubClient { return this.client }

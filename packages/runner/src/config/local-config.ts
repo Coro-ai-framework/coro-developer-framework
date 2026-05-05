@@ -11,6 +11,7 @@ import os from 'os'
 import { z } from 'zod'
 import type { TenantOverlaySource } from '../intelligence/tenant-context'
 import { pluginsConfigSchema, type PluginsConfig } from './plugins-config'
+import { legacyConfigKeysBehaviour } from '../plugins/deprecation'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -429,9 +430,23 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
 /**
  * Resolve the PluginsConfig for this runner: explicit `plugins` block
  * wins, otherwise synthesised via {@link legacyConfigToPlugins}.
+ *
+ * Stage-aware behaviour (see `plugins/deprecation.ts`):
+ *   - N    → reads both shapes; legacy `git`/`tracker` keys feed the translator.
+ *   - N+1  → still parses both shapes (silently); CLI prompts only show the new shape.
+ *   - N+2  → throws when a legacy `git`/`tracker` block is encountered without
+ *            an explicit `plugins` block — operators must migrate.
  */
 export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
   if (config?.plugins) return config.plugins
+  const stage = legacyConfigKeysBehaviour()
+  if (stage === 'error' && config && (config.git || config.tracker)) {
+    throw new Error(
+      `Legacy 'git'/'tracker' top-level config keys are no longer supported. ` +
+      `Move them into a 'plugins.installed' block. ` +
+      `Run 'coro init' to regenerate the config in the new shape.`,
+    )
+  }
   return legacyConfigToPlugins(config)
 }
 

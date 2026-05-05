@@ -169,6 +169,18 @@ export interface PluginRuntime<Config = unknown> {
    * leave this as a no-op.
    */
   dispose(): Promise<void>
+  /**
+   * Absolute filesystem path the resolver consults for the plugin's
+   * intelligence contributions. Built-in plugins return their
+   * `__dirname/intelligence`; the v1.5 drop-in loader returns
+   * `~/.coro/plugins/<id>/intelligence`. May be omitted when the
+   * plugin contributes no intelligence.
+   *
+   * Kept distinct from {@link PluginManifest.intelligence} because the
+   * manifest is JSON-serialisable (sent to the cloud) while the
+   * intelligence root is a runner-local filesystem detail.
+   */
+  intelligenceRoot?(): string | undefined
 }
 
 // ── SCM plugin runtime ───────────────────────────────────────────────────────

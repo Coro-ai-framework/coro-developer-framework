@@ -15,6 +15,7 @@
 // solo deployments don't need a separate reviewer account.
 
 import { z } from 'zod'
+import path from 'node:path'
 import type { Logger } from 'pino'
 import {
   BitBucketClient,
@@ -72,6 +73,11 @@ const MANIFEST: PluginManifest = {
     header: 'X-Hub-Signature',
     format: 'sha256=<hex>',
   },
+  intelligence: {
+    snippets: [
+      { id: 'bitbucket-clone', relativePath: 'snippets/bitbucket-clone.md' },
+    ],
+  },
 }
 
 // ── Runtime ──────────────────────────────────────────────────────────────────
@@ -113,6 +119,14 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
 
   async dispose(): Promise<void> {
     // Stateless HTTP client — nothing to release.
+  }
+
+  intelligenceRoot(): string | undefined {
+    // Plugin-shipped markdown lives next to the runtime so a single
+    // `tsc` build keeps it on disk under `dist/.../intelligence/`.
+    // The resolver tolerates a missing dir (we declare contributions
+    // in the manifest before the snippet file is written).
+    return path.join(__dirname, 'intelligence')
   }
 
   // Expose the underlying clients to back-compat consumers (RunnerContext

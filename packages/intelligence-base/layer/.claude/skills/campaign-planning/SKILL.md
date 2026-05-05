@@ -45,7 +45,7 @@ The dispatcher detects cycles at `campaign_finalize` time and rejects the breakd
 `campaign_register_child({ name })` and tracker issue keys are different namespaces:
 
 - **Child name** — slug-like, ≤ 64 chars, `[a-zA-Z0-9._-]`. Used as the dependsOn key and the suggested branch suffix. Examples: `db-schema`, `api-routes`, `migration-runner`.
-- **Tracker key** — provider-native (e.g. Jira's `PROJ-123`). Recorded in `trackerRef` so the dashboard and campaign-evaluator can correlate.
+- **Tracker external id** — plugin-native (e.g. Jira's `PROJ-123`, Linear's `ENG-42`, GitHub Issues' `owner/repo#7`). Recorded in `trackerRef` (an `ExternalRef` of `kind: 'ticket'`) so the dashboard and campaign-evaluator can correlate.
 
 Pick child names that read well in `dependsOn: ["api-routes"]`. Avoid free-form descriptions in the name — those go in the `description` field.
 
@@ -62,8 +62,8 @@ Example: campaign `payments-v2` → child `db-schema` → branch `coro/payments-
 
 The job context's `tracker` block is the source of truth for whether to talk to a tracker:
 
-- `tracker.available === true` → call `tracker_create_epic` first, then one `tracker_create_issue` per child (linked via `parentKey`), then mirror `dependsOn` edges with `tracker_link_issues({ relation: "Blocks" })`. Use consistent labels (`coro-campaign`, `coro-campaign-child`) so a single JQL / GitHub query surfaces every Coro-managed campaign.
-- `tracker.available === false` or `tracker.provider === 'none'` → **do not call any tracker tool**. Continue without a tracker; the campaign still works, you just lose tracker correlation. Note the absence in the campaign plan markdown so the human reader isn't surprised.
+- `tracker.available === true` → call `tracker_create_epic` first, then one `tracker_create_issue` per child (linked via `parentKey`), then mirror `dependsOn` edges with `tracker_link_issues({ relation: "Blocks" })`. Use consistent labels (`coro-campaign`, `coro-campaign-child`) so a single tracker query surfaces every Coro-managed campaign regardless of which Tracker plugin is active.
+- `tracker.available === false` (no Tracker plugin resolved) → **do not call any tracker tool**. Continue without a tracker; the campaign still works, you just lose tracker correlation. Note the absence in the campaign plan markdown so the human reader isn't surprised.
 
 Never use a tracker mutation tool (`tracker_create_epic`, `tracker_create_issue`, etc.) as a probe — they have side effects on success. The `tracker.available` flag is computed on every phase boundary specifically so you don't have to.
 

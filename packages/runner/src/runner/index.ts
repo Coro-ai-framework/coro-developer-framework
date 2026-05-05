@@ -71,6 +71,7 @@ import {
   type LocalConfig,
 } from '../config/local-config'
 import { buildBuiltinPluginRegistry } from '../plugins/builtin'
+import { makePluginWebhookNormalizer } from '../plugins/webhook-bridge'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 import { Settings } from '../config/settings'
@@ -307,6 +308,7 @@ export async function startLocalRunner(
     logger,
     mode: 'local',
     tenantId: tenantContext.tenantId,
+    plugins,
   })
 
   const shutdown = async () => {
@@ -336,11 +338,17 @@ export async function startHybridRunner(
   fs.mkdirSync(settings.paths.workingDir, { recursive: true })
   fs.mkdirSync(settings.paths.coroIntelligenceDir, { recursive: true })
 
+  // Build the plugin registry up front so we can supply the WS
+  // transport with a closure that normalises plugin webhooks.
+  const pluginsConfig = resolvePluginsConfig(config)
+  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
+
   // Create WebSocket transport to cloud
   const transport = new WebSocketTransport({
     url: config.cloud.url.replace(/^http/, 'ws') + '/ws/runner',
     token: config.cloud.token,
     logger,
+    normalizePluginWebhook: makePluginWebhookNormalizer({ plugins, logger }),
   })
 
   // Connect to cloud
@@ -386,11 +394,9 @@ export async function startHybridRunner(
   const jiraClient = createJiraClient(settings)
   const trackerClient = createTrackerClient(settings)
 
-  // Build the plugin registry — same shape in hybrid mode.
-  const pluginsConfig = resolvePluginsConfig(config)
-  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
-
-  // Build runner context
+  // Build runner context — `plugins` was created above so the WS
+  // transport could capture the webhook normaliser closure before
+  // connecting.
   const runnerCtx: RunnerContext = {
     stateBackend,
     settings,
@@ -422,6 +428,7 @@ export async function startHybridRunner(
     logger,
     mode: 'hybrid',
     tenantId: tenantContext.tenantId,
+    plugins,
   })
 
   const shutdown = async () => {

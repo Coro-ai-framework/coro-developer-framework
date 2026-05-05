@@ -35,10 +35,10 @@ If a PR is already open and you have access to PR comment tools, you may also po
 | Tool | Purpose |
 |------|------|
 | `log` | Report review progress |
-| `bb_get_pr_comments` / `gh_get_pr_comments` | Read existing PR comments to avoid duplicating feedback |
-| `bb_post_pr_comment` / `gh_post_pr_comment` | Post the consolidated review (only when a PR is open) |
+| `scm_get_pr_comments` | Read existing PR comments to avoid duplicating feedback |
+| `scm_post_pr_comment` | Post the consolidated review (only when a PR is open) |
 
-You do **not** have `goto_phase`, `await_event`, `bb_approve_pr`, `bb_merge_pr`, or their GitHub equivalents. Those belong to the merge gatekeeper.
+You do **not** have `goto_phase`, `await_event`, `scm_approve_pr`, or `scm_merge_pr`. Those belong to the merge gatekeeper.
 
 ## Review checklist
 

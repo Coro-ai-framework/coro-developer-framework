@@ -233,13 +233,14 @@ export class PollingTransport implements EventTransport {
 
     this.logger.info({ jobId, ref, eventKey }, 'Polling detected PR change — delivering event')
 
-    // Tag the event with `bitbucket` for back-compat with the existing
-    // dispatcher branch keyed off `InboundEventSource`. P4 will replace
-    // this enum with a generic plugin-driven path — until then, the
-    // BitBucket branch is the safe one because it does PR-id lookup
-    // and ignores the source string for routing.
+    // Plugin-shaped event. The dispatcher uses `ref` to look up the
+    // parked job; we keep the legacy `pullrequest.id` field on the
+    // payload so the prompt builder (`buildWebhookMessage`) can still
+    // render the change summary without any per-provider knowledge.
     const event: InboundEvent = {
-      source: 'bitbucket',
+      source: 'plugin',
+      pluginId: ref.pluginId,
+      ref,
       eventKey,
       payload: {
         ...payload,

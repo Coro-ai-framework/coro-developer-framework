@@ -10,7 +10,7 @@ You only run inside the campaign workflow, in the `campaign-planning` phase. The
 
 - `params.campaignTitle` and `params.campaignDescription` (set by `convert_to_campaign`)
 - `params.trackerEpicRef` if the regular Planner already created an epic
-- `tracker` block on the job context — `{ provider, available, defaults? }`. This is the **only** signal you should use to decide whether to call any `tracker_*` tool. When `available` is `false` (or `provider` is `'none'`), skip every tracker step and proceed without a tracker. Do **not** probe with destructive calls.
+- `tracker` block on the job context — `{ pluginId, available, defaults? }`. This is the **only** signal you should use to decide whether to call any `tracker_*` tool. When `available` is `false` (or no plugin is resolved), skip every tracker step and proceed without a tracker. Do **not** probe with destructive calls.
 - The job description, the repository, and any spec the spec-writer produced
 - Memory: `memory/MEMORY.md` and any linked files (call `read_memory`)
 
@@ -63,8 +63,8 @@ If you can't justify why two pieces should be separate children, fold them. Five
 
 Read the `tracker` block on the job context first. Decision rule:
 
-- If `tracker.available === false` (or `tracker.provider === 'none'`), **skip steps 3 and 4.1 entirely**. Do not call any `tracker_*` tool. Continue with `campaign_register_child` calls that omit `trackerRef`. Note the absence in the campaign plan markdown so the human reader isn't surprised.
-- Otherwise, if `params.trackerEpicRef` is already set, reuse that key as the epic and skip to step 4.
+- If `tracker.available === false` (no Tracker plugin resolved), **skip steps 3 and 4.1 entirely**. Do not call any `tracker_*` tool. Continue with `campaign_register_child` calls that omit `trackerRef`. Note the absence in the campaign plan markdown so the human reader isn't surprised.
+- Otherwise, if `params.trackerEpicRef` is already set, reuse that ref as the epic and skip to step 4.
 
 When `tracker.available === true` and no epic was pre-created:
 
@@ -77,19 +77,19 @@ tracker_create_epic({
 })
 ```
 
-How to pick `projectKey`:
+How to pick `projectKey` — read `memory/snippets/<tracker.pluginId>-*.md` for the canonical shape; common conventions today:
 
-- **GitHub** (`tracker.provider === 'github'`): pass `<owner>/<repo>` where `<owner>` is `tracker.defaults.owner` (configured for the tenant) and `<repo>` is the campaign's target repo (`params.repoSlug` or equivalent). Bare `<repo>` also works — the GitHub client prefixes the default owner — but explicit is clearer.
-- **Jira** (`tracker.provider === 'jira'`): pass the Jira project key (e.g. `PROJ`). Derive it from the spec / description; the runner does not store a tenant default today.
-- **Linear** (`tracker.provider === 'linear'`): pass `tracker.defaults.teamKey` when present, otherwise the team key the spec calls out.
+- **GitHub Issues** (`tracker.pluginId === 'github-issues'`): pass `<owner>/<repo>` where `<owner>` is `tracker.defaults.owner` (configured for the tenant) and `<repo>` is the campaign's target repo (`params.repoSlug` or equivalent). Bare `<repo>` also works — the plugin prefixes the default owner — but explicit is clearer.
+- **Jira** (`tracker.pluginId === 'jira'`): pass the Jira project key (e.g. `PROJ`). Derive it from the spec / description; the runner does not store a tenant default today.
+- **Linear** (`tracker.pluginId === 'linear'`): pass `tracker.defaults.teamKey` when present, otherwise the team key the spec calls out.
 
-Capture the returned `key` / `url` for use in step 4.
+Capture the returned `ExternalRef` (`{ kind: 'ticket', pluginId, externalId, url }`) for use in step 4.
 
 ### 4. Create each child issue and register it
 
 For every child in your breakdown, in dependency-aware order (parents before children):
 
-1. Create the tracker issue (only when `tracker.available === true`; otherwise skip directly to substep 2):
+1. Create the tracker issue (only when `tracker.available === true`; otherwise skip directly to substep 2). Capture the returned key/url — that pair becomes the child's `trackerRef`:
 
    ```
    tracker_create_issue({
@@ -112,7 +112,11 @@ For every child in your breakdown, in dependency-aware order (parents before chi
        branchName: "<recommended branch>",
        // any extra hints the child's Planner should see
      },
-     trackerRef: { provider: "jira", key: "<key>", url: "<url>" }   // omit if no tracker
+     trackerRef: {                                     // omit if no tracker
+       provider: "<tracker.pluginId>",                 // e.g. 'jira', 'linear', 'github-issues'
+       key: "<child issue key returned in step 1>",
+       url: "<child issue url>"
+     }
    })
    ```
 

@@ -9,6 +9,7 @@ import type { Logger } from 'pino'
 import type { PluginsConfig } from '../../config/plugins-config'
 import { PluginRegistry } from '../registry'
 import type { PluginRuntime } from '../types'
+import { buildDropinFactoryMap, type DropinPluginFactory } from '../loader'
 import { createBitBucketScmPlugin } from './bitbucket'
 import { createGitHubScmPlugin } from './github'
 import { createJiraTrackerPlugin } from './jira'
@@ -39,19 +40,41 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
   'github-issues': createGitHubTrackerPlugin,
 }
 
+/**
+ * Static index of built-in plugin ids grouped by kind. The `coro init`
+ * CLI uses this to validate `--scm` choices without instantiating
+ * every plugin (which would require valid config). Keep this list in
+ * sync with {@link BUILTIN_PLUGIN_FACTORIES}.
+ */
+export const BUILTIN_PLUGIN_IDS_BY_KIND: Readonly<Record<'scm' | 'tracker', readonly string[]>> = {
+  scm: ['bitbucket', 'github'],
+  tracker: ['jira', 'linear', 'github-issues'],
+}
+
 // ── Bootstrap helper ─────────────────────────────────────────────────────────
 
 export interface BuildPluginsArgs {
   pluginsConfig: PluginsConfig
   logger: Logger
+  /**
+   * Override `~/.coro/plugins/` for the v1.5 drop-in loader. Tests pass
+   * an isolated tmpdir; production leaves this undefined so the loader
+   * uses the user's home dir.
+   */
+  dropinPluginsRoot?: string
 }
 
 /**
  * Build a fully initialised registry from the resolved
- * `PluginsConfig`. Plugin ids that aren't in
- * {@link BUILTIN_PLUGIN_FACTORIES} are silently ignored at v1 — the
- * v1.5 drop-in loader (P8) is what wires those in. Logs a warning so
- * misspelled ids don't fail in mysterious ways.
+ * `PluginsConfig`.
+ *
+ * Resolution order per id:
+ *   1. Built-in factory (this file).
+ *   2. Drop-in factory under `~/.coro/plugins/<id>/` (the v1.5 loader).
+ *
+ * Plugin ids that resolve from neither path are skipped with a warn —
+ * a misspelled id, or a folder that hasn't been cloned yet, shouldn't
+ * stop the rest of the registry from booting.
  */
 export async function buildBuiltinPluginRegistry(
   args: BuildPluginsArgs,
@@ -59,18 +82,31 @@ export async function buildBuiltinPluginRegistry(
   const { pluginsConfig, logger } = args
   const registry = new PluginRegistry(pluginsConfig.defaults ?? {})
 
+  // Load v1.5 drop-in plugins up front — same factory shape as
+  // built-ins so the loop below treats them identically.
+  const dropinFactoryArgs: Parameters<typeof buildDropinFactoryMap>[0] = {
+    pluginsConfig,
+    logger,
+    ...(args.dropinPluginsRoot ? { pluginsRoot: args.dropinPluginsRoot } : {}),
+  }
+  const dropinFactories = await buildDropinFactoryMap(dropinFactoryArgs)
+
   for (const [id, slot] of Object.entries(pluginsConfig.installed ?? {})) {
     if (!slot.enabled) continue
-    const factory = BUILTIN_PLUGIN_FACTORIES[id]
-    if (!factory) {
-      logger.warn(
-        { pluginId: id },
-        'Plugin id is not a built-in and the v1.5 drop-in loader is not yet active — skipping',
-      )
-      continue
-    }
     try {
-      const runtime = factory({ config: slot.config ?? {}, logger })
+      const runtime = await instantiatePlugin({
+        id,
+        config: slot.config ?? {},
+        logger,
+        dropinFactories,
+      })
+      if (!runtime) {
+        logger.warn(
+          { pluginId: id },
+          'Plugin id is neither a built-in nor a drop-in plugin — skipping (check ~/.coro/plugins/<id>/ or the spelling)',
+        )
+        continue
+      }
       await runtime.init(slot.config ?? {}, { logger, fetch: globalThis.fetch })
       registry.register(runtime)
     } catch (err) {
@@ -79,6 +115,23 @@ export async function buildBuiltinPluginRegistry(
   }
 
   return registry
+}
+
+async function instantiatePlugin(args: {
+  id: string
+  config: Record<string, unknown>
+  logger: Logger
+  dropinFactories: Record<string, DropinPluginFactory>
+}): Promise<PluginRuntime | null> {
+  const builtin = BUILTIN_PLUGIN_FACTORIES[args.id]
+  if (builtin) {
+    return builtin({ config: args.config, logger: args.logger })
+  }
+  const dropin = args.dropinFactories[args.id]
+  if (dropin) {
+    return dropin.factory({ config: args.config, logger: args.logger })
+  }
+  return null
 }
 
 export * from './bitbucket'

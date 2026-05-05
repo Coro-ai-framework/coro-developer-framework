@@ -21,8 +21,9 @@ import {
 } from '../tools/campaign'
 import { runJob, RunnerContext } from './runner'
 import type { EventTransport } from '../state/transport'
-import type { InboundEventSource } from '../state/events'
-import { extractBbPrId, extractJiraTicketId } from './webhook-payload'
+import type { InboundEvent, InboundEventSource } from '../state/events'
+import type { ExternalRef } from '../plugins/refs'
+import { resolveJobByExternalRef } from '../plugins/refs'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
 const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
@@ -59,7 +60,7 @@ export class Dispatcher {
     // Register for transport events (used in Phase 3 when events arrive via WebSocket)
     if (transport) {
       transport.onEvent(async (event) => {
-        await this.handleWebhookEvent(event.source, event.eventKey, event.payload)
+        await this.handleInboundEvent(event)
       })
     }
   }
@@ -194,23 +195,53 @@ export class Dispatcher {
   }
 
   // ── Webhook events ──────────────────────────────────────────────────────────
+  //
+  // After P4 the source axis collapsed to two values:
+  //
+  //   - `'plugin'` — a provider webhook normalised by a plugin's
+  //     `normalizeInbound`. Dispatch is fully generic: the
+  //     `ExternalRef` carried on the event identifies the parked job
+  //     to wake.
+  //   - `'cloud'` — control-plane originated commands addressed by
+  //     `jobId`. Different protocol; never lookups by ref.
+  //
+  // The legacy `'bitbucket'`/`'jira'` source values were retired here.
+  // Callers (transports, tests) now produce `'plugin'` events with a
+  // `pluginId` and `ref`; the per-provider handlers became part of
+  // each plugin's `normalizeInbound`.
 
+  /**
+   * Entry point used by transports. Accepts a fully-formed
+   * {@link InboundEvent}; reads the source, eventKey, payload, and —
+   * for plugin events — the {@link ExternalRef}.
+   */
+  async handleInboundEvent(event: InboundEvent): Promise<void> {
+    switch (event.source) {
+      case 'plugin':
+        await this.handlePluginEvent(event)
+        return
+      case 'cloud':
+        await this.handleCloudEvent(event.eventKey, event.payload)
+        return
+    }
+  }
+
+  /**
+   * @deprecated Use {@link handleInboundEvent}. Kept as a thin
+   * adapter so callers that don't yet build an `InboundEvent` still
+   * dispatch through the same code path.
+   */
   async handleWebhookEvent(
     source: InboundEventSource,
     eventKey: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    switch (source) {
-      case 'bitbucket':
-        await this.handleBitBucketEvent(eventKey, payload)
-        return
-      case 'jira':
-        await this.handleJiraEvent(eventKey, payload)
-        return
-      case 'cloud':
-        await this.handleCloudEvent(eventKey, payload)
-        return
-    }
+    await this.handleInboundEvent({
+      source,
+      eventKey,
+      payload,
+      receivedAt: new Date().toISOString(),
+    })
   }
 
   // ── Cloud-initiated control events ─────────────────────────────────────────
@@ -273,21 +304,31 @@ export class Dispatcher {
     }
   }
 
-  // ── BitBucket event handling ────────────────────────────────────────────────
+  // ── Plugin webhook event handling ──────────────────────────────────────────
+  //
+  // Plugin events arrive with everything we need to wake the parked
+  // job already attached: the `ref` (an {@link ExternalRef}) tells us
+  // exactly which job to look up, regardless of which provider the
+  // event came from. The legacy per-provider extractors that used to
+  // live in `webhook-payload.ts` now live inside each plugin's
+  // `normalizeInbound`.
 
-  private async handleBitBucketEvent(
-    eventKey: string,
-    payload: Record<string, unknown>,
-  ): Promise<void> {
-    const prId = extractBbPrId(payload)
-    if (prId === null) {
-      this.ctx.logger.debug({ eventKey }, 'BitBucket event has no PR ID — skipping')
+  private async handlePluginEvent(event: InboundEvent): Promise<void> {
+    if (!event.ref) {
+      this.ctx.logger.debug(
+        { eventKey: event.eventKey, pluginId: event.pluginId },
+        'Plugin event has no ExternalRef — skipping',
+      )
       return
     }
 
-    const job = await this.ctx.stateBackend.getJobByPr(prId)
+    const ref: ExternalRef = event.ref
+    const job = await resolveJobByExternalRef(this.ctx.stateBackend, ref)
     if (!job) {
-      this.ctx.logger.debug({ eventKey, prId }, 'No job found for PR — skipping')
+      this.ctx.logger.debug(
+        { eventKey: event.eventKey, ref },
+        'No job found for external ref — skipping',
+      )
       return
     }
 
@@ -295,35 +336,29 @@ export class Dispatcher {
     // The runner's finally() handler will replay queued events once the phase completes.
     // This prevents the race where a webhook arrives just before await_event is called.
     if (this.activeJobs.has(job.id)) {
-      this.ctx.logger.debug({ jobId: job.id, eventKey }, 'Job is active — queueing webhook event for after park')
+      this.ctx.logger.debug(
+        { jobId: job.id, eventKey: event.eventKey, ref },
+        'Job is active — queueing webhook event for after park',
+      )
       const queue = this.eventQueue.get(job.id) ?? []
-      queue.push({ eventKey, payload, receivedAt: new Date().toISOString() })
+      queue.push({ eventKey: event.eventKey, payload: event.payload, receivedAt: event.receivedAt })
       this.eventQueue.set(job.id, queue)
       return
     }
 
     if (!isParkingStatus(job.status)) {
-      this.ctx.logger.debug({ jobId: job.id, status: job.status }, 'Job is not parked — skipping')
+      this.ctx.logger.debug(
+        { jobId: job.id, status: job.status },
+        'Job is not parked — skipping',
+      )
       return
     }
 
-    // Any PR event on a mapped job wakes the agent — the AI decides what to do.
-    // Comments, approvals, merges, updates — all are relevant context the agent
-    // should see and react to. No rigid event matching.
-    await this.resumeWithEvent(job.id, eventKey, payload)
-  }
-
-  private async handleJiraEvent(
-    eventKey: string,
-    payload: Record<string, unknown>,
-  ): Promise<void> {
-    const ticketId = extractJiraTicketId(payload)
-    if (!ticketId) return
-
-    const job = await this.ctx.stateBackend.getJobByJiraTicket(ticketId)
-    if (!job || !isParkingStatus(job.status)) return
-
-    await this.resumeWithEvent(job.id, eventKey, payload)
+    // Any matched event on a parked job wakes the agent — the AI decides
+    // what to do. Comments, approvals, merges, updates, ticket transitions
+    // — all are relevant context the agent should see and react to.
+    // No rigid event matching.
+    await this.resumeWithEvent(job.id, event.eventKey, event.payload)
   }
 
   // ── Resume ──────────────────────────────────────────────────────────────────

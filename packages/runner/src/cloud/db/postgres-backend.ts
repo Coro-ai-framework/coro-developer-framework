@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { eq, and, sql, asc } from 'drizzle-orm'
+import { eq, and, sql, asc, desc } from 'drizzle-orm'
 import type { CloudDb } from '../db/connection'
 import * as schema from '../db/schema'
 import type { StateBackend } from '../../state/backend'
@@ -18,6 +18,7 @@ import {
   CampaignChild,
 } from '../../jobs/types'
 import { buildJobRecord, resolveWorkflowPath } from '../../jobs/creation'
+import { repoKeyForStorage, type ExternalRef } from '../../plugins/refs'
 
 // ── Row ↔ Job mapping ─────────────────────────────────────────────────────────
 
@@ -287,6 +288,57 @@ export class PostgresStateBackend implements StateBackend {
   // PK `(teamId, prId)` enforces this at the storage level — see the
   // schema for the rationale.
 
+  // ── External-ref mappings (P5+) ───────────────────────────────────────────
+
+  async mapExternalRef(ref: ExternalRef, jobId: string): Promise<void> {
+    const repoKey = repoKeyForStorage(ref)
+    await this.db
+      .insert(schema.externalRefMappings)
+      .values({
+        teamId: this.teamId,
+        pluginId: ref.pluginId,
+        kind: ref.kind,
+        repoKey,
+        externalId: ref.externalId,
+        jobId,
+      })
+      .onConflictDoUpdate({
+        target: [
+          schema.externalRefMappings.teamId,
+          schema.externalRefMappings.pluginId,
+          schema.externalRefMappings.kind,
+          schema.externalRefMappings.repoKey,
+          schema.externalRefMappings.externalId,
+        ],
+        set: { jobId },
+      })
+  }
+
+  async getJobByExternalRef(ref: ExternalRef): Promise<Job | null> {
+    const repoKey = ref.repoKey ?? ''
+    const rows = await this.db
+      .select({ jobId: schema.externalRefMappings.jobId })
+      .from(schema.externalRefMappings)
+      .where(and(
+        eq(schema.externalRefMappings.teamId, this.teamId),
+        eq(schema.externalRefMappings.pluginId, ref.pluginId),
+        eq(schema.externalRefMappings.kind, ref.kind),
+        eq(schema.externalRefMappings.repoKey, repoKey),
+        eq(schema.externalRefMappings.externalId, ref.externalId),
+      ))
+      .limit(1)
+    if (!rows[0]) return null
+    return this.getJob(rows[0].jobId)
+  }
+
+  // ── PR mappings (legacy adapter) ──────────────────────────────────────────
+  //
+  // Reads prefer `external_ref_mappings` and fall back to the legacy
+  // `pr_mappings` table for rows written before the P5 migration.
+  // Writes still hit the legacy table so a downgrade window is
+  // possible — callers with a real {@link ExternalRef} should use
+  // {@link mapExternalRef} directly.
+
   async mapPrToJob(prId: number, jobId: string): Promise<void> {
     await this.db
       .insert(schema.prMappings)
@@ -298,6 +350,22 @@ export class PostgresStateBackend implements StateBackend {
   }
 
   async getJobByPr(prId: number): Promise<Job | null> {
+    // New table first. PR ids are namespaced by `(plugin, repo_key)`
+    // there, but the legacy lookup carries only `prId`; resolve to the
+    // most-recently-mapped job within this team when more than one
+    // row matches (vanishingly rare in practice).
+    const newRows = await this.db
+      .select({ jobId: schema.externalRefMappings.jobId })
+      .from(schema.externalRefMappings)
+      .where(and(
+        eq(schema.externalRefMappings.teamId, this.teamId),
+        eq(schema.externalRefMappings.kind, 'pull_request'),
+        eq(schema.externalRefMappings.externalId, String(prId)),
+      ))
+      .orderBy(desc(schema.externalRefMappings.externalId))
+      .limit(1)
+    if (newRows[0]) return this.getJob(newRows[0].jobId)
+
     const rows = await this.db
       .select({ jobId: schema.prMappings.jobId })
       .from(schema.prMappings)
@@ -336,6 +404,8 @@ export class PostgresStateBackend implements StateBackend {
   // as `prMappings` — keep multi-tenant data isolation at the storage layer.
 
   async mapJiraTicketToJob(ticketId: string, jobId: string): Promise<void> {
+    // Dual-write: legacy table + new plugin-aware table. Tickets
+    // carry no repo so `repo_key` stays empty.
     await this.db
       .insert(schema.jiraMappings)
       .values({ ticketId, jobId, teamId: this.teamId })
@@ -343,9 +413,42 @@ export class PostgresStateBackend implements StateBackend {
         target: [schema.jiraMappings.teamId, schema.jiraMappings.ticketId],
         set: { jobId },
       })
+    await this.db
+      .insert(schema.externalRefMappings)
+      .values({
+        teamId: this.teamId,
+        pluginId: 'jira',
+        kind: 'ticket',
+        repoKey: '',
+        externalId: ticketId,
+        jobId,
+      })
+      .onConflictDoUpdate({
+        target: [
+          schema.externalRefMappings.teamId,
+          schema.externalRefMappings.pluginId,
+          schema.externalRefMappings.kind,
+          schema.externalRefMappings.repoKey,
+          schema.externalRefMappings.externalId,
+        ],
+        set: { jobId },
+      })
   }
 
   async getJobByJiraTicket(ticketId: string): Promise<Job | null> {
+    const newRows = await this.db
+      .select({ jobId: schema.externalRefMappings.jobId })
+      .from(schema.externalRefMappings)
+      .where(and(
+        eq(schema.externalRefMappings.teamId, this.teamId),
+        eq(schema.externalRefMappings.pluginId, 'jira'),
+        eq(schema.externalRefMappings.kind, 'ticket'),
+        eq(schema.externalRefMappings.repoKey, ''),
+        eq(schema.externalRefMappings.externalId, ticketId),
+      ))
+      .limit(1)
+    if (newRows[0]) return this.getJob(newRows[0].jobId)
+
     const rows = await this.db
       .select({ jobId: schema.jiraMappings.jobId })
       .from(schema.jiraMappings)

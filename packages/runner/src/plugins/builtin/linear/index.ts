@@ -5,6 +5,7 @@
 // v1 (read-only API only — see megaplan §8 "out of scope").
 
 import { z } from 'zod'
+import path from 'node:path'
 import type { Logger } from 'pino'
 import { LinearTrackerClient } from '../../../clients/tracker/linear'
 import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
@@ -56,6 +57,11 @@ const MANIFEST: PluginManifest = {
   // Linear webhook support is a follow-up; we don't advertise a
   // descriptor at v1 so the cloud rejects webhook configuration for
   // this plugin until the feature lands.
+  intelligence: {
+    snippets: [
+      { id: 'linear-keys', relativePath: 'snippets/linear-keys.md' },
+    ],
+  },
 }
 
 class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
@@ -78,6 +84,10 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
   }
 
   async dispose(): Promise<void> {}
+
+  intelligenceRoot(): string | undefined {
+    return path.join(__dirname, 'intelligence')
+  }
 
   /** @internal */
   unsafeClient(): LinearTrackerClient { return this.client }

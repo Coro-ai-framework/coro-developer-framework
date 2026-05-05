@@ -10,6 +10,7 @@ import {
 } from '../jobs/types'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
+import { repoKeyForStorage, type ExternalRef } from '../plugins/refs'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
 
@@ -20,6 +21,17 @@ function keyJira(ticketId: string): string      { return `jira:${ticketId}:job` 
 function keyRepo(repoSlug: string): string      { return `repo:${repoSlug}:jobs` }
 function keyAllJobs(): string                   { return 'jobs:all' }
 function keyJobsByType(type: JobType): string   { return `jobs:type:${type}` }
+
+/**
+ * Composite key for the new plugin-aware ref index. Uses the same
+ * shape as the SQLite/Postgres composite primary key
+ * `(plugin_id, kind, repo_key, external_id)` so the lookup logic
+ * stays uniform across backends.
+ */
+function keyExternalRef(ref: ExternalRef): string {
+  const repoKey = ref.repoKey ?? ''
+  return `ext:${ref.pluginId}:${ref.kind}:${repoKey}:${ref.externalId}:job`
+}
 
 // ── Redis state backend ───────────────────────────────────────────────────────
 
@@ -163,11 +175,37 @@ export class RedisStateBackend implements StateBackend {
   }
 
   async mapJiraTicketToJob(ticketId: string, jobId: string): Promise<void> {
+    // Dual-write so the new plugin-aware lookup picks it up.
     await this.redis.set(keyJira(ticketId), jobId)
+    await this.mapExternalRef(
+      { kind: 'ticket', pluginId: 'jira', externalId: ticketId },
+      jobId,
+    )
   }
 
   async getJobByJiraTicket(ticketId: string): Promise<Job | null> {
+    const newJobId = await this.redis.get(keyExternalRef({
+      kind: 'ticket', pluginId: 'jira', externalId: ticketId,
+    }))
+    if (newJobId) return this.getJob(newJobId)
+
     const jobId = await this.redis.get(keyJira(ticketId))
+    if (!jobId) return null
+    return this.getJob(jobId)
+  }
+
+  // ── External-ref mappings (P5+) ────────────────────────────────────────────
+
+  async mapExternalRef(ref: ExternalRef, jobId: string): Promise<void> {
+    // Validate `repo_key` requirement for `pull_request` early —
+    // matches the storage contract and produces a clear error rather
+    // than a silently corrupt key.
+    repoKeyForStorage(ref)
+    await this.redis.set(keyExternalRef(ref), jobId)
+  }
+
+  async getJobByExternalRef(ref: ExternalRef): Promise<Job | null> {
+    const jobId = await this.redis.get(keyExternalRef(ref))
     if (!jobId) return null
     return this.getJob(jobId)
   }

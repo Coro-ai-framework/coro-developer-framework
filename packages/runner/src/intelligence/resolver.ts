@@ -33,6 +33,7 @@ import {
 } from './loaders'
 import { applyLayer } from './merge'
 import type { TenantContext } from './tenant-context'
+import type { PluginRegistry } from '../plugins/registry'
 
 /** Inputs to {@link resolveJobIntelligence}. */
 export interface ResolveJobIntelligenceArgs {
@@ -62,6 +63,14 @@ export interface ResolveJobIntelligenceArgs {
    * Phase 5 will switch the runner to pass `~/.coro/cache/`.
    */
   loaderCacheRoot?: string
+  /**
+   * Plugin registry consulted for the optional plugin-intelligence
+   * pass. When provided, every loaded plugin's `intelligenceRoot()`
+   * is applied as its own layer (between tenant and repo) so plugins
+   * can ship provider-specific snippets and skills without forcing
+   * the base layer to know about them.
+   */
+  plugins?: PluginRegistry
   /** Logger for resolver diagnostics. */
   logger: Logger
 }
@@ -107,6 +116,7 @@ export async function resolveJobIntelligence(
     jobId,
     workingRoot,
     repoCheckoutDir,
+    plugins,
     logger,
   } = args
   const loaderCacheRoot = args.loaderCacheRoot ?? path.join(workingRoot, '.cache', 'tenant-overlays')
@@ -150,6 +160,36 @@ export async function resolveJobIntelligence(
       layerName,
     })
     layers.push({ name: layerName, source: tenantSource, fileCount: result.filesApplied })
+  }
+
+  // Layer 2b — plugin contributions (optional).
+  //
+  // Each loaded plugin can ship a `intelligence/` directory with the
+  // same shape as base/tenant (`.claude/skills/<id>/`, `snippets/`,
+  // optionally `agents/` overrides). We apply them after the tenant
+  // overlay so a tenant can still override plugin-shipped snippets,
+  // and before the repo overlay so a repo's `.coro/` always wins.
+  if (plugins) {
+    for (const runtime of plugins.all()) {
+      const root = typeof runtime.intelligenceRoot === 'function'
+        ? runtime.intelligenceRoot()
+        : undefined
+      if (!root) continue
+      try {
+        await fs.access(root)
+      } catch {
+        // Plugin declared an intelligence root but the directory is
+        // missing — common for plugins that ship no markdown yet.
+        continue
+      }
+      const layerName = `plugin:${runtime.manifest.id}`
+      const result = await applyLayer({
+        srcRoot: root,
+        destRoot: intelligenceDir,
+        layerName,
+      })
+      layers.push({ name: layerName, source: root, fileCount: result.filesApplied })
+    }
   }
 
   // Layer 3 — repo overlay (optional, opportunistic).

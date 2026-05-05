@@ -187,7 +187,50 @@ export const jiraMappings = pgTable('jira_mappings', {
   index('jira_mappings_team_idx').on(t.teamId),
 ])
 
+// ── External ref mappings (plugin-aware, P5+) ─────────────────────────────────
+//
+// Single home for every plugin-rooted lookup the runner cares about
+// (PR ids, ticket keys, future kinds). Replaces both `prMappings`
+// and `jiraMappings` over the deprecation window — those two tables
+// stay around for one release as fallbacks (read-side adapters in
+// `PostgresStateBackend.getJobByPr` / `getJobByJiraTicket` look here
+// first and fall back).
+//
+// Composite PK `(teamId, pluginId, kind, repoKey, externalId)`:
+//   - `teamId` for tenant isolation (same as the other mapping
+//     tables — two teams with the same provider must not collide).
+//   - `pluginId` so the same external id under different plugins
+//     stays distinct (`github` PR 42 vs `bitbucket` PR 42).
+//   - `kind` discriminates `pull_request` / `ticket` / future kinds.
+//   - `repoKey` is REQUIRED for `pull_request` (enforced at the
+//     runtime layer via `repoKeyForStorage`). For kinds where repo
+//     is not meaningful, the column stores the empty string.
+
+export const externalRefMappings = pgTable('external_ref_mappings', {
+  teamId: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
+  pluginId: text('plugin_id').notNull(),
+  kind: text('kind').notNull(),
+  repoKey: text('repo_key').notNull().default(''),
+  externalId: text('external_id').notNull(),
+  jobId: text('job_id').notNull().references(() => jobs.id, { onDelete: 'cascade' }),
+}, (t) => [
+  primaryKey({
+    name: 'external_ref_mappings_pk',
+    columns: [t.teamId, t.pluginId, t.kind, t.repoKey, t.externalId],
+  }),
+  index('external_ref_mappings_team_idx').on(t.teamId),
+  index('external_ref_mappings_job_idx').on(t.jobId),
+])
+
 // ── Webhook configs ───────────────────────────────────────────────────────────
+//
+// Legacy table: keyed by `(teamId, provider)` where `provider` is the
+// `webhookProviderEnum`. P4 deprecates this in favour of
+// `tenant_plugin_webhooks` (below) which is plugin-aware (the cloud
+// no longer needs to know what `provider` even means). Both tables
+// coexist for one release so existing tenants keep working while the
+// runner can be configured against either; P9 drops this one and the
+// enum.
 
 export const webhookConfigs = pgTable('webhook_configs', {
   id: text('id').primaryKey(),
@@ -198,4 +241,34 @@ export const webhookConfigs = pgTable('webhook_configs', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex('webhook_configs_team_provider_idx').on(t.teamId, t.provider),
+])
+
+// ── Tenant plugin webhooks ────────────────────────────────────────────────────
+//
+// The cloud control plane is provider-agnostic post-P4: it accepts
+// `POST /webhook/:teamId/:pluginId`, loads the row keyed by `(teamId,
+// pluginId)` here, validates the HMAC using `algorithm`/`header`/`format`,
+// and forwards the raw payload to the runner over WS. The runner's
+// plugin's `normalizeInbound` does all shape-aware work; the cloud
+// holds zero plugin knowledge.
+//
+// Fields mirror the four pieces every HMAC scheme exposes — algorithm
+// (one of the three we support today), the header where the signature
+// lives, the secret, and the wire `format` (e.g. `sha256=<hex>` for
+// GitHub, `<plain>` for "no HMAC, rely on URL secret"). Plugins that
+// don't authenticate via HMAC at all (Jira webhook variant) set
+// `algorithm = 'none'` — the verifier short-circuits to "ok".
+
+export const tenantPluginWebhooks = pgTable('tenant_plugin_webhooks', {
+  teamId: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
+  pluginId: text('plugin_id').notNull(),
+  algorithm: text('algorithm').notNull(),
+  header: text('header').notNull(),
+  secret: text('secret').notNull(),
+  format: text('format').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ name: 'tenant_plugin_webhooks_pk', columns: [t.teamId, t.pluginId] }),
+  index('tenant_plugin_webhooks_team_idx').on(t.teamId),
 ])
