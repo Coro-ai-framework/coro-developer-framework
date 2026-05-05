@@ -121,7 +121,14 @@ export interface ProposeChangeResult {
   targetLayer: ProposalTargetLayer
   branch: string
   prUrl: string
-  prId: number
+  /**
+   * Provider-neutral PR id as returned by the writer. Most providers
+   * use numeric ids (GitHub / Bitbucket / GitLab) but a string keeps
+   * the door open for non-numeric ids (e.g. Linear-style URLs).
+   * Consumers needing a numeric form should `Number(prId)` and check
+   * `Number.isFinite`.
+   */
+  prId: string
   filesShipped: string[]
   nextStep: string
 }
@@ -544,7 +551,9 @@ export async function proposeChange(
     logger: ctx.logger,
   })
 
-  // Open the PR.
+  // Open the PR via the SCM plugin matching the remote. The writer
+  // never reaches into bare BitBucket / GitHub clients anymore — see
+  // `intelligence/writer.ts:openProposalPr` for the dispatch rules.
   const reviewerUsernames = jobReviewers(ctx.job)
   const pr = await openProposalPr({
     remoteUrl,
@@ -553,15 +562,23 @@ export async function proposeChange(
     title: `Coro proposal: ${input.title}`,
     body: buildPrBody(input, files, targetLayer, ctx),
     ...(reviewerUsernames.length > 0 ? { reviewerUsernames } : {}),
-    bbCoder: ctx.bbCoder,
-    ghClient: ctx.ghClient,
+    plugins: ctx.plugins,
     logger: ctx.logger,
   })
 
   // Record in the state backend so the dashboard and future jobs can
   // de-dup. The runner intentionally writes the proposal *after* the
   // PR opens — if PR creation fails the state stays clean.
+  //
+  // The writer's `OpenedProposalPr.id` is a provider-neutral string
+  // post-pivot (some providers — e.g. Linear — use non-numeric ids).
+  // The legacy `Proposal.prId` column is still typed `number | null`
+  // for back-compat; we coerce when the id is purely numeric and
+  // fall through to `null` otherwise so the dashboard's existing
+  // numeric-PR queries keep working without lying about non-numeric
+  // ids.
   const now = new Date().toISOString()
+  const numericPrId = /^\d+$/.test(pr.id) ? Number(pr.id) : null
   const stored = await ctx.stateBackend.createProposal({
     tenantId: ctx.tenantContext.tenantId,
     jobId: ctx.job.id,
@@ -576,7 +593,7 @@ export async function proposeChange(
     targetLayer,
     branch,
     prUrl: pr.url,
-    prId: pr.id,
+    prId: numericPrId,
   })
 
   await ctx.stateBackend.appendLog(

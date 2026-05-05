@@ -1,5 +1,5 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
-import { GitBranch, KeyRound, Plug, RefreshCcw, ShieldCheck, Ticket, Waypoints } from 'lucide-react'
+import { GitBranch, KeyRound, PackagePlus, Plug, RefreshCcw, ShieldCheck, Ticket, Trash2, Waypoints } from 'lucide-react'
 import PageHeader from '../components/common/page-header'
 import StatCard from '../components/common/stat-card'
 import ErrorState from '../components/common/error-state'
@@ -11,14 +11,16 @@ import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
 import { Separator } from '../components/ui/separator'
 import { Skeleton } from '../components/ui/skeleton'
+import { Switch } from '../components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
+import { Textarea } from '../components/ui/textarea'
 import { ApiError, jsonRequest, requestJson } from '../lib/http'
 import { cn } from '../lib/utils'
 import { toneClasses, type Tone } from '../lib/status'
 
 type AnthropicMethod = 'apiKey' | 'claudeLogin' | 'oauth'
 type TrackerProvider = 'none' | 'jira' | 'github' | 'linear'
-type SettingsTab = 'anthropic' | 'plugins' | 'git' | 'tracker' | 'paths'
+type SettingsTab = 'anthropic' | 'plugins' | 'mcp' | 'git' | 'tracker' | 'paths'
 
 interface PluginManifestSummary {
   id: string
@@ -49,6 +51,7 @@ interface PluginsResponse {
   plugins: {
     manifest: PluginManifestSummary
     installed: boolean
+    source?: 'builtin' | 'dropin'
     mcpServer?: PluginMcpServerSummary | null
   }[]
   defaults: { scm?: string; tracker?: string }
@@ -73,6 +76,18 @@ interface ClaudeLoginState {
   completedAt?: string
 }
 
+interface McpServerEntry {
+  type: 'stdio' | 'http' | 'sse'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string>
+  enabled?: boolean
+  allowedTools?: string[]
+  disallowedTools?: string[]
+}
+
 interface ConfigResponse {
   config: {
     anthropic?: {
@@ -95,6 +110,8 @@ interface ConfigResponse {
       jira?: { baseUrl?: string; username?: string; apiToken?: string }
       linear?: { apiKey?: string; teamKey?: string }
     }
+    mcpServers?: Record<string, McpServerEntry>
+    inheritClaudeCodeMcps?: boolean
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
@@ -324,6 +341,30 @@ export default function Settings() {
 
   const [pluginsState, setPluginsState] = useState<PluginsResponse | null>(null)
   const [pluginsLoading, setPluginsLoading] = useState(false)
+  const [installSpec, setInstallSpec] = useState('')
+  const [installId, setInstallId] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [installError, setInstallError] = useState<string | null>(null)
+  const [installNotice, setInstallNotice] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+
+  // BYO MCP servers editor (S8). Held as a JSON string so operators
+  // can paste a full block in one go without us re-implementing every
+  // shape variation in form controls.
+  const [mcpServersText, setMcpServersText] = useState('{}')
+  const [mcpServersOriginal, setMcpServersOriginal] = useState('{}')
+  const [mcpSaving, setMcpSaving] = useState(false)
+  const [mcpError, setMcpError] = useState<string | null>(null)
+  const [mcpNotice, setMcpNotice] = useState<string | null>(null)
+
+  // Claude Code MCP inheritance (S9).
+  const [inheritClaudeCodeMcps, setInheritClaudeCodeMcps] = useState(false)
+  const [inheritSaving, setInheritSaving] = useState(false)
+  const [claudeCodeMcps, setClaudeCodeMcps] = useState<{
+    servers: Record<string, McpServerEntry>
+    sources: string[]
+  } | null>(null)
+  const [claudeCodeMcpsLoading, setClaudeCodeMcpsLoading] = useState(false)
 
   const effectiveClaudeAccount = claudeLoginState.account ?? claudeLoginAccount
   const claudeLoginReady = claudeLoginState.status === 'connected' || !!effectiveClaudeAccount
@@ -358,6 +399,123 @@ export default function Settings() {
       setPluginsState(null)
     } finally {
       setPluginsLoading(false)
+    }
+  }
+
+  async function installPlugin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setInstallError(null)
+    setInstallNotice(null)
+    const spec = installSpec.trim()
+    if (!spec) {
+      setInstallError('Enter an npm package name (e.g. `@coro/plugin-gitlab`).')
+      return
+    }
+    try {
+      setInstalling(true)
+      const body: Record<string, string> = { spec }
+      const id = installId.trim()
+      if (id) body['id'] = id
+      const result = await requestJson<{ manifest: { id: string; displayName: string }; restartHint?: string }>(
+        '/plugins/install',
+        jsonRequest(body, { method: 'POST' }),
+      )
+      setInstallNotice(
+        `Installed "${result.manifest.displayName}". ${result.restartHint ?? 'Restart the runner to load it.'}`,
+      )
+      setInstallSpec('')
+      setInstallId('')
+      void loadPlugins()
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : (err as Error).message
+      setInstallError(message)
+    } finally {
+      setInstalling(false)
+    }
+  }
+
+  async function uninstallPlugin(id: string, displayName: string) {
+    setInstallError(null)
+    setInstallNotice(null)
+    if (!window.confirm(`Remove drop-in plugin "${displayName}"? The runner will need a restart to drop it from memory.`)) {
+      return
+    }
+    try {
+      setRemovingId(id)
+      const result = await requestJson<{ restartHint?: string }>(`/plugins/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      })
+      setInstallNotice(`Removed "${displayName}". ${result.restartHint ?? 'Restart the runner to fully unload it.'}`)
+      void loadPlugins()
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : (err as Error).message
+      setInstallError(`Failed to uninstall ${displayName}: ${message}`)
+    } finally {
+      setRemovingId(null)
+    }
+  }
+
+  async function loadClaudeCodeMcps() {
+    try {
+      setClaudeCodeMcpsLoading(true)
+      const data = await requestJson<{ servers: Record<string, McpServerEntry>; sources: string[] }>(
+        '/config/claude-code-mcps',
+      )
+      setClaudeCodeMcps(data)
+    } catch {
+      setClaudeCodeMcps(null)
+    } finally {
+      setClaudeCodeMcpsLoading(false)
+    }
+  }
+
+  async function setInheritClaudeCodeMcpsToggle(next: boolean) {
+    setMcpError(null)
+    setMcpNotice(null)
+    try {
+      setInheritSaving(true)
+      await requestJson('/config', jsonRequest({ inheritClaudeCodeMcps: next }, { method: 'PUT' }))
+      setInheritClaudeCodeMcps(next)
+      setMcpNotice(
+        next
+          ? 'Inheritance enabled. New jobs will see your Claude Code MCP servers under `mcp__<id>__*` after the runner restarts.'
+          : 'Inheritance disabled. Already-running jobs keep their attached servers; new jobs only see the BYO list above.',
+      )
+      if (next && !claudeCodeMcps) void loadClaudeCodeMcps()
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : (err as Error).message
+      setMcpError(message)
+    } finally {
+      setInheritSaving(false)
+    }
+  }
+
+  async function saveMcpServers() {
+    setMcpError(null)
+    setMcpNotice(null)
+    let parsed: Record<string, McpServerEntry>
+    try {
+      parsed = JSON.parse(mcpServersText) as Record<string, McpServerEntry>
+    } catch (err) {
+      setMcpError(`Invalid JSON: ${(err as Error).message}`)
+      return
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      setMcpError('mcpServers must be a JSON object keyed by server id.')
+      return
+    }
+    try {
+      setMcpSaving(true)
+      await requestJson('/config', jsonRequest({ mcpServers: parsed }, { method: 'PUT' }))
+      const formatted = JSON.stringify(parsed, null, 2)
+      setMcpServersText(formatted)
+      setMcpServersOriginal(formatted)
+      setMcpNotice('Saved. Restart the runner so the new servers are attached to job sessions.')
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : (err as Error).message
+      setMcpError(message)
+    } finally {
+      setMcpSaving(false)
     }
   }
 
@@ -414,6 +572,10 @@ export default function Settings() {
           linearApiKey: data.config.tracker?.linear?.apiKey ?? '',
           linearTeamKey: data.config.tracker?.linear?.teamKey ?? '',
         })
+        const mcpJson = JSON.stringify(data.config.mcpServers ?? {}, null, 2)
+        setMcpServersText(mcpJson)
+        setMcpServersOriginal(mcpJson)
+        setInheritClaudeCodeMcps(data.config.inheritClaudeCodeMcps === true)
       }
     } catch (loadIssue) {
       setError(loadIssue instanceof Error ? loadIssue.message : String(loadIssue))
@@ -762,6 +924,7 @@ export default function Settings() {
             <TabsList>
               <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
               <TabsTrigger value="plugins">Plugins</TabsTrigger>
+              <TabsTrigger value="mcp">MCP servers</TabsTrigger>
               <TabsTrigger value="git">Git</TabsTrigger>
               <TabsTrigger value="tracker">Tracker</TabsTrigger>
               <TabsTrigger value="paths">Paths</TabsTrigger>
@@ -975,6 +1138,53 @@ export default function Settings() {
 
             <TabsContent value="plugins" className="space-y-6">
               <SectionCard
+                title="Install a plugin"
+                description="Drop-in plugins live under ~/.coro/plugins/. Paste any npm package name or git/tarball spec — the runner installs it locally and merges it into the registry on the next restart."
+              >
+                <form onSubmit={installPlugin} className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">
+                    <Field label="npm spec" htmlFor="plugin-install-spec">
+                      <Input
+                        id="plugin-install-spec"
+                        value={installSpec}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => setInstallSpec(e.target.value)}
+                        placeholder="@coro/plugin-gitlab"
+                        disabled={installing}
+                      />
+                    </Field>
+                    <Field label="Plugin id (optional)" htmlFor="plugin-install-id">
+                      <Input
+                        id="plugin-install-id"
+                        value={installId}
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => setInstallId(e.target.value)}
+                        placeholder="auto"
+                        disabled={installing}
+                      />
+                    </Field>
+                    <Button type="submit" disabled={installing}>
+                      <PackagePlus />
+                      {installing ? 'Installing…' : 'Install'}
+                    </Button>
+                  </div>
+                  {installError ? (
+                    <div className="rounded-2xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+                      {installError}
+                    </div>
+                  ) : null}
+                  {installNotice ? (
+                    <div className="rounded-2xl border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
+                      {installNotice}
+                    </div>
+                  ) : null}
+                  <p className="text-[12px] text-fg-muted">
+                    Examples: <code>@coro/plugin-gitlab</code>, <code>coro-plugin-jenkins@1.2.0</code>,{' '}
+                    <code>github:my-org/coro-plugin-acme</code>. Restart the runner after installing so the new
+                    plugin is loaded into the active registry.
+                  </p>
+                </form>
+              </SectionCard>
+
+              <SectionCard
                 title="Installed plugins"
                 description="Provider integrations the runner has loaded. Each plugin contributes its own MCP tools, webhook normaliser, and (optionally) intelligence snippets. Defaults below decide which plugin a job uses when its params don't pin one."
                 action={
@@ -1011,7 +1221,7 @@ export default function Settings() {
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {pluginsState.plugins.map(({ manifest, installed, mcpServer }) => (
+                        {pluginsState.plugins.map(({ manifest, installed, source, mcpServer }) => (
                           <div
                             key={manifest.id}
                             className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5"
@@ -1024,6 +1234,11 @@ export default function Settings() {
                                     {manifest.displayName}
                                   </div>
                                   <span className="font-mono text-[11px] text-fg-subtle">{manifest.id}</span>
+                                  {source === 'dropin' ? (
+                                    <span className="rounded-full border border-line bg-overlay/60 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-fg-muted">
+                                      drop-in
+                                    </span>
+                                  ) : null}
                                 </div>
                                 <div className="mt-1 text-[12px] text-fg-muted">
                                   kind: <span className="font-mono text-fg">{manifest.kind}</span>
@@ -1073,14 +1288,28 @@ export default function Settings() {
                                   </div>
                                 ) : null}
                               </div>
-                              <span
-                                className={cn(
-                                  'rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]',
-                                  toneClasses(installed ? 'success' : 'warning'),
-                                )}
-                              >
-                                {installed ? 'enabled' : 'disabled'}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={cn(
+                                    'rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em]',
+                                    toneClasses(installed ? 'success' : 'warning'),
+                                  )}
+                                >
+                                  {installed ? 'enabled' : 'disabled'}
+                                </span>
+                                {source === 'dropin' ? (
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => void uninstallPlugin(manifest.id, manifest.displayName)}
+                                    disabled={removingId === manifest.id}
+                                  >
+                                    <Trash2 />
+                                    {removingId === manifest.id ? 'Removing…' : 'Uninstall'}
+                                  </Button>
+                                ) : null}
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -1094,6 +1323,155 @@ export default function Settings() {
                       : 'Plugin discovery is unavailable. The runner may be too old or returned an error.'}
                   </div>
                 )}
+              </SectionCard>
+            </TabsContent>
+
+            <TabsContent value="mcp" className="space-y-6">
+              <SectionCard
+                title="Bring-your-own MCP servers"
+                description="Attach any MCP server (Slack, Sentry, Datadog, internal tooling, …) to every job session without writing a Coro plugin. The runner spawns each entry alongside the in-process `coro` server and the active plugin servers; agents see them as `mcp__<id>__*`."
+              >
+                <div className="space-y-3">
+                  <Textarea
+                    value={mcpServersText}
+                    onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setMcpServersText(e.target.value)}
+                    spellCheck={false}
+                    rows={14}
+                    className="font-mono text-[12px]"
+                    disabled={mcpSaving}
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[12px] text-fg-muted">
+                      The reserved id <code>coro</code> is rejected. Use <code>"enabled": false</code> to
+                      keep an entry without attaching it. <code>allowedTools</code> /{' '}
+                      <code>disallowedTools</code> are translated into the SDK's per-server tool policy.
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setMcpServersText(mcpServersOriginal)}
+                        disabled={mcpSaving || mcpServersText === mcpServersOriginal}
+                      >
+                        Discard
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => void saveMcpServers()}
+                        disabled={mcpSaving}
+                      >
+                        {mcpSaving ? 'Saving…' : 'Save'}
+                      </Button>
+                    </div>
+                  </div>
+                  {mcpError ? (
+                    <div className="rounded-2xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+                      {mcpError}
+                    </div>
+                  ) : null}
+                  {mcpNotice ? (
+                    <div className="rounded-2xl border border-success/40 bg-success/10 px-4 py-3 text-sm text-success">
+                      {mcpNotice}
+                    </div>
+                  ) : null}
+                </div>
+              </SectionCard>
+
+              <SectionCard
+                title="Inherit from Claude Code"
+                description="When enabled, the runner reads MCP servers from your user-level Claude Code config (~/.claude.json and ~/.claude/settings.json) and attaches them to every job session. Explicit BYO entries above override inherited entries with the same id."
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadClaudeCodeMcps()}
+                    disabled={claudeCodeMcpsLoading}
+                  >
+                    <RefreshCcw />
+                    {claudeCodeMcpsLoading ? 'Refreshing…' : 'Refresh'}
+                  </Button>
+                }
+              >
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-fg">Inherit Claude Code MCP servers</div>
+                      <div className="text-[12px] text-fg-muted">
+                        Off by default — Claude Code configs commonly carry developer-personal entries
+                        (Notion, GitHub Personal, …) that an operator may not want every job to see.
+                      </div>
+                    </div>
+                    <Switch
+                      checked={inheritClaudeCodeMcps}
+                      onCheckedChange={(next) => void setInheritClaudeCodeMcpsToggle(next)}
+                      disabled={inheritSaving}
+                      ariaLabel="Inherit Claude Code MCP servers"
+                    />
+                  </div>
+
+                  {claudeCodeMcps ? (
+                    <div className="space-y-3">
+                      {claudeCodeMcps.sources.length > 0 ? (
+                        <div className="text-[12px] text-fg-muted">
+                          Read from{' '}
+                          {claudeCodeMcps.sources.map((src, i) => (
+                            <span key={src} className="font-mono">
+                              {i > 0 ? ', ' : ''}
+                              {src}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
+                          No Claude Code MCP servers found. Add one with{' '}
+                          <code>claude mcp add &lt;name&gt; --scope user</code> or paste an entry into{' '}
+                          <code>~/.claude.json</code> under <code>mcpServers</code>.
+                        </div>
+                      )}
+                      {Object.keys(claudeCodeMcps.servers).length > 0 ? (
+                        <pre className="overflow-auto rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-[12px] text-fg-muted">
+                          {JSON.stringify(claudeCodeMcps.servers, null, 2)}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-sm text-fg-muted">
+                      {claudeCodeMcpsLoading
+                        ? 'Loading discovered servers…'
+                        : 'Click Refresh to preview the MCP servers Claude Code currently exposes.'}
+                    </div>
+                  )}
+                </div>
+              </SectionCard>
+
+              <SectionCard
+                title="Examples"
+                description="Drop these into the editor above. Replace the placeholder secrets with real ones — values containing `...` are treated as redacted echoes and ignored on save."
+              >
+                <pre className="overflow-auto rounded-2xl border border-line bg-overlay/40 px-4 py-3.5 text-[12px] text-fg-muted">
+{`{
+  "slack": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-slack"],
+    "env": { "SLACK_BOT_TOKEN": "xoxb-…" },
+    "allowedTools": ["list_channels", "search_messages"]
+  },
+  "sentry": {
+    "type": "http",
+    "url": "https://mcp.sentry.io",
+    "headers": { "Authorization": "Bearer …" }
+  },
+  "datadog": {
+    "type": "sse",
+    "url": "https://mcp.datadoghq.com/sse",
+    "enabled": false
+  }
+}`}
+                </pre>
               </SectionCard>
             </TabsContent>
 

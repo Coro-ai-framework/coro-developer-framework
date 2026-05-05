@@ -30,6 +30,7 @@ import type { Logger } from 'pino'
 import { GitHubClient } from '../../../clients/github'
 import {
   externalIdString,
+  type ExternalRef,
   type NormalizedEvent,
 } from '../../refs'
 import type {
@@ -38,6 +39,7 @@ import type {
   PluginManifest,
   PluginMcpServerConfig,
   ScmCloneInfo,
+  ScmCreatePrArgs,
   ScmPluginRuntime,
   ScmPollSnapshot,
   ScmPrComment,
@@ -218,6 +220,32 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
 
   matchesRemote(remoteUrl: string): boolean {
     return /(^|\/\/|@)github\.com[:/]/i.test(remoteUrl)
+  }
+
+  /**
+   * Self-improvement writer escape hatch (see ScmPluginRuntime.writerCreatePr).
+   * Re-uses the inline `GitHubClient` that `pollPr` already needs, so
+   * we don't pay the round-trip cost of spawning a fresh upstream
+   * MCP server outside `query()` — which the SDK doesn't support
+   * today anyway.
+   */
+  async writerCreatePr(args: ScmCreatePrArgs): Promise<ExternalRef> {
+    const reviewers = args.reviewers ? Array.from(args.reviewers) : undefined
+    const pr = await this.client.createPr({
+      repoSlug: args.repoSlug,
+      title: args.title,
+      ...(args.description !== undefined ? { description: args.description } : {}),
+      sourceBranch: args.sourceBranch,
+      ...(args.targetBranch !== undefined ? { targetBranch: args.targetBranch } : {}),
+      ...(reviewers && reviewers.length > 0 ? { reviewerUsernames: reviewers } : {}),
+    })
+    return {
+      kind: 'pull_request',
+      pluginId: this.manifest.id,
+      repoKey: args.repoSlug,
+      externalId: String(pr.id),
+      url: pr.links.html.href,
+    }
   }
 
   normalizeInbound(req: { headers: Record<string, string | string[] | undefined>; rawBody: Buffer }): NormalizedEvent | null {

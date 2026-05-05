@@ -3,13 +3,12 @@ import { z } from 'zod'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { createMcpToolHandlers, mcpError, mcpText } from './mcp-handlers'
 
-// Legacy `bb_*` / `gh_*` / `jira_*` tools stay registered at every
-// deprecation stage; the *handler* surface (`mcp-handlers.ts`)
-// decides whether to log a warning (N), throw a structured error
-// (N+1), or refuse with the same error after registration is
-// hypothetically left over (N+2). Keeping registration unconditional
-// avoids fighting the SDK's tool-list shape and lets a single
-// `logDeprecation` site own all stage transitions.
+// Legacy `bb_*` / `gh_*` / `jira_*` tools were removed entirely in
+// S6 of the MCP-first plugins pivot. Workflow markdown that still
+// names a legacy tool now hits the SDK's "tool not found" path; the
+// agent sees a clean error and is expected to call the trimmed
+// `scm_*` / `tracker_*` surface or the upstream MCP server directly
+// (`mcp__github__*`, `mcp__jira__*`, …).
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
@@ -150,146 +149,6 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         { annotations: { readOnlyHint: true } },
       ),
 
-      // ── BitBucket — coder account (DEPRECATED) ────────────────────────────
-      //
-      // Legacy tool surface kept for one release while workflow
-      // markdown migrates. Each call emits a deprecation log line; P9
-      // turns these into MCP errors at N+1 and removes them at N+2.
-
-      tool(
-        'bb_create_repo',
-        'REMOVED: BitBucket repo creation now goes through the runner during job bootstrap, not via an agent tool.',
-        { repoSlug: z.string(), description: z.string().optional() },
-        h.bb_create_repo,
-      ),
-
-      tool(
-        'bb_create_pr',
-        'DEPRECATED: use scm_create_pr with pluginId="bitbucket". Open a pull request from the current work-item branch.',
-        {
-          repoSlug: z.string(),
-          title: z.string(),
-          description: z.string().optional(),
-          sourceBranch: z.string(),
-          targetBranch: z.string().optional(),
-          reviewerUsernames: z.array(z.string()).optional(),
-        },
-        h.bb_create_pr,
-      ),
-
-      tool(
-        'bb_get_pr_status',
-        'DEPRECATED: use scm_get_pr_status with pluginId="bitbucket".',
-        { repoSlug: z.string(), prId: z.number() },
-        h.bb_get_pr_status,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      // ── BitBucket — reviewer account (DEPRECATED) ─────────────────────────
-
-      tool(
-        'bb_get_pr_comments',
-        'DEPRECATED: use scm_list_pr_comments with pluginId="bitbucket".',
-        { repoSlug: z.string(), prId: z.number() },
-        h.bb_get_pr_comments,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
-        'bb_post_pr_comment',
-        'DEPRECATED: use scm_post_pr_comment with pluginId="bitbucket".',
-        { repoSlug: z.string(), prId: z.number(), content: z.string() },
-        h.bb_post_pr_comment,
-      ),
-
-      tool(
-        'bb_reply_to_comment',
-        'REMOVED: threaded comment replies are not in the generic surface; use scm_post_pr_comment for top-level comments.',
-        { repoSlug: z.string(), prId: z.number(), parentId: z.number(), content: z.string() },
-        h.bb_reply_to_comment,
-      ),
-
-      tool(
-        'bb_approve_pr',
-        'REMOVED: PR approvals are a human responsibility; the agent should request review and park, not self-approve.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.bb_approve_pr,
-      ),
-
-      tool(
-        'bb_merge_pr',
-        'DEPRECATED: use scm_merge_pr with pluginId="bitbucket".',
-        { repoSlug: z.string(), prId: z.number(), message: z.string().optional() },
-        h.bb_merge_pr,
-      ),
-
-      // ── GitHub (DEPRECATED) ───────────────────────────────────────────────
-
-      tool(
-        'gh_create_repo',
-        'REMOVED: call mcp__github__create_repository directly (the upstream GitHub MCP server is attached to every session).',
-        { repoSlug: z.string(), description: z.string().optional() },
-        h.gh_create_repo,
-      ),
-
-      tool(
-        'gh_create_pr',
-        'DEPRECATED: use scm_create_pr with pluginId="github".',
-        {
-          repoSlug: z.string(),
-          title: z.string(),
-          description: z.string().optional(),
-          sourceBranch: z.string(),
-          targetBranch: z.string().optional(),
-          reviewerUsernames: z.array(z.string()).optional(),
-        },
-        h.gh_create_pr,
-      ),
-
-      tool(
-        'gh_get_pr_status',
-        'DEPRECATED: use scm_get_pr_status with pluginId="github".',
-        { repoSlug: z.string(), prId: z.number() },
-        h.gh_get_pr_status,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
-        'gh_get_pr_comments',
-        'DEPRECATED: use scm_list_pr_comments with pluginId="github".',
-        { repoSlug: z.string(), prId: z.number() },
-        h.gh_get_pr_comments,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
-        'gh_post_pr_comment',
-        'DEPRECATED: use scm_post_pr_comment with pluginId="github".',
-        { repoSlug: z.string(), prId: z.number(), content: z.string() },
-        h.gh_post_pr_comment,
-      ),
-
-      tool(
-        'gh_reply_to_comment',
-        'REMOVED: call mcp__github__add_pull_request_review_comment directly with the parent comment id.',
-        { repoSlug: z.string(), prId: z.number(), parentId: z.number(), content: z.string() },
-        h.gh_reply_to_comment,
-      ),
-
-      tool(
-        'gh_approve_pr',
-        'REMOVED: PR approvals are a human responsibility; the agent should request review and park, not self-approve.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.gh_approve_pr,
-      ),
-
-      tool(
-        'gh_merge_pr',
-        'DEPRECATED: use scm_merge_pr with pluginId="github".',
-        { repoSlug: z.string(), prId: z.number(), message: z.string().optional() },
-        h.gh_merge_pr,
-      ),
-
       // ── Test harness ──────────────────────────────────────────────────────
 
       tool(
@@ -358,30 +217,6 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         { query: z.string(), start: z.string(), end: z.string().optional(), limit: z.number().optional() },
         h.tempo_search,
         { annotations: { readOnlyHint: true } },
-      ),
-
-      // ── Jira (DEPRECATED) ─────────────────────────────────────────────────
-
-      tool(
-        'jira_get_issue',
-        'DEPRECATED: use tracker_get_issue with pluginId="jira".',
-        { ticketId: z.string() },
-        h.jira_get_issue,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
-        'jira_post_comment',
-        'DEPRECATED: use tracker_comment_issue with pluginId="jira".',
-        { ticketId: z.string(), body: z.string() },
-        h.jira_post_comment,
-      ),
-
-      tool(
-        'jira_transition_issue',
-        'DEPRECATED: use tracker_transition_issue with pluginId="jira" and pass status name (not numeric transition id).',
-        { ticketId: z.string(), transitionId: z.string() },
-        h.jira_transition_issue,
       ),
 
       // ── Tracker (provider-agnostic, MCP-first proxy) ─────────────────────

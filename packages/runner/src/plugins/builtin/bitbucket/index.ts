@@ -189,6 +189,17 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     }
   }
 
+  /**
+   * Self-improvement writer escape hatch. BitBucket is fully native
+   * (no upstream MCP), so this just delegates to `createPr`. The
+   * dedicated method exists so the writer doesn't have to reach into
+   * the agent-facing surface and so the contract stays uniform with
+   * MCP-mode plugins like GitHub.
+   */
+  async writerCreatePr(args: ScmCreatePrArgs): Promise<ExternalRef> {
+    return this.createPr(args)
+  }
+
   async getPrStatus(ref: ExternalRef): Promise<ScmPrStatus> {
     const { repoSlug, prId } = this.parseRef(ref)
     const status = await this.coder.getPrStatus(repoSlug, prId)

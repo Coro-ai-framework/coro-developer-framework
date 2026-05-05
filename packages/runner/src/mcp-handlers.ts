@@ -3,10 +3,6 @@ import { Artifact, WorkItem, Insight, Job } from './jobs/types'
 import type { ExternalRef } from './plugins/refs'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
-import {
-  DeprecatedMcpToolError,
-  legacyMcpWrapperBehaviour,
-} from './plugins/deprecation'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -127,38 +123,16 @@ function prRef(scm: ScmPluginRuntime, repo: string, prId: number | string): Exte
 }
 
 /**
- * Stage-aware deprecation gate for `bb_*` / `gh_*` / `jira_*`
- * wrappers. The stage matrix lives in `plugins/deprecation.ts`:
- *
- *   N    → log a warning and let the wrapper proceed.
- *   N+1  → throw {@link DeprecatedMcpToolError}; the wrapper body
- *          never runs and the agent sees a structured MCP error
- *          pointing at the new tool.
- *   N+2  → wrapper not registered at all (mcp-server filters at
- *          registration time); kept here as a guard in case a
- *          stale code path still calls in.
- *
- * Every wrapper calls this as the first statement. If it returns,
- * the legacy code path proceeds; otherwise it throws and the SDK
- * surfaces the error to the model.
- */
-function logDeprecation(ctx: ToolContext, oldName: string, newName: string, extra?: Record<string, unknown>): void {
-  const stage = legacyMcpWrapperBehaviour()
-  if (stage === 'warn') {
-    ctx.logger.warn(
-      { tool: oldName, replacement: newName, jobId: ctx.job.id, ...extra },
-      `MCP tool ${oldName} is deprecated — agents should call ${newName}`,
-    )
-    return
-  }
-  // 'error' (N+1) and 'remove' (N+2 fallback) both surface the same
-  // structured error to the agent.
-  throw new DeprecatedMcpToolError(oldName, newName)
-}
-
-/**
  * All Coro MCP tool implementations. Used by `createCoroMcpServer` and by tests
  * that invoke handlers with a mock {@link ToolContext}.
+ *
+ * The legacy `bb_*` / `gh_*` / `jira_*` shims and their
+ * `logDeprecation` gate were removed in S6 of the MCP-first plugins
+ * pivot. The deprecation cycle controller in `plugins/deprecation.ts`
+ * still ships for *config* keys (`legacyConfigKeysBehaviour`) and the
+ * *mapping tables* (`legacyMappingTablesBehaviour`); only the MCP
+ * wrapper branch graduated past N+2 ahead of cycle because the
+ * plugins migration replaced every legacy call site at once.
  */
 export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const text = mcpText
@@ -428,157 +402,21 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     tracker_comment_issue,
     tracker_transition_issue,
 
-    // ── BitBucket / GitHub back-compat shims (DEPRECATED) ────────────
+    // ── Legacy bb_*/gh_*/jira_* shims removed in S6 ──────────────────────
     //
-    // Surviving shims forward straight to the trimmed `scm_*` surface.
-    // Shims that pointed to dropped ops (`scm_create_repo`,
-    // `scm_approve_pr`, `scm_reply_to_comment`) return a structured
-    // error pointing the agent at the equivalent native MCP tool
-    // (`mcp__github__create_repository` etc.) — the upstream MCP
-    // server attached at job start covers these. BitBucket users
-    // (no `mcpServer()`) get told the op is unavailable; they should
-    // not be calling these legacy names anyway.
+    // The MCP-first pivot deleted every back-compat wrapper. Workflow
+    // markdown that still names a legacy tool now hits the SDK's
+    // "tool not found" path, which surfaces a clean error to the
+    // agent. Agents must call the trimmed generic surface
+    // (`scm_*`/`tracker_*`) or the upstream MCP server directly
+    // (`mcp__github__*`, `mcp__jira__*`, …).
     //
-    // The full deletion of every `bb_*`/`gh_*`/`jira_*` shim is the
-    // responsibility of S6.
-    bb_create_repo: async (_args: { repoSlug: string; description?: string }) => {
-      logDeprecation(ctx, 'bb_create_repo', 'scm_get_clone_info + bitbucket native client')
-      return error(
-        `bb_create_repo is removed in the MCP-first pivot. BitBucket repo creation now ` +
-        `goes through the runner's git client directly during job bootstrap; agents do not ` +
-        `call this anymore.`,
-      )
-    },
-
-    bb_create_pr: async ({
-      repoSlug, title, description, sourceBranch, targetBranch, reviewerUsernames,
-    }: {
-      repoSlug: string
-      title: string
-      description?: string
-      sourceBranch: string
-      targetBranch?: string
-      reviewerUsernames?: string[]
-    }) => {
-      logDeprecation(ctx, 'bb_create_pr', 'scm_create_pr')
-      return scm_create_pr({
-        pluginId: 'bitbucket',
-        repo: repoSlug,
-        title,
-        ...(description ? { description } : {}),
-        sourceBranch,
-        ...(targetBranch ? { targetBranch } : {}),
-        ...(reviewerUsernames ? { reviewers: reviewerUsernames } : {}),
-      })
-    },
-
-    bb_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      logDeprecation(ctx, 'bb_get_pr_status', 'scm_get_pr_status')
-      return scm_get_pr_status({ pluginId: 'bitbucket', repo: repoSlug, prId })
-    },
-
-    bb_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      logDeprecation(ctx, 'bb_get_pr_comments', 'scm_list_pr_comments')
-      return scm_list_pr_comments({ pluginId: 'bitbucket', repo: repoSlug, prId })
-    },
-
-    bb_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
-      logDeprecation(ctx, 'bb_post_pr_comment', 'scm_post_pr_comment')
-      return scm_post_pr_comment({ pluginId: 'bitbucket', repo: repoSlug, prId, body: content })
-    },
-
-    bb_reply_to_comment: async (_args: {
-      repoSlug: string; prId: number; parentId: number; content: string
-    }) => {
-      logDeprecation(ctx, 'bb_reply_to_comment', 'scm_post_pr_comment')
-      return error(
-        `bb_reply_to_comment is removed in the MCP-first pivot. Threaded replies are ` +
-        `provider-specific; use scm_post_pr_comment for top-level comments and rely on ` +
-        `the BitBucket native client when threading is needed.`,
-      )
-    },
-
-    bb_approve_pr: async (_args: { repoSlug: string; prId: number }) => {
-      logDeprecation(ctx, 'bb_approve_pr', 'human PR review')
-      return error(
-        `bb_approve_pr is removed in the MCP-first pivot. PR approvals are a human ` +
-        `review responsibility; the agent should request review and park, not self-approve.`,
-      )
-    },
-
-    bb_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
-      logDeprecation(ctx, 'bb_merge_pr', 'scm_merge_pr')
-      return scm_merge_pr({ pluginId: 'bitbucket', repo: repoSlug, prId, ...(message ? { message } : {}) })
-    },
-
-    gh_create_repo: async (_args: { repoSlug: string; description?: string }) => {
-      logDeprecation(ctx, 'gh_create_repo', 'mcp__github__create_repository')
-      return error(
-        `gh_create_repo is removed in the MCP-first pivot. Call ` +
-        `mcp__github__create_repository directly — the upstream GitHub MCP server is ` +
-        `attached to every session.`,
-      )
-    },
-
-    gh_create_pr: async ({
-      repoSlug, title, description, sourceBranch, targetBranch, reviewerUsernames,
-    }: {
-      repoSlug: string
-      title: string
-      description?: string
-      sourceBranch: string
-      targetBranch?: string
-      reviewerUsernames?: string[]
-    }) => {
-      logDeprecation(ctx, 'gh_create_pr', 'scm_create_pr')
-      return scm_create_pr({
-        pluginId: 'github',
-        repo: repoSlug,
-        title,
-        ...(description ? { description } : {}),
-        sourceBranch,
-        ...(targetBranch ? { targetBranch } : {}),
-        ...(reviewerUsernames ? { reviewers: reviewerUsernames } : {}),
-      })
-    },
-
-    gh_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      logDeprecation(ctx, 'gh_get_pr_status', 'scm_get_pr_status')
-      return scm_get_pr_status({ pluginId: 'github', repo: repoSlug, prId })
-    },
-
-    gh_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      logDeprecation(ctx, 'gh_get_pr_comments', 'scm_list_pr_comments')
-      return scm_list_pr_comments({ pluginId: 'github', repo: repoSlug, prId })
-    },
-
-    gh_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
-      logDeprecation(ctx, 'gh_post_pr_comment', 'scm_post_pr_comment')
-      return scm_post_pr_comment({ pluginId: 'github', repo: repoSlug, prId, body: content })
-    },
-
-    gh_reply_to_comment: async (_args: {
-      repoSlug: string; prId: number; parentId: number; content: string
-    }) => {
-      logDeprecation(ctx, 'gh_reply_to_comment', 'mcp__github__add_pull_request_review_comment')
-      return error(
-        `gh_reply_to_comment is removed in the MCP-first pivot. Call ` +
-        `mcp__github__add_pull_request_review_comment directly with the parent comment id.`,
-      )
-    },
-
-    gh_approve_pr: async (_args: { repoSlug: string; prId: number }) => {
-      logDeprecation(ctx, 'gh_approve_pr', 'human PR review')
-      return error(
-        `gh_approve_pr is removed in the MCP-first pivot. PR approvals are a human ` +
-        `review responsibility; the agent should request review and park, not self-approve.`,
-      )
-    },
-
-    gh_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
-      logDeprecation(ctx, 'gh_merge_pr', 'scm_merge_pr')
-      return scm_merge_pr({ pluginId: 'github', repo: repoSlug, prId, ...(message ? { message } : {}) })
-    },
+    // The deprecation-cycle controller in `plugins/deprecation.ts`
+    // still ships for the *config* keys (`legacyConfigKeysBehaviour`)
+    // and the mapping tables (`legacyMappingTablesBehaviour`); only
+    // the MCP-wrapper branch has been graduated past N+2 ahead of
+    // the cycle because the plugins migration replaced all the
+    // legacy call sites.
 
     // Test harness
     run_go_build: async ({ repoDir }: { repoDir: string }) => {
@@ -673,34 +511,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text(result)
     },
 
-    // Jira back-compat shims (DEPRECATED).
-    //
-    // The tracker plugin's `transitionIssue` takes a *status name*
-    // (e.g. `"Done"`); the legacy Jira tool took a numeric Jira
-    // transition id (e.g. `"11"`). The plugin handles the lookup
-    // internally so the wrapper just renames the field — the semantic
-    // is identical for any modern Jira project (transition names map
-    // 1:1 to ids inside the plugin).
-    jira_get_issue: async ({ ticketId }: { ticketId: string }) => {
-      logDeprecation(ctx, 'jira_get_issue', 'tracker_get_issue')
-      return tracker_get_issue({ pluginId: 'jira', key: ticketId })
-    },
-
-    jira_post_comment: async ({ ticketId, body }: { ticketId: string; body: string }) => {
-      logDeprecation(ctx, 'jira_post_comment', 'tracker_comment_issue')
-      return tracker_comment_issue({ pluginId: 'jira', key: ticketId, body })
-    },
-
-    jira_transition_issue: async ({ ticketId, transitionId }: { ticketId: string; transitionId: string }) => {
-      logDeprecation(ctx, 'jira_transition_issue', 'tracker_transition_issue')
-      // The legacy contract took a Jira transition *id*; the plugin's
-      // tracker contract takes a *status name*. Pass the value
-      // through as the status string — Jira projects with numeric
-      // transition ids in workflow markdown will need to migrate at
-      // P9, but the call still goes to Jira and the runner emits a
-      // structured tool error if Jira rejects an unknown transition.
-      return tracker_transition_issue({ pluginId: 'jira', key: ticketId, status: transitionId })
-    },
+    // (Legacy jira_*/bb_*/gh_* shims removed in S6 — see comment above.)
 
     // Work-item tracking — pure state CRUD, zero orchestration logic
     set_work_items: setWorkItems,

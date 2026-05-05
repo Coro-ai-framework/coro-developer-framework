@@ -20,7 +20,12 @@ import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import type { TrackerClient } from '../clients/tracker'
 import { Settings } from '../config/settings'
-import { defaultLoaderCacheRoot } from '../config/local-config'
+import {
+  defaultLoaderCacheRoot,
+  discoverClaudeCodeMcpServers,
+  loadLocalConfig,
+  type UserMcpServerConfig,
+} from '../config/local-config'
 import {
   resolveJobIntelligence,
   type ResolvedIntelligence,
@@ -381,20 +386,26 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       ensureClaudeConfigSymlink(workingDir, jobIntelligenceDir, logger)
 
       // Build subagent definitions from workflow config. Plugin-provided
-      // MCP servers (S1) propagate to subagents too — otherwise a code
-      // reviewer subagent would be blind to `mcp__github__*` tools the
+      // MCP servers (S1) and BYO MCP servers (S8) propagate to
+      // subagents too — otherwise a code reviewer subagent would be
+      // blind to `mcp__github__*` / `mcp__slack__*` etc. tools the
       // parent agent can see.
       const subagentPluginMcpServers = collectPluginMcpServers({
         plugins: ctx.plugins,
         logger,
       })
+      const subagentUserMcpServers = collectUserMcpServers({ logger })
+      const subagentMcpServers = {
+        ...subagentPluginMcpServers,
+        ...subagentUserMcpServers,
+      }
       const agents = phaseConf?.subagents
         ? buildSubagentDefinitions(
             phaseConf.subagents,
             jobIntelligenceDir,
             settings,
             mcpServer as McpSdkServerConfig,
-            subagentPluginMcpServers,
+            subagentMcpServers,
           )
         : undefined
 
@@ -485,9 +496,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         plugins: ctx.plugins,
         logger,
       })
+      // Bring-your-own MCP servers (S8 of the MCP-first pivot) are
+      // attached after plugin servers; collisions with plugin ids
+      // are resolved by giving the BYO config the win — operators
+      // explicitly opted into the user-level entry. `coro` is still
+      // reserved.
+      const userMcpServers = collectUserMcpServers({ logger })
       const dynamicMcpServers = {
         coro: mcpServer,
         ...pluginMcpServers,
+        ...userMcpServers,
       } satisfies Record<string, McpServerConfig>
 
       if (Object.keys(pluginMcpServers).length > 0) {
@@ -1187,6 +1205,99 @@ export function collectPluginMcpServers(args: {
       // through unchanged here and rely on the per-plugin manifest's
       // capability flags to drive the prompt-side curation in S2.
       result[id] = descriptor
+    }
+  }
+
+  return result
+}
+
+/**
+ * Collects bring-your-own MCP servers from the local config
+ * (`~/.coro/config.json` → `mcpServers`). Returns a `Record<id,
+ * McpServerConfig>` ready to merge into the SDK's `mcpServers`
+ * option, exactly mirroring the shape `collectPluginMcpServers` emits.
+ *
+ * Servers with `enabled: false` are skipped. The reserved id `coro`
+ * is rejected with a warning. `allowedTools` / `disallowedTools` are
+ * translated into per-server `tools` policies so operators can curate
+ * the prompt-side surface without forking the upstream MCP server.
+ *
+ * Errors loading the config (missing file, unparsable JSON) are
+ * downgraded to a warn — running jobs must not fail because the
+ * developer mis-edited the config. The SDK reports unreachable MCP
+ * servers in its `init` message anyway.
+ */
+export function collectUserMcpServers(args: { logger: Logger }): Record<string, McpServerConfig> {
+  const result: Record<string, McpServerConfig> = {}
+  let config: ReturnType<typeof loadLocalConfig>
+  try {
+    config = loadLocalConfig()
+  } catch (err) {
+    args.logger.warn(
+      { err },
+      'collectUserMcpServers: failed to load local config — skipping BYO MCP servers',
+    )
+    return result
+  }
+
+  // Build the merged source map: explicit BYO entries from
+  // ~/.coro/config.json land last so they always win over inherited
+  // Claude Code entries with the same id (operators can mask noisy
+  // inherited servers without editing ~/.claude.json).
+  const merged: Record<string, UserMcpServerConfig> = {}
+  if (config?.inheritClaudeCodeMcps === true) {
+    try {
+      const discovered = discoverClaudeCodeMcpServers()
+      Object.assign(merged, discovered.servers)
+      if (discovered.sources.length > 0) {
+        args.logger.info(
+          { sources: discovered.sources, inheritedCount: Object.keys(discovered.servers).length },
+          'Inheriting MCP servers from Claude Code user-level config',
+        )
+      }
+    } catch (err) {
+      args.logger.warn(
+        { err },
+        'collectUserMcpServers: Claude Code MCP discovery failed — skipping',
+      )
+    }
+  }
+  if (config?.mcpServers) {
+    Object.assign(merged, config.mcpServers)
+  }
+
+  const userServers: Record<string, UserMcpServerConfig> = merged
+  const reservedIds = new Set<string>(['coro', 'a5'])
+
+  for (const [id, raw] of Object.entries(userServers)) {
+    if (raw.enabled === false) continue
+    if (reservedIds.has(id)) {
+      args.logger.warn(
+        { mcpServerId: id },
+        'BYO MCP server id collides with a reserved key — skipping; rename the entry',
+      )
+      continue
+    }
+
+    const allowed = raw.allowedTools ?? null
+    const disallowed = raw.disallowedTools ?? null
+    const toolsPolicy = buildPluginMcpToolPolicy(allowed, disallowed)
+
+    if (raw.type === 'http' || raw.type === 'sse') {
+      const desc = {
+        type: raw.type,
+        url: raw.url,
+        ...(raw.headers ? { headers: raw.headers } : {}),
+      }
+      result[id] = (toolsPolicy ? { ...desc, tools: toolsPolicy } : desc) as McpServerConfig
+    } else if (raw.type === 'stdio') {
+      const desc = {
+        type: 'stdio' as const,
+        command: raw.command,
+        ...(raw.args ? { args: raw.args } : {}),
+        ...(raw.env ? { env: raw.env } : {}),
+      }
+      result[id] = desc as McpServerConfig
     }
   }
 

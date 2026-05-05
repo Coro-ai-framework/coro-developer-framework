@@ -377,6 +377,32 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   approvePr?(ref: ExternalRef): Promise<void>
   mergePr?(ref: ExternalRef, opts?: ScmMergeOptions): Promise<void>
 
+  // ── Self-improvement writer escape hatch ────────────────────────────────
+  /**
+   * Open a proposal PR from an outside-of-`query()` context. Used
+   * **only** by `intelligence/writer.ts` to ship `propose_change`
+   * payloads. The agent never sees this method.
+   *
+   * Why a dedicated method instead of just calling `createPr`?
+   *   The self-improvement writer runs synchronously in the runner's
+   *   event loop, *not* inside an SDK `query()` session. That means
+   *   the upstream MCP server attached via `mcpServer()` is
+   *   unreachable here — there is no `query()` tool-use loop that
+   *   could route a `mcp__github__create_pull_request` call back to
+   *   the spawned MCP process. So MCP-mode plugins still need a
+   *   minimal native PR-creation path for this single use case, and
+   *   we name it explicitly so it's clear it is not a workaround
+   *   reachable from agent code.
+   *
+   *   When the SDK or our plumbing learns to invoke MCP tools
+   *   programmatically from arbitrary TS, this method goes away in
+   *   favour of routing through `mcpServer()`. Until then, this is
+   *   the documented native fallback for both BitBucket (no MCP
+   *   today) and GitHub (MCP-mode but with a tiny inline native
+   *   client retained for `pollPr`, reused here).
+   */
+  writerCreatePr?(args: ScmCreatePrArgs): Promise<ExternalRef>
+
   // ── Polling (replaces PrPoller) ─────────────────────────────────────────
   /**
    * Single call returning the data the polling transport needs to

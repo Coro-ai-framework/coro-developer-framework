@@ -418,6 +418,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const { resolvePluginsConfig } = await import('../config/local-config')
       const resolved = resolvePluginsConfig(config)
 
+      const dropinIds = listDropinPluginIds()
+
       const runtimes = plugins?.all() ?? []
       const manifests = runtimes.map(runtime => {
         const m = runtime.manifest
@@ -469,6 +471,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             configSchema: configSchemaJson,
           },
           installed: resolved.installed[m.id]?.enabled ?? false,
+          // Tells the dashboard whether the user can call `DELETE
+          // /plugins/:id` on this entry. Built-in plugins ship with
+          // the runner and can't be removed at runtime.
+          source: dropinIds.has(m.id) ? ('dropin' as const) : ('builtin' as const),
           mcpServer,
         }
       })
@@ -486,6 +492,63 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       })
     } catch (err) {
       logger.error({ err }, 'GET /plugins failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // POST /plugins/install — drop-in install via npm spec. Wraps the
+  // CLI flow (`coro plugin install …`) in an HTTP endpoint so the
+  // dashboard's "Install plugin" form can spawn the same install
+  // pipeline without shelling out client-side. The runner reloads
+  // its plugin registry by re-bootstrapping on the next job; the
+  // response includes a `restartHint` flag the dashboard surfaces
+  // verbatim.
+  app.post('/plugins/install', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as { spec?: unknown; id?: unknown }
+      if (typeof body.spec !== 'string' || body.spec.length === 0) {
+        res.status(400).json({ error: '`spec` (npm package spec) is required' })
+        return
+      }
+      const explicitId = typeof body.id === 'string' && body.id.length > 0 ? body.id : undefined
+      const result = await installDropinPlugin({ spec: body.spec, id: explicitId, logger })
+      res.json({
+        ok: true,
+        installedAt: result.pluginDir,
+        manifest: result.manifest,
+        restartHint:
+          'Plugin installed. Restart the runner (`coro start`) so the new ' +
+          'plugin is loaded into the registry — running jobs continue with ' +
+          'the previous registry until you restart.',
+      })
+    } catch (err) {
+      logger.error({ err }, 'POST /plugins/install failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  app.delete('/plugins/:id', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id']
+      const id = typeof rawId === 'string' ? rawId : Array.isArray(rawId) ? rawId[0] : undefined
+      if (!id || !/^[a-z0-9][a-z0-9._-]*$/i.test(id)) {
+        res.status(400).json({ error: 'Invalid plugin id' })
+        return
+      }
+      const removed = await uninstallDropinPlugin({ id, logger })
+      if (!removed) {
+        res.status(404).json({ error: `No drop-in plugin installed under id "${id}"` })
+        return
+      }
+      res.json({
+        ok: true,
+        removedAt: removed,
+        restartHint:
+          'Plugin removed from disk. Restart the runner so the in-memory ' +
+          'registry stops attaching it to new job sessions.',
+      })
+    } catch (err) {
+      logger.error({ err }, 'DELETE /plugins/:id failed')
       res.status(500).json({ error: (err as Error).message })
     }
   })
@@ -887,6 +950,30 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             teamKey: config.tracker.linear.teamKey,
           } : undefined,
         } : undefined,
+        // S9 toggle. Always echo (even when `false`) so the
+        // dashboard can render the switch in its actual state.
+        inheritClaudeCodeMcps: config.inheritClaudeCodeMcps === true,
+        // BYO MCP servers (S8). env / headers values get redacted
+        // so secrets never round-trip through the dashboard. PUT
+        // /config restores the on-disk value when it sees `...`.
+        mcpServers: config.mcpServers
+          ? Object.fromEntries(
+              Object.entries(config.mcpServers).map(([id, raw]) => {
+                const entry: Record<string, unknown> = { ...raw }
+                if (raw.type === 'stdio' && raw.env) {
+                  entry['env'] = Object.fromEntries(
+                    Object.entries(raw.env).map(([k, v]) => [k, redactSecret(v)]),
+                  )
+                }
+                if ((raw.type === 'http' || raw.type === 'sse') && raw.headers) {
+                  entry['headers'] = Object.fromEntries(
+                    Object.entries(raw.headers).map(([k, v]) => [k, redactSecret(v)]),
+                  )
+                }
+                return [id, entry]
+              }),
+            )
+          : undefined,
       } : null
 
       // `resolved` mirrors what the runner will actually use on disk:
@@ -904,6 +991,38 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         },
       })
     } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // GET /config/claude-code-mcps — preview helper for the
+  // `inheritClaudeCodeMcps` toggle (S9). Returns the MCP server
+  // entries the runner would discover from user-level Claude Code
+  // configs, with secrets redacted. The dashboard uses this to show
+  // operators exactly what the toggle inherits before they enable it.
+  app.get('/config/claude-code-mcps', async (_req: Request, res: Response) => {
+    try {
+      const { discoverClaudeCodeMcpServers } = await import('../config/local-config')
+      const { servers, sources } = discoverClaudeCodeMcpServers()
+      const safe = Object.fromEntries(
+        Object.entries(servers).map(([id, raw]) => {
+          const entry: Record<string, unknown> = { ...raw }
+          if (raw.type === 'stdio' && raw.env) {
+            entry['env'] = Object.fromEntries(
+              Object.entries(raw.env).map(([k, v]) => [k, redactSecret(v)]),
+            )
+          }
+          if ((raw.type === 'http' || raw.type === 'sse') && raw.headers) {
+            entry['headers'] = Object.fromEntries(
+              Object.entries(raw.headers).map(([k, v]) => [k, redactSecret(v)]),
+            )
+          }
+          return [id, entry]
+        }),
+      )
+      res.json({ servers: safe, sources })
+    } catch (err) {
+      logger.error({ err }, 'GET /config/claude-code-mcps failed')
       res.status(500).json({ error: (err as Error).message })
     }
   })
@@ -1032,6 +1151,54 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           }
         }
         merged.tracker = next
+      }
+
+      // S9: inheritClaudeCodeMcps toggle — discover user-level
+      // Claude Code MCP entries and merge them into every job
+      // session at attachment time. The flag is persisted as-is.
+      if (Object.prototype.hasOwnProperty.call(updates, 'inheritClaudeCodeMcps')) {
+        const value = (updates as Record<string, unknown>)['inheritClaudeCodeMcps']
+        if (typeof value === 'boolean') {
+          ;(merged as Record<string, unknown>).inheritClaudeCodeMcps = value
+        }
+      }
+
+      // BYO MCP servers (S8). The dashboard sends the entire
+      // `mcpServers` map back; secrets in env / headers go through
+      // the same redaction-preserve dance as other credentials so a
+      // round-trip GET → save doesn't write `***` to disk.
+      if (Object.prototype.hasOwnProperty.call(updates, 'mcpServers')) {
+        const incoming = updates.mcpServers as Record<string, Record<string, unknown>> | null | undefined
+        if (incoming === null || incoming === undefined) {
+          delete (merged as Record<string, unknown>).mcpServers
+        } else {
+          const next: Record<string, Record<string, unknown>> = {}
+          for (const [id, raw] of Object.entries(incoming)) {
+            if (!raw || typeof raw !== 'object') continue
+            const previous = existing.mcpServers?.[id] as Record<string, unknown> | undefined
+            const cleaned: Record<string, unknown> = { ...raw }
+            if (raw['env'] && typeof raw['env'] === 'object') {
+              const env = raw['env'] as Record<string, string>
+              const prevEnv = (previous?.['env'] ?? {}) as Record<string, string>
+              const nextEnv: Record<string, string> = {}
+              for (const [k, v] of Object.entries(env)) {
+                nextEnv[k] = isRedacted(v) ? prevEnv[k] ?? v : v
+              }
+              cleaned['env'] = nextEnv
+            }
+            if (raw['headers'] && typeof raw['headers'] === 'object') {
+              const headers = raw['headers'] as Record<string, string>
+              const prevHeaders = (previous?.['headers'] ?? {}) as Record<string, string>
+              const nextHeaders: Record<string, string> = {}
+              for (const [k, v] of Object.entries(headers)) {
+                nextHeaders[k] = isRedacted(v) ? prevHeaders[k] ?? v : v
+              }
+              cleaned['headers'] = nextHeaders
+            }
+            next[id] = cleaned
+          }
+          ;(merged as Record<string, unknown>).mcpServers = next
+        }
       }
 
       // Drop empty sub-objects (e.g. `{ paths: {}, intelligence: {} }`) so the
@@ -1428,4 +1595,142 @@ function redactPluginMcpServer(desc: unknown): Record<string, unknown> | null {
     out.headers = redactedHeaders
   }
   return out
+}
+
+// ── Drop-in plugin install / uninstall helpers (S7) ──────────────────────────
+//
+// These wrap the same on-disk operations the `coro plugin install` /
+// `coro plugin uninstall` CLI commands perform, but expose them as
+// HTTP endpoints so the dashboard can drive the workflow without
+// shelling out client-side. Both helpers are intentionally *not*
+// transactional with the in-memory `PluginRegistry`: the runner reloads
+// the registry on its next bootstrap. The endpoint responses surface a
+// `restartHint` so the operator knows to bounce the runner.
+
+interface InstallDropinResult {
+  pluginDir: string
+  manifest: { id: string; kind: string; version: string; displayName: string }
+}
+
+async function installDropinPlugin(args: {
+  spec: string
+  id?: string
+  logger: Logger
+}): Promise<InstallDropinResult> {
+  const os = await import('node:os')
+  const { spawn: spawnCp } = await import('node:child_process')
+
+  const id = args.id ?? deriveIdFromSpec(args.spec)
+  if (!id) {
+    throw new Error(
+      `Could not derive a plugin id from spec "${args.spec}". ` +
+      `Pass an explicit \`id\` field in the request body.`,
+    )
+  }
+  const dropinRoot = path.join(os.homedir(), '.coro', 'plugins')
+  const pluginDir = path.join(dropinRoot, id)
+  fs.mkdirSync(pluginDir, { recursive: true })
+  if (!fs.existsSync(path.join(pluginDir, 'package.json'))) {
+    fs.writeFileSync(
+      path.join(pluginDir, 'package.json'),
+      JSON.stringify({ name: `coro-plugin-host-${id}`, private: true }, null, 2) + '\n',
+    )
+  }
+
+  args.logger.info({ spec: args.spec, pluginDir }, 'Installing drop-in plugin')
+  const code = await new Promise<number>((resolve) => {
+    const child = spawnCp('npm', ['install', args.spec], { cwd: pluginDir, stdio: 'pipe' })
+    child.stdout?.on('data', (chunk: Buffer) => args.logger.debug({ npm: 'stdout' }, chunk.toString()))
+    child.stderr?.on('data', (chunk: Buffer) => args.logger.debug({ npm: 'stderr' }, chunk.toString()))
+    child.on('close', (c) => resolve(c ?? 1))
+  })
+  if (code !== 0) throw new Error(`npm install exited with code ${code}`)
+
+  // Locate the package's coro-plugin.json — either at the install
+  // dir's root or copied from `node_modules/<package>/`.
+  const directManifest = path.join(pluginDir, 'coro-plugin.json')
+  if (!fs.existsSync(directManifest)) {
+    const nm = path.join(pluginDir, 'node_modules')
+    const found = findPluginManifest(nm)
+    if (!found) {
+      throw new Error(
+        `Installed package does not ship a coro-plugin.json. ` +
+        `Either ${args.spec} is not a Coro plugin or it needs to declare ` +
+        `the manifest under its package root.`,
+      )
+    }
+    const inner = JSON.parse(fs.readFileSync(found.manifestPath, 'utf-8')) as { entry?: string }
+    const synthetic = {
+      ...inner,
+      entry: path.relative(pluginDir, path.join(found.packageDir, inner.entry ?? 'index.js')),
+    }
+    fs.writeFileSync(directManifest, JSON.stringify(synthetic, null, 2) + '\n')
+  }
+
+  const manifestRaw = JSON.parse(fs.readFileSync(directManifest, 'utf-8')) as Record<string, unknown>
+  return {
+    pluginDir,
+    manifest: {
+      id: String(manifestRaw['id'] ?? id),
+      kind: String(manifestRaw['kind'] ?? 'unknown'),
+      version: String(manifestRaw['version'] ?? '0.0.0'),
+      displayName: String(manifestRaw['displayName'] ?? id),
+    },
+  }
+}
+
+function listDropinPluginIds(): Set<string> {
+  const ids = new Set<string>()
+  try {
+    const os = require('node:os') as typeof import('node:os')
+    const root = path.join(os.homedir(), '.coro', 'plugins')
+    if (!fs.existsSync(root)) return ids
+    for (const dirent of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!dirent.isDirectory()) continue
+      const manifest = path.join(root, dirent.name, 'coro-plugin.json')
+      if (fs.existsSync(manifest)) ids.add(dirent.name)
+    }
+  } catch {
+    // Permission errors etc. — fall through with whatever we got.
+  }
+  return ids
+}
+
+async function uninstallDropinPlugin(args: { id: string; logger: Logger }): Promise<string | null> {
+  const os = await import('node:os')
+  const dir = path.join(os.homedir(), '.coro', 'plugins', args.id)
+  if (!fs.existsSync(dir)) return null
+  fs.rmSync(dir, { recursive: true, force: true })
+  args.logger.info({ pluginDir: dir }, 'Removed drop-in plugin')
+  return dir
+}
+
+function deriveIdFromSpec(spec: string): string | undefined {
+  const scoped = spec.match(/^@[^/]+\/(?:plugin-)?(.+)$/)
+  if (scoped?.[1]) return scoped[1].replace(/[^a-z0-9-]/gi, '').toLowerCase()
+  const bare = spec.match(/(?:^|\/)(?:coro-plugin-)?([^/]+?)(?:\.git)?$/)
+  if (bare?.[1]) return bare[1].replace(/[^a-z0-9-]/gi, '').toLowerCase()
+  return undefined
+}
+
+interface FoundPluginManifest { manifestPath: string; packageDir: string }
+
+function findPluginManifest(rootDir: string): FoundPluginManifest | undefined {
+  if (!fs.existsSync(rootDir)) return undefined
+  for (const dirent of fs.readdirSync(rootDir, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) continue
+    const dir = path.join(rootDir, dirent.name)
+    const manifest = path.join(dir, 'coro-plugin.json')
+    if (fs.existsSync(manifest)) return { manifestPath: manifest, packageDir: dir }
+    if (dirent.name.startsWith('@')) {
+      for (const sub of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!sub.isDirectory()) continue
+        const subManifest = path.join(dir, sub.name, 'coro-plugin.json')
+        if (fs.existsSync(subManifest)) {
+          return { manifestPath: subManifest, packageDir: path.join(dir, sub.name) }
+        }
+      }
+    }
+  }
+  return undefined
 }

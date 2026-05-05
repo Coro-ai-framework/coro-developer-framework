@@ -1,0 +1,36 @@
+{
+  "name": "@coro/plugin-sdk",
+  "version": "0.1.0",
+  "description": "Public SDK for authoring Coro plugins (SCM, tracker, …). Re-exports the runner's plugin contracts plus a small set of authoring helpers (HMAC verification, base classes, MCP-server descriptors).",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "pino": "^9.0.0",
+    "zod": "^3.0.0 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "pino": "^9.7.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.4",
+    "zod": "^4.0.0"
+  }
+}

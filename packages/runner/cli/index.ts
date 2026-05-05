@@ -11,6 +11,7 @@ import { loginCommand } from './commands/login'
 import { initCommand } from './commands/init'
 import { runnerCommand, startCommand } from './commands/runner'
 import { campaignCommand } from './commands/campaign'
+import { pluginCommand } from './commands/plugin'
 
 const program = new Command()
 
@@ -38,5 +39,6 @@ program.addCommand(loginCommand)
 program.addCommand(initCommand)
 program.addCommand(runnerCommand)
 program.addCommand(campaignCommand)
+program.addCommand(pluginCommand)
 
 program.parse()

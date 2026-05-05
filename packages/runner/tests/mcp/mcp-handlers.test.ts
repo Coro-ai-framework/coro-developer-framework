@@ -7,8 +7,6 @@ import {
   makeMockToolContext,
   makeMockToolContextWithSpies,
   makeMockJob,
-  type ScmStubSpies,
-  type TrackerStubSpies,
 } from './fixtures'
 
 vi.mock('fs/promises')
@@ -83,118 +81,27 @@ describe('createMcpToolHandlers — job control & signals', () => {
   })
 })
 
-// ── Legacy bb_* shims ──────────────────────────────────────────────────────
+// ── Legacy bb_*/gh_*/jira_* shims removed in S6 ─────────────────────────────
 //
-// After the MCP-first plugins pivot (S4) the surviving `bb_*` shims
-// fan out to one of three places:
-//   - the kept generic `scm_*` tools (which still dispatch through
-//     the plugin registry) — `bb_create_pr`, `bb_get_pr_status`,
-//     `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_merge_pr`.
-//   - a structured "removed" error pointing the agent at the
-//     equivalent native MCP tool — `bb_create_repo`,
-//     `bb_reply_to_comment`, `bb_approve_pr`. (`scm_create_repo`,
-//     `scm_reply_to_comment`, and `scm_approve_pr` no longer exist
-//     as part of the trimmed surface.)
-// All shims still emit a deprecation log line so operators can see
-// usage; S6 removes them entirely.
+// The MCP-first plugins pivot deleted every back-compat wrapper.
+// What used to be a thick block of routing tests now collapses to a
+// single check: the handler surface no longer exports these names.
+// Workflow markdown that still references them hits the SDK's
+// "tool not found" path, which surfaces a clean error to the agent.
 
-describe('createMcpToolHandlers — BitBucket back-compat shims', () => {
-  let ctx: ToolContext
-  let scm: ScmStubSpies
-
-  beforeEach(() => {
+describe('createMcpToolHandlers — legacy shim removal', () => {
+  it('bb_*/gh_*/jira_* handlers are not exported', () => {
     const built = makeMockToolContextWithSpies()
-    ctx = built.ctx
-    scm = built.scmSpies['bitbucket']
-  })
-
-  it('bb_create_repo returns a structured "removed" error and warns', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const r = await h.bb_create_repo({ repoSlug: 'my-svc', description: 'svc' })
-    expect('isError' in r && r.isError).toBe(true)
-    expect(r.content[0].text).toMatch(/bb_create_repo is removed/i)
-    expect(scm.createRepo).not.toHaveBeenCalled()
-    expect(ctx.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ tool: 'bb_create_repo' }),
-      expect.stringContaining('deprecated'),
-    )
-  })
-
-  it('bb_create_pr passes job reviewers when reviewers omitted', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    await h.bb_create_pr({ repoSlug: 'r', title: 'T', sourceBranch: 'feat' })
-    expect(scm.createPr).toHaveBeenCalledWith(
-      expect.objectContaining({
-        repoSlug: 'r',
-        reviewers: ['reviewer-1'],
-        targetBranch: 'main',
-      }),
-    )
-  })
-
-  it('bb_create_pr uses explicit reviewers when provided', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    await h.bb_create_pr({
-      repoSlug: 'r',
-      title: 'T',
-      sourceBranch: 'feat',
-      reviewerUsernames: ['alice'],
-    })
-    expect(scm.createPr).toHaveBeenCalledWith(
-      expect.objectContaining({ reviewers: ['alice'] }),
-    )
-  })
-
-  it('bb_get_pr_status returns status payload from plugin', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.bb_get_pr_status({ repoSlug: 'r', prId: 1 }))
-    expect(scm.getPrStatus).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'pull_request',
-        pluginId: 'bitbucket',
-        repoKey: 'r',
-        externalId: '1',
-      }),
-    )
-    expect(data).toEqual({ state: 'open', approvalCount: 1 })
-  })
-
-  it('bb_get_pr_comments returns comments via plugin', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.bb_get_pr_comments({ repoSlug: 'r', prId: 1 })) as unknown[]
-    expect(scm.listPrComments).toHaveBeenCalled()
-    expect(Array.isArray(data)).toBe(true)
-    expect(data[0]).toMatchObject({ id: '1', body: 'hello' })
-  })
-
-  it('bb_post_pr_comment delegates to plugin; merge dispatches with prId', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-
-    await h.bb_post_pr_comment({ repoSlug: 'r', prId: 1, content: 'hi' })
-    expect(scm.postPrComment).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'pull_request', repoKey: 'r', externalId: '1' }),
-      'hi',
-    )
-
-    await h.bb_merge_pr({ repoSlug: 'r', prId: 2, message: 'merge' })
-    expect(scm.mergePr).toHaveBeenCalledWith(
-      expect.objectContaining({ repoKey: 'r', externalId: '2' }),
-      expect.objectContaining({ message: 'merge' }),
-    )
-  })
-
-  it('bb_reply_to_comment and bb_approve_pr now return structured errors', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-
-    const reply = await h.bb_reply_to_comment({ repoSlug: 'r', prId: 1, parentId: 9, content: 'reply' })
-    expect('isError' in reply && reply.isError).toBe(true)
-    expect(reply.content[0].text).toMatch(/bb_reply_to_comment is removed/i)
-    expect(scm.replyToComment).not.toHaveBeenCalled()
-
-    const approve = await h.bb_approve_pr({ repoSlug: 'r', prId: 2 })
-    expect('isError' in approve && approve.isError).toBe(true)
-    expect(approve.content[0].text).toMatch(/bb_approve_pr is removed/i)
-    expect(scm.approvePr).not.toHaveBeenCalled()
+    const h = createMcpToolHandlers(built.ctx, {}) as Record<string, unknown>
+    for (const name of [
+      'bb_create_repo', 'bb_create_pr', 'bb_get_pr_status', 'bb_get_pr_comments',
+      'bb_post_pr_comment', 'bb_reply_to_comment', 'bb_approve_pr', 'bb_merge_pr',
+      'gh_create_repo', 'gh_create_pr', 'gh_get_pr_status', 'gh_get_pr_comments',
+      'gh_post_pr_comment', 'gh_reply_to_comment', 'gh_approve_pr', 'gh_merge_pr',
+      'jira_get_issue', 'jira_post_comment', 'jira_transition_issue',
+    ]) {
+      expect(h[name]).toBeUndefined()
+    }
   })
 })
 
@@ -216,40 +123,6 @@ describe('createMcpToolHandlers — observability', () => {
 
     await h.tempo_search({ query: '{}', start: 's', end: 'e', limit: 5 })
     expect(ctx.tempoClient.search).toHaveBeenCalledWith('{}', 's', 'e', 5)
-  })
-})
-
-describe('createMcpToolHandlers — Jira back-compat shims', () => {
-  let ctx: ToolContext
-  let tracker: TrackerStubSpies
-
-  beforeEach(() => {
-    const built = makeMockToolContextWithSpies()
-    ctx = built.ctx
-    tracker = built.trackerSpies['jira']
-  })
-
-  it('jira_get_issue dispatches to jira tracker plugin', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    await h.jira_get_issue({ ticketId: 'ABC-1' })
-    expect(tracker.getIssue).toHaveBeenCalledWith('ABC-1')
-    expect(ctx.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ tool: 'jira_get_issue', replacement: 'tracker_get_issue' }),
-      expect.stringContaining('deprecated'),
-    )
-  })
-
-  it('jira_post_comment dispatches to plugin', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    await h.jira_post_comment({ ticketId: 'ABC-1', body: 'note' })
-    expect(tracker.commentIssue).toHaveBeenCalledWith({ key: 'ABC-1', body: 'note' })
-  })
-
-  it('jira_transition_issue forwards transitionId as status', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const tr = parseJson(await h.jira_transition_issue({ ticketId: 'ABC-1', transitionId: '31' }))
-    expect(tracker.transitionIssue).toHaveBeenCalledWith({ key: 'ABC-1', status: '31' })
-    expect(tr).toMatchObject({ transitioned: true, key: 'ABC-1' })
   })
 })
 

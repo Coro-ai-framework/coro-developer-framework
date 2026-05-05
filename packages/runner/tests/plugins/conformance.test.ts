@@ -360,11 +360,25 @@ describe.each(TRACKER_CASES)('Tracker plugin contract — $id', (kase) => {
     return runtime
   }
 
-  it('exposes the read/write methods from the contract', async () => {
+  it('declares mcpServer() OR exposes native getIssue/commentIssue/transitionIssue', async () => {
+    // After the MCP-first pivot (S2/S6) tracker plugins are split:
+    //   - **MCP-mode** plugins (`jira`, `linear`, `github-issues`)
+    //     drop the per-op methods and delegate to an upstream MCP
+    //     server attached at job start. Their contract is `mcpServer()`
+    //     plus the lifecycle hooks.
+    //   - **Native-mode** plugins (none ship today after the cleanup,
+    //     but the slot is reserved for future upstream-less providers)
+    //     keep `getIssue`/`commentIssue`/`transitionIssue` and do
+    //     not declare `mcpServer()`.
+    // Exactly one of those two surfaces must be present so the
+    // hybrid `tracker_*` proxy can dispatch the call.
     const r = await init()
-    expect(typeof r.getIssue).toBe('function')
-    expect(typeof r.commentIssue).toBe('function')
-    expect(typeof r.transitionIssue).toBe('function')
+    const hasMcp = typeof r.mcpServer === 'function' && r.mcpServer() !== undefined
+    const hasNative =
+      typeof r.getIssue === 'function' &&
+      typeof r.commentIssue === 'function' &&
+      typeof r.transitionIssue === 'function'
+    expect(hasMcp || hasNative).toBe(true)
   })
 
   it('normalizeInbound() (when defined) returns null for malformed JSON', async () => {
@@ -403,6 +417,35 @@ describe('cross-plugin invariants', () => {
     ])
     for (const c of CASES) {
       expect(indexed.has(c.id)).toBe(true)
+    }
+  })
+
+  // Per the MCP-first plugins pivot (S6): when a plugin declares
+  // `mcpServer()`, the descriptor must be a valid `McpServerConfig`
+  // shape — otherwise the runner cannot spawn the upstream server at
+  // job start. We don't actually spawn it here (that needs `npx -y …`
+  // and network); we just check the structural contract.
+  it('every plugin declaring mcpServer() returns a structurally valid descriptor', async () => {
+    for (const c of CASES) {
+      const r = c.factory({ config: c.validConfig, logger })
+      await r.init(c.validConfig as never, { logger, fetch: globalThis.fetch })
+      if (typeof r.mcpServer !== 'function') continue
+      const descriptor = r.mcpServer()
+      if (!descriptor) continue
+      expect(['stdio', 'http', 'sse']).toContain(descriptor.type)
+      if (descriptor.type === 'stdio') {
+        expect(typeof descriptor.command).toBe('string')
+        expect(descriptor.command.length).toBeGreaterThan(0)
+        expect(Array.isArray(descriptor.args ?? [])).toBe(true)
+        if (descriptor.env) {
+          for (const [k, v] of Object.entries(descriptor.env)) {
+            expect(typeof k).toBe('string')
+            expect(typeof v).toBe('string')
+          }
+        }
+      } else {
+        expect(typeof (descriptor as { url?: unknown }).url).toBe('string')
+      }
     }
   })
 
