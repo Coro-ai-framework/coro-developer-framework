@@ -79,7 +79,7 @@ If `convert_to_campaign` is refused (e.g. `epicAllowed=false`, or the job is alr
 - If `scm.available` is `false` or `scm.resolved === "none"`, stop immediately and escalate. Do **not** search the filesystem, the working tree parent, or the user's home directory for a repository copy.
 - If you need confirmation about which plugin is active (e.g. ambiguous tenant, dry-run job), `mcp__coro__log` the resolved plugin id and continue. If something looks wrong, escalate.
 
-Use `mcp__coro__scm_get_clone_info({ repo: params.repoSlug })` to fetch the credentialed clone URL plus git env vars — never construct provider-specific clone URLs in your own logic. Log the resolved plugin id so it's visible in `coro logs`.
+Use `mcp__coro__scm_clone_repo({ repo: params.repoSlug })` when you need a local checkout. Use `mcp__coro__scm_get_clone_info({ repo: params.repoSlug })` only for advanced git flows that truly need the raw URL. Never construct provider-specific clone URLs in your own logic. Log the resolved plugin id so it's visible in `coro logs`.
 
 ### 4. Analyze inputs
 - Read the workflow instructions first and identify which artifacts, specs, and domain skills this workflow expects in the planning phase.

@@ -60,6 +60,7 @@ function manifest(id: string, kind: 'scm' | 'tracker'): PluginManifest {
 }
 
 export interface ScmStubSpies {
+  cloneInfo: ReturnType<typeof vi.fn>
   createRepo: ReturnType<typeof vi.fn>
   createPr: ReturnType<typeof vi.fn>
   getPrStatus: ReturnType<typeof vi.fn>
@@ -73,6 +74,7 @@ export interface ScmStubSpies {
 
 export function makeStubScmPlugin(id: string): { plugin: ScmPluginRuntime; spies: ScmStubSpies } {
   const spies: ScmStubSpies = {
+    cloneInfo: vi.fn().mockReturnValue({ url: `https://${id}/clone/repo.git`, envForGit: {} }),
     createRepo: vi.fn().mockResolvedValue({
       kind: 'repo', pluginId: id, externalId: 'ws/new-repo', url: `https://${id}/ws/new-repo`,
     }),
@@ -96,7 +98,7 @@ export function makeStubScmPlugin(id: string): { plugin: ScmPluginRuntime; spies
     init: async () => {},
     healthcheck: async () => ({ ok: true }),
     dispose: async () => {},
-    cloneInfo: () => ({ url: '', envForGit: {} }),
+    cloneInfo: spies.cloneInfo,
     createRepo: spies.createRepo,
     createPr: spies.createPr,
     getPrStatus: spies.getPrStatus,
@@ -230,6 +232,7 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
       prMappings: [mapping],
     })),
     mapPrToJob: vi.fn().mockResolvedValue(undefined),
+    mapRepoToJob: vi.fn().mockResolvedValue(undefined),
     mapExternalRef: vi.fn().mockResolvedValue(undefined),
     getJobByExternalRef: vi.fn().mockResolvedValue(null),
   } as unknown as StateBackend

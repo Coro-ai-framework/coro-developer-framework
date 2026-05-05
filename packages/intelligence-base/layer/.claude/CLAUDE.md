@@ -110,7 +110,8 @@ All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__cor
 Coro now ships a deliberately small generic surface. The high-frequency
 ops below work the same regardless of the active SCM plugin:
 
-- `scm_get_clone_info` — Get a credentialed clone URL + git env for a repo
+- `scm_clone_repo` — Clone a repo into the current job working directory
+- `scm_get_clone_info` — Get a credentialed clone URL + git env for advanced git flows
 - `scm_create_pr` — Open a pull request from a feature branch
 - `scm_get_pr_status` — Get state and approval count of a PR
 - `scm_list_pr_comments` — List comments on a PR
@@ -311,8 +312,18 @@ the active plugin handles the rest:
   before constructing URLs or guessing transition names.
 
 ### Cloning a repo
-Use the generic clone-info tool — it returns a fully-credentialed URL plus
-the git env vars the plugin needs:
+Prefer the dedicated clone tool — it clones the target repo into the current
+job working directory using the active SCM plugin:
+
+```ts
+const checkout = scm_clone_repo({ repo: "<repo-slug>" })
+// checkout.repoDir: absolute path to the cloned repo
+// checkout.relativeDir: path relative to the job working directory
+// checkout.reused: true when the repo was already cloned
+```
+
+If you need the raw URL for an advanced git flow, use the clone-info tool —
+it returns a fully-credentialed URL plus the git env vars the plugin needs:
 
 ```ts
 const info = scm_get_clone_info({ repo: "<repo-slug>" })
@@ -320,13 +331,10 @@ const info = scm_get_clone_info({ repo: "<repo-slug>" })
 // info.envForGit: { GIT_TERMINAL_PROMPT: "0", ... }
 ```
 
-```bash
-git clone "$INFO_URL" "<repo-slug>"
-```
-
 **Never use `gh` or `bb` CLI commands** — they bypass the plugin layer and
-break the moment the tenant swaps providers. Always use `git` directly with
-the URL `scm_get_clone_info` returned, plus `scm_*` MCP tools for PR ops.
+break the moment the tenant swaps providers. Use `scm_clone_repo` for normal
+checkouts, and only use raw `git` with the URL `scm_get_clone_info` returned
+when you need an explicit low-level git operation.
 
 ### External references (`ExternalRef`)
 Every PR / ticket / repo / issue identity flows through a single primitive:

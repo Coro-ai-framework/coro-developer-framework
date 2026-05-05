@@ -1,3 +1,6 @@
+import * as fs from 'fs/promises'
+import * as path from 'path'
+import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { Artifact, WorkItem, Insight, Job } from './jobs/types'
 import type { ExternalRef } from './plugins/refs'
@@ -178,13 +181,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   // ── Generic SCM tools ──────────────────────────────────────────────────
   //
   // After the MCP-first pivot (S4), the agent-facing surface is
-  // trimmed to 6 tools (5 ops + clone-info):
+  // trimmed to 7 tools (5 PR ops + clone-info + clone-repo):
   //   - scm_create_pr
   //   - scm_get_pr_status
   //   - scm_list_pr_comments
   //   - scm_post_pr_comment
   //   - scm_merge_pr
   //   - scm_get_clone_info
+  //   - scm_clone_repo
   //
   // Removed: scm_create_repo, scm_approve_pr, scm_reply_to_comment,
   // scm_poll_pr — agents call native `mcp__<pluginId>__*` tools for
@@ -330,6 +334,61 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     return text({ pluginId: r.scm.manifest.id, ...info })
   }
 
+  const scm_clone_repo = async (args: { pluginId?: string; repo: string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+
+    const repo = args.repo.trim()
+    if (!repo) return error('repo is required')
+
+    const info = r.scm.cloneInfo({ repo })
+    if (!info.url) {
+      return error(`scm plugin "${r.scm.manifest.id}" returned an empty clone URL for repo "${repo}"`)
+    }
+
+    const jobWorkingDir = path.join(ctx.settings.paths.workingDir, ctx.job.id)
+    const repoDir = path.join(jobWorkingDir, repo)
+
+    await fs.mkdir(jobWorkingDir, { recursive: true })
+
+    if (await isGitRepo(repoDir)) {
+      await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
+      return text({
+        pluginId: r.scm.manifest.id,
+        repo,
+        repoDir,
+        relativeDir: repo,
+        reused: true,
+      })
+    }
+
+    const targetStat = await fs.stat(repoDir).catch(() => null)
+    if (targetStat) {
+      const entries = await fs.readdir(repoDir)
+      if (entries.length === 0) {
+        await fs.rm(repoDir, { recursive: true, force: true })
+      } else {
+        return error(
+          `Cannot clone repo "${repo}": target path ${repoDir} already exists and is not a git checkout. ` +
+          'Remove it or choose a different directory.',
+        )
+      }
+    }
+
+    const git = buildCloneGit(jobWorkingDir, info.envForGit)
+    await git.clone(info.url, repoDir)
+    await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
+    await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)
+
+    return text({
+      pluginId: r.scm.manifest.id,
+      repo,
+      repoDir,
+      relativeDir: repo,
+      reused: false,
+    })
+  }
+
   // ── Generic Tracker tools ──────────────────────────────────────────────
   //
   // Same idea as scm_*: every tracker plugin implements the same
@@ -390,13 +449,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   return {
     // ── Generic surface (preferred, post-pivot — 9 tools total) ────────
     //
-    // SCM (6):
+    // SCM (7):
     scm_create_pr,
     scm_get_pr_status,
     scm_list_pr_comments,
     scm_post_pr_comment,
     scm_merge_pr,
     scm_get_clone_info,
+    scm_clone_repo,
     // Tracker (3):
     tracker_get_issue,
     tracker_comment_issue,
@@ -815,6 +875,23 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text({ index, files: linkedFiles, proposals })
     },
   }
+}
+
+async function isGitRepo(dir: string): Promise<boolean> {
+  const stat = await fs.stat(path.join(dir, '.git')).catch(() => null)
+  return stat?.isDirectory() ?? false
+}
+
+function buildCloneGit(cwd: string, extraEnv: Record<string, string>): SimpleGit {
+  const opts: Partial<SimpleGitOptions> = {
+    baseDir: cwd,
+    unsafe: { allowUnsafeProtocolOverride: false, allowUnsafeAskPass: true } as unknown as SimpleGitOptions['unsafe'],
+  }
+  return simpleGit(opts).env({
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    ...extraEnv,
+  })
 }
 
 export type McpToolHandlers = ReturnType<typeof createMcpToolHandlers>

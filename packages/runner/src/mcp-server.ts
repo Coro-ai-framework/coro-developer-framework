@@ -59,9 +59,10 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       // ── Generic SCM (MCP-first proxy) ─────────────────────────────────────
       //
-      // After the MCP-first plugins pivot, only six high-traffic ops
+      // After the MCP-first plugins pivot, only seven high-traffic ops
       // survive as a provider-neutral shim: open PR, read PR status,
-      // list / post PR comments, merge PR, and resolve clone info.
+      // list / post PR comments, merge PR, resolve clone info, and
+      // clone the target repo into the job sandbox.
       // Everything else (repo creation, approvals, threaded replies,
       // change-detection polls) is now expected to come from the
       // upstream MCP server attached by the active SCM plugin — the
@@ -140,13 +141,23 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'scm_get_clone_info',
-        'Get the clone URL and git env for a repo via the configured SCM plugin. Used by the runner to clone target repos with the correct credentials baked in.',
+        'Get the clone URL and git env for a repo via the configured SCM plugin. Prefer scm_clone_repo for the standard checkout path.',
         {
           pluginId: z.string().optional(),
           repo: z.string(),
         },
         h.scm_get_clone_info,
         { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'scm_clone_repo',
+        'Clone a repo into the current job working directory via the configured SCM plugin. Prefer this over running git clone in Bash.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+        },
+        h.scm_clone_repo,
       ),
 
       // ── Test harness ──────────────────────────────────────────────────────

@@ -31,7 +31,8 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | `get_work_items` | Check work-item list and which item to work on |
 | `update_work_item` | Mark a work item as `in-progress` |
 | `request_new_session` | Clear context when starting a new work item |
-| `scm_get_clone_info` | Get the credentialed clone URL + git env for the active SCM |
+| `scm_clone_repo` | Clone the repo into the current job working directory |
+| `scm_get_clone_info` | Get the credentialed clone URL + git env for advanced git flows |
 | `scm_create_pr` | Open a PR on the active SCM (registers with job system for webhooks) |
 | `scm_get_pr_comments` | Read PR feedback when responding to review |
 | `scm_post_pr_comment` | Reply to reviewer comments on a PR |
@@ -56,23 +57,18 @@ If this is a new work item (not a fix loop), call `mcp__coro__request_new_sessio
 
 ### 3. Clone the repository (if not already cloned)
 
-The repo slug comes from the job context (`params.repoSlug` or `params.repo`). Your `cwd` is already set to `working/{job-id}/` by the runner — clone directly into it.
+The repo slug comes from the job context (`params.repoSlug` or `params.repo`). Your `cwd` is already set to `working/{job-id}/` by the runner.
 
-Ask the active SCM plugin for the clone URL and git env vars instead of constructing them by hand:
+Use the dedicated clone tool instead of shelling out to `git clone`:
 
 ```ts
-const info = mcp__coro__scm_get_clone_info({ repo: params.repoSlug })
-// info.url:        provider-specific, fully credentialed
-// info.envForGit:  e.g. { GIT_TERMINAL_PROMPT: "0", ... }
+const checkout = mcp__coro__scm_clone_repo({ repo: params.repoSlug })
+// checkout.repoDir: absolute repo path
+// checkout.relativeDir: repo path relative to the job working directory
+// checkout.reused: true when the repo was already cloned
 ```
 
-Then:
-
-```bash
-git clone "$INFO_URL" "$REPO_SLUG"
-```
-
-This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct paths like `working/{job-id}/` yourself — the runner already placed you there. **Do not** fall back to `gh` or `bb` CLI commands; both bypass the plugin layer and break the moment a tenant swaps providers.
+This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct paths like `working/{job-id}/` yourself — the runner already placed you there. **Do not** fall back to `gh` or `bb` CLI commands; both bypass the plugin layer and break the moment a tenant swaps providers. Use `mcp__coro__scm_get_clone_info` only when you need a raw credentialed URL for a low-level git operation.
 
 ### 4. Create the work-item branch
 

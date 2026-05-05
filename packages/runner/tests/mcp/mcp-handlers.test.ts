@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as cp from 'child_process'
+import * as fs from 'fs/promises'
+import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
 import { STATUS_ESCALATED } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
@@ -18,6 +20,10 @@ vi.mock('child_process', async (importOriginal) => {
     spawn: vi.fn(),
   }
 })
+
+vi.mock('simple-git', () => ({
+  simpleGit: vi.fn(),
+}))
 
 /** Parses JSON from the first text content block returned by handlers. */
 function parseJson(result: { content: Array<{ type: string; text: string }> }): unknown {
@@ -193,6 +199,58 @@ describe('createMcpToolHandlers — run_go_build', () => {
     const h = createMcpToolHandlers(ctx, {})
     const result = await h.run_go_build({ repoDir: '/nonexistent-dir-for-go-build-test-xyz' })
     expect('isError' in result && result.isError).toBe(true)
+  })
+})
+
+describe('createMcpToolHandlers — scm_clone_repo', () => {
+  const simpleGitMock = vi.mocked(simpleGit)
+  const mkdirMock = vi.mocked(fs.mkdir)
+  const statMock = vi.mocked(fs.stat)
+  const readdirMock = vi.mocked(fs.readdir)
+  const rmMock = vi.mocked(fs.rm)
+
+  beforeEach(() => {
+    mkdirMock.mockResolvedValue(undefined)
+    statMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    readdirMock.mockResolvedValue([])
+    rmMock.mockResolvedValue(undefined)
+    simpleGitMock.mockReset()
+  })
+
+  it('clones via the resolved scm plugin into the job working directory', async () => {
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    const clone = vi.fn().mockResolvedValue(undefined)
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
+
+    expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({ baseDir: '/tmp/work-mcp/job-mcp-test' }))
+    expect(env).toHaveBeenCalledWith(expect.objectContaining({ GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' }))
+    expect(clone).toHaveBeenCalledWith('https://example.test/svc.git', '/tmp/work-mcp/job-mcp-test/svc')
+    expect(built.ctx.stateBackend.mapRepoToJob).toHaveBeenCalledWith('svc', 'job-mcp-test')
+    expect(data['repoDir']).toBe('/tmp/work-mcp/job-mcp-test/svc')
+    expect(data['reused']).toBe(false)
+  })
+
+  it('reuses an existing checkout when .git already exists', async () => {
+    const built = makeMockToolContextWithSpies()
+    statMock.mockImplementation(async (filePath: any) => {
+      if (String(filePath).endsWith('/svc/.git')) return { isDirectory: () => true } as never
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
+
+    expect(simpleGitMock).not.toHaveBeenCalled()
+    expect(data['reused']).toBe(true)
+    expect(data['relativeDir']).toBe('svc')
   })
 })
 

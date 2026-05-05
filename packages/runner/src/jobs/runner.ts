@@ -175,12 +175,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   // the MCP tools resolves against `jobIntelligenceDir`, NOT the
   // process-wide `settings.paths.coroIntelligenceDir`.
   //
-  // Repo overlay timing: agents `git clone` the target repo themselves
-  // during the workflow, so at the very first resolve the repo dir
-  // typically does not exist yet. We pass `repoCheckoutDir` based on
-  // `job.params.repoSlug`; the resolver gracefully skips the layer when
-  // the path is missing. Per-phase re-resolution (below) picks up the
-  // overlay as soon as the agent clones the repo.
+  // Repo overlay timing: the target repo is cloned during the workflow,
+  // typically via `mcp__coro__scm_clone_repo`, so at the very first
+  // resolve the repo dir typically does not exist yet. We pass
+  // `repoCheckoutDir` based on `job.params.repoSlug`; the resolver
+  // gracefully skips the layer when the path is missing. Per-phase
+  // re-resolution (below) picks up the overlay as soon as the repo is
+  // cloned.
   const repoCheckoutDir = deriveRepoCheckoutDir(job, settings.paths.workingDir)
   const loaderCacheRoot = defaultLoaderCacheRoot()
 
@@ -1062,8 +1063,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 /**
  * Best-effort guess at where the agent will clone the target repo.
  *
- * Convention: agents do `git clone <url> <repoSlug>` inside the SDK's
- * `cwd: workingDir`, which lands the checkout at
+ * Convention: the repo is cloned into `<repoSlug>` inside the SDK's
+ * `cwd: workingDir`, typically via `mcp__coro__scm_clone_repo`, which
+ * lands the checkout at
  * `<workingDir>/<repoSlug>`. The resolver uses this path to discover a
  * repo `.coro/` overlay; if the path doesn't exist (typical at first
  * resolve), the resolver skips the layer.
