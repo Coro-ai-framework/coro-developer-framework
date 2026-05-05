@@ -268,9 +268,10 @@ When any agent calls `propose_change`, the Coro Runner synchronously:
 1. Validates the proposal (path allowlist per layer, frontmatter / heading checks per type)
 2. Routes the change to the right writable layer (tenant intelligence repo or the project's `.coro/` overlay; **never** the base layer that ships with the runner)
 3. Creates a branch `coro/proposal/<jobId>-<layer>-<slug>` cut from that layer's default branch
-4. Commits every file in the multi-file payload as one atomic commit
-5. Pushes the branch and opens a PR via the configured git provider (GitHub / Bitbucket)
-6. Records the proposal in the state backend so the dashboard and `list_proposals` can show it
+4. Materialises the final file contents against that writable source clone. `_intelligence` is only a constructed read view; proposal writes must never use it as the source of truth.
+5. Commits every file in the multi-file payload as one atomic commit
+6. Pushes the branch and opens a PR via the configured git provider (GitHub / Bitbucket)
+7. Records the proposal in the state backend so the dashboard and `list_proposals` can show it
 
 **Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the next job's intelligence resolver pulls the merged change automatically.
 
@@ -282,6 +283,8 @@ When any agent calls `propose_change`, the Coro Runner synchronously:
 - **Skill amendment:** ≤ 15 lines per added `##` section.
 
 The recipe is the most valuable part — copy-paste only, no narrative. Prefer the structured `entries[]` field on `propose_change` for memory updates: it serialises into the canonical layout and the runner mechanically enforces these caps. If a finding wants to exceed a budget, it is either two findings or already documented — split or dedupe before writing. See the `self-improvement-guide` skill for the full reference.
+
+For `memory-update`, append-only memory files are merged against the current file in the writable tenant/repo source clone so existing entries survive in the proposal PR. `memory/MEMORY.md` remains an explicit index update rather than an append-only stream.
 
 ## Working directory
 

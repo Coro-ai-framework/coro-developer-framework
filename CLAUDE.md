@@ -64,6 +64,15 @@ layers:
 Append banners look like `<!-- ─── coro layer: tenant:team-abc ─── -->`
 so the model can see provenance when reading the merged file.
 
+Important: these merge rules apply only to the resolver's read-time
+materialisation into `<workingDir>/<jobId>/_intelligence/`. Proposal
+shipping is a separate write path. `propose_change` must materialise
+diffs against the writable tenant/repo source clone, never against the
+constructed `_intelligence` tree. In particular, memory-update
+proposals append against the current source file in the writer clone;
+`memory/MEMORY.md` remains an authored index update rather than an
+append-only stream.
+
 #### Resolver lifecycle
 
 The **intelligence resolver**
@@ -226,9 +235,10 @@ When any agent calls `propose_change`, the runner synchronously:
 1. Validates the proposal (path allowlist per layer, frontmatter / heading checks per type)
 2. Routes the change to the right writable layer — **tenant** (the configured intelligence repo, identical for solo and team) or **repo** (the project's `.coro/` overlay). The base layer that ships with the runner is never written.
 3. Cuts a branch `coro/proposal/<jobId>-<layer>-<slug>` from that layer's default branch
-4. Commits every file in the multi-file payload as one atomic commit
-5. Pushes and opens a PR via the configured git provider (GitHub or Bitbucket)
-6. Records the proposal in the state backend so `list_proposals` and the dashboard can surface it
+4. Materialises the proposed file contents against that writable source clone. For `memory-update`, append-only memory files merge into the current file in the writer clone; they are not regenerated from `_intelligence`.
+5. Commits every file in the multi-file payload as one atomic commit
+6. Pushes and opens a PR via the configured git provider (GitHub or Bitbucket)
+7. Records the proposal in the state backend so `list_proposals` and the dashboard can surface it
 
 **Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the next job's intelligence resolver pulls the merged change automatically.
 

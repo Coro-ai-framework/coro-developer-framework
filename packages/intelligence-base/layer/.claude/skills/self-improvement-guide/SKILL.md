@@ -63,10 +63,11 @@ Each call is **synchronous** and produces exactly **one PR**:
 
 1. **Validate** — path is in the writable allowlist for the inferred layer; per-type format checks (skill frontmatter, agent headings, etc.).
 2. **Branch** — `coro/proposal/<jobId>-<layer>-<slug>` cut from the layer's default branch.
-3. **Commit** — every file in your `files: []` payload, in one atomic commit.
-4. **Push** + **open PR** via whichever SCM plugin is active for the layer (GitHub, Bitbucket, GitLab, …).
-5. **Record** in the state backend — surfaces in `list_proposals` and the dashboard.
-6. **Return** the PR URL. A human reviews and merges; the next job's resolver pulls the merged change automatically.
+3. **Materialise** — the runner resolves the writable source clone for that layer and constructs the final file contents there. This is intentionally separate from the resolver's `_intelligence` tree: `_intelligence` is a read-only, multi-layer view and must never be used as the source of truth for proposal writes.
+4. **Commit** — every file in your `files: []` payload, in one atomic commit.
+5. **Push** + **open PR** via whichever SCM plugin is active for the layer (GitHub, Bitbucket, GitLab, …).
+6. **Record** in the state backend — surfaces in `list_proposals` and the dashboard.
+7. **Return** the PR URL. A human reviews and merges; the next job's resolver pulls the merged change automatically.
 
 If validation fails, the tool throws — **no commit, no push, no PR**. Fix the input and retry.
 
@@ -77,6 +78,8 @@ If validation fails, the tool throws — **no commit, no push, no PR**. Fix the 
 ### Memory entries: prefer the structured `entries[]` schema
 
 Memory grows monotonically and is loaded by every future job. Brevity wins. The runner exposes a structured schema that **renders** entries into the canonical short-form layout and **rejects** entries that exceed the per-kind line budget.
+
+For `memory-update`, append-only memory files (`memory/*.md` and `.coro/memory/*.md`, excluding `memory/MEMORY.md`) are merged against the current file in the writable tenant/repo source clone. That means you can send a short snippet or structured `entries[]` block and the runner will preserve the existing file contents in the PR branch. `memory/MEMORY.md` is the deliberate exception: treat it as an explicitly authored index file.
 
 ```
 propose_change({
