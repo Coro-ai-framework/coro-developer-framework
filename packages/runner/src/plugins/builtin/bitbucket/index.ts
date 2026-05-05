@@ -6,6 +6,21 @@
 // it directly; the plugin shape is what the registry, generic MCP tools,
 // and the polling transport see.
 //
+// ── MCP-first pivot status (S3) ──────────────────────────────────────────
+//
+// Unlike `github`, `jira`, `linear`, and `github-issues` — which switched
+// to MCP mode and dropped their per-operation methods — `bitbucket`
+// **stays native** for now. It does NOT implement `mcpServer()`. The
+// hybrid `scm_*` proxy detects this and falls back to the plugin's own
+// methods (createPr, getPrStatus, postPrComment, …), preserving today's
+// behaviour exactly.
+//
+// Why: at the time of this writing there is no production-quality
+// upstream BitBucket MCP server covering both Cloud and Server with
+// the full `Scm*` op set. See `docs/plugins-bitbucket-future.md` for
+// the off-ramp options (wait for upstream, publish ours, contribute
+// to community).
+//
 // Config shape (validated at init):
 //   - workspace: BitBucket workspace slug (e.g. `acme`).
 //   - coderUsername / coderToken: account that opens PRs.

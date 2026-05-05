@@ -9,13 +9,15 @@ import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workfl
 // ── Tracker prompt context ────────────────────────────────────────────────────
 //
 // Surfaced into the system prompt so agents — chiefly the campaign-planner —
-// have a deterministic signal for whether to call the `tracker_*` tools. Prior
-// to this, the prompt carried no tracker information at all and the agent
-// could only discover availability by issuing a *destructive* call
-// (`tracker_create_epic` would actually create an epic on success), so it
-// played safe and skipped the tracker branch even when the tenant had wired
-// up GitHub Issues / Jira / Linear. See campaign-planner.md §3 for the
-// agent-side decision rule that keys off this struct.
+// have a deterministic signal for whether to call any tracker tool (the
+// generic `tracker_*` proxy *or* the active plugin's native
+// `mcp__<pluginId>__*` tools). Prior to this, the prompt carried no tracker
+// information at all and the agent could only discover availability by
+// issuing a *destructive* call (e.g. `mcp__jira__jira_create_issue` would
+// actually create an issue on success), so it played safe and skipped the
+// tracker branch even when the tenant had wired up GitHub Issues / Jira /
+// Linear. See campaign-planner.md §3 for the agent-side decision rule that
+// keys off this struct.
 
 export interface TrackerPromptContext {
   /**

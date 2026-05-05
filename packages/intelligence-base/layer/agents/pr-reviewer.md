@@ -31,13 +31,14 @@ The runner **auto-advances** to the next phase (`evaluation`) when you finish. Y
 
 ## MCP tools for this agent
 
+Generic Coro tools (provider-neutral, always available):
+
 | Tool | Purpose |
 |------|------|
 | `log` | Report review progress and decisions |
 | `scm_get_pr_status` | Check PR state, approval count, and CI status |
-| `scm_get_pr_comments` | Read all comments on the PR |
-| `scm_reply_to_comment` | Reply to existing comment threads |
-| `scm_approve_pr` | Approve the PR (only after human sign-off) |
+| `scm_list_pr_comments` | Read all comments on the PR |
+| `scm_post_pr_comment` | Post a top-level comment on the PR |
 | `scm_merge_pr` | Merge the PR after approval |
 | `goto_phase` | Send control back to coding when humans request changes |
 | `await_event` | Wait for human approval (NOT for coder fixes) |
@@ -47,13 +48,21 @@ The runner **auto-advances** to the next phase (`evaluation`) when you finish. Y
 | `propose_change` | Suggest systemic improvements (use sparingly — the Evaluator owns the canonical proposal) |
 | `list_proposals` | Check past proposals before suggesting duplicates |
 
-All `scm_*` tools route to the active SCM plugin automatically — you do not branch on a provider name. If the active plugin registers extension-only tools (e.g. provider-specific approval rules) you'll find them documented in `memory/snippets/<pluginId>-*.md`.
+Native plugin MCP tools — when the active SCM plugin attaches one
+(GitHub today; not BitBucket), call these directly for ops that aren't
+in the generic surface:
+
+- **Replying to a specific comment thread:** `mcp__github__add_pull_request_review_comment` (with the parent comment id).
+- **Approving a PR programmatically:** `mcp__github__create_pull_request_review` with `event: "APPROVE"`. **Only do this after a human reviewer has signed off** — the agent never self-approves.
+- **Anything more advanced** (branch protection, releases, workflow runs): see the plugin's intelligence snippet for the curated allowlist.
+
+All `scm_*` tools route to the active SCM plugin automatically — you do not branch on a provider name. The plugin's intelligence snippet (read via `read_memory`) tells you which native MCP tools are exposed.
 
 ## Step-by-step procedure
 
 ### 1. Read the current PR state
 
-Look up the PR's `ExternalRef` from the job context (artefacts and `job.prMappings` both record it; the `pr-link` artefact carries the canonical shape — `kind: 'pull_request'`, `pluginId`, `repoKey`, `externalId`). Pull the latest comments and status via `scm_get_pr_status` / `scm_get_pr_comments`. Note:
+Look up the PR's `ExternalRef` from the job context (artefacts and `job.prMappings` both record it; the `pr-link` artefact carries the canonical shape — `kind: 'pull_request'`, `pluginId`, `repoKey`, `externalId`). Pull the latest comments and status via `scm_get_pr_status` / `scm_list_pr_comments`. Note:
 - Did the Coder include the `code-reviewer` subagent's verdict in the PR description? (It should.)
 - Are there any human comments since the last time you checked?
 - Are there any approvals?
@@ -63,7 +72,7 @@ Look up the PR's `ExternalRef` from the job context (artefacts and `job.prMappin
 
 For each new human comment:
 - **Change request (blocking):** post a brief acknowledgement and call `mcp__coro__goto_phase("coding")`. The runner will wake the Coder; on the next push, the `pr:updated` webhook resumes you here.
-- **Question:** answer it directly via `scm_reply_to_comment` if you can; otherwise `goto_phase("coding")` so the Coder can answer.
+- **Question:** answer it directly with `scm_post_pr_comment` (or, when you need to thread the reply, `mcp__github__add_pull_request_review_comment` with the parent comment id) if you can; otherwise `goto_phase("coding")` so the Coder can answer.
 - **Suggestion (non-blocking):** acknowledge and proceed; do not gate the merge on it.
 - **Approval:** record the reviewer and timestamp.
 

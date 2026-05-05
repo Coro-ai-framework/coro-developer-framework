@@ -36,8 +36,21 @@ interface PluginManifestSummary {
   configSchema: unknown
 }
 
+interface PluginMcpServerSummary {
+  type: 'stdio' | 'sse' | 'http' | string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string>
+}
+
 interface PluginsResponse {
-  plugins: { manifest: PluginManifestSummary; installed: boolean }[]
+  plugins: {
+    manifest: PluginManifestSummary
+    installed: boolean
+    mcpServer?: PluginMcpServerSummary | null
+  }[]
   defaults: { scm?: string; tracker?: string }
   webhookBaseUrl: string | null
 }
@@ -998,7 +1011,7 @@ export default function Settings() {
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {pluginsState.plugins.map(({ manifest, installed }) => (
+                        {pluginsState.plugins.map(({ manifest, installed, mcpServer }) => (
                           <div
                             key={manifest.id}
                             className="rounded-2xl border border-line bg-overlay/40 px-4 py-3.5"
@@ -1032,6 +1045,31 @@ export default function Settings() {
                                         </span>
                                       </>
                                     ) : null}
+                                  </div>
+                                ) : null}
+                                {mcpServer ? (
+                                  <div className="mt-2 text-[11px] text-fg-muted">
+                                    Attached MCP server:{' '}
+                                    <span className="font-mono">{mcpServer.type}</span>
+                                    {mcpServer.type === 'stdio' && mcpServer.command ? (
+                                      <>
+                                        {' · '}
+                                        <span className="font-mono break-all">
+                                          {mcpServer.command}
+                                          {mcpServer.args && mcpServer.args.length > 0
+                                            ? ' ' + mcpServer.args.join(' ')
+                                            : ''}
+                                        </span>
+                                      </>
+                                    ) : null}
+                                    {(mcpServer.type === 'http' || mcpServer.type === 'sse') && mcpServer.url ? (
+                                      <>
+                                        {' · '}
+                                        <span className="font-mono break-all">{mcpServer.url}</span>
+                                      </>
+                                    ) : null}
+                                    {' · agents see tools as '}
+                                    <span className="font-mono">mcp__{manifest.id}__*</span>
                                   </div>
                                 ) : null}
                               </div>

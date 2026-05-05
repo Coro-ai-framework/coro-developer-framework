@@ -1,38 +1,30 @@
-// ── Linear tracker plugin ────────────────────────────────────────────────────
+// ── Linear tracker plugin (MCP mode) ────────────────────────────────────────
 //
-// Wraps {@link LinearTrackerClient} in the {@link TrackerPluginRuntime}
-// contract. Linear webhook normalisation is intentionally a no-op for
-// v1 (read-only API only — see megaplan §8 "out of scope").
+// After the MCP-first pivot, Linear's agent-facing operations come from
+// Linear's official MCP server (`@linear/mcp-server`), attached to every
+// job session via `mcpServer()`. The plugin keeps only:
+//
+//   - lifecycle (`init`/`healthcheck`/`dispose`)
+//   - `intelligenceRoot()` — markdown snippets
+//   - `mcpServer()` — descriptor for the upstream MCP server
+//
+// All read/write methods are dropped — the upstream MCP serves them as
+// `mcp__linear__*` tools. Linear webhook normalisation remains a no-op
+// for v1 (out of scope; revisit when the Linear → Coro webhook flow is
+// designed).
 
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
-import { LinearTrackerClient } from '../../../clients/tracker/linear'
-import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 import type {
   PluginDeps,
   PluginHealth,
   PluginManifest,
-  TrackerCommentArgs,
-  TrackerCreateEpicArgs,
-  TrackerCreateIssueArgs,
-  TrackerIssue,
-  TrackerLinkIssuesArgs,
+  PluginMcpServerConfig,
   TrackerPluginRuntime,
-  TrackerTransitionArgs,
 } from '../../types'
 
-function unwrap<T>(r: TrackerResult<T>): T {
-  if (
-    r !== null &&
-    typeof r === 'object' &&
-    'available' in (r as object) &&
-    (r as TrackerNotConfigured).available === false
-  ) {
-    throw new Error(`linear plugin: tracker not available — ${(r as TrackerNotConfigured).reason}`)
-  }
-  return r as T
-}
+// ── Config ───────────────────────────────────────────────────────────────────
 
 const linearConfigSchema = z.object({
   apiKey: z.string().min(1),
@@ -43,16 +35,35 @@ const linearConfigSchema = z.object({
 
 export type LinearPluginConfig = z.infer<typeof linearConfigSchema>
 
+const DEFAULT_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
+  // Read
+  'list_issues',
+  'get_issue',
+  'list_projects',
+  'list_teams',
+  // Write
+  'create_issue',
+  'update_issue',
+  'create_comment',
+  // Linear's "epic" is just a parent issue, no separate API.
+]
+
 const MANIFEST: PluginManifest = {
   id: 'linear',
   kind: 'tracker',
-  version: '1.0.0',
+  version: '2.0.0',
   displayName: 'Linear',
   hostCompatibility: '^1.0.0',
   configSchema: linearConfigSchema,
   capabilities: {
     supportsEpics: true,
     supportsLinks: true,
+  },
+  allowedMcpTools: DEFAULT_ALLOWED_MCP_TOOLS,
+  mcpToolMap: {
+    tracker_get_issue: 'get_issue',
+    tracker_comment_issue: 'create_comment',
+    tracker_transition_issue: 'update_issue',
   },
   // Linear webhook support is a follow-up; we don't advertise a
   // descriptor at v1 so the cloud rejects webhook configuration for
@@ -68,19 +79,21 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
   readonly manifest = MANIFEST
   readonly kind = 'tracker' as const
 
-  private client!: LinearTrackerClient
+  private apiKey!: string
+  private apiUrl?: string
+  private available = false
 
   async init(rawConfig: LinearPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
     const cfg = linearConfigSchema.parse(rawConfig)
-    this.client = new LinearTrackerClient({
-      apiKey: cfg.apiKey,
-      ...(cfg.teamKey ? { defaultTeamKey: cfg.teamKey } : {}),
-      ...(cfg.apiUrl ? { apiUrl: cfg.apiUrl } : {}),
-    })
+    this.apiKey = cfg.apiKey
+    this.apiUrl = cfg.apiUrl
+    this.available = Boolean(cfg.apiKey)
   }
 
   async healthcheck(): Promise<PluginHealth> {
-    return { ok: this.client.isAvailable() }
+    return this.available
+      ? { ok: true }
+      : { ok: false, reason: 'linear plugin: missing apiKey' }
   }
 
   async dispose(): Promise<void> {}
@@ -89,47 +102,20 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
     return path.join(__dirname, 'intelligence')
   }
 
-  /** @internal */
-  unsafeClient(): LinearTrackerClient { return this.client }
-
-  async getIssue(key: string): Promise<TrackerIssue> {
-    return unwrap(await this.client.getIssue(key))
-  }
-
-  async listChildren(parentKey: string): Promise<TrackerIssue[]> {
-    return unwrap(await this.client.listChildren(parentKey))
-  }
-
-  async commentIssue(args: TrackerCommentArgs): Promise<void> {
-    unwrap(await this.client.commentIssue(args))
-  }
-
-  async transitionIssue(args: TrackerTransitionArgs): Promise<void> {
-    unwrap(await this.client.transitionIssue(args))
-  }
-
-  async createIssue(args: TrackerCreateIssueArgs): Promise<TrackerIssue> {
-    return unwrap(await this.client.createIssue({
-      projectKey: args.projectKey,
-      summary: args.summary,
-      description: args.description,
-      ...(args.issueType ? { issueType: args.issueType } : {}),
-      ...(args.parentKey ? { parentKey: args.parentKey } : {}),
-      ...(args.labels ? { labels: [...args.labels] } : {}),
-    }))
-  }
-
-  async createEpic(args: TrackerCreateEpicArgs): Promise<TrackerIssue> {
-    return unwrap(await this.client.createEpic({
-      projectKey: args.projectKey,
-      summary: args.summary,
-      description: args.description,
-      ...(args.labels ? { labels: [...args.labels] } : {}),
-    }))
-  }
-
-  async linkIssues(args: TrackerLinkIssuesArgs): Promise<void> {
-    unwrap(await this.client.linkIssues(args))
+  /**
+   * Descriptor for the upstream Linear MCP server. Defaults to the
+   * official `@linear/mcp-server` package which reads
+   * `LINEAR_API_KEY` from the env.
+   */
+  mcpServer(): PluginMcpServerConfig {
+    const env: Record<string, string> = { LINEAR_API_KEY: this.apiKey }
+    if (this.apiUrl) env.LINEAR_API_URL = this.apiUrl
+    return {
+      type: 'stdio',
+      command: 'npx',
+      args: ['-y', '@linear/mcp-server'],
+      env,
+    }
   }
 }
 

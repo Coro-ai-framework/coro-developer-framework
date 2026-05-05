@@ -30,6 +30,57 @@ import type {
   NormalizedEvent,
 } from './refs'
 
+// ── External MCP server descriptor ──────────────────────────────────────────
+//
+// A plugin can expose an *external* MCP server that the runner attaches to
+// every job's session. This is the MCP-first pivot's outbound channel —
+// the model talks to the provider via `mcp__<pluginId>__<toolName>` tools
+// served by the upstream MCP server (e.g. `@modelcontextprotocol/server-github`).
+//
+// This is intentionally narrower than the SDK's full union: we only allow
+// the *serialisable* transport variants (stdio / http / sse). The in-process
+// SDK MCP server (`type: 'sdk'`) is reserved for Coro's own MCP server —
+// plugins can't mount in-process servers, since they'd share the runner's
+// memory space and bypass the plugin sandbox.
+//
+// Plugins that need fine-grained tool exposure can carry a `disallowedTools`
+// or `allowedTools` array in their manifest's `capabilities` block; the
+// runner reads that out and applies it to the SDK's per-server tool policy
+// when attaching.
+
+/** stdio-transported MCP server: spawned as a child process. */
+export interface PluginMcpStdioServerConfig {
+  type: 'stdio'
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+}
+
+/** SSE-transported MCP server: long-lived HTTP+SSE connection. */
+export interface PluginMcpSseServerConfig {
+  type: 'sse'
+  url: string
+  headers?: Record<string, string>
+}
+
+/** HTTP-transported MCP server: each tool call is a fresh HTTP roundtrip. */
+export interface PluginMcpHttpServerConfig {
+  type: 'http'
+  url: string
+  headers?: Record<string, string>
+}
+
+/**
+ * Serialisable subset of the SDK's MCP server config. Every variant is
+ * JSON-roundtrippable so the dashboard's `/plugins` endpoint can render
+ * them and the cloud control plane can ferry them between runners and
+ * the UI without losing fidelity.
+ */
+export type PluginMcpServerConfig =
+  | PluginMcpStdioServerConfig
+  | PluginMcpSseServerConfig
+  | PluginMcpHttpServerConfig
+
 // ── Plugin kinds ─────────────────────────────────────────────────────────────
 
 /**
@@ -117,6 +168,33 @@ export interface PluginManifest {
   webhook?: PluginWebhookDescriptor
   /** Markdown the resolver merges into the per-job intelligence overlay. */
   intelligence?: PluginIntelligenceContribution
+  /**
+   * Maps Coro's generic proxy ops (`scm_create_pr`, `tracker_get_issue`,
+   * …) to the upstream MCP tool name on this plugin's `mcpServer()`.
+   * Only meaningful for plugins that declare an `mcpServer()`. The
+   * hybrid `scm_*`/`tracker_*` proxy reads this when an MCP-mode
+   * plugin is the active resolver to redirect the agent at the
+   * correct native tool name.
+   *
+   * Example for the `github` plugin:
+   * ```
+   * { scm_create_pr: 'create_pull_request', scm_get_pr_status: 'get_pull_request' }
+   * ```
+   */
+  mcpToolMap?: Record<string, string>
+  /**
+   * Optional list of upstream MCP tool names to expose to the agent.
+   * The runner threads this into the SDK's per-server tool policy at
+   * attach time; tools outside the list are denied. Curated allowlists
+   * keep token usage down (large MCPs ship 50–80 tools, agents only
+   * need ~15). When omitted, every upstream tool is exposed.
+   */
+  allowedMcpTools?: ReadonlyArray<string>
+  /**
+   * Optional list of upstream MCP tool names to deny. Combined with
+   * {@link allowedMcpTools} when both are present.
+   */
+  disallowedMcpTools?: ReadonlyArray<string>
 }
 
 // ── Plugin runtime — common ──────────────────────────────────────────────────
@@ -181,6 +259,25 @@ export interface PluginRuntime<Config = unknown> {
    * intelligence root is a runner-local filesystem detail.
    */
   intelligenceRoot?(): string | undefined
+  /**
+   * External MCP server descriptor. When present, the runner attaches
+   * the server to every job's `query()` session under the registration
+   * key `<pluginId>` so the agent sees its tools as
+   * `mcp__<pluginId>__<toolName>`. This is the primary outbound channel
+   * after the MCP-first pivot — provider clients (GitHub, Jira, Linear)
+   * are served by upstream MCP servers rather than re-implemented in
+   * Coro's plugin runtimes.
+   *
+   * Plugins without a usable upstream MCP (currently BitBucket) leave
+   * this undefined; the hybrid `scm_*`/`tracker_*` proxy then falls
+   * back to the plugin's own native methods.
+   *
+   * Plugins that want to trim or extend the upstream tool surface can
+   * set `capabilities.allowedMcpTools` / `capabilities.disallowedMcpTools`
+   * on their manifest — the runner threads those through the SDK's
+   * per-server tool policy at attach time.
+   */
+  mcpServer?(): PluginMcpServerConfig | undefined
 }
 
 // ── SCM plugin runtime ───────────────────────────────────────────────────────
@@ -257,16 +354,26 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   kind: 'scm'
 
   // ── Repo / clone ────────────────────────────────────────────────────────
+  // `cloneInfo` and `matchesRemote` stay required — they have no MCP
+  // equivalent (the credentialed clone URL must come from the plugin
+  // itself, and webhook ingress needs a host check). Everything else
+  // is optional after the MCP-first pivot: a plugin that exposes an
+  // upstream MCP server via `mcpServer()` can omit these methods, and
+  // the hybrid `scm_*` proxy will forward calls through the SDK's MCP
+  // client instead.
   cloneInfo(args: { repo: string }): ScmCloneInfo
-  /** Optional: hosts that don't support repo creation (read-only mirrors) omit this. */
   createRepo?(args: ScmCreateRepoArgs): Promise<ExternalRef>
 
   // ── Pull requests ───────────────────────────────────────────────────────
-  createPr(args: ScmCreatePrArgs): Promise<ExternalRef>
-  getPrStatus(ref: ExternalRef): Promise<ScmPrStatus>
-  listPrComments(ref: ExternalRef): Promise<ScmPrComment[]>
-  postPrComment(ref: ExternalRef, body: string): Promise<ScmPrComment>
-  replyToComment(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment>
+  // Each of the methods below is now optional. Plugins serving the
+  // operation through their MCP server omit the method; plugins
+  // without a usable upstream MCP (currently BitBucket) keep
+  // implementing them and the `scm_*` proxy falls back to them.
+  createPr?(args: ScmCreatePrArgs): Promise<ExternalRef>
+  getPrStatus?(ref: ExternalRef): Promise<ScmPrStatus>
+  listPrComments?(ref: ExternalRef): Promise<ScmPrComment[]>
+  postPrComment?(ref: ExternalRef, body: string): Promise<ScmPrComment>
+  replyToComment?(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment>
   approvePr?(ref: ExternalRef): Promise<void>
   mergePr?(ref: ExternalRef, opts?: ScmMergeOptions): Promise<void>
 
@@ -277,6 +384,11 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
    * `getPrStatus` and `listPrComments`. The polling transport calls
    * this on every cycle for every parked job that's awaiting an
    * `external_ref`.
+   *
+   * Polling runs OUTSIDE an active `query()` session, so it cannot
+   * use the upstream MCP server attached at job start. Plugins keep
+   * a tiny native fetch (HTTP or `fetch`) for this single method even
+   * after migrating to MCP mode for the agent-facing operations.
    */
   pollPr(ref: ExternalRef): Promise<ScmPollSnapshot>
 
@@ -354,12 +466,16 @@ export interface TrackerPluginRuntime<Config = unknown> extends PluginRuntime<Co
   kind: 'tracker'
 
   // ── Read ────────────────────────────────────────────────────────────────
-  getIssue(key: string): Promise<TrackerIssue>
+  // After the MCP-first pivot every operation is optional. Plugins
+  // backed by an upstream MCP server (Jira via Atlassian MCP, Linear,
+  // GitHub Issues via the GitHub MCP) drop these methods and the
+  // hybrid `tracker_*` proxy forwards through MCP instead.
+  getIssue?(key: string): Promise<TrackerIssue>
   listChildren?(parentKey: string): Promise<TrackerIssue[]>
 
   // ── Write ───────────────────────────────────────────────────────────────
-  commentIssue(args: TrackerCommentArgs): Promise<void>
-  transitionIssue(args: TrackerTransitionArgs): Promise<void>
+  commentIssue?(args: TrackerCommentArgs): Promise<void>
+  transitionIssue?(args: TrackerTransitionArgs): Promise<void>
   createIssue?(args: TrackerCreateIssueArgs): Promise<TrackerIssue>
   createEpic?(args: TrackerCreateEpicArgs): Promise<TrackerIssue>
   linkIssues?(args: TrackerLinkIssuesArgs): Promise<void>

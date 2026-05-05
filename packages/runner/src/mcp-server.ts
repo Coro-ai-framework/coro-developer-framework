@@ -58,26 +58,22 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
     tools: [
       ...extensionTools,
 
-      // ── Generic SCM (preferred) ───────────────────────────────────────────
+      // ── Generic SCM (MCP-first proxy) ─────────────────────────────────────
       //
-      // Provider-neutral pull-request / repo tools. The agent picks
-      // which plugin to talk to via `pluginId` (e.g. `'github'`,
-      // `'bitbucket'`); when omitted, the runner resolves from
-      // `params.scm` and the tenant default. New workflow markdown
-      // should use these and stop hard-coding `bb_*`/`gh_*`.
-
-      tool(
-        'scm_create_repo',
-        'Create a new repository through the configured SCM plugin. `pluginId` overrides the per-job default.',
-        {
-          pluginId: z.string().optional(),
-          repoSlug: z.string(),
-          description: z.string().optional(),
-          isPrivate: z.boolean().optional(),
-          defaultBranch: z.string().optional(),
-        },
-        h.scm_create_repo,
-      ),
+      // After the MCP-first plugins pivot, only six high-traffic ops
+      // survive as a provider-neutral shim: open PR, read PR status,
+      // list / post PR comments, merge PR, and resolve clone info.
+      // Everything else (repo creation, approvals, threaded replies,
+      // change-detection polls) is now expected to come from the
+      // upstream MCP server attached by the active SCM plugin — the
+      // agent calls `mcp__<pluginId>__<tool>` directly.
+      //
+      // For native-mode plugins (BitBucket today) these wrappers hit
+      // the plugin's native methods. For MCP-mode plugins (GitHub) the
+      // wrapper returns a structured redirect telling the agent which
+      // upstream tool to call, costing one extra round-trip. We accept
+      // that cost in exchange for a tiny, stable, provider-agnostic
+      // tool surface that workflow markdown can rely on.
 
       tool(
         'scm_create_pr',
@@ -131,30 +127,6 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
       ),
 
       tool(
-        'scm_reply_to_comment',
-        'Reply to an existing comment on a pull request via the configured SCM plugin.',
-        {
-          pluginId: z.string().optional(),
-          repo: z.string(),
-          prId: z.union([z.number(), z.string()]),
-          parentId: z.union([z.number(), z.string()]),
-          body: z.string(),
-        },
-        h.scm_reply_to_comment,
-      ),
-
-      tool(
-        'scm_approve_pr',
-        'Approve a pull request via the configured SCM plugin.',
-        {
-          pluginId: z.string().optional(),
-          repo: z.string(),
-          prId: z.union([z.number(), z.string()]),
-        },
-        h.scm_approve_pr,
-      ),
-
-      tool(
         'scm_merge_pr',
         'Merge a pull request via the configured SCM plugin. Only call when approved and conversations are resolved.',
         {
@@ -178,18 +150,6 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         { annotations: { readOnlyHint: true } },
       ),
 
-      tool(
-        'scm_poll_pr',
-        'Read a snapshot of a pull request (state + approval count + comments) for change-detection use cases. Mirrors what the polling transport calls internally.',
-        {
-          pluginId: z.string().optional(),
-          repo: z.string(),
-          prId: z.union([z.number(), z.string()]),
-        },
-        h.scm_poll_pr,
-        { annotations: { readOnlyHint: true } },
-      ),
-
       // ── BitBucket — coder account (DEPRECATED) ────────────────────────────
       //
       // Legacy tool surface kept for one release while workflow
@@ -198,7 +158,7 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'bb_create_repo',
-        'DEPRECATED: use scm_create_repo with pluginId="bitbucket". Create a new private BitBucket repository.',
+        'REMOVED: BitBucket repo creation now goes through the runner during job bootstrap, not via an agent tool.',
         { repoSlug: z.string(), description: z.string().optional() },
         h.bb_create_repo,
       ),
@@ -244,14 +204,14 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'bb_reply_to_comment',
-        'DEPRECATED: use scm_reply_to_comment with pluginId="bitbucket".',
+        'REMOVED: threaded comment replies are not in the generic surface; use scm_post_pr_comment for top-level comments.',
         { repoSlug: z.string(), prId: z.number(), parentId: z.number(), content: z.string() },
         h.bb_reply_to_comment,
       ),
 
       tool(
         'bb_approve_pr',
-        'DEPRECATED: use scm_approve_pr with pluginId="bitbucket".',
+        'REMOVED: PR approvals are a human responsibility; the agent should request review and park, not self-approve.',
         { repoSlug: z.string(), prId: z.number() },
         h.bb_approve_pr,
       ),
@@ -267,7 +227,7 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'gh_create_repo',
-        'DEPRECATED: use scm_create_repo with pluginId="github".',
+        'REMOVED: call mcp__github__create_repository directly (the upstream GitHub MCP server is attached to every session).',
         { repoSlug: z.string(), description: z.string().optional() },
         h.gh_create_repo,
       ),
@@ -311,14 +271,14 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'gh_reply_to_comment',
-        'DEPRECATED: use scm_reply_to_comment with pluginId="github".',
+        'REMOVED: call mcp__github__add_pull_request_review_comment directly with the parent comment id.',
         { repoSlug: z.string(), prId: z.number(), parentId: z.number(), content: z.string() },
         h.gh_reply_to_comment,
       ),
 
       tool(
         'gh_approve_pr',
-        'DEPRECATED: use scm_approve_pr with pluginId="github".',
+        'REMOVED: PR approvals are a human responsibility; the agent should request review and park, not self-approve.',
         { repoSlug: z.string(), prId: z.number() },
         h.gh_approve_pr,
       ),
@@ -424,53 +384,23 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         h.jira_transition_issue,
       ),
 
-      // ── Tracker (provider-agnostic) ──────────────────────────────────────
+      // ── Tracker (provider-agnostic, MCP-first proxy) ─────────────────────
       //
-      // These tools let the campaign-planner work the same way against any
-      // configured tracker (Jira today, GitHub Issues / Linear later). They
-      // return `{ available: false, reason }` when no tracker is configured
-      // — the planner is expected to detect that and proceed in tracker-less
-      // mode.
-
-      tool(
-        'tracker_create_epic',
-        'Create a tracker epic via the configured tracker plugin. `pluginId` overrides the per-job default.',
-        {
-          pluginId: z.string().optional(),
-          projectKey: z.string().describe('Jira project key, GitHub repo, or Linear team — provider-specific.'),
-          summary: z.string(),
-          description: z.string(),
-          labels: z.array(z.string()).optional(),
-        },
-        h.tracker_create_epic,
-      ),
-
-      tool(
-        'tracker_create_issue',
-        'Create a child tracker issue under an epic (or standalone) via the configured tracker plugin.',
-        {
-          pluginId: z.string().optional(),
-          projectKey: z.string(),
-          summary: z.string(),
-          description: z.string(),
-          issueType: z.string().optional().describe('Provider-native issue type (Jira: Task/Story; defaults to Task).'),
-          parentKey: z.string().optional().describe('Parent epic key.'),
-          labels: z.array(z.string()).optional(),
-        },
-        h.tracker_create_issue,
-      ),
-
-      tool(
-        'tracker_link_issues',
-        'Add a relation between two tracker issues (e.g. Blocks) via the configured tracker plugin.',
-        {
-          pluginId: z.string().optional(),
-          fromKey: z.string().describe('Dependent issue key (the one that is blocked).'),
-          toKey: z.string().describe('Upstream issue key (the blocker).'),
-          relation: z.string().optional().describe('Provider-native relation name. Defaults to "Blocks".'),
-        },
-        h.tracker_link_issues,
-      ),
+      // After the MCP-first plugins pivot, only the three high-traffic
+      // ops survive as a generic shim. Everything else (epic creation,
+      // child listings, links) is now expected to flow through the
+      // upstream MCP server attached by the active tracker plugin —
+      // agents call `mcp__<pluginId>__<tool>` directly. These three
+      // remain because they show up in nearly every workflow and we
+      // want one canonical name regardless of the tracker.
+      //
+      // For native-mode plugins (none today: Jira/Linear/GH-Issues are
+      // MCP-mode, but BitBucket-style natives are still allowed) the
+      // proxy hits the plugin's native `getIssue/commentIssue/
+      // transitionIssue`. For MCP-mode plugins it returns a structured
+      // redirect telling the agent which `mcp__<pluginId>__<tool>` to
+      // call instead, costing one extra round-trip. The redirect is
+      // cheap and keeps the agent's tool surface small.
 
       tool(
         'tracker_get_issue',
@@ -480,17 +410,6 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
           key: z.string(),
         },
         h.tracker_get_issue,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
-        'tracker_list_children',
-        'List the tracker issues that are direct children of a parent (e.g. epic) via the configured tracker plugin.',
-        {
-          pluginId: z.string().optional(),
-          parentKey: z.string(),
-        },
-        h.tracker_list_children,
         { annotations: { readOnlyHint: true } },
       ),
 

@@ -106,27 +106,46 @@ All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__cor
 - `read_memory` — Load accumulated memory (pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: full bundle. `{ file }`: a single file. The system prompt no longer carries memory by default — call this yourself.
 
 ### Source control (provider-neutral; uses `params.scm` or the tenant default)
+
+Coro now ships a deliberately small generic surface. The high-frequency
+ops below work the same regardless of the active SCM plugin:
+
 - `scm_get_clone_info` — Get a credentialed clone URL + git env for a repo
-- `scm_create_repo` — Create a new private repository
 - `scm_create_pr` — Open a pull request from a feature branch
 - `scm_get_pr_status` — Get state and approval count of a PR
 - `scm_list_pr_comments` — List comments on a PR
 - `scm_post_pr_comment` — Post a top-level comment on a PR
-- `scm_reply_to_comment` — Reply to an existing comment thread
-- `scm_approve_pr` — Approve a PR (reviewer credentials)
 - `scm_merge_pr` — Merge a PR (squash, only after approval + all comments resolved)
-- `scm_poll_pr` — One-shot poll snapshot used by the runner's polling transport
 
 Each tool accepts an optional `pluginId` to override the resolved default — use it when the job needs to talk to a non-default plugin (rare).
 
+**Everything else** — repo creation, threaded comment replies, PR
+approvals, PR change-detection polls, branch protection, releases,
+workflows, … — comes from the upstream MCP server attached by the
+active SCM plugin. Call those tools directly using their native names:
+`mcp__github__create_repository`, `mcp__github__add_pull_request_review_comment`,
+`mcp__github__create_release`, etc. Each plugin's intelligence snippet
+lists which native tools are exposed (curated `allowedMcpTools`) so you
+don't have to guess.
+
+For native-mode plugins without an upstream MCP (BitBucket today), the
+generic tools above are the entire surface — there is no
+`mcp__bitbucket__*` namespace.
+
 ### Issue tracker (provider-neutral; uses `params.tracker` or the tenant default)
+
+Generic shim — the same three ops show up in nearly every workflow:
+
 - `tracker_get_issue` — Fetch an issue/ticket by external id (`PROJ-123`, `ENG-7`, `owner/repo#42`, …)
 - `tracker_comment_issue` — Post a comment on an issue
 - `tracker_transition_issue` — Move the issue to a new status (transition names are plugin-specific)
-- `tracker_create_issue` — Create a new issue (when supported)
-- `tracker_create_epic` — Create an epic / parent issue (when supported)
-- `tracker_link_issues` — Link two issues (when supported)
-- `tracker_list_children` — List children of a parent issue (when supported)
+
+For everything more advanced (epic/issue creation, parent-child
+listings, dependency links, label/sprint management, JQL/GraphQL
+queries, …) call the active tracker plugin's upstream MCP tools
+directly: `mcp__jira__jira_create_issue`, `mcp__jira__jira_link_to_epic`,
+`mcp__linear__create_issue`, `mcp__linear__update_issue`, etc. The
+plugin's intelligence snippet lists the curated tool allowlist.
 
 ### Test harness
 - `run_go_build` — Compile a Go project in a directory

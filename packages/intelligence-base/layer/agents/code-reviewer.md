@@ -38,7 +38,7 @@ If a PR is already open and you have access to PR comment tools, you may also po
 | `scm_get_pr_comments` | Read existing PR comments to avoid duplicating feedback |
 | `scm_post_pr_comment` | Post the consolidated review (only when a PR is open) |
 
-You do **not** have `goto_phase`, `await_event`, `scm_approve_pr`, or `scm_merge_pr`. Those belong to the merge gatekeeper.
+You do **not** have `goto_phase`, `await_event`, or `scm_merge_pr`. Those belong to the merge gatekeeper. PR approvals are a human responsibility — there is no `scm_approve_pr` in the agent surface.
 
 ## Review checklist
 

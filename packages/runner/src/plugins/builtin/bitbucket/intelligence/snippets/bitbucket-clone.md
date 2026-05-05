@@ -1,6 +1,16 @@
-# BitBucket — Clone & Auth
+# BitBucket — Clone, Auth, and Tooling
 
 The BitBucket SCM plugin (`pluginId: bitbucket`) talks to `bitbucket.org`.
+
+## Toolset (note — different from the other built-ins)
+After the MCP-first pivot, GitHub / Jira / Linear / GH Issues attached
+upstream MCP servers and exposed their tools as `mcp__<plugin>__*`.
+**BitBucket is the exception.** No production-quality upstream MCP
+server covers it yet, so the plugin stays native — agents call generic
+`scm_*` tools and the runner forwards to the plugin's own methods.
+
+There is **no** `mcp__bitbucket__*` tool surface. Always go through the
+generic `scm_*` tools when the active SCM is BitBucket.
 
 ## Tokens
 - **Atlassian API tokens** (start with `ATATT…`): the git username **must** be

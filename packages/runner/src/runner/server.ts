@@ -436,6 +436,20 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         } catch {
           configSchemaJson = null
         }
+        // Surface plugin-provided MCP server descriptors (S1 of the
+        // MCP-first pivot) so operators can see exactly which upstream
+        // servers will be attached to job sessions. Secrets in
+        // env / headers are redacted — the dashboard only needs the
+        // shape, not the credentials.
+        let mcpServer: unknown = null
+        if (typeof runtime.mcpServer === 'function') {
+          try {
+            const desc = runtime.mcpServer()
+            if (desc) mcpServer = redactPluginMcpServer(desc)
+          } catch (err) {
+            logger.warn({ err, pluginId: m.id }, 'Plugin mcpServer() threw during /plugins enumeration')
+          }
+        }
         return {
           manifest: {
             id: m.id,
@@ -455,6 +469,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             configSchema: configSchemaJson,
           },
           installed: resolved.installed[m.id]?.enabled ?? false,
+          mcpServer,
         }
       })
 
@@ -1383,4 +1398,34 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   })
 
   return server
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Sanitise a plugin's MCP server descriptor for transport over the HTTP
+ * API. Tokens land in `env` (stdio) or `headers` (http/sse); we keep
+ * the keys (so the operator can see *which* secrets are wired in) but
+ * blank the values. The shape is otherwise pass-through so the
+ * dashboard can render `command`, `args`, `url`, transport type, etc.
+ */
+function redactPluginMcpServer(desc: unknown): Record<string, unknown> | null {
+  if (!desc || typeof desc !== 'object') return null
+  const src = desc as Record<string, unknown>
+  const out: Record<string, unknown> = { ...src }
+  if (src.env && typeof src.env === 'object') {
+    const redactedEnv: Record<string, string> = {}
+    for (const k of Object.keys(src.env as Record<string, unknown>)) {
+      redactedEnv[k] = '***'
+    }
+    out.env = redactedEnv
+  }
+  if (src.headers && typeof src.headers === 'object') {
+    const redactedHeaders: Record<string, string> = {}
+    for (const k of Object.keys(src.headers as Record<string, unknown>)) {
+      redactedHeaders[k] = '***'
+    }
+    out.headers = redactedHeaders
+  }
+  return out
 }

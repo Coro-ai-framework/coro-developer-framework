@@ -85,11 +85,18 @@ describe('createMcpToolHandlers — job control & signals', () => {
 
 // ── Legacy bb_* shims ──────────────────────────────────────────────────────
 //
-// After the plugin refactor (P3) the `bb_*` MCP tools became thin
-// wrappers around the generic `scm_*` tools, which dispatch through
-// the plugin registry. So these tests assert that the call lands on
-// the registered `bitbucket` SCM plugin (and that a deprecation
-// warning gets logged), not that the bare BitBucket client got hit.
+// After the MCP-first plugins pivot (S4) the surviving `bb_*` shims
+// fan out to one of three places:
+//   - the kept generic `scm_*` tools (which still dispatch through
+//     the plugin registry) — `bb_create_pr`, `bb_get_pr_status`,
+//     `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_merge_pr`.
+//   - a structured "removed" error pointing the agent at the
+//     equivalent native MCP tool — `bb_create_repo`,
+//     `bb_reply_to_comment`, `bb_approve_pr`. (`scm_create_repo`,
+//     `scm_reply_to_comment`, and `scm_approve_pr` no longer exist
+//     as part of the trimmed surface.)
+// All shims still emit a deprecation log line so operators can see
+// usage; S6 removes them entirely.
 
 describe('createMcpToolHandlers — BitBucket back-compat shims', () => {
   let ctx: ToolContext
@@ -101,18 +108,14 @@ describe('createMcpToolHandlers — BitBucket back-compat shims', () => {
     scm = built.scmSpies['bitbucket']
   })
 
-  it('bb_create_repo dispatches to bitbucket SCM plugin and warns', async () => {
+  it('bb_create_repo returns a structured "removed" error and warns', async () => {
     const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.bb_create_repo({ repoSlug: 'my-svc', description: 'svc' })) as Record<string, unknown>
-    expect(scm.createRepo).toHaveBeenCalledWith({
-      repoSlug: 'my-svc',
-      description: 'svc',
-      isPrivate: true,
-    })
-    expect(data['pluginId']).toBe('bitbucket')
-    expect(data['fullName']).toBe('ws/new-repo')
+    const r = await h.bb_create_repo({ repoSlug: 'my-svc', description: 'svc' })
+    expect('isError' in r && r.isError).toBe(true)
+    expect(r.content[0].text).toMatch(/bb_create_repo is removed/i)
+    expect(scm.createRepo).not.toHaveBeenCalled()
     expect(ctx.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ tool: 'bb_create_repo', replacement: 'scm_create_repo' }),
+      expect.objectContaining({ tool: 'bb_create_repo' }),
       expect.stringContaining('deprecated'),
     )
   })
@@ -164,7 +167,7 @@ describe('createMcpToolHandlers — BitBucket back-compat shims', () => {
     expect(data[0]).toMatchObject({ id: '1', body: 'hello' })
   })
 
-  it('bb_post_pr_comment, bb_reply_to_comment, bb_approve_pr, bb_merge_pr delegate to plugin', async () => {
+  it('bb_post_pr_comment delegates to plugin; merge dispatches with prId', async () => {
     const h = createMcpToolHandlers(ctx, {})
 
     await h.bb_post_pr_comment({ repoSlug: 'r', prId: 1, content: 'hi' })
@@ -173,21 +176,25 @@ describe('createMcpToolHandlers — BitBucket back-compat shims', () => {
       'hi',
     )
 
-    await h.bb_reply_to_comment({ repoSlug: 'r', prId: 1, parentId: 9, content: 'reply' })
-    expect(scm.replyToComment).toHaveBeenCalledWith(
-      expect.objectContaining({ repoKey: 'r', externalId: '1' }),
-      '9',
-      'reply',
-    )
-
-    await h.bb_approve_pr({ repoSlug: 'r', prId: 2 })
-    expect(scm.approvePr).toHaveBeenCalled()
-
     await h.bb_merge_pr({ repoSlug: 'r', prId: 2, message: 'merge' })
     expect(scm.mergePr).toHaveBeenCalledWith(
       expect.objectContaining({ repoKey: 'r', externalId: '2' }),
       expect.objectContaining({ message: 'merge' }),
     )
+  })
+
+  it('bb_reply_to_comment and bb_approve_pr now return structured errors', async () => {
+    const h = createMcpToolHandlers(ctx, {})
+
+    const reply = await h.bb_reply_to_comment({ repoSlug: 'r', prId: 1, parentId: 9, content: 'reply' })
+    expect('isError' in reply && reply.isError).toBe(true)
+    expect(reply.content[0].text).toMatch(/bb_reply_to_comment is removed/i)
+    expect(scm.replyToComment).not.toHaveBeenCalled()
+
+    const approve = await h.bb_approve_pr({ repoSlug: 'r', prId: 2 })
+    expect('isError' in approve && approve.isError).toBe(true)
+    expect(approve.content[0].text).toMatch(/bb_approve_pr is removed/i)
+    expect(scm.approvePr).not.toHaveBeenCalled()
   })
 })
 

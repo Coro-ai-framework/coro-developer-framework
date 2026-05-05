@@ -1,20 +1,27 @@
-// ── Jira tracker plugin ──────────────────────────────────────────────────────
+// ── Jira tracker plugin (MCP mode) ──────────────────────────────────────────
 //
-// Wraps the existing {@link JiraTrackerClient} (and the legacy
-// {@link JiraClient}) in the {@link TrackerPluginRuntime} contract.
+// After the MCP-first pivot, Jira's agent-facing operations come from an
+// upstream Atlassian/Jira MCP server (attached via `mcpServer()`). This
+// plugin keeps only the responsibilities MCP can't serve:
 //
-// Two clients live underneath because the legacy {@link JiraClient}
-// (in `clients/jira.ts`) is the read-skewed spec-writer flow; the new
-// tracker client owns the campaign-planner write paths. Both are
-// reachable via the plugin so the upstream consumers can move over
-// gradually.
+//   - `init`/`healthcheck`/`dispose` lifecycle      — plugin contract.
+//   - `intelligenceRoot()`                          — markdown snippets
+//                                                     for the agent.
+//   - `mcpServer()`                                 — descriptor for the
+//                                                     stdio MCP server.
+//   - `normalizeInbound()`                          — Jira webhooks have
+//                                                     no MCP equivalent.
+//
+// All read/write methods (`getIssue`, `commentIssue`, `transitionIssue`,
+// `createIssue`, `createEpic`, `linkIssues`, `listChildren`) are dropped
+// — the upstream MCP server serves them as `mcp__jira__*` tools.
+//
+// The hybrid `tracker_*` proxy (mcp-handlers.ts) is reshaped in S4 to
+// forward calls through the SDK's MCP client.
 
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
-import { JiraClient } from './legacy-client'
-import { JiraTrackerClient } from '../../../clients/tracker/jira'
-import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 import {
   externalIdString,
   type NormalizedEvent,
@@ -23,32 +30,9 @@ import type {
   PluginDeps,
   PluginHealth,
   PluginManifest,
-  TrackerCommentArgs,
-  TrackerCreateEpicArgs,
-  TrackerCreateIssueArgs,
-  TrackerIssue,
-  TrackerLinkIssuesArgs,
+  PluginMcpServerConfig,
   TrackerPluginRuntime,
-  TrackerTransitionArgs,
 } from '../../types'
-
-/**
- * Narrow a `TrackerResult<T>` to `T`, throwing the upstream
- * `unavailable` reason when the legacy client reports the tracker is
- * not configured. The plugin contract is "throw on failure", so we
- * bridge here.
- */
-function unwrap<T>(r: TrackerResult<T>): T {
-  if (
-    r !== null &&
-    typeof r === 'object' &&
-    'available' in (r as object) &&
-    (r as TrackerNotConfigured).available === false
-  ) {
-    throw new Error(`jira plugin: tracker not available — ${(r as TrackerNotConfigured).reason}`)
-  }
-  return r as T
-}
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -60,16 +44,43 @@ const jiraConfigSchema = z.object({
 
 export type JiraPluginConfig = z.infer<typeof jiraConfigSchema>
 
+// Curated allowlist of upstream MCP tools exposed to the agent. Mirrors
+// the agent procedures in `intelligence-base/.../agents/*.md`.
+//
+// Tool names follow the conventions of the most-deployed community
+// Jira MCP servers (`mcp-atlassian`, `@cosmix/jira-mcp`). When we
+// switch to a different upstream the names map across the same
+// canonical operations, so the curation set stays portable.
+const DEFAULT_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
+  // Read
+  'jira_get_issue',
+  'jira_search_issues',
+  'jira_list_children',
+  // Write
+  'jira_create_issue',
+  'jira_create_epic',
+  'jira_update_issue',
+  'jira_add_comment',
+  'jira_transition_issue',
+  'jira_link_issues',
+]
+
 const MANIFEST: PluginManifest = {
   id: 'jira',
   kind: 'tracker',
-  version: '1.0.0',
+  version: '2.0.0',
   displayName: 'Jira',
   hostCompatibility: '^1.0.0',
   configSchema: jiraConfigSchema,
   capabilities: {
     supportsEpics: true,
     supportsLinks: true,
+  },
+  allowedMcpTools: DEFAULT_ALLOWED_MCP_TOOLS,
+  mcpToolMap: {
+    tracker_get_issue: 'jira_get_issue',
+    tracker_comment_issue: 'jira_add_comment',
+    tracker_transition_issue: 'jira_transition_issue',
   },
   webhook: {
     // Atlassian webhooks don't carry an HMAC by default — they rely on
@@ -92,17 +103,23 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
   readonly manifest = MANIFEST
   readonly kind = 'tracker' as const
 
-  private tracker!: JiraTrackerClient
-  private legacy!: JiraClient
+  private baseUrl!: string
+  private username!: string
+  private apiToken!: string
+  private available = false
 
   async init(rawConfig: JiraPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
     const cfg = jiraConfigSchema.parse(rawConfig)
-    this.tracker = new JiraTrackerClient(cfg)
-    this.legacy = new JiraClient(cfg)
+    this.baseUrl = cfg.baseUrl
+    this.username = cfg.username
+    this.apiToken = cfg.apiToken
+    this.available = Boolean(cfg.baseUrl && cfg.username && cfg.apiToken)
   }
 
   async healthcheck(): Promise<PluginHealth> {
-    return { ok: this.tracker.isAvailable() }
+    return this.available
+      ? { ok: true }
+      : { ok: false, reason: 'jira plugin: missing baseUrl/username/apiToken' }
   }
 
   async dispose(): Promise<void> {}
@@ -111,53 +128,31 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
     return path.join(__dirname, 'intelligence')
   }
 
-  /** @internal */
-  unsafeTrackerClient(): JiraTrackerClient { return this.tracker }
-  /** @internal */
-  unsafeLegacyClient(): JiraClient { return this.legacy }
-
-  // ── Read ────────────────────────────────────────────────────────────────
-
-  async getIssue(key: string): Promise<TrackerIssue> {
-    return unwrap(await this.tracker.getIssue(key))
-  }
-
-  async listChildren(parentKey: string): Promise<TrackerIssue[]> {
-    return unwrap(await this.tracker.listChildren(parentKey))
-  }
-
-  // ── Write ───────────────────────────────────────────────────────────────
-
-  async commentIssue(args: TrackerCommentArgs): Promise<void> {
-    unwrap(await this.tracker.commentIssue(args))
-  }
-
-  async transitionIssue(args: TrackerTransitionArgs): Promise<void> {
-    unwrap(await this.tracker.transitionIssue(args))
-  }
-
-  async createIssue(args: TrackerCreateIssueArgs): Promise<TrackerIssue> {
-    return unwrap(await this.tracker.createIssue({
-      projectKey: args.projectKey,
-      summary: args.summary,
-      description: args.description,
-      ...(args.issueType ? { issueType: args.issueType } : {}),
-      ...(args.parentKey ? { parentKey: args.parentKey } : {}),
-      ...(args.labels ? { labels: [...args.labels] } : {}),
-    }))
-  }
-
-  async createEpic(args: TrackerCreateEpicArgs): Promise<TrackerIssue> {
-    return unwrap(await this.tracker.createEpic({
-      projectKey: args.projectKey,
-      summary: args.summary,
-      description: args.description,
-      ...(args.labels ? { labels: [...args.labels] } : {}),
-    }))
-  }
-
-  async linkIssues(args: TrackerLinkIssuesArgs): Promise<void> {
-    unwrap(await this.tracker.linkIssues(args))
+  /**
+   * Descriptor for the upstream Jira MCP server. Defaults to the
+   * popular community `mcp-atlassian` package run via `uvx`, which
+   * reads `JIRA_URL` / `JIRA_USERNAME` / `JIRA_API_TOKEN` env vars.
+   *
+   * Operators on different MCP servers (Atlassian's hosted SSE
+   * endpoint, `@cosmix/jira-mcp`, …) can override by adapting the
+   * plugin install entry in `~/.coro/config.json` once the v1.5
+   * drop-in loader exposes mcp overrides — until then, this default
+   * is what ships out of the box.
+   */
+  mcpServer(): PluginMcpServerConfig {
+    return {
+      type: 'stdio',
+      command: 'uvx',
+      args: ['mcp-atlassian'],
+      env: {
+        JIRA_URL: this.baseUrl,
+        JIRA_USERNAME: this.username,
+        JIRA_API_TOKEN: this.apiToken,
+        // Disable the Confluence half of the server — Coro only needs
+        // Jira tools attached for now.
+        CONFLUENCE_DISABLED: 'true',
+      },
+    }
   }
 
   // ── Webhook normalisation ───────────────────────────────────────────────
@@ -183,19 +178,19 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
         pluginId: this.manifest.id,
         externalId: externalIdString(key),
       },
-      kind: this.toGenericTicketEvent(eventName),
+      kind: toGenericTicketEvent(eventName),
       raw: payload,
       receivedAt: new Date().toISOString(),
     }
   }
+}
 
-  private toGenericTicketEvent(name: string): string {
-    if (name.includes('comment')) return 'ticket.commented'
-    if (name.includes('updated') || name.includes('transition')) return 'ticket.transitioned'
-    if (name.includes('created')) return 'ticket.created'
-    if (name.includes('deleted')) return 'ticket.deleted'
-    return `ticket.${name}`
-  }
+function toGenericTicketEvent(name: string): string {
+  if (name.includes('comment')) return 'ticket.commented'
+  if (name.includes('updated') || name.includes('transition')) return 'ticket.transitioned'
+  if (name.includes('created')) return 'ticket.created'
+  if (name.includes('deleted')) return 'ticket.deleted'
+  return `ticket.${name}`
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────

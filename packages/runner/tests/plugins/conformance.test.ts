@@ -328,9 +328,11 @@ describe.each(SCM_CASES)('SCM plugin contract — $id', (kase) => {
       repoKey: 'acme/svc-abc',
       externalId: '42',
     }
-    // Any of the read paths is sufficient — we pick getPrStatus
-    // because every SCM plugin implements it.
-    await expect(r.getPrStatus(foreignRef)).rejects.toThrow(/foreign-plugin|owned/i)
+    // After the MCP-first pivot, `getPrStatus` is optional — plugins
+    // serving the operation through their MCP server omit it. We use
+    // `pollPr` for the negative path here because it stays required
+    // (it runs outside `query()`, has no MCP equivalent).
+    await expect(r.pollPr(foreignRef)).rejects.toThrow(/foreign-plugin|owned/i)
   })
 
   it('rejects pull_request ExternalRefs with no repoKey', async () => {
@@ -340,7 +342,7 @@ describe.each(SCM_CASES)('SCM plugin contract — $id', (kase) => {
       pluginId: r.manifest.id,
       externalId: '42',
     }
-    await expect(r.getPrStatus(refWithoutRepo)).rejects.toThrow(/repoKey/i)
+    await expect(r.pollPr(refWithoutRepo)).rejects.toThrow(/repoKey/i)
   })
 })
 

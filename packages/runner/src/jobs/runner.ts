@@ -380,9 +380,22 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       mkdirSync(workingDir, { recursive: true })
       ensureClaudeConfigSymlink(workingDir, jobIntelligenceDir, logger)
 
-      // Build subagent definitions from workflow config
+      // Build subagent definitions from workflow config. Plugin-provided
+      // MCP servers (S1) propagate to subagents too — otherwise a code
+      // reviewer subagent would be blind to `mcp__github__*` tools the
+      // parent agent can see.
+      const subagentPluginMcpServers = collectPluginMcpServers({
+        plugins: ctx.plugins,
+        logger,
+      })
       const agents = phaseConf?.subagents
-        ? buildSubagentDefinitions(phaseConf.subagents, jobIntelligenceDir, settings, mcpServer as McpSdkServerConfig)
+        ? buildSubagentDefinitions(
+            phaseConf.subagents,
+            jobIntelligenceDir,
+            settings,
+            mcpServer as McpSdkServerConfig,
+            subagentPluginMcpServers,
+          )
         : undefined
 
       // Update job status for the current phase
@@ -463,7 +476,30 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // the server.name passed to createSdkMcpServer). Keeping them aligned
       // (both `coro`) avoids the historical confusion where the key drifted
       // and tools silently disappeared.
-      const dynamicMcpServers = { coro: mcpServer } satisfies Record<string, McpServerConfig>
+      //
+      // Plugin-provided MCP servers (S1 of the MCP-first pivot) are merged
+      // alongside `coro` so the model sees `mcp__github__*`, `mcp__jira__*`
+      // etc. directly. The reserved id `coro` cannot be shadowed — see
+      // `collectPluginMcpServers`.
+      const pluginMcpServers = collectPluginMcpServers({
+        plugins: ctx.plugins,
+        logger,
+      })
+      const dynamicMcpServers = {
+        coro: mcpServer,
+        ...pluginMcpServers,
+      } satisfies Record<string, McpServerConfig>
+
+      if (Object.keys(pluginMcpServers).length > 0) {
+        logger.info(
+          {
+            jobId: liveJob.id,
+            phase: liveJob.phase,
+            pluginMcpServers: Object.keys(pluginMcpServers),
+          },
+          'Attached plugin-provided MCP servers to query session',
+        )
+      }
 
       const queryOptions: Record<string, unknown> = {
         pathToClaudeCodeExecutable: claudeCodeCliPath,
@@ -1080,6 +1116,98 @@ export function buildAnthropicAuthEnv(auth: Settings['claude']['auth']): Record<
   }
 }
 
+/**
+ * Collects every active plugin's `mcpServer()` descriptor and returns a
+ * `Record<pluginId, McpServerConfig>` ready to merge into the SDK's
+ * `mcpServers` option. Plugins without an `mcpServer()` (e.g. BitBucket
+ * pre-MCP) are silently skipped — the hybrid `scm_*`/`tracker_*` proxy
+ * is responsible for falling back to the plugin's native methods.
+ *
+ * Collisions with reserved keys (`coro`) are rejected with a warning;
+ * we never let a plugin shadow Coro's in-process MCP server. Per-plugin
+ * tool policies (`capabilities.allowedMcpTools` / `disallowedMcpTools`)
+ * are translated into the SDK's `tools` array so the model only sees
+ * what we want it to see.
+ */
+export function collectPluginMcpServers(args: {
+  plugins: PluginRegistry
+  logger: Logger
+}): Record<string, McpServerConfig> {
+  const result: Record<string, McpServerConfig> = {}
+  const reservedIds = new Set<string>(['coro', 'a5'])
+
+  for (const runtime of args.plugins.all()) {
+    const id = runtime.manifest.id
+    if (typeof runtime.mcpServer !== 'function') continue
+    let descriptor
+    try {
+      descriptor = runtime.mcpServer()
+    } catch (err) {
+      args.logger.warn(
+        { err, pluginId: id },
+        'Plugin mcpServer() threw — skipping attachment for this job',
+      )
+      continue
+    }
+    if (!descriptor) continue
+
+    if (reservedIds.has(id)) {
+      args.logger.warn(
+        { pluginId: id },
+        'Plugin id collides with a reserved MCP server key — skipping; rename the plugin',
+      )
+      continue
+    }
+
+    const allowed: ReadonlyArray<string> | null =
+      runtime.manifest.allowedMcpTools ??
+      (runtime.manifest.capabilities?.allowedMcpTools as unknown as ReadonlyArray<string> | undefined) ??
+      null
+    const disallowed: ReadonlyArray<string> | null =
+      runtime.manifest.disallowedMcpTools ??
+      (runtime.manifest.capabilities?.disallowedMcpTools as unknown as ReadonlyArray<string> | undefined) ??
+      null
+
+    // Per-server tool policies are SDK-native. We forward them through
+    // the descriptor's `tools` field where the SDK accepts a list of
+    // `{ name, behavior }` objects. Falling through with no policy
+    // surfaces every upstream tool — fine for early integration but
+    // expensive at steady state (curate via the manifest).
+    const toolsPolicy = buildPluginMcpToolPolicy(allowed, disallowed)
+
+    if (descriptor.type === 'http' || descriptor.type === 'sse') {
+      result[id] = toolsPolicy
+        ? { ...descriptor, tools: toolsPolicy }
+        : descriptor
+    } else {
+      // stdio descriptors don't accept `tools` directly in the SDK
+      // typing; the SDK's `setMcpServers` ignores the field for stdio,
+      // and the curated tool list is applied via `disallowedTools` /
+      // `allowedTools` in the SDK's permission system. We pass it
+      // through unchanged here and rely on the per-plugin manifest's
+      // capability flags to drive the prompt-side curation in S2.
+      result[id] = descriptor
+    }
+  }
+
+  return result
+}
+
+function buildPluginMcpToolPolicy(
+  allowed: ReadonlyArray<string> | null,
+  disallowed: ReadonlyArray<string> | null,
+): Array<{ name: string; permission_policy: 'always_allow' | 'always_deny' }> | undefined {
+  if (!allowed && !disallowed) return undefined
+  const policy: Array<{ name: string; permission_policy: 'always_allow' | 'always_deny' }> = []
+  if (allowed) {
+    for (const name of allowed) policy.push({ name, permission_policy: 'always_allow' })
+  }
+  if (disallowed) {
+    for (const name of disallowed) policy.push({ name, permission_policy: 'always_deny' })
+  }
+  return policy.length > 0 ? policy : undefined
+}
+
 type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconnectMcpServer'>
 
 export async function reattachDynamicMcpServers(
@@ -1121,6 +1249,7 @@ function buildSubagentDefinitions(
   intelligenceDir: string,
   settings: Settings,
   mcpServer: McpSdkServerConfig,
+  pluginMcpServers: Record<string, McpServerConfig> = {},
 ) {
   // Load .claude/CLAUDE.md once — subagents need behavior rules, company context,
   // git conventions, and infrastructure context that the main agent receives
@@ -1153,13 +1282,26 @@ function buildSubagentDefinitions(
       agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
     }
 
+    // The SDK accepts subagent `mcpServers` as an array of either named
+    // strings or full records. We pass one record carrying both the
+    // Coro in-process server and every plugin-provided MCP server so
+    // subagents see `mcp__coro__*` AND `mcp__<pluginId>__*` tools.
+    //
+    // The cast is needed because `mcpServer` is a `McpSdkServerConfig`
+    // (without `instance`) which the SDK's runtime accepts but its
+    // typing only matches `McpSdkServerConfigWithInstance`. Mirrors the
+    // existing `[mcpServer]` form this function already used.
+    const subagentMcpRecord = {
+      coro: mcpServer,
+      ...pluginMcpServers,
+    } as unknown as Record<string, McpServerConfig>
     defs[sa.name] = {
       description: `Subagent: ${sa.name}`,
       prompt: agentPrompt,
       model: sa.model === 'coding'
         ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
         : (sa.model ?? 'inherit'),
-      mcpServers: [mcpServer],
+      mcpServers: [subagentMcpRecord],
     }
   }
   return defs
