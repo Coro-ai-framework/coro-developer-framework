@@ -3,6 +3,7 @@ import {
   JobType,
   STATUS_QUEUED,
   STATUS_COMPLETE,
+  STATUS_CANCELLED,
   STATUS_ESCALATED,
   STATUS_FAILED,
   STATUS_AWAITING_PLAN_APPROVAL,
@@ -12,6 +13,8 @@ import {
   isTerminalStatus,
   isStoppedStatus,
   isParkingStatus,
+  isResumableStatus,
+  isCancellableStatus,
   defaultWorkflowPath,
   jobParam,
   jobReviewers,
@@ -53,6 +56,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
 describe('isTerminalStatus', () => {
   it.each([
     [STATUS_COMPLETE, true],
+    [STATUS_CANCELLED, true],
   ])('returns true for terminal status "%s"', (status, expected) => {
     expect(isTerminalStatus(status)).toBe(expected)
   })
@@ -76,6 +80,7 @@ describe('isTerminalStatus', () => {
 describe('isStoppedStatus', () => {
   it.each([
     [STATUS_COMPLETE, true],
+    [STATUS_CANCELLED, true],
     [STATUS_FAILED, true],
     [STATUS_ESCALATED, true],
   ])('returns true for stopped status "%s"', (status, expected) => {
@@ -122,6 +127,7 @@ describe('isParkingStatus', () => {
   it.each([
     STATUS_QUEUED,
     STATUS_COMPLETE,
+    STATUS_CANCELLED,
     STATUS_CODING,
     'awaiting-something-else',
     '',
@@ -131,7 +137,7 @@ describe('isParkingStatus', () => {
 
   it('parking and terminal statuses are disjoint', () => {
     const all = [
-      STATUS_QUEUED, STATUS_COMPLETE, STATUS_ESCALATED, STATUS_FAILED,
+      STATUS_QUEUED, STATUS_COMPLETE, STATUS_CANCELLED, STATUS_ESCALATED, STATUS_FAILED,
       STATUS_AWAITING_PLAN_APPROVAL, STATUS_AWAITING_PR_MERGE, STATUS_CODING,
     ]
     for (const s of all) {
@@ -142,6 +148,69 @@ describe('isParkingStatus', () => {
         expect(isTerminalStatus(s)).toBe(false)
       }
     }
+  })
+})
+
+// ── isResumableStatus ───────────────────────────────────────────────────────
+
+describe('isResumableStatus', () => {
+  it.each([
+    STATUS_QUEUED,
+    STATUS_CODING,
+    STATUS_AWAITING_PLAN_APPROVAL,
+    STATUS_AWAITING_PR_MERGE,
+    STATUS_AWAITING_DEVELOPER_INPUT,
+    STATUS_FAILED,
+    STATUS_ESCALATED,
+  ])('returns true for resumable status "%s"', (status) => {
+    expect(isResumableStatus(status)).toBe(true)
+  })
+
+  it.each([
+    STATUS_COMPLETE,
+    STATUS_CANCELLED,
+  ])('returns false for non-resumable status "%s"', (status) => {
+    expect(isResumableStatus(status)).toBe(false)
+  })
+
+  it.each([
+    'planning',
+    'reviewing',
+    'custom-status',
+    '',
+  ])('keeps legacy live statuses resumable "%s"', (status) => {
+    expect(isResumableStatus(status)).toBe(true)
+  })
+})
+
+// ── isCancellableStatus ─────────────────────────────────────────────────────
+
+describe('isCancellableStatus', () => {
+  it.each([
+    STATUS_QUEUED,
+    STATUS_CODING,
+    STATUS_AWAITING_PLAN_APPROVAL,
+    STATUS_AWAITING_PR_MERGE,
+    STATUS_AWAITING_DEVELOPER_INPUT,
+    STATUS_FAILED,
+    STATUS_ESCALATED,
+  ])('returns true for cancellable status "%s"', (status) => {
+    expect(isCancellableStatus(status)).toBe(true)
+  })
+
+  it.each([
+    STATUS_COMPLETE,
+    STATUS_CANCELLED,
+  ])('returns false for terminal non-cancellable status "%s"', (status) => {
+    expect(isCancellableStatus(status)).toBe(false)
+  })
+
+  it.each([
+    'planning',
+    'custom-status',
+    '',
+  ])('keeps non-terminal statuses cancellable "%s"', (status) => {
+    expect(isCancellableStatus(status)).toBe(true)
   })
 })
 
@@ -262,7 +331,7 @@ describe('jobJiraTicketId', () => {
 describe('status constants', () => {
   it('all have unique values', () => {
     const values = [
-      STATUS_QUEUED, STATUS_COMPLETE, STATUS_ESCALATED, STATUS_FAILED,
+      STATUS_QUEUED, STATUS_COMPLETE, STATUS_CANCELLED, STATUS_ESCALATED, STATUS_FAILED,
       STATUS_AWAITING_PLAN_APPROVAL, STATUS_AWAITING_PR_MERGE, STATUS_CODING,
     ]
     expect(new Set(values).size).toBe(values.length)

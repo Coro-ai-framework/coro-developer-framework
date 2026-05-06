@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { z } from 'zod'
 import { reattachDynamicMcpServers, runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
 import {
+  STATUS_CANCELLED,
   JobType,
   STATUS_COMPLETE,
   STATUS_ESCALATED,
@@ -13,9 +15,12 @@ import {
 import type { Job } from '../../src/jobs/types'
 import type { WorkflowConfig } from '../../src/workflow-parser'
 import type { Settings } from '../../src/config/settings'
+import { PluginRegistry } from '../../src/plugins/registry'
+import type { ScmPluginRuntime } from '../../src/plugins'
 
 vi.mock('../../src/prompt/builder', () => ({
   buildSystemPrompt: vi.fn().mockResolvedValue('# Mock system prompt for runner tests'),
+  computeScmPromptContext: vi.fn().mockReturnValue({ available: true, resolved: 'github', installed: ['github'] }),
   // The runner now calls this once per phase to assemble the tracker block
   // before delegating to `buildSystemPrompt`. We mock it as a no-op pure
   // function so the runner's call site stays exercised without forcing
@@ -121,9 +126,22 @@ function createMockStateBackend(initial: Job) {
   }
 }
 
+const cancellationPatch = {
+  status: STATUS_CANCELLED,
+  awaitingEvent: undefined,
+  awaitingPrId: undefined,
+  awaitingNextPhase: undefined,
+  approvedAdvanceFromPhase: undefined,
+  pendingPrompt: undefined,
+  escalationMessage: undefined,
+} as const
+
 type MockStateBackend = ReturnType<typeof createMockStateBackend>
 
 function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
+  const plugins = new PluginRegistry()
+  plugins.register(fakeScmPlugin('github'))
+
   return {
     stateBackend: stateBackend as unknown as RunnerContext['stateBackend'],
     settings: makeSettings(),
@@ -152,6 +170,7 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
       provider: 'jira',
       isAvailable: () => false,
     } as unknown as RunnerContext['trackerClient'],
+    plugins,
     logger: {
       debug: vi.fn(),
       info: vi.fn(),
@@ -159,6 +178,54 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
       error: vi.fn(),
     } as unknown as RunnerContext['logger'],
   }
+}
+
+function fakeScmPlugin(id: string): ScmPluginRuntime {
+  return {
+    manifest: {
+      id,
+      kind: 'scm',
+      version: '0.0.1',
+      displayName: id,
+      hostCompatibility: '*',
+      configSchema: z.object({}),
+    },
+    kind: 'scm',
+    init: async () => {},
+    healthcheck: async () => ({ ok: true }),
+    dispose: async () => {},
+    cloneInfo: () => ({ url: 'fake', envForGit: {} }),
+    createPr: async () => ({ kind: 'pull_request', pluginId: id, repoKey: 'repo', externalId: '1' }),
+    getPrStatus: async () => ({ state: 'open', approvalCount: 0 }),
+    listPrComments: async () => [],
+    postPrComment: async (_ref, body) => ({ id: '1', body, createdAt: '', updatedAt: '' }),
+    replyToComment: async (_ref, parentId, body) => ({ id: '2', body, createdAt: '', updatedAt: '', parentId }),
+    pollPr: async () => ({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] }),
+    normalizeInbound: () => null,
+    matchesRemote: () => false,
+  }
+}
+
+async function capturePreToolUseHook(
+  ctx: RunnerContext,
+  workflowConfig: WorkflowConfig = workflowSingle,
+): Promise<(input: Record<string, unknown>) => Promise<unknown>> {
+  let hooks: Record<string, Array<{ hooks: Array<(input: Record<string, unknown>) => Promise<unknown>> }>> | undefined
+
+  await runJob(makeJob({ phase: 'only', status: 'queued' }), ctx, {
+    queryImpl: (inv) =>
+      (async function* () {
+        hooks = inv.options['hooks'] as typeof hooks
+        yield { type: 'system', session_id: 'hook-capture' }
+      })(),
+    workflowConfigOverride: workflowConfig,
+  })
+
+  const preToolUse = hooks?.PreToolUse?.[0]?.hooks?.[0]
+  if (!preToolUse) {
+    throw new Error('PreToolUse hook was not attached to the query options')
+  }
+  return preToolUse
 }
 
 describe('runJob (mocked Agent SDK query)', () => {
@@ -389,6 +456,64 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.phase).toBe('beta')
   })
 
+  it('stops at a safe boundary when the job is cancelled during the live turn', async () => {
+    const queryImpl = () =>
+      (async function* () {
+        await stateBackend.updateJob('runner-job-1', { ...cancellationPatch, phase: 'only' })
+        yield { type: 'system', session_id: 'sess-cancelled' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
+    expect(stateBackend.current.phase).toBe('only')
+    expect(stateBackend.appendLog).not.toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.stringContaining('All phases complete'),
+    )
+  })
+
+  it('does not park a cancelled job even if the agent already requested await_event', async () => {
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        await stateBackend.updateJob('runner-job-1', cancellationPatch)
+        inv.signals.awaitingEvent = 'pr:merged'
+        inv.signals.awaitingPrId = 99
+        yield { type: 'system', session_id: 'sess-cancelled-await' }
+      })()
+
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowTwoPhase,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
+    expect(stateBackend.current.awaitingEvent).toBeUndefined()
+    expect(stateBackend.current.awaitingPrId).toBeUndefined()
+  })
+
+  it('does not overwrite a cancelled job with failed when the active turn crashes', async () => {
+    const queryImpl = () =>
+      (async function* () {
+        await stateBackend.updateJob('runner-job-1', cancellationPatch)
+        throw new Error('query crashed after cancel')
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
+    expect(stateBackend.updateJob).not.toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.objectContaining({ status: STATUS_FAILED }),
+    )
+  })
+
   it('persists sessionId from system messages', async () => {
     const queryImpl = () =>
       (async function* () {
@@ -464,6 +589,32 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
   })
 
+  it('chunks long thinking logs instead of truncating them', async () => {
+    const longThinking = 'x'.repeat(4_200)
+    const queryImpl = () =>
+      (async function* () {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'thinking', thinking: longThinking }],
+          },
+        }
+        yield { type: 'system', session_id: 'x' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    const thinkingLogs = stateBackend.appendLog.mock.calls
+      .filter((call: unknown[]) => call[0] === 'runner-job-1' && typeof call[1] === 'string' && (call[1] as string).startsWith('[thinking] '))
+      .map(call => (call[1] as string).slice('[thinking] '.length))
+
+    expect(thinkingLogs.length).toBeGreaterThan(1)
+    expect(thinkingLogs.join('')).toBe(longThinking)
+  })
+
   it('marks job failed when query throws', async () => {
     const queryImpl = () =>
       (async function* () {
@@ -504,6 +655,147 @@ describe('runJob (mocked Agent SDK query)', () => {
       'runner-job-1',
       expect.stringContaining('ZERO mcp__coro__* calls'),
     )
+  })
+
+  it('allows Bash commands that stay within the workspace', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    await expect(
+      preToolUse({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git status' },
+      }),
+    ).resolves.toEqual({})
+  })
+
+  it('denies tools outside an explicit phase whitelist', async () => {
+    const restrictedWorkflow: WorkflowConfig = {
+      initialPhase: 'only',
+      initialStatus: 'queued',
+      phases: [{
+        name: 'only',
+        agent: null,
+        model: 'planning',
+        status: 'running-only',
+        tools: ['Read', 'mcp__coro__log'],
+      }],
+      overrides: {},
+    }
+
+    const preToolUse = await capturePreToolUseHook(ctx, restrictedWorkflow)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'git status' },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('only allows Read, mcp__coro__log'),
+      },
+    })
+  })
+
+  it('denies Bash commands that probe the user home', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'find ~/src -maxdepth 2' },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('home-relative path'),
+      },
+    })
+  })
+
+  it('denies Bash commands that escape via parent traversal', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'cd .. && ls' },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('parent-directory traversal'),
+      },
+    })
+  })
+
+  it('denies Bash commands that read Claude runtime task output files', async () => {
+    const preToolUse = await capturePreToolUseHook(ctx)
+
+    const result = await preToolUse({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'cat /private/tmp/claude-501/example-session/tasks/abc123.output',
+      },
+    })
+
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('/private/tmp/claude-*/tasks/*.output'),
+      },
+    })
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecisionReason: expect.stringContaining('workspace file instead'),
+      },
+    })
+  })
+
+  it('passes subagent tool whitelists into SDK agent definitions', async () => {
+    const workflowWithSubagent: WorkflowConfig = {
+      initialPhase: 'only',
+      initialStatus: 'queued',
+      phases: [{
+        name: 'only',
+        agent: null,
+        model: 'planning',
+        status: 'running-only',
+        subagents: [{
+          name: 'reviewer',
+          model: 'planning',
+          tools: ['Read', 'Bash', 'mcp__coro__log'],
+        }],
+      }],
+      overrides: {},
+    }
+
+    let capturedAgents: Record<string, unknown> | undefined
+    const queryImpl = (inv: QueryInvocation) =>
+      (async function* () {
+        capturedAgents = inv.options['agents'] as Record<string, unknown>
+        yield { type: 'system', session_id: 'subagent-tools' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowWithSubagent,
+    })
+
+    expect(capturedAgents).toMatchObject({
+      reviewer: {
+        tools: ['Read', 'Bash', 'mcp__coro__log'],
+      },
+    })
   })
 
   it('stops when escalated signal is set (after stateBackend update)', async () => {
@@ -692,6 +984,125 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(onlyUsage!.numTurns).toBe(5)
     // Job total should include phase cost
     expect(stateBackend.current.tokenUsage.totalCostUsd).toBe(1.2345)
+  })
+
+  it('uses a delta from cumulative SDK cost when resuming an existing session', async () => {
+    stateBackend = createMockStateBackend(makeJob({
+      phase: 'only',
+      status: 'queued',
+      sessionId: 'resume-phase-cost',
+      tokenUsage: {
+        inputTokens: 1200,
+        outputTokens: 300,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        totalCostUsd: 1.99,
+      },
+      phaseUsage: [{
+        phase: 'planning',
+        inputTokens: 1200,
+        outputTokens: 300,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 1.99,
+        durationMs: 12_000,
+        durationApiMs: 9_000,
+        numTurns: 6,
+        model: 'plan-model',
+      }],
+    }))
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = () =>
+      (async function* () {
+        yield {
+          type: 'result',
+          result: 'Resumed phase complete',
+          usage: {
+            input_tokens: 1800,
+            output_tokens: 450,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          total_cost_usd: 2.49,
+          duration_ms: 10_000,
+          duration_api_ms: 8_000,
+          num_turns: 2,
+        }
+        yield { type: 'system', session_id: 'resume-phase-cost' }
+      })()
+
+    await runJob(makeJob({ phase: 'only', sessionId: 'resume-phase-cost' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    const onlyUsage = stateBackend.current.phaseUsage.at(-1)
+    expect(onlyUsage).toBeDefined()
+    expect(onlyUsage!.phase).toBe('only')
+    expect(onlyUsage!.costUsd).toBeCloseTo(0.5)
+    expect(stateBackend.current.tokenUsage.totalCostUsd).toBeCloseTo(2.49)
+  })
+
+  it('does not re-book cumulative SDK cost when a resumed session returns zero new tokens', async () => {
+    stateBackend = createMockStateBackend(makeJob({
+      phase: 'only',
+      status: 'queued',
+      sessionId: 'resume-no-usage',
+      tokenUsage: {
+        inputTokens: 2100,
+        outputTokens: 500,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        totalCostUsd: 1.99,
+      },
+      phaseUsage: [{
+        phase: 'evaluation',
+        inputTokens: 2100,
+        outputTokens: 500,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUsd: 1.99,
+        durationMs: 20_000,
+        durationApiMs: 18_000,
+        numTurns: 8,
+        model: 'plan-model',
+      }],
+    }))
+    ctx = makeRunnerContext(stateBackend)
+
+    const queryImpl = () =>
+      (async function* () {
+        yield {
+          type: 'result',
+          is_error: true,
+          errors: ['Credits exhausted'],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          total_cost_usd: 1.99,
+          duration_ms: 0,
+          duration_api_ms: 0,
+          num_turns: 1,
+        }
+        yield { type: 'system', session_id: 'resume-no-usage' }
+      })()
+
+    await runJob(makeJob({ phase: 'only', sessionId: 'resume-no-usage' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    const onlyUsage = stateBackend.current.phaseUsage.at(-1)
+    expect(onlyUsage).toBeDefined()
+    expect(onlyUsage!.phase).toBe('only')
+    expect(onlyUsage!.inputTokens).toBe(0)
+    expect(onlyUsage!.outputTokens).toBe(0)
+    expect(onlyUsage!.costUsd).toBe(0)
+    expect(stateBackend.current.tokenUsage.totalCostUsd).toBe(1.99)
   })
 
   it('accumulates PhaseUsage entries across multiple phases', async () => {

@@ -1,7 +1,14 @@
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { ToolContext, PhaseSignals } from './tools/types'
-import { createMcpToolHandlers } from './mcp-handlers'
+import { createMcpToolHandlers, mcpError, mcpText } from './mcp-handlers'
+
+// Legacy `bb_*` / `gh_*` / `jira_*` tools were removed entirely in
+// S6 of the MCP-first plugins pivot. Workflow markdown that still
+// names a legacy tool now hits the SDK's "tool not found" path; the
+// agent sees a clean error and is expected to call the trimmed
+// `scm_*` / `tracker_*` surface or the upstream MCP server directly
+// (`mcp__github__*`, `mcp__jira__*`, …).
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
@@ -24,144 +31,133 @@ import { createMcpToolHandlers } from './mcp-handlers'
 export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
   const h = createMcpToolHandlers(ctx, signals)
 
+  // Plugin extension tools — provider-specific tools that don't fit
+  // the generic `scm_*` / `tracker_*` surface (e.g. `gh_create_release`,
+  // `bb_pipeline_run`). The registry refuses collisions so two
+  // plugins can never silently overwrite the same name.
+  const extensionTools = ctx.plugins.collectExtensionTools().map(def =>
+    tool(
+      def.name,
+      def.description,
+      def.inputSchema,
+      async (args: Record<string, unknown>) => {
+        try {
+          const result = await def.handler(args)
+          return mcpText(result)
+        } catch (err) {
+          return mcpError((err as Error).message)
+        }
+      },
+      def.annotations ? { annotations: def.annotations } : {},
+    ),
+  )
+
   return createSdkMcpServer({
     name: 'coro',
     tools: [
+      ...extensionTools,
 
-      // ── BitBucket — coder account ─────────────────────────────────────────
+      // ── Generic SCM (MCP-first proxy) ─────────────────────────────────────
+      //
+      // After the MCP-first plugins pivot, only seven high-traffic ops
+      // survive as a provider-neutral shim: open PR, read PR status,
+      // list / post PR comments, merge PR, resolve clone info, and
+      // clone the target repo into the job sandbox.
+      // Everything else (repo creation, approvals, threaded replies,
+      // change-detection polls) is now expected to come from the
+      // upstream MCP server attached by the active SCM plugin — the
+      // agent calls `mcp__<pluginId>__<tool>` directly.
+      //
+      // For native-mode plugins (BitBucket today) these wrappers hit
+      // the plugin's native methods. For MCP-mode plugins (GitHub) the
+      // wrapper returns a structured redirect telling the agent which
+      // upstream tool to call, costing one extra round-trip. We accept
+      // that cost in exchange for a tiny, stable, provider-agnostic
+      // tool surface that workflow markdown can rely on.
 
       tool(
-        'bb_create_repo',
-        'Create a new private BitBucket repository.',
-        { repoSlug: z.string(), description: z.string().optional() },
-        h.bb_create_repo,
-      ),
-
-      tool(
-        'bb_create_pr',
-        'Open a pull request from the current work-item branch. Reviewers default to job reviewers if omitted.',
+        'scm_create_pr',
+        'Open a pull request via the configured SCM plugin. Reviewers default to job reviewers when omitted.',
         {
-          repoSlug: z.string(),
+          pluginId: z.string().optional(),
+          repo: z.string(),
           title: z.string(),
           description: z.string().optional(),
           sourceBranch: z.string(),
           targetBranch: z.string().optional(),
-          reviewerUsernames: z.array(z.string()).optional(),
+          reviewers: z.array(z.string()).optional(),
         },
-        h.bb_create_pr,
+        h.scm_create_pr,
       ),
 
       tool(
-        'bb_get_pr_status',
-        'Get the current state and approval count of a pull request.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.bb_get_pr_status,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      // ── BitBucket — reviewer account ──────────────────────────────────────
-
-      tool(
-        'bb_get_pr_comments',
-        'List all comments on a pull request.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.bb_get_pr_comments,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
-        'bb_post_pr_comment',
-        'Post a new top-level comment on a pull request (reviewer account).',
-        { repoSlug: z.string(), prId: z.number(), content: z.string() },
-        h.bb_post_pr_comment,
-      ),
-
-      tool(
-        'bb_reply_to_comment',
-        'Reply to an existing comment thread on a pull request (reviewer account).',
-        { repoSlug: z.string(), prId: z.number(), parentId: z.number(), content: z.string() },
-        h.bb_reply_to_comment,
-      ),
-
-      tool(
-        'bb_approve_pr',
-        'Approve a pull request using the reviewer account.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.bb_approve_pr,
-      ),
-
-      tool(
-        'bb_merge_pr',
-        'Merge a pull request. Only call when approved and all comments are resolved.',
-        { repoSlug: z.string(), prId: z.number(), message: z.string().optional() },
-        h.bb_merge_pr,
-      ),
-
-      // ── GitHub ────────────────────────────────────────────────────────────
-
-      tool(
-        'gh_create_repo',
-        'Create a new private GitHub repository.',
-        { repoSlug: z.string(), description: z.string().optional() },
-        h.gh_create_repo,
-      ),
-
-      tool(
-        'gh_create_pr',
-        'Open a pull request on GitHub. Reviewers default to job reviewers if omitted.',
+        'scm_get_pr_status',
+        'Get the current state and approval count of a pull request via the configured SCM plugin.',
         {
-          repoSlug: z.string(),
-          title: z.string(),
-          description: z.string().optional(),
-          sourceBranch: z.string(),
-          targetBranch: z.string().optional(),
-          reviewerUsernames: z.array(z.string()).optional(),
+          pluginId: z.string().optional(),
+          repo: z.string(),
+          prId: z.union([z.number(), z.string()]),
         },
-        h.gh_create_pr,
-      ),
-
-      tool(
-        'gh_get_pr_status',
-        'Get the current state and approval count of a GitHub pull request.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.gh_get_pr_status,
+        h.scm_get_pr_status,
         { annotations: { readOnlyHint: true } },
       ),
 
       tool(
-        'gh_get_pr_comments',
-        'List all comments on a GitHub pull request.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.gh_get_pr_comments,
+        'scm_list_pr_comments',
+        'List all comments on a pull request via the configured SCM plugin.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+          prId: z.union([z.number(), z.string()]),
+        },
+        h.scm_list_pr_comments,
         { annotations: { readOnlyHint: true } },
       ),
 
       tool(
-        'gh_post_pr_comment',
-        'Post a new top-level comment on a GitHub pull request.',
-        { repoSlug: z.string(), prId: z.number(), content: z.string() },
-        h.gh_post_pr_comment,
+        'scm_post_pr_comment',
+        'Post a top-level comment on a pull request via the configured SCM plugin.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+          prId: z.union([z.number(), z.string()]),
+          body: z.string(),
+        },
+        h.scm_post_pr_comment,
       ),
 
       tool(
-        'gh_reply_to_comment',
-        'Reply to an existing review comment on a GitHub pull request.',
-        { repoSlug: z.string(), prId: z.number(), parentId: z.number(), content: z.string() },
-        h.gh_reply_to_comment,
+        'scm_merge_pr',
+        'Merge a pull request via the configured SCM plugin. Only call when approved and conversations are resolved.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+          prId: z.union([z.number(), z.string()]),
+          message: z.string().optional(),
+          strategy: z.enum(['merge', 'squash', 'rebase']).optional(),
+        },
+        h.scm_merge_pr,
       ),
 
       tool(
-        'gh_approve_pr',
-        'Approve a GitHub pull request.',
-        { repoSlug: z.string(), prId: z.number() },
-        h.gh_approve_pr,
+        'scm_get_clone_info',
+        'Get the clone URL and git env for a repo via the configured SCM plugin. Prefer scm_clone_repo for the standard checkout path.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+        },
+        h.scm_get_clone_info,
+        { annotations: { readOnlyHint: true } },
       ),
 
       tool(
-        'gh_merge_pr',
-        'Merge a GitHub pull request (squash merge). Only call when approved.',
-        { repoSlug: z.string(), prId: z.number(), message: z.string().optional() },
-        h.gh_merge_pr,
+        'scm_clone_repo',
+        'Clone a repo into the current job working directory via the configured SCM plugin. Prefer this over running git clone in Bash.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+        },
+        h.scm_clone_repo,
       ),
 
       // ── Test harness ──────────────────────────────────────────────────────
@@ -234,102 +230,54 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         { annotations: { readOnlyHint: true } },
       ),
 
-      // ── Jira ──────────────────────────────────────────────────────────────
-
-      tool(
-        'jira_get_issue',
-        'Fetch a Jira issue by ticket ID. Returns fields, status, and transitions.',
-        { ticketId: z.string() },
-        h.jira_get_issue,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
-        'jira_post_comment',
-        'Post a comment on a Jira issue.',
-        { ticketId: z.string(), body: z.string() },
-        h.jira_post_comment,
-      ),
-
-      tool(
-        'jira_transition_issue',
-        'Move a Jira issue to a new status.',
-        { ticketId: z.string(), transitionId: z.string() },
-        h.jira_transition_issue,
-      ),
-
-      // ── Tracker (provider-agnostic) ──────────────────────────────────────
+      // ── Tracker (provider-agnostic, MCP-first proxy) ─────────────────────
       //
-      // These tools let the campaign-planner work the same way against any
-      // configured tracker (Jira today, GitHub Issues / Linear later). They
-      // return `{ available: false, reason }` when no tracker is configured
-      // — the planner is expected to detect that and proceed in tracker-less
-      // mode.
-
-      tool(
-        'tracker_create_epic',
-        'Create a tracker epic to roll up the campaign\'s child issues. Returns the new issue\'s key/url.',
-        {
-          projectKey: z.string().describe('Jira project key, GitHub repo, or Linear team — provider-specific.'),
-          summary: z.string(),
-          description: z.string(),
-          labels: z.array(z.string()).optional(),
-        },
-        h.tracker_create_epic,
-      ),
-
-      tool(
-        'tracker_create_issue',
-        'Create a child tracker issue under an epic (or standalone). Use for each child registered with campaign_register_child.',
-        {
-          projectKey: z.string(),
-          summary: z.string(),
-          description: z.string(),
-          issueType: z.string().optional().describe('Provider-native issue type (Jira: Task/Story; defaults to Task).'),
-          parentKey: z.string().optional().describe('Parent epic key.'),
-          labels: z.array(z.string()).optional(),
-        },
-        h.tracker_create_issue,
-      ),
-
-      tool(
-        'tracker_link_issues',
-        'Add a relation between two tracker issues (e.g. Blocks). Reflects the campaign\'s dependsOn graph in the tracker.',
-        {
-          fromKey: z.string().describe('Dependent issue key (the one that is blocked).'),
-          toKey: z.string().describe('Upstream issue key (the blocker).'),
-          relation: z.string().optional().describe('Provider-native relation name. Defaults to "Blocks".'),
-        },
-        h.tracker_link_issues,
-      ),
+      // After the MCP-first plugins pivot, only the three high-traffic
+      // ops survive as a generic shim. Everything else (epic creation,
+      // child listings, links) is now expected to flow through the
+      // upstream MCP server attached by the active tracker plugin —
+      // agents call `mcp__<pluginId>__<tool>` directly. These three
+      // remain because they show up in nearly every workflow and we
+      // want one canonical name regardless of the tracker.
+      //
+      // For native-mode plugins (none today: Jira/Linear/GH-Issues are
+      // MCP-mode, but BitBucket-style natives are still allowed) the
+      // proxy hits the plugin's native `getIssue/commentIssue/
+      // transitionIssue`. For MCP-mode plugins it returns a structured
+      // redirect telling the agent which `mcp__<pluginId>__<tool>` to
+      // call instead, costing one extra round-trip. The redirect is
+      // cheap and keeps the agent's tool surface small.
 
       tool(
         'tracker_get_issue',
-        'Fetch a single tracker issue by its key.',
-        { key: z.string() },
+        'Fetch a single tracker issue by its key via the configured tracker plugin.',
+        {
+          pluginId: z.string().optional(),
+          key: z.string(),
+        },
         h.tracker_get_issue,
         { annotations: { readOnlyHint: true } },
       ),
 
       tool(
-        'tracker_list_children',
-        'List the tracker issues that are direct children of a parent (e.g. epic). Used by the campaign-evaluator to reconcile state with the tracker.',
-        { parentKey: z.string() },
-        h.tracker_list_children,
-        { annotations: { readOnlyHint: true } },
-      ),
-
-      tool(
         'tracker_transition_issue',
-        'Move a tracker issue to a target status by name (e.g. "In Progress", "Done"). Provider-specific status names are passed through.',
-        { key: z.string(), status: z.string() },
+        'Move a tracker issue to a target status by name (e.g. "In Progress", "Done").',
+        {
+          pluginId: z.string().optional(),
+          key: z.string(),
+          status: z.string(),
+        },
         h.tracker_transition_issue,
       ),
 
       tool(
         'tracker_comment_issue',
-        'Post a plain-text comment on a tracker issue.',
-        { key: z.string(), body: z.string() },
+        'Post a plain-text comment on a tracker issue via the configured tracker plugin.',
+        {
+          pluginId: z.string().optional(),
+          key: z.string(),
+          body: z.string(),
+        },
         h.tracker_comment_issue,
       ),
 

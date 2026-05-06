@@ -11,7 +11,7 @@
     "coro": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-plugin-assets.js",
     "start": "node dist/cli/index.js start",
     "start:cloud": "node dist/src/cloud/index.js",
     "dev": "tsx cli/index.ts start",

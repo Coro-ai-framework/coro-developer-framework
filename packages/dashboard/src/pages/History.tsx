@@ -24,10 +24,11 @@ import { isTerminalStatus } from '../lib/status'
 import { useJobs } from '../hooks/useJobs'
 import type { Job } from '../types'
 
-type OutcomeFilter = 'all' | 'complete' | 'failed' | 'escalated'
+type OutcomeFilter = 'all' | 'cancelled' | 'complete' | 'failed' | 'escalated'
 
 const OUTCOME_FILTERS = [
   { value: 'all' as const, label: 'All outcomes' },
+  { value: 'cancelled' as const, label: 'Cancelled' },
   { value: 'complete' as const, label: 'Complete' },
   { value: 'failed' as const, label: 'Failed' },
   { value: 'escalated' as const, label: 'Escalated' },
@@ -103,6 +104,7 @@ export default function History() {
     [visibleRows],
   )
 
+  const cancelledCount = terminalJobs.filter(job => job.status === 'cancelled').length
   const completedCount = terminalJobs.filter(job => job.status === 'complete').length
   const failedCount = terminalJobs.filter(job => job.status === 'failed').length
   const escalatedCount = terminalJobs.filter(job => job.status === 'escalated').length
@@ -120,7 +122,7 @@ export default function History() {
     <div className="space-y-6">
       <PageHeader
         title={PAGE_TITLES.history}
-        description={`Completed, failed, and escalated ${RUN_NOUN.pluralLower}. ${completedCount} done · ${failedCount} failed · ${escalatedCount} escalated.`}
+        description={`Completed, cancelled, failed, and escalated ${RUN_NOUN.pluralLower}. ${completedCount} done · ${cancelledCount} cancelled · ${failedCount} failed · ${escalatedCount} escalated.`}
       />
 
       <Card>

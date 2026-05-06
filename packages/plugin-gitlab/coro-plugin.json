@@ -1,0 +1,8 @@
+{
+  "id": "gitlab",
+  "kind": "scm",
+  "version": "0.1.0",
+  "displayName": "GitLab",
+  "hostCompatibility": "^1.0.0",
+  "entry": "dist/index.js"
+}

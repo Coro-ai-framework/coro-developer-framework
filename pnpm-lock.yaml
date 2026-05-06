@@ -152,6 +152,46 @@ importers:
         specifier: ^8.0.4
         version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
 
+  packages/plugin-gitlab:
+    dependencies:
+      '@coro/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.6
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.17
+      pino:
+        specifier: ^9.7.0
+        version: 9.14.0
+      typescript:
+        specifier: ^5.8.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
+
+  packages/plugin-sdk:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.17
+      pino:
+        specifier: ^9.7.0
+        version: 9.14.0
+      typescript:
+        specifier: ^5.8.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.6
+
   packages/runner:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':

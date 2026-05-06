@@ -3,19 +3,22 @@ import path from 'path'
 import { Logger } from 'pino'
 import type { Settings } from '../config/settings'
 import type { TrackerClient, TrackerProvider } from '../clients/tracker'
+import type { PluginRegistry } from '../plugins/registry'
 import { Job } from '../jobs/types'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 
 // ── Tracker prompt context ────────────────────────────────────────────────────
 //
 // Surfaced into the system prompt so agents — chiefly the campaign-planner —
-// have a deterministic signal for whether to call the `tracker_*` tools. Prior
-// to this, the prompt carried no tracker information at all and the agent
-// could only discover availability by issuing a *destructive* call
-// (`tracker_create_epic` would actually create an epic on success), so it
-// played safe and skipped the tracker branch even when the tenant had wired
-// up GitHub Issues / Jira / Linear. See campaign-planner.md §3 for the
-// agent-side decision rule that keys off this struct.
+// have a deterministic signal for whether to call any tracker tool (the
+// generic `tracker_*` proxy *or* the active plugin's native
+// `mcp__<pluginId>__*` tools). Prior to this, the prompt carried no tracker
+// information at all and the agent could only discover availability by
+// issuing a *destructive* call (e.g. `mcp__jira__jira_create_issue` would
+// actually create an issue on success), so it played safe and skipped the
+// tracker branch even when the tenant had wired up GitHub Issues / Jira /
+// Linear. See campaign-planner.md §3 for the agent-side decision rule that
+// keys off this struct.
 
 export interface TrackerPromptContext {
   /**
@@ -69,6 +72,46 @@ export function computeTrackerPromptContext(
   }
 }
 
+// ── SCM prompt context ───────────────────────────────────────────────────────
+
+export interface ScmPromptContext {
+  available: boolean
+  resolved: string | 'none'
+  requested?: string
+  default?: string
+  installed: string[]
+}
+
+export function computeScmPromptContext(
+  job: Job,
+  plugins: PluginRegistry,
+): ScmPromptContext {
+  const requested = typeof job.params['scm'] === 'string' && job.params['scm'].length > 0
+    ? job.params['scm'] as string
+    : undefined
+  const defaults = plugins.getDefaults()
+  const installed = plugins.byKind('scm').map(plugin => plugin.manifest.id).sort()
+
+  try {
+    const resolved = plugins.resolveScm(requested ? { scm: requested } : {})
+    return {
+      available: true,
+      resolved: resolved.manifest.id,
+      ...(requested ? { requested } : {}),
+      ...(defaults.scm ? { default: defaults.scm } : {}),
+      installed,
+    }
+  } catch {
+    return {
+      available: false,
+      resolved: 'none',
+      ...(requested ? { requested } : {}),
+      ...(defaults.scm ? { default: defaults.scm } : {}),
+      installed,
+    }
+  }
+}
+
 // ── Builder ───────────────────────────────────────────────────────────────────
 
 /**
@@ -100,6 +143,7 @@ export async function buildSystemPrompt(
   intelligenceDir: string,
   logger: Logger,
   trackerInfo?: TrackerPromptContext,
+  scmInfo?: ScmPromptContext,
 ): Promise<string> {
   const sections: string[] = []
 
@@ -124,14 +168,14 @@ export async function buildSystemPrompt(
     }
   }
 
-  sections.push(buildJobContext(job, trackerInfo))
+  sections.push(buildJobContext(job, trackerInfo, scmInfo))
 
   return sections.join('\n\n---\n\n')
 }
 
 // ── Job context ───────────────────────────────────────────────────────────────
 
-function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext): string {
+function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext, scmInfo?: ScmPromptContext): string {
   const context: Record<string, unknown> = {
     jobId: job.id,
     type: job.type,
@@ -158,6 +202,9 @@ function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext): string {
   // a context — tests that exercise the builder in isolation may skip it.
   if (trackerInfo) {
     context['tracker'] = trackerInfo
+  }
+  if (scmInfo) {
+    context['scm'] = scmInfo
   }
 
   const parts = [

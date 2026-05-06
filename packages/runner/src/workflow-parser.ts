@@ -27,10 +27,11 @@ export interface PhaseConfig {
   interactiveCheckpoint?: boolean
   /**
    * Optional whitelist of tool names available to the agent during this
-   * phase. When set, replaces the default tool list entirely — the runner
-   * passes this straight to `allowedTools` on the Agent SDK query. Use the
-   * exact tool names the SDK expects: `Read`, `Write`, `Edit`, `Bash`,
-   * `Glob`, `Grep`, `Skill`, `Agent`, and any `mcp__coro__*` patterns.
+    * phase. When set, replaces the default tool list entirely for that phase.
+    * The runner enforces it at tool-use time and also narrows built-in tool
+    * exposure where the Agent SDK supports it. Use the exact tool names the
+    * SDK expects: `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `Skill`,
+    * `Agent`, and any `mcp__coro__*` patterns.
    *
    * If unset, the runner falls back to the workflow-agnostic defaults
    * (all built-ins + all `mcp__coro__*`).

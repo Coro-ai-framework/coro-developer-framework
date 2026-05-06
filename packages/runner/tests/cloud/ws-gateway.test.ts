@@ -206,6 +206,66 @@ describe('WsGateway', () => {
     expect(delivered).toBe(false)
   })
 
+  describe('sendToJobOrTeam', () => {
+    it('routes via "job" when a runner reports the jobId in heartbeat', async () => {
+      const ws = new WebSocket(`ws://localhost:${port}/ws/runner?token=${runnerToken}`)
+      await waitForOpen(ws)
+
+      ws.send(JSON.stringify({ type: 'runner:register', runnerId: 'runner-job', hostname: 'h1' }))
+      await new Promise(resolve => setTimeout(resolve, 50))
+      ws.send(JSON.stringify({
+        type: 'runner:heartbeat',
+        runnerId: 'runner-job',
+        currentJobId: 'job-42',
+        uptimeMs: 60000,
+      }))
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      const msgPromise = waitForMessage(ws)
+      const result = gateway.sendToJobOrTeam('team-1', 'job-42', {
+        type: 'event:message',
+        jobId: 'job-42',
+        message: 'hello',
+      })
+
+      expect(result).toEqual({ delivered: true, route: 'job' })
+      const msg = await msgPromise
+      expect(msg.type).toBe('event:message')
+
+      ws.close()
+    })
+
+    it('falls back to "team" when no runner claims the jobId but team has runners', async () => {
+      const ws = new WebSocket(`ws://localhost:${port}/ws/runner?token=${runnerToken}`)
+      await waitForOpen(ws)
+
+      ws.send(JSON.stringify({ type: 'runner:register', runnerId: 'runner-idle', hostname: 'h2' }))
+      // No heartbeat with currentJobId — runner is idle.
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      const msgPromise = waitForMessage(ws)
+      const result = gateway.sendToJobOrTeam('team-1', 'job-99', {
+        type: 'event:resume',
+        jobId: 'job-99',
+      })
+
+      expect(result).toEqual({ delivered: true, route: 'team' })
+      const msg = await msgPromise
+      expect(msg.type).toBe('event:resume')
+
+      ws.close()
+    })
+
+    it('returns "queued" when no runner is connected at all', () => {
+      const result = gateway.sendToJobOrTeam('team-1', 'job-1', {
+        type: 'event:message',
+        jobId: 'job-1',
+        message: 'queued',
+      })
+      expect(result).toEqual({ delivered: false, route: 'queued' })
+    })
+  })
+
   it('records heartbeat and updates runner status', async () => {
     const ws = new WebSocket(`ws://localhost:${port}/ws/runner?token=${runnerToken}`)
     await waitForOpen(ws)

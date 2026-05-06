@@ -46,6 +46,7 @@ const STATUS_MAP: Record<string, StatusMeta> = {
   'awaiting-pr-merge': { label: 'Awaiting PR Merge', category: 'waiting', tone: 'warning' },
   'awaiting-developer-input': { label: 'Awaiting Input', category: 'waiting', tone: 'warning', pulse: true },
   'awaiting-children': { label: 'Awaiting Children', category: 'waiting', tone: 'warning' },
+  cancelled: { label: 'Cancelled', category: 'terminal', tone: 'neutral' },
   complete: { label: 'Complete', category: 'terminal', tone: 'success' },
   failed: { label: 'Failed', category: 'terminal', tone: 'danger' },
   escalated: { label: 'Escalated', category: 'terminal', tone: 'danger' },
@@ -83,6 +84,14 @@ export function isWaitingStatus(status: string): boolean {
 
 export function isRunningStatus(status: string): boolean {
   return getStatusMeta(status).category === 'running'
+}
+
+export function isResumableStatus(status: string): boolean {
+  return status !== 'complete' && status !== 'cancelled'
+}
+
+export function isCancellableStatus(status: string): boolean {
+  return status !== 'complete' && status !== 'cancelled'
 }
 
 /**

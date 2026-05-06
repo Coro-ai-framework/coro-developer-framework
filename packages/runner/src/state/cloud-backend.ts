@@ -14,6 +14,8 @@ import type {
   Proposal,
   ProposalStatus,
 } from '../jobs/types'
+import type { ExternalRef } from '../plugins/refs'
+import { repoKeyForStorage } from '../plugins/refs'
 
 export class CloudStateBackend implements StateBackend {
   constructor(
@@ -96,6 +98,40 @@ export class CloudStateBackend implements StateBackend {
 
   async getJobByJiraTicket(ticketId: string): Promise<Job | null> {
     return await this.call('job:byJira', { ticketId }) as Job | null
+  }
+
+  // ── External-ref mappings (P5+) ───────────────────────────────────────────
+  //
+  // Sent over the WS as `job:mapExternalRef` / `job:byExternalRef`.
+  // The cloud-side handlers look up the row in `external_ref_mappings`
+  // (Postgres). A future cleanup may collapse these on top of the
+  // legacy job:prMapping / job:jiraMapping handlers, but keeping
+  // them as distinct RPCs makes the migration symmetric to the
+  // SQLite path.
+
+  async mapExternalRef(ref: ExternalRef, jobId: string): Promise<void> {
+    const repoKey = repoKeyForStorage(ref)
+    await this.call('job:mapExternalRef', {
+      ref: {
+        kind: ref.kind,
+        pluginId: ref.pluginId,
+        repoKey,
+        externalId: ref.externalId,
+      },
+      jobId,
+    })
+  }
+
+  async getJobByExternalRef(ref: ExternalRef): Promise<Job | null> {
+    const repoKey = ref.repoKey ?? ''
+    return await this.call('job:byExternalRef', {
+      ref: {
+        kind: ref.kind,
+        pluginId: ref.pluginId,
+        repoKey,
+        externalId: ref.externalId,
+      },
+    }) as Job | null
   }
 
   // ── Repo mappings ──────────────────────────────────────────────────────────
