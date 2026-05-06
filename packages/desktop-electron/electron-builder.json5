@@ -1,0 +1,35 @@
+{
+  appId: 'ai.coro.desktop',
+  productName: 'Coro',
+  artifactName: '${productName}-${version}-${arch}.${ext}',
+  npmRebuild: false,
+  files: [
+    'dist/main.js',
+    'dist/main.js.map',
+    'dist/preload.js',
+    'dist/preload.js.map',
+    'package.json',
+  ],
+  extraResources: [
+    {
+      from: 'dist/resources/coro',
+      to: 'coro',
+    },
+  ],
+  directories: {
+    output: 'release',
+  },
+  mac: {
+    category: 'public.app-category.developer-tools',
+    target: [
+      {
+        target: 'dir',
+        arch: ['arm64'],
+      },
+      {
+        target: 'dmg',
+        arch: ['arm64'],
+      },
+    ],
+  },
+}
