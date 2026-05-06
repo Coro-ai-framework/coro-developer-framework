@@ -599,7 +599,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             if (!trimmed) continue
             logger.debug({ jobId: liveJob.id, phase: liveJob.phase }, `[sdk-stderr] ${trimmed}`)
             if (/mcp|Transport|sdkMcp|control_request/i.test(trimmed)) {
-              stateBackend.appendLog(liveJob.id, `[sdk-stderr] ${trimmed.slice(0, 500)}`)
+              appendChunkedLog(stateBackend, liveJob.id, '[sdk-stderr] ', trimmed)
                 .catch(() => { /* logging is best-effort */ })
             }
           }
@@ -726,12 +726,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               if (bt === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
                 await stateBackend.appendLog(liveJob.id, block['text'] as string)
               } else if (bt === 'thinking' && typeof block['thinking'] === 'string') {
-                await stateBackend.appendLog(liveJob.id, `[thinking] ${(block['thinking'] as string).slice(0, 300)}`)
+                await appendChunkedLog(stateBackend, liveJob.id, '[thinking] ', block['thinking'] as string)
               } else if (bt === 'tool_use' || bt === 'mcp_tool_use') {
                 const toolName = String(block['name'] ?? 'unknown')
                 const input = block['input']
-                const inputStr = input ? ` ${JSON.stringify(input).slice(0, 300)}` : ''
-                await stateBackend.appendLog(liveJob.id, `→ ${toolName}${inputStr}`)
+                if (input) {
+                  await appendChunkedLog(stateBackend, liveJob.id, `→ ${toolName} `, JSON.stringify(input))
+                } else {
+                  await stateBackend.appendLog(liveJob.id, `→ ${toolName}`)
+                }
                 if (toolName.startsWith('mcp__coro__')) mcpToolUseCount++
                 else builtinToolUseCount++
               }
@@ -758,7 +761,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         if (eventType === 'tool_use_summary') {
           const summary = message['summary']
           if (typeof summary === 'string' && summary.trim()) {
-            await stateBackend.appendLog(liveJob.id, `[tool_summary] ${summary.slice(0, 500)}`)
+            await appendChunkedLog(stateBackend, liveJob.id, '[tool_summary] ', summary)
           }
         }
 
@@ -775,7 +778,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           if (isError) {
             const errors = message['errors']
             const errStr = Array.isArray(errors) ? (errors as string[]).join('; ') : 'unknown error'
-            await stateBackend.appendLog(liveJob.id, `[error] ${errStr.slice(0, 500)}`)
+            await appendChunkedLog(stateBackend, liveJob.id, '[error] ', errStr)
           } else {
             const result = message['result']
             if (typeof result === 'string' && result.trim()) {
@@ -845,7 +848,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           'user', 'stream_event', 'auth_status',
         ])
         if (!handledTypes.has(eventType)) {
-          await stateBackend.appendLog(liveJob.id, `[event:${eventType}] ${JSON.stringify(message).slice(0, 500)}`)
+          await appendChunkedLog(stateBackend, liveJob.id, `[event:${eventType}] `, JSON.stringify(message))
         }
 
         // Early break on exception signals so we don't keep pulling events
@@ -1148,6 +1151,51 @@ function deriveRepoCheckoutDir(job: Job, workingRoot: string): string | undefine
   const slug = (job.params as Record<string, unknown> | undefined)?.['repoSlug']
   if (typeof slug !== 'string' || slug.length === 0) return undefined
   return path.join(workingRoot, job.id, slug)
+}
+
+const MAX_ACTIVITY_LOG_ENTRY_CHARS = 1600
+
+function splitLogTextIntoChunks(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text]
+
+  const chunks: string[] = []
+  let remaining = text
+
+  while (remaining.length > maxChars) {
+    let splitAt = remaining.lastIndexOf('\n', maxChars)
+    if (splitAt <= maxChars / 2) splitAt = remaining.lastIndexOf(' ', maxChars)
+    if (splitAt <= maxChars / 2) splitAt = maxChars
+
+    const chunk = remaining.slice(0, splitAt)
+    if (chunk) chunks.push(chunk)
+
+    remaining = remaining.slice(splitAt)
+    if (remaining.startsWith('\n')) remaining = remaining.slice(1)
+    while (remaining.startsWith(' ')) remaining = remaining.slice(1)
+  }
+
+  if (remaining) chunks.push(remaining)
+  return chunks
+}
+
+async function appendChunkedLog(
+  stateBackend: StateBackend,
+  jobId: string,
+  prefix: string,
+  text: string,
+): Promise<void> {
+  const payload = text.replace(/\r\n/g, '\n')
+  if (!payload) {
+    await stateBackend.appendLog(jobId, prefix.trimEnd())
+    return
+  }
+
+  const chunkBudget = Math.max(256, MAX_ACTIVITY_LOG_ENTRY_CHARS - prefix.length)
+  const chunks = splitLogTextIntoChunks(payload, chunkBudget)
+
+  for (const chunk of chunks) {
+    await stateBackend.appendLog(jobId, `${prefix}${chunk}`)
+  }
 }
 
 async function syncJob(

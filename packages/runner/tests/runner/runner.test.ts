@@ -589,6 +589,32 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
   })
 
+  it('chunks long thinking logs instead of truncating them', async () => {
+    const longThinking = 'x'.repeat(4_200)
+    const queryImpl = () =>
+      (async function* () {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'thinking', thinking: longThinking }],
+          },
+        }
+        yield { type: 'system', session_id: 'x' }
+      })()
+
+    await runJob(makeJob({ phase: 'only' }), ctx, {
+      queryImpl,
+      workflowConfigOverride: workflowSingle,
+    })
+
+    const thinkingLogs = stateBackend.appendLog.mock.calls
+      .filter((call: unknown[]) => call[0] === 'runner-job-1' && typeof call[1] === 'string' && (call[1] as string).startsWith('[thinking] '))
+      .map(call => (call[1] as string).slice('[thinking] '.length))
+
+    expect(thinkingLogs.length).toBeGreaterThan(1)
+    expect(thinkingLogs.join('')).toBe(longThinking)
+  })
+
   it('marks job failed when query throws', async () => {
     const queryImpl = () =>
       (async function* () {

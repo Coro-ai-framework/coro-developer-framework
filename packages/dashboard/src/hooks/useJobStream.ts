@@ -70,12 +70,14 @@ function parseTimestamp(raw: string): string {
   return match ? match[1] : ''
 }
 
-export function useJobStream(jobId: string | undefined) {
+export function useJobStream(jobId: string | undefined, shouldStream = true) {
   const [lines, setLines] = useState<LogLine[]>([])
   const [status, setStatus] = useState<ConnectionStatus>('connecting')
   const [lastHeartbeat, setLastHeartbeat] = useState<number>(Date.now())
   const eventSourceRef = useRef<EventSource | null>(null)
   const streamEndedRef = useRef(false)
+  const previousJobIdRef = useRef<string | undefined>(undefined)
+  const previousShouldStreamRef = useRef(true)
 
   const disconnect = useCallback(() => {
     streamEndedRef.current = true
@@ -88,7 +90,24 @@ export function useJobStream(jobId: string | undefined) {
   useEffect(() => {
     if (!jobId) return
 
-    setLines([])
+    const previousJobId = previousJobIdRef.current
+    const previousShouldStream = previousShouldStreamRef.current
+    const jobChanged = previousJobId !== jobId
+    const resumedFromStopped = !previousShouldStream && shouldStream
+
+    previousJobIdRef.current = jobId
+    previousShouldStreamRef.current = shouldStream
+
+    if (jobChanged || resumedFromStopped) {
+      setLines([])
+    }
+
+    if (!shouldStream) {
+      disconnect()
+      setStatus('disconnected')
+      return
+    }
+
     setStatus('connecting')
     streamEndedRef.current = false
 
@@ -127,7 +146,7 @@ export function useJobStream(jobId: string | undefined) {
       source.close()
       eventSourceRef.current = null
     }
-  }, [jobId])
+  }, [disconnect, jobId, shouldStream])
 
   return { lines, status, lastHeartbeat, disconnect }
 }

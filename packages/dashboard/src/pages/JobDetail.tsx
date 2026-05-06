@@ -5,6 +5,7 @@ import {
   Briefcase,
   Bug,
   ChevronDown,
+  Clock3,
   GitPullRequest,
   Send,
 } from 'lucide-react'
@@ -56,6 +57,12 @@ import type { Tone } from '../lib/status'
 import { isRunningStatus, isTerminalStatus } from '../lib/status'
 
 type DetailTab = 'activity' | 'work' | 'diagnostics'
+
+interface PendingOutgoingMessage {
+  id: string
+  text: string
+  queuedAt: number
+}
 
 function deriveWorkflowPhases(job: Job | null): WorkflowPhase[] {
   if (!job) return []
@@ -132,9 +139,33 @@ function HeaderSummary({ job }: { job: Job }) {
           <span>· updated {formatRelativeTime(job.updatedAt)}</span>
         </div>
 
-        {description ? (
-          <p className="line-clamp-2 max-w-3xl text-sm text-fg-muted">{description}</p>
-        ) : null}
+        {description ? <ExpandableDescription description={description} /> : null}
+      </div>
+    </div>
+  )
+}
+
+function ExpandableDescription({ description }: { description: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const canToggle = description.length > 140 || description.includes('\n')
+
+  if (!canToggle) {
+    return <p className="max-w-3xl text-sm text-fg-muted whitespace-pre-wrap break-words">{description}</p>
+  }
+
+  return (
+    <div className="max-w-3xl text-sm text-fg-muted">
+      <div className={cn('relative pr-9', !expanded && 'line-clamp-2')}>
+        <span className="whitespace-pre-wrap break-words">{description}</span>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse description' : 'Expand description'}
+          onClick={() => setExpanded(current => !current)}
+          className="absolute right-0 bottom-0 inline-flex size-6 items-center justify-center rounded-md border border-line bg-panel/95 text-fg-subtle shadow-[var(--shadow-card)] transition-[color,transform,background-color] hover:bg-panel-raised hover:text-fg"
+        >
+          <ChevronDown className={cn('size-4 transition-transform', expanded && 'rotate-180')} />
+        </button>
       </div>
     </div>
   )
@@ -498,7 +529,6 @@ function MessageComposer({
   value,
   onChange,
   onSend,
-  sending,
   error,
 }: {
   title?: string
@@ -507,7 +537,6 @@ function MessageComposer({
   value: string
   onChange: (value: string) => void
   onSend: () => Promise<void>
-  sending: boolean
   error: string | null
 }) {
   return (
@@ -526,13 +555,44 @@ function MessageComposer({
           className="min-h-24"
         />
         <div className="flex justify-end">
-          <Button onClick={() => void onSend()} disabled={sending || !value.trim()} size="sm">
+          <Button onClick={() => void onSend()} disabled={!value.trim()} size="sm">
             <Send />
-            {sending ? 'Sending…' : submitLabel}
+            {submitLabel}
           </Button>
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+function PendingOutgoingMessages({ messages }: { messages: PendingOutgoingMessage[] }) {
+  if (messages.length === 0) return null
+
+  return (
+    <div className="border-t border-line pt-4">
+      <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+        <Clock3 className="size-3.5" />
+        Pending messages
+      </div>
+
+      <div className="space-y-2">
+        {messages.map((message, index) => (
+          <div key={message.id} className="rounded-xl border border-line bg-overlay/35 px-3 py-2.5">
+            <div className="flex items-start gap-2.5">
+              <Clock3 className="mt-0.5 size-3.5 shrink-0 text-warning-400" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-fg whitespace-pre-wrap break-words">{message.text}</div>
+                <div className="mt-1 text-[11px] text-fg-subtle">
+                  {index === 0
+                    ? `Waiting for the next safe point. Queued ${formatRelativeTime(message.queuedAt)}.`
+                    : `Queued behind ${index} earlier message${index === 1 ? '' : 's'} since ${formatRelativeTime(message.queuedAt)}.`}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -676,7 +736,8 @@ export default function JobDetail() {
   const location = useLocation()
 
   const { job, loading, error, refetch } = useJob(jobId)
-  const { lines, status: connectionStatus, lastHeartbeat } = useJobStream(jobId)
+  const shouldStream = job ? !isTerminalStatus(job.status) : true
+  const { lines, status: connectionStatus, lastHeartbeat } = useJobStream(jobId, shouldStream)
 
   /** Last `job.phase` from the server — used to detect "following" vs user-pinned phase inspection. */
   const prevServerPhaseRef = useRef<string | undefined>(undefined)
@@ -693,11 +754,14 @@ export default function JobDetail() {
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [messageText, setMessageText] = useState('')
   const [messageError, setMessageError] = useState<string | null>(null)
-  const [sendingMessage, setSendingMessage] = useState(false)
+  const [pendingOutgoingMessages, setPendingOutgoingMessages] = useState<PendingOutgoingMessage[]>([])
   const [refreshing, setRefreshing] = useState(false)
   /** Optimistic override for `job.interactive` while a PATCH is in flight.
    *  Cleared once the server-side value catches up. */
   const [interactiveOverride, setInteractiveOverride] = useState<boolean | undefined>(undefined)
+  const pendingOutgoingMessagesRef = useRef<PendingOutgoingMessage[]>([])
+  const drainingOutgoingQueueRef = useRef(false)
+  const outgoingQueueTokenRef = useRef(0)
 
   const carriesSubRuns = job ? isCampaignJob(job) : false
 
@@ -715,6 +779,10 @@ export default function JobDetail() {
     prevServerPhaseRef.current = undefined
     streamLinesProcessedRef.current = 0
     setSelectedPhase(null)
+    outgoingQueueTokenRef.current += 1
+    pendingOutgoingMessagesRef.current = []
+    drainingOutgoingQueueRef.current = false
+    setPendingOutgoingMessages([])
   }, [jobId])
 
   useEffect(() => {
@@ -816,24 +884,69 @@ export default function JobDetail() {
     }
   }, [job?.interactive, interactiveOverride])
 
+  function updatePendingOutgoingMessages(
+    updater: (messages: PendingOutgoingMessage[]) => PendingOutgoingMessage[],
+  ) {
+    setPendingOutgoingMessages(current => {
+      const next = updater(current)
+      pendingOutgoingMessagesRef.current = next
+      return next
+    })
+  }
+
   async function postMessage(message: string) {
     if (!jobId) throw new Error('No job id')
     await requestJson(`/jobs/${jobId}/message`, jsonRequest({ message }, { method: 'POST' }))
-    await refetch()
+    void refetch()
+  }
+
+  async function drainPendingOutgoingMessages() {
+    if (drainingOutgoingQueueRef.current) return
+
+    drainingOutgoingQueueRef.current = true
+    const queueToken = outgoingQueueTokenRef.current
+
+    try {
+      while (outgoingQueueTokenRef.current === queueToken) {
+        const next = pendingOutgoingMessagesRef.current[0]
+        if (!next) break
+
+        try {
+          await postMessage(next.text)
+          if (outgoingQueueTokenRef.current !== queueToken) return
+          setMessageError(null)
+        } catch (sendIssue) {
+          if (outgoingQueueTokenRef.current !== queueToken) return
+          setMessageError(sendIssue instanceof Error ? sendIssue.message : 'Failed to send message')
+        } finally {
+          if (outgoingQueueTokenRef.current !== queueToken) return
+          updatePendingOutgoingMessages(messages => messages.filter(message => message.id !== next.id))
+        }
+      }
+    } finally {
+      if (outgoingQueueTokenRef.current === queueToken) {
+        drainingOutgoingQueueRef.current = false
+      }
+    }
   }
 
   async function handleSendMessage() {
-    if (!messageText.trim()) return
-    setSendingMessage(true)
+    const text = messageText.trim()
+    if (!text) return
+
     setMessageError(null)
-    try {
-      await postMessage(messageText.trim())
-      setMessageText('')
-    } catch (sendIssue) {
-      setMessageError(sendIssue instanceof Error ? sendIssue.message : 'Failed to send message')
-    } finally {
-      setSendingMessage(false)
-    }
+    setMessageText('')
+
+    updatePendingOutgoingMessages(messages => [
+      ...messages,
+      {
+        id: crypto.randomUUID(),
+        text,
+        queuedAt: Date.now(),
+      },
+    ])
+
+    void drainPendingOutgoingMessages()
   }
 
   if (loading) {
@@ -936,7 +1049,6 @@ export default function JobDetail() {
                   value={messageText}
                   onChange={setMessageText}
                   onSend={handleSendMessage}
-                  sending={sendingMessage}
                   error={messageError}
                 />
               ) : null}
@@ -951,8 +1063,9 @@ export default function JobDetail() {
                   </div>
                   <ConnectionIndicator status={connectionStatus} lastHeartbeat={lastHeartbeat} />
                 </CardHeader>
-                <CardContent className="pt-5">
+                <CardContent className="space-y-4 pt-5">
                   <LogViewer lines={lines} />
+                  <PendingOutgoingMessages messages={pendingOutgoingMessages} />
                 </CardContent>
               </Card>
 
@@ -961,7 +1074,6 @@ export default function JobDetail() {
                   value={messageText}
                   onChange={setMessageText}
                   onSend={handleSendMessage}
-                  sending={sendingMessage}
                   error={messageError}
                 />
               ) : null}
