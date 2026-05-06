@@ -10,6 +10,8 @@ import path from 'path'
 import os from 'os'
 import { z } from 'zod'
 import type { TenantOverlaySource } from '../intelligence/tenant-context'
+import { pluginsConfigSchema, type PluginsConfig } from './plugins-config'
+import { legacyConfigKeysBehaviour } from '../plugins/deprecation'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -154,6 +156,61 @@ const trackerConfigSchema = z.object({
   }).optional(),
 }).optional()
 
+// ── BYO (bring-your-own) MCP servers ─────────────────────────────────────────
+//
+// S8 of the MCP-first plugins pivot. Operators can attach any MCP
+// server to every job session without writing a Coro plugin —
+// useful for Slack, Sentry, Datadog, internal tooling, or any
+// service that already publishes an MCP server.
+//
+// The shape mirrors what `collectPluginMcpServers()` produces from
+// plugin manifests, with two extra fields:
+//
+//   - `enabled`      — false → skip without removing the entry.
+//   - `allowedTools` / `disallowedTools` — translated into the SDK's
+//                       per-server tool policy so operators can
+//                       silence noisy tools.
+//
+// The reserved id `coro` is rejected at config-load time (and again
+// at attachment time) — Coro's in-process MCP server cannot be
+// shadowed.
+
+const mcpStdioServerSchema = z.object({
+  type: z.literal('stdio'),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+})
+
+const mcpHttpServerSchema = z.object({
+  type: z.literal('http'),
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+})
+
+const mcpSseServerSchema = z.object({
+  type: z.literal('sse'),
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+})
+
+const userMcpServerSchema = z.discriminatedUnion('type', [
+  mcpStdioServerSchema,
+  mcpHttpServerSchema,
+  mcpSseServerSchema,
+]).and(
+  z.object({
+    enabled: z.boolean().optional(),
+    allowedTools: z.array(z.string()).optional(),
+    disallowedTools: z.array(z.string()).optional(),
+  }),
+)
+
+const mcpServersConfigSchema = z.record(z.string().min(1), userMcpServerSchema).optional()
+
+export type UserMcpServerConfig = z.infer<typeof userMcpServerSchema>
+export type UserMcpServersConfig = NonNullable<z.infer<typeof mcpServersConfigSchema>>
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   anthropic: anthropicConfigSchema,
@@ -163,6 +220,34 @@ const localConfigSchema = z.object({
   tenant: tenantConfigSchema,
   proposals: proposalsConfigSchema,
   tracker: trackerConfigSchema,
+  /**
+   * Provider-plugin config — the new uniform shape replacing the
+   * per-provider blocks above. When `plugins` is absent the runner
+   * synthesises one via {@link legacyConfigToPlugins} so existing
+   * configs round-trip without manual edits.
+   */
+  plugins: pluginsConfigSchema.optional(),
+  /**
+   * Bring-your-own MCP servers attached to every job session. Lets
+   * operators wire arbitrary MCP servers (Slack, Sentry, internal
+   * tooling) without authoring a full Coro plugin. The keys are the
+   * MCP server registration ids the agent will see as
+   * `mcp__<id>__*`. The reserved id `coro` is rejected.
+   */
+  mcpServers: mcpServersConfigSchema,
+  /**
+   * S9 of the MCP-first plugins pivot. When true the runner discovers
+   * user-level Claude Code MCP server entries (from
+   * `~/.claude.json` and `~/.claude/settings.json`) and attaches
+   * them to every job session — same shape as the BYO `mcpServers`
+   * block. Operators that already have a curated Claude Code config
+   * get every MCP server at once without editing Coro's config.
+   *
+   * Defaults to `false` because Claude Code configs commonly carry
+   * developer-personal entries (Notion, GitHub Personal, etc.) that
+   * an operator may not want every job to see.
+   */
+  inheritClaudeCodeMcps: z.boolean().optional(),
 })
 
 export type LocalConfig = z.infer<typeof localConfigSchema>
@@ -319,9 +404,129 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
     tracker: patch.tracker !== undefined ? patch.tracker : existing.tracker,
+    plugins: patch.plugins !== undefined ? patch.plugins : existing.plugins,
+    mcpServers: patch.mcpServers !== undefined ? patch.mcpServers : existing.mcpServers,
+    inheritClaudeCodeMcps:
+      patch.inheritClaudeCodeMcps !== undefined ? patch.inheritClaudeCodeMcps : existing.inheritClaudeCodeMcps,
   }
   saveLocalConfig(merged, configPath)
   return merged
+}
+
+// ── Legacy → PluginsConfig translator ────────────────────────────────────────
+//
+// v1 keeps the legacy `git`, `github`, `tracker.jira`, `tracker.linear`,
+// and `tracker.provider` blocks readable for one release. This translator
+// builds an equivalent PluginsConfig from those keys when `plugins` is
+// absent, so existing tenants don't have to migrate their config to
+// keep working.
+//
+// The translator is purely additive: it never overrides an explicit
+// `plugins` block. Set `installed[<id>].enabled = false` on the
+// generated config to opt out of a legacy provider while keeping its
+// credentials around for round-tripping.
+
+/**
+ * Convert legacy config blocks into a {@link PluginsConfig}. Leaves
+ * `defaults.scm` / `defaults.tracker` undefined when the choice is
+ * ambiguous so the registry surfaces a clear error rather than
+ * silently picking.
+ */
+export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig {
+  if (!config) return { installed: {} }
+
+  const installed: PluginsConfig['installed'] = {}
+
+  // ── SCM ──
+  if (config.git?.provider === 'bitbucket' && config.git?.workspace && config.git?.username && config.git?.token) {
+    installed['bitbucket'] = {
+      enabled: true,
+      config: {
+        workspace: config.git.workspace,
+        coderUsername: config.git.username,
+        coderToken: config.git.token,
+      },
+    }
+  }
+  if (config.git?.provider === 'github' && config.git?.workspace && config.git?.token) {
+    installed['github'] = {
+      enabled: true,
+      config: {
+        owner: config.git.workspace,
+        token: config.git.token,
+      },
+    }
+  }
+
+  // ── Tracker ──
+  if (config.tracker?.jira?.baseUrl && config.tracker.jira.username && config.tracker.jira.apiToken) {
+    installed['jira'] = {
+      enabled: true,
+      config: {
+        baseUrl: config.tracker.jira.baseUrl,
+        username: config.tracker.jira.username,
+        apiToken: config.tracker.jira.apiToken,
+      },
+    }
+  }
+  if (config.tracker?.linear?.apiKey) {
+    installed['linear'] = {
+      enabled: true,
+      config: {
+        apiKey: config.tracker.linear.apiKey,
+        ...(config.tracker.linear.teamKey ? { teamKey: config.tracker.linear.teamKey } : {}),
+      },
+    }
+  }
+  // Legacy `tracker.provider: 'github'` reuses the git creds for issues.
+  if (config.tracker?.provider === 'github' && config.git?.provider === 'github' && config.git?.token && config.git?.workspace) {
+    installed['github-issues'] = {
+      enabled: true,
+      config: {
+        token: config.git.token,
+        defaultOwner: config.git.workspace,
+      },
+    }
+  }
+
+  // ── Defaults ──
+  // Only set the default when the legacy config makes the choice
+  // unambiguous; otherwise leave it for the registry to fall back to
+  // "single installed plugin wins" or surface an error.
+  const defaults: PluginsConfig['defaults'] = {}
+  if (config.git?.provider === 'bitbucket' && installed['bitbucket']) defaults.scm = 'bitbucket'
+  else if (config.git?.provider === 'github' && installed['github']) defaults.scm = 'github'
+
+  if (config.tracker?.provider === 'jira' && installed['jira']) defaults.tracker = 'jira'
+  else if (config.tracker?.provider === 'linear' && installed['linear']) defaults.tracker = 'linear'
+  else if (config.tracker?.provider === 'github' && installed['github-issues']) defaults.tracker = 'github-issues'
+
+  const out: PluginsConfig = { installed }
+  if (defaults.scm || defaults.tracker) out.defaults = defaults
+  return out
+}
+
+/**
+ * Resolve the PluginsConfig for this runner: explicit `plugins` block
+ * wins, otherwise synthesised via {@link legacyConfigToPlugins}.
+ *
+ * Stage-aware behaviour (see `plugins/deprecation.ts`):
+ *   - N    → reads both shapes; legacy `git`/`tracker` keys feed the translator.
+ *   - N+1  → still parses both shapes (silently); CLI prompts only show the new shape.
+ *   - N+2  → throws when a legacy `git`/`tracker` block is encountered without
+ *            an explicit `plugins` block — operators must migrate.
+ */
+export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
+  if (config?.plugins) return config.plugins
+  const stage = legacyConfigKeysBehaviour()
+  if (stage === 'error' && config && (config.git || config.tracker)) {
+    throw new Error(
+      `Legacy 'git'/'tracker' top-level config keys are no longer supported. ` +
+      `Move them into a 'plugins.installed' block. ` +
+      `Run 'coro init' to regenerate the config in the new shape.`,
+    )
+  }
+  return legacyConfigToPlugins(config)
 }
 
 /**
@@ -378,4 +583,85 @@ export function resolveTenantOverlaySource(config: LocalConfig | null): TenantOv
   }
 
   return { kind: 'none' }
+}
+
+// ── Claude Code MCP discovery (S9) ───────────────────────────────────────────
+//
+// Reads user-level Claude Code config files and returns the
+// `mcpServers` block(s) merged into a single
+// `Record<id, UserMcpServerConfig>`. Order of precedence (later wins):
+//
+//   1. `~/.claude.json`                  — the default Claude Code config
+//   2. `~/.claude/settings.json`         — explicit user-scope settings
+//
+// Both files are optional. Malformed JSON or missing `mcpServers`
+// blocks are silently ignored — a user-level Claude Code config that
+// existed long before Coro was installed must never break a job
+// run. The runner combines this output with `mcpServers` from
+// `~/.coro/config.json` at attachment time so the agent sees one
+// coherent set of `mcp__<id>__*` tools.
+
+export interface ClaudeCodeDiscovery {
+  servers: Record<string, UserMcpServerConfig>
+  sources: ReadonlyArray<string>
+}
+
+export function discoverClaudeCodeMcpServers(): ClaudeCodeDiscovery {
+  const home = os.homedir()
+  const candidates = [
+    path.join(home, '.claude.json'),
+    path.join(home, '.claude', 'settings.json'),
+  ]
+  const servers: Record<string, UserMcpServerConfig> = {}
+  const sources: string[] = []
+
+  for (const filePath of candidates) {
+    if (!fs.existsSync(filePath)) continue
+    let raw: unknown
+    try {
+      raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+    } catch {
+      continue
+    }
+    if (!raw || typeof raw !== 'object') continue
+    const block = (raw as Record<string, unknown>)['mcpServers']
+    if (!block || typeof block !== 'object') continue
+    let imported = 0
+    for (const [id, entry] of Object.entries(block as Record<string, unknown>)) {
+      const normalised = normaliseClaudeMcpEntry(entry)
+      if (!normalised) continue
+      servers[id] = normalised
+      imported += 1
+    }
+    if (imported > 0) sources.push(filePath)
+  }
+
+  return { servers, sources }
+}
+
+function normaliseClaudeMcpEntry(entry: unknown): UserMcpServerConfig | undefined {
+  if (!entry || typeof entry !== 'object') return undefined
+  const obj = entry as Record<string, unknown>
+  // Claude Code config commonly omits `type` for stdio servers — they
+  // declare `command` directly. We default to `'stdio'` in that case.
+  const explicitType = typeof obj['type'] === 'string' ? (obj['type'] as string) : undefined
+  const type = explicitType ?? (typeof obj['command'] === 'string' ? 'stdio' : undefined)
+  if (type === 'stdio') {
+    if (typeof obj['command'] !== 'string' || obj['command'].length === 0) return undefined
+    return {
+      type: 'stdio',
+      command: obj['command'] as string,
+      ...(Array.isArray(obj['args']) ? { args: (obj['args'] as unknown[]).filter((a): a is string => typeof a === 'string') } : {}),
+      ...(obj['env'] && typeof obj['env'] === 'object' ? { env: obj['env'] as Record<string, string> } : {}),
+    }
+  }
+  if (type === 'http' || type === 'sse') {
+    if (typeof obj['url'] !== 'string' || obj['url'].length === 0) return undefined
+    return {
+      type,
+      url: obj['url'],
+      ...(obj['headers'] && typeof obj['headers'] === 'object' ? { headers: obj['headers'] as Record<string, string> } : {}),
+    }
+  }
+  return undefined
 }

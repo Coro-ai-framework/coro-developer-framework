@@ -33,6 +33,18 @@ export async function apiPost<T = unknown>(path: string, body: unknown): Promise
   return { ok: res.ok, status: res.status, data }
 }
 
+export async function apiDelete<T = unknown>(path: string): Promise<ApiResponse<T>> {
+  const url = `${baseUrl()}${path}`
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+  })
+  // Some endpoints return 204 with no body — handle both.
+  const text = await res.text()
+  const data = (text ? JSON.parse(text) : {}) as T
+  return { ok: res.ok, status: res.status, data }
+}
+
 export function die(msg: string): never {
   console.error(`\x1b[31mError:\x1b[0m ${msg}`)
   process.exit(1)

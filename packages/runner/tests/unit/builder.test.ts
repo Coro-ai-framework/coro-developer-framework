@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
-import { buildSystemPrompt, computeTrackerPromptContext } from '../../src/prompt/builder'
+import { z } from 'zod'
+import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../../src/prompt/builder'
 import type { Settings } from '../../src/config/settings'
 import type { TrackerClient, TrackerProvider } from '../../src/clients/tracker'
+import { PluginRegistry, type ScmPluginRuntime } from '../../src/plugins'
 import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -421,6 +423,56 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
       expect(ctx['tracker']).toEqual({ provider: 'none', available: false })
     })
+
+    it('renders scm context when supplied', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        { provider: 'none', available: false },
+        { available: true, resolved: 'github', installed: ['github'], default: 'github' },
+      )
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['scm']).toEqual({
+        available: true,
+        resolved: 'github',
+        installed: ['github'],
+        default: 'github',
+      })
+    })
+  })
+})
+
+describe('computeScmPromptContext', () => {
+  it('reports the resolved default scm plugin', () => {
+    const registry = new PluginRegistry()
+    registry.register(fakeScmPlugin('github'))
+
+    const out = computeScmPromptContext(makeJob(), registry)
+    expect(out).toEqual({ available: true, resolved: 'github', installed: ['github'] })
+  })
+
+  it('preserves the requested scm id when one is set on the job', () => {
+    const registry = new PluginRegistry({ scm: 'github' })
+    registry.register(fakeScmPlugin('github'))
+    registry.register(fakeScmPlugin('bitbucket'))
+
+    const out = computeScmPromptContext(makeJob({ params: { repoSlug: 'my-svc', scm: 'bitbucket' } }), registry)
+    expect(out).toEqual({
+      available: true,
+      resolved: 'bitbucket',
+      requested: 'bitbucket',
+      default: 'github',
+      installed: ['bitbucket', 'github'],
+    })
+  })
+
+  it('reports available=false when no scm plugin resolves', () => {
+    const out = computeScmPromptContext(makeJob(), new PluginRegistry())
+    expect(out).toEqual({ available: false, resolved: 'none', installed: [] })
   })
 })
 
@@ -528,4 +580,30 @@ function makeTrackerClient(args: { provider: TrackerProvider; available: boolean
     transitionIssue: vi.fn(),
     commentIssue: vi.fn(),
   } as unknown as TrackerClient
+}
+
+function fakeScmPlugin(id: string): ScmPluginRuntime {
+  return {
+    manifest: {
+      id,
+      kind: 'scm',
+      version: '0.0.1',
+      displayName: id,
+      hostCompatibility: '*',
+      configSchema: z.object({}),
+    },
+    kind: 'scm',
+    init: async () => {},
+    healthcheck: async () => ({ ok: true }),
+    dispose: async () => {},
+    cloneInfo: () => ({ url: 'fake', envForGit: {} }),
+    createPr: async () => ({ kind: 'pull_request', pluginId: id, repoKey: 'repo', externalId: '1' }),
+    getPrStatus: async () => ({ state: 'open', approvalCount: 0 }),
+    listPrComments: async () => [],
+    postPrComment: async (_ref, body) => ({ id: '1', body, createdAt: '', updatedAt: '' }),
+    replyToComment: async (_ref, parentId, body) => ({ id: '2', body, createdAt: '', updatedAt: '', parentId }),
+    pollPr: async () => ({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] }),
+    normalizeInbound: () => null,
+    matchesRemote: () => false,
+  }
 }

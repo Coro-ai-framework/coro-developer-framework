@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as cp from 'child_process'
+import * as fs from 'fs/promises'
+import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
 import { STATUS_ESCALATED } from '../../src/jobs/types'
 import type { ToolContext } from '../../src/tools/types'
-import { makeMockToolContext, makeMockJob } from './fixtures'
+import {
+  makeMockToolContext,
+  makeMockToolContextWithSpies,
+  makeMockJob,
+} from './fixtures'
 
 vi.mock('fs/promises')
 
@@ -14,6 +20,10 @@ vi.mock('child_process', async (importOriginal) => {
     spawn: vi.fn(),
   }
 })
+
+vi.mock('simple-git', () => ({
+  simpleGit: vi.fn(),
+}))
 
 /** Parses JSON from the first text content block returned by handlers. */
 function parseJson(result: { content: Array<{ type: string; text: string }> }): unknown {
@@ -77,100 +87,31 @@ describe('createMcpToolHandlers — job control & signals', () => {
   })
 })
 
-describe('createMcpToolHandlers — BitBucket (coder)', () => {
-  let ctx: ReturnType<typeof makeMockToolContext>
+// ── Legacy bb_*/gh_*/jira_* shims removed in S6 ─────────────────────────────
+//
+// The MCP-first plugins pivot deleted every back-compat wrapper.
+// What used to be a thick block of routing tests now collapses to a
+// single check: the handler surface no longer exports these names.
+// Workflow markdown that still references them hits the SDK's
+// "tool not found" path, which surfaces a clean error to the agent.
 
-  beforeEach(() => {
-    ctx = makeMockToolContext()
-  })
-
-  it('bb_create_repo creates a private repo', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.bb_create_repo({ repoSlug: 'my-svc', description: 'svc' })) as Record<
-      string,
-      unknown
-    >
-    expect(ctx.bbCoder.createRepo).toHaveBeenCalledWith({
-      repoSlug: 'my-svc',
-      description: 'svc',
-      isPrivate: true,
-    })
-    expect(data['fullName']).toBe('ws/new-repo')
-  })
-
-  it('bb_create_pr passes job reviewers when reviewers omitted', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    await h.bb_create_pr({
-      repoSlug: 'r',
-      title: 'T',
-      sourceBranch: 'feat',
-    })
-    expect(ctx.bbCoder.createPr).toHaveBeenCalledWith(
-      expect.objectContaining({
-        repoSlug: 'r',
-        reviewerUsernames: ['reviewer-1'],
-        targetBranch: 'main',
-      }),
-    )
-  })
-
-  it('bb_create_pr uses explicit reviewers when provided', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    await h.bb_create_pr({
-      repoSlug: 'r',
-      title: 'T',
-      sourceBranch: 'feat',
-      reviewerUsernames: ['alice'],
-    })
-    expect(ctx.bbCoder.createPr).toHaveBeenCalledWith(
-      expect.objectContaining({ reviewerUsernames: ['alice'] }),
-    )
-  })
-
-  it('bb_get_pr_status returns status payload', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.bb_get_pr_status({ repoSlug: 'r', prId: 1 }))
-    expect(ctx.bbCoder.getPrStatus).toHaveBeenCalledWith('r', 1)
-    expect(data).toEqual({ state: 'OPEN', approvals: 1 })
+describe('createMcpToolHandlers — legacy shim removal', () => {
+  it('bb_*/gh_*/jira_* handlers are not exported', () => {
+    const built = makeMockToolContextWithSpies()
+    const h = createMcpToolHandlers(built.ctx, {}) as Record<string, unknown>
+    for (const name of [
+      'bb_create_repo', 'bb_create_pr', 'bb_get_pr_status', 'bb_get_pr_comments',
+      'bb_post_pr_comment', 'bb_reply_to_comment', 'bb_approve_pr', 'bb_merge_pr',
+      'gh_create_repo', 'gh_create_pr', 'gh_get_pr_status', 'gh_get_pr_comments',
+      'gh_post_pr_comment', 'gh_reply_to_comment', 'gh_approve_pr', 'gh_merge_pr',
+      'jira_get_issue', 'jira_post_comment', 'jira_transition_issue',
+    ]) {
+      expect(h[name]).toBeUndefined()
+    }
   })
 })
 
-describe('createMcpToolHandlers — BitBucket (reviewer)', () => {
-  let ctx: ReturnType<typeof makeMockToolContext>
-
-  beforeEach(() => {
-    ctx = makeMockToolContext()
-  })
-
-  it('bb_get_pr_comments maps comment shape', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(await h.bb_get_pr_comments({ repoSlug: 'r', prId: 1 })) as unknown[]
-    expect(Array.isArray(data)).toBe(true)
-    expect(data[0]).toMatchObject({
-      id: 1,
-      content: 'hello',
-      parentId: null,
-    })
-  })
-
-  it('bb_post_pr_comment, bb_reply_to_comment, bb_approve_pr, bb_merge_pr delegate to reviewer', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-
-    await h.bb_post_pr_comment({ repoSlug: 'r', prId: 1, content: 'hi' })
-    expect(ctx.bbReviewer.postComment).toHaveBeenCalledWith('r', 1, 'hi')
-
-    await h.bb_reply_to_comment({ repoSlug: 'r', prId: 1, parentId: 9, content: 'reply' })
-    expect(ctx.bbReviewer.replyToComment).toHaveBeenCalledWith('r', 1, 9, 'reply')
-
-    await h.bb_approve_pr({ repoSlug: 'r', prId: 2 })
-    expect(ctx.bbReviewer.approvePr).toHaveBeenCalledWith('r', 2)
-
-    await h.bb_merge_pr({ repoSlug: 'r', prId: 2, message: 'merge' })
-    expect(ctx.bbReviewer.mergePr).toHaveBeenCalledWith('r', 2, 'merge')
-  })
-})
-
-describe('createMcpToolHandlers — observability & Jira', () => {
+describe('createMcpToolHandlers — observability', () => {
   let ctx: ReturnType<typeof makeMockToolContext>
 
   beforeEach(() => {
@@ -188,20 +129,6 @@ describe('createMcpToolHandlers — observability & Jira', () => {
 
     await h.tempo_search({ query: '{}', start: 's', end: 'e', limit: 5 })
     expect(ctx.tempoClient.search).toHaveBeenCalledWith('{}', 's', 'e', 5)
-  })
-
-  it('forwards Jira calls', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-
-    await h.jira_get_issue({ ticketId: 'ABC-1' })
-    expect(ctx.jiraClient.getIssue).toHaveBeenCalledWith('ABC-1')
-
-    await h.jira_post_comment({ ticketId: 'ABC-1', body: 'note' })
-    expect(ctx.jiraClient.postComment).toHaveBeenCalledWith('ABC-1', 'note')
-
-    const tr = parseJson(await h.jira_transition_issue({ ticketId: 'ABC-1', transitionId: '31' }))
-    expect(ctx.jiraClient.transitionIssue).toHaveBeenCalledWith('ABC-1', '31')
-    expect(tr).toEqual({ transitioned: true })
   })
 })
 
@@ -272,6 +199,58 @@ describe('createMcpToolHandlers — run_go_build', () => {
     const h = createMcpToolHandlers(ctx, {})
     const result = await h.run_go_build({ repoDir: '/nonexistent-dir-for-go-build-test-xyz' })
     expect('isError' in result && result.isError).toBe(true)
+  })
+})
+
+describe('createMcpToolHandlers — scm_clone_repo', () => {
+  const simpleGitMock = vi.mocked(simpleGit)
+  const mkdirMock = vi.mocked(fs.mkdir)
+  const statMock = vi.mocked(fs.stat)
+  const readdirMock = vi.mocked(fs.readdir)
+  const rmMock = vi.mocked(fs.rm)
+
+  beforeEach(() => {
+    mkdirMock.mockResolvedValue(undefined)
+    statMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    readdirMock.mockResolvedValue([])
+    rmMock.mockResolvedValue(undefined)
+    simpleGitMock.mockReset()
+  })
+
+  it('clones via the resolved scm plugin into the job working directory', async () => {
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    const clone = vi.fn().mockResolvedValue(undefined)
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
+
+    expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({ baseDir: '/tmp/work-mcp/job-mcp-test' }))
+    expect(env).toHaveBeenCalledWith(expect.objectContaining({ GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' }))
+    expect(clone).toHaveBeenCalledWith('https://example.test/svc.git', '/tmp/work-mcp/job-mcp-test/svc')
+    expect(built.ctx.stateBackend.mapRepoToJob).toHaveBeenCalledWith('svc', 'job-mcp-test')
+    expect(data['repoDir']).toBe('/tmp/work-mcp/job-mcp-test/svc')
+    expect(data['reused']).toBe(false)
+  })
+
+  it('reuses an existing checkout when .git already exists', async () => {
+    const built = makeMockToolContextWithSpies()
+    statMock.mockImplementation(async (filePath: any) => {
+      if (String(filePath).endsWith('/svc/.git')) return { isDirectory: () => true } as never
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
+
+    expect(simpleGitMock).not.toHaveBeenCalled()
+    expect(data['reused']).toBe(true)
+    expect(data['relativeDir']).toBe('svc')
   })
 })
 

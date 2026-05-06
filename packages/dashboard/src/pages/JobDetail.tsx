@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Activity,
   ArrowLeft,
+  Briefcase,
+  Bug,
   ChevronDown,
+  Clock3,
   GitPullRequest,
   Send,
 } from 'lucide-react'
@@ -50,17 +54,15 @@ import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
-import { isTerminalStatus } from '../lib/status'
+import { isRunningStatus, isTerminalStatus } from '../lib/status'
 
 type DetailTab = 'activity' | 'work' | 'diagnostics'
 
-const NON_RUNNING_STATUSES = new Set([
-  'complete',
-  'failed',
-  'escalated',
-  'awaiting-plan-approval',
-  'awaiting-pr-merge',
-])
+interface PendingOutgoingMessage {
+  id: string
+  text: string
+  queuedAt: number
+}
 
 function deriveWorkflowPhases(job: Job | null): WorkflowPhase[] {
   if (!job) return []
@@ -137,9 +139,33 @@ function HeaderSummary({ job }: { job: Job }) {
           <span>· updated {formatRelativeTime(job.updatedAt)}</span>
         </div>
 
-        {description ? (
-          <p className="line-clamp-2 max-w-3xl text-sm text-fg-muted">{description}</p>
-        ) : null}
+        {description ? <ExpandableDescription description={description} /> : null}
+      </div>
+    </div>
+  )
+}
+
+function ExpandableDescription({ description }: { description: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const canToggle = description.length > 140 || description.includes('\n')
+
+  if (!canToggle) {
+    return <p className="max-w-3xl text-sm text-fg-muted whitespace-pre-wrap break-words">{description}</p>
+  }
+
+  return (
+    <div className="max-w-3xl text-sm text-fg-muted">
+      <div className={cn('relative pr-9', !expanded && 'line-clamp-2')}>
+        <span className="whitespace-pre-wrap break-words">{description}</span>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse description' : 'Expand description'}
+          onClick={() => setExpanded(current => !current)}
+          className="absolute right-0 bottom-0 inline-flex size-6 items-center justify-center rounded-md border border-line bg-panel/95 text-fg-subtle shadow-[var(--shadow-card)] transition-[color,transform,background-color] hover:bg-panel-raised hover:text-fg"
+        >
+          <ChevronDown className={cn('size-4 transition-transform', expanded && 'rotate-180')} />
+        </button>
       </div>
     </div>
   )
@@ -377,6 +403,46 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
   )
 }
 
+function JobAlerts({ job }: { job: Job }) {
+  const parentRunId = getParentRunId(job)
+
+  if (!parentRunId && !job.awaitingEvent && !job.escalationMessage) {
+    return null
+  }
+
+  return (
+    <div className="space-y-3">
+      {parentRunId ? (
+        <AlertCard title={`Dispatched as a ${SUB_RUN_NOUN.singularLower}`} tone="accent">
+          {`This ${RUN_NOUN.singularLower} runs as a ${SUB_RUN_NOUN.singularLower} of `}
+          <Link
+            to={getRunDetailPath({ id: parentRunId })}
+            className="font-mono text-accent-300 underline underline-offset-2"
+          >
+            {parentRunId}
+          </Link>
+          {typeof job.params['campaignChildName'] === 'string'
+            ? ` (named ${job.params['campaignChildName'] as string}).`
+            : '.'}
+        </AlertCard>
+      ) : null}
+
+      {job.awaitingEvent && job.status !== 'awaiting-developer-input' ? (
+        <AlertCard title="Awaiting external event" tone="warning">
+          {job.awaitingEvent}
+          {job.awaitingPrId ? ` (PR #${job.awaitingPrId})` : ''}
+        </AlertCard>
+      ) : null}
+
+      {job.escalationMessage ? (
+        <AlertCard title="Escalation message" tone="danger">
+          {job.escalationMessage}
+        </AlertCard>
+      ) : null}
+    </div>
+  )
+}
+
 function WorkflowSnapshotCard({
   job,
   selectedPhase,
@@ -457,42 +523,76 @@ function WorkflowSnapshotCard({
 }
 
 function MessageComposer({
+  title = 'Send message',
+  description = 'Send additional guidance into the live run. Multiple messages are allowed.',
+  submitLabel = 'Send message',
   value,
   onChange,
   onSend,
-  sending,
   error,
 }: {
+  title?: string
+  description?: string
+  submitLabel?: string
   value: string
   onChange: (value: string) => void
   onSend: () => Promise<void>
-  sending: boolean
   error: string | null
 }) {
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Send message</CardTitle>
-        <CardDescription>
-          Send additional guidance into the live run. Multiple messages are allowed.
-        </CardDescription>
+      <CardHeader className="gap-1.5 pb-4">
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2.5 pt-0">
         {error ? <ErrorState message={error} /> : null}
         <Textarea
-          rows={4}
+          rows={3}
           value={value}
           onChange={event => onChange(event.target.value)}
           placeholder="Tell the agent what changed, what to prioritize, or where to look next…"
+          className="min-h-24"
         />
         <div className="flex justify-end">
-          <Button onClick={() => void onSend()} disabled={sending || !value.trim()} size="sm">
+          <Button onClick={() => void onSend()} disabled={!value.trim()} size="sm">
             <Send />
-            {sending ? 'Sending…' : 'Send message'}
+            {submitLabel}
           </Button>
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+function PendingOutgoingMessages({ messages }: { messages: PendingOutgoingMessage[] }) {
+  if (messages.length === 0) return null
+
+  return (
+    <div className="border-t border-line pt-4">
+      <div className="mb-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+        <Clock3 className="size-3.5" />
+        Pending messages
+      </div>
+
+      <div className="space-y-2">
+        {messages.map((message, index) => (
+          <div key={message.id} className="rounded-xl border border-line bg-overlay/35 px-3 py-2.5">
+            <div className="flex items-start gap-2.5">
+              <Clock3 className="mt-0.5 size-3.5 shrink-0 text-warning-400" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-fg whitespace-pre-wrap break-words">{message.text}</div>
+                <div className="mt-1 text-[11px] text-fg-subtle">
+                  {index === 0
+                    ? `Waiting for the next safe point. Queued ${formatRelativeTime(message.queuedAt)}.`
+                    : `Queued behind ${index} earlier message${index === 1 ? '' : 's'} since ${formatRelativeTime(message.queuedAt)}.`}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -636,7 +736,8 @@ export default function JobDetail() {
   const location = useLocation()
 
   const { job, loading, error, refetch } = useJob(jobId)
-  const { lines, status: connectionStatus, lastHeartbeat } = useJobStream(jobId)
+  const shouldStream = job ? !isTerminalStatus(job.status) : true
+  const { lines, status: connectionStatus, lastHeartbeat } = useJobStream(jobId, shouldStream)
 
   /** Last `job.phase` from the server — used to detect "following" vs user-pinned phase inspection. */
   const prevServerPhaseRef = useRef<string | undefined>(undefined)
@@ -647,15 +748,20 @@ export default function JobDetail() {
   const [selectedPhase, setSelectedPhase] = useState<string | null>(null)
   const [resumePhase, setResumePhase] = useState('')
   const [clearSession, setClearSession] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [messageText, setMessageText] = useState('')
   const [messageError, setMessageError] = useState<string | null>(null)
-  const [sendingMessage, setSendingMessage] = useState(false)
+  const [pendingOutgoingMessages, setPendingOutgoingMessages] = useState<PendingOutgoingMessage[]>([])
   const [refreshing, setRefreshing] = useState(false)
   /** Optimistic override for `job.interactive` while a PATCH is in flight.
    *  Cleared once the server-side value catches up. */
   const [interactiveOverride, setInteractiveOverride] = useState<boolean | undefined>(undefined)
+  const pendingOutgoingMessagesRef = useRef<PendingOutgoingMessage[]>([])
+  const drainingOutgoingQueueRef = useRef(false)
+  const outgoingQueueTokenRef = useRef(0)
 
   const carriesSubRuns = job ? isCampaignJob(job) : false
 
@@ -673,6 +779,10 @@ export default function JobDetail() {
     prevServerPhaseRef.current = undefined
     streamLinesProcessedRef.current = 0
     setSelectedPhase(null)
+    outgoingQueueTokenRef.current += 1
+    pendingOutgoingMessagesRef.current = []
+    drainingOutgoingQueueRef.current = false
+    setPendingOutgoingMessages([])
   }, [jobId])
 
   useEffect(() => {
@@ -739,6 +849,24 @@ export default function JobDetail() {
     }
   }
 
+  async function handleCancel() {
+    if (!jobId) return
+    if (!window.confirm('Cancel this run? It will stop at the next safe boundary and will not auto-resume.')) {
+      return
+    }
+
+    setCancelling(true)
+    setCancelError(null)
+    try {
+      await requestJson(`/jobs/${jobId}/cancel`, jsonRequest({}, { method: 'POST' }))
+      await refetch()
+    } catch (cancelIssue) {
+      setCancelError(cancelIssue instanceof Error ? cancelIssue.message : 'Cancel failed')
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   async function handleRefresh() {
     setRefreshing(true)
     try {
@@ -756,24 +884,69 @@ export default function JobDetail() {
     }
   }, [job?.interactive, interactiveOverride])
 
+  function updatePendingOutgoingMessages(
+    updater: (messages: PendingOutgoingMessage[]) => PendingOutgoingMessage[],
+  ) {
+    setPendingOutgoingMessages(current => {
+      const next = updater(current)
+      pendingOutgoingMessagesRef.current = next
+      return next
+    })
+  }
+
   async function postMessage(message: string) {
     if (!jobId) throw new Error('No job id')
     await requestJson(`/jobs/${jobId}/message`, jsonRequest({ message }, { method: 'POST' }))
-    await refetch()
+    void refetch()
+  }
+
+  async function drainPendingOutgoingMessages() {
+    if (drainingOutgoingQueueRef.current) return
+
+    drainingOutgoingQueueRef.current = true
+    const queueToken = outgoingQueueTokenRef.current
+
+    try {
+      while (outgoingQueueTokenRef.current === queueToken) {
+        const next = pendingOutgoingMessagesRef.current[0]
+        if (!next) break
+
+        try {
+          await postMessage(next.text)
+          if (outgoingQueueTokenRef.current !== queueToken) return
+          setMessageError(null)
+        } catch (sendIssue) {
+          if (outgoingQueueTokenRef.current !== queueToken) return
+          setMessageError(sendIssue instanceof Error ? sendIssue.message : 'Failed to send message')
+        } finally {
+          if (outgoingQueueTokenRef.current !== queueToken) return
+          updatePendingOutgoingMessages(messages => messages.filter(message => message.id !== next.id))
+        }
+      }
+    } finally {
+      if (outgoingQueueTokenRef.current === queueToken) {
+        drainingOutgoingQueueRef.current = false
+      }
+    }
   }
 
   async function handleSendMessage() {
-    if (!messageText.trim()) return
-    setSendingMessage(true)
+    const text = messageText.trim()
+    if (!text) return
+
     setMessageError(null)
-    try {
-      await postMessage(messageText.trim())
-      setMessageText('')
-    } catch (sendIssue) {
-      setMessageError(sendIssue instanceof Error ? sendIssue.message : 'Failed to send message')
-    } finally {
-      setSendingMessage(false)
-    }
+    setMessageText('')
+
+    updatePendingOutgoingMessages(messages => [
+      ...messages,
+      {
+        id: crypto.randomUUID(),
+        text,
+        queuedAt: Date.now(),
+      },
+    ])
+
+    void drainPendingOutgoingMessages()
   }
 
   if (loading) {
@@ -808,18 +981,23 @@ export default function JobDetail() {
     )
   }
 
-  const canSendLiveMessage = !NON_RUNNING_STATUSES.has(job.status) && connectionStatus !== 'disconnected'
-  const canSendMessage = canSendLiveMessage || job.status === 'awaiting-developer-input'
+  const canSendLiveMessage = isRunningStatus(job.status) && connectionStatus !== 'disconnected'
+  const canReplyToEscalation = job.status === 'escalated'
 
   return (
     <div className="space-y-6">
       <HeaderSummary job={job} />
+
+      <JobAlerts job={job} />
 
       <JobControlBar
         job={job}
         workflowPhases={workflowPhases}
         refreshing={refreshing}
         onRefresh={handleRefresh}
+        cancelling={cancelling}
+        cancelError={cancelError}
+        onCancel={handleCancel}
         resuming={resuming}
         resumeError={resumeError}
         resumePhase={resumePhase}
@@ -842,9 +1020,18 @@ export default function JobDetail() {
 
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>
         <TabsList>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
-          <TabsTrigger value="work">Work</TabsTrigger>
-          <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
+          <TabsTrigger value="activity" className="gap-1.5">
+            <Activity className="size-3.5 shrink-0" aria-hidden="true" />
+            Activity
+          </TabsTrigger>
+          <TabsTrigger value="work" className="gap-1.5">
+            <Briefcase className="size-3.5 shrink-0" aria-hidden="true" />
+            Work
+          </TabsTrigger>
+          <TabsTrigger value="diagnostics" className="gap-1.5">
+            <Bug className="size-3.5 shrink-0" aria-hidden="true" />
+            Diagnostics
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="activity" className="space-y-5">
@@ -852,6 +1039,18 @@ export default function JobDetail() {
             <div className="space-y-5">
               {job.status === 'awaiting-developer-input' ? (
                 <ApprovalBox job={job} onSend={postMessage} />
+              ) : null}
+
+              {canReplyToEscalation ? (
+                <MessageComposer
+                  title="Reply to escalation"
+                  description="Send guidance back into the parked run. Your reply will resume the current phase in the existing job."
+                  submitLabel="Send reply"
+                  value={messageText}
+                  onChange={setMessageText}
+                  onSend={handleSendMessage}
+                  error={messageError}
+                />
               ) : null}
 
               <Card>
@@ -864,51 +1063,23 @@ export default function JobDetail() {
                   </div>
                   <ConnectionIndicator status={connectionStatus} lastHeartbeat={lastHeartbeat} />
                 </CardHeader>
-                <CardContent className="pt-5">
+                <CardContent className="space-y-4 pt-5">
                   <LogViewer lines={lines} />
+                  <PendingOutgoingMessages messages={pendingOutgoingMessages} />
                 </CardContent>
               </Card>
 
-              {canSendMessage ? (
+              {canSendLiveMessage ? (
                 <MessageComposer
                   value={messageText}
                   onChange={setMessageText}
                   onSend={handleSendMessage}
-                  sending={sendingMessage}
                   error={messageError}
                 />
               ) : null}
             </div>
 
             <div className="space-y-4">
-              {getParentRunId(job) ? (
-                <AlertCard title={`Dispatched as a ${SUB_RUN_NOUN.singularLower}`} tone="accent">
-                  {`This ${RUN_NOUN.singularLower} runs as a ${SUB_RUN_NOUN.singularLower} of `}
-                  <Link
-                    to={getRunDetailPath({ id: getParentRunId(job) ?? '' })}
-                    className="font-mono text-accent-300 underline underline-offset-2"
-                  >
-                    {getParentRunId(job)}
-                  </Link>
-                  {typeof job.params['campaignChildName'] === 'string'
-                    ? ` (named ${job.params['campaignChildName'] as string}).`
-                    : '.'}
-                </AlertCard>
-              ) : null}
-
-              {job.awaitingEvent && job.status !== 'awaiting-developer-input' ? (
-                <AlertCard title="Awaiting external event" tone="warning">
-                  {job.awaitingEvent}
-                  {job.awaitingPrId ? ` (PR #${job.awaitingPrId})` : ''}
-                </AlertCard>
-              ) : null}
-
-              {job.escalationMessage ? (
-                <AlertCard title="Escalation message" tone="danger">
-                  {job.escalationMessage}
-                </AlertCard>
-              ) : null}
-
               <ContextPanel job={job} />
             </div>
           </div>

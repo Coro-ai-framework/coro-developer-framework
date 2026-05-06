@@ -41,6 +41,8 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 11. **Do not manually park normal workflow checkpoints.** If a phase is marked `interactive_checkpoint: true` and the workflow docs say the runner enforces it, finish the phase normally and let the runner park for approval. Use `await_event({ eventName: "developer-input: <reason>" })` only for extra mid-phase questions, clarifications, or external waits the runner cannot infer.
 
+12. **Treat Claude runtime temp task files as off-limits.** Do not poll or read paths like `/private/tmp/claude-*/tasks/*.output`. When you need output from a long-running Bash command, redirect stdout/stderr to a file under the current job working directory and read that workspace file instead.
+
 ## Tenant context
 
 This base layer is **company-agnostic**. The tenant overlay (a tenant repo,
@@ -64,10 +66,8 @@ any company-specific fact they need to proceed, rather than guessing.
 
 ## Service accounts (generic)
 
-### BitBucket / GitHub / GitLab
-
-The runner authenticates to the configured Git provider on behalf of two
-logical accounts:
+The runner authenticates to whichever SCM is active for the job on behalf of
+two logical accounts:
 
 - **Coder service account** — developer-level access. Creates repos and
   branches, commits, opens PRs, and replies to review comments.
@@ -76,27 +76,25 @@ logical accounts:
 
 These accounts may be the same identity if the tenant chooses, but separating
 them produces clearer audit trails. The tenant overlay specifies the actual
-account names so human developers can recognise comments from the platform.
+account names (and the active SCM plugin's snippet documents how the plugin
+maps them onto provider-specific identities). Human developers interact with
+these accounts exactly as they would with a human colleague — comments appear
+in PRs, review requests arrive normally.
 
-### GitHub auth
-
-GitHub operations use a Personal Access Token (PAT) configured via `GH_TOKEN`.
-The token must have **Contents** (read/write), **Pull requests** (read/write),
-and **Metadata** (read) permissions on the target repos.
-
-Human developers interact with these accounts exactly as they would with a
-human colleague — comments appear in PRs, review requests arrive normally.
+Plugin-specific authentication details (token names, scopes, OAuth flows)
+live in the plugin's own intelligence snippet — see
+`memory/snippets/<pluginId>-*.md` after job start.
 
 ## MCP tools available to agents
 
-All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__coro__log`, `mcp__coro__bb_create_pr`). Prefer calling the documented tool names directly for predictable workflows; use `ToolSearch` only when the right tool is genuinely unclear.
+All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__coro__log`, `mcp__coro__scm_create_pr`). Prefer calling the documented tool names directly for predictable workflows; use `ToolSearch` only when the right tool is genuinely unclear.
 
 ### Work-item tracking
 - `set_work_items` — Register the ordered work-item list (called by planner)
 - `update_work_item` — Update a work item's status or increment its loop count
 - `get_work_items` — Read the current work-item list with statuses
 - `request_new_session` — Clear session for fresh context (e.g., new work item)
-- `set_job_params` — Set dynamic job parameters (e.g., language)
+- `set_job_params` — Set dynamic job parameters (e.g., language, scm, tracker)
 
 ### Job control
 - `goto_phase` — Override the next phase (e.g., loop back to coding, or jump over phases). If you do not call `goto_phase`, the runner auto-advances to the next phase when your turn ends. There is no separate "complete this phase" tool — simply finish your work and end your turn.
@@ -109,25 +107,56 @@ All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__cor
 ### On-demand context
 - `read_memory` — Load accumulated memory (pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: full bundle. `{ file }`: a single file. The system prompt no longer carries memory by default — call this yourself.
 
-### BitBucket (use when `params.gitProvider` is `bitbucket` or unset)
-- `bb_create_repo` — Create a new private BitBucket repository
-- `bb_create_pr` — Open a pull request from a feature branch (registers with job system for webhook routing)
-- `bb_get_pr_status` — Get the current state and approval count of a PR
-- `bb_get_pr_comments` — List all comments on a pull request
-- `bb_post_pr_comment` — Post a new top-level comment on a PR
-- `bb_reply_to_comment` — Reply to an existing comment thread on a PR
-- `bb_approve_pr` — Approve a pull request
-- `bb_merge_pr` — Merge a pull request (only when approved and all comments resolved)
+### Source control (provider-neutral; uses `params.scm` or the tenant default)
 
-### GitHub (use when `params.gitProvider` is `github`)
-- `gh_create_repo` — Create a new private GitHub repository
-- `gh_create_pr` — Open a pull request from a feature branch (registers with job system)
-- `gh_get_pr_status` — Get the current state and approval count of a PR
-- `gh_get_pr_comments` — List all comments on a pull request
-- `gh_post_pr_comment` — Post a new top-level comment on a PR
-- `gh_reply_to_comment` — Reply to an existing review comment on a PR
-- `gh_approve_pr` — Approve a pull request
-- `gh_merge_pr` — Merge a pull request (squash merge)
+Coro now ships a deliberately small generic surface. The high-frequency
+ops below work the same regardless of the active SCM plugin:
+
+- `scm_clone_repo` — Clone a repo into the current job working directory
+- `scm_get_clone_info` — Get a credentialed clone URL + git env for advanced git flows
+- `scm_create_pr` — Open a pull request from a feature branch
+- `scm_get_pr_status` — Get state and approval count of a PR
+- `scm_list_pr_comments` — List comments on a PR
+- `scm_post_pr_comment` — Post a top-level comment on a PR
+- `scm_merge_pr` — Merge a PR (squash, only after approval + all comments resolved)
+
+Each tool accepts an optional `pluginId` to override the resolved default — use it when the job needs to talk to a non-default plugin (rare).
+
+The current job context may include an `scm` block describing the resolved SCM state:
+
+```json
+{ "available": true, "resolved": "github", "requested": "github", "default": "github", "installed": ["github"] }
+```
+
+If `scm.available` is `false` or `scm.resolved === "none"`, do not probe the filesystem for a repo copy and do not search the user's machine. Stop and escalate the configuration problem.
+
+**Everything else** — repo creation, threaded comment replies, PR
+approvals, PR change-detection polls, branch protection, releases,
+workflows, … — comes from the upstream MCP server attached by the
+active SCM plugin. Call those tools directly using their native names:
+`mcp__github__create_repository`, `mcp__github__add_pull_request_review_comment`,
+`mcp__github__create_release`, etc. Each plugin's intelligence snippet
+lists which native tools are exposed (curated `allowedMcpTools`) so you
+don't have to guess.
+
+For native-mode plugins without an upstream MCP (BitBucket today), the
+generic tools above are the entire surface — there is no
+`mcp__bitbucket__*` namespace.
+
+### Issue tracker (provider-neutral; uses `params.tracker` or the tenant default)
+
+Generic shim — the same three ops show up in nearly every workflow:
+
+- `tracker_get_issue` — Fetch an issue/ticket by external id (`PROJ-123`, `ENG-7`, `owner/repo#42`, …)
+- `tracker_comment_issue` — Post a comment on an issue
+- `tracker_transition_issue` — Move the issue to a new status (transition names are plugin-specific)
+
+For everything more advanced (epic/issue creation, parent-child
+listings, dependency links, label/sprint management, JQL/GraphQL
+queries, …) call the active tracker plugin's upstream MCP tools
+directly: `mcp__jira__jira_create_issue`, `mcp__jira__jira_link_to_epic`,
+`mcp__linear__create_issue`, `mcp__linear__update_issue`, etc. The
+plugin's intelligence snippet lists the curated tool allowlist.
 
 ### Test harness
 - `run_go_build` — Compile a Go project in a directory
@@ -140,15 +169,21 @@ All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__cor
 - `tempo_get_trace` — Fetch a full distributed trace by trace ID from Tempo
 - `tempo_search` — Search for traces matching a TraceQL query
 
-### Jira
-- `jira_get_issue` — Fetch a Jira issue by ticket ID
-- `jira_post_comment` — Post a comment on a Jira issue
-- `jira_transition_issue` — Move a Jira issue to a new status
-
 ### Self-improvement
 - `add_insight` — Record a learning, workaround, or pattern for the Evaluator to review (all agents)
 - `propose_change` — Propose an improvement to agents, skills, memory, or code (typically Evaluator / PR Reviewer)
 - `list_proposals` — Check past proposals before proposing duplicates
+
+### Plugin-specific extension tools
+Each plugin can register provider-specific MCP tools (e.g. `gh_create_release`,
+`bb_pipeline_run`) that don't fit the generic `scm_*` / `tracker_*` shape.
+These are listed in the active plugin's intelligence snippets — read them on
+demand via `read_memory`.
+
+### Deprecated provider-specific tools
+The legacy `bb_*`, `gh_*`, and `jira_*` tools still work but log a deprecation
+warning on every call. They will be removed in a future release. Always prefer
+the generic `scm_*` / `tracker_*` surface above.
 
 ### Artefacts
 - `post_artifact` — Record an artefact produced by your phase so developers can view it from the dashboard. Arguments: `{ kind, title, data, phase? }`. `phase` defaults to your current phase. See "Artefacts" section below for kinds and data shapes.
@@ -171,7 +206,7 @@ Common kinds:
 | `plan-md` | Planner writes a workflow plan | `{ path: "…/implementation-plan.md" }` |
 | `implementation-plan-md` | Planner writes an implementation plan for a job or work item | `{ path: "…/implementation-plan.md" }` |
 | `analysis-contract` | Analyzer writes the service contract JSON | `{ path: "…/service-contract.json" }` |
-| `pr-link` | Coder opens a PR (both bb and gh paths) | `{ url, prId, repoSlug, title }` |
+| `pr-link` | Coder opens a PR | `{ url, prId, repoSlug, title, pluginId? }` |
 | `review-summary` | PR Reviewer posts a review summary | `{ prId, repoSlug, verdict, summary }` |
 | `test-results` | Evaluator records build/test/acceptance verification on the merged commit | `{ path, passed, failed, skipped }` |
 | `evaluation-md` | Evaluator writes an evaluation report | `{ path: "…/evaluation.md" }` |
@@ -233,9 +268,10 @@ When any agent calls `propose_change`, the Coro Runner synchronously:
 1. Validates the proposal (path allowlist per layer, frontmatter / heading checks per type)
 2. Routes the change to the right writable layer (tenant intelligence repo or the project's `.coro/` overlay; **never** the base layer that ships with the runner)
 3. Creates a branch `coro/proposal/<jobId>-<layer>-<slug>` cut from that layer's default branch
-4. Commits every file in the multi-file payload as one atomic commit
-5. Pushes the branch and opens a PR via the configured git provider (GitHub / Bitbucket)
-6. Records the proposal in the state backend so the dashboard and `list_proposals` can show it
+4. Materialises the final file contents against that writable source clone. `_intelligence` is only a constructed read view; proposal writes must never use it as the source of truth.
+5. Commits every file in the multi-file payload as one atomic commit
+6. Pushes the branch and opens a PR via the configured git provider (GitHub / Bitbucket)
+7. Records the proposal in the state backend so the dashboard and `list_proposals` can show it
 
 **Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the next job's intelligence resolver pulls the merged change automatically.
 
@@ -247,6 +283,8 @@ When any agent calls `propose_change`, the Coro Runner synchronously:
 - **Skill amendment:** ≤ 15 lines per added `##` section.
 
 The recipe is the most valuable part — copy-paste only, no narrative. Prefer the structured `entries[]` field on `propose_change` for memory updates: it serialises into the canonical layout and the runner mechanically enforces these caps. If a finding wants to exceed a budget, it is either two findings or already documented — split or dedupe before writing. See the `self-improvement-guide` skill for the full reference.
+
+For `memory-update`, append-only memory files are merged against the current file in the writable tenant/repo source clone so existing entries survive in the proposal PR. `memory/MEMORY.md` remains an explicit index update rather than an append-only stream.
 
 ## Working directory
 
@@ -263,39 +301,60 @@ Rules:
 
 ## Infrastructure
 
-Repositories may live on **BitBucket** or **GitHub**. Check `params.gitProvider` in the job context to determine which provider hosts the target repo.
+Repositories live on whichever SCM plugin the tenant has installed (BitBucket,
+GitHub, GitLab, …). The runner exposes a single, provider-neutral surface and
+the active plugin handles the rest:
 
-### BitBucket environment variables (available when BitBucket is configured)
+- `params.scm` (job-level) and `defaults.scm` (tenant-level) decide which SCM
+  plugin runs for the job. If both are unset and exactly one SCM plugin is
+  installed, that one wins; otherwise the runner aborts the job with a clear
+  error.
+- `params.tracker` / `defaults.tracker` work the same way for issue trackers.
+- The job context's `scm` block tells you which SCM plugin actually resolved for this run. Treat it as authoritative.
+- The plugin's own intelligence snippets (loaded automatically into the
+  per-job intelligence overlay) document its tokens, identifier shapes, and
+  webhook configuration. Read them via `read_memory({ file: "snippets/<id>.md" })`
+  before constructing URLs or guessing transition names.
+
+### Cloning a repo
+Prefer the dedicated clone tool — it clones the target repo into the current
+job working directory using the active SCM plugin:
+
+```ts
+const checkout = scm_clone_repo({ repo: "<repo-slug>" })
+// checkout.repoDir: absolute path to the cloned repo
+// checkout.relativeDir: path relative to the job working directory
+// checkout.reused: true when the repo was already cloned
 ```
-BB_WORKSPACE          — BitBucket workspace slug
-BB_GIT_USERNAME       — git username (x-token-auth for API tokens, or encoded username)
-BB_CODER_APP_PASSWORD — API token for git operations
-BB_BASE_URL           — https://bitbucket.org
+
+If you need the raw URL for an advanced git flow, use the clone-info tool —
+it returns a fully-credentialed URL plus the git env vars the plugin needs:
+
+```ts
+const info = scm_get_clone_info({ repo: "<repo-slug>" })
+// info.url: "https://<creds>@<host>/<owner-or-workspace>/<repo>.git"
+// info.envForGit: { GIT_TERMINAL_PROMPT: "0", ... }
 ```
 
-To clone a **BitBucket** repo:
-```bash
-git clone "https://$BB_GIT_USERNAME:$BB_CODER_APP_PASSWORD@bitbucket.org/$BB_WORKSPACE/<repo-slug>.git"
+**Never use `gh` or `bb` CLI commands** — they bypass the plugin layer and
+break the moment the tenant swaps providers. Use `scm_clone_repo` for normal
+checkouts, and only use raw `git` with the URL `scm_get_clone_info` returned
+when you need an explicit low-level git operation.
+
+### External references (`ExternalRef`)
+Every PR / ticket / repo / issue identity flows through a single primitive:
+
+```ts
+{ kind: 'pull_request' | 'ticket' | 'repo' | 'issue',
+  pluginId: '<scm-or-tracker-plugin>',
+  repoKey?: '<repo>',                 // REQUIRED for kind='pull_request'
+  externalId: '<n> | "PROJ-123" | "owner/repo#42"',
+  url?: '<https://…>' }
 ```
 
-### GitHub environment variables (available when GitHub is configured)
-```
-GH_OWNER              — GitHub user or organization that owns the repo
-GH_TOKEN              — GitHub Personal Access Token
-```
-
-To clone a **GitHub** repo:
-```bash
-git clone "https://x-access-token:$GH_TOKEN@github.com/$GH_OWNER/<repo-slug>.git"
-```
-
-### Choosing the right tools
-
-**Check `params.gitProvider`** in your job context before cloning or using PR tools:
-- If `gitProvider` is `github` → use `git clone` with the GitHub URL and `gh_*` MCP tools (`gh_create_pr`, `gh_get_pr_comments`, etc.)
-- If `gitProvider` is `bitbucket` or not set → use `git clone` with the BitBucket URL and `bb_*` MCP tools (`bb_create_pr`, `bb_get_pr_comments`, etc.)
-
-**Never use `gh` CLI commands.** Always use `git` directly with the appropriate URL and MCP tools for PR operations.
+`pull_request` ExternalRefs **must** carry `repoKey`. PR ids are not unique
+across repositories — operating on a PR id without a repo would alias 42
+across two services.
 
 ## Git and PR conventions
 

@@ -20,13 +20,19 @@ import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import type { TrackerClient } from '../clients/tracker'
 import { Settings } from '../config/settings'
-import { defaultLoaderCacheRoot } from '../config/local-config'
+import {
+  defaultLoaderCacheRoot,
+  discoverClaudeCodeMcpServers,
+  loadLocalConfig,
+  type UserMcpServerConfig,
+} from '../config/local-config'
 import {
   resolveJobIntelligence,
   type ResolvedIntelligence,
 } from '../intelligence/resolver'
 import type { TenantContext } from '../intelligence/tenant-context'
-import { buildSystemPrompt, computeTrackerPromptContext } from '../prompt/builder'
+import type { PluginRegistry } from '../plugins/registry'
+import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
@@ -39,6 +45,7 @@ import {
 import type { StateBackend } from '../state/backend'
 import {
   Job,
+  STATUS_CANCELLED,
   STATUS_COMPLETE,
   STATUS_FAILED,
   STATUS_AWAITING_CHILDREN,
@@ -52,6 +59,7 @@ import {
   PhaseUsage,
   emptyTokenUsage,
 } from './types'
+import { assertJobPluginRequirements } from './plugin-preflight'
 import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
 
 // ── Runner context ────────────────────────────────────────────────────────────
@@ -83,6 +91,14 @@ export interface RunnerContext {
    * from every method when no provider is configured.
    */
   trackerClient: TrackerClient
+  /**
+   * Resolved plugin registry. Owns the `scm_*` / `tracker_*` MCP
+   * surface and all webhook normalisation. The legacy `bbCoder` /
+   * `ghClient` / `jiraClient` / `trackerClient` fields stay populated
+   * from the registry's built-in plugins for back-compat — they are
+   * scheduled for removal at N+2 (see plan/§6/Phase 9).
+   */
+  plugins: PluginRegistry
   logger: Logger
 }
 
@@ -160,12 +176,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   // the MCP tools resolves against `jobIntelligenceDir`, NOT the
   // process-wide `settings.paths.coroIntelligenceDir`.
   //
-  // Repo overlay timing: agents `git clone` the target repo themselves
-  // during the workflow, so at the very first resolve the repo dir
-  // typically does not exist yet. We pass `repoCheckoutDir` based on
-  // `job.params.repoSlug`; the resolver gracefully skips the layer when
-  // the path is missing. Per-phase re-resolution (below) picks up the
-  // overlay as soon as the agent clones the repo.
+  // Repo overlay timing: the target repo is cloned during the workflow,
+  // typically via `mcp__coro__scm_clone_repo`, so at the very first
+  // resolve the repo dir typically does not exist yet. We pass
+  // `repoCheckoutDir` based on `job.params.repoSlug`; the resolver
+  // gracefully skips the layer when the path is missing. Per-phase
+  // re-resolution (below) picks up the overlay as soon as the repo is
+  // cloned.
   const repoCheckoutDir = deriveRepoCheckoutDir(job, settings.paths.workingDir)
   const loaderCacheRoot = defaultLoaderCacheRoot()
 
@@ -176,6 +193,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     workingRoot: settings.paths.workingDir,
     repoCheckoutDir,
     loaderCacheRoot,
+    plugins: ctx.plugins,
     logger,
   })
   // The materialised path is stable across re-resolves (it's a function
@@ -239,6 +257,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     tempoClient: ctx.tempoClient,
     jiraClient: ctx.jiraClient,
     trackerClient: ctx.trackerClient,
+    plugins: ctx.plugins,
     logger,
     runningServices,
   }
@@ -257,6 +276,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     'Job runner started',
   )
 
+  try {
+    assertJobPluginRequirements(liveJob, ctx.plugins)
+  } catch (err) {
+    const message = (err as Error).message
+    logger.error({ jobId: liveJob.id, phase: liveJob.phase }, message)
+    await stateBackend.appendLog(liveJob.id, `[error] ${message}`)
+    await stateBackend.updateJob(liveJob.id, { status: STATUS_FAILED, escalationMessage: message })
+    return
+  }
+
   /** Bundled Claude Code entrypoint; npm ships it as non-executable — we chmod if needed. */
   const claudeCodeCliPath = resolveClaudeCodeCliPath()
   ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
@@ -264,7 +293,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
+    let shouldStopLoop = false
     while (!isTerminalStatus(liveJob.status)) {
+      ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+        stateBackend,
+        liveJob,
+        logger,
+        'phase-start',
+      ))
+      toolCtx.job = liveJob
+      if (shouldStopLoop) break
+
       // Reset signals and create a fresh MCP server for each phase.
       // Reusing the MCP server across phases can leave the transport in a
       // broken state if the previous Claude Code subprocess exited uncleanly.
@@ -284,6 +323,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           workingRoot: settings.paths.workingDir,
           repoCheckoutDir,
           loaderCacheRoot,
+          plugins: ctx.plugins,
           logger,
         })
       } catch (err) {
@@ -300,7 +340,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // and we want the prompt to reflect any tenant-overlay config refresh
       // between phases.
       const trackerInfo = computeTrackerPromptContext(settings, ctx.trackerClient)
-      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo)
+      const scmInfo = computeScmPromptContext(liveJob, ctx.plugins)
+      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo, scmInfo)
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
@@ -368,9 +409,28 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       mkdirSync(workingDir, { recursive: true })
       ensureClaudeConfigSymlink(workingDir, jobIntelligenceDir, logger)
 
-      // Build subagent definitions from workflow config
+      // Build subagent definitions from workflow config. Plugin-provided
+      // MCP servers (S1) and BYO MCP servers (S8) propagate to
+      // subagents too — otherwise a code reviewer subagent would be
+      // blind to `mcp__github__*` / `mcp__slack__*` etc. tools the
+      // parent agent can see.
+      const subagentPluginMcpServers = collectPluginMcpServers({
+        plugins: ctx.plugins,
+        logger,
+      })
+      const subagentUserMcpServers = collectUserMcpServers({ logger })
+      const subagentMcpServers = {
+        ...subagentPluginMcpServers,
+        ...subagentUserMcpServers,
+      }
       const agents = phaseConf?.subagents
-        ? buildSubagentDefinitions(phaseConf.subagents, jobIntelligenceDir, settings, mcpServer as McpSdkServerConfig)
+        ? buildSubagentDefinitions(
+            phaseConf.subagents,
+            jobIntelligenceDir,
+            settings,
+            mcpServer as McpSdkServerConfig,
+            subagentMcpServers,
+          )
         : undefined
 
       // Update job status for the current phase
@@ -392,6 +452,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // coordinator hook (for campaigns) or webhook handler (for
       // self-update) takes responsibility for the next resume.
       if (!phaseConf?.agent && phaseConf && isParkingStatus(phaseConf.status)) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'agentless-park',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         const isCampaign = isCampaignJob(liveJob) && phaseConf.status === STATUS_AWAITING_CHILDREN
         const awaiting = isCampaign
           ? 'campaign-children-complete'
@@ -430,6 +499,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         liveJobRef: () => liveJob,
         workingDir,
         coroIntelligenceDir: jobIntelligenceDir,
+        allowedTools: phaseConf?.tools,
         logger,
       })
 
@@ -451,7 +521,37 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // the server.name passed to createSdkMcpServer). Keeping them aligned
       // (both `coro`) avoids the historical confusion where the key drifted
       // and tools silently disappeared.
-      const dynamicMcpServers = { coro: mcpServer } satisfies Record<string, McpServerConfig>
+      //
+      // Plugin-provided MCP servers (S1 of the MCP-first pivot) are merged
+      // alongside `coro` so the model sees `mcp__github__*`, `mcp__jira__*`
+      // etc. directly. The reserved id `coro` cannot be shadowed — see
+      // `collectPluginMcpServers`.
+      const pluginMcpServers = collectPluginMcpServers({
+        plugins: ctx.plugins,
+        logger,
+      })
+      // Bring-your-own MCP servers (S8 of the MCP-first pivot) are
+      // attached after plugin servers; collisions with plugin ids
+      // are resolved by giving the BYO config the win — operators
+      // explicitly opted into the user-level entry. `coro` is still
+      // reserved.
+      const userMcpServers = collectUserMcpServers({ logger })
+      const dynamicMcpServers = {
+        coro: mcpServer,
+        ...pluginMcpServers,
+        ...userMcpServers,
+      } satisfies Record<string, McpServerConfig>
+
+      if (Object.keys(pluginMcpServers).length > 0) {
+        logger.info(
+          {
+            jobId: liveJob.id,
+            phase: liveJob.phase,
+            pluginMcpServers: Object.keys(pluginMcpServers),
+          },
+          'Attached plugin-provided MCP servers to query session',
+        )
+      }
 
       const queryOptions: Record<string, unknown> = {
         pathToClaudeCodeExecutable: claudeCodeCliPath,
@@ -499,7 +599,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             if (!trimmed) continue
             logger.debug({ jobId: liveJob.id, phase: liveJob.phase }, `[sdk-stderr] ${trimmed}`)
             if (/mcp|Transport|sdkMcp|control_request/i.test(trimmed)) {
-              stateBackend.appendLog(liveJob.id, `[sdk-stderr] ${trimmed.slice(0, 500)}`)
+              appendChunkedLog(stateBackend, liveJob.id, '[sdk-stderr] ', trimmed)
                 .catch(() => { /* logging is best-effort */ })
             }
           }
@@ -626,12 +726,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               if (bt === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
                 await stateBackend.appendLog(liveJob.id, block['text'] as string)
               } else if (bt === 'thinking' && typeof block['thinking'] === 'string') {
-                await stateBackend.appendLog(liveJob.id, `[thinking] ${(block['thinking'] as string).slice(0, 300)}`)
+                await appendChunkedLog(stateBackend, liveJob.id, '[thinking] ', block['thinking'] as string)
               } else if (bt === 'tool_use' || bt === 'mcp_tool_use') {
                 const toolName = String(block['name'] ?? 'unknown')
                 const input = block['input']
-                const inputStr = input ? ` ${JSON.stringify(input).slice(0, 300)}` : ''
-                await stateBackend.appendLog(liveJob.id, `→ ${toolName}${inputStr}`)
+                if (input) {
+                  await appendChunkedLog(stateBackend, liveJob.id, `→ ${toolName} `, JSON.stringify(input))
+                } else {
+                  await stateBackend.appendLog(liveJob.id, `→ ${toolName}`)
+                }
                 if (toolName.startsWith('mcp__coro__')) mcpToolUseCount++
                 else builtinToolUseCount++
               }
@@ -658,7 +761,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         if (eventType === 'tool_use_summary') {
           const summary = message['summary']
           if (typeof summary === 'string' && summary.trim()) {
-            await stateBackend.appendLog(liveJob.id, `[tool_summary] ${summary.slice(0, 500)}`)
+            await appendChunkedLog(stateBackend, liveJob.id, '[tool_summary] ', summary)
           }
         }
 
@@ -675,7 +778,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           if (isError) {
             const errors = message['errors']
             const errStr = Array.isArray(errors) ? (errors as string[]).join('; ') : 'unknown error'
-            await stateBackend.appendLog(liveJob.id, `[error] ${errStr.slice(0, 500)}`)
+            await appendChunkedLog(stateBackend, liveJob.id, '[error] ', errStr)
           } else {
             const result = message['result']
             if (typeof result === 'string' && result.trim()) {
@@ -695,7 +798,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             phaseTokens.cacheCreationInputTokens = Number(resultUsage['cache_creation_input_tokens'] ?? phaseTokens.cacheCreationInputTokens)
           }
 
-          const phaseCostUsd = typeof message['total_cost_usd'] === 'number' ? message['total_cost_usd'] as number : 0
+          const phaseCostUsd = derivePhaseCostUsd({
+            reportedTotalCostUsd: message['total_cost_usd'],
+            phaseTokens,
+            prePhaseCostUsd: prePhaseUsage.totalCostUsd,
+            resumedSessionId: resumeSessionId,
+          })
           phaseTokens.totalCostUsd = phaseCostUsd
 
           const phaseSnapshot: PhaseUsage = {
@@ -740,7 +848,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           'user', 'stream_event', 'auth_status',
         ])
         if (!handledTypes.has(eventType)) {
-          await stateBackend.appendLog(liveJob.id, `[event:${eventType}] ${JSON.stringify(message).slice(0, 500)}`)
+          await appendChunkedLog(stateBackend, liveJob.id, `[event:${eventType}] `, JSON.stringify(message))
         }
 
         // Early break on exception signals so we don't keep pulling events
@@ -829,6 +937,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         toolCtx.job = liveJob
       }
 
+      ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+        stateBackend,
+        liveJob,
+        logger,
+        'post-query',
+      ))
+      toolCtx.job = liveJob
+      if (shouldStopLoop) break
+
       // ── Post-query signal processing ───────────────────────────────────────
       //
       // Priority order:
@@ -849,6 +966,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       if (signals.awaitingEvent) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'before-awaiting-event-park',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         const evt = signals.awaitingEvent
         const awaitStatus = evt.startsWith('developer-input')
           ? STATUS_AWAITING_DEVELOPER_INPUT
@@ -888,6 +1014,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
 
       if (!nextPhase) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'before-complete',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         liveJob = await syncJob(stateBackend, liveJob, { status: STATUS_COMPLETE })
         await stateBackend.appendLog(liveJob.id, 'All phases complete — job finished successfully')
         logger.info({ jobId: liveJob.id }, 'Job completed')
@@ -920,6 +1055,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const checkpointApproved = liveJob.approvedAdvanceFromPhase === liveJob.phase
       if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'before-interactive-park',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
         const waitingFor = `developer-input: approval after ${liveJob.phase}`
 
         liveJob = await syncJob(stateBackend, liveJob, {
@@ -940,6 +1084,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         )
         break
       }
+
+      ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+        stateBackend,
+        liveJob,
+        logger,
+        'before-phase-advance',
+      ))
+      toolCtx.job = liveJob
+      if (shouldStopLoop) break
 
       liveJob = await syncJob(stateBackend, liveJob, {
         phase: nextPhase,
@@ -984,8 +1137,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 /**
  * Best-effort guess at where the agent will clone the target repo.
  *
- * Convention: agents do `git clone <url> <repoSlug>` inside the SDK's
- * `cwd: workingDir`, which lands the checkout at
+ * Convention: the repo is cloned into `<repoSlug>` inside the SDK's
+ * `cwd: workingDir`, typically via `mcp__coro__scm_clone_repo`, which
+ * lands the checkout at
  * `<workingDir>/<repoSlug>`. The resolver uses this path to discover a
  * repo `.coro/` overlay; if the path doesn't exist (typical at first
  * resolve), the resolver skips the layer.
@@ -999,12 +1153,84 @@ function deriveRepoCheckoutDir(job: Job, workingRoot: string): string | undefine
   return path.join(workingRoot, job.id, slug)
 }
 
+const MAX_ACTIVITY_LOG_ENTRY_CHARS = 1600
+
+function splitLogTextIntoChunks(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text]
+
+  const chunks: string[] = []
+  let remaining = text
+
+  while (remaining.length > maxChars) {
+    let splitAt = remaining.lastIndexOf('\n', maxChars)
+    if (splitAt <= maxChars / 2) splitAt = remaining.lastIndexOf(' ', maxChars)
+    if (splitAt <= maxChars / 2) splitAt = maxChars
+
+    const chunk = remaining.slice(0, splitAt)
+    if (chunk) chunks.push(chunk)
+
+    remaining = remaining.slice(splitAt)
+    if (remaining.startsWith('\n')) remaining = remaining.slice(1)
+    while (remaining.startsWith(' ')) remaining = remaining.slice(1)
+  }
+
+  if (remaining) chunks.push(remaining)
+  return chunks
+}
+
+async function appendChunkedLog(
+  stateBackend: StateBackend,
+  jobId: string,
+  prefix: string,
+  text: string,
+): Promise<void> {
+  const payload = text.replace(/\r\n/g, '\n')
+  if (!payload) {
+    await stateBackend.appendLog(jobId, prefix.trimEnd())
+    return
+  }
+
+  const chunkBudget = Math.max(256, MAX_ACTIVITY_LOG_ENTRY_CHARS - prefix.length)
+  const chunks = splitLogTextIntoChunks(payload, chunkBudget)
+
+  for (const chunk of chunks) {
+    await stateBackend.appendLog(jobId, `${prefix}${chunk}`)
+  }
+}
+
 async function syncJob(
   stateBackend: StateBackend,
   job: Job,
   patch: Partial<Job>,
 ): Promise<Job> {
   return stateBackend.updateJob(job.id, patch)
+}
+
+async function refreshJobForBoundary(
+  stateBackend: StateBackend,
+  job: Job,
+  logger: Logger,
+  boundary: string,
+): Promise<{ job: Job; shouldStop: boolean }> {
+  const fresh = await stateBackend.getJob(job.id)
+  if (!fresh || !isTerminalStatus(fresh.status)) {
+    return {
+      job,
+      shouldStop: false,
+    }
+  }
+
+  if (fresh.status === STATUS_CANCELLED && job.status !== STATUS_CANCELLED) {
+    logger.info(
+      { jobId: fresh.id, phase: fresh.phase, boundary },
+      'Job cancelled externally — stopping runner at safe boundary',
+    )
+  }
+
+  return {
+    job: fresh,
+    shouldStop: true,
+  }
 }
 
 function resetSignals(s: PhaseSignals): void {
@@ -1032,6 +1258,37 @@ function mergeTokenUsage(base: TokenUsage, phase: TokenUsage): TokenUsage {
     cacheCreationInputTokens: base.cacheCreationInputTokens + phase.cacheCreationInputTokens,
     totalCostUsd: base.totalCostUsd + phase.totalCostUsd,
   }
+}
+
+/**
+ * Claude Code reports `total_cost_usd` on the result frame, but on resumed
+ * sessions that value is cumulative for the whole session, not a phase-local
+ * delta. We store per-phase costs, so resumed sessions must subtract the job's
+ * pre-phase cost baseline. We also never book non-zero cost for phases with no
+ * billable token usage.
+ */
+function derivePhaseCostUsd(args: {
+  reportedTotalCostUsd: unknown
+  phaseTokens: Pick<TokenUsage, 'inputTokens' | 'outputTokens' | 'cacheReadInputTokens' | 'cacheCreationInputTokens'>
+  prePhaseCostUsd: number
+  resumedSessionId?: string
+}): number {
+  const rawCostUsd = typeof args.reportedTotalCostUsd === 'number' && Number.isFinite(args.reportedTotalCostUsd)
+    ? Math.max(args.reportedTotalCostUsd, 0)
+    : 0
+
+  const hasBillableTokens = args.phaseTokens.inputTokens > 0
+    || args.phaseTokens.outputTokens > 0
+    || args.phaseTokens.cacheReadInputTokens > 0
+    || args.phaseTokens.cacheCreationInputTokens > 0
+
+  if (!hasBillableTokens) return 0
+  if (!args.resumedSessionId) return rawCostUsd
+
+  const deltaCostUsd = rawCostUsd - args.prePhaseCostUsd
+  if (deltaCostUsd >= 0) return deltaCostUsd
+
+  return rawCostUsd
 }
 
 function selectModel(
@@ -1066,6 +1323,191 @@ export function buildAnthropicAuthEnv(auth: Settings['claude']['auth']): Record<
     ANTHROPIC_API_KEY: auth.apiKey ?? '',
     CLAUDE_CODE_OAUTH_TOKEN: undefined,
   }
+}
+
+/**
+ * Collects every active plugin's `mcpServer()` descriptor and returns a
+ * `Record<pluginId, McpServerConfig>` ready to merge into the SDK's
+ * `mcpServers` option. Plugins without an `mcpServer()` (e.g. BitBucket
+ * pre-MCP) are silently skipped — the hybrid `scm_*`/`tracker_*` proxy
+ * is responsible for falling back to the plugin's native methods.
+ *
+ * Collisions with reserved keys (`coro`) are rejected with a warning;
+ * we never let a plugin shadow Coro's in-process MCP server. Per-plugin
+ * tool policies (`capabilities.allowedMcpTools` / `disallowedMcpTools`)
+ * are translated into the SDK's `tools` array so the model only sees
+ * what we want it to see.
+ */
+export function collectPluginMcpServers(args: {
+  plugins: PluginRegistry
+  logger: Logger
+}): Record<string, McpServerConfig> {
+  const result: Record<string, McpServerConfig> = {}
+  const reservedIds = new Set<string>(['coro', 'a5'])
+
+  for (const runtime of args.plugins.all()) {
+    const id = runtime.manifest.id
+    if (typeof runtime.mcpServer !== 'function') continue
+    let descriptor
+    try {
+      descriptor = runtime.mcpServer()
+    } catch (err) {
+      args.logger.warn(
+        { err, pluginId: id },
+        'Plugin mcpServer() threw — skipping attachment for this job',
+      )
+      continue
+    }
+    if (!descriptor) continue
+
+    if (reservedIds.has(id)) {
+      args.logger.warn(
+        { pluginId: id },
+        'Plugin id collides with a reserved MCP server key — skipping; rename the plugin',
+      )
+      continue
+    }
+
+    const allowed: ReadonlyArray<string> | null =
+      runtime.manifest.allowedMcpTools ??
+      (runtime.manifest.capabilities?.allowedMcpTools as unknown as ReadonlyArray<string> | undefined) ??
+      null
+    const disallowed: ReadonlyArray<string> | null =
+      runtime.manifest.disallowedMcpTools ??
+      (runtime.manifest.capabilities?.disallowedMcpTools as unknown as ReadonlyArray<string> | undefined) ??
+      null
+
+    // Per-server tool policies are SDK-native. We forward them through
+    // the descriptor's `tools` field where the SDK accepts a list of
+    // `{ name, behavior }` objects. Falling through with no policy
+    // surfaces every upstream tool — fine for early integration but
+    // expensive at steady state (curate via the manifest).
+    const toolsPolicy = buildPluginMcpToolPolicy(allowed, disallowed)
+
+    if (descriptor.type === 'http' || descriptor.type === 'sse') {
+      result[id] = toolsPolicy
+        ? { ...descriptor, tools: toolsPolicy }
+        : descriptor
+    } else {
+      // stdio descriptors don't accept `tools` directly in the SDK
+      // typing; the SDK's `setMcpServers` ignores the field for stdio,
+      // and the curated tool list is applied via `disallowedTools` /
+      // `allowedTools` in the SDK's permission system. We pass it
+      // through unchanged here and rely on the per-plugin manifest's
+      // capability flags to drive the prompt-side curation in S2.
+      result[id] = descriptor
+    }
+  }
+
+  return result
+}
+
+/**
+ * Collects bring-your-own MCP servers from the local config
+ * (`~/.coro/config.json` → `mcpServers`). Returns a `Record<id,
+ * McpServerConfig>` ready to merge into the SDK's `mcpServers`
+ * option, exactly mirroring the shape `collectPluginMcpServers` emits.
+ *
+ * Servers with `enabled: false` are skipped. The reserved id `coro`
+ * is rejected with a warning. `allowedTools` / `disallowedTools` are
+ * translated into per-server `tools` policies so operators can curate
+ * the prompt-side surface without forking the upstream MCP server.
+ *
+ * Errors loading the config (missing file, unparsable JSON) are
+ * downgraded to a warn — running jobs must not fail because the
+ * developer mis-edited the config. The SDK reports unreachable MCP
+ * servers in its `init` message anyway.
+ */
+export function collectUserMcpServers(args: { logger: Logger }): Record<string, McpServerConfig> {
+  const result: Record<string, McpServerConfig> = {}
+  let config: ReturnType<typeof loadLocalConfig>
+  try {
+    config = loadLocalConfig()
+  } catch (err) {
+    args.logger.warn(
+      { err },
+      'collectUserMcpServers: failed to load local config — skipping BYO MCP servers',
+    )
+    return result
+  }
+
+  // Build the merged source map: explicit BYO entries from
+  // ~/.coro/config.json land last so they always win over inherited
+  // Claude Code entries with the same id (operators can mask noisy
+  // inherited servers without editing ~/.claude.json).
+  const merged: Record<string, UserMcpServerConfig> = {}
+  if (config?.inheritClaudeCodeMcps === true) {
+    try {
+      const discovered = discoverClaudeCodeMcpServers()
+      Object.assign(merged, discovered.servers)
+      if (discovered.sources.length > 0) {
+        args.logger.info(
+          { sources: discovered.sources, inheritedCount: Object.keys(discovered.servers).length },
+          'Inheriting MCP servers from Claude Code user-level config',
+        )
+      }
+    } catch (err) {
+      args.logger.warn(
+        { err },
+        'collectUserMcpServers: Claude Code MCP discovery failed — skipping',
+      )
+    }
+  }
+  if (config?.mcpServers) {
+    Object.assign(merged, config.mcpServers)
+  }
+
+  const userServers: Record<string, UserMcpServerConfig> = merged
+  const reservedIds = new Set<string>(['coro', 'a5'])
+
+  for (const [id, raw] of Object.entries(userServers)) {
+    if (raw.enabled === false) continue
+    if (reservedIds.has(id)) {
+      args.logger.warn(
+        { mcpServerId: id },
+        'BYO MCP server id collides with a reserved key — skipping; rename the entry',
+      )
+      continue
+    }
+
+    const allowed = raw.allowedTools ?? null
+    const disallowed = raw.disallowedTools ?? null
+    const toolsPolicy = buildPluginMcpToolPolicy(allowed, disallowed)
+
+    if (raw.type === 'http' || raw.type === 'sse') {
+      const desc = {
+        type: raw.type,
+        url: raw.url,
+        ...(raw.headers ? { headers: raw.headers } : {}),
+      }
+      result[id] = (toolsPolicy ? { ...desc, tools: toolsPolicy } : desc) as McpServerConfig
+    } else if (raw.type === 'stdio') {
+      const desc = {
+        type: 'stdio' as const,
+        command: raw.command,
+        ...(raw.args ? { args: raw.args } : {}),
+        ...(raw.env ? { env: raw.env } : {}),
+      }
+      result[id] = desc as McpServerConfig
+    }
+  }
+
+  return result
+}
+
+function buildPluginMcpToolPolicy(
+  allowed: ReadonlyArray<string> | null,
+  disallowed: ReadonlyArray<string> | null,
+): Array<{ name: string; permission_policy: 'always_allow' | 'always_deny' }> | undefined {
+  if (!allowed && !disallowed) return undefined
+  const policy: Array<{ name: string; permission_policy: 'always_allow' | 'always_deny' }> = []
+  if (allowed) {
+    for (const name of allowed) policy.push({ name, permission_policy: 'always_allow' })
+  }
+  if (disallowed) {
+    for (const name of disallowed) policy.push({ name, permission_policy: 'always_deny' })
+  }
+  return policy.length > 0 ? policy : undefined
 }
 
 type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconnectMcpServer'>
@@ -1109,6 +1551,7 @@ function buildSubagentDefinitions(
   intelligenceDir: string,
   settings: Settings,
   mcpServer: McpSdkServerConfig,
+  pluginMcpServers: Record<string, McpServerConfig> = {},
 ) {
   // Load .claude/CLAUDE.md once — subagents need behavior rules, company context,
   // git conventions, and infrastructure context that the main agent receives
@@ -1141,13 +1584,27 @@ function buildSubagentDefinitions(
       agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
     }
 
+    // The SDK accepts subagent `mcpServers` as an array of either named
+    // strings or full records. We pass one record carrying both the
+    // Coro in-process server and every plugin-provided MCP server so
+    // subagents see `mcp__coro__*` AND `mcp__<pluginId>__*` tools.
+    //
+    // The cast is needed because `mcpServer` is a `McpSdkServerConfig`
+    // (without `instance`) which the SDK's runtime accepts but its
+    // typing only matches `McpSdkServerConfigWithInstance`. Mirrors the
+    // existing `[mcpServer]` form this function already used.
+    const subagentMcpRecord = {
+      coro: mcpServer,
+      ...pluginMcpServers,
+    } as unknown as Record<string, McpServerConfig>
     defs[sa.name] = {
       description: `Subagent: ${sa.name}`,
       prompt: agentPrompt,
+      ...(sa.tools && sa.tools.length > 0 ? { tools: sa.tools } : {}),
       model: sa.model === 'coding'
         ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
         : (sa.model ?? 'inherit'),
-      mcpServers: [mcpServer],
+      mcpServers: [subagentMcpRecord],
     }
   }
   return defs
@@ -1217,11 +1674,16 @@ interface BuildHookOpts {
   workingDir: string
   /** Absolute path to the Coro intelligence dir. */
   coroIntelligenceDir: string
+  /** Optional exact tool whitelist for this phase. */
+  allowedTools?: ReadonlyArray<string>
   logger: Logger
 }
 
 function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
   const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
+  const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
+    ? new Set(opts.allowedTools)
+    : null
 
   const deny = (reason: string): HookJSONOutput => ({
     hookSpecificOutput: {
@@ -1235,6 +1697,16 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
     if (input.hook_event_name !== 'PreToolUse') return {}
     const toolName = input.tool_name
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
+
+    if (allowedTools && !allowedTools.has(toolName)) {
+      const reason =
+        `Blocked ${toolName}: phase ${opts.liveJobRef().phase} only allows ` +
+        `${Array.from(allowedTools).join(', ')}. Update the workflow if this phase ` +
+        `needs broader tool access.`
+      opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
+      return deny(reason)
+    }
+
     // Guard rail: Write/Edit must stay inside working dir or memory/.
     // Bash commands with obvious write intent (e.g. `rm -rf /`) are harder
     // to validate generically, so we do the simple path check and rely on
@@ -1256,6 +1728,17 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
       }
     }
 
+    if (toolName === 'Bash') {
+      const command = toolInput['command']
+      if (typeof command === 'string' && command.trim().length > 0) {
+        const denialReason = getBashPathDenialReason(command, opts.workingDir, memoryRoot)
+        if (denialReason) {
+          opts.logger.warn({ phase: opts.liveJobRef().phase, command }, denialReason)
+          return deny(denialReason)
+        }
+      }
+    }
+
     return {}
   }
 
@@ -1268,4 +1751,123 @@ function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: Hoo
 function isInside(candidate: string, root: string): boolean {
   const rel = path.relative(root, candidate)
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+function getBashPathDenialReason(command: string, workingDir: string, memoryRoot: string): string | null {
+  for (const rawToken of tokenizeShellCommand(command)) {
+    const candidate = extractPathCandidate(rawToken)
+    if (!candidate) continue
+
+    if (isClaudeTaskOutputPath(candidate)) {
+      return (
+        `Blocked Bash: command "${command}" references Claude runtime task output ` +
+        `via "${candidate}". Do not poll or read /private/tmp/claude-*/tasks/*.output ` +
+        `directly. Rerun the underlying command with output redirected to a file inside ` +
+        `${workingDir}/** and read that workspace file instead.`
+      )
+    }
+
+    if (candidate === '~' || candidate.startsWith('~/')) {
+      return bashPathReason(command, candidate, 'home-relative path', workingDir, memoryRoot)
+    }
+
+    if (
+      candidate.includes('$HOME') || candidate.includes('${HOME}') ||
+      candidate.includes('$OLDPWD') || candidate.includes('${OLDPWD}')
+    ) {
+      return bashPathReason(command, candidate, 'home-directory environment reference', workingDir, memoryRoot)
+    }
+
+    const pwdExpanded = expandPwdPath(candidate, workingDir)
+    if (pwdExpanded) {
+      if (!isInside(pwdExpanded, workingDir) && !isInside(pwdExpanded, memoryRoot)) {
+        return bashPathReason(command, candidate, `path ${pwdExpanded}`, workingDir, memoryRoot)
+      }
+      continue
+    }
+
+    if (hasParentTraversal(candidate)) {
+      return bashPathReason(command, candidate, 'parent-directory traversal', workingDir, memoryRoot)
+    }
+
+    if (candidate.startsWith('/')) {
+      const abs = path.resolve(candidate)
+      if (!isInside(abs, workingDir) && !isInside(abs, memoryRoot)) {
+        return bashPathReason(command, candidate, `path ${abs}`, workingDir, memoryRoot)
+      }
+    }
+  }
+
+  return null
+}
+
+function isClaudeTaskOutputPath(token: string): boolean {
+  return token.startsWith('/private/tmp/claude-')
+    && token.includes('/tasks/')
+    && token.endsWith('.output')
+}
+
+function tokenizeShellCommand(command: string): string[] {
+  return command.match(/'[^']*'|"[^"]*"|`[^`]*`|\S+/g) ?? []
+}
+
+function extractPathCandidate(token: string): string | null {
+  const unquoted = stripShellQuotes(token)
+  const value = extractAssignmentValue(unquoted)
+  if (!looksLikePathReference(value)) return null
+  return value
+}
+
+function stripShellQuotes(token: string): string {
+  if (token.length >= 2) {
+    const first = token[0]
+    const last = token[token.length - 1]
+    if ((first === '"' || first === '\'' || first === '`') && first === last) {
+      return token.slice(1, -1)
+    }
+  }
+  return token
+}
+
+function extractAssignmentValue(token: string): string {
+  const envMatch = token.match(/^[A-Za-z_][A-Za-z0-9_]*=(.+)$/)
+  if (envMatch) return envMatch[1]
+
+  const flagMatch = token.match(/^--[^=]+=(.+)$/)
+  if (flagMatch) return flagMatch[1]
+
+  return token
+}
+
+function looksLikePathReference(token: string): boolean {
+  return token === '~' || token === '..' || token === '-' ||
+    token.startsWith('~/') || token.startsWith('../') || token.startsWith('./') ||
+    token.startsWith('/') || token.startsWith('$HOME') || token.startsWith('${HOME}') ||
+    token.startsWith('$OLDPWD') || token.startsWith('${OLDPWD}') ||
+    token.startsWith('$PWD/') || token.startsWith('${PWD}/') ||
+    token.includes('/..') || token.includes('../')
+}
+
+function hasParentTraversal(token: string): boolean {
+  return /(^|\/)(\.\.)(\/|$)/.test(token)
+}
+
+function expandPwdPath(token: string, workingDir: string): string | null {
+  if (token === '$PWD' || token === '${PWD}') return workingDir
+  if (token.startsWith('$PWD/')) return path.resolve(workingDir, token.slice('$PWD/'.length))
+  if (token.startsWith('${PWD}/')) return path.resolve(workingDir, token.slice('${PWD}/'.length))
+  return null
+}
+
+function bashPathReason(
+  command: string,
+  matched: string,
+  kind: string,
+  workingDir: string,
+  memoryRoot: string,
+): string {
+  return (
+    `Blocked Bash: command "${command}" references ${kind} via "${matched}". ` +
+    `Shell access must stay inside ${workingDir}/** or ${memoryRoot}/**.`
+  )
 }

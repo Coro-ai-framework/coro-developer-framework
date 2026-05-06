@@ -30,6 +30,21 @@ export interface WsTransportConfig {
   runnerId?: string
   /** Logger instance */
   logger: Logger
+  /**
+   * Translate a generic plugin webhook frame into a fully-formed
+   * {@link InboundEvent}. The hybrid bootstrap supplies this with a
+   * closure that has the {@link PluginRegistry}: it resolves the
+   * plugin by id, calls `normalizeInbound`, and packages the result.
+   *
+   * The transport itself stays plugin-unaware — when no normalizer
+   * is wired (e.g. a runner without any installed plugins) we log
+   * and drop the frame instead of crashing the WS connection.
+   */
+  normalizePluginWebhook?: (
+    pluginId: string,
+    headers: Record<string, string>,
+    rawBody: Buffer,
+  ) => InboundEvent | null
 }
 
 interface PendingRpc {
@@ -290,11 +305,50 @@ export class WebSocketTransport implements EventTransport {
         }
         return
 
+      case 'event:pluginWebhook': {
+        if (!this.eventHandler) return
+        const normalize = this.config.normalizePluginWebhook
+        if (!normalize) {
+          this.config.logger.warn(
+            { pluginId: msg.pluginId },
+            'Plugin webhook received but no normalizer wired — dropping',
+          )
+          return
+        }
+        let event: InboundEvent | null
+        try {
+          event = normalize(
+            msg.pluginId,
+            msg.headers,
+            Buffer.from(msg.rawBodyBase64, 'base64'),
+          )
+        } catch (err) {
+          this.config.logger.error(
+            { err, pluginId: msg.pluginId },
+            'Plugin webhook normalisation threw',
+          )
+          return
+        }
+        if (!event) {
+          this.config.logger.debug(
+            { pluginId: msg.pluginId },
+            'Plugin returned null from normalizeInbound — skipping',
+          )
+          return
+        }
+        this.eventHandler(event).catch(err => {
+          this.config.logger.error(
+            { err, pluginId: msg.pluginId },
+            'Error handling plugin webhook event',
+          )
+        })
+        return
+      }
+
       case 'event:resume':
-        // Treat resume as an inbound event for the dispatcher
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket', // Resume events don't have a source
+            source: 'cloud',
             eventKey: 'job:resume',
             payload: { jobId: msg.jobId, prompt: msg.prompt },
             receivedAt: new Date().toISOString(),
@@ -304,10 +358,23 @@ export class WebSocketTransport implements EventTransport {
         }
         return
 
+      case 'event:cancel':
+        if (this.eventHandler) {
+          this.eventHandler({
+            source: 'cloud',
+            eventKey: 'job:cancel',
+            payload: { jobId: msg.jobId, reason: msg.reason },
+            receivedAt: new Date().toISOString(),
+          }).catch(err => {
+            this.config.logger.error({ err }, 'Error handling cancel event')
+          })
+        }
+        return
+
       case 'event:message':
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket',
+            source: 'cloud',
             eventKey: 'job:message',
             payload: { jobId: msg.jobId, message: msg.message },
             receivedAt: new Date().toISOString(),
@@ -320,7 +387,7 @@ export class WebSocketTransport implements EventTransport {
       case 'proposal:apply':
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket',
+            source: 'cloud',
             eventKey: 'proposal:apply',
             payload: { proposalId: msg.proposalId, files: msg.files },
             receivedAt: new Date().toISOString(),
@@ -333,7 +400,7 @@ export class WebSocketTransport implements EventTransport {
       case 'event:dispatch':
         if (this.eventHandler) {
           this.eventHandler({
-            source: 'bitbucket',
+            source: 'cloud',
             eventKey: 'job:dispatch',
             payload: { jobId: msg.jobId },
             receivedAt: new Date().toISOString(),

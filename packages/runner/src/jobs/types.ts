@@ -13,6 +13,7 @@ export enum JobType {
 
 export const STATUS_QUEUED                      = 'queued'
 export const STATUS_COMPLETE                    = 'complete'
+export const STATUS_CANCELLED                   = 'cancelled'
 export const STATUS_ESCALATED                   = 'escalated'
 export const STATUS_FAILED                      = 'failed'
 export const STATUS_AWAITING_PLAN_APPROVAL      = 'awaiting-plan-approval'
@@ -407,12 +408,13 @@ export function emptyTokenUsage(): TokenUsage {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function isTerminalStatus(status: string): boolean {
-  return status === STATUS_COMPLETE
+  return status === STATUS_COMPLETE || status === STATUS_CANCELLED
 }
 
 /**
  * Has the runner stopped processing this job?
- * Includes terminal (complete) and stopped-with-reason (failed, escalated).
+ * Includes terminal (complete, cancelled) and stopped-with-reason
+ * (failed, escalated).
  * Used by SSE to close the log stream — no more logs will be produced until
  * a manual resume. Distinct from isParkingStatus (which covers awaiting-*
  * states where the stream may stay open for webhook-driven resume).
@@ -420,6 +422,7 @@ export function isTerminalStatus(status: string): boolean {
 export function isStoppedStatus(status: string): boolean {
   return (
     status === STATUS_COMPLETE ||
+    status === STATUS_CANCELLED ||
     status === STATUS_FAILED ||
     status === STATUS_ESCALATED
   )
@@ -430,7 +433,7 @@ export function isStoppedStatus(status: string): boolean {
  * Includes explicit parking states AND escalated/failed — because a webhook
  * event (comment, approval, merge) may provide exactly the context the agent
  * needs to continue. The AI decides whether to proceed or re-escalate.
- * Only `complete` is truly unreachable.
+ * Terminal statuses (`complete`, `cancelled`) are unreachable.
  */
 export function isParkingStatus(status: string): boolean {
   return (
@@ -441,6 +444,43 @@ export function isParkingStatus(status: string): boolean {
     status === STATUS_ESCALATED ||
     status === STATUS_FAILED
   )
+}
+
+/**
+ * Whether a job can be resumed manually or via a control-plane event.
+ * Failed/escalated stay resumable so developers can continue after review;
+ * cancelled is intentionally terminal and excluded. The runner also uses
+ * workflow phase names (for example `planning`) as live statuses, so every
+ * non-terminal state remains resumable subject to the dispatcher's active-run
+ * concurrency checks.
+ */
+export function isResumableStatus(status: string): boolean {
+  return !isTerminalStatus(status)
+}
+
+/**
+ * Whether the job can still be cancelled.
+ * Completed work is immutable; every other lifecycle state remains cancellable.
+ */
+export function isCancellableStatus(status: string): boolean {
+  return !isTerminalStatus(status)
+}
+
+/**
+ * Canonical state mutation applied when a job is cancelled.
+ * Callers may layer additional volatile cleanup (such as in-memory event
+ * queues) on top, but the persisted lifecycle fields should stay aligned.
+ */
+export function cancelledJobPatch(): Partial<Job> {
+  return {
+    status: STATUS_CANCELLED,
+    awaitingEvent: undefined,
+    awaitingPrId: undefined,
+    awaitingNextPhase: undefined,
+    approvedAdvanceFromPhase: undefined,
+    pendingPrompt: undefined,
+    escalationMessage: undefined,
+  }
 }
 
 export function defaultWorkflowPath(type: JobType): string {

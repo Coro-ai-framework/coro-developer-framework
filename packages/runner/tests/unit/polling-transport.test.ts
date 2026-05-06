@@ -1,11 +1,26 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { PollingTransport, type PrPoller } from '../../src/state/polling-transport'
+import { PollingTransport } from '../../src/state/polling-transport'
 import type { StateBackend } from '../../src/state/backend'
 import type { InboundEvent } from '../../src/state/events'
 import { Job, JobType, emptyTokenUsage } from '../../src/jobs/types'
+import { PluginRegistry } from '../../src/plugins/registry'
+import type {
+  PluginManifest,
+  ScmCloneInfo,
+  ScmPluginRuntime,
+  ScmPollSnapshot,
+  ScmPrComment,
+  ScmPrStatus,
+} from '../../src/plugins/types'
+import type { ExternalRef, NormalizedEvent } from '../../src/plugins/refs'
 import pino from 'pino'
+import { z } from 'zod'
 
 // ── Mock factories ──────────────────────────────────────────────────────────
+//
+// The polling transport now resolves SCM plugins through the registry.
+// The mock plugin records the snapshot the test wants returned per poll
+// cycle so tests can drive state transitions without re-instantiating.
 
 const logger = pino({ level: 'silent' })
 
@@ -37,7 +52,6 @@ function makeJob(overrides: Partial<Job> = {}): Job {
 function makeMockBackend(jobs: Job[]): StateBackend {
   return {
     listJobs: vi.fn().mockResolvedValue(jobs),
-    // Stubs for the rest — not exercised in these tests
     createJob: vi.fn(),
     getJob: vi.fn(),
     updateJob: vi.fn(),
@@ -53,6 +67,8 @@ function makeMockBackend(jobs: Job[]): StateBackend {
     markPrMerged: vi.fn(),
     mapJiraTicketToJob: vi.fn(),
     getJobByJiraTicket: vi.fn(),
+    mapExternalRef: vi.fn(),
+    getJobByExternalRef: vi.fn(),
     mapRepoToJob: vi.fn(),
     createProposal: vi.fn(),
     listProposals: vi.fn(),
@@ -61,11 +77,50 @@ function makeMockBackend(jobs: Job[]): StateBackend {
   }
 }
 
-function makeMockPoller(state = 'OPEN', approvalCount = 0, comments: Array<{ id: number; content: { raw: string }; created_on: string }> = []): PrPoller {
-  return {
-    getPrStatus: vi.fn().mockResolvedValue({ state, approvalCount }),
-    getComments: vi.fn().mockResolvedValue(comments),
+const mockManifest: PluginManifest = {
+  id: 'mock-scm',
+  kind: 'scm',
+  version: '0.0.0',
+  displayName: 'Mock SCM',
+  hostCompatibility: '^1.0.0',
+  configSchema: z.object({}),
+}
+
+interface MockScmPluginHandle {
+  plugin: ScmPluginRuntime
+  setSnapshot(s: ScmPollSnapshot): void
+}
+
+function makeMockScmPlugin(initial: ScmPollSnapshot): MockScmPluginHandle {
+  let current = initial
+
+  const plugin: ScmPluginRuntime = {
+    manifest: mockManifest,
+    kind: 'scm',
+    init: async () => {},
+    healthcheck: async () => ({ ok: true }),
+    dispose: async () => {},
+    cloneInfo: (_args): ScmCloneInfo => ({ url: '', envForGit: {} }),
+    createPr: async (): Promise<ExternalRef> => ({ kind: 'pull_request', pluginId: mockManifest.id, repoKey: 'r', externalId: '1' }),
+    getPrStatus: async (): Promise<ScmPrStatus> => ({ state: current.state, approvalCount: current.approvalCount }),
+    listPrComments: async (): Promise<ScmPrComment[]> => [...current.comments],
+    postPrComment: async (): Promise<ScmPrComment> => ({ id: '0', body: '', createdAt: '', updatedAt: '' }),
+    replyToComment: async (): Promise<ScmPrComment> => ({ id: '0', body: '', createdAt: '', updatedAt: '' }),
+    pollPr: async (_ref: ExternalRef): Promise<ScmPollSnapshot> => current,
+    normalizeInbound: (): NormalizedEvent | null => null,
+    matchesRemote: () => true,
   }
+
+  return {
+    plugin,
+    setSnapshot: (s) => { current = s },
+  }
+}
+
+function makeRegistry(plugin: ScmPluginRuntime): PluginRegistry {
+  const r = new PluginRegistry({ scm: plugin.manifest.id })
+  r.register(plugin)
+  return r
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -80,10 +135,10 @@ describe('PollingTransport', () => {
   describe('lifecycle', () => {
     it('starts disconnected', () => {
       const backend = makeMockBackend([])
-      const poller = makeMockPoller()
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
         intervalMs: 60_000,
       })
@@ -92,10 +147,10 @@ describe('PollingTransport', () => {
 
     it('connects and disconnects', async () => {
       const backend = makeMockBackend([])
-      const poller = makeMockPoller()
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
         intervalMs: 60_000,
       })
@@ -111,10 +166,10 @@ describe('PollingTransport', () => {
   describe('emit', () => {
     it('is a no-op (does not throw)', async () => {
       const backend = makeMockBackend([])
-      const poller = makeMockPoller()
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
       })
 
@@ -129,56 +184,56 @@ describe('PollingTransport', () => {
   describe('poll', () => {
     it('skips poll when no parked jobs exist', async () => {
       const backend = makeMockBackend([])
-      const poller = makeMockPoller()
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
       })
 
       await transport.poll()
-      expect(poller.getPrStatus).not.toHaveBeenCalled()
+      expect(pollSpy).not.toHaveBeenCalled()
     })
 
     it('skips jobs without awaitingPrId', async () => {
       const job = makeJob({ awaitingPrId: undefined })
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller()
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
       })
 
       await transport.poll()
-      expect(poller.getPrStatus).not.toHaveBeenCalled()
+      expect(pollSpy).not.toHaveBeenCalled()
     })
 
     it('caches initial snapshot without delivering events for OPEN PRs', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('OPEN', 0, [])
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
       })
       transport.onEvent(async (e) => { events.push(e) })
 
       await transport.poll()
 
-      // First poll — snapshot only, no events
       expect(events).toHaveLength(0)
-      expect(poller.getPrStatus).toHaveBeenCalledWith('my-repo', 42)
     })
 
     it('fires pullrequest:fulfilled immediately when PR is already merged on first poll', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('MERGED', 1, [])
+      const { plugin } = makeMockScmPlugin({ state: 'merged', approvalCount: 1, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
-      transport = new PollingTransport({ stateBackend: backend, prPoller: poller, logger })
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(plugin), logger })
       transport.onEvent(async (e) => { events.push(e) })
 
       await transport.poll()
@@ -190,9 +245,9 @@ describe('PollingTransport', () => {
     it('fires pullrequest:rejected immediately when PR is already declined on first poll', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('DECLINED', 0, [])
+      const { plugin } = makeMockScmPlugin({ state: 'declined', approvalCount: 0, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
-      transport = new PollingTransport({ stateBackend: backend, prPoller: poller, logger })
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(plugin), logger })
       transport.onEvent(async (e) => { events.push(e) })
 
       await transport.poll()
@@ -204,9 +259,9 @@ describe('PollingTransport', () => {
     it('fires pullrequest:approved immediately when PR already has approvals on first poll', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('OPEN', 2, [])
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 2, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
-      transport = new PollingTransport({ stateBackend: backend, prPoller: poller, logger })
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(plugin), logger })
       transport.onEvent(async (e) => { events.push(e) })
 
       await transport.poll()
@@ -218,23 +273,20 @@ describe('PollingTransport', () => {
     it('detects PR merge and delivers event', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('OPEN', 0, [])
+      const handle = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(handle.plugin),
         logger,
       })
       transport.onEvent(async (e) => { events.push(e) })
 
-      // First poll — cache baseline
       await transport.poll()
       expect(events).toHaveLength(0)
 
-      // Now change PR state to MERGED
-      ;(poller.getPrStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ state: 'MERGED', approvalCount: 0 })
+      handle.setSnapshot({ state: 'merged', approvalCount: 0, commentCount: 0, comments: [] })
 
-      // Second poll — should detect the change
       await transport.poll()
       expect(events).toHaveLength(1)
       expect(events[0].eventKey).toBe('pullrequest:fulfilled')
@@ -243,22 +295,19 @@ describe('PollingTransport', () => {
     it('detects PR approval and delivers event', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('OPEN', 0, [])
+      const handle = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(handle.plugin),
         logger,
       })
       transport.onEvent(async (e) => { events.push(e) })
 
-      // First poll — baseline
       await transport.poll()
 
-      // Approval added
-      ;(poller.getPrStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ state: 'OPEN', approvalCount: 1 })
+      handle.setSnapshot({ state: 'open', approvalCount: 1, commentCount: 0, comments: [] })
 
-      // Second poll
       await transport.poll()
       expect(events).toHaveLength(1)
       expect(events[0].eventKey).toBe('pullrequest:approved')
@@ -267,26 +316,24 @@ describe('PollingTransport', () => {
     it('detects new comments and delivers events', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const initialComments: Array<{ id: number; content: { raw: string }; created_on: string }> = []
-      const poller = makeMockPoller('OPEN', 0, initialComments)
+      const handle = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(handle.plugin),
         logger,
       })
       transport.onEvent(async (e) => { events.push(e) })
 
-      // First poll — baseline
       await transport.poll()
 
-      // New comment appears
-      const newComments = [
-        { id: 1, content: { raw: 'LGTM!' }, created_on: '2026-04-20T12:00:00Z' },
-      ]
-      ;(poller.getComments as ReturnType<typeof vi.fn>).mockResolvedValue(newComments)
+      handle.setSnapshot({
+        state: 'open',
+        approvalCount: 0,
+        commentCount: 1,
+        comments: [{ id: '1', body: 'LGTM!', createdAt: '2026-04-20T12:00:00Z', updatedAt: '2026-04-20T12:00:00Z' }],
+      })
 
-      // Second poll
       await transport.poll()
       expect(events).toHaveLength(1)
       expect(events[0].eventKey).toBe('pullrequest:comment_created')
@@ -295,22 +342,19 @@ describe('PollingTransport', () => {
     it('detects PR decline and delivers event', async () => {
       const job = makeJob()
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('OPEN', 0, [])
+      const handle = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(handle.plugin),
         logger,
       })
       transport.onEvent(async (e) => { events.push(e) })
 
-      // First poll
       await transport.poll()
 
-      // PR declined
-      ;(poller.getPrStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ state: 'DECLINED', approvalCount: 0 })
+      handle.setSnapshot({ state: 'declined', approvalCount: 0, commentCount: 0, comments: [] })
 
-      // Second poll
       await transport.poll()
       expect(events).toHaveLength(1)
       expect(events[0].eventKey).toBe('pullrequest:rejected')
@@ -318,19 +362,23 @@ describe('PollingTransport', () => {
 
     it('resolves repoSlug from prMappings', async () => {
       const job = makeJob({
-        params: {},  // no repoSlug in params
+        params: {},
         prMappings: [{ prId: 42, workItem: 'f', repoSlug: 'mapped-repo', openedAt: '2026-01-01' }],
       })
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('OPEN', 0, [])
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
       })
 
       await transport.poll()
-      expect(poller.getPrStatus).toHaveBeenCalledWith('mapped-repo', 42)
+      expect(pollSpy).toHaveBeenCalled()
+      const ref = pollSpy.mock.calls[0]![0]
+      expect(ref.repoKey).toBe('mapped-repo')
+      expect(ref.externalId).toBe('42')
     })
 
     it('polls parked jobs with empty prMappings when repo is in params', async () => {
@@ -339,15 +387,36 @@ describe('PollingTransport', () => {
         prMappings: [],
       })
       const backend = makeMockBackend([job])
-      const poller = makeMockPoller('OPEN', 0, [])
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
       transport = new PollingTransport({
         stateBackend: backend,
-        prPoller: poller,
+        plugins: makeRegistry(plugin),
         logger,
       })
 
       await transport.poll()
-      expect(poller.getPrStatus).toHaveBeenCalledWith('ai-test-repository', 42)
+      expect(pollSpy).toHaveBeenCalled()
+      const ref = pollSpy.mock.calls[0]![0]
+      expect(ref.repoKey).toBe('ai-test-repository')
+    })
+
+    it('skips parked jobs whose ref cannot be resolved', async () => {
+      const job = makeJob({
+        params: {},
+        prMappings: [],
+      })
+      const backend = makeMockBackend([job])
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
+      transport = new PollingTransport({
+        stateBackend: backend,
+        plugins: makeRegistry(plugin),
+        logger,
+      })
+
+      await transport.poll()
+      expect(pollSpy).not.toHaveBeenCalled()
     })
   })
 })

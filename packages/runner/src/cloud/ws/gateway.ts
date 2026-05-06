@@ -269,6 +269,32 @@ export class WsGateway {
         return
       }
 
+      // ── External-ref mappings (P5+) ──────────────────────────────────────
+      case 'job:mapExternalRef': {
+        await backend.mapExternalRef(
+          {
+            kind: msg.ref.kind as 'pull_request' | 'ticket' | 'repo' | 'issue',
+            pluginId: msg.ref.pluginId,
+            repoKey: msg.ref.repoKey,
+            externalId: msg.ref.externalId,
+          },
+          msg.jobId,
+        )
+        this.reply(ws, msg.messageId, { ok: true })
+        return
+      }
+
+      case 'job:byExternalRef': {
+        const job = await backend.getJobByExternalRef({
+          kind: msg.ref.kind as 'pull_request' | 'ticket' | 'repo' | 'issue',
+          pluginId: msg.ref.pluginId,
+          repoKey: msg.ref.repoKey,
+          externalId: msg.ref.externalId,
+        })
+        this.reply(ws, msg.messageId, job)
+        return
+      }
+
       // ── Repo mapping ─────────────────────────────────────────────────────
       case 'job:repoMapping': {
         await backend.mapRepoToJob(msg.repoSlug, msg.jobId)
@@ -380,6 +406,41 @@ export class WsGateway {
 
     this.send(runner.ws, msg)
     return true
+  }
+
+  /**
+   * Result of a job-or-team delivery attempt.
+   *
+   *   - `route: 'job'`     — delivered to the runner that reported this job.
+   *   - `route: 'team'`    — no runner claims the job, so the message went to
+   *                          another connected team runner.
+   *   - `route: 'queued'`  — no runner connected; message queued for the
+   *                          next runner that registers.
+   */
+  static readonly DeliveryRoutes = ['job', 'team', 'queued'] as const
+
+  /**
+   * Try to deliver a message to the runner that is actively handling
+   * `jobId`; if none claims it, fall back to any connected team runner.
+   * If the team has no connected runner, the message is queued and
+   * delivered on the next runner registration (matching the
+   * {@link sendToTeam} contract).
+   *
+   * Used for control-plane events that target a specific job (resume,
+   * developer message, webhook resume) — these should land on the
+   * runner that actually owns the job's session whenever possible to
+   * avoid cross-runner noise in multi-runner teams.
+   */
+  sendToJobOrTeam(
+    teamId: string,
+    jobId: string,
+    msg: CloudMessage,
+  ): { delivered: boolean; route: 'job' | 'team' | 'queued' } {
+    if (this.sendToJob(jobId, msg)) {
+      return { delivered: true, route: 'job' }
+    }
+    const delivered = this.sendToTeam(teamId, msg)
+    return { delivered, route: delivered ? 'team' : 'queued' }
   }
 
   /** Get the registry for external access (e.g. REST endpoints). */

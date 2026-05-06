@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, Loader2, RefreshCcw, Play } from 'lucide-react'
+import { Ban, ChevronDown, Loader2, RefreshCcw, Play } from 'lucide-react'
 import ErrorState from './common/error-state'
 import { Button } from './ui/button'
 import { Select } from './ui/select'
@@ -12,34 +12,17 @@ import {
 import { cn } from '../lib/utils'
 import { jsonRequest, requestJson } from '../lib/http'
 import { RUN_NOUN } from '../lib/run-labels'
+import { isCancellableStatus, isResumableStatus } from '../lib/status'
 import type { Job, WorkflowPhase } from '../types'
-
-const RESUMABLE_STATUSES = new Set([
-  'failed',
-  'escalated',
-  'awaiting-plan-approval',
-  'awaiting-pr-merge',
-  'awaiting-developer-input',
-  'queued',
-  'planning',
-  'coding',
-  'reviewing',
-  'testing',
-  'evaluating',
-  'spec-writing',
-  'analysis',
-  'repo-setup',
-  'reporting',
-  'campaign-planning',
-  'coordinating',
-  'aggregating',
-])
 
 export interface JobControlBarProps {
   job: Job
   workflowPhases: WorkflowPhase[]
   refreshing: boolean
   onRefresh: () => Promise<void>
+  cancelling: boolean
+  cancelError: string | null
+  onCancel: () => Promise<void>
   resuming: boolean
   resumeError: string | null
   resumePhase: string
@@ -63,6 +46,9 @@ export default function JobControlBar({
   workflowPhases,
   refreshing,
   onRefresh,
+  cancelling,
+  cancelError,
+  onCancel,
   resuming,
   resumeError,
   resumePhase,
@@ -73,7 +59,8 @@ export default function JobControlBar({
   interactiveOverride,
   onInteractiveChange,
 }: JobControlBarProps) {
-  const canResume = RESUMABLE_STATUSES.has(job.status)
+  const canResume = isResumableStatus(job.status)
+  const canCancel = isCancellableStatus(job.status)
   const interactiveValue = interactiveOverride ?? job.interactive
   const [togglePending, setTogglePending] = useState(false)
   const [toggleError, setToggleError] = useState<string | null>(null)
@@ -112,10 +99,20 @@ export default function JobControlBar({
           variant="secondary"
           size="sm"
           onClick={() => void onRefresh()}
-          disabled={refreshing}
+          disabled={refreshing || cancelling}
         >
           {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCcw />}
           Refresh
+        </Button>
+
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => void onCancel()}
+          disabled={!canCancel || cancelling || resuming}
+        >
+          {cancelling ? <Loader2 className="animate-spin" /> : <Ban />}
+          {cancelling ? 'Cancelling…' : 'Cancel'}
         </Button>
 
         <ResumeControl
@@ -152,8 +149,9 @@ export default function JobControlBar({
         </div>
       </div>
 
-      {(resumeError || toggleError) ? (
+      {(cancelError || resumeError || toggleError) ? (
         <div className="space-y-2">
+          {cancelError ? <ErrorState title="Cancel failed" message={cancelError} /> : null}
           {resumeError ? <ErrorState title="Resume failed" message={resumeError} /> : null}
           {toggleError ? <ErrorState title="Interactive toggle failed" message={toggleError} /> : null}
         </div>

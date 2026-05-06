@@ -34,8 +34,7 @@ import * as path from 'node:path'
 import type { Logger } from 'pino'
 import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
 
-import type { BitBucketClient, CreatePrOptions, PullRequest } from '../clients/bitbucket'
-import type { GitHubClient } from '../clients/github'
+import type { PluginRegistry } from '../plugins/registry'
 
 import {
   DEFAULT_OVERLAY_REF,
@@ -98,18 +97,24 @@ export interface OpenProposalPrArgs {
   title: string
   body: string
   reviewerUsernames?: string[]
-  bbCoder: BitBucketClient
-  ghClient: GitHubClient | null
+  /**
+   * Plugin registry used to resolve the SCM plugin from `remoteUrl`.
+   * The writer no longer carries hard-wired BitBucket / GitHub
+   * clients — every PR-opening path goes through
+   * `plugin.writerCreatePr(...)`. See {@link openProposalPr} for
+   * the resolution rules.
+   */
+  plugins: PluginRegistry
   logger: Logger
 }
 
 export interface OpenedProposalPr {
-  /** Provider-specific PR id. */
-  id: number
+  /** Provider-specific PR id (string — provider may not be numeric). */
+  id: string
   /** Web URL of the opened PR. */
   url: string
-  /** `'github' | 'bitbucket'` for downstream telemetry. */
-  provider: 'github' | 'bitbucket'
+  /** Plugin id that opened the PR (e.g. `'github'`, `'bitbucket'`). */
+  provider: string
 }
 
 // ── Tenant writer ────────────────────────────────────────────────────────────
@@ -327,60 +332,78 @@ export async function commitAndPush(args: CommitAndPushArgs): Promise<void> {
 // ── Open PR ──────────────────────────────────────────────────────────────────
 
 /**
- * Open a PR for the just-pushed branch. The provider is chosen by the
- * host of `remoteUrl`:
- *   - github.com → ghClient
- *   - bitbucket.org → bbCoder
- *   - any other host → throws (we don't have a client for it yet)
+ * Open a PR for the just-pushed branch. Dispatch is plugin-driven:
  *
- * The runner's existing PR clients are scoped to a single
- * workspace/owner, so we also validate that the URL's owner matches
- * the configured client. If it doesn't, the user has misconfigured
- * `git.workspace`/`github.owner` for the target repo and we fail
- * loudly rather than opening a PR in the wrong place.
+ *   1. Parse `remoteUrl` to recover `{ host, owner, repoSlug }`.
+ *   2. Ask the plugin registry which SCM plugin recognises that
+ *      remote (`PluginRegistry.resolveByRemote(remoteUrl)`) — every
+ *      SCM plugin implements `matchesRemote(...)` so this is fast
+ *      and deterministic.
+ *   3. Invoke that plugin's `writerCreatePr(...)` (a writer-only
+ *      escape hatch — see ScmPluginRuntime.writerCreatePr docs).
+ *      Plugins without a usable PR-creation path (e.g. an MCP-mode
+ *      plugin that hasn't kept any inline native client) opt out by
+ *      omitting the method, and we fail loudly with a remediation
+ *      message rather than silently dropping the proposal.
+ *
+ * Why not use the SDK's MCP client to invoke
+ * `mcp__<pluginId>__create_pull_request` directly?
+ *   The writer runs in the runner's main event loop, **outside** any
+ *   `query()` session. The Claude Agent SDK only exposes MCP tools
+ *   inside a `query()` tool-use loop today. Until that lands as a
+ *   standalone API, MCP-mode plugins keep a tiny native fallback
+ *   (re-using the inline client they already need for `pollPr`)
+ *   exposed as `writerCreatePr` and we route through it here.
  */
 export async function openProposalPr(
   args: OpenProposalPrArgs,
 ): Promise<OpenedProposalPr> {
-  const { remoteUrl, branch, baseRef, title, body, reviewerUsernames, bbCoder, ghClient, logger } = args
+  const { remoteUrl, branch, baseRef, title, body, reviewerUsernames, plugins, logger } = args
 
   const parsed = parseRepoUrl(remoteUrl)
   if (!parsed) {
     throw new Error(`openProposalPr: cannot parse repo URL "${remoteUrl}"`)
   }
 
-  const opts: CreatePrOptions = {
+  const scm = plugins.resolveByRemote(remoteUrl)
+  if (!scm) {
+    throw new Error(
+      `openProposalPr: no SCM plugin recognises remote "${remoteUrl}". ` +
+      `Install or configure an SCM plugin (e.g. github, bitbucket) whose ` +
+      `matchesRemote() returns true for this host before shipping proposals.`,
+    )
+  }
+
+  if (typeof scm.writerCreatePr !== 'function') {
+    throw new Error(
+      `openProposalPr: SCM plugin "${scm.manifest.id}" does not implement ` +
+      `writerCreatePr — proposal PRs cannot be opened against ${remoteUrl}. ` +
+      `MCP-mode plugins must keep a writer-only native fallback because the ` +
+      `runner cannot invoke MCP tools outside an active query() session today.`,
+    )
+  }
+
+  const ref = await scm.writerCreatePr({
     repoSlug: parsed.repoSlug,
     title,
     description: body,
     sourceBranch: branch,
     targetBranch: baseRef,
-    ...(reviewerUsernames && reviewerUsernames.length > 0 ? { reviewerUsernames } : {}),
-  }
+    ...(reviewerUsernames && reviewerUsernames.length > 0 ? { reviewers: reviewerUsernames } : {}),
+  })
 
-  let pr: PullRequest
-  let provider: 'github' | 'bitbucket'
-
-  if (parsed.host.endsWith('github.com')) {
-    if (!ghClient) {
-      throw new Error(
-        `openProposalPr: ${remoteUrl} is a GitHub repo but no GitHub client is configured. ` +
-          `Set git.provider="github" with a token in your config.`,
-      )
-    }
-    pr = await ghClient.createPr(opts)
-    provider = 'github'
-  } else if (parsed.host.endsWith('bitbucket.org')) {
-    pr = await bbCoder.createPr(opts)
-    provider = 'bitbucket'
-  } else {
+  if (!ref.url) {
+    // Without a URL the proposal record on the dashboard would be
+    // useless — fail loudly so plugin authors notice.
     throw new Error(
-      `openProposalPr: unsupported provider host "${parsed.host}" — only github.com and bitbucket.org are wired today.`,
+      `openProposalPr: SCM plugin "${scm.manifest.id}" returned no PR URL. ` +
+      `writerCreatePr must populate ExternalRef.url for the dashboard to link the proposal.`,
     )
   }
 
-  logger.info({ prId: pr.id, url: pr.links.html.href, branch, provider }, 'Opened proposal PR')
-  return { id: pr.id, url: pr.links.html.href, provider }
+  const provider = scm.manifest.id
+  logger.info({ prId: ref.externalId, url: ref.url, branch, provider }, 'Opened proposal PR')
+  return { id: ref.externalId, url: ref.url, provider }
 }
 
 // ── URL parsing ──────────────────────────────────────────────────────────────

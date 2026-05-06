@@ -19,6 +19,7 @@ import {
 } from '../jobs/types'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
+import { repoKeyForStorage, type ExternalRef } from '../plugins/refs'
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,24 @@ const SCHEMA_SQL = `
     ticket_id  TEXT PRIMARY KEY,
     job_id     TEXT NOT NULL
   );
+
+  -- External reference mappings (P5+).
+  -- Single home for every plugin-rooted lookup: PR ids, ticket keys,
+  -- and any future kind. repo_key is required for kind=pull_request
+  -- (enforced at the runtime layer via repoKeyForStorage) so PR id 42
+  -- in two different repos cannot alias each other; for kinds where
+  -- repo is not meaningful the column stores the empty string.
+  CREATE TABLE IF NOT EXISTS external_ref_mappings (
+    plugin_id    TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    repo_key     TEXT NOT NULL DEFAULT '',
+    external_id  TEXT NOT NULL,
+    job_id       TEXT NOT NULL,
+    PRIMARY KEY (plugin_id, kind, repo_key, external_id),
+    FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_external_ref_job ON external_ref_mappings(job_id);
 
   CREATE TABLE IF NOT EXISTS repo_mappings (
     repo_slug  TEXT NOT NULL,
@@ -246,14 +265,62 @@ export class SqliteStateBackend implements StateBackend {
     return row.cnt
   }
 
-  // ── PR mappings ────────────────────────────────────────────────────────────
+  // ── External-ref mappings (P5+) ────────────────────────────────────────────
+
+  async mapExternalRef(ref: ExternalRef, jobId: string): Promise<void> {
+    const repoKey = repoKeyForStorage(ref)
+    this.db.prepare(`
+      INSERT OR REPLACE INTO external_ref_mappings
+        (plugin_id, kind, repo_key, external_id, job_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(ref.pluginId, ref.kind, repoKey, ref.externalId, jobId)
+  }
+
+  async getJobByExternalRef(ref: ExternalRef): Promise<Job | null> {
+    const repoKey = ref.repoKey ?? ''
+    const row = this.db.prepare(`
+      SELECT job_id FROM external_ref_mappings
+       WHERE plugin_id = ? AND kind = ? AND repo_key = ? AND external_id = ?
+    `).get(ref.pluginId, ref.kind, repoKey, ref.externalId) as { job_id: string } | undefined
+    if (!row) return null
+    return this.getJob(row.job_id)
+  }
+
+  // ── PR mappings (legacy adapter — writes to BOTH tables) ──────────────────
+  //
+  // Until P9 we keep dual-writing to the legacy `pr_mappings` table
+  // so a downgrade is still possible while the new
+  // `external_ref_mappings` table is on the hot path. Reads prefer
+  // the new table and fall back to the legacy one for rows that
+  // pre-date the migration.
 
   async mapPrToJob(prId: number, jobId: string): Promise<void> {
     this.db.prepare('INSERT OR REPLACE INTO pr_mappings (pr_id, job_id) VALUES (?, ?)')
       .run(prId, jobId)
+    // The legacy method does not carry a pluginId or repoKey; we
+    // intentionally do NOT mirror into `external_ref_mappings` here
+    // because the row would violate the `repo_key NOT NULL`
+    // requirement for `pull_request`. Callers that have a real
+    // {@link ExternalRef} (the dispatcher, the SCM plugin) should
+    // prefer {@link mapExternalRef} directly.
   }
 
   async getJobByPr(prId: number): Promise<Job | null> {
+    // Prefer the new table — query for any pull_request mapping
+    // whose externalId matches across plugins. PR ids are namespaced
+    // by `(plugin_id, repo_key)` so two repos with the same PR id
+    // don't collide here, but a single numeric `prId` arriving via
+    // the legacy path may match more than one row; the dispatcher's
+    // legacy callers don't carry that disambiguation, so we resolve
+    // to the most-recently-mapped job (highest rowid).
+    const newRow = this.db.prepare(`
+      SELECT job_id FROM external_ref_mappings
+       WHERE kind = 'pull_request' AND external_id = ?
+       ORDER BY rowid DESC
+       LIMIT 1
+    `).get(String(prId)) as { job_id: string } | undefined
+    if (newRow) return this.getJob(newRow.job_id)
+
     const row = this.db.prepare('SELECT job_id FROM pr_mappings WHERE pr_id = ?')
       .get(prId) as { job_id: string } | undefined
     if (!row) return null
@@ -266,6 +333,11 @@ export class SqliteStateBackend implements StateBackend {
 
     job.prMappings.push(mapping)
     await this.mapPrToJob(mapping.prId, jobId)
+    // We have a repo for this mapping, so we can also write it into
+    // the new table under the registry's default SCM plugin id is
+    // unknown here — the dispatcher's `scm_create_pr` writes via
+    // {@link mapExternalRef} directly when it has a plugin context.
+    // The legacy fallback above keeps reads working either way.
     return this.updateJob(jobId, { prMappings: job.prMappings })
   }
 
@@ -279,14 +351,30 @@ export class SqliteStateBackend implements StateBackend {
     return this.updateJob(jobId, { prMappings: updated })
   }
 
-  // ── Jira mappings ──────────────────────────────────────────────────────────
+  // ── Jira mappings (legacy adapter) ─────────────────────────────────────────
 
   async mapJiraTicketToJob(ticketId: string, jobId: string): Promise<void> {
+    // Dual-write: legacy table + plugin-aware table. Tickets carry no
+    // repo so `repo_key` stays the empty string. The plugin id
+    // defaults to `'jira'` — the only tracker plugin the legacy
+    // method has ever been used by; new code should call
+    // {@link mapExternalRef} with an explicit plugin.
     this.db.prepare('INSERT OR REPLACE INTO jira_mappings (ticket_id, job_id) VALUES (?, ?)')
       .run(ticketId, jobId)
+    this.db.prepare(`
+      INSERT OR REPLACE INTO external_ref_mappings
+        (plugin_id, kind, repo_key, external_id, job_id)
+      VALUES ('jira', 'ticket', '', ?, ?)
+    `).run(ticketId, jobId)
   }
 
   async getJobByJiraTicket(ticketId: string): Promise<Job | null> {
+    const newRow = this.db.prepare(`
+      SELECT job_id FROM external_ref_mappings
+       WHERE plugin_id = 'jira' AND kind = 'ticket' AND repo_key = '' AND external_id = ?
+    `).get(ticketId) as { job_id: string } | undefined
+    if (newRow) return this.getJob(newRow.job_id)
+
     const row = this.db.prepare('SELECT job_id FROM jira_mappings WHERE ticket_id = ?')
       .get(ticketId) as { job_id: string } | undefined
     if (!row) return null

@@ -1,5 +1,11 @@
+import * as fs from 'fs/promises'
+import * as path from 'path'
+import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { Artifact, WorkItem, Insight, Job } from './jobs/types'
+import type { ExternalRef } from './plugins/refs'
+import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
+import { PluginResolutionError } from './plugins/registry'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -11,9 +17,125 @@ export function mcpError(msg: string) {
   return { content: [{ type: 'text' as const, text: msg }], isError: true as const }
 }
 
+// ── Plugin resolution helpers ────────────────────────────────────────────────
+//
+// `scm_*` and `tracker_*` handlers all need the same boilerplate: pick
+// the per-job-or-explicit plugin, surface a structured MCP error when
+// resolution fails so the agent can re-call with a corrected
+// `pluginId`. Centralised here so each tool stays a one-liner that
+// just dispatches to the chosen plugin's method.
+//
+// After the MCP-first pivot, the proxy operates in one of two modes
+// per (plugin, op):
+//
+//   1. **Native mode** — the plugin keeps its concrete method
+//      (BitBucket today). The handler calls the method and returns
+//      its result. No MCP server is involved.
+//
+//   2. **MCP-mode redirect** — the plugin delegates to an upstream
+//      MCP server attached at job start (github / jira / linear /
+//      github-issues today). The Claude Agent SDK does not expose a
+//      programmatic MCP client we can call from inside a handler, so
+//      we return a structured `mcp__<pluginId>__<upstream-tool>`
+//      pointer for the agent to invoke directly on its next turn.
+//      The agent already has those tools attached (S1) — the
+//      redirect costs one round-trip and avoids spawning the
+//      upstream MCP server twice.
+//
+// `mcpRedirect` formats the redirect consistently. The exact upstream
+// tool name comes from the plugin manifest's `mcpToolMap` so each
+// plugin owns its own naming.
+
+function mcpRedirect(
+  pluginId: string,
+  proxyOp: string,
+  upstreamTool: string | undefined,
+  args: Record<string, unknown>,
+) {
+  if (!upstreamTool) {
+    return mcpError(
+      `Plugin "${pluginId}" has an MCP server but no \`mcpToolMap[${proxyOp}]\`. ` +
+      `Either add the mapping to the plugin manifest or call the upstream tool ` +
+      `directly via \`mcp__${pluginId}__<tool-name>\`.`,
+    )
+  }
+  // The shape mimics a standard MCP error so the agent's prompt-side
+  // error-handling logic (built into Claude Code) classifies the
+  // redirect as a "use this other tool" hint rather than a hard fail.
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        redirect: true,
+        message:
+          `Generic proxy "${proxyOp}" delegates to the active plugin's MCP server. ` +
+          `Call \`mcp__${pluginId}__${upstreamTool}\` directly with the args below — ` +
+          `the upstream MCP server is already attached to this session.`,
+        upstreamTool: `mcp__${pluginId}__${upstreamTool}`,
+        upstreamArgs: args,
+      }, null, 2),
+    }],
+    isError: true as const,
+  }
+}
+
+function resolveScm(
+  ctx: ToolContext,
+  pluginId?: string,
+): { ok: true; scm: ScmPluginRuntime } | { ok: false; error: ReturnType<typeof mcpError> } {
+  try {
+    const requested = pluginId ?? (typeof ctx.job.params['scm'] === 'string' ? (ctx.job.params['scm'] as string) : undefined)
+    const scm = ctx.plugins.resolveScm(requested ? { scm: requested } : {})
+    return { ok: true, scm }
+  } catch (err) {
+    if (err instanceof PluginResolutionError) {
+      return { ok: false, error: mcpError(`scm plugin resolution failed: ${err.message}`) }
+    }
+    return { ok: false, error: mcpError(`scm plugin resolution error: ${(err as Error).message}`) }
+  }
+}
+
+function resolveTracker(
+  ctx: ToolContext,
+  pluginId?: string,
+): { ok: true; tracker: TrackerPluginRuntime } | { ok: false; error: ReturnType<typeof mcpError> } {
+  try {
+    const requested = pluginId ?? (typeof ctx.job.params['tracker'] === 'string' ? (ctx.job.params['tracker'] as string) : undefined)
+    const tracker = ctx.plugins.resolveTracker(requested ? { tracker: requested } : {})
+    return { ok: true, tracker }
+  } catch (err) {
+    if (err instanceof PluginResolutionError) {
+      return { ok: false, error: mcpError(`tracker plugin resolution failed: ${err.message}`) }
+    }
+    return { ok: false, error: mcpError(`tracker plugin resolution error: ${(err as Error).message}`) }
+  }
+}
+
+/**
+ * Build an `ExternalRef` for a PR from the args MCP tools accept.
+ * Stringifies the PR id (PRs are numbers in most providers but the
+ * ref is provider-neutral string).
+ */
+function prRef(scm: ScmPluginRuntime, repo: string, prId: number | string): ExternalRef {
+  return {
+    kind: 'pull_request',
+    pluginId: scm.manifest.id,
+    repoKey: repo,
+    externalId: String(prId),
+  }
+}
+
 /**
  * All Coro MCP tool implementations. Used by `createCoroMcpServer` and by tests
  * that invoke handlers with a mock {@link ToolContext}.
+ *
+ * The legacy `bb_*` / `gh_*` / `jira_*` shims and their
+ * `logDeprecation` gate were removed in S6 of the MCP-first plugins
+ * pivot. The deprecation cycle controller in `plugins/deprecation.ts`
+ * still ships for *config* keys (`legacyConfigKeysBehaviour`) and the
+ * *mapping tables* (`legacyMappingTablesBehaviour`); only the MCP
+ * wrapper branch graduated past N+2 ahead of cycle because the
+ * plugins migration replaced every legacy call site at once.
  */
 export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const text = mcpText
@@ -56,161 +178,305 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     return text({ workItems: job.workItems, currentWorkItem: job.currentWorkItem })
   }
 
+  // ── Generic SCM tools ──────────────────────────────────────────────────
+  //
+  // After the MCP-first pivot (S4), the agent-facing surface is
+  // trimmed to 7 tools (5 PR ops + clone-info + clone-repo):
+  //   - scm_create_pr
+  //   - scm_get_pr_status
+  //   - scm_list_pr_comments
+  //   - scm_post_pr_comment
+  //   - scm_merge_pr
+  //   - scm_get_clone_info
+  //   - scm_clone_repo
+  //
+  // Removed: scm_create_repo, scm_approve_pr, scm_reply_to_comment,
+  // scm_poll_pr — agents call native `mcp__<pluginId>__*` tools for
+  // those (the upstream MCP servers cover them). `pollPr` moves out
+  // of the agent surface entirely; only the polling transport calls
+  // it on the runner-side.
+
+  const scm_create_pr = async (args: {
+    pluginId?: string
+    repo: string
+    title: string
+    description?: string
+    sourceBranch: string
+    targetBranch?: string
+    reviewers?: string[]
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const { jobReviewers } = await import('./jobs/types')
+    const targetBranch = args.targetBranch ?? 'main'
+    const reviewers = args.reviewers ?? jobReviewers(ctx.job)
+    if (!r.scm.createPr) {
+      // MCP-mode plugin (e.g. github). Redirect the agent at the
+      // upstream tool. The mapping comes from the plugin manifest.
+      return mcpRedirect(r.scm.manifest.id, 'scm_create_pr',
+        r.scm.manifest.mcpToolMap?.scm_create_pr,
+        {
+          repo: args.repo,
+          title: args.title,
+          ...(args.description ? { body: args.description } : {}),
+          head: args.sourceBranch,
+          base: targetBranch,
+          ...(reviewers.length ? { reviewers } : {}),
+        },
+      )
+    }
+    const ref = await r.scm.createPr({
+      repoSlug: args.repo,
+      title: args.title,
+      ...(args.description ? { description: args.description } : {}),
+      sourceBranch: args.sourceBranch,
+      targetBranch,
+      reviewers,
+    })
+
+    const prIdNumber = Number(ref.externalId)
+    if (Number.isFinite(prIdNumber)) {
+      // Legacy `prMappings` table still records numeric PR ids per job
+      // for back-compat with consumers that haven't moved off the old
+      // shape (e.g. `markPrMerged` and the PR-merged work item watcher).
+      await ctx.stateBackend.addPrMapping(ctx.job.id, {
+        prId: prIdNumber,
+        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
+        repoSlug: args.repo,
+        openedAt: new Date().toISOString(),
+      })
+    }
+    // Plugin-aware mapping in `external_ref_mappings`: this is the
+    // path resolveJobByExternalRef + the polling/webhook bridge use,
+    // and it carries enough provenance to disambiguate PR id 42 across
+    // repositories or providers.
+    await ctx.stateBackend.mapExternalRef(ref, ctx.job.id)
+
+    return text({
+      pluginId: ref.pluginId,
+      prId: prIdNumber,
+      externalId: ref.externalId,
+      url: ref.url ?? null,
+    })
+  }
+
+  const scm_get_pr_status = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.scm.getPrStatus) {
+      return mcpRedirect(r.scm.manifest.id, 'scm_get_pr_status',
+        r.scm.manifest.mcpToolMap?.scm_get_pr_status,
+        { repo: args.repo, pull_number: Number(args.prId) },
+      )
+    }
+    const status = await r.scm.getPrStatus(prRef(r.scm, args.repo, args.prId))
+    return text(status)
+  }
+
+  const scm_list_pr_comments = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.scm.listPrComments) {
+      return mcpRedirect(r.scm.manifest.id, 'scm_list_pr_comments',
+        r.scm.manifest.mcpToolMap?.scm_list_pr_comments,
+        { repo: args.repo, pull_number: Number(args.prId) },
+      )
+    }
+    const comments = await r.scm.listPrComments(prRef(r.scm, args.repo, args.prId))
+    return text(comments)
+  }
+
+  const scm_post_pr_comment = async (args: {
+    pluginId?: string; repo: string; prId: number | string; body: string
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.scm.postPrComment) {
+      return mcpRedirect(r.scm.manifest.id, 'scm_post_pr_comment',
+        r.scm.manifest.mcpToolMap?.scm_post_pr_comment,
+        { repo: args.repo, issue_number: Number(args.prId), body: args.body },
+      )
+    }
+    const comment = await r.scm.postPrComment(prRef(r.scm, args.repo, args.prId), args.body)
+    return text(comment)
+  }
+
+  const scm_merge_pr = async (args: {
+    pluginId?: string; repo: string; prId: number | string; message?: string; strategy?: 'merge' | 'squash' | 'rebase'
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.scm.mergePr) {
+      return mcpRedirect(r.scm.manifest.id, 'scm_merge_pr',
+        r.scm.manifest.mcpToolMap?.scm_merge_pr,
+        {
+          repo: args.repo,
+          pull_number: Number(args.prId),
+          ...(args.message ? { commit_message: args.message } : {}),
+          ...(args.strategy ? { merge_method: args.strategy } : {}),
+        },
+      )
+    }
+    await r.scm.mergePr(
+      prRef(r.scm, args.repo, args.prId),
+      {
+        ...(args.message ? { message: args.message } : {}),
+        ...(args.strategy ? { strategy: args.strategy } : {}),
+      },
+    )
+    return text({ merged: true })
+  }
+
+  const scm_get_clone_info = async (args: { pluginId?: string; repo: string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    const info = r.scm.cloneInfo({ repo: args.repo })
+    return text({ pluginId: r.scm.manifest.id, ...info })
+  }
+
+  const scm_clone_repo = async (args: { pluginId?: string; repo: string }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+
+    const repo = args.repo.trim()
+    if (!repo) return error('repo is required')
+
+    const info = r.scm.cloneInfo({ repo })
+    if (!info.url) {
+      return error(`scm plugin "${r.scm.manifest.id}" returned an empty clone URL for repo "${repo}"`)
+    }
+
+    const jobWorkingDir = path.join(ctx.settings.paths.workingDir, ctx.job.id)
+    const repoDir = path.join(jobWorkingDir, repo)
+
+    await fs.mkdir(jobWorkingDir, { recursive: true })
+
+    if (await isGitRepo(repoDir)) {
+      await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
+      return text({
+        pluginId: r.scm.manifest.id,
+        repo,
+        repoDir,
+        relativeDir: repo,
+        reused: true,
+      })
+    }
+
+    const targetStat = await fs.stat(repoDir).catch(() => null)
+    if (targetStat) {
+      const entries = await fs.readdir(repoDir)
+      if (entries.length === 0) {
+        await fs.rm(repoDir, { recursive: true, force: true })
+      } else {
+        return error(
+          `Cannot clone repo "${repo}": target path ${repoDir} already exists and is not a git checkout. ` +
+          'Remove it or choose a different directory.',
+        )
+      }
+    }
+
+    const git = buildCloneGit(jobWorkingDir, info.envForGit)
+    await git.clone(info.url, repoDir)
+    await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
+    await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)
+
+    return text({
+      pluginId: r.scm.manifest.id,
+      repo,
+      repoDir,
+      relativeDir: repo,
+      reused: false,
+    })
+  }
+
+  // ── Generic Tracker tools ──────────────────────────────────────────────
+  //
+  // Same idea as scm_*: every tracker plugin implements the same
+  // surface; the registry picks one. The legacy `tracker_*` handlers
+  // (which went through `ctx.trackerClient`) are replaced by these.
+
+  const tracker_get_issue = async (args: { pluginId?: string; key: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.getIssue) {
+      return mcpRedirect(r.tracker.manifest.id, 'tracker_get_issue',
+        r.tracker.manifest.mcpToolMap?.tracker_get_issue,
+        { issue_key: args.key, key: args.key },
+      )
+    }
+    try {
+      const issue = await r.tracker.getIssue(args.key)
+      return text(issue)
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_comment_issue = async (args: { pluginId?: string; key: string; body: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.commentIssue) {
+      return mcpRedirect(r.tracker.manifest.id, 'tracker_comment_issue',
+        r.tracker.manifest.mcpToolMap?.tracker_comment_issue,
+        { issue_key: args.key, key: args.key, body: args.body },
+      )
+    }
+    try {
+      await r.tracker.commentIssue({ key: args.key, body: args.body })
+      return text({ commented: true, key: args.key })
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_transition_issue = async (args: { pluginId?: string; key: string; status: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.transitionIssue) {
+      return mcpRedirect(r.tracker.manifest.id, 'tracker_transition_issue',
+        r.tracker.manifest.mcpToolMap?.tracker_transition_issue,
+        { issue_key: args.key, key: args.key, status: args.status },
+      )
+    }
+    try {
+      await r.tracker.transitionIssue({ key: args.key, status: args.status })
+      return text({ transitioned: true, key: args.key, status: args.status })
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
   return {
-    // BitBucket — coder
-    bb_create_repo: async ({ repoSlug, description }: { repoSlug: string; description?: string }) => {
-      const repo = await ctx.bbCoder.createRepo({ repoSlug, description, isPrivate: true })
-      return text({ fullName: repo.full_name })
-    },
+    // ── Generic surface (preferred, post-pivot — 9 tools total) ────────
+    //
+    // SCM (7):
+    scm_create_pr,
+    scm_get_pr_status,
+    scm_list_pr_comments,
+    scm_post_pr_comment,
+    scm_merge_pr,
+    scm_get_clone_info,
+    scm_clone_repo,
+    // Tracker (3):
+    tracker_get_issue,
+    tracker_comment_issue,
+    tracker_transition_issue,
 
-    bb_create_pr: async ({
-      repoSlug, title, description, sourceBranch, targetBranch, reviewerUsernames,
-    }: {
-      repoSlug: string
-      title: string
-      description?: string
-      sourceBranch: string
-      targetBranch?: string
-      reviewerUsernames?: string[]
-    }) => {
-      const { jobReviewers } = await import('./jobs/types')
-      const pr = await ctx.bbCoder.createPr({
-        repoSlug, title, description,
-        sourceBranch,
-        targetBranch: targetBranch ?? 'main',
-        reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
-      })
-
-      await ctx.stateBackend.addPrMapping(ctx.job.id, {
-        prId: pr.id,
-        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
-        repoSlug: repoSlug,
-        openedAt: new Date().toISOString(),
-      })
-
-      return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
-    },
-
-    bb_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      const status = await ctx.bbCoder.getPrStatus(repoSlug, prId)
-      return text(status)
-    },
-
-    // BitBucket — reviewer
-    bb_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      const comments = await ctx.bbReviewer.getComments(repoSlug, prId)
-      const mapped = comments.map(c => ({
-        id: c.id,
-        content: c.content.raw,
-        parentId: c.parent?.id ?? null,
-        createdOn: c.created_on,
-        inline: c.inline ?? null,
-      }))
-      return text(mapped)
-    },
-
-    bb_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
-      const comment = await ctx.bbReviewer.postComment(repoSlug, prId, content)
-      return text({ commentId: comment.id })
-    },
-
-    bb_reply_to_comment: async ({
-      repoSlug, prId, parentId, content,
-    }: { repoSlug: string; prId: number; parentId: number; content: string }) => {
-      const comment = await ctx.bbReviewer.replyToComment(repoSlug, prId, parentId, content)
-      return text({ commentId: comment.id })
-    },
-
-    bb_approve_pr: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      await ctx.bbReviewer.approvePr(repoSlug, prId)
-      return text({ approved: true })
-    },
-
-    bb_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
-      const pr = await ctx.bbReviewer.mergePr(repoSlug, prId, message)
-      return text({ state: pr.state })
-    },
-
-    // GitHub — uses a single token for both coder and reviewer operations
-    gh_create_repo: async ({ repoSlug, description }: { repoSlug: string; description?: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
-      const repo = await ctx.ghClient.createRepo({ repoSlug, description, isPrivate: true })
-      return text({ fullName: repo.full_name })
-    },
-
-    gh_create_pr: async ({
-      repoSlug, title, description, sourceBranch, targetBranch, reviewerUsernames,
-    }: {
-      repoSlug: string
-      title: string
-      description?: string
-      sourceBranch: string
-      targetBranch?: string
-      reviewerUsernames?: string[]
-    }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured. Set GITHUB_TOKEN and GITHUB_OWNER.')
-      const { jobReviewers } = await import('./jobs/types')
-      const pr = await ctx.ghClient.createPr({
-        repoSlug, title, description,
-        sourceBranch,
-        targetBranch: targetBranch ?? 'main',
-        reviewerUsernames: reviewerUsernames ?? jobReviewers(ctx.job),
-      })
-
-      await ctx.stateBackend.addPrMapping(ctx.job.id, {
-        prId: pr.id,
-        workItem: ctx.job.currentWorkItem ?? ctx.job.phase,
-        repoSlug: repoSlug,
-        openedAt: new Date().toISOString(),
-      })
-
-      return text({ prId: pr.id, url: pr.links.html.href, state: pr.state })
-    },
-
-    gh_get_pr_status: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const status = await ctx.ghClient.getPrStatus(repoSlug, prId)
-      return text(status)
-    },
-
-    gh_get_pr_comments: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const comments = await ctx.ghClient.getComments(repoSlug, prId)
-      const mapped = comments.map(c => ({
-        id: c.id,
-        content: c.content.raw,
-        parentId: c.parent?.id ?? null,
-        createdOn: c.created_on,
-        inline: c.inline ?? null,
-      }))
-      return text(mapped)
-    },
-
-    gh_post_pr_comment: async ({ repoSlug, prId, content }: { repoSlug: string; prId: number; content: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const comment = await ctx.ghClient.postComment(repoSlug, prId, content)
-      return text({ commentId: comment.id })
-    },
-
-    gh_reply_to_comment: async ({
-      repoSlug, prId, parentId, content,
-    }: { repoSlug: string; prId: number; parentId: number; content: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const comment = await ctx.ghClient.replyToComment(repoSlug, prId, parentId, content)
-      return text({ commentId: comment.id })
-    },
-
-    gh_approve_pr: async ({ repoSlug, prId }: { repoSlug: string; prId: number }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      await ctx.ghClient.approvePr(repoSlug, prId)
-      return text({ approved: true })
-    },
-
-    gh_merge_pr: async ({ repoSlug, prId, message }: { repoSlug: string; prId: number; message?: string }) => {
-      if (!ctx.ghClient) return error('GitHub is not configured.')
-      const pr = await ctx.ghClient.mergePr(repoSlug, prId, message)
-      return text({ state: pr.state })
-    },
+    // ── Legacy bb_*/gh_*/jira_* shims removed in S6 ──────────────────────
+    //
+    // The MCP-first pivot deleted every back-compat wrapper. Workflow
+    // markdown that still names a legacy tool now hits the SDK's
+    // "tool not found" path, which surfaces a clean error to the
+    // agent. Agents must call the trimmed generic surface
+    // (`scm_*`/`tracker_*`) or the upstream MCP server directly
+    // (`mcp__github__*`, `mcp__jira__*`, …).
+    //
+    // The deprecation-cycle controller in `plugins/deprecation.ts`
+    // still ships for the *config* keys (`legacyConfigKeysBehaviour`)
+    // and the mapping tables (`legacyMappingTablesBehaviour`); only
+    // the MCP-wrapper branch has been graduated past N+2 ahead of
+    // the cycle because the plugins migration replaced all the
+    // legacy call sites.
 
     // Test harness
     run_go_build: async ({ repoDir }: { repoDir: string }) => {
@@ -305,76 +571,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text(result)
     },
 
-    // Jira
-    jira_get_issue: async ({ ticketId }: { ticketId: string }) => {
-      const result = await ctx.jiraClient.getIssue(ticketId)
-      return text(result)
-    },
-
-    jira_post_comment: async ({ ticketId, body }: { ticketId: string; body: string }) => {
-      const result = await ctx.jiraClient.postComment(ticketId, body)
-      return text(result)
-    },
-
-    jira_transition_issue: async ({ ticketId, transitionId }: { ticketId: string; transitionId: string }) => {
-      const result = await ctx.jiraClient.transitionIssue(ticketId, transitionId)
-      return text(result ?? { transitioned: true })
-    },
-
-    // Provider-agnostic issue tracker. Resolves to whichever provider is
-    // configured at runner bootstrap (Jira today; GitHub Issues / Linear
-    // later). All methods short-circuit with a structured `available:false`
-    // response when no tracker is configured, letting the campaign-planner
-    // proceed in degraded mode rather than aborting the phase.
-    tracker_create_epic: async (args: {
-      projectKey: string; summary: string; description: string; labels?: string[]
-    }) => {
-      const result = await ctx.trackerClient.createEpic(args)
-      return text(result)
-    },
-
-    tracker_create_issue: async (args: {
-      projectKey: string
-      summary: string
-      description: string
-      issueType?: string
-      parentKey?: string
-      labels?: string[]
-    }) => {
-      const result = await ctx.trackerClient.createIssue(args)
-      return text(result)
-    },
-
-    tracker_link_issues: async (args: {
-      fromKey: string; toKey: string; relation?: string
-    }) => {
-      const result = await ctx.trackerClient.linkIssues({
-        fromKey: args.fromKey,
-        toKey: args.toKey,
-        relation: args.relation ?? 'Blocks',
-      })
-      return text(result)
-    },
-
-    tracker_get_issue: async ({ key }: { key: string }) => {
-      const result = await ctx.trackerClient.getIssue(key)
-      return text(result)
-    },
-
-    tracker_list_children: async ({ parentKey }: { parentKey: string }) => {
-      const result = await ctx.trackerClient.listChildren(parentKey)
-      return text(result)
-    },
-
-    tracker_transition_issue: async (args: { key: string; status: string }) => {
-      const result = await ctx.trackerClient.transitionIssue(args)
-      return text(result)
-    },
-
-    tracker_comment_issue: async (args: { key: string; body: string }) => {
-      const result = await ctx.trackerClient.commentIssue(args)
-      return text(result)
-    },
+    // (Legacy jira_*/bb_*/gh_* shims removed in S6 — see comment above.)
 
     // Work-item tracking — pure state CRUD, zero orchestration logic
     set_work_items: setWorkItems,
@@ -678,6 +875,23 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text({ index, files: linkedFiles, proposals })
     },
   }
+}
+
+async function isGitRepo(dir: string): Promise<boolean> {
+  const stat = await fs.stat(path.join(dir, '.git')).catch(() => null)
+  return stat?.isDirectory() ?? false
+}
+
+function buildCloneGit(cwd: string, extraEnv: Record<string, string>): SimpleGit {
+  const opts: Partial<SimpleGitOptions> = {
+    baseDir: cwd,
+    unsafe: { allowUnsafeProtocolOverride: false, allowUnsafeAskPass: true } as unknown as SimpleGitOptions['unsafe'],
+  }
+  return simpleGit(opts).env({
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    ...extraEnv,
+  })
 }
 
 export type McpToolHandlers = ReturnType<typeof createMcpToolHandlers>

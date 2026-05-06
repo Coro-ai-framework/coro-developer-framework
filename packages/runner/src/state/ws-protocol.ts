@@ -126,6 +126,33 @@ export interface WsRepoMapping {
   jobId: string
 }
 
+// ── External-ref RPCs (P5+) ──────────────────────────────────────────────────
+//
+// Plugin-aware lookups go through these. The cloud handler resolves
+// against `external_ref_mappings`; legacy `job:prMapping` /
+// `job:byPr` etc. remain on the wire so one-release downgrade is
+// possible.
+
+export interface WsRefDescriptor {
+  kind: string
+  pluginId: string
+  repoKey: string
+  externalId: string
+}
+
+export interface WsJobMapExternalRef {
+  type: 'job:mapExternalRef'
+  messageId: string
+  ref: WsRefDescriptor
+  jobId: string
+}
+
+export interface WsJobByExternalRef {
+  type: 'job:byExternalRef'
+  messageId: string
+  ref: WsRefDescriptor
+}
+
 export interface WsJobPark {
   type: 'job:park'
   messageId?: string
@@ -200,6 +227,8 @@ export type RunnerMessage =
   | WsJiraMapping
   | WsJobByJira
   | WsRepoMapping
+  | WsJobMapExternalRef
+  | WsJobByExternalRef
   | WsJobPark
   | WsJobComplete
   | WsProposalCreate
@@ -222,10 +251,39 @@ export interface WsEventWebhook {
   event: InboundEvent
 }
 
+/**
+ * Generic plugin-routed webhook frame (P4+).
+ *
+ * The cloud has zero provider knowledge: it forwards the raw HTTP
+ * body and headers verbatim, tagged with the `pluginId` the request
+ * URL named. The runner side resolves the matching plugin runtime
+ * and calls its `normalizeInbound` to produce an
+ * {@link InboundEvent} with `source: 'plugin'`.
+ *
+ * `rawBody` is base64-encoded so the WS frame stays text-safe
+ * regardless of the original `Content-Type` (Bitbucket sends JSON
+ * but other providers sometimes send `application/x-www-form-urlencoded`).
+ */
+export interface WsEventPluginWebhook {
+  type: 'event:pluginWebhook'
+  pluginId: string
+  /** Lowercased header map. Multi-valued headers collapsed to first value. */
+  headers: Record<string, string>
+  /** Base64-encoded raw HTTP body. */
+  rawBodyBase64: string
+  receivedAt: string
+}
+
 export interface WsEventResume {
   type: 'event:resume'
   jobId: string
   prompt?: string
+}
+
+export interface WsEventCancel {
+  type: 'event:cancel'
+  jobId: string
+  reason?: string
 }
 
 export interface WsEventMessage {
@@ -253,7 +311,9 @@ export interface WsEventDispatch {
 export type CloudMessage =
   | WsRpcResponse
   | WsEventWebhook
+  | WsEventPluginWebhook
   | WsEventResume
+  | WsEventCancel
   | WsEventMessage
   | WsEventDispatch
   | WsProposalApply

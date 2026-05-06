@@ -7,11 +7,15 @@ import {
   JobInput,
   STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_DEVELOPER_INPUT,
+  STATUS_CANCELLED,
   STATUS_CODING,
-  STATUS_COMPLETE,
+  STATUS_ESCALATED,
   STATUS_FAILED,
+  cancelledJobPatch,
+  isCancellableStatus,
   isCampaignJob,
   isParkingStatus,
+  isResumableStatus,
   isStoppedStatus,
   isTerminalChildStatus,
 } from './types'
@@ -21,6 +25,9 @@ import {
 } from '../tools/campaign'
 import { runJob, RunnerContext } from './runner'
 import type { EventTransport } from '../state/transport'
+import type { InboundEvent, InboundEventSource } from '../state/events'
+import type { ExternalRef } from '../plugins/refs'
+import { resolveJobByExternalRef } from '../plugins/refs'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
 const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
@@ -57,7 +64,7 @@ export class Dispatcher {
     // Register for transport events (used in Phase 3 when events arrive via WebSocket)
     if (transport) {
       transport.onEvent(async (event) => {
-        await this.handleWebhookEvent(event.source, event.eventKey, event.payload)
+        await this.handleInboundEvent(event)
       })
     }
   }
@@ -69,6 +76,40 @@ export class Dispatcher {
     this.ctx.logger.info({ jobId: job.id, type: job.type }, 'Job dispatched')
     this.fireAndForget(job.id)
     return job
+  }
+
+  async cancelJob(jobId: string, reason?: string): Promise<Job> {
+    const job = await this.requireJob(jobId)
+    if (!isCancellableStatus(job.status)) {
+      if (job.status === STATUS_CANCELLED) {
+        this.eventQueue.delete(jobId)
+        if (this.activeJobs.has(jobId)) {
+          await this.ctx.stateBackend.appendLog(
+            jobId,
+            '[control] Cancellation will take effect at the next safe boundary',
+          )
+        }
+        return job
+      }
+      throw new Error(`Job ${jobId} is already complete`)
+    }
+
+    const wasActive = this.activeJobs.has(jobId)
+    const updated = await this.ctx.stateBackend.updateJob(jobId, cancelledJobPatch())
+
+    this.eventQueue.delete(jobId)
+
+    const reasonSuffix = reason ? `: ${reason}` : ''
+    await this.ctx.stateBackend.appendLog(jobId, `[control] Job cancelled${reasonSuffix}`)
+    if (wasActive) {
+      await this.ctx.stateBackend.appendLog(
+        jobId,
+        '[control] Cancellation requested during an active run — the current agent turn will stop at the next safe boundary',
+      )
+    }
+
+    this.ctx.logger.info({ jobId, wasActive, reason }, 'Job cancelled')
+    return updated
   }
 
   // ── Manual resume ───────────────────────────────────────────────────────────
@@ -88,15 +129,14 @@ export class Dispatcher {
    * compatibility and simply wipes `sessionId` from state when set.
    */
   async resumeJob(jobId: string, fromPhase?: string, clearSession = false): Promise<void> {
-    const job = await this.ctx.stateBackend.getJob(jobId)
-    if (!job) throw new Error(`Job not found: ${jobId}`)
+    const job = await this.requireJob(jobId)
 
     if (this.activeJobs.has(jobId)) {
       throw new Error(`Job ${jobId} is already running`)
     }
 
-    if (job.status === STATUS_COMPLETE) {
-      throw new Error(`Job ${jobId} is already complete`)
+    if (!isResumableStatus(job.status)) {
+      throw new Error(`Job ${jobId} is already ${job.status}`)
     }
 
     const phaseChanged = fromPhase && fromPhase !== job.phase
@@ -145,8 +185,7 @@ export class Dispatcher {
    * Returns the patch that was applied so callers can echo the new state.
    */
   async setJobInteractive(jobId: string, value: boolean): Promise<Job> {
-    const job = await this.ctx.stateBackend.getJob(jobId)
-    if (!job) throw new Error(`Job not found: ${jobId}`)
+    const job = await this.requireJob(jobId)
 
     if (isStoppedStatus(job.status)) {
       throw new Error(
@@ -192,34 +231,157 @@ export class Dispatcher {
   }
 
   // ── Webhook events ──────────────────────────────────────────────────────────
+  //
+  // After P4 the source axis collapsed to two values:
+  //
+  //   - `'plugin'` — a provider webhook normalised by a plugin's
+  //     `normalizeInbound`. Dispatch is fully generic: the
+  //     `ExternalRef` carried on the event identifies the parked job
+  //     to wake.
+  //   - `'cloud'` — control-plane originated commands addressed by
+  //     `jobId`. Different protocol; never lookups by ref.
+  //
+  // The legacy `'bitbucket'`/`'jira'` source values were retired here.
+  // Callers (transports, tests) now produce `'plugin'` events with a
+  // `pluginId` and `ref`; the per-provider handlers became part of
+  // each plugin's `normalizeInbound`.
 
-  async handleWebhookEvent(
-    source: 'bitbucket' | 'jira',
-    eventKey: string,
-    payload: Record<string, unknown>,
-  ): Promise<void> {
-    if (source === 'bitbucket') {
-      await this.handleBitBucketEvent(eventKey, payload)
-    } else {
-      await this.handleJiraEvent(eventKey, payload)
+  /**
+   * Entry point used by transports. Accepts a fully-formed
+   * {@link InboundEvent}; reads the source, eventKey, payload, and —
+   * for plugin events — the {@link ExternalRef}.
+   */
+  async handleInboundEvent(event: InboundEvent): Promise<void> {
+    switch (event.source) {
+      case 'plugin':
+        await this.handlePluginEvent(event)
+        return
+      case 'cloud':
+        await this.handleCloudEvent(event.eventKey, event.payload)
+        return
     }
   }
 
-  // ── BitBucket event handling ────────────────────────────────────────────────
-
-  private async handleBitBucketEvent(
+  /**
+   * @deprecated Use {@link handleInboundEvent}. Kept as a thin
+   * adapter so callers that don't yet build an `InboundEvent` still
+   * dispatch through the same code path.
+   */
+  async handleWebhookEvent(
+    source: InboundEventSource,
     eventKey: string,
     payload: Record<string, unknown>,
   ): Promise<void> {
-    const prId = extractBbPrId(payload)
-    if (prId === null) {
-      this.ctx.logger.debug({ eventKey }, 'BitBucket event has no PR ID — skipping')
+    await this.handleInboundEvent({
+      source,
+      eventKey,
+      payload,
+      receivedAt: new Date().toISOString(),
+    })
+  }
+
+  // ── Cloud-initiated control events ─────────────────────────────────────────
+  //
+  // These events arrive from the cloud control plane (dashboard / REST) over
+  // the WebSocket transport. Unlike provider webhooks, the payload always
+  // carries an explicit `jobId` — there is no PR/issue lookup. We delegate
+  // to the same `resumeJob` / `sendMessage` paths used by the local HTTP
+  // server so behaviour is identical regardless of which surface initiated
+  // the action.
+
+  private async handleCloudEvent(
+    eventKey: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const jobId = typeof payload['jobId'] === 'string' ? payload['jobId'] : null
+    if (!jobId) {
+      this.ctx.logger.warn({ eventKey, payload }, 'Cloud event missing jobId — skipping')
       return
     }
 
-    const job = await this.ctx.stateBackend.getJobByPr(prId)
+    switch (eventKey) {
+      case 'job:resume': {
+        const prompt = typeof payload['prompt'] === 'string' ? payload['prompt'] : undefined
+        try {
+          // `prompt` arrives as an optional phase override today (mirrors the
+          // local POST /jobs/:id/resume contract). Pass it through to
+          // `resumeJob` which interprets a string as `fromPhase`.
+          await this.resumeJob(jobId, prompt)
+        } catch (err) {
+          this.ctx.logger.warn({ err, jobId }, 'Cloud resume failed — job state may have changed')
+        }
+        return
+      }
+      case 'job:message': {
+        const message = typeof payload['message'] === 'string' ? payload['message'] : null
+        if (!message) {
+          this.ctx.logger.warn({ jobId }, 'Cloud message event missing message text — skipping')
+          return
+        }
+        try {
+          await this.sendMessage(jobId, message)
+        } catch (err) {
+          this.ctx.logger.warn({ err, jobId }, 'Cloud message injection failed')
+        }
+        return
+      }
+      case 'job:cancel': {
+        const reason = typeof payload['reason'] === 'string' ? payload['reason'] : undefined
+        try {
+          await this.cancelJob(jobId, reason)
+        } catch (err) {
+          this.ctx.logger.warn({ err, jobId }, 'Cloud cancel failed — job state may have changed')
+        }
+        return
+      }
+      // `job:dispatch` and `proposal:apply` are intercepted earlier by
+      // `wireCloudJobDispatch` (see `runner/hybrid-dispatcher.ts`). They
+      // reach this branch only if hybrid wiring is missing — log loudly.
+      case 'job:dispatch':
+      case 'proposal:apply':
+        this.ctx.logger.warn(
+          { eventKey, jobId },
+          'Cloud event reached base dispatcher — hybrid wiring may be missing',
+        )
+        return
+      default:
+        this.ctx.logger.debug({ eventKey, jobId }, 'Unknown cloud event key — ignoring')
+    }
+  }
+
+  // ── Plugin webhook event handling ──────────────────────────────────────────
+  //
+  // Plugin events arrive with everything we need to wake the parked
+  // job already attached: the `ref` (an {@link ExternalRef}) tells us
+  // exactly which job to look up, regardless of which provider the
+  // event came from. The legacy per-provider extractors that used to
+  // live in `webhook-payload.ts` now live inside each plugin's
+  // `normalizeInbound`.
+
+  private async handlePluginEvent(event: InboundEvent): Promise<void> {
+    if (!event.ref) {
+      this.ctx.logger.debug(
+        { eventKey: event.eventKey, pluginId: event.pluginId },
+        'Plugin event has no ExternalRef — skipping',
+      )
+      return
+    }
+
+    const ref: ExternalRef = event.ref
+    const job = await resolveJobByExternalRef(this.ctx.stateBackend, ref)
     if (!job) {
-      this.ctx.logger.debug({ eventKey, prId }, 'No job found for PR — skipping')
+      this.ctx.logger.debug(
+        { eventKey: event.eventKey, ref },
+        'No job found for external ref — skipping',
+      )
+      return
+    }
+
+    if (!isResumableStatus(job.status)) {
+      this.ctx.logger.debug(
+        { jobId: job.id, status: job.status, eventKey: event.eventKey, ref },
+        'Job is terminal — skipping webhook event',
+      )
       return
     }
 
@@ -227,35 +389,28 @@ export class Dispatcher {
     // The runner's finally() handler will replay queued events once the phase completes.
     // This prevents the race where a webhook arrives just before await_event is called.
     if (this.activeJobs.has(job.id)) {
-      this.ctx.logger.debug({ jobId: job.id, eventKey }, 'Job is active — queueing webhook event for after park')
-      const queue = this.eventQueue.get(job.id) ?? []
-      queue.push({ eventKey, payload, receivedAt: new Date().toISOString() })
-      this.eventQueue.set(job.id, queue)
+      this.queueEvent(
+        job.id,
+        { eventKey: event.eventKey, payload: event.payload, receivedAt: event.receivedAt },
+        { jobId: job.id, eventKey: event.eventKey, ref },
+        'Job is active — queueing webhook event for after park',
+      )
       return
     }
 
     if (!isParkingStatus(job.status)) {
-      this.ctx.logger.debug({ jobId: job.id, status: job.status }, 'Job is not parked — skipping')
+      this.ctx.logger.debug(
+        { jobId: job.id, status: job.status },
+        'Job is not parked — skipping',
+      )
       return
     }
 
-    // Any PR event on a mapped job wakes the agent — the AI decides what to do.
-    // Comments, approvals, merges, updates — all are relevant context the agent
-    // should see and react to. No rigid event matching.
-    await this.resumeWithEvent(job.id, eventKey, payload)
-  }
-
-  private async handleJiraEvent(
-    eventKey: string,
-    payload: Record<string, unknown>,
-  ): Promise<void> {
-    const ticketId = extractJiraTicketId(payload)
-    if (!ticketId) return
-
-    const job = await this.ctx.stateBackend.getJobByJiraTicket(ticketId)
-    if (!job || !isParkingStatus(job.status)) return
-
-    await this.resumeWithEvent(job.id, eventKey, payload)
+    // Any matched event on a parked job wakes the agent — the AI decides
+    // what to do. Comments, approvals, merges, updates, ticket transitions
+    // — all are relevant context the agent should see and react to.
+    // No rigid event matching.
+    await this.resumeWithEvent(job.id, event.eventKey, event.payload)
   }
 
   // ── Resume ──────────────────────────────────────────────────────────────────
@@ -268,10 +423,7 @@ export class Dispatcher {
     const event: WebhookEvent = { eventKey, payload, receivedAt: new Date().toISOString() }
 
     if (this.activeJobs.has(jobId)) {
-      this.ctx.logger.debug({ jobId, eventKey }, 'Job is active — queueing webhook event')
-      const queue = this.eventQueue.get(jobId) ?? []
-      queue.push(event)
-      this.eventQueue.set(jobId, queue)
+      this.queueEvent(jobId, event, { jobId, eventKey }, 'Job is active — queueing webhook event')
       return
     }
 
@@ -281,6 +433,13 @@ export class Dispatcher {
   private async injectAndResume(jobId: string, event: WebhookEvent): Promise<void> {
     const job = await this.ctx.stateBackend.getJob(jobId)
     if (!job) return
+    if (!isParkingStatus(job.status)) {
+      this.ctx.logger.debug(
+        { jobId, status: job.status, eventKey: event.eventKey },
+        'Job is no longer parked — dropping queued webhook event',
+      )
+      return
+    }
 
     const pendingPrompt = buildWebhookMessage(event.eventKey, event.payload)
 
@@ -305,14 +464,17 @@ export class Dispatcher {
    * Two paths:
    *   1. Job is actively running — inject via Query.streamInput() so the live
    *      agent sees the message mid-turn (zero session rebuild).
-  *   2. Job is parked waiting for developer input — build a framed prompt,
-  *      clear the awaiting* fields, and resume the job in the existing Claude
-  *      session. The runner re-registers the dynamic A5 MCP server before the
-  *      next turn so the agent keeps both transcript continuity and MCP tools.
+   *   2. Job is parked waiting for developer input or is escalated — build a
+   *      framed prompt, clear the parked/escalated fields, and resume the job.
    *
    * Any other status (complete, failed, queued without a live query) throws.
    */
   async sendMessage(jobId: string, message: string): Promise<void> {
+    const job = await this.requireJob(jobId)
+    if (job.status === STATUS_CANCELLED) {
+      throw new Error(`Cannot send message to cancelled job ${jobId}`)
+    }
+
     const q = this.activeQueries.get(jobId)
 
     if (q) {
@@ -343,14 +505,14 @@ export class Dispatcher {
       return
     }
 
-    // No live query — check if the job is parked waiting for developer input.
-    const job = await this.ctx.stateBackend.getJob(jobId)
-    if (!job) throw new Error(`Job not found: ${jobId}`)
+    // No live query — check if the job is parked waiting for human follow-up.
+    const awaitingDeveloperInput = job.status === STATUS_AWAITING_DEVELOPER_INPUT
+    const escalated = job.status === STATUS_ESCALATED
 
-    if (job.status !== STATUS_AWAITING_DEVELOPER_INPUT) {
+    if (!awaitingDeveloperInput && !escalated) {
       throw new Error(
         `Cannot send message to job with status "${job.status}" — ` +
-        `only running jobs and jobs awaiting developer input accept messages.`,
+        `only running jobs, escalated jobs, and jobs awaiting developer input accept messages.`,
       )
     }
 
@@ -358,24 +520,26 @@ export class Dispatcher {
       throw new Error('Job is transitioning — try again in a moment')
     }
 
-    const pendingPrompt = buildDeveloperInputMessage(
-      message,
-      job.phase,
-      job.awaitingEvent,
-      (job.artifacts ?? []).filter(a => a.phase === job.phase),
-    )
+    const currentPhaseArtifacts = (job.artifacts ?? []).filter(a => a.phase === job.phase)
+    const pendingPrompt = escalated
+      ? buildEscalationResponseMessage(message, job.phase, job.escalationMessage, currentPhaseArtifacts)
+      : buildDeveloperInputMessage(message, job.phase, job.awaitingEvent, currentPhaseArtifacts)
 
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
+      escalationMessage: undefined,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
-      approvedAdvanceFromPhase: job.awaitingNextPhase ? job.phase : undefined,
+      approvedAdvanceFromPhase: awaitingDeveloperInput && job.awaitingNextPhase ? job.phase : undefined,
       pendingPrompt,
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
-    this.ctx.logger.info({ jobId, phase: job.phase }, 'Resuming parked job with developer message')
+    this.ctx.logger.info(
+      { jobId, phase: job.phase, escalated },
+      escalated ? 'Resuming escalated job with developer message' : 'Resuming parked job with developer message',
+    )
 
     this.fireAndForget(jobId)
   }
@@ -698,6 +862,7 @@ export class Dispatcher {
       tempoClient: this.ctx.tempoClient,
       jiraClient: this.ctx.jiraClient,
       trackerClient: this.ctx.trackerClient,
+      plugins: this.ctx.plugins,
       logger: this.ctx.logger,
       runningServices: new Map(),
     }
@@ -782,6 +947,24 @@ export class Dispatcher {
         await this.injectAndResume(jobId, next)
       })
   }
+
+  private async requireJob(jobId: string): Promise<Job> {
+    const job = await this.ctx.stateBackend.getJob(jobId)
+    if (!job) throw new Error(`Job not found: ${jobId}`)
+    return job
+  }
+
+  private queueEvent(
+    jobId: string,
+    event: WebhookEvent,
+    context: Record<string, unknown>,
+    message: string,
+  ): void {
+    this.ctx.logger.debug(context, message)
+    const queue = this.eventQueue.get(jobId) ?? []
+    queue.push(event)
+    this.eventQueue.set(jobId, queue)
+  }
 }
 
 // ── Developer input message builder ───────────────────────────────────────────
@@ -840,6 +1023,46 @@ export function buildDeveloperInputMessage(
   return lines.join('\n')
 }
 
+export function buildEscalationResponseMessage(
+  message: string,
+  phase: string,
+  escalationMessage: string | undefined,
+  currentPhaseArtifacts: Artifact[],
+): string {
+  const lines = [
+    '[DEVELOPER RESPONSE]',
+    '',
+    `You previously escalated during phase: ${phase}.`,
+  ]
+
+  if (escalationMessage) {
+    lines.push('', 'Your escalation reason was:', `"${escalationMessage}"`)
+  }
+
+  if (currentPhaseArtifacts.length > 0) {
+    lines.push('', 'Artefacts you posted this phase:')
+    for (const a of currentPhaseArtifacts.slice(-10)) {
+      lines.push(`  - ${a.kind}: ${a.title}`)
+    }
+  }
+
+  lines.push(
+    '',
+    'Developer said:',
+    `"${message}"`,
+    '',
+    'Use the developer\'s reply to continue from the current phase. If the blocker is resolved, or the developer ' +
+    'explicitly chose a path that you can execute yourself, continue normally. If the developer is asking you for ' +
+    'instructions, research, or any out-of-band action they must perform themselves, answer clearly and then call ' +
+    '`await_event({ eventName: "developer-input: <short reason>" })` so the job stays with you instead of ' +
+    'auto-advancing to the next phase. If you still cannot proceed after that, explain the remaining blocker and ' +
+    'escalate again. If this reply contains a reusable pattern or convention, record it via `add_insight` so the ' +
+    'evaluator can review it.',
+  )
+
+  return lines.join('\n')
+}
+
 // ── Webhook message builder ───────────────────────────────────────────────────
 
 export function buildWebhookMessage(eventKey: string, payload: Record<string, unknown>): string {
@@ -872,25 +1095,6 @@ export function buildWebhookMessage(eventKey: string, payload: Record<string, un
   lines.push('Please continue your work based on this event. Refer to your current phase instructions.')
 
   return lines.join('\n')
-}
-
-// ── Payload extraction helpers ────────────────────────────────────────────────
-
-function extractBbPrId(payload: Record<string, unknown>): number | null {
-  const pr = payload['pullrequest'] as Record<string, unknown> | undefined
-  const id = pr?.['id']
-  if (typeof id === 'number') return id
-  if (typeof id === 'string') {
-    const n = parseInt(id, 10)
-    return isNaN(n) ? null : n
-  }
-  return null
-}
-
-function extractJiraTicketId(payload: Record<string, unknown>): string | null {
-  const issue = payload['issue'] as Record<string, unknown> | undefined
-  const key = issue?.['key']
-  return typeof key === 'string' ? key : null
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────

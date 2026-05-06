@@ -533,43 +533,67 @@ describe('commitAndPush', () => {
 // ── openProposalPr ───────────────────────────────────────────────────────────
 
 describe('openProposalPr', () => {
-  function makeBb(): import('../../src/clients/bitbucket').BitBucketClient {
-    return {
-      createPr: vi.fn(async (opts: import('../../src/clients/bitbucket').CreatePrOptions) => ({
-        id: 42,
-        title: opts.title,
-        description: opts.description ?? '',
-        state: 'OPEN',
-        source: { branch: { name: opts.sourceBranch } },
-        destination: { branch: { name: opts.targetBranch ?? 'main' } },
-        author: { display_name: 'bot' },
-        created_on: 'now',
-        updated_on: 'now',
-        links: { html: { href: `https://bitbucket.org/acme/intel/pull-requests/${42}` } },
-      })),
-    } as unknown as import('../../src/clients/bitbucket').BitBucketClient
+  // The writer no longer takes raw `bbCoder` / `ghClient` clients. After
+  // the MCP-first plugins pivot it routes proposal PRs through the
+  // `PluginRegistry`: we resolve the SCM plugin whose `matchesRemote()`
+  // claims the URL, then call its `writerCreatePr()` escape hatch (a
+  // writer-only native fallback documented on `ScmPluginRuntime`).
+  // These mocks reproduce just enough of that surface to drive the
+  // routing rules end-to-end.
+  type ScmStub = import('../../src/plugins/types').ScmPluginRuntime
+  type RegistryStub = import('../../src/plugins/registry').PluginRegistry
+
+  interface MakePluginArgs {
+    id: string
+    matchHost: RegExp
+    /** PR id the stub returns. */
+    prId: number
+    /** Used to build the response URL. */
+    repoUrlBase: string
   }
 
-  function makeGh(): import('../../src/clients/github').GitHubClient {
+  function makePlugin(args: MakePluginArgs): ScmStub & {
+    writerCreatePr: ReturnType<typeof vi.fn>
+  } {
+    const writerCreatePr = vi.fn(async (a: {
+      repoSlug: string
+      sourceBranch: string
+      targetBranch?: string
+      reviewers?: ReadonlyArray<string>
+    }) => ({
+      kind: 'pull_request' as const,
+      pluginId: args.id,
+      repoKey: a.repoSlug,
+      externalId: String(args.prId),
+      url: `${args.repoUrlBase}/${a.repoSlug}/pull/${args.prId}`,
+    }))
     return {
-      createPr: vi.fn(async (opts: import('../../src/clients/github').CreatePrOptions) => ({
-        id: 7,
-        title: opts.title,
-        description: opts.description ?? '',
-        state: 'OPEN',
-        source: { branch: { name: opts.sourceBranch } },
-        destination: { branch: { name: opts.targetBranch ?? 'main' } },
-        author: { display_name: 'bot' },
-        created_on: 'now',
-        updated_on: 'now',
-        links: { html: { href: `https://github.com/acme/intel/pull/7` } },
-      })),
-    } as unknown as import('../../src/clients/github').GitHubClient
+      manifest: { id: args.id, kind: 'scm', version: '1.0.0', displayName: args.id, hostCompatibility: '*' },
+      kind: 'scm',
+      init: vi.fn(async () => {}),
+      healthcheck: vi.fn(async () => ({ ok: true })),
+      dispose: vi.fn(async () => {}),
+      cloneInfo: () => ({ url: '', envForGit: {} }),
+      matchesRemote: (url: string) => args.matchHost.test(url),
+      writerCreatePr,
+    } as unknown as ScmStub & { writerCreatePr: ReturnType<typeof vi.fn> }
   }
 
-  it('routes github URLs to ghClient', async () => {
-    const ghClient = makeGh()
-    const bbCoder = makeBb()
+  function makeRegistry(plugins: ScmStub[]): RegistryStub {
+    return {
+      resolveByRemote(url: string) {
+        return plugins.find(p => typeof p.matchesRemote === 'function' && p.matchesRemote(url))
+      },
+    } as unknown as RegistryStub
+  }
+
+  it('routes github URLs to the github plugin via writerCreatePr', async () => {
+    const ghPlugin = makePlugin({
+      id: 'github', matchHost: /github\.com/i, prId: 7, repoUrlBase: 'https://github.com/acme',
+    })
+    const bbPlugin = makePlugin({
+      id: 'bitbucket', matchHost: /bitbucket\.org/i, prId: 42, repoUrlBase: 'https://bitbucket.org/acme',
+    })
 
     const result = await openProposalPr({
       remoteUrl: 'git@github.com:acme/intel.git',
@@ -577,24 +601,27 @@ describe('openProposalPr', () => {
       baseRef: 'main',
       title: 't',
       body: 'b',
-      bbCoder,
-      ghClient,
+      plugins: makeRegistry([ghPlugin, bbPlugin]),
       logger: makeLogger(),
     })
 
     expect(result.provider).toBe('github')
-    expect(result.id).toBe(7)
-    expect(ghClient.createPr).toHaveBeenCalledWith(expect.objectContaining({
+    expect(result.id).toBe('7')
+    expect(ghPlugin.writerCreatePr).toHaveBeenCalledWith(expect.objectContaining({
       repoSlug: 'intel',
       sourceBranch: 'coro/proposal/x',
       targetBranch: 'main',
     }))
-    expect(bbCoder.createPr).not.toHaveBeenCalled()
+    expect(bbPlugin.writerCreatePr).not.toHaveBeenCalled()
   })
 
-  it('routes bitbucket URLs to bbCoder', async () => {
-    const ghClient = makeGh()
-    const bbCoder = makeBb()
+  it('routes bitbucket URLs to the bitbucket plugin via writerCreatePr', async () => {
+    const ghPlugin = makePlugin({
+      id: 'github', matchHost: /github\.com/i, prId: 7, repoUrlBase: 'https://github.com/acme',
+    })
+    const bbPlugin = makePlugin({
+      id: 'bitbucket', matchHost: /bitbucket\.org/i, prId: 42, repoUrlBase: 'https://bitbucket.org/acme',
+    })
 
     const result = await openProposalPr({
       remoteUrl: 'https://bitbucket.org/acme/intel.git',
@@ -602,18 +629,20 @@ describe('openProposalPr', () => {
       baseRef: 'main',
       title: 't',
       body: 'b',
-      bbCoder,
-      ghClient,
+      plugins: makeRegistry([ghPlugin, bbPlugin]),
       logger: makeLogger(),
     })
 
     expect(result.provider).toBe('bitbucket')
-    expect(result.id).toBe(42)
-    expect(bbCoder.createPr).toHaveBeenCalled()
-    expect(ghClient.createPr).not.toHaveBeenCalled()
+    expect(result.id).toBe('42')
+    expect(bbPlugin.writerCreatePr).toHaveBeenCalled()
+    expect(ghPlugin.writerCreatePr).not.toHaveBeenCalled()
   })
 
-  it('throws when host is unsupported', async () => {
+  it('throws when no plugin recognises the remote', async () => {
+    const ghPlugin = makePlugin({
+      id: 'github', matchHost: /github\.com/i, prId: 7, repoUrlBase: 'https://github.com/acme',
+    })
     await expect(
       openProposalPr({
         remoteUrl: 'git@gitlab.com:acme/intel.git',
@@ -621,14 +650,25 @@ describe('openProposalPr', () => {
         baseRef: 'main',
         title: 't',
         body: 'b',
-        bbCoder: makeBb(),
-        ghClient: makeGh(),
+        plugins: makeRegistry([ghPlugin]),
         logger: makeLogger(),
       }),
-    ).rejects.toThrow('unsupported provider host')
+    ).rejects.toThrow(/no SCM plugin recognises remote/)
   })
 
-  it('throws when the URL is a GitHub repo but ghClient is null', async () => {
+  it('throws when the resolved plugin omits writerCreatePr', async () => {
+    // An MCP-mode plugin without an inline native fallback. The plan
+    // explicitly documents writerCreatePr as the writer escape hatch,
+    // so missing it must fail loudly.
+    const ghPlugin = {
+      manifest: { id: 'github', kind: 'scm', version: '1.0.0', displayName: 'GitHub', hostCompatibility: '*' },
+      kind: 'scm',
+      init: vi.fn(async () => {}),
+      healthcheck: vi.fn(async () => ({ ok: true })),
+      dispose: vi.fn(async () => {}),
+      cloneInfo: () => ({ url: '', envForGit: {} }),
+      matchesRemote: (url: string) => /github\.com/i.test(url),
+    } as unknown as ScmStub
     await expect(
       openProposalPr({
         remoteUrl: 'git@github.com:acme/intel.git',
@@ -636,11 +676,10 @@ describe('openProposalPr', () => {
         baseRef: 'main',
         title: 't',
         body: 'b',
-        bbCoder: makeBb(),
-        ghClient: null,
+        plugins: makeRegistry([ghPlugin]),
         logger: makeLogger(),
       }),
-    ).rejects.toThrow('no GitHub client is configured')
+    ).rejects.toThrow(/writerCreatePr/)
   })
 
   it('throws when the URL cannot be parsed', async () => {
@@ -651,15 +690,16 @@ describe('openProposalPr', () => {
         baseRef: 'main',
         title: 't',
         body: 'b',
-        bbCoder: makeBb(),
-        ghClient: makeGh(),
+        plugins: makeRegistry([]),
         logger: makeLogger(),
       }),
     ).rejects.toThrow('cannot parse repo URL')
   })
 
   it('forwards reviewerUsernames when supplied', async () => {
-    const ghClient = makeGh()
+    const ghPlugin = makePlugin({
+      id: 'github', matchHost: /github\.com/i, prId: 7, repoUrlBase: 'https://github.com/acme',
+    })
     await openProposalPr({
       remoteUrl: 'https://github.com/acme/intel.git',
       branch: 'coro/proposal/x',
@@ -667,12 +707,11 @@ describe('openProposalPr', () => {
       title: 't',
       body: 'b',
       reviewerUsernames: ['alice', 'bob'],
-      bbCoder: makeBb(),
-      ghClient,
+      plugins: makeRegistry([ghPlugin]),
       logger: makeLogger(),
     })
-    expect(ghClient.createPr).toHaveBeenCalledWith(expect.objectContaining({
-      reviewerUsernames: ['alice', 'bob'],
+    expect(ghPlugin.writerCreatePr).toHaveBeenCalledWith(expect.objectContaining({
+      reviewers: ['alice', 'bob'],
     }))
   })
 })

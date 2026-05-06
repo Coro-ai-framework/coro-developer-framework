@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type ChangeEvent } from 'react'
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/common/page-header'
@@ -15,8 +15,28 @@ import { jsonRequest, requestJson } from '../lib/http'
 import { IMPLEMENTATION_WORKFLOWS } from '../workflows'
 import { cn } from '../lib/utils'
 
-type GitProvider = 'bitbucket' | 'github'
 type SourceMode = 'jira' | 'manual'
+
+interface PluginManifest {
+  id: string
+  kind: 'scm' | 'tracker' | string
+  displayName: string
+}
+
+interface PluginsResponse {
+  plugins: {
+    manifest: PluginManifest
+    installed: boolean
+    configured?: boolean
+    active?: boolean
+    available?: boolean
+    activationHint?: string
+    source?: 'builtin' | 'dropin'
+  }[]
+  defaults: { scm?: string; tracker?: string }
+}
+
+type PluginEntry = PluginsResponse['plugins'][number]
 
 interface JobForm {
   repo: string
@@ -24,7 +44,8 @@ interface JobForm {
   description: string
   reviewers: string
   jiraTicketId: string
-  gitProvider: GitProvider
+  scm: string
+  tracker: string
 }
 
 const EMPTY_JOB: JobForm = {
@@ -33,7 +54,49 @@ const EMPTY_JOB: JobForm = {
   description: '',
   reviewers: '',
   jiraTicketId: '',
-  gitProvider: 'bitbucket',
+  scm: '',
+  tracker: '',
+}
+
+function pluginConfigured(plugin: PluginEntry): boolean {
+  return plugin.configured ?? plugin.installed
+}
+
+function pluginActive(plugin: PluginEntry): boolean {
+  return plugin.active ?? pluginConfigured(plugin)
+}
+
+function pluginDisplayNames(entries: PluginEntry[]): string {
+  return entries.map(entry => entry.manifest.displayName).join(', ')
+}
+
+function missingPluginHint(entries: PluginEntry[], kind: 'scm' | 'tracker'): string {
+  const configuredButInactive = entries.filter(entry => pluginConfigured(entry) && !pluginActive(entry))
+  if (configuredButInactive.length > 0) {
+    return `Configured ${kind.toUpperCase()} plugins are not active: ${pluginDisplayNames(configuredButInactive)}. Recheck Settings and restart the runner.`
+  }
+
+  const builtinAvailable = entries.filter(entry => !pluginConfigured(entry) && entry.source === 'builtin')
+  if (builtinAvailable.length > 0) {
+    return kind === 'scm'
+      ? `Built-in SCM plugins are available: ${pluginDisplayNames(builtinAvailable)}. Configure Settings > Git to enable one.`
+      : `Built-in tracker plugins are available: ${pluginDisplayNames(builtinAvailable)}. Configure Settings > Tracker to enable one.`
+  }
+
+  return kind === 'scm'
+    ? 'No SCM plugin is enabled for this runner yet.'
+    : 'No tracker plugin is enabled for this runner yet.'
+}
+
+function missingPluginPlaceholder(entries: PluginEntry[], kind: 'scm' | 'tracker'): string {
+  const builtinAvailable = entries.filter(entry => !pluginConfigured(entry) && entry.source === 'builtin')
+  if (builtinAvailable.length > 0) {
+    return kind === 'scm'
+      ? `Configure Settings > Git to enable ${pluginDisplayNames(builtinAvailable)}`
+      : `Configure Settings > Tracker to enable ${pluginDisplayNames(builtinAvailable)}`
+  }
+
+  return kind === 'scm' ? 'No enabled SCM plugin' : 'No enabled tracker plugin'
 }
 
 export default function CreateJob() {
@@ -44,6 +107,34 @@ export default function CreateJob() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<SourceMode>('manual')
+  const [scmPluginEntries, setScmPluginEntries] = useState<PluginEntry[]>([])
+  const [trackerPluginEntries, setTrackerPluginEntries] = useState<PluginEntry[]>([])
+  const [scmPlugins, setScmPlugins] = useState<PluginManifest[]>([])
+  const [trackerPlugins, setTrackerPlugins] = useState<PluginManifest[]>([])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const data = await requestJson<PluginsResponse>('/plugins')
+        const scmEntries = data.plugins.filter(p => p.manifest.kind === 'scm')
+        const trackerEntries = data.plugins.filter(p => p.manifest.kind === 'tracker')
+        const scms = scmEntries.filter(pluginActive).map(p => p.manifest)
+        const trackers = trackerEntries.filter(pluginActive).map(p => p.manifest)
+        setScmPluginEntries(scmEntries)
+        setTrackerPluginEntries(trackerEntries)
+        setScmPlugins(scms)
+        setTrackerPlugins(trackers)
+        setJobForm(previous => ({
+          ...previous,
+          scm: previous.scm || data.defaults.scm || (scms.length === 1 ? scms[0].id : ''),
+          tracker: previous.tracker || data.defaults.tracker || (trackers.length === 1 ? trackers[0].id : ''),
+        }))
+      } catch {
+        // Plugin discovery is non-fatal — the form falls back to a free-form
+        // job submission and the runner still resolves at dispatch time.
+      }
+    })()
+  }, [])
 
   function handleJobChange(e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) {
     setJobForm(prev => ({ ...prev, [e.target.name]: e.target.value }))
@@ -79,6 +170,20 @@ export default function CreateJob() {
     }
   }, [jobForm.description, jobForm.jiraTicketId, jobForm.serviceName, mode])
 
+  const submitBlockReason = useMemo(() => {
+    if (mode === 'manual') {
+      if (scmPlugins.length === 0) return missingPluginHint(scmPluginEntries, 'scm')
+      if (scmPlugins.length > 1 && !jobForm.scm) return 'Choose an SCM plugin before dispatching this run.'
+    }
+
+    if (mode === 'jira') {
+      if (trackerPlugins.length === 0) return missingPluginHint(trackerPluginEntries, 'tracker')
+      if (trackerPlugins.length > 1 && !jobForm.tracker) return 'Choose a tracker plugin before dispatching this run.'
+    }
+
+    return null
+  }, [jobForm.scm, jobForm.tracker, mode, scmPluginEntries, scmPlugins.length, trackerPluginEntries, trackerPlugins.length])
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
@@ -88,6 +193,13 @@ export default function CreateJob() {
       if (!workflowPath) {
         throw new Error('Select a workflow before dispatching the job')
       }
+      if (submitBlockReason) {
+        throw new Error(submitBlockReason)
+      }
+
+      const params: Record<string, string> = {}
+      if (jobForm.scm) params['scm'] = jobForm.scm
+      if (jobForm.tracker) params['tracker'] = jobForm.tracker
 
       const body = mode === 'jira'
         ? {
@@ -95,6 +207,7 @@ export default function CreateJob() {
             workflowPath,
             jiraTicketId: jobForm.jiraTicketId.trim(),
             interactive,
+            ...(Object.keys(params).length ? { params } : {}),
           }
         : {
             type: 'job',
@@ -103,8 +216,8 @@ export default function CreateJob() {
             serviceName: jobForm.serviceName.trim(),
             description: jobForm.description.trim(),
             reviewers: splitCsv(jobForm.reviewers),
-            gitProvider: jobForm.gitProvider,
             interactive,
+            ...(Object.keys(params).length ? { params } : {}),
           }
 
       const data = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
@@ -201,9 +314,33 @@ export default function CreateJob() {
 
               <TabsContent value="jira" className="space-y-4">
                 <Field
-                  label="Jira ticket ID"
+                  label="Tracker plugin"
+                  hint={
+                    trackerPlugins.length === 0
+                      ? missingPluginHint(trackerPluginEntries, 'tracker')
+                      : 'Issue-tracker plugin used to fetch ticket context.'
+                  }
+                >
+                  <Select
+                    name="tracker"
+                    value={jobForm.tracker}
+                    onChange={handleJobChange}
+                    disabled={trackerPlugins.length === 0}
+                  >
+                    {trackerPlugins.length === 0 ? (
+                      <option value="">{missingPluginPlaceholder(trackerPluginEntries, 'tracker')}</option>
+                    ) : null}
+                    {trackerPlugins.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.displayName}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field
+                  label="Ticket ID"
                   required
-                  hint="Tracker context overrides the manual fields."
+                  hint="Tracker-specific issue key (Jira: ENG-1234, Linear: ENG-12)."
                 >
                   <Input
                     name="jiraTicketId"
@@ -216,20 +353,34 @@ export default function CreateJob() {
 
               <TabsContent value="manual" className="space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Git provider" hint="Repository host.">
+                  <Field
+                    label="SCM plugin"
+                    hint={
+                      scmPlugins.length === 0
+                        ? missingPluginHint(scmPluginEntries, 'scm')
+                        : 'Source-control plugin used for clone, branch, and PR.'
+                    }
+                  >
                     <Select
-                      name="gitProvider"
-                      value={jobForm.gitProvider}
+                      name="scm"
+                      value={jobForm.scm}
                       onChange={handleJobChange}
+                      disabled={scmPlugins.length === 0}
                     >
-                      <option value="bitbucket">Bitbucket</option>
-                      <option value="github">GitHub</option>
+                      {scmPlugins.length === 0 ? (
+                        <option value="">{missingPluginPlaceholder(scmPluginEntries, 'scm')}</option>
+                      ) : null}
+                      {scmPlugins.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.displayName}
+                        </option>
+                      ))}
                     </Select>
                   </Field>
                   <Field
                     label="Repository slug"
                     required
-                    hint={jobForm.gitProvider === 'github' ? 'GitHub repository name.' : 'Bitbucket slug.'}
+                    hint="Plugin-specific identifier (e.g. owner/repo)."
                   >
                     <Input
                       name="repo"
@@ -254,11 +405,7 @@ export default function CreateJob() {
                   <Field
                     label="Reviewers"
                     required
-                    hint={
-                      jobForm.gitProvider === 'github'
-                        ? 'Comma-separated GitHub usernames.'
-                        : 'Comma-separated Bitbucket usernames.'
-                    }
+                    hint="Comma-separated usernames recognised by the SCM plugin."
                   >
                     <Input
                       name="reviewers"
@@ -316,18 +463,39 @@ export default function CreateJob() {
             <CardContent className="space-y-4 pt-5 text-sm">
               <SummaryRow label="Target" value={reviewSummary.title} />
               <SummaryRow label="Workflow" value={workflow?.name ?? '—'} />
-              <SummaryRow label="Mode" value={mode === 'jira' ? 'Jira ticket' : 'Manual details'} />
-              <SummaryRow label="Provider" value={jobForm.gitProvider === 'github' ? 'GitHub' : 'Bitbucket'} />
+              <SummaryRow label="Mode" value={mode === 'jira' ? 'Tracker ticket' : 'Manual details'} />
+              <SummaryRow
+                label="SCM"
+                value={
+                  scmPlugins.find(p => p.id === jobForm.scm)?.displayName
+                  ?? jobForm.scm
+                  ?? '—'
+                }
+              />
+              <SummaryRow
+                label="Tracker"
+                value={
+                  trackerPlugins.find(p => p.id === jobForm.tracker)?.displayName
+                  ?? jobForm.tracker
+                  ?? '—'
+                }
+              />
               <SummaryRow label="Interactive" value={interactive ? 'Yes' : 'No'} />
 
               <div className="rounded-xl border border-line bg-overlay/40 px-3 py-2.5 text-[12px] leading-5 text-fg-muted">
                 {reviewSummary.description}
               </div>
 
+              {submitBlockReason ? (
+                <div className="rounded-xl border border-warning-500/30 bg-warning-500/10 px-3 py-2.5 text-[12px] leading-5 text-warning-300">
+                  {submitBlockReason}
+                </div>
+              ) : null}
+
               {error ? <ErrorState message={error} /> : null}
 
               <div className="flex flex-col gap-2 pt-1">
-                <Button type="submit" size="lg" disabled={submitting}>
+                <Button type="submit" size="lg" disabled={submitting || Boolean(submitBlockReason)}>
                   {submitting ? 'Dispatching…' : 'Dispatch run'}
                   <ArrowRight />
                 </Button>

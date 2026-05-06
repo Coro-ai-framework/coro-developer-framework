@@ -27,7 +27,7 @@ You do not re-run failed children. The campaign workflow's live-control tools (`
 | `campaign_status` | Pull the canonical per-child summary |
 | `read_memory` | Pull existing memory before drafting updates |
 | `list_proposals` | Avoid duplicate proposals |
-| `tracker_get_issue` / `tracker_list_children` / `tracker_transition_issue` / `tracker_comment_issue` | Reconcile + close out the tracker epic |
+| `tracker_get_issue` / `tracker_transition_issue` / `tracker_comment_issue` | Reconcile + close out the tracker epic (provider-neutral). Use the active plugin's native `mcp__<pluginId>__*` tools (e.g. `mcp__jira__jira_search`, `mcp__linear__list_issues`) for parent-child listings or richer queries — see the plugin's intelligence snippet. |
 | `propose_change` | Ship memory updates as a tenant PR |
 | `post_artifact` | Save the report markdown for the dashboard |
 | `add_insight` | Record evaluation findings for future campaigns |
