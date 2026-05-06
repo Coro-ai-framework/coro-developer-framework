@@ -242,7 +242,7 @@ export default function CreateJob() {
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Service name" required hint="Shown in the workbench.">
+                  <Field label="Service name" required hint="Shown across Coro.">
                     <Input
                       name="serviceName"
                       value={jobForm.serviceName}

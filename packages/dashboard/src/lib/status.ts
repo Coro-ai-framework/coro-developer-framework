@@ -47,6 +47,8 @@ const STATUS_MAP: Record<string, StatusMeta> = {
   'awaiting-developer-input': { label: 'Awaiting Input', category: 'waiting', tone: 'warning', pulse: true },
   'awaiting-children': { label: 'Awaiting Children', category: 'waiting', tone: 'warning' },
   complete: { label: 'Complete', category: 'terminal', tone: 'success' },
+  cancelled: { label: 'Cancelled', category: 'terminal', tone: 'neutral' },
+  canceled: { label: 'Cancelled', category: 'terminal', tone: 'neutral' },
   failed: { label: 'Failed', category: 'terminal', tone: 'danger' },
   escalated: { label: 'Escalated', category: 'terminal', tone: 'danger' },
 }

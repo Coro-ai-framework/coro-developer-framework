@@ -124,7 +124,7 @@ function SetupBanner({ setup }: { setup: SetupSummary }) {
   const isFirstRun = setup.state === 'not-configured'
   const title = isFirstRun ? 'Finish runner setup' : 'Runner setup is incomplete'
   const description = isFirstRun
-    ? 'The workbench is ready, but the runner still needs authentication and git settings before it can dispatch real work.'
+    ? 'Coro is ready, but the runner still needs authentication and git settings before it can dispatch real work.'
     : `One or more essentials are missing. Finish configuration so ${RUN_NOUN.pluralLower} can run cleanly.`
 
   return (

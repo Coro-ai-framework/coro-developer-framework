@@ -20,7 +20,7 @@ interface NavigationItem {
 
 /**
  * Single-source navigation. The previous Layout split this into two visual
- * sections in the sidebar (Workbench / Controls) and ALSO duplicated the
+ * sections in the sidebar and ALSO duplicated the
  * secondary actions in the page-level header. We now show every entry once,
  * grouped only by a subtle divider in the sidebar, and never repeat them
  * in the header.

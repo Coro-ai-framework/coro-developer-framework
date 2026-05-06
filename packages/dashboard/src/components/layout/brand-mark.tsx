@@ -38,11 +38,8 @@ export default function BrandMark({ iconOnly = false, className }: BrandMarkProp
         </svg>
       </span>
       {iconOnly ? null : (
-        <span className="flex flex-col leading-none">
-          <span className="text-[15px] font-semibold tracking-tight text-fg">Coro</span>
-          <span className="mt-1 text-[10px] font-medium uppercase tracking-[0.22em] text-fg-subtle">
-            Workbench
-          </span>
+        <span className="leading-none">
+          <span className="text-[17px] font-semibold tracking-tight text-fg">Coro</span>
         </span>
       )}
     </span>
