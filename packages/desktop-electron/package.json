@@ -16,8 +16,12 @@
     "dev": "pnpm run build && electron .",
     "typecheck": "tsc --noEmit",
     "package:mac": "pnpm run build && electron-builder --config electron-builder.json5 --mac dir --arm64 --publish never",
-    "dist:mac": "pnpm run build && electron-builder --config electron-builder.json5 --mac dmg --arm64 --publish never",
+    "dist:mac": "pnpm run build && electron-builder --config electron-builder.json5 --arm64 --publish never",
+    "release:mac": "pnpm run build && electron-builder --config electron-builder.json5 --arm64 --publish always",
     "clean": "rm -rf dist release"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
