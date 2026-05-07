@@ -21,6 +21,8 @@ const nodeTargetPath = path.join(nodeTargetDir, process.platform === 'win32' ? '
 const runnerSourceDir = path.join(workspaceRoot, 'packages', 'runner')
 const dashboardSourceDir = path.join(workspaceRoot, 'packages', 'dashboard', 'dist')
 const intelligenceSourceDir = path.join(workspaceRoot, 'packages', 'intelligence-base')
+const PNPM_COMMAND = resolveCommand('pnpm')
+const NPM_COMMAND = resolveCommand('npm')
 
 runPnpm(['--filter', '@coro/intelligence-base', 'build'])
 runPnpm(['--filter', '@coro/runner', 'build'])
@@ -43,7 +45,7 @@ rmSync(stagingRoot, { recursive: true, force: true })
 console.log(`desktop-electron: prepared packaged resources under ${resourcesRoot}`)
 
 function runPnpm(args) {
-  const result = spawnSync('pnpm', ['--dir', workspaceRoot, ...args], {
+  const result = spawnSync(PNPM_COMMAND, ['--dir', workspaceRoot, ...args], {
     stdio: 'inherit',
     env: process.env,
   })
@@ -123,7 +125,7 @@ function prepareRunnerBundle(runnerRoot) {
 
 function runNpmInstall(cwd) {
   const result = spawnSync(
-    'npm',
+    NPM_COMMAND,
     ['install', '--omit=dev', '--package-lock=false'],
     {
       cwd,
@@ -145,4 +147,8 @@ function materializeLocalDependency(sourceDir, installedDir) {
   rmSync(installedDir, { recursive: true, force: true })
   mkdirSync(path.dirname(installedDir), { recursive: true })
   cpSync(sourceDir, installedDir, { recursive: true })
+}
+
+function resolveCommand(command) {
+  return process.platform === 'win32' ? `${command}.cmd` : command
 }

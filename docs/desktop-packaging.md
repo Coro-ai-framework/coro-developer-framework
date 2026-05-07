@@ -37,7 +37,7 @@ ready, and installs on restart or app quit.
 The current operator workflow is:
 
 1. Trigger `.github/workflows/desktop-release.yml` manually with the target
-  platform and semantic version.
+  semantic version and a `platforms` value.
 2. Provide a release type of `release`, `prerelease`, or `draft`.
 3. Let the workflow temporarily rewrite the desktop package version for the
   build and publish the artifacts to the public releases repo.
@@ -48,6 +48,12 @@ The current operator workflow is:
 6. Verify the public release includes the platform-appropriate updater metadata
   and binaries.
 7. Validate the installed app updates from the previously released version.
+
+Valid `platforms` examples:
+
+- `macos`
+- `windows`
+- `macos,windows`
 
 Required secrets already used by the workflow:
 
@@ -83,7 +89,9 @@ This is now reflected in the desktop workflows:
 - `.github/workflows/desktop-validation.yml` builds Windows x64 artifacts on a
   Windows runner for validation.
 - `.github/workflows/desktop-release.yml` can publish Windows x64 artifacts when
-  dispatched with `platform=windows`.
+  dispatched with `platforms=windows`.
+- `.github/workflows/desktop-release.yml` can publish both platforms for the
+  same version from one dispatch with `platforms=macos,windows`.
 
 `nsis` is the recommended Windows target because it is the updater path that
 `electron-updater` supports well for packaged Electron apps. We should not plan
