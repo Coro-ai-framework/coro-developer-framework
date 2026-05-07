@@ -1,0 +1,167 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Desktop app version to publish
+        required: true
+        type: string
+      release_type:
+        description: Release visibility in the public releases repository
+        required: true
+        default: release
+        type: choice
+        options:
+          - release
+          - prerelease
+          - draft
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish-macos:
+    name: Publish macOS desktop release
+    runs-on: macos-14-xlarge
+    timeout-minutes: 60
+    env:
+      CI: true
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_TYPE: ${{ inputs.release_type }}
+      PUBLIC_RELEASE_REPO: emreertugrul/coro-release
+      GITHUB_RELEASE_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Ensure release token is configured
+        run: |
+          if [[ -z "${GITHUB_RELEASE_TOKEN}" ]]; then
+            echo "::error::Repository secret CORO_RELEASE_GITHUB_TOKEN is required to publish to ${PUBLIC_RELEASE_REPO}."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate requested version
+        run: |
+          node <<'NODE'
+          const version = process.env.RELEASE_VERSION ?? ''
+          const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+          if (!semver.test(version)) {
+            console.error(`Invalid version: ${version}`)
+            process.exit(1)
+          }
+          NODE
+          echo "DESKTOP_VERSION=${RELEASE_VERSION}" >> "$GITHUB_ENV"
+          echo "DESKTOP_RELEASE_TAG=v${RELEASE_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Apply desktop version for this build
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const file = 'packages/desktop-electron/package.json'
+          const pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
+          pkg.version = process.env.RELEASE_VERSION
+          fs.writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`)
+          NODE
+
+      - name: Configure release type
+        run: |
+          case "$RELEASE_TYPE" in
+            release)
+              echo 'EP_DRAFT=false' >> "$GITHUB_ENV"
+              echo 'EP_PRE_RELEASE=false' >> "$GITHUB_ENV"
+              ;;
+            prerelease)
+              echo 'EP_DRAFT=false' >> "$GITHUB_ENV"
+              echo 'EP_PRE_RELEASE=true' >> "$GITHUB_ENV"
+              ;;
+            draft)
+              echo 'EP_DRAFT=true' >> "$GITHUB_ENV"
+              echo 'EP_PRE_RELEASE=false' >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "::error::Unsupported release_type: $RELEASE_TYPE"
+              exit 1
+              ;;
+          esac
+
+      - name: Typecheck desktop package
+        run: pnpm --filter @coro/desktop-electron typecheck
+
+      - name: Publish macOS release artifacts
+        run: pnpm --filter @coro/desktop-electron release:mac
+
+      - name: Capture public release metadata
+        run: |
+          set -euo pipefail
+          gh release view "$DESKTOP_RELEASE_TAG" --repo "$PUBLIC_RELEASE_REPO" --json url,isDraft,isPrerelease,tagName > "$RUNNER_TEMP/public-release.json"
+          release_url="$(gh release view "$DESKTOP_RELEASE_TAG" --repo "$PUBLIC_RELEASE_REPO" --json url --jq .url)"
+          echo "PUBLIC_RELEASE_URL=${release_url}" >> "$GITHUB_ENV"
+
+      - name: Attach provenance asset
+        run: |
+          set -euo pipefail
+          provenance_path="$RUNNER_TEMP/coro-desktop-provenance.json"
+          cat > "$provenance_path" <<EOF
+          {
+            "desktopVersion": "${DESKTOP_VERSION}",
+            "releaseType": "${RELEASE_TYPE}",
+            "publicReleaseRepository": "${PUBLIC_RELEASE_REPO}",
+            "publicReleaseTag": "${DESKTOP_RELEASE_TAG}",
+            "publicReleaseUrl": "${PUBLIC_RELEASE_URL}",
+            "sourceRepository": "${GITHUB_REPOSITORY}",
+            "sourceRef": "${GITHUB_REF}",
+            "sourceSha": "${GITHUB_SHA}",
+            "workflow": "${GITHUB_WORKFLOW}",
+            "runId": "${GITHUB_RUN_ID}",
+            "runAttempt": "${GITHUB_RUN_ATTEMPT}",
+            "runUrl": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          }
+          EOF
+          gh release upload "$DESKTOP_RELEASE_TAG" "$provenance_path" --repo "$PUBLIC_RELEASE_REPO" --clobber
+
+      - name: Upload release outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-${{ env.DESKTOP_VERSION }}
+          retention-days: 30
+          path: |
+            packages/desktop-electron/release/Coro-${{ env.DESKTOP_VERSION }}-arm64.dmg
+            packages/desktop-electron/release/Coro-${{ env.DESKTOP_VERSION }}-arm64.zip
+            packages/desktop-electron/release/*.blockmap
+            packages/desktop-electron/release/*.yml
+            packages/desktop-electron/release/builder-effective-config.yaml
+            ${{ runner.temp }}/public-release.json
+            ${{ runner.temp }}/coro-desktop-provenance.json
+
+      - name: Write workflow summary
+        run: |
+          {
+            echo '## Desktop release published'
+            echo
+            echo "- Version: ${DESKTOP_VERSION}"
+            echo "- Release type: ${RELEASE_TYPE}"
+            echo "- Public release: ${PUBLIC_RELEASE_URL}"
+            echo "- Source commit: ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"
