@@ -22,9 +22,9 @@ const runnerSourceDir = path.join(workspaceRoot, 'packages', 'runner')
 const dashboardSourceDir = path.join(workspaceRoot, 'packages', 'dashboard', 'dist')
 const intelligenceSourceDir = path.join(workspaceRoot, 'packages', 'intelligence-base')
 
+runPnpm(['--filter', '@coro/intelligence-base', 'build'])
 runPnpm(['--filter', '@coro/runner', 'build'])
 runPnpm(['--filter', '@coro/dashboard', 'build'])
-runPnpm(['--filter', '@coro/intelligence-base', 'build'])
 
 rmSync(resourcesRoot, { recursive: true, force: true })
 rmSync(stagingRoot, { recursive: true, force: true })
