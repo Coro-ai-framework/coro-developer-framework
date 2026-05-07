@@ -69,7 +69,6 @@ function createMainWindow(dashboardUrl: string, dashboardOrigin: string): Browse
     minHeight: 720,
     show: false,
     title: 'Coro',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,

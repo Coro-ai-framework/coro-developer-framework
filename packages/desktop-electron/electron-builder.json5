@@ -21,6 +21,7 @@
   },
   mac: {
     category: 'public.app-category.developer-tools',
+    icon: 'dist/icon.icns',
     target: [
       {
         target: 'dir',

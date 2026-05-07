@@ -9,8 +9,9 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "pnpm run build:bundle && pnpm run prepare:resources",
+    "build": "pnpm run build:bundle && pnpm run prepare:icon && pnpm run prepare:resources",
     "build:bundle": "tsup src/main.ts src/preload.ts --format cjs --out-dir dist --clean --target node20 --external electron --sourcemap",
+    "prepare:icon": "node ./scripts/prepare-icon.mjs",
     "prepare:resources": "node ./scripts/prepare-resources.mjs",
     "dev": "pnpm run build && electron .",
     "typecheck": "tsc --noEmit",
