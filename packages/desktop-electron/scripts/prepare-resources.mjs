@@ -21,8 +21,6 @@ const nodeTargetPath = path.join(nodeTargetDir, process.platform === 'win32' ? '
 const runnerSourceDir = path.join(workspaceRoot, 'packages', 'runner')
 const dashboardSourceDir = path.join(workspaceRoot, 'packages', 'dashboard', 'dist')
 const intelligenceSourceDir = path.join(workspaceRoot, 'packages', 'intelligence-base')
-const PNPM_COMMAND = resolveCommand('pnpm')
-const NPM_COMMAND = resolveCommand('npm')
 
 runPnpm(['--filter', '@coro/intelligence-base', 'build'])
 runPnpm(['--filter', '@coro/runner', 'build'])
@@ -45,18 +43,7 @@ rmSync(stagingRoot, { recursive: true, force: true })
 console.log(`desktop-electron: prepared packaged resources under ${resourcesRoot}`)
 
 function runPnpm(args) {
-  const result = spawnSync(PNPM_COMMAND, ['--dir', workspaceRoot, ...args], {
-    stdio: 'inherit',
-    env: process.env,
-  })
-
-  if (typeof result.status === 'number' && result.status !== 0) {
-    process.exit(result.status)
-  }
-
-  if (result.error) {
-    throw result.error
-  }
+  runCommand('pnpm', ['--dir', workspaceRoot, ...args])
 }
 
 function prepareRunnerBundle(runnerRoot) {
@@ -124,23 +111,7 @@ function prepareRunnerBundle(runnerRoot) {
 }
 
 function runNpmInstall(cwd) {
-  const result = spawnSync(
-    NPM_COMMAND,
-    ['install', '--omit=dev', '--package-lock=false'],
-    {
-      cwd,
-      stdio: 'inherit',
-      env: process.env,
-    },
-  )
-
-  if (typeof result.status === 'number' && result.status !== 0) {
-    process.exit(result.status)
-  }
-
-  if (result.error) {
-    throw result.error
-  }
+  runCommand('npm', ['install', '--omit=dev', '--package-lock=false'], { cwd })
 }
 
 function materializeLocalDependency(sourceDir, installedDir) {
@@ -149,6 +120,19 @@ function materializeLocalDependency(sourceDir, installedDir) {
   cpSync(sourceDir, installedDir, { recursive: true })
 }
 
-function resolveCommand(command) {
-  return process.platform === 'win32' ? `${command}.cmd` : command
+function runCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    ...options,
+    stdio: 'inherit',
+    env: process.env,
+    shell: process.platform === 'win32',
+  })
+
+  if (typeof result.status === 'number' && result.status !== 0) {
+    process.exit(result.status)
+  }
+
+  if (result.error) {
+    throw result.error
+  }
 }

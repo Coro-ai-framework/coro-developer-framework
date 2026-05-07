@@ -92,7 +92,6 @@ jobs:
       PUBLIC_RELEASE_DEFAULT_BRANCH: main
       GITHUB_RELEASE_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       WINDOWS_SIGNING_ENABLED: 'false'
     steps:
       - name: Ensure release token is configured
@@ -251,7 +250,7 @@ jobs:
 
           password_delimiter="$(uuidgen)"
           {
-            echo "CSC_LINK=file://$cert_path"
+            echo "CSC_LINK=$cert_path"
             echo "CSC_KEY_PASSWORD<<$password_delimiter"
             printf '%s\n' "$APPLE_SIGNING_CERT_PASSWORD"
             echo "$password_delimiter"
@@ -259,6 +258,16 @@ jobs:
             echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID"
             echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
           } >> "$GITHUB_ENV"
+
+      - name: Verify mac signing inputs are present
+        if: ${{ matrix.platform == 'macos' }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CSC_LINK:-}" || -z "${CSC_KEY_PASSWORD:-}" ]]; then
+            echo "::error::macOS signing inputs are missing after Apple signing setup."
+            exit 1
+          fi
+          echo "macOS signing inputs configured for electron-builder."
 
       - name: Prepare optional Windows signing inputs
         if: ${{ matrix.platform == 'windows' }}
@@ -286,7 +295,7 @@ jobs:
           password_delimiter="$(node -p 'require("node:crypto").randomUUID()')"
           {
             echo "WINDOWS_SIGNING_ENABLED=true"
-            echo "CSC_LINK=file://$cert_path"
+            echo "CSC_LINK=$cert_path"
             echo "CSC_KEY_PASSWORD<<$password_delimiter"
             printf '%s\n' "$WINDOWS_SIGNING_CERT_PASSWORD"
             echo "$password_delimiter"
