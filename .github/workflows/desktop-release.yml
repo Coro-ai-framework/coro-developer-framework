@@ -34,6 +34,7 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_TYPE: ${{ inputs.release_type }}
       PUBLIC_RELEASE_REPO: emreertugrul/coro-release
+      PUBLIC_RELEASE_DEFAULT_BRANCH: main
       GITHUB_RELEASE_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}
     steps:
@@ -43,6 +44,60 @@ jobs:
             echo "::error::Repository secret CORO_RELEASE_GITHUB_TOKEN is required to publish to ${PUBLIC_RELEASE_REPO}."
             exit 1
           fi
+
+      - name: Bootstrap public release repository if empty
+        run: |
+          set -euo pipefail
+
+          gh api "repos/${PUBLIC_RELEASE_REPO}" >/dev/null
+
+          remote_url="https://github.com/${PUBLIC_RELEASE_REPO}.git"
+
+          set +e
+          git ls-remote --exit-code --heads "$remote_url" >/dev/null 2>&1
+          ls_remote_status=$?
+          set -e
+
+          case "$ls_remote_status" in
+            0)
+              echo "PUBLIC_RELEASE_BOOTSTRAPPED=false" >> "$GITHUB_ENV"
+              echo "Public release repo already has a branch."
+              exit 0
+              ;;
+            2)
+              echo "Bootstrapping empty public release repo ${PUBLIC_RELEASE_REPO}."
+              ;;
+            *)
+              echo "::error::Unable to inspect ${PUBLIC_RELEASE_REPO}; git ls-remote exited with status ${ls_remote_status}."
+              exit "$ls_remote_status"
+              ;;
+          esac
+
+          bootstrap_dir="$RUNNER_TEMP/public-release-bootstrap"
+          rm -rf "$bootstrap_dir"
+          mkdir -p "$bootstrap_dir"
+          cd "$bootstrap_dir"
+
+          git init -b "$PUBLIC_RELEASE_DEFAULT_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          cat > README.md <<EOF
+          # Coro Desktop Releases
+
+          This repository is the public distribution channel for signed Coro desktop builds.
+
+          Source repository: https://github.com/${GITHUB_REPOSITORY}
+          Release workflow: https://github.com/${GITHUB_REPOSITORY}/actions/workflows/desktop-release.yml
+          EOF
+
+          git add README.md
+          git commit -m "Initialize public desktop release repository"
+          git remote add origin "https://x-access-token:${GITHUB_RELEASE_TOKEN}@github.com/${PUBLIC_RELEASE_REPO}.git"
+          git push origin "HEAD:${PUBLIC_RELEASE_DEFAULT_BRANCH}"
+          git ls-remote --exit-code --heads "$remote_url" "refs/heads/${PUBLIC_RELEASE_DEFAULT_BRANCH}" >/dev/null
+
+          echo "PUBLIC_RELEASE_BOOTSTRAPPED=true" >> "$GITHUB_ENV"
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -200,6 +255,7 @@ jobs:
             echo
             echo "- Version: ${DESKTOP_VERSION}"
             echo "- Release type: ${RELEASE_TYPE}"
+            echo "- Public release repo bootstrapped: ${PUBLIC_RELEASE_BOOTSTRAPPED:-false}"
             echo "- Public release: ${PUBLIC_RELEASE_URL}"
             echo "- Source commit: ${GITHUB_SHA}"
           } >> "$GITHUB_STEP_SUMMARY"
