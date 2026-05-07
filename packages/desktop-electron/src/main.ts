@@ -24,6 +24,10 @@ app.on('second-instance', () => {
 
 app.whenReady()
   .then(async () => {
+    if (process.platform === 'win32') {
+      app.setAppUserModelId('ai.coro.desktop')
+    }
+
     sidecar = new RunnerSidecar({
       resourcesRoot: app.isPackaged ? process.resourcesPath : resolveLocalResourcesRoot(__dirname),
       onUnexpectedExit: (message) => {

@@ -18,7 +18,10 @@
     "package:mac": "pnpm run build && electron-builder --config electron-builder.json5 --mac dir --arm64 --publish never",
     "dist:mac": "pnpm run build && electron-builder --config electron-builder.json5 --arm64 --publish never",
     "release:mac": "pnpm run build && electron-builder --config electron-builder.json5 --arm64 --publish always",
-    "clean": "rm -rf dist release"
+    "package:win": "pnpm run build && electron-builder --config electron-builder.json5 --win dir --x64 --publish never",
+    "dist:win": "pnpm run build && electron-builder --config electron-builder.json5 --win nsis --x64 --publish never",
+    "release:win": "pnpm run build && electron-builder --config electron-builder.json5 --win nsis --x64 --publish always",
+    "clean": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('release',{recursive:true,force:true});\""
   },
   "dependencies": {
     "electron-updater": "^6.8.3"
@@ -27,6 +30,8 @@
     "@types/node": "^22.13.14",
     "electron": "^42.0.0",
     "electron-builder": "^26.8.1",
+    "png-to-ico": "^2.1.8",
+    "sharp": "^0.34.2",
     "tsup": "^8.5.1",
     "typescript": "^5.8.2"
   }
