@@ -95,7 +95,7 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
-      <aside className="hidden border-r border-line bg-panel/60 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col lg:gap-6">
+      <aside className="hidden border-r border-line bg-panel/60 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col lg:gap-6 lg:pt-8">
         <NavLink to="/" className="px-2">
           <BrandMark />
         </NavLink>
@@ -115,7 +115,7 @@ export default function Layout() {
         </nav>
       </aside>
 
-      <div className="flex min-h-screen min-w-0 flex-col">
+      <div className="flex min-h-screen min-w-0 flex-col lg:pt-4">
         {/* Mobile-only top bar. Desktop has the full sidebar so it doesn't
             need a second chrome row above content. */}
         <header className="sticky top-0 z-40 border-b border-line bg-canvas/85 backdrop-blur-xl lg:hidden">

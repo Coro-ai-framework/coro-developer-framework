@@ -1,0 +1,33 @@
+{
+  "name": "@coro/desktop-electron",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Coro Desktop Shell — Electron wrapper for the Coro runner and dashboard",
+  "author": "Coro",
+  "main": "dist/main.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "pnpm run build:bundle && pnpm run prepare:icon && pnpm run prepare:resources",
+    "build:bundle": "tsup src/main.ts src/preload.ts --format cjs --out-dir dist --clean --target node20 --external electron --sourcemap",
+    "prepare:icon": "node ./scripts/prepare-icon.mjs",
+    "prepare:resources": "node ./scripts/prepare-resources.mjs",
+    "dev": "pnpm run build && electron .",
+    "typecheck": "tsc --noEmit",
+    "package:mac": "pnpm run build && electron-builder --config electron-builder.json5 --mac dir --arm64 --publish never",
+    "dist:mac": "pnpm run build && electron-builder --config electron-builder.json5 --arm64 --publish never",
+    "release:mac": "pnpm run build && electron-builder --config electron-builder.json5 --arm64 --publish always",
+    "clean": "rm -rf dist release"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.8.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.2"
+  }
+}

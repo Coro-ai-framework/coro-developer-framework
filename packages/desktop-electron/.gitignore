@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Packaged apps and installer artifacts
+release/
+
+# macOS
+.DS_Store
