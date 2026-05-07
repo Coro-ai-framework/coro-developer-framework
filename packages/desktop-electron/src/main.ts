@@ -59,7 +59,15 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', (event) => {
-  if (isQuitting || isInstallingUpdate) return
+  if (isQuitting) return
+  if (isInstallingUpdate) {
+    isQuitting = true
+    logAutoUpdater('Preparing runner shutdown for update install')
+    void sidecar?.stop().catch((error) => {
+      logAutoUpdater('Failed to stop runner before update quit', serializeError(error))
+    })
+    return
+  }
   event.preventDefault()
   void quitApplication()
 })
@@ -201,7 +209,6 @@ async function installDownloadedUpdate(): Promise<void> {
   logAutoUpdater('Installing downloaded update and restarting')
 
   try {
-    await sidecar?.stop()
     autoUpdater.quitAndInstall(false, true)
   } catch (error) {
     isInstallingUpdate = false
