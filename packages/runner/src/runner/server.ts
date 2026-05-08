@@ -38,6 +38,7 @@ import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata } from '../plugins/builtin'
 import { discoverWorkflows } from '../workflow-discovery'
 import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
+import { inferKind, validateArtefact } from '../intelligence-validator'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 export interface RunnerServerOptions {
@@ -656,6 +657,22 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.status(400).json({ error: 'content must be a string' })
       return
     }
+    // Validate per-kind so we never write a workflow that the runner
+    // can't parse, etc. Callers can opt out via ?force=1 (the dashboard
+    // doesn't do that today; the CLI may, with a warning).
+    const force = req.query.force === '1' || req.query.force === 'true'
+    const kind = inferKind(v.pathParam)
+    if (kind && !force) {
+      const result = validateArtefact(kind, v.pathParam, content)
+      if (!result.ok) {
+        res.status(422).json({
+          error: 'validation failed',
+          errors: result.errors,
+          warnings: result.warnings,
+        })
+        return
+      }
+    }
     try {
       const target = path.join(v.root, v.pathParam)
       await fs.promises.mkdir(path.dirname(target), { recursive: true })
@@ -666,6 +683,29 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       logger.error({ err }, 'PUT /intelligence/file failed')
       res.status(500).json({ error: (err as Error).message })
     }
+  })
+
+  // Dry-run validation. Lets the dashboard show errors live before save.
+  app.post('/intelligence/preflight', (req: Request, res: Response): void => {
+    const pathParam = String(req.body?.path ?? '')
+    const content = req.body?.content
+    if (!pathParam) {
+      res.status(400).json({ error: 'path is required' })
+      return
+    }
+    if (typeof content !== 'string') {
+      res.status(400).json({ error: 'content must be a string' })
+      return
+    }
+    const kind = inferKind(pathParam)
+    if (!kind) {
+      res.status(400).json({
+        error: 'path must start with one of: workflows/, agents/, .claude/skills/, memory/',
+      })
+      return
+    }
+    const result = validateArtefact(kind, pathParam, content)
+    res.json({ kind, ...result })
   })
 
   // Delete an overlay file (revert to lower layer). Refuses base.

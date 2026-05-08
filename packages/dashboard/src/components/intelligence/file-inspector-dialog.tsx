@@ -13,7 +13,7 @@
 // Read-only in this phase. The "Edit" / "Override" actions land in Phase 4.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, FileText, Loader2, Plus, RotateCcw } from 'lucide-react'
+import { ArrowDown, FileText, Loader2, Pencil, Plus, RotateCcw, Save, X } from 'lucide-react'
 import {
   Dialog,
   DialogBody,
@@ -28,6 +28,7 @@ import LayerBadge, { type IntelligenceLayer } from './layer-badge'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 import { renderInlineMarkdown } from './markdown-mini'
 import { renderLineDiff, summarizeDiff } from './line-diff'
+import PreflightPanel, { type PreflightResult } from './preflight-panel'
 
 interface FileInspectorTarget {
   layer: IntelligenceLayer
@@ -112,13 +113,6 @@ export default function FileInspectorDialog({
   // For an artefact that only exists in the current layer, hide it.
   const canDiff = Boolean(payload?.lowerContent && payload.lowerLayer)
 
-  // Pre-compute +/- counts so the legend can show "+12 −250" up-front and
-  // the user knows there ARE additions even if they're below the fold.
-  const diffSummary = useMemo(() => {
-    if (!payload?.lowerContent) return null
-    return summarizeDiff(payload.lowerContent, payload.content)
-  }, [payload])
-
   // Ref + handler so the user can jump to the first `+` row when the diff
   // is dominated by removals at the top.
   const diffScrollRef = useRef<HTMLDivElement>(null)
@@ -174,6 +168,104 @@ export default function FileInspectorDialog({
       setActionError(message)
     } finally {
       setActionPending(null)
+    }
+  }
+
+  // ── Inline edit mode ───────────────────────────────────────────────────
+  // Lets the user edit the Source tab in place. Only available for writable
+  // layers (tenant / repo). Save runs preflight first, and the runner also
+  // re-validates server-side as a belt-and-braces guard.
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const preflightTimer = useRef<number | null>(null)
+
+  const writable = activeLayer === 'tenant' || activeLayer === 'repo'
+
+  // Live content: the draft while editing, persisted content otherwise. The
+  // Rendered + Diff tabs read from this so they update as the user types.
+  const effectiveContent = editing ? draft : (payload?.content ?? '')
+
+  // Pre-compute +/- counts so the legend can show "+12 −250" up-front and
+  // the user knows there ARE additions even if they're below the fold.
+  // Recomputes against the live draft while editing.
+  const diffSummary = useMemo(() => {
+    if (!payload?.lowerContent) return null
+    return summarizeDiff(payload.lowerContent, effectiveContent)
+  }, [payload, effectiveContent])
+
+  // Reset edit state whenever the underlying file changes.
+  useEffect(() => {
+    setEditing(false)
+    setDraft('')
+    setPreflight(null)
+  }, [activeLayer, activePath])
+
+  function startEditing() {
+    if (!payload) return
+    setDraft(payload.content)
+    setEditing(true)
+    setTab('source')
+    setPreflight(null)
+  }
+
+  function cancelEditing() {
+    setEditing(false)
+    setDraft('')
+    setPreflight(null)
+  }
+
+  // Debounced preflight while editing.
+  useEffect(() => {
+    if (!editing || !activePath) return
+    if (preflightTimer.current) window.clearTimeout(preflightTimer.current)
+    preflightTimer.current = window.setTimeout(() => {
+      setPreflightLoading(true)
+      requestJson<PreflightResult>(
+        '/intelligence/preflight',
+        jsonRequest({ path: activePath, content: draft }, { method: 'POST' }),
+      )
+        .then(r => setPreflight(r))
+        .catch(() => setPreflight(null))
+        .finally(() => setPreflightLoading(false))
+    }, 250)
+    return () => {
+      if (preflightTimer.current) window.clearTimeout(preflightTimer.current)
+    }
+  }, [editing, draft, activePath])
+
+  async function saveDraft() {
+    if (!activeLayer || !activePath || !preflight?.ok || saving) return
+    setSaving(true)
+    setActionError(null)
+    try {
+      await requestJson<{ bytes: number }>(
+        '/intelligence/file',
+        jsonRequest({ layer: activeLayer, path: activePath, content: draft }, { method: 'PUT' }),
+      )
+      setEditing(false)
+      setDraft('')
+      setPreflight(null)
+      // Trigger reload of the active file via the existing effect.
+      onChanged?.({ layer: activeLayer, path: activePath })
+      // Force re-fetch by toggling the tuple — set then set back is fine
+      // because the dependency array compares by value. Simplest: bump via
+      // a no-op then refetch; here we re-set to trigger the effect.
+      setActivePath(p => p)
+      setActiveLayer(l => l)
+      // Easier: manually re-invoke fetch with a tiny dance below.
+      const fresh = await requestJson<FilePayload>(
+        `/intelligence/file?layer=${encodeURIComponent(activeLayer)}&path=${encodeURIComponent(activePath)}`,
+      )
+      setPayload(fresh)
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? `${err.message} (HTTP ${err.status})` : (err as Error).message
+      setActionError(message)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -246,14 +338,26 @@ export default function FileInspectorDialog({
                 <div
                   className="prose-coro space-y-3 text-sm leading-6 text-fg"
                   // Renderer escapes input — see markdown-mini for the contract.
-                  dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(payload.content) }}
+                  dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(effectiveContent) }}
                 />
               </TabsContent>
 
               <TabsContent value="source" className="rounded-lg border border-line bg-canvas/60">
-                <pre className="whitespace-pre-wrap break-words p-4 font-mono text-[12px] leading-5 text-fg">
-                  {payload.content}
-                </pre>
+                {editing ? (
+                  <div className="space-y-2 p-3">
+                    <textarea
+                      value={draft}
+                      onChange={e => setDraft(e.target.value)}
+                      spellCheck={false}
+                      className="h-[360px] w-full resize-y rounded-md border border-line bg-canvas/80 p-3 font-mono text-[12px] leading-5 text-fg outline-none focus:border-accent-400"
+                    />
+                    <PreflightPanel preflight={preflight} loading={preflightLoading} />
+                  </div>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words p-4 font-mono text-[12px] leading-5 text-fg">
+                    {payload.content}
+                  </pre>
+                )}
               </TabsContent>
 
               <TabsContent value="diff" className="rounded-lg border border-line bg-canvas/60">
@@ -261,7 +365,7 @@ export default function FileInspectorDialog({
                   <div ref={diffScrollRef}>
                     <div
                       dangerouslySetInnerHTML={{
-                        __html: renderLineDiff(payload.lowerContent, payload.content),
+                        __html: renderLineDiff(payload.lowerContent, effectiveContent),
                       }}
                     />
                   </div>
@@ -282,7 +386,7 @@ export default function FileInspectorDialog({
                     <>
                       <Button
                         size="sm"
-                        variant="default"
+                        variant="primary"
                         disabled={actionPending !== null}
                         onClick={() => overrideInLayer('tenant')}
                       >
@@ -307,7 +411,7 @@ export default function FileInspectorDialog({
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={actionPending !== null || !payload.lowerLayer}
+                      disabled={actionPending !== null || !payload.lowerLayer || editing}
                       onClick={revertToLower}
                       title={
                         payload.lowerLayer
@@ -323,6 +427,33 @@ export default function FileInspectorDialog({
                       Revert to Coro
                     </Button>
                   )}
+                  {writable && !editing ? (
+                    <Button size="sm" variant="outline" onClick={startEditing}>
+                      <Pencil className="mr-1 size-3" />
+                      Edit
+                    </Button>
+                  ) : null}
+                  {editing ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={saveDraft}
+                        disabled={!preflight?.ok || saving || preflightLoading}
+                      >
+                        {saving ? (
+                          <Loader2 className="mr-1 size-3 animate-spin" />
+                        ) : (
+                          <Save className="mr-1 size-3" />
+                        )}
+                        Save
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={cancelEditing} disabled={saving}>
+                        <X className="mr-1 size-3" />
+                        Cancel
+                      </Button>
+                    </>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-3 text-[11px] text-fg-subtle">
                   <span className="inline-flex items-center gap-1">

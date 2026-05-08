@@ -24,6 +24,7 @@ import {
   Info,
   Layers,
   Package,
+  Plus,
   RefreshCw,
   Server,
   Sparkles,
@@ -35,11 +36,20 @@ import PageHeader from '../components/common/page-header'
 import ErrorState from '../components/common/error-state'
 import LayerBadge, { type IntelligenceLayer } from '../components/intelligence/layer-badge'
 import FileInspectorDialog from '../components/intelligence/file-inspector-dialog'
+import NewArtefactDialog from '../components/intelligence/new-artefact-dialog'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import WorkflowDetailsDialog from '../components/workflow/workflow-details-dialog'
 import { ApiError, requestJson } from '../lib/http'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu'
 import type { WorkflowOption } from '../workflows'
 import { fetchLaunchableWorkflows } from '../workflows'
 
@@ -292,7 +302,21 @@ export default function Intelligence() {
       ) : catalogue ? (
         <div className="grid gap-4 md:grid-cols-3">
           {catalogue.layers.map(layer => (
-            <LayerCard key={layer.layer} layer={layer} />
+            <LayerCard
+              key={layer.layer}
+              layer={layer}
+              onCreated={target => {
+                void refresh()
+                // Open the inspector on the freshly created file so the user
+                // immediately sees what they just made.
+                setInspectorTarget({
+                  layer: target.layer,
+                  path: target.path,
+                  displayName: target.path.split('/').pop() ?? target.path,
+                })
+                setInspectorOpen(true)
+              }}
+            />
           ))}
           {/* Repo layer is not yet surfaced by the catalogue (no working repo
               context in the runner). Show a placeholder so the model is
@@ -347,7 +371,13 @@ export default function Intelligence() {
 
 // ── Layer Card ─────────────────────────────────────────────────────────────
 
-function LayerCard({ layer }: { layer: LayerInfo }) {
+function LayerCard({
+  layer,
+  onCreated,
+}: {
+  layer: LayerInfo
+  onCreated?: (target: { layer: IntelligenceLayer; path: string }) => void
+}) {
   const meta = LAYER_META[layer.layer]
   const Icon = meta.Icon
   const total =
@@ -369,9 +399,14 @@ function LayerCard({ layer }: { layer: LayerInfo }) {
           </div>
           <p className="text-xs leading-snug text-fg-muted">{meta.pitch}</p>
         </div>
-        <div className="text-right">
-          <div className="text-2xl font-semibold tabular-nums">{total}</div>
-          <div className="text-[10px] uppercase tracking-wide text-fg-subtle">files</div>
+        <div className="flex items-start gap-2">
+          {layer.writable ? (
+            <NewArtefactMenu layer={layer.layer} onCreated={onCreated} />
+          ) : null}
+          <div className="text-right">
+            <div className="text-2xl font-semibold tabular-nums">{total}</div>
+            <div className="text-[10px] uppercase tracking-wide text-fg-subtle">files</div>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-2 pt-0">
@@ -535,4 +570,57 @@ function shortenPath(p: string): string {
   const homeMatches = p.match(/^\/(?:Users|home)\/[^/]+/)
   if (homeMatches) return '~' + p.slice(homeMatches[0].length)
   return p
+}
+
+// ── New Artefact Menu ──────────────────────────────────────────────────────
+
+function NewArtefactMenu({
+  layer,
+  onCreated,
+}: {
+  layer: IntelligenceLayer
+  onCreated?: (target: { layer: IntelligenceLayer; path: string }) => void
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogKind, setDialogKind] = useState<ArtefactKind>('memory')
+
+  function pick(kind: ArtefactKind) {
+    setDialogKind(kind)
+    setDialogOpen(true)
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" variant="outline" className="h-7 px-2">
+            <Plus className="size-3" />
+            New
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-44">
+          <DropdownMenuLabel className="text-[10px] uppercase tracking-wide text-fg-subtle">
+            New artefact
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {(['workflow', 'agent', 'skill', 'memory'] as ArtefactKind[]).map(k => {
+            const KindIcon = KIND_META[k].Icon
+            return (
+              <DropdownMenuItem key={k} onClick={() => pick(k)}>
+                <KindIcon className={`mr-2 size-3.5 ${KIND_META[k].tone}`} />
+                {KIND_META[k].label}
+              </DropdownMenuItem>
+            )
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <NewArtefactDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        layer={layer}
+        kind={dialogKind}
+        onCreated={target => onCreated?.(target)}
+      />
+    </>
+  )
 }
