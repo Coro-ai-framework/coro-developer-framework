@@ -244,6 +244,27 @@ export default function Intelligence() {
     setInspectorOpen(true)
   }
 
+  // Layers the user is allowed to write to (tenant in solo, plus repo if
+  // mounted). Used by the per-pillar `+ New` affordance to decide whether
+  // it can dispatch directly or needs a layer picker.
+  const writableLayers = useMemo<IntelligenceLayer[]>(
+    () => catalogue?.layers.filter(l => l.writable).map(l => l.layer) ?? [],
+    [catalogue],
+  )
+
+  // Shared post-create handler for both the LayerCard menu and the per-
+  // pillar inline button. Refreshes the catalogue then opens the inspector
+  // on the freshly created file so the user sees what they just made.
+  function handleCreated(target: { layer: IntelligenceLayer; path: string }) {
+    void refresh()
+    setInspectorTarget({
+      layer: target.layer,
+      path: target.path,
+      displayName: target.path.split('/').pop() ?? target.path,
+    })
+    setInspectorOpen(true)
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -305,17 +326,7 @@ export default function Intelligence() {
             <LayerCard
               key={layer.layer}
               layer={layer}
-              onCreated={target => {
-                void refresh()
-                // Open the inspector on the freshly created file so the user
-                // immediately sees what they just made.
-                setInspectorTarget({
-                  layer: target.layer,
-                  path: target.path,
-                  displayName: target.path.split('/').pop() ?? target.path,
-                })
-                setInspectorOpen(true)
-              }}
+              onCreated={handleCreated}
             />
           ))}
           {/* Repo layer is not yet surfaced by the catalogue (no working repo
@@ -337,6 +348,8 @@ export default function Intelligence() {
               key={kind}
               kind={kind}
               artefacts={grouped[kind]}
+              writableLayers={writableLayers}
+              onCreated={handleCreated}
               onOpenInspector={openInspector}
               onOpenWorkflow={kind === 'workflow' ? openWorkflowDetails : undefined}
             />
@@ -466,11 +479,20 @@ function RepoPlaceholder() {
 interface ArtefactColumnProps {
   kind: ArtefactKind
   artefacts: Artefact[]
+  writableLayers: IntelligenceLayer[]
+  onCreated?: (target: { layer: IntelligenceLayer; path: string }) => void
   onOpenInspector: (artefact: Artefact) => void
   onOpenWorkflow?: (artefact: Artefact) => void
 }
 
-function ArtefactColumn({ kind, artefacts, onOpenInspector, onOpenWorkflow }: ArtefactColumnProps) {
+function ArtefactColumn({
+  kind,
+  artefacts,
+  writableLayers,
+  onCreated,
+  onOpenInspector,
+  onOpenWorkflow,
+}: ArtefactColumnProps) {
   const meta = KIND_META[kind]
   const Icon = meta.Icon
   return (
@@ -481,9 +503,18 @@ function ArtefactColumn({ kind, artefacts, onOpenInspector, onOpenWorkflow }: Ar
             <Icon className={`size-4 ${meta.tone}`} />
             <CardTitle className="text-sm font-semibold">{meta.plural}</CardTitle>
           </div>
-          <span className="rounded bg-overlay/60 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-fg-muted">
-            {artefacts.length}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="rounded bg-overlay/60 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-fg-muted">
+              {artefacts.length}
+            </span>
+            {writableLayers.length > 0 ? (
+              <PillarNewButton
+                kind={kind}
+                writableLayers={writableLayers}
+                onCreated={onCreated}
+              />
+            ) : null}
+          </div>
         </div>
         <p className="text-[11px] leading-snug text-fg-subtle">{meta.description}</p>
       </CardHeader>
@@ -619,6 +650,79 @@ function NewArtefactMenu({
         onOpenChange={setDialogOpen}
         layer={layer}
         kind={dialogKind}
+        onCreated={target => onCreated?.(target)}
+      />
+    </>
+  )
+}
+
+// ── Pillar New Button ──────────────────────────────────────────────────────
+//
+// Subtle `+` affordance rendered in each ArtefactColumn header. Pre-selects
+// the column's kind. If only one writable layer exists (the common solo-mode
+// case), a single click opens the dialog directly. If multiple writable
+// layers are available, a tiny dropdown lets the user pick which one.
+
+function PillarNewButton({
+  kind,
+  writableLayers,
+  onCreated,
+}: {
+  kind: ArtefactKind
+  writableLayers: IntelligenceLayer[]
+  onCreated?: (target: { layer: IntelligenceLayer; path: string }) => void
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogLayer, setDialogLayer] = useState<IntelligenceLayer>(writableLayers[0])
+  const meta = KIND_META[kind]
+
+  function openWith(layer: IntelligenceLayer) {
+    setDialogLayer(layer)
+    setDialogOpen(true)
+  }
+
+  const triggerClass =
+    'inline-flex size-6 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-overlay/60 hover:text-fg'
+  const triggerTitle = `New ${meta.label.toLowerCase()}`
+
+  return (
+    <>
+      {writableLayers.length === 1 ? (
+        <button
+          type="button"
+          onClick={() => openWith(writableLayers[0])}
+          className={triggerClass}
+          title={triggerTitle}
+          aria-label={triggerTitle}
+        >
+          <Plus className="size-3.5" />
+        </button>
+      ) : (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className={triggerClass} title={triggerTitle} aria-label={triggerTitle}>
+              <Plus className="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuLabel className="text-[10px] uppercase tracking-wide text-fg-subtle">
+              New {meta.label.toLowerCase()} in…
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {writableLayers.map(layer => (
+              <DropdownMenuItem key={layer} onClick={() => openWith(layer)}>
+                <LayerBadge layer={layer} size="sm" />
+                <span className="ml-2">{LAYER_META[layer].label}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      <NewArtefactDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        layer={dialogLayer}
+        kind={kind}
         onCreated={target => onCreated?.(target)}
       />
     </>
