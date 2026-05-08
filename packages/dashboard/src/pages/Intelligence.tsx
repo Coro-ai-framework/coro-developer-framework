@@ -329,6 +329,17 @@ export default function Intelligence() {
         open={inspectorOpen}
         onOpenChange={setInspectorOpen}
         target={inspectorTarget}
+        onChanged={next => {
+          // After an Override or Revert, re-fetch the catalogue so the
+          // layer cards + tables reflect the new shadow set. We also
+          // update the parent's target so re-opening uses the new layer.
+          if (next) {
+            setInspectorTarget(prev =>
+              prev ? { ...prev, layer: next.layer, path: next.path } : prev,
+            )
+          }
+          void refresh()
+        }}
       />
     </div>
   )

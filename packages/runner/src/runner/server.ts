@@ -540,27 +540,54 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // Path traversal is rejected up front: only relative paths under one of
   // the four well-known artefact roots (workflows/, agents/, .claude/skills/,
   // memory/) are accepted, and any path containing `..` is rejected.
-  app.get('/intelligence/file', async (req: Request, res: Response): Promise<void> => {
-    const layerParam = String(req.query.layer ?? '')
-    const pathParam = String(req.query.path ?? '')
+  const ALLOWED_PREFIXES = ['workflows/', 'agents/', '.claude/skills/', 'memory/']
+
+  type ValidatedTarget =
+    | { ok: true; layer: 'base' | 'tenant' | 'repo'; pathParam: string; root: string }
+    | { ok: false; status: number; error: string }
+
+  function validateTarget(req: Request, opts: { writable?: boolean } = {}): ValidatedTarget {
+    const layerParam = String(req.query.layer ?? (req.body && req.body.layer) ?? '')
+    const pathParam = String(req.query.path ?? (req.body && req.body.path) ?? '')
 
     if (layerParam !== 'base' && layerParam !== 'tenant' && layerParam !== 'repo') {
-      res.status(400).json({ error: 'layer must be one of base|tenant|repo' })
-      return
+      return { ok: false, status: 400, error: 'layer must be one of base|tenant|repo' }
+    }
+    if (opts.writable && layerParam === 'base') {
+      return { ok: false, status: 403, error: 'base layer is read-only; choose tenant or repo' }
     }
     if (!pathParam) {
-      res.status(400).json({ error: 'path is required' })
-      return
+      return { ok: false, status: 400, error: 'path is required' }
     }
     if (pathParam.includes('..') || pathParam.startsWith('/')) {
-      res.status(400).json({ error: 'path must be relative and may not contain ..' })
+      return { ok: false, status: 400, error: 'path must be relative and may not contain ..' }
+    }
+    if (!ALLOWED_PREFIXES.some(p => pathParam.startsWith(p))) {
+      return {
+        ok: false,
+        status: 400,
+        error: `path must start with one of: ${ALLOWED_PREFIXES.join(', ')}`,
+      }
+    }
+
+    const config = loadLocalConfig()
+    let root: string
+    if (layerParam === 'base') root = getBaseLayerRoot()
+    else if (layerParam === 'tenant') root = resolveIntelligenceDir(config)
+    else {
+      // Repo overlay isn't wired in solo mode yet (tracked separately).
+      return { ok: false, status: 409, error: 'repo overlay is not currently mounted' }
+    }
+    return { ok: true, layer: layerParam, pathParam, root }
+  }
+
+  app.get('/intelligence/file', async (req: Request, res: Response): Promise<void> => {
+    const v = validateTarget(req)
+    if (!v.ok) {
+      res.status(v.status).json({ error: v.error })
       return
     }
-    const allowedPrefixes = ['workflows/', 'agents/', '.claude/skills/', 'memory/']
-    if (!allowedPrefixes.some(p => pathParam.startsWith(p))) {
-      res.status(400).json({ error: `path must start with one of: ${allowedPrefixes.join(', ')}` })
-      return
-    }
+    const { layer: layerParam, pathParam } = v
 
     try {
       const config = loadLocalConfig()
@@ -612,6 +639,68 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       })
     } catch (err) {
       logger.error({ err }, 'GET /intelligence/file failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // Write (create or replace) an intelligence file in a writable layer.
+  // Body: { layer, path, content }. Refuses base. Creates parent dirs.
+  app.put('/intelligence/file', async (req: Request, res: Response): Promise<void> => {
+    const v = validateTarget(req, { writable: true })
+    if (!v.ok) {
+      res.status(v.status).json({ error: v.error })
+      return
+    }
+    const content = req.body?.content
+    if (typeof content !== 'string') {
+      res.status(400).json({ error: 'content must be a string' })
+      return
+    }
+    try {
+      const target = path.join(v.root, v.pathParam)
+      await fs.promises.mkdir(path.dirname(target), { recursive: true })
+      await fs.promises.writeFile(target, content, 'utf-8')
+      logger.info({ layer: v.layer, path: v.pathParam, bytes: content.length }, 'Intelligence file written')
+      res.json({ layer: v.layer, path: v.pathParam, bytes: content.length })
+    } catch (err) {
+      logger.error({ err }, 'PUT /intelligence/file failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // Delete an overlay file (revert to lower layer). Refuses base.
+  app.delete('/intelligence/file', async (req: Request, res: Response): Promise<void> => {
+    const v = validateTarget(req, { writable: true })
+    if (!v.ok) {
+      res.status(v.status).json({ error: v.error })
+      return
+    }
+    try {
+      const target = path.join(v.root, v.pathParam)
+      try {
+        await fs.promises.unlink(target)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          res.status(404).json({ error: `File not found in ${v.layer} layer` })
+          return
+        }
+        throw err
+      }
+      // Best-effort: clean up empty parent directories under the layer root,
+      // but never the layer root itself.
+      let dir = path.dirname(target)
+      while (dir.startsWith(v.root) && dir !== v.root) {
+        try {
+          await fs.promises.rmdir(dir)
+        } catch {
+          break
+        }
+        dir = path.dirname(dir)
+      }
+      logger.info({ layer: v.layer, path: v.pathParam }, 'Intelligence file deleted')
+      res.json({ layer: v.layer, path: v.pathParam, deleted: true })
+    } catch (err) {
+      logger.error({ err }, 'DELETE /intelligence/file failed')
       res.status(500).json({ error: (err as Error).message })
     }
   })

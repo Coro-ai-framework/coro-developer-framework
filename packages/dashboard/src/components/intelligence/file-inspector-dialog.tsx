@@ -13,7 +13,7 @@
 // Read-only in this phase. The "Edit" / "Override" actions land in Phase 4.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ExternalLink, FileText, Loader2 } from 'lucide-react'
+import { ArrowDown, FileText, Loader2, Plus, RotateCcw } from 'lucide-react'
 import {
   Dialog,
   DialogBody,
@@ -22,9 +22,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog'
+import { Button } from '../ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
 import LayerBadge, { type IntelligenceLayer } from './layer-badge'
-import { ApiError, requestJson } from '../../lib/http'
+import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 import { renderInlineMarkdown } from './markdown-mini'
 import { renderLineDiff, summarizeDiff } from './line-diff'
 
@@ -40,6 +41,8 @@ interface FileInspectorDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   target: FileInspectorTarget | null
+  /** Called after a successful write/delete so the parent can refresh the catalogue. */
+  onChanged?: (next: { layer: IntelligenceLayer; path: string } | null) => void
 }
 
 interface FilePayload {
@@ -50,25 +53,48 @@ interface FilePayload {
   lowerContent: string | null
 }
 
-export default function FileInspectorDialog({ open, onOpenChange, target }: FileInspectorDialogProps) {
+export default function FileInspectorDialog({
+  open,
+  onOpenChange,
+  target,
+  onChanged,
+}: FileInspectorDialogProps) {
   const [payload, setPayload] = useState<FilePayload | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState<'rendered' | 'source' | 'diff'>('rendered')
+  // Tracks the layer/path the inspector is currently showing. Diverges from
+  // `target` after an Override/Revert action so we don't have to round-trip
+  // through the parent.
+  const [activeLayer, setActiveLayer] = useState<IntelligenceLayer | null>(null)
+  const [activePath, setActivePath] = useState<string | null>(null)
+  const [actionPending, setActionPending] = useState<null | 'override' | 'revert'>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open || !target) {
       setPayload(null)
       setError(null)
+      setActiveLayer(null)
+      setActivePath(null)
+      setActionError(null)
       return
     }
+    setActiveLayer(target.layer)
+    setActivePath(target.path)
+  }, [open, target])
+
+  // Re-fetch whenever the active layer/path changes (driven either by a new
+  // target or by an internal action like Override / Revert).
+  useEffect(() => {
+    if (!open || !activeLayer || !activePath) return
     const ctrl = new AbortController()
     setLoading(true)
     setError(null)
     setPayload(null)
     setTab('rendered')
     requestJson<FilePayload>(
-      `/intelligence/file?layer=${encodeURIComponent(target.layer)}&path=${encodeURIComponent(target.path)}`,
+      `/intelligence/file?layer=${encodeURIComponent(activeLayer)}&path=${encodeURIComponent(activePath)}`,
       { signal: ctrl.signal },
     )
       .then(data => setPayload(data))
@@ -80,7 +106,7 @@ export default function FileInspectorDialog({ open, onOpenChange, target }: File
       })
       .finally(() => setLoading(false))
     return () => ctrl.abort()
-  }, [open, target])
+  }, [open, activeLayer, activePath])
 
   // The Diff tab only makes sense when there is something to diff against.
   // For an artefact that only exists in the current layer, hide it.
@@ -101,6 +127,54 @@ export default function FileInspectorDialog({ open, onOpenChange, target }: File
     if (!root) return
     const target = root.querySelector('[data-diff-kind="add"]') as HTMLElement | null
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  async function overrideInLayer(targetLayer: 'tenant' | 'repo') {
+    if (!payload || !activePath) return
+    setActionPending('override')
+    setActionError(null)
+    try {
+      // Seed the new override with the current (base) content so the user
+      // has something concrete to edit. The PUT writes through to disk.
+      await requestJson<{ layer: string; path: string; bytes: number }>(
+        '/intelligence/file',
+        jsonRequest(
+          { layer: targetLayer, path: activePath, content: payload.content },
+          { method: 'PUT' },
+        ),
+      )
+      // Re-target the inspector to the new override so the user sees it
+      // shadowing the base layer.
+      setActiveLayer(targetLayer)
+      onChanged?.({ layer: targetLayer, path: activePath })
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? `${err.message} (HTTP ${err.status})` : (err as Error).message
+      setActionError(message)
+    } finally {
+      setActionPending(null)
+    }
+  }
+
+  async function revertToLower() {
+    if (!payload || !activeLayer || !activePath || !payload.lowerLayer) return
+    setActionPending('revert')
+    setActionError(null)
+    try {
+      await requestJson<{ deleted: true }>(
+        `/intelligence/file?layer=${encodeURIComponent(activeLayer)}&path=${encodeURIComponent(activePath)}`,
+        { method: 'DELETE' },
+      )
+      const fallback = payload.lowerLayer
+      setActiveLayer(fallback)
+      onChanged?.({ layer: fallback, path: activePath })
+    } catch (err) {
+      const message =
+        err instanceof ApiError ? `${err.message} (HTTP ${err.status})` : (err as Error).message
+      setActionError(message)
+    } finally {
+      setActionPending(null)
+    }
   }
 
   return (
@@ -201,16 +275,70 @@ export default function FileInspectorDialog({ open, onOpenChange, target }: File
 
         <div className="shrink-0 border-t border-line px-6 py-3">
           {payload ? (
-            <div className="flex w-full items-center justify-between text-[11px] text-fg-subtle">
-              <span className="inline-flex items-center gap-1">
-                <ExternalLink className="size-3" />
-                Read-only — Phase 4 adds in-place editing.
-              </span>
-              {payload.lowerLayer ? (
-                <span className="inline-flex items-center gap-1">
-                  Shadowing
-                  <LayerBadge layer={payload.lowerLayer} size="sm" />
-                </span>
+            <div className="flex w-full flex-col gap-2">
+              <div className="flex w-full flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {payload.layer === 'base' ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        disabled={actionPending !== null}
+                        onClick={() => overrideInLayer('tenant')}
+                      >
+                        {actionPending === 'override' ? (
+                          <Loader2 className="mr-1 size-3 animate-spin" />
+                        ) : (
+                          <Plus className="mr-1 size-3" />
+                        )}
+                        Override in Custom
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled
+                        title="No repo overlay mounted"
+                      >
+                        <Plus className="mr-1 size-3" />
+                        Override in Repo
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actionPending !== null || !payload.lowerLayer}
+                      onClick={revertToLower}
+                      title={
+                        payload.lowerLayer
+                          ? `Delete this override and fall back to ${payload.lowerLayer}`
+                          : 'Nothing to revert to — no lower layer'
+                      }
+                    >
+                      {actionPending === 'revert' ? (
+                        <Loader2 className="mr-1 size-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="mr-1 size-3" />
+                      )}
+                      Revert to Coro
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 text-[11px] text-fg-subtle">
+                  <span className="inline-flex items-center gap-1">
+                    <FileText className="size-3" />
+                    {payload.layer === 'base' ? 'Base file' : 'Override file'}
+                  </span>
+                  {payload.lowerLayer ? (
+                    <span className="inline-flex items-center gap-1">
+                      Shadowing
+                      <LayerBadge layer={payload.lowerLayer} size="sm" />
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              {actionError ? (
+                <div className="text-[11px] text-danger-400">{actionError}</div>
               ) : null}
             </div>
           ) : null}
