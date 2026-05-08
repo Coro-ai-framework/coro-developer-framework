@@ -21,6 +21,19 @@ import { parseWorkflowConfig } from './workflow-parser'
 
 export type WorkflowKind = 'job' | 'campaign' | 'internal'
 
+/**
+ * Identifies which intelligence layer an artefact came from. Used by
+ * the dashboard to render provenance chips and explain to the developer
+ * where they would edit a file to override it.
+ */
+export type IntelligenceLayer = 'base' | 'tenant' | 'repo'
+
+/** Search-root descriptor used by discovery. Order = priority (first wins). */
+export interface LayerRoot {
+  layer: IntelligenceLayer
+  root: string
+}
+
 export interface WorkflowPhaseSummary {
   /** Phase name as declared in the workflow front-matter. */
   name: string
@@ -54,6 +67,15 @@ export interface DiscoveredWorkflow {
   kind: WorkflowKind
   /** Which intelligence layer this came from (root path). */
   source: string
+  /** Logical layer label corresponding to `source`. */
+  layer: IntelligenceLayer
+  /**
+   * If set, the same `workflowPath` also exists in this lower-priority
+   * layer — i.e. the current entry is **overriding** the layer named
+   * here. Surfaced as a chip in the UI so the user knows their tenant
+   * file is shadowing a base file.
+   */
+  overrides?: IntelligenceLayer
   /**
    * Ordered phase list parsed from the workflow front-matter. Empty if
    * the file has no parseable phases (i.e. malformed YAML).
@@ -115,7 +137,7 @@ function normaliseKind(value: unknown): WorkflowKind {
   return 'job'
 }
 
-async function readWorkflowsFromRoot(root: string): Promise<DiscoveredWorkflow[]> {
+async function readWorkflowsFromRoot(layer: IntelligenceLayer, root: string): Promise<DiscoveredWorkflow[]> {
   const workflowsDir = path.join(root, 'workflows')
   let entries: string[]
   try {
@@ -161,6 +183,7 @@ async function readWorkflowsFromRoot(root: string): Promise<DiscoveredWorkflow[]
       description: fmDesc || extractFirstParagraph(content),
       kind: normaliseKind(fm.kind),
       source: root,
+      layer,
       phases,
       initialPhase,
     })
@@ -169,22 +192,31 @@ async function readWorkflowsFromRoot(root: string): Promise<DiscoveredWorkflow[]
 }
 
 /**
- * Enumerate every workflow visible across the supplied search roots.
- * Roots should be ordered most-specific-first (e.g. tenant before base);
- * later roots are added only if they contribute a new `workflowPath`.
+ * Enumerate every workflow visible across the supplied layered roots.
+ * Roots are ordered most-specific-first (e.g. tenant before base): the
+ * first occurrence of any `workflowPath` wins, and any later layer that
+ * also contains that path is recorded on the winning entry as
+ * `overrides` so the UI can render the provenance chip.
  */
 export async function discoverWorkflows(
-  searchRoots: ReadonlyArray<string>,
+  layerRoots: ReadonlyArray<LayerRoot>,
   logger?: Logger,
 ): Promise<DiscoveredWorkflow[]> {
   const seen = new Map<string, DiscoveredWorkflow>()
-  for (const root of searchRoots) {
+  for (const { layer, root } of layerRoots) {
     if (!root) continue
     try {
-      const workflows = await readWorkflowsFromRoot(root)
+      const workflows = await readWorkflowsFromRoot(layer, root)
       for (const wf of workflows) {
-        if (!seen.has(wf.workflowPath)) {
+        const existing = seen.get(wf.workflowPath)
+        if (!existing) {
           seen.set(wf.workflowPath, wf)
+        } else if (!existing.overrides) {
+          // The higher-priority entry is overriding this lower layer.
+          // Record only the first lower-layer hit (tenant beats base, repo
+          // beats both — deeper conflicts are rare and listing them all
+          // would clutter the chip).
+          existing.overrides = wf.layer
         }
       }
     } catch (err) {

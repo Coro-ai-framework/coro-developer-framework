@@ -8,6 +8,8 @@ import { requestJson } from './lib/http'
 
 export type WorkflowKind = 'job' | 'campaign' | 'internal'
 
+export type IntelligenceLayer = 'base' | 'tenant' | 'repo'
+
 export interface WorkflowPhaseSummary {
   name: string
   status: string
@@ -24,6 +26,10 @@ export interface WorkflowOption {
   description: string
   kind: WorkflowKind
   source?: string
+  /** Which intelligence layer the served file came from. */
+  layer?: IntelligenceLayer
+  /** Lower-priority layer this entry is shadowing, if any. */
+  overrides?: IntelligenceLayer
   phases?: WorkflowPhaseSummary[]
   initialPhase?: string
 }
@@ -44,6 +50,7 @@ export const FALLBACK_JOB_WORKFLOW: WorkflowOption = {
   description:
     'General-purpose work-item workflow for scoped changes in an existing repository.',
   kind: 'job',
+  layer: 'base',
 }
 
 /** Legacy export retained for any caller that still imports the static list. */

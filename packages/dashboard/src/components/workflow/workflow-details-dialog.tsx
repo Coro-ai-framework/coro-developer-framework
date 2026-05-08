@@ -1,7 +1,6 @@
 import {
   ArrowDown,
   Bot,
-  Check,
   CircleDot,
   ExternalLink,
   PauseCircle,
@@ -15,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog'
+import LayerBadge from '../intelligence/layer-badge'
 import { cn } from '../../lib/utils'
 import type { WorkflowOption } from '../../workflows'
 
@@ -46,7 +46,12 @@ export default function WorkflowDetailsDialog({
               <WorkflowIcon className="size-4" />
             </span>
             <div className="min-w-0 flex-1">
-              <DialogTitle>{workflow?.name ?? 'Workflow'}</DialogTitle>
+              <div className="flex flex-wrap items-center gap-2">
+                <DialogTitle>{workflow?.name ?? 'Workflow'}</DialogTitle>
+                {workflow?.layer ? (
+                  <LayerBadge layer={workflow.layer} overrides={workflow.overrides} />
+                ) : null}
+              </div>
               {workflow ? (
                 <DialogDescription className="font-mono text-[11px] text-fg-subtle">
                   {workflow.workflowPath}
@@ -154,11 +159,18 @@ export default function WorkflowDetailsDialog({
 
           {workflow ? (
             <div className="flex items-center justify-between gap-3 border-t border-line pt-4 text-xs text-fg-subtle">
-              <div className="flex items-center gap-1.5">
-                <Check className="size-3" />
-                <span>
-                  Resolved from <span className="font-mono">{shortenSource(workflow.source)}</span>
-                </span>
+              <div className="flex items-center gap-2">
+                <span>From</span>
+                {workflow.layer ? (
+                  <LayerBadge layer={workflow.layer} overrides={workflow.overrides} size="sm" />
+                ) : (
+                  <span className="font-mono">{shortenSource(workflow.source)}</span>
+                )}
+                {workflow.layer && workflow.source ? (
+                  <span className="font-mono text-[10px] opacity-60" title={workflow.source}>
+                    {shortenSource(workflow.source)}
+                  </span>
+                ) : null}
               </div>
               {workflow.kind !== 'job' ? (
                 <Badge tone="muted">

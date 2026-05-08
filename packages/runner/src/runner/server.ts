@@ -518,8 +518,18 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   app.get('/workflows', async (req: Request, res: Response) => {
     try {
       const config = loadLocalConfig()
-      const roots = [resolveIntelligenceDir(config), getBaseLayerRoot()]
-      const all = await discoverWorkflows(roots, logger)
+      const tenantRoot = resolveIntelligenceDir(config)
+      const baseRoot = getBaseLayerRoot()
+      // Order = priority: tenant overrides base. Repo overlay is not
+      // available outside a job context, so it is intentionally absent
+      // here \u2014 the new-run page only shows base/tenant workflows.
+      const all = await discoverWorkflows(
+        [
+          { layer: 'tenant', root: tenantRoot },
+          { layer: 'base', root: baseRoot },
+        ],
+        logger,
+      )
       const kindFilter = typeof req.query['kind'] === 'string' ? req.query['kind'] : undefined
       const workflows = kindFilter ? all.filter(w => w.kind === kindFilter) : all
       res.json({ workflows })

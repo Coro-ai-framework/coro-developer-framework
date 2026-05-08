@@ -19,6 +19,7 @@ import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
 import WorkflowDetailsDialog from '../components/workflow/workflow-details-dialog'
+import LayerBadge from '../components/intelligence/layer-badge'
 import { jsonRequest, requestJson, ApiError } from '../lib/http'
 import {
   FALLBACK_JOB_WORKFLOW,
@@ -346,6 +347,9 @@ export default function CreateJob() {
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                               <span className="text-sm font-medium text-fg">{option.name}</span>
+                              {option.layer ? (
+                                <LayerBadge layer={option.layer} overrides={option.overrides} size="sm" />
+                              ) : null}
                               <span className="font-mono text-[10px] text-fg-subtle">{option.workflowPath}</span>
                               {option.phases ? (
                                 <span className="text-[10px] text-fg-subtle">
