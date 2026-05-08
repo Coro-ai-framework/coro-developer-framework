@@ -34,6 +34,7 @@ import {
 import PageHeader from '../components/common/page-header'
 import ErrorState from '../components/common/error-state'
 import LayerBadge, { type IntelligenceLayer } from '../components/intelligence/layer-badge'
+import FileInspectorDialog from '../components/intelligence/file-inspector-dialog'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
@@ -151,6 +152,15 @@ export default function Intelligence() {
   const [activeWorkflow, setActiveWorkflow] = useState<WorkflowOption | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
 
+  // File inspector — opened by clicking any artefact row.
+  const [inspectorTarget, setInspectorTarget] = useState<{
+    layer: IntelligenceLayer
+    path: string
+    displayName: string
+    overrides?: IntelligenceLayer
+  } | null>(null)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+
   async function load(signal?: AbortSignal) {
     try {
       const [data, options] = await Promise.all([
@@ -212,6 +222,16 @@ export default function Intelligence() {
     if (!option) return
     setActiveWorkflow(option)
     setDetailsOpen(true)
+  }
+
+  function openInspector(artefact: Artefact) {
+    setInspectorTarget({
+      layer: artefact.layer,
+      path: artefact.path,
+      displayName: artefact.displayName,
+      overrides: artefact.overrides,
+    })
+    setInspectorOpen(true)
   }
 
   return (
@@ -293,6 +313,7 @@ export default function Intelligence() {
               key={kind}
               kind={kind}
               artefacts={grouped[kind]}
+              onOpenInspector={openInspector}
               onOpenWorkflow={kind === 'workflow' ? openWorkflowDetails : undefined}
             />
           ))}
@@ -303,6 +324,11 @@ export default function Intelligence() {
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
         workflow={activeWorkflow}
+      />
+      <FileInspectorDialog
+        open={inspectorOpen}
+        onOpenChange={setInspectorOpen}
+        target={inspectorTarget}
       />
     </div>
   )
@@ -394,10 +420,11 @@ function RepoPlaceholder() {
 interface ArtefactColumnProps {
   kind: ArtefactKind
   artefacts: Artefact[]
+  onOpenInspector: (artefact: Artefact) => void
   onOpenWorkflow?: (artefact: Artefact) => void
 }
 
-function ArtefactColumn({ kind, artefacts, onOpenWorkflow }: ArtefactColumnProps) {
+function ArtefactColumn({ kind, artefacts, onOpenInspector, onOpenWorkflow }: ArtefactColumnProps) {
   const meta = KIND_META[kind]
   const Icon = meta.Icon
   return (
@@ -424,6 +451,7 @@ function ArtefactColumn({ kind, artefacts, onOpenWorkflow }: ArtefactColumnProps
             <ArtefactRow
               key={`${artefact.layer}:${artefact.path}`}
               artefact={artefact}
+              onOpenInspector={onOpenInspector}
               onOpenWorkflow={onOpenWorkflow}
             />
           ))
@@ -435,28 +463,19 @@ function ArtefactColumn({ kind, artefacts, onOpenWorkflow }: ArtefactColumnProps
 
 function ArtefactRow({
   artefact,
+  onOpenInspector,
   onOpenWorkflow,
 }: {
   artefact: Artefact
+  onOpenInspector: (artefact: Artefact) => void
   onOpenWorkflow?: (artefact: Artefact) => void
 }) {
-  const clickable = artefact.kind === 'workflow' && onOpenWorkflow
-  const Wrapper = (clickable
-    ? ({ children }: { children: React.ReactNode }) => (
-        <button
-          type="button"
-          onClick={() => onOpenWorkflow!(artefact)}
-          className="group block w-full rounded-lg border border-line bg-canvas/30 p-2.5 text-left transition-colors hover:border-accent-500/40 hover:bg-overlay/40"
-        >
-          {children}
-        </button>
-      )
-    : ({ children }: { children: React.ReactNode }) => (
-        <div className="rounded-lg border border-line bg-canvas/30 p-2.5">{children}</div>
-      )) as React.ComponentType<{ children: React.ReactNode }>
-
   return (
-    <Wrapper>
+    <button
+      type="button"
+      onClick={() => onOpenInspector(artefact)}
+      className="group block w-full rounded-lg border border-line bg-canvas/30 p-2.5 text-left transition-colors hover:border-accent-500/40 hover:bg-overlay/40"
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex items-center gap-1.5">
@@ -478,10 +497,22 @@ function ArtefactRow({
               {artefact.description}
             </p>
           ) : null}
+          {artefact.kind === 'workflow' && onOpenWorkflow ? (
+            <button
+              type="button"
+              onClick={e => {
+                e.stopPropagation()
+                onOpenWorkflow(artefact)
+              }}
+              className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-accent-300 hover:text-accent-200"
+            >
+              View phases →
+            </button>
+          ) : null}
         </div>
         <LayerBadge layer={artefact.layer} overrides={artefact.overrides} size="sm" />
       </div>
-    </Wrapper>
+    </button>
   )
 }
 

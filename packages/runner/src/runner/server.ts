@@ -531,6 +531,91 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  // ── Intelligence file inspector ─────────────────────────────────────────
+  //
+  // Returns the raw contents of a single intelligence file along with the
+  // next-lower layer's copy (when one exists) so the dashboard can render
+  // a Source view and a Diff view without a second round-trip.
+  //
+  // Path traversal is rejected up front: only relative paths under one of
+  // the four well-known artefact roots (workflows/, agents/, .claude/skills/,
+  // memory/) are accepted, and any path containing `..` is rejected.
+  app.get('/intelligence/file', async (req: Request, res: Response): Promise<void> => {
+    const layerParam = String(req.query.layer ?? '')
+    const pathParam = String(req.query.path ?? '')
+
+    if (layerParam !== 'base' && layerParam !== 'tenant' && layerParam !== 'repo') {
+      res.status(400).json({ error: 'layer must be one of base|tenant|repo' })
+      return
+    }
+    if (!pathParam) {
+      res.status(400).json({ error: 'path is required' })
+      return
+    }
+    if (pathParam.includes('..') || pathParam.startsWith('/')) {
+      res.status(400).json({ error: 'path must be relative and may not contain ..' })
+      return
+    }
+    const allowedPrefixes = ['workflows/', 'agents/', '.claude/skills/', 'memory/']
+    if (!allowedPrefixes.some(p => pathParam.startsWith(p))) {
+      res.status(400).json({ error: `path must start with one of: ${allowedPrefixes.join(', ')}` })
+      return
+    }
+
+    try {
+      const config = loadLocalConfig()
+      const tenantRoot = resolveIntelligenceDir(config)
+      const baseRoot = getBaseLayerRoot()
+
+      // Layer order matters for "lower layer" lookup: lower-priority comes
+      // after higher-priority. Repo not yet wired (no working repo here).
+      const layerStack: { layer: 'tenant' | 'base'; root: string }[] = [
+        { layer: 'tenant', root: tenantRoot },
+        { layer: 'base', root: baseRoot },
+      ]
+
+      async function readAt(layer: string): Promise<string | null> {
+        const entry = layerStack.find(l => l.layer === layer)
+        if (!entry) return null
+        try {
+          return await fs.promises.readFile(path.join(entry.root, pathParam), 'utf-8')
+        } catch {
+          return null
+        }
+      }
+
+      const content = await readAt(layerParam)
+      if (content === null) {
+        res.status(404).json({ error: `File not found in ${layerParam} layer` })
+        return
+      }
+
+      // Walk lower-priority layers in order; first hit wins.
+      let lowerContent: string | null = null
+      let lowerLayerResolved: string | null = null
+      const startIdx = layerStack.findIndex(l => l.layer === layerParam)
+      for (const l of layerStack.slice(startIdx + 1)) {
+        const c = await readAt(l.layer)
+        if (c !== null) {
+          lowerContent = c
+          lowerLayerResolved = l.layer
+          break
+        }
+      }
+
+      res.json({
+        layer: layerParam,
+        path: pathParam,
+        content,
+        lowerLayer: lowerLayerResolved,
+        lowerContent,
+      })
+    } catch (err) {
+      logger.error({ err }, 'GET /intelligence/file failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
   // ── Workflows ───────────────────────────────────────────────────────────
   //
   // Enumerate every workflow.md the runner can dispatch against,
