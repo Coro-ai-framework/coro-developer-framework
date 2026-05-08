@@ -1,4 +1,8 @@
 ---
+display_name: Campaign
+description: Plan and coordinate a multi-job campaign across one or more repositories. Spawns child implementation jobs and aggregates their results.
+kind: campaign
+
 initial_phase: campaign-planning
 initial_status: campaign-planning
 

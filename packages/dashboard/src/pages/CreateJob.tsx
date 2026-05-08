@@ -4,10 +4,13 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  ChevronDown,
   Edit3,
+  Info,
   Loader2,
   Settings,
   Ticket,
+  Workflow as WorkflowIcon,
 } from 'lucide-react'
 import PageHeader from '../components/common/page-header'
 import Field from '../components/forms/field'
@@ -15,8 +18,13 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
+import WorkflowDetailsDialog from '../components/workflow/workflow-details-dialog'
 import { jsonRequest, requestJson, ApiError } from '../lib/http'
-import { IMPLEMENTATION_WORKFLOWS } from '../workflows'
+import {
+  FALLBACK_JOB_WORKFLOW,
+  fetchLaunchableWorkflows,
+  type WorkflowOption,
+} from '../workflows'
 import { cn } from '../lib/utils'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -46,7 +54,16 @@ interface PluginsResponse {
 
 export default function CreateJob() {
   const navigate = useNavigate()
-  const workflow = IMPLEMENTATION_WORKFLOWS[0]
+
+  // Workflow discovery — populated from the runner. Defaults to the
+  // canonical implementation workflow so the page remains functional
+  // while the request is in flight or if the runner is unreachable.
+  const [workflows, setWorkflows] = useState<WorkflowOption[]>([FALLBACK_JOB_WORKFLOW])
+  const [workflowId, setWorkflowId] = useState<string>(FALLBACK_JOB_WORKFLOW.id)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [detailsWorkflow, setDetailsWorkflow] = useState<WorkflowOption | null>(null)
+  const workflow =
+    workflows.find(w => w.id === workflowId) ?? workflows[0] ?? FALLBACK_JOB_WORKFLOW
 
   // Form state — flat fields, only the ones each mode actually needs are
   // shown. Keeps the form approachable for first-time users.
@@ -68,6 +85,26 @@ export default function CreateJob() {
 
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const list = await fetchLaunchableWorkflows()
+        if (list.length > 0) {
+          setWorkflows(list)
+          // Prefer the previously-selected id if it's still valid, else
+          // the canonical `job` workflow, else the first entry.
+          setWorkflowId(prev => {
+            if (list.some(w => w.id === prev)) return prev
+            const job = list.find(w => w.id === 'job')
+            return (job ?? list[0]).id
+          })
+        }
+      } catch {
+        // Discovery is non-fatal — the fallback workflow keeps the page usable.
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     void (async () => {
@@ -251,6 +288,97 @@ export default function CreateJob() {
           </label>
         </section>
 
+        {/* ── Advanced ── */}
+        <section className="rounded-2xl border border-line bg-overlay/30">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen(o => !o)}
+            className="flex w-full items-center justify-between gap-3 px-5 py-3 text-left transition-colors hover:bg-overlay/50"
+            aria-expanded={advancedOpen}
+          >
+            <div>
+              <div className="text-sm font-semibold text-fg">Advanced</div>
+              <p className="text-xs text-fg-muted">
+                Pick a workflow other than the default. Custom workflows added to your intelligence overlay show up here.
+              </p>
+            </div>
+            <ChevronDown
+              className={cn(
+                'size-4 shrink-0 text-fg-muted transition-transform',
+                advancedOpen && 'rotate-180',
+              )}
+            />
+          </button>
+          {advancedOpen ? (
+            <div className="border-t border-line px-5 py-4 space-y-4">
+              <Field
+                label="Workflow"
+                hint="The phase definition Coro will execute. The default fits most ad-hoc work."
+              >
+                <div className="space-y-2">
+                  {workflows.map(option => {
+                    const selected = option.id === workflowId
+                    return (
+                      <div
+                        key={option.id}
+                        className={cn(
+                          'group flex items-start gap-3 rounded-xl border px-3 py-2.5 transition-colors',
+                          selected
+                            ? 'border-accent-500/50 bg-accent-500/10'
+                            : 'border-line bg-overlay/40 hover:border-line-strong',
+                        )}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setWorkflowId(option.id)}
+                          className="flex flex-1 items-start gap-3 text-left"
+                        >
+                          <span
+                            className={cn(
+                              'mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-lg ring-1',
+                              selected
+                                ? 'bg-accent-500/20 ring-accent-500/40 text-accent-200'
+                                : 'bg-overlay/60 ring-line text-fg-muted',
+                            )}
+                          >
+                            <WorkflowIcon className="size-3.5" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span className="text-sm font-medium text-fg">{option.name}</span>
+                              <span className="font-mono text-[10px] text-fg-subtle">{option.workflowPath}</span>
+                              {option.phases ? (
+                                <span className="text-[10px] text-fg-subtle">
+                                  · {option.phases.length} phase{option.phases.length === 1 ? '' : 's'}
+                                </span>
+                              ) : null}
+                            </div>
+                            {option.description ? (
+                              <p className="mt-0.5 text-xs leading-relaxed text-fg-muted">
+                                {option.description}
+                              </p>
+                            ) : null}
+                          </div>
+                        </button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setDetailsWorkflow(option)}
+                          className="shrink-0"
+                        >
+                          <Info />
+                          Details
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </Field>
+            </div>
+          ) : null}
+        </section>
+
         {error ? (
           <div className="rounded-2xl border border-danger-500/30 bg-danger-500/10 p-4 text-sm text-danger-200">
             {error}
@@ -262,7 +390,17 @@ export default function CreateJob() {
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-canvas/85 backdrop-blur supports-[backdrop-filter]:bg-canvas/70">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-6 py-3">
           <div className="min-w-0 text-xs text-fg-muted">
-            <div className="font-medium text-fg">{workflow.name}</div>
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-fg">{workflow.name}</span>
+              <button
+                type="button"
+                onClick={() => setDetailsWorkflow(workflow)}
+                className="inline-flex items-center gap-1 rounded text-[11px] text-fg-subtle transition-colors hover:text-accent-200"
+              >
+                <Info className="size-3" />
+                Details
+              </button>
+            </div>
             <div className="truncate">
               {mode === 'manual'
                 ? serviceName.trim() || 'Add a service name and prompt to dispatch'
@@ -276,6 +414,14 @@ export default function CreateJob() {
           </Button>
         </div>
       </div>
+
+      <WorkflowDetailsDialog
+        workflow={detailsWorkflow}
+        open={detailsWorkflow !== null}
+        onOpenChange={open => {
+          if (!open) setDetailsWorkflow(null)
+        }}
+      />
     </div>
   )
 }

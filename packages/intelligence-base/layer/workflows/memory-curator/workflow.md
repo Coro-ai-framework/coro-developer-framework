@@ -1,4 +1,8 @@
 ---
+display_name: Memory Curator
+description: Internal workflow that grooms the tenant memory bundle. Not user-launchable.
+kind: internal
+
 initial_phase: curating
 initial_status: queued
 

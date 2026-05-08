@@ -1,4 +1,8 @@
 ---
+display_name: Implementation Job
+description: General-purpose work-item workflow for scoped changes in an existing repository. Coro plans, codes, reviews, and ships a pull request.
+kind: job
+
 initial_phase: planning
 initial_status: queued
 

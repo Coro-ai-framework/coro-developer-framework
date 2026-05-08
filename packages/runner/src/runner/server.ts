@@ -36,6 +36,8 @@ import { resolveDashboardDist } from '../dashboard-dist'
 import { ClaudeLoginManager } from './claude-login'
 import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata } from '../plugins/builtin'
+import { discoverWorkflows } from '../workflow-discovery'
+import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 export interface RunnerServerOptions {
   port: number
@@ -500,6 +502,33 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // not redacted here because the runner never persists raw plugin
   // config back through this endpoint — `PUT /config` (legacy) is the
   // write path for v1; the plugin-aware writer arrives in P9.
+
+  // ── Workflows ───────────────────────────────────────────────────────────
+  //
+  // Enumerate every workflow.md the runner can dispatch against,
+  // walking the layered intelligence stack (tenant overlay first,
+  // then the base layer that ships with @coro/intelligence-base).
+  // The dashboard's new-run page uses this to populate its workflow
+  // picker, so dropping a new `workflows/<my-flow>/workflow.md` into
+  // the tenant overlay surfaces it without any code change.
+  //
+  // Optional `?kind=job|campaign|internal` filters the result. Without
+  // a filter every discovered workflow is returned — the dashboard
+  // typically asks for `kind=job`.
+  app.get('/workflows', async (req: Request, res: Response) => {
+    try {
+      const config = loadLocalConfig()
+      const roots = [resolveIntelligenceDir(config), getBaseLayerRoot()]
+      const all = await discoverWorkflows(roots, logger)
+      const kindFilter = typeof req.query['kind'] === 'string' ? req.query['kind'] : undefined
+      const workflows = kindFilter ? all.filter(w => w.kind === kindFilter) : all
+      res.json({ workflows })
+    } catch (err) {
+      logger.error({ err }, 'GET /workflows failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
   app.get('/plugins', async (_req: Request, res: Response) => {
     try {
       const config = loadLocalConfig()

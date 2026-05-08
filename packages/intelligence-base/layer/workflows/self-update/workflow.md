@@ -1,4 +1,8 @@
 ---
+display_name: Self Update Tracking
+description: Internal tracker for self-improvement PRs. Created automatically by the runner; not user-launchable.
+kind: internal
+
 initial_phase: tracking
 initial_status: awaiting-pr-merge
 
