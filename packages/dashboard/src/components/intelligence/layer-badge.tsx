@@ -7,8 +7,8 @@ import { cn } from '../../lib/utils'
 // (workflow, agent, skill, memory file) came from. Provides a single
 // vocabulary for provenance across every surface that renders intelligence:
 //
-//   • Base   → ships with the runner, read-only
-//   • Tenant → your overlay at ~/.coro/intelligence (writable)
+//   • Coro   → ships with the runner, read-only (internally `base`)
+//   • Custom → your overlay at ~/.coro/intelligence (writable, internally `tenant`)
 //   • Repo   → the target repo's .coro/ folder (writable, repo-scoped)
 //
 // Optional `overrides` annotates that the displayed file is shadowing a
@@ -34,16 +34,16 @@ const LAYER_META: Record<
   }
 > = {
   base: {
-    label: 'Base',
+    label: 'Coro',
     Icon: Package,
     tone: 'bg-fg/8 text-fg-muted ring-line',
-    description: 'Ships with the Coro runner. Read-only — override in your tenant or repo layer.',
+    description: 'Ships with the Coro runner. Read-only — override in your Custom or Repo layer.',
   },
   tenant: {
-    label: 'Tenant',
+    label: 'Custom',
     Icon: Layers,
     tone: 'bg-accent-500/15 text-accent-200 ring-accent-500/30',
-    description: 'Your tenant overlay (~/.coro/intelligence). Edit here to apply across every repo.',
+    description: 'Your custom overlay (~/.coro/intelligence). Edit here to apply across every repo.',
   },
   repo: {
     label: 'Repo',

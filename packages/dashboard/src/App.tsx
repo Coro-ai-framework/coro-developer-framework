@@ -5,6 +5,7 @@ import History from './pages/History'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
 import CreateJob from './pages/CreateJob'
+import Intelligence from './pages/Intelligence'
 import Settings from './pages/Settings'
 
 function RedirectToJobDetail() {
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/jobs/new" element={<CreateJob />} />
         <Route path="/jobs/:jobId" element={<JobDetail />} />
         <Route path="/campaigns/:jobId" element={<RedirectToJobDetail />} />
+        <Route path="/intelligence" element={<Intelligence />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

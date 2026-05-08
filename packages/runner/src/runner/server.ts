@@ -37,6 +37,7 @@ import { ClaudeLoginManager } from './claude-login'
 import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata } from '../plugins/builtin'
 import { discoverWorkflows } from '../workflow-discovery'
+import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 export interface RunnerServerOptions {
@@ -502,6 +503,33 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // not redacted here because the runner never persists raw plugin
   // config back through this endpoint — `PUT /config` (legacy) is the
   // write path for v1; the plugin-aware writer arrives in P9.
+
+  // ── Intelligence ─────────────────────────────────────────────────────────
+  //
+  // Inventory of every artefact the runner can see across the layered
+  // intelligence stack. Drives the dashboard's Intelligence page so the
+  // user can answer "what do I have, where did it come from, and what
+  // would I edit to override it" without grepping the filesystem.
+  //
+  // Read-only in this phase. Edits land in a later milestone.
+  app.get('/intelligence/layers', async (_req: Request, res: Response) => {
+    try {
+      const config = loadLocalConfig()
+      const tenantRoot = resolveIntelligenceDir(config)
+      const baseRoot = getBaseLayerRoot()
+      const catalogue = await buildIntelligenceCatalogue(
+        [
+          { layer: 'tenant', root: tenantRoot },
+          { layer: 'base', root: baseRoot },
+        ],
+        logger,
+      )
+      res.json(catalogue)
+    } catch (err) {
+      logger.error({ err }, 'GET /intelligence/layers failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
 
   // ── Workflows ───────────────────────────────────────────────────────────
   //
