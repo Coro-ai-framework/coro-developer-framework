@@ -3,10 +3,12 @@ import {
   AlertTriangle,
   ArrowRight,
   Bot,
+  CheckCircle2,
   FolderKanban,
   Inbox,
   PlayCircle,
   Settings2,
+  Sparkles,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -17,6 +19,8 @@ import StatusBadge from '../components/StatusBadge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
+import SetupWizard from '../components/wizard/SetupWizard'
+import { SettingsProvider } from './Settings/SettingsContext'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { requestJson } from '../lib/http'
 import { deriveJobDescription, deriveJobTitle, getRunDetailPath, sortJobsByUpdatedAt } from '../lib/jobs'
@@ -120,18 +124,18 @@ function OverviewList({ title, jobs, emptyLabel, icon: Icon }: OverviewListProps
   )
 }
 
-function SetupBanner({ setup }: { setup: SetupSummary }) {
+function SetupBanner({ setup, onLaunchWizard }: { setup: SetupSummary; onLaunchWizard: () => void }) {
   const isFirstRun = setup.state === 'not-configured'
-  const title = isFirstRun ? 'Finish runner setup' : 'Runner setup is incomplete'
+  const title = isFirstRun ? 'Welcome to Coro — finish setup' : 'Runner setup is incomplete'
   const description = isFirstRun
-    ? 'Coro is ready, but the runner still needs authentication and git settings before it can dispatch real work.'
+    ? 'Connect your model and code host. The setup wizard walks through each step.'
     : `One or more essentials are missing. Finish configuration so ${RUN_NOUN.pluralLower} can run cleanly.`
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-warning-500/25 bg-warning-500/8 p-5 lg:flex-row lg:items-center lg:justify-between">
       <div className="flex items-start gap-3">
         <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-warning-500/25 bg-warning-500/10 text-warning-400">
-          <AlertTriangle className="size-4" />
+          {isFirstRun ? <Sparkles className="size-4" /> : <AlertTriangle className="size-4" />}
         </div>
         <div className="space-y-1">
           <div className="text-[15px] font-semibold text-fg">{title}</div>
@@ -143,19 +147,44 @@ function SetupBanner({ setup }: { setup: SetupSummary }) {
           ) : null}
         </div>
       </div>
-      <Button asChild variant="secondary">
-        <Link to="/settings">
-          <Settings2 />
-          Open settings
-        </Link>
-      </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" onClick={onLaunchWizard}>
+          <Sparkles />
+          Run setup wizard
+        </Button>
+        <Button asChild variant="outline">
+          <Link to="/settings">
+            <Settings2 />
+            Open settings
+          </Link>
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function ReadyChip() {
+  return (
+    <div className="flex items-center gap-2 rounded-2xl border border-success-500/30 bg-success-500/8 px-4 py-2.5 text-sm text-success-300">
+      <CheckCircle2 className="size-4" />
+      Runner is ready. New jobs will dispatch immediately.
     </div>
   )
 }
 
 export default function Home() {
+  return (
+    <SettingsProvider>
+      <HomeInner />
+    </SettingsProvider>
+  )
+}
+
+function HomeInner() {
   const { jobs, loading, error } = useJobs()
   const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null)
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const [autoLaunched, setAutoLaunched] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -181,6 +210,30 @@ export default function Home() {
   const recentHistory = sortedJobs.filter(job => isTerminalStatus(job.status)).slice(0, 5)
   const liveSpend = activeRuns.reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
 
+  // Auto-launch the wizard on first boot when nothing is configured and the
+  // user has not dismissed it before. The localStorage flag is also set when
+  // the wizard's "Open dashboard" button is clicked, so re-loads stay quiet.
+  useEffect(() => {
+    if (autoLaunched) return
+    if (setup.state !== 'not-configured') return
+    if (typeof window === 'undefined') return
+    const completed = window.localStorage.getItem('coro.firstRun.completed') === 'true'
+    const dismissed = window.localStorage.getItem('coro.firstRun.dismissed') === 'true'
+    if (completed || dismissed) return
+    setWizardOpen(true)
+    setAutoLaunched(true)
+  }, [setup.state, autoLaunched])
+
+  function handleWizardOpenChange(next: boolean) {
+    setWizardOpen(next)
+    // If the user closed the wizard without finishing, suppress auto-launch
+    // for the rest of the browser session so it does not nag.
+    if (!next && typeof window !== 'undefined') {
+      const completed = window.localStorage.getItem('coro.firstRun.completed') === 'true'
+      if (!completed) window.localStorage.setItem('coro.firstRun.dismissed', 'true')
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -197,8 +250,11 @@ export default function Home() {
       />
 
       {setup.state !== 'configured' && setup.state !== 'loading' ? (
-        <SetupBanner setup={setup} />
+        <SetupBanner setup={setup} onLaunchWizard={() => setWizardOpen(true)} />
       ) : null}
+      {setup.state === 'configured' ? <ReadyChip /> : null}
+
+      <SetupWizard open={wizardOpen} onOpenChange={handleWizardOpenChange} />
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <StatCard

@@ -168,6 +168,20 @@ select {
   animation: fade-in 0.18s ease-out;
 }
 
+@keyframes fade-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+.animate-fade-out {
+  animation: fade-out 0.12s ease-in;
+}
+
 @keyframes pulse-slow {
   0%,
   100% {

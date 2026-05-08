@@ -9,6 +9,7 @@
 import express, { Request, Response } from 'express'
 import http from 'http'
 import path from 'path'
+import os from 'os'
 import fs from 'fs'
 import { spawn, spawnSync } from 'child_process'
 import { Logger } from 'pino'
@@ -404,6 +405,90 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', mode, version: '0.1.0' })
+  })
+
+  // ── System helpers ──────────────────────────────────────────────────────
+  //
+  // Open a path in the OS-native file manager (Finder / Explorer /
+  // xdg-open). The dashboard uses this for the "reveal" buttons on
+  // configured paths in Settings → Paths. Path is resolved against
+  // `~` and validated against an allowlist of safe roots so the
+  // browser cannot ask the runner to reveal arbitrary filesystem
+  // locations (e.g. `/etc`).
+  app.post('/system/reveal', (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as { path?: unknown; create?: unknown }
+      if (typeof body.path !== 'string' || body.path.trim().length === 0) {
+        res.status(400).json({ ok: false, error: '`path` is required' })
+        return
+      }
+
+      const expanded = body.path.startsWith('~')
+        ? path.join(os.homedir(), body.path.slice(1))
+        : body.path
+      const resolved = path.resolve(expanded)
+
+      // Allowlist: must sit under the user's home directory or under
+      // the resolved intelligence/working dirs. Prevents drive-by
+      // requests for `/etc`, `/var/db/...`, etc.
+      const config = loadLocalConfig()
+      const allowedRoots = [
+        os.homedir(),
+        resolveIntelligenceDir(config),
+        resolveLocalWorkingDir(config),
+        defaultConfigPath(),
+      ]
+      const ok = allowedRoots.some(root => {
+        const r = path.resolve(root)
+        return resolved === r || resolved.startsWith(r + path.sep)
+      })
+      if (!ok) {
+        res.status(400).json({ ok: false, error: 'Path is outside allowed roots' })
+        return
+      }
+
+      // Auto-create the directory on demand. The defaults (e.g.
+      // `~/.coro/working`) won't exist on a fresh install until the
+      // first job runs — without this, "Open folder" would 404.
+      if (body.create !== false) {
+        try {
+          fs.mkdirSync(resolved, { recursive: true })
+        } catch {
+          // Continue; the open command will surface the real error if
+          // the path truly doesn't exist.
+        }
+      }
+
+      if (!fs.existsSync(resolved)) {
+        res.status(404).json({ ok: false, error: `Path does not exist: ${resolved}` })
+        return
+      }
+
+      // Spawn the platform-native opener. We detach + ignore stdio so
+      // the child is fully decoupled from the runner process — the
+      // file manager keeps running after the request returns.
+      let cmd: string
+      let args: string[]
+      if (process.platform === 'darwin') {
+        cmd = 'open'
+        args = [resolved]
+      } else if (process.platform === 'win32') {
+        cmd = 'explorer.exe'
+        // explorer returns exit code 1 on success — we don't wait for it.
+        args = [resolved]
+      } else {
+        cmd = 'xdg-open'
+        args = [resolved]
+      }
+      const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
+      child.on('error', err => logger.warn({ err, cmd, resolved }, 'Failed to spawn file manager'))
+      child.unref()
+
+      res.json({ ok: true, path: resolved })
+    } catch (err) {
+      logger.warn({ err }, 'POST /system/reveal failed')
+      res.status(500).json({ ok: false, error: (err as Error).message })
+    }
   })
 
   // ── Plugins ─────────────────────────────────────────────────────────────
@@ -1264,6 +1349,230 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ saved: true, configPath: defaultConfigPath() })
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // ── Connection tests (third-party APIs) ─────────────────────────────────
+  //
+  // These endpoints proxy a "ping" call to the configured third-party API
+  // (git provider, issue tracker) so the dashboard never has to hold or
+  // ship the raw credential. They also accept the dashboard's redacted
+  // `...` token form: when the user hasn't re-entered the secret, we
+  // substitute the value from disk before making the upstream call.
+
+  /** Resolve a possibly-redacted secret from the request against on-disk config. */
+  function resolveSecret(provided: unknown, onDisk: string | undefined | null): string {
+    if (typeof provided !== 'string') return onDisk ?? ''
+    if (provided.length === 0) return onDisk ?? ''
+    if (isRedacted(provided)) return onDisk ?? ''
+    return provided
+  }
+
+  /** Trim trailing slash for clean URL joins. */
+  function trimSlash(url: string): string {
+    return url.replace(/\/+$/, '')
+  }
+
+  app.post('/test/git', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as {
+        provider?: string
+        username?: string
+        token?: string
+        workspace?: string
+      }
+      const provider = body.provider
+      if (provider !== 'github' && provider !== 'bitbucket' && provider !== 'gitlab') {
+        res.status(400).json({ ok: false, message: `Unsupported git provider "${provider}"` })
+        return
+      }
+
+      const existing = loadLocalConfig()
+      const username = (body.username ?? existing?.git?.username ?? '').trim()
+      const token = resolveSecret(body.token, existing?.git?.token)
+      if (!token) {
+        res.json({ ok: false, message: 'Token is required.' })
+        return
+      }
+
+      if (provider === 'github') {
+        const r = await fetch('https://api.github.com/user', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'coro-runner',
+          },
+        })
+        if (!r.ok) {
+          const text = await r.text().catch(() => '')
+          res.json({ ok: false, message: `GitHub ${r.status}: ${text.slice(0, 200) || r.statusText}` })
+          return
+        }
+        const data = (await r.json()) as { login?: string }
+        if (username && data.login && data.login.toLowerCase() !== username.toLowerCase()) {
+          res.json({
+            ok: false,
+            message: `Token authenticated as ${data.login}, but username is set to ${username}.`,
+          })
+          return
+        }
+        res.json({ ok: true, message: `Authenticated as ${data.login ?? '(unknown)'}` })
+        return
+      }
+
+      if (provider === 'bitbucket') {
+        if (!username) {
+          res.json({ ok: false, message: 'Bitbucket requires a username for app-password auth.' })
+          return
+        }
+        const auth = Buffer.from(`${username}:${token}`).toString('base64')
+        const r = await fetch('https://api.bitbucket.org/2.0/user', {
+          headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
+        })
+        if (!r.ok) {
+          const text = await r.text().catch(() => '')
+          res.json({ ok: false, message: `Bitbucket ${r.status}: ${text.slice(0, 200) || r.statusText}` })
+          return
+        }
+        const data = (await r.json()) as { username?: string; display_name?: string }
+        res.json({
+          ok: true,
+          message: `Authenticated as ${data.display_name ?? data.username ?? username}`,
+        })
+        return
+      }
+
+      // gitlab
+      const r = await fetch('https://gitlab.com/api/v4/user', {
+        headers: { 'PRIVATE-TOKEN': token, 'User-Agent': 'coro-runner' },
+      })
+      if (!r.ok) {
+        const text = await r.text().catch(() => '')
+        res.json({ ok: false, message: `GitLab ${r.status}: ${text.slice(0, 200) || r.statusText}` })
+        return
+      }
+      const data = (await r.json()) as { username?: string; name?: string }
+      res.json({ ok: true, message: `Authenticated as ${data.name ?? data.username ?? '(unknown)'}` })
+    } catch (err) {
+      logger.warn({ err }, 'POST /test/git failed')
+      res.json({ ok: false, message: (err as Error).message })
+    }
+  })
+
+  app.post('/test/tracker', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as {
+        provider?: string
+        jira?: { baseUrl?: string; username?: string; apiToken?: string }
+        linear?: { apiKey?: string; teamKey?: string }
+        git?: { provider?: string; username?: string; token?: string; workspace?: string }
+      }
+      const provider = body.provider
+      const existing = loadLocalConfig()
+
+      if (provider === 'jira') {
+        const baseUrl = (body.jira?.baseUrl ?? existing?.tracker?.jira?.baseUrl ?? '').trim()
+        const username = (body.jira?.username ?? existing?.tracker?.jira?.username ?? '').trim()
+        const apiToken = resolveSecret(body.jira?.apiToken, existing?.tracker?.jira?.apiToken)
+        if (!baseUrl || !username || !apiToken) {
+          res.json({ ok: false, message: 'Jira requires base URL, username, and API token.' })
+          return
+        }
+        const auth = Buffer.from(`${username}:${apiToken}`).toString('base64')
+        const r = await fetch(`${trimSlash(baseUrl)}/rest/api/3/myself`, {
+          headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+        })
+        if (!r.ok) {
+          const text = await r.text().catch(() => '')
+          res.json({ ok: false, message: `Jira ${r.status}: ${text.slice(0, 200) || r.statusText}` })
+          return
+        }
+        const data = (await r.json()) as { displayName?: string; emailAddress?: string }
+        res.json({
+          ok: true,
+          message: `Authenticated as ${data.displayName ?? data.emailAddress ?? username}`,
+        })
+        return
+      }
+
+      if (provider === 'linear') {
+        const apiKey = resolveSecret(body.linear?.apiKey, existing?.tracker?.linear?.apiKey)
+        if (!apiKey) {
+          res.json({ ok: false, message: 'Linear requires an API key.' })
+          return
+        }
+        const r = await fetch('https://api.linear.app/graphql', {
+          method: 'POST',
+          headers: {
+            Authorization: apiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ query: '{ viewer { id name email } }' }),
+        })
+        if (!r.ok) {
+          const text = await r.text().catch(() => '')
+          res.json({ ok: false, message: `Linear ${r.status}: ${text.slice(0, 200) || r.statusText}` })
+          return
+        }
+        const data = (await r.json()) as {
+          data?: { viewer?: { name?: string; email?: string } }
+          errors?: Array<{ message?: string }>
+        }
+        if (data.errors?.length) {
+          res.json({ ok: false, message: data.errors[0]?.message ?? 'Linear returned an error.' })
+          return
+        }
+        const viewer = data.data?.viewer
+        res.json({ ok: true, message: `Authenticated as ${viewer?.name ?? viewer?.email ?? '(unknown)'}` })
+        return
+      }
+
+      if (provider === 'github') {
+        // GitHub Issues reuses the git credential. Delegate to the same
+        // ping the /test/git endpoint runs.
+        const gitProvider = body.git?.provider ?? existing?.git?.provider
+        if (gitProvider !== 'github') {
+          res.json({
+            ok: false,
+            message: 'GitHub Issues requires the git provider to be GitHub.',
+          })
+          return
+        }
+        const username = (body.git?.username ?? existing?.git?.username ?? '').trim()
+        const token = resolveSecret(body.git?.token, existing?.git?.token)
+        if (!token) {
+          res.json({ ok: false, message: 'GitHub token is required (set it in Source control).' })
+          return
+        }
+        const r = await fetch('https://api.github.com/user', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'coro-runner',
+          },
+        })
+        if (!r.ok) {
+          const text = await r.text().catch(() => '')
+          res.json({ ok: false, message: `GitHub ${r.status}: ${text.slice(0, 200) || r.statusText}` })
+          return
+        }
+        const data = (await r.json()) as { login?: string }
+        res.json({
+          ok: true,
+          message: `Authenticated as ${data.login ?? username ?? '(unknown)'}`,
+        })
+        return
+      }
+
+      if (provider === 'none') {
+        res.json({ ok: true, message: 'No tracker configured.' })
+        return
+      }
+
+      res.status(400).json({ ok: false, message: `Unsupported tracker provider "${provider}"` })
+    } catch (err) {
+      logger.warn({ err }, 'POST /test/tracker failed')
+      res.json({ ok: false, message: (err as Error).message })
     }
   })
 
