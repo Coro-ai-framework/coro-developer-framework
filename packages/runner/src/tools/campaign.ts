@@ -48,6 +48,7 @@ import {
   type Job,
   type TrackerRef,
 } from '../jobs/types'
+import { switchWorkflow } from './workflow-switch'
 
 // ── convert_to_campaign ──────────────────────────────────────────────────────
 
@@ -85,39 +86,35 @@ export async function convertToCampaign(
     throw new Error('convert_to_campaign requires a non-empty description.')
   }
 
-  const params = {
-    ...ctx.job.params,
-    campaignTitle: args.title,
-    campaignDescription: args.description,
-    ...(args.trackerEpicRef ? { trackerEpicRef: args.trackerEpicRef } : {}),
-  }
+  // Delegate the actual workflow swap to the generic switch_workflow
+  // primitive — same plumbing for params merge, history append, session
+  // reset, and the next-phase signal. We layer the campaign-specific
+  // initialisation (`campaignChildren: []`) on top.
+  const switchResult = await switchWorkflow(
+    {
+      workflowPath: CAMPAIGN_WORKFLOW_PATH,
+      paramsPatch: {
+        campaignTitle: args.title,
+        campaignDescription: args.description,
+        ...(args.trackerEpicRef ? { trackerEpicRef: args.trackerEpicRef } : {}),
+      },
+      reason: `convert_to_campaign: ${args.title}`,
+      by: 'convert_to_campaign',
+    },
+    ctx,
+    signals,
+  )
 
   await ctx.stateBackend.updateJob(ctx.job.id, {
-    workflowPath: CAMPAIGN_WORKFLOW_PATH,
-    phase: 'campaign-planning',
-    status: 'campaign-planning',
-    params,
     campaignChildren: [],
-    // Force a fresh Claude session for the campaign-planner. The triage
-    // turn just made a single decision; loading the planner's full feature
-    // breakdown context into the same session would only confuse it.
-    sessionId: undefined,
   })
   ctx.job = (await ctx.stateBackend.getJob(ctx.job.id)) as Job
 
   await ctx.stateBackend.appendLog(
     ctx.job.id,
     `[convert_to_campaign] Promoted to campaign — title="${args.title}". ` +
-      `Workflow switched to ${CAMPAIGN_WORKFLOW_PATH}, phase=campaign-planning.`,
+      `Workflow switched to ${CAMPAIGN_WORKFLOW_PATH}, phase=${switchResult.phase}.`,
   )
-
-  // Signal the runner to end this turn cleanly. The current phase loop
-  // is still in `planning` (workflows/job/workflow.md); we want the runner
-  // to stop, persist the new workflow, and re-enter at campaign-planning
-  // on the NEXT loop iteration. `goto_phase` does exactly that — and the
-  // outer loop reloads `workflowConfig` from `job.workflowPath` each pass,
-  // so the new workflow takes effect.
-  signals.nextPhase = 'campaign-planning'
 
   ctx.logger.info(
     {
@@ -128,7 +125,7 @@ export async function convertToCampaign(
     'Job promoted to campaign',
   )
 
-  return { ok: true, campaignJobId: ctx.job.id, nextPhase: 'campaign-planning' }
+  return { ok: true, campaignJobId: ctx.job.id, nextPhase: switchResult.phase }
 }
 
 // ── campaign_register_child ──────────────────────────────────────────────────

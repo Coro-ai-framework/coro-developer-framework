@@ -747,6 +747,24 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       }
     },
 
+    // Generic in-place workflow lane change. Replaces the legacy
+    // "switch via convert_to_campaign" trick for any non-campaign lane.
+    // Implementation lives in `tools/workflow-switch.ts`.
+    switch_workflow: async (args: {
+      workflowPath: string
+      paramsPatch?: Record<string, unknown>
+      reason: string
+      toPhase?: string
+    }) => {
+      const { switchWorkflow } = await import('./tools/workflow-switch')
+      try {
+        const result = await switchWorkflow(args, ctx, signals)
+        return text(result)
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
     campaign_register_child: async (args: {
       name: string
       description: string

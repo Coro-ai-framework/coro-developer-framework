@@ -452,6 +452,18 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
       ),
 
       tool(
+        'switch_workflow',
+        'Switch the active job to a different workflow lane in place. Use when the planner / evaluator detects the current lane is mis-sized (e.g. promote a tiny task to job-fast, or escalate to job-deep). Path-based admission: target workflow must exist in any layer (base, tenant, repo). Refused if target equals the campaign workflow and params.epicAllowed=false.',
+        {
+          workflowPath: z.string().describe('Workflow markdown path relative to the intelligence root (e.g. "workflows/job-fast/workflow.md").'),
+          paramsPatch: z.record(z.string(), z.unknown()).optional().describe('Shallow merge into job.params (e.g. seed lane-specific options). Other fields are preserved.'),
+          reason: z.string().describe('Short audit message — surfaces in the run log and in workflowPathHistory.'),
+          toPhase: z.string().optional().describe('Optional explicit start phase on the new workflow. Must be declared by it; otherwise the workflow\'s initial_phase is used.'),
+        },
+        h.switch_workflow,
+      ),
+
+      tool(
         'campaign_register_child',
         'Register a single child issue spec on a campaign. Call once per issue from the campaign-planner. The dispatcher dispatches each child as a normal job when its dependsOn list is satisfied.',
         {

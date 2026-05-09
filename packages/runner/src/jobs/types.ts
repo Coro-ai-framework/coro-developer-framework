@@ -285,6 +285,30 @@ export interface Job {
    * benefit from sibling N's discoveries before any human review happens.
    */
   campaignAggregatedInsights?: Insight[]
+
+  /**
+   * Audit trail of mid-job workflow switches recorded by the
+   * `switch_workflow` MCP tool (and indirectly by `convert_to_campaign`,
+   * which delegates to the same primitive). The current `workflowPath` is
+   * always the live workflow; this list preserves the chain so the
+   * dashboard, evaluator, and replay tools can reason about how the job
+   * arrived in its present lane.
+   */
+  workflowPathHistory?: WorkflowSwitchEntry[]
+}
+
+/**
+ * One row of {@link Job.workflowPathHistory}. Recorded every time
+ * `switch_workflow` mutates the job's `workflowPath`.
+ */
+export interface WorkflowSwitchEntry {
+  at: string
+  from: string
+  to: string
+  fromPhase: string
+  toPhase: string
+  reason: string
+  by: 'switch_workflow' | 'convert_to_campaign'
 }
 
 // ── Convenience accessors ─────────────────────────────────────────────────────

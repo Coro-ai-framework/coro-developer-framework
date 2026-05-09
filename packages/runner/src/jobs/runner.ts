@@ -201,7 +201,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   // once. Per-phase calls below re-run the resolver to refresh CONTENTS.
   const jobIntelligenceDir = initialResolved.intelligenceDir
 
-  const workflowConfig: WorkflowConfig | null =
+  let workflowConfig: WorkflowConfig | null =
     options?.workflowConfigOverride !== undefined
       ? options.workflowConfigOverride
       : job.workflowPath
@@ -211,6 +211,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             logger,
           ))?.config ?? null
         : null
+  let workflowConfigPath: string | null = job.workflowPath || null
 
   // A configured workflow that we can't resolve at runtime is a hard
   // failure. We also validate that the job's current phase is one we
@@ -348,6 +349,53 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         `System prompt assembled: ${promptSizeKb} KB`,
       )
       await stateBackend.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
+
+      // Mid-job workflow switches (`switch_workflow`, `convert_to_campaign`)
+      // mutate `liveJob.workflowPath` while the cached `workflowConfig`
+      // still points at the previous lane. Detect drift and reload the
+      // config from the resolved overlay so the rest of the loop dispatches
+      // against the right phase set.
+      if (liveJob.workflowPath && liveJob.workflowPath !== workflowConfigPath) {
+        const reloaded = await loadWorkflowConfigFromRoots(
+          liveJob.workflowPath,
+          [jobIntelligenceDir, settings.paths.baseLayerDir],
+          logger,
+        )
+        if (reloaded) {
+          workflowConfig = reloaded.config
+          workflowConfigPath = liveJob.workflowPath
+          logger.info(
+            {
+              jobId: liveJob.id,
+              workflowPath: liveJob.workflowPath,
+              resolvedFrom: reloaded.resolvedFrom,
+              phases: reloaded.config.phases.map(p => p.name),
+            },
+            'Reloaded workflow config after mid-job switch',
+          )
+          await stateBackend.appendLog(
+            liveJob.id,
+            `[workflow-reload] now running ${liveJob.workflowPath} ` +
+              `(phases: ${reloaded.config.phases.map(p => p.name).join(', ')})`,
+          )
+        } else {
+          // Workflow disappeared between switch_workflow's path-existence
+          // check and now (e.g. a tenant overlay refresh removed it). Fail
+          // fast — the old config no longer matches the active path.
+          const message =
+            `Cannot resolve workflow '${liveJob.workflowPath}' for job ${liveJob.id} ` +
+            `after mid-job switch. Failing the job — fix the intelligence path.`
+          logger.error({ jobId: liveJob.id, workflowPath: liveJob.workflowPath }, message)
+          await stateBackend.appendLog(liveJob.id, `[error] ${message}`)
+          liveJob = await syncJob(stateBackend, liveJob, {
+            status: STATUS_FAILED,
+            escalationMessage: message,
+          })
+          toolCtx.job = liveJob
+          break
+        }
+      }
+
       const phaseConf = workflowConfig ? getPhaseConfig(workflowConfig, liveJob.phase) : null
 
       // Defence in depth — the start-of-runJob guard already rejects
