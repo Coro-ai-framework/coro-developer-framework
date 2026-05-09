@@ -488,3 +488,78 @@ and that is a deliberate property of the system, not a bug.
 
 The base content can grow more opinionated over time — the contract
 above bounds how much that opinionation can leak into user workflows.
+
+---
+
+## 8. DEEP-lane and campaign content invariants (v1.1 + v1.2)
+
+The base intelligence layer adds two further opt-in surfaces in v1.1
+(the DEEP analyzer + qa pipeline plus tiered testing skills) and v1.2
+(the campaign-architecture and campaign-integration phases plus a
+file-based cross-child contracts pattern). Both surfaces extend the
+same "content, not infrastructure" stance from §7.
+
+### Invariant 7 — DEEP analyzer / qa are content additions only
+
+`workflows/job-deep/workflow.md` rewires its `analysis` and `qa`
+phases to `agents/analyzer.md` and `agents/qa.md` respectively. No
+new MCP tools, no new state-backend columns, no dispatcher branches.
+Tenants and repos that override `job-deep` may use those agents,
+ignore them, or replace them outright — the runner does not care.
+
+### Invariant 8 — Tiered testing skills are an index, not a contract
+
+`feature-testing/SKILL.md` is now an index that points at four tier
+skills (`feature-testing-unit`, `feature-testing-integration`,
+`feature-testing-contract`, `feature-testing-e2e`). The
+`tiers_run` field in the testing JSON schema is advisory metadata —
+nothing in the runner reads it. A user workflow can invoke any
+subset of the tier skills, none of them, or its own testing skill.
+
+### Invariant 9 — Cross-child contracts are file-based, not tool-based
+
+The campaign cross-child contract pattern lives entirely on disk
+under `working/{parent-job-id}/contracts/`:
+
+| File | Owner | Schema |
+|---|---|---|
+| `_index.json` | Campaign Architect (seed) | `{ contracts: [{ id, kind, producer_hint, consumer_hints[], shape, compatibility, ownership }] }` |
+| `{producer-child-name}.json` | The producer child's Coder (after merge) | `{ child_name, produces: [{ id, kind, shape, compatibility, test_ref, merged_pr_url, merged_commit_sha }] }` |
+
+Producer / consumer ordering is encoded in the campaign DAG via
+`dependsOn` on `campaign_register_child` — the dispatcher already
+honours it, so the consumer's working directory always observes the
+producer's contract file before the consumer's Coder runs. There is
+no MCP tool for "claim" or "publish" a contract; the file's presence
+is the publication. Drift is signalled via `add_insight({
+category: "contract-drift" })`, surfaced by the Campaign Evaluator
+and the Campaign Integrator.
+
+The `campaign-contracts` skill carries the prose for both producer
+and consumer flows. Tenants that want a different pattern can ship
+their own skill and their own campaign-architect / coder overrides;
+the runner does not police the file shape.
+
+### Invariant 10 — Campaign architecture and integration are extra phases, not extra primitives
+
+`workflows/campaign/workflow.md` now has five phases:
+`campaign-architecture` → `campaign-planning` → `coordinating` →
+`campaign-integration` → `aggregation`. The first and fourth are
+new in v1.2 and run `agents/campaign-architect.md` and
+`agents/campaign-integrator.md`. They use only existing MCP tools
+(`post_artifact`, `add_insight`, `read_memory`, `log`,
+`campaign_status`) — there is no `campaign_architect_*` namespace.
+A user campaign workflow may keep, drop, or replace either phase by
+authoring its own `workflows/<name>/workflow.md`.
+
+### Invariant 11 — Halt-and-remediate stays human-mediated
+
+The Campaign Evaluator may **suggest** in `campaign-report.md` that a
+failed/escalated child be re-run, optionally with a different
+`params.lane`. It does not call `campaign_rerun_child` /
+`campaign_skip_child` / `campaign_cancel_child` itself — those are
+human-triggered via the dashboard. When a human reruns a child with
+`paramsPatch.lane = "deep"`, the child Planner's lane router (§7,
+Invariant 6) detects the mismatch with the active workflow and calls
+`switch_workflow` to land on the correct sized workflow.
+

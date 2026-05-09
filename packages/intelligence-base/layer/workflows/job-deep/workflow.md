@@ -13,7 +13,7 @@ phases:
     status: spec-writing
 
   - name: analysis
-    agent: agents/planner.md
+    agent: agents/analyzer.md
     model: planning
     status: analyzing
     interactive_checkpoint: true
@@ -42,7 +42,7 @@ phases:
     interactive_checkpoint: true
 
   - name: qa
-    agent: agents/evaluator.md
+    agent: agents/qa.md
     model: planning
     status: qa
     interactive_checkpoint: true
@@ -104,24 +104,28 @@ Output: `working/{job-id}/feature-spec.md`.
 
 ### Phase 1: Analysis
 
-**Agent:** Planner (`agents/planner.md`) running in analysis mode
-**Skills:** Agent should invoke `feature-planning` for system-level reasoning;
-when available, `cross-cutting-review` for security/perf/observability prompts.
+**Agent:** Analyzer (`agents/analyzer.md`) — a dedicated agent, **not**
+the Planner running in analysis mode.
+**Skills:** Analyzer invokes `feature-planning`, `register-convention`,
+the relevant language conventions skill, and `cross-cutting-review` at
+the design level.
 
 Goal: produce **design notes** before any work item is sequenced. Output:
 `working/{job-id}/design-notes.md` containing at minimum:
 
-- Architecture decisions (ADR-style: context, decision, consequences) for any
-  shared abstraction, public API, or schema being introduced or changed
+- Architecture decisions (ADR-style: context, decision, alternatives,
+  consequences) for any shared abstraction, public API, or schema being
+  introduced or changed.
 - Identified contracts (API shapes, message formats, schema deltas)
-- Risk register (what can break, blast radius, rollback plan)
-- Cross-cutting checklist (security, perf, observability, dependency hygiene)
+  with the test that will prove each contract holds.
+- Risk register (what can break, blast radius, rollback plan).
+- Cross-cutting checklist (security, perf, observability, dep hygiene).
 
-Also call `post_artifact({ kind: "design-notes-md", title, data: { path: "design-notes.md" } })`.
-
-End the turn after writing design-notes — do **not** also call
-`set_work_items` here. The next phase (planning) does the decomposition with
-design-notes as input.
+The Analyzer also seeds `register.json`'s `decisions[]` and
+`contracts[]` arrays so the Coder and the Code Reviewer treat them as
+load-bearing. End the turn after writing design-notes — do **not** call
+`set_work_items` here. The next phase (planning) does the decomposition
+with design-notes as input.
 
 ### Phase 2: Planning
 
@@ -149,23 +153,31 @@ routes change requests back to coding, waits for approval, merges.
 
 ### Phase 5: QA (verify the merged result)
 
-**Agent:** Evaluator (`agents/evaluator.md`) running in QA mode
-**Skills:** `feature-testing` for verification heuristics
+**Agent:** QA (`agents/qa.md`) — a dedicated agent, **not** the Evaluator
+running in QA mode.
+**Skills:** `feature-testing` (which indexes the unit / integration /
+contract / e2e tier sub-skills).
 
-1. Check out the merged branch.
-2. Re-run build + the full test suite (`build_status`, `existing_tests_status`).
-3. **Verify the CI pipeline is green** on the merged commit (call
-   `mcp__coro__scm_get_pr_status` or the upstream CI tool — do not re-run tests
-   to substitute for missing CI signal).
-4. Verify each acceptance criterion from `implementation-plan.md` and each
-   architectural commitment from `design-notes.md`. Record pass/fail with
-   diffs.
-5. Query Loki/Tempo for runtime errors during verification (when applicable).
-6. Decision:
+1. Verify the CI pipeline is green on the merged commit (call
+   `mcp__coro__scm_get_pr_status`). If pending, await the CI event. If
+   red, route back to coding without re-running locally.
+2. Check out the merged commit.
+3. Run build + the full existing-test suite.
+4. Verify each acceptance criterion from `implementation-plan.md` and
+   each architectural commitment from `design-notes.md`. Record
+   pass/fail with diffs.
+5. Verify each contract in `register.json` introduced this job has the
+   test that proves it holds.
+6. Query Loki/Tempo for runtime errors during verification (when
+   applicable).
+7. Decision:
    - **Pass:** end the turn — the runner advances to `evaluation`.
    - **Fix needed:** call `update_work_item(name, incrementLoop: true)` and
      `goto_phase("coding")` with a focused fix brief.
    - **Escalate:** loop count >= 5 or blocker found.
+
+QA produces `working/{job-id}/qa-report.md` for the dashboard and the
+Evaluator.
 
 ### Phase 6: Evaluation (insights + proposals)
 

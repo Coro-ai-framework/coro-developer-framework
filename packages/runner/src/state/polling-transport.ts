@@ -63,6 +63,16 @@ export class PollingTransport implements EventTransport {
   /** Cache of last-seen PR state to detect changes. Keyed by `${pluginId}:${repoKey}:${externalId}`. */
   private readonly snapshots = new Map<string, PrSnapshot>()
 
+  /**
+   * Consecutive poll-failure counter per ref. Reset on every successful poll.
+   * Used to escalate a parked job once the upstream PR / repo has been
+   * unreachable for too long (deleted, renamed, permissions revoked).
+   */
+  private readonly pollFailures = new Map<string, number>()
+
+  /** Threshold of consecutive failures before we unpark the job. */
+  private static readonly FAILURE_THRESHOLD = 5
+
   constructor(opts: PollingTransportOptions) {
     this.stateBackend = opts.stateBackend
     this.plugins = opts.plugins
@@ -92,6 +102,7 @@ export class PollingTransport implements EventTransport {
     }
     this.connected = false
     this.snapshots.clear()
+    this.pollFailures.clear()
     this.logger.info('Polling transport stopped')
   }
 
@@ -150,7 +161,7 @@ export class PollingTransport implements EventTransport {
         try {
           await this.checkPr(job.id, scm, ref)
         } catch (err) {
-          this.logger.warn({ jobId: job.id, prId, err }, 'PR poll failed — will retry next cycle')
+          await this.handlePollError(job.id, ref, err)
         }
       }
     } finally {
@@ -162,6 +173,8 @@ export class PollingTransport implements EventTransport {
 
   private async checkPr(jobId: string, scm: ScmPluginRuntime, ref: ExternalRef): Promise<void> {
     const snap = await scm.pollPr(ref)
+    // Successful poll — clear any prior failure streak for this ref.
+    this.pollFailures.delete(snapshotKey(ref))
 
     const current: PrSnapshot = {
       state: snap.state,
@@ -256,6 +269,56 @@ export class PollingTransport implements EventTransport {
     await this.handler(event)
   }
 
+  /**
+   * Handle a poll cycle error. Increments the per-ref consecutive failure
+   * counter; once it crosses the threshold we deliver a synthetic
+   * `pullrequest:rejected` event with `state: 'NOT_FOUND'` so the parked
+   * job unparks instead of looping forever. The agent receives the
+   * payload, sees the PR is unreachable, and decides what to do
+   * (re-open, escalate, or move on).
+   *
+   * We deliberately apply the **same threshold to 404s and other errors**.
+   * A single-cycle 404 can be caused by a transient infrastructure issue,
+   * a malformed slug stored on a prMapping, or a configured-owner mismatch
+   * — none of which mean the PR is actually rejected. Requiring N
+   * consecutive failures eliminates that false-positive class while still
+   * unparking promptly when the upstream really is gone.
+   */
+  private async handlePollError(jobId: string, ref: ExternalRef, err: unknown): Promise<void> {
+    const key = snapshotKey(ref)
+    const prevFailures = this.pollFailures.get(key) ?? 0
+    const failures = prevFailures + 1
+    this.pollFailures.set(key, failures)
+
+    const statusCode = extractStatusCode(err)
+    const reachedThreshold = failures >= PollingTransport.FAILURE_THRESHOLD
+
+    if (reachedThreshold) {
+      this.logger.warn(
+        { jobId, ref, prId: Number(ref.externalId), statusCode, failures, err },
+        'PR poll failed too many times in a row — unparking job with NOT_FOUND.',
+      )
+      this.snapshots.delete(key)
+      this.pollFailures.delete(key)
+      await this.deliver(jobId, ref, 'pullrequest:rejected', {
+        state: 'NOT_FOUND',
+        reason: statusCode === 404
+          ? `GitHub returned 404 for this PR on ${failures} consecutive cycles. The PR or repository may be unreachable to the configured token, the stored repoSlug may be malformed, or the PR may have been deleted.`
+          : `PR poll failed ${failures} consecutive cycles.`,
+        statusCode,
+      })
+      return
+    }
+
+    // Transient failure — log once at warn, subsequent ones at debug to
+    // keep the runner log readable.
+    if (failures === 1) {
+      this.logger.warn({ jobId, ref, prId: Number(ref.externalId), statusCode, err }, 'PR poll failed — will retry next cycle')
+    } else {
+      this.logger.debug({ jobId, ref, prId: Number(ref.externalId), statusCode, failures, err }, 'PR poll still failing — will retry')
+    }
+  }
+
   // ── Resolution helpers ─────────────────────────────────────────────────────
 
   private resolveRef(job: Job, prId: number): ExternalRef | null {
@@ -293,6 +356,20 @@ export class PollingTransport implements EventTransport {
 
 function snapshotKey(ref: ExternalRef): string {
   return `${ref.pluginId}:${ref.repoKey ?? ''}:${ref.externalId}`
+}
+
+/**
+ * Best-effort extraction of an HTTP status code from a thrown error.
+ * Plugin clients (GitHubError, BitbucketError, …) all expose `statusCode`;
+ * fetch-style errors may expose `status`. Anything else falls through to
+ * `undefined`.
+ */
+function extractStatusCode(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined
+  const e = err as { statusCode?: unknown; status?: unknown }
+  if (typeof e.statusCode === 'number') return e.statusCode
+  if (typeof e.status === 'number') return e.status
+  return undefined
 }
 
 function pickRepoKey(job: { params: Record<string, unknown>; prMappings: PrMapping[] }): string {

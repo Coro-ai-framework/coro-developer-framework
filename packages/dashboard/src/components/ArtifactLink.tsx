@@ -6,6 +6,8 @@ import { requestText } from '../lib/http'
 import { Badge } from './ui/badge'
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { ScrollArea } from './ui/scroll-area'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
+import { renderInlineMarkdown } from './intelligence/markdown-mini'
 import ErrorState from './common/error-state'
 import { cn } from '../lib/utils'
 
@@ -155,6 +157,7 @@ function ArtefactModal({
   }, [onClose])
 
   const path = artifact.data['path'] as string
+  const isMarkdown = path.toLowerCase().endsWith('.md') || artifact.kind.endsWith('-md')
 
   return (
     <Dialog open onOpenChange={open => { if (!open) onClose() }}>
@@ -171,6 +174,29 @@ function ArtefactModal({
             <ErrorState title="Could not load artifact" message={error} />
           ) : !content ? (
             <div className="animate-pulse text-sm text-fg-subtle">Loading artifact content…</div>
+          ) : isMarkdown ? (
+            <Tabs defaultValue="rendered" className="space-y-3">
+              <TabsList>
+                <TabsTrigger value="rendered">Rendered</TabsTrigger>
+                <TabsTrigger value="source">Source</TabsTrigger>
+              </TabsList>
+              <TabsContent value="rendered" className="rounded-2xl border border-line bg-canvas/40">
+                <ScrollArea className="h-[60vh]">
+                  <div
+                    className="prose-coro space-y-3 p-5 text-sm leading-6 text-fg"
+                    // Renderer escapes input — see markdown-mini for the contract.
+                    dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(content) }}
+                  />
+                </ScrollArea>
+              </TabsContent>
+              <TabsContent value="source" className="rounded-2xl border border-line bg-canvas/60">
+                <ScrollArea className="h-[60vh]">
+                  <pre className="whitespace-pre-wrap break-words p-5 font-mono text-xs leading-6 text-fg">
+                    {content}
+                  </pre>
+                </ScrollArea>
+              </TabsContent>
+            </Tabs>
           ) : (
             <ScrollArea className="h-[60vh] rounded-2xl border border-line bg-canvas/60">
               <div className="p-5">

@@ -72,6 +72,31 @@ export class GitHubClient {
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 
+  /**
+   * Coerce any of these input shapes into a bare repo slug:
+   *   - `repo`
+   *   - `owner/repo`
+   *   - `https://github.com/owner/repo`
+   *   - `https://github.com/owner/repo.git`
+   *   - `git@github.com:owner/repo.git`
+   *
+   * Agents (and historic prMappings) sometimes hand us a URL or `owner/repo`
+   * pair instead of just `repo`. Without this, the API path becomes
+   * `/repos/<configuredOwner>/<the-whole-url>/pulls/<id>` which 404s.
+   */
+  private slug(repoSlug: string): string {
+    let s = String(repoSlug ?? '').trim()
+    // Strip protocol + host (https://, git@github.com:)
+    s = s.replace(/^https?:\/\/[^/]+\//, '')
+    s = s.replace(/^git@[^:]+:/, '')
+    // Strip a leading owner/ prefix
+    const lastSlash = s.lastIndexOf('/')
+    if (lastSlash >= 0) s = s.slice(lastSlash + 1)
+    // Strip trailing .git or trailing slash
+    s = s.replace(/\.git$/, '').replace(/\/$/, '')
+    return s
+  }
+
   // ── Repositories ────────────────────────────────────────────────────────────
 
   async createRepo(opts: CreateRepoOptions): Promise<{ full_name: string }> {
@@ -191,10 +216,11 @@ export class GitHubClient {
   }
 
   async postComment(repoSlug: string, prId: number, content: string): Promise<PrComment> {
+    const repo = this.slug(repoSlug)
     // Top-level comments go through the Issues API
     const c = await this.request<GhIssueComment>(
       'POST',
-      `/repos/${this.owner}/${repoSlug}/issues/${prId}/comments`,
+      `/repos/${this.owner}/${repo}/issues/${prId}/comments`,
       { body: content },
     )
     return {
@@ -206,10 +232,11 @@ export class GitHubClient {
   }
 
   async replyToComment(repoSlug: string, prId: number, parentId: number, content: string): Promise<PrComment> {
+    const repo = this.slug(repoSlug)
     // Reply to a review comment
     const c = await this.request<GhReviewComment>(
       'POST',
-      `/repos/${this.owner}/${repoSlug}/pulls/${prId}/comments/${parentId}/replies`,
+      `/repos/${this.owner}/${repo}/pulls/${prId}/comments/${parentId}/replies`,
       { body: content },
     )
     return {

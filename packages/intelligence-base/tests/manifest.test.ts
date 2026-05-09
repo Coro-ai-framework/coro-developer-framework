@@ -50,7 +50,10 @@ describe('@coro/intelligence-base manifest', () => {
         .filter((f) => f.endsWith('.md'))
         .sort()
       expect(agents).toEqual([
+        'analyzer.md',
+        'campaign-architect.md',
         'campaign-evaluator.md',
+        'campaign-integrator.md',
         'campaign-planner.md',
         'code-reviewer.md',
         'coder.md',
@@ -58,6 +61,7 @@ describe('@coro/intelligence-base manifest', () => {
         'memory-curator.md',
         'planner.md',
         'pr-reviewer.md',
+        'qa.md',
         'spec-writer.md',
       ])
     })
@@ -79,14 +83,24 @@ describe('@coro/intelligence-base manifest', () => {
         .map((e) => e.name)
         .sort()
       expect(skills).toEqual([
+        'api-design',
+        'campaign-contracts',
         'campaign-planning',
+        'ci-cd-authoring',
         'cross-cutting-review',
+        'db-migrations-safe',
+        'dependency-hygiene',
         'dotnet-conventions',
         'feature-planning',
         'feature-testing',
+        'feature-testing-contract',
+        'feature-testing-e2e',
+        'feature-testing-integration',
+        'feature-testing-unit',
         'golang-conventions',
         'java-conventions',
         'kotlin-conventions',
+        'observability-additions',
         'python-conventions',
         'register-convention',
         'ruby-conventions',

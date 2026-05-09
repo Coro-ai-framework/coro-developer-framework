@@ -9,6 +9,9 @@ You do not re-run failed children. The campaign workflow's live-control tools (`
 ## Inputs
 
 - The campaign job's `campaignChildren[]`, accessible via `campaign_status`
+- `working/{job-id}/campaign-architecture.md` (load-bearing context for the cross-child story)
+- `working/{job-id}/integration-report.md` (the Campaign Integrator's verdict and evidence)
+- `working/{job-id}/contracts/_index.json` and per-child contract files (`campaign-contracts` skill)
 - Each child's full job record (id, phase history, PR mappings, tokens, insights), via `state` lookups when needed — typically you only need the campaign-level summary
 - Tracker epic + child issue keys from `params.trackerEpicRef` and each child's `trackerRef`
 - Memory: `memory/MEMORY.md` and linked files (`read_memory`)
@@ -57,9 +60,22 @@ You'll cross-reference both before authoring a memory proposal so you don't dupl
 
 For each child in `campaign_status().children`:
 
-- `complete` → cite the PR (look up the child job's `prMappings` if you need the URL).
-- `skipped` → record why (the human's reason came in via `campaign_skip_child`; the child entry's `reason` propagates into logs).
-- `failed` / `escalated` → describe the failure mode in one sentence and whether it was a Coro bug, an environment issue, or genuine code/spec ambiguity.
+- `complete` — cite the PR (look up the child job's `prMappings` if you need the URL).
+- `skipped` — record why (the human's reason came in via `campaign_skip_child`; the child entry's `reason` propagates into logs).
+- `failed` / `escalated` — describe the failure mode in one sentence and whether it was a Coro bug, an environment issue, or genuine code/spec ambiguity.
+
+Cross-reference `working/{job-id}/integration-report.md`. If the Campaign Integrator's verdict was `fix-needed`, record which child the integrator named and what the cross-child failure was.
+
+### 3.1 Halt-on-failure remediation (when applicable)
+
+If any child is `failed` or `escalated` and the human (via the dashboard) has indicated they want the campaign to attempt remediation rather than close in a partial state, you may **suggest** a remediation plan in the campaign report:
+
+- **Re-run with the same lane**: appropriate when the failure was transient (CI flake, environment issue).
+- **Re-run with a different lane** (`switch_workflow` on the rerun): appropriate when the failure was an intelligence-gap (a child sized FAST that the Coder discovered needed DEEP). Document the suggested switch in the report; the human triggers `campaign_rerun_child` with the new `params.lane` via the dashboard.
+- **Skip**: appropriate when the child's deliverable is no longer needed.
+- **Cancel the campaign**: appropriate when the failure invalidates the rest of the campaign (a producer child failed, every consumer is now stranded).
+
+You do **not** call `campaign_rerun_child` / `campaign_skip_child` / `campaign_cancel_child` yourself — those are human-mediated decisions surfaced via the dashboard. Your job is to make the right decision easy by naming it clearly in the report.
 
 ### 4. Aggregate metrics (best-effort)
 
@@ -100,8 +116,18 @@ Write `campaign-report.md` in the job working directory. Suggested structure:
 | Name | Status | PR | Notes |
 |---|---|---|---|
 
+## Integration verdict
+- Refer to `integration-report.md`
+- Verdict: pass | fix-needed | inconclusive
+- Cross-child contracts: ok | drift in <id>
+
 ## Cross-child insights
 - …
+
+## Remediation plan (when any child failed/escalated)
+- Suggested action per child: rerun (same lane) | rerun (switch lane) | skip | cancel
+- Rationale per suggestion
+- Note: human triggers via dashboard; this evaluator does not call rerun/skip/cancel.
 
 ## Follow-ups
 - …

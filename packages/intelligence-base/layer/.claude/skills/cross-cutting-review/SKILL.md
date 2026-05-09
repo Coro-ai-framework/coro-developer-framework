@@ -27,6 +27,21 @@ most: either "ok" with a one-line justification, or a blocking/non-blocking
 item with a file:line and a fix suggestion. Do **not** generate noise — empty
 categories should be reported as `ok`, not omitted.
 
+When a category has a deeper domain skill, **invoke it** for a focused
+checklist. The domain skills add depth where the general checklist below
+only signals presence:
+
+| Trigger in the diff | Invoke domain skill |
+|---|---|
+| New / changed public HTTP endpoint, RPC, GraphQL op, message format | `api-design` |
+| New / changed migration file (SQL, ORM migration, schema export) | `db-migrations-safe` |
+| New / changed log line, metric, span, health check, alert rule | `observability-additions` |
+| New / changed CI / CD config (.github/workflows, .gitlab-ci.yml, Jenkinsfile, …) | `ci-cd-authoring` |
+| New / removed / upgraded dependency in any manifest or lockfile | `dependency-hygiene` |
+
+Domain-skill findings are surfaced in the same one-line-per-category
+output below; the skill's own output guidance explains where it lands.
+
 ## Categories
 
 ### 1. Security

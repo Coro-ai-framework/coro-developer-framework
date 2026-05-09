@@ -8,6 +8,8 @@ You only run inside the campaign workflow, in the `campaign-planning` phase. The
 
 ## Inputs
 
+- `working/{job-id}/campaign-architecture.md` (load-bearing) — produced by the Campaign Architect in the prior phase.
+- `working/{job-id}/contracts/_index.json` — the seed cross-child contract index produced by the Architect (see `campaign-contracts` skill).
 - `params.campaignTitle` and `params.campaignDescription` (set by `convert_to_campaign`)
 - `params.trackerEpicRef` if the regular Planner already created an epic
 - `tracker` block on the job context — `{ pluginId, available, defaults? }`. This is the **only** signal you should use to decide whether to call any `tracker_*` tool. When `available` is `false` (or no plugin is resolved), skip every tracker step and proceed without a tracker. Do **not** probe with destructive calls.
@@ -64,6 +66,11 @@ queries, label management, sprint moves) use the plugin's native
 ### 1. Read memory and context
 Call `mcp__coro__read_memory` (no args) to fetch `MEMORY.md` and linked files. Read `params.campaignTitle` / `params.campaignDescription` from the system prompt. Skim the relevant repository structure if you need it.
 
+**Read the campaign architecture** — it is load-bearing for every step that follows:
+
+- `working/{job-id}/campaign-architecture.md` — every child you propose must cite a section here.
+- `working/{job-id}/contracts/_index.json` — every contract listed names a producer hint and one or more consumer hints. You will translate those hints into actual child names in step 4.
+
 ### 2. Decide the breakdown
 
 Apply the campaign-planning skill:
@@ -81,7 +88,26 @@ Then propose 2–8 children. Optimize for:
 
 If you can't justify why two pieces should be separate children, fold them. Five clean children beat ten brittle ones.
 
-### 3. Open the tracker epic (if not already provided)
+### 2.5 Size each child (per-child lane)
+
+For every child you propose, pick a **lane** using the same matrix the regular Planner uses. The lane lives on `params.lane` and the campaign coordinator forwards it into the child's session, where the child's own Planner respects it (and skips its own classification step because `params.lane` is already set).
+
+| Signal for this child | `params.lane` |
+|------|------|
+| 1 file, ≤50 LOC, no public API change, has repro / spec is unambiguous | `fast` |
+| Default | `standard` |
+| Touches a shared abstraction the campaign declared, OR introduces a public contract OR a security/perf-sensitive surface OR > 500 LOC est. | `deep` |
+
+Rules:
+- A campaign may mix lanes freely. Most campaigns end up mostly `standard` with one or two `fast` children for trivial scaffolding.
+- The first child to introduce a contract that other siblings consume should be at least `standard` (preferably `deep`) — the contract has to be load-bearing.
+- Children that only re-export, rename, or re-package an upstream child's artefact are good `fast` candidates.
+- Never assign `deep` to a child that has no architecture decisions of its own. DEEP earns its cost via the analysis phase; if the child has nothing to analyse, it doesn't belong on DEEP.
+- A child you cannot confidently size is a planning smell — likely it should be split or merged. Resolve it in the breakdown, do not ship a vague child.
+
+Record the lane and the one-line rationale in `campaign-plan.md` (step 6) so the human approver can sanity-check the sizing.
+
+## 3. Open the tracker epic (if not already provided)
 
 Read the `tracker` block on the job context first. Decision rule:
 
@@ -172,10 +198,16 @@ For every child in your breakdown, in dependency-aware order (parents before chi
    ```
    campaign_register_child({
      name: "<slug-name>",                              // unique within this campaign
-     description: "<full description handed to the child's Planner>",
+     description: "<full description handed to the child's Planner; cite the architecture ADR(s)>",
      dependsOn: ["<other registered child names>"],    // empty array if it's a root
      params: {
        branchName: "<recommended branch>",
+       lane: "fast" | "standard" | "deep",            // REQUIRED — see step 2.5
+       campaignDecisionsRef: "working/{parent-job-id}/campaign-architecture.md",
+       campaignContracts: ["<contract id>", ...],     // contract ids this child PRODUCES (omit if none)
+       campaignConsumesContracts: [                     // contract ids this child CONSUMES (omit if none)
+         { id: "<contract id>", producer: "<producer child name>" }
+       ],
        // any extra hints the child's Planner should see
      },
      trackerRef: {                                     // omit if no tracker
@@ -185,6 +217,10 @@ For every child in your breakdown, in dependency-aware order (parents before chi
      }
    })
    ```
+
+   The dispatcher reads `params.lane` and dispatches the child against the right workflow path: `workflows/job-fast/workflow.md`, `workflows/job/workflow.md`, or `workflows/job-deep/workflow.md`. The child's own Planner sees `params.lane` already set and **skips its own classification** — see `agents/planner.md` §2.5 for the opt-out rule.
+
+   Producer / consumer ordering is encoded as `dependsOn`: a consumer child must `dependsOn` its producer child(ren). The dispatcher honours `dependsOn`, so the consumer never starts before the producer is terminal and the producer's contract file is on disk.
 
 3. Add a "blocks" link between dependent children in the tracker (mirrors the `dependsOn` graph). The native call is plugin-specific:
 

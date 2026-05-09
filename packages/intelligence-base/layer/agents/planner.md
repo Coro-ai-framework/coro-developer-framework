@@ -56,6 +56,14 @@ Before doing **any other planning work**, decide whether this job is a single **
 
 **Honour the recursion guard.** If `params.epicAllowed === false`, you are running as a child of an existing campaign. Treat this as a task-only job — never call `convert_to_campaign`. Note the constraint in your `log` so it's visible.
 
+**Read the campaign architecture if you are a campaign child.** When `params.epicAllowed === false`:
+
+- `params.campaignDecisionsRef` typically points at `working/{parent-job-id}/campaign-architecture.md`. Read it. Treat its ADRs as load-bearing — your decomposition must respect them.
+- `params.campaignContracts` lists the contract ids this child **produces**. For each id, read `working/{parent-job-id}/contracts/_index.json` to get the design-time shape. Invoke the `campaign-contracts` skill for the producer-side workflow.
+- `params.campaignConsumesContracts` lists the contract ids this child **consumes**, each with the producer child name. For each, read `working/{parent-job-id}/contracts/{producer-name}.json` (the producer has already merged — `dependsOn` guaranteed it). Invoke the `campaign-contracts` skill for the consumer-side workflow. If the producer's contract file is missing, escalate.
+
+Both sets of contracts feed the work-item plan: the producer must write the contract test in step 1; the consumer must reference the producer's recorded shape verbatim.
+
 Otherwise, weigh these signals:
 
 | Signal | Lean **campaign** when … |
@@ -93,13 +101,31 @@ better position to call it.
 
 **Skip this step entirely** if any of these are true (the runner-supplied
 context tells you which apply):
-- `params.lane` is already set (a previous switch already routed you).
-- `params.epicAllowed === false` (you are a campaign child — children are
-  already sized by the campaign-planner; do not re-route).
 - The active workflow is not one of the three sized job workflows
   (`workflows/job-fast/workflow.md`, `workflows/job/workflow.md`,
   `workflows/job-deep/workflow.md`). User-supplied workflows opt out of the
   lane router by design — leave them alone.
+
+**Skip the classification matrix below** (but still run the routing check
+that follows it) if `params.lane` is already set:
+- A previous `switch_workflow` already classified the job.
+- Or the campaign-planner sized you (you are a campaign child:
+  `params.epicAllowed === false` and `params.lane` was injected at
+  registration time).
+
+In that case, treat `params.lane` as load-bearing and **route to the
+matching workflow if you aren't there already**:
+
+| `params.lane` | Required workflow |
+|---|---|
+| `fast` | `workflows/job-fast/workflow.md` |
+| `standard` | `workflows/job/workflow.md` |
+| `deep` | `workflows/job-deep/workflow.md` |
+
+If the active workflow doesn't match, call `switch_workflow` immediately
+with `reason: "honour params.lane=<lane> set upstream"` — same call shape as
+below — and end your turn. If it matches, continue with the regular planning
+procedure (skip the classification step; do **not** call `set_job_params`).
 
 Otherwise, classify against this matrix. **All FAST signals must hold**, and
 **any single DEEP signal is enough**.

@@ -49,6 +49,8 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 ### 1. Read all inputs
 Read the implementation plan, workflow instructions, and memory. Invoke the relevant language conventions skill and any workflow-specified domain knowledge skill before writing a single line of code. Also invoke the `register-convention` skill — you will read and append to `working/{job-id}/register.json` throughout this phase. Skim `memory/snippets/*.md` so you know which `ExternalRef` shape and identifier conventions the active SCM/Tracker plugins expect.
 
+**Campaign children only:** if `params.campaignContracts` is non-empty, also invoke the `campaign-contracts` skill. For each contract id you produce, read `working/{parent-job-id}/contracts/_index.json` and treat the recorded `shape` as the canonical contract for your implementation. The producer-side contract test you write in step 5 must pin this shape exactly. If `params.campaignConsumesContracts` is non-empty, read each producer's `working/{parent-job-id}/contracts/{producer-name}.json` (the producer has already merged — `dependsOn` guaranteed it) and treat its as-shipped shape as canonical for your consumer-side code and test.
+
 ### 2. Determine current work item
 
 Call `mcp__coro__get_work_items` to see the work-item list and which item you're working on. Find the next `pending` work item (or continue with the current `in-progress` work item if resuming after a fix loop).
@@ -159,7 +161,28 @@ Then update `register.json` (per the `register-convention` skill):
 - Append a `contracts[]` entry for any new/modified public surface (endpoint, schema field, message format, CLI flag, config key).
 - On the first non-trivial register append in this job, also call `post_artifact({ kind: "register", title: "Register", data: { path: "register.json" } })` so the dashboard surfaces it.
 
-When responding to review feedback (step 12), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link. Do, however, append register entries for any new decisions/contracts the fix introduces.
+**Campaign producer children only:** if `params.campaignContracts` was non-empty, you also write the producer-side contract record at `working/{parent-job-id}/contracts/{this-child-name}.json`. The runner injects `params.campaignParentId` and `params.campaignChildName` so you can resolve both. Per the `campaign-contracts` skill, the file shape is:
+
+```json
+{
+  "child_name": "<params.campaignChildName>",
+  "produces": [
+    {
+      "id": "<contract id from params.campaignContracts>",
+      "kind": "endpoint|event|schema|type|config|cli",
+      "shape": { "...": "..." },
+      "compatibility": "new|breaking|additive|internal",
+      "test_ref": "<path to the producer-side contract test you wrote>",
+      "merged_pr_url": "{ref.url}",
+      "merged_commit_sha": "<the merge commit; populate when known, else leave empty for now>"
+    }
+  ]
+}
+```
+
+If the as-shipped shape **must** deviate from the design-time shape recorded in `_index.json`, also call `add_insight({ category: "contract-drift", … })` so the Campaign Evaluator surfaces it. Never silently diverge.
+
+When responding to review feedback (step 12), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link. Do, however, append register entries for any new decisions/contracts the fix introduces (and update the producer contract file if the as-shipped shape changed).
 
 ### 12. Responding to review feedback
 
