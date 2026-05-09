@@ -47,7 +47,7 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 ## Step-by-step procedure
 
 ### 1. Read all inputs
-Read the implementation plan, workflow instructions, and memory. Invoke the relevant language conventions skill and any workflow-specified domain knowledge skill before writing a single line of code. Skim `memory/snippets/*.md` so you know which `ExternalRef` shape and identifier conventions the active SCM/Tracker plugins expect.
+Read the implementation plan, workflow instructions, and memory. Invoke the relevant language conventions skill and any workflow-specified domain knowledge skill before writing a single line of code. Also invoke the `register-convention` skill — you will read and append to `working/{job-id}/register.json` throughout this phase. Skim `memory/snippets/*.md` so you know which `ExternalRef` shape and identifier conventions the active SCM/Tracker plugins expect.
 
 ### 2. Determine current work item
 
@@ -140,7 +140,7 @@ Include in the PR description:
 - Acceptance criteria
 - **Campaign children**: when `params.trackerRef` is set, reference the tracker issue (e.g. `Closes PROJ-123`) so the issue moves with the PR. Also call out which campaign this child belongs to (`params.campaignChildName` of campaign `params.campaignParentId`) so reviewers can find the parent campaign on the dashboard.
 
-### 11. Post the PR artefact
+### 11. Post the PR artefact and update the register
 
 Immediately after the PR is created, call `mcp__coro__post_artifact` so the PR link appears on the dashboard. Use the `ExternalRef` returned by `scm_create_pr` for `prId`/`repoSlug`/`pluginId`:
 
@@ -152,7 +152,14 @@ post_artifact({
 })
 ```
 
-When responding to review feedback (step 12), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link.
+Then update `register.json` (per the `register-convention` skill):
+
+- Replace the matching `traceability[]` row's `files` with the actually-touched files, fill in `tests` with the test names you added/touched, and set `pr` to `ref.url`.
+- Append a `decisions[]` entry for any non-trivial divergence from the plan.
+- Append a `contracts[]` entry for any new/modified public surface (endpoint, schema field, message format, CLI flag, config key).
+- On the first non-trivial register append in this job, also call `post_artifact({ kind: "register", title: "Register", data: { path: "register.json" } })` so the dashboard surfaces it.
+
+When responding to review feedback (step 12), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link. Do, however, append register entries for any new decisions/contracts the fix introduces.
 
 ### 12. Responding to review feedback
 

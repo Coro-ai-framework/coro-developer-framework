@@ -3,7 +3,7 @@ display_name: Implementation Job — Deep Lane
 description: Extended workflow for high-risk or cross-cutting changes (new public API, schema migration, security-sensitive surface, multi-service contract). Adds explicit analysis (architecture decisions) and qa (verification) phases on either side of standard coding/review.
 kind: job
 
-initial_phase: planning
+initial_phase: spec-writing
 initial_status: queued
 
 phases:
@@ -53,9 +53,8 @@ phases:
     status: evaluating
     interactive_checkpoint: true
 
-overrides:
-  jira:
-    initial_phase: spec-writing
+# No overrides needed — DEEP always starts at spec-writing for both CLI
+# and tracker-triggered jobs.
 ---
 
 # Workflow: Deep-Lane Implementation Job

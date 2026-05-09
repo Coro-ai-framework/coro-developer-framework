@@ -54,7 +54,15 @@ After analyzing the repository structure, the planner must call `set_job_params(
 - `package.json` + `tsconfig.json` → `typescript`
 - `*.csproj` or `*.sln` → `dotnet`
 - `Cargo.toml` → `rust`
-- `requirements.txt` or `pyproject.toml` → `python`
+- `pyproject.toml` or `requirements.txt` or `setup.py` → `python`
+- `pom.xml` or `build.gradle` (groovy DSL, no `.kts`) → `java`
+- `build.gradle.kts` or any `*.kt` source → `kotlin`
+- `Gemfile` or `*.gemspec` → `ruby`
+
+The matching language conventions skill (`<language>-conventions`) is the
+one downstream agents will invoke. If the repo uses a language with no
+matching skill, set `language` to the closest match and `add_insight` so
+the Evaluator can propose a new conventions skill.
 
 ## Branch strategy
 

@@ -199,6 +199,20 @@ post_artifact({
 
 Paths must be relative to the job working directory.
 
+### 8b. Initialise the job register
+
+Invoke the `register-convention` skill, then write the initial
+`working/{job-id}/register.json` with:
+
+- `lane`: the value of `params.lane` (default `"standard"`).
+- `traceability[]`: one row per work item with `spec` / `plan` anchors and the
+  planned `files` list. Leave `tests` and `pr` empty.
+- `rollout`: best-effort first cut (strategy + owner).
+
+Skip on FAST lane unless the job has multiple acceptance criteria. Skip
+entirely in the DEEP lane's `analysis` phase — the subsequent `planning`
+phase initialises the register after `set_work_items`.
+
 ### 9. Record insights
 
 Call `mcp__coro__add_insight` in the same turn the discovery clicks (don't batch them at the end). You must record if ANY of these triggers fired during planning:

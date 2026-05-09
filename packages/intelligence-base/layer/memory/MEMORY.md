@@ -8,6 +8,11 @@ Keep entries under 150 characters. Lines beyond 200 will be truncated.
 - [Known Pitfalls](known-pitfalls.md) — Recurring failure patterns to avoid [general]
 - [Successful Patterns](successful-patterns.md) — Validated approaches that worked well in past jobs [general]
 - [PR Feedback Patterns](pr-feedback.md) — Recurring developer feedback from code reviews [general]
+- [Architecture Decisions](architecture-decisions.md) — Cross-job ADRs surfaced by the Evaluator from DEEP-lane design notes [architecture]
+- [Debugging Recipes](debugging-recipes.md) — Step-by-step playbooks for diagnosing recurring failure modes [debugging]
+- [Library Choices](library-choices.md) — Approved / discouraged third-party dependencies with rationale [dependencies]
+- [Deprecated Paths](deprecated-paths.md) — APIs, modules, configs, and patterns the codebase is migrating away from [migration]
+- [Security Postures](security-postures.md) — Authn/authz, secrets, PII, and audit conventions per surface area [security]
 
 ## Note on memory updates
 

@@ -63,6 +63,33 @@ git pull --ff-only origin <base-branch>
 
 If the base branch fails to fast-forward (someone else merged in parallel), stop and `escalate` — this is not a single-job recovery.
 
+### 1b. CI-green precondition (before re-running anything locally)
+
+The merged commit must already be green in the project's CI before you spend
+tokens re-running build / tests locally. Local re-runs are a **second
+opinion**, not a substitute for CI signal.
+
+1. Read the most recent `pr-link` artefact for this work item to recover the
+   PR's `ExternalRef` (`prId`, `repoSlug`, `pluginId`).
+2. Call `mcp__coro__scm_get_pr_status({ repo: <repoSlug>, prId: <prId> })`.
+3. Inspect the returned status for the merge commit's CI conclusion. Decision:
+   - **CI green (passed)**: continue to step 2.
+   - **CI pending / running**: call `await_event({ eventName: "ci-status:
+     <prId>" })` so the runner re-enters the phase when the SCM webhook
+     reports the next status. Do not poll.
+   - **CI red (failed)**: do **not** re-run tests locally to "see if it's
+     just flaky." Loop back to coding with the failing job's logs as the
+     fix brief: `update_work_item(name, incrementLoop: true)` then
+     `goto_phase("coding")`.
+   - **Status unknown / SCM does not report CI**: log a warning and continue.
+     Tenants whose CI does not feed status checks back to the SCM should
+     teach their plugin to do so; meanwhile we fall back to local-only
+     verification but flag this in the evaluation report's notes.
+
+Why this matters: re-running tests locally on a red merge wastes minutes per
+loop and can mask transient infra failures as "this code is broken." The CI
+signal is authoritative — respect it, then layer your local re-run on top.
+
 ### 2. Verify the build
 
 Run the build commands from the implementation plan. If the plan does not specify them, use language defaults:

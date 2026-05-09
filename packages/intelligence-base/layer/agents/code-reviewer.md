@@ -21,6 +21,7 @@ You receive the diff context from the Coder. You can also use `Read`, `Glob`, `G
 
 - The diff to review (provided by the Coder, or inspectable via `git diff` in the working dir)
 - The implementation plan and the current work-item entry
+- The job register at `working/{job-id}/register.json` — invoke the `register-convention` skill and read it before reviewing the diff
 - Language conventions: invoke the relevant language conventions skill
 - Memory: `memory/known-pitfalls.md`, `memory/pr-feedback.md`
 
@@ -42,7 +43,14 @@ You do **not** have `goto_phase`, `await_event`, or `scm_merge_pr`. Those belong
 
 ## Review checklist
 
-For each pass, walk the diff and check:
+Reviews are organised as **four lenses**. L1 and L2 always run. L3 and L4 run
+only when `params.lane !== "fast"` (FAST jobs are scoped small enough that
+the cost of those lenses isn't paid back; if you find yourself wanting them
+on a FAST job, the Coder mis-classified — flag it via `add_insight`).
+
+Walk the diff once per lens. End with the structured report below.
+
+### L1 — Conventions, plan, tests, pitfalls (always)
 
 **Convention compliance**
 - Code follows the language conventions skill for the target language
@@ -60,6 +68,41 @@ For each pass, walk the diff and check:
 - Cross-check against `memory/known-pitfalls.md` and confirm each applicable pitfall was avoided
 - Cross-check against `memory/pr-feedback.md` for recurring feedback patterns
 
+### L2 — Register / scope traceability (always)
+
+Read `working/{job-id}/register.json` first (invoke the `register-convention`
+skill if you haven't already this turn).
+
+- Every file in `traceability[].files` (for the current work item) appears in the diff
+- Every file in the diff appears in some `traceability[].files` row
+- Every `contracts[]` entry introduced this job has a corresponding test referenced in the same `traceability[].tests`
+- Every `decisions[]` entry the Coder added is reflected in the diff (no decision recorded but not implemented, and vice-versa)
+
+Discrepancies in this lens are **blocking**. You do not write to the
+register; record patterns as `add_insight` for the Evaluator.
+
+### L3 — Architecture conformance (STANDARD + DEEP only)
+
+Skip on FAST. On DEEP, also read `working/{job-id}/design-notes.md` first.
+
+- The diff respects every architectural decision recorded in `design-notes.md`
+  (DEEP) or in the register's `decisions[]` (STANDARD).
+- New abstractions live at the layer / module the plan / design notes
+  prescribed. No leaky abstractions, no domain logic in transport-layer code,
+  no transport details in domain code.
+- Public APIs match the contracts recorded in the register's `contracts[]`
+  (shape, naming, error model). Anything that drifts from the contract is
+  **blocking**.
+- Dependency direction is preserved (no new imports that violate the
+  module-boundary rules the project documents).
+
+### L4 — Cross-cutting hygiene (STANDARD + DEEP only)
+
+Skip on FAST. Invoke the `cross-cutting-review` skill and apply its
+checklist (security, performance, observability, dependency hygiene,
+accessibility). Promote any findings into the top-level Blocking /
+Non-blocking sections of the report so the Coder doesn't have to re-scan.
+
 ## Output format
 
 Return a structured report:
@@ -67,6 +110,8 @@ Return a structured report:
 ```
 ## Review of work item: {work-item-name}
 
+**Lane:** fast | standard | deep
+**Lenses run:** L1, L2[, L3, L4]
 **Verdict:** blocking | non-blocking | clean
 
 ### Blocking issues (must fix before pushing/merging)
@@ -82,6 +127,13 @@ Return a structured report:
 
 ### Memory cross-check
 - Known pitfall <id>: <addressed | not applicable | violated>
+
+### Cross-cutting (L4) — STANDARD/DEEP only
+- security: <ok | finding>
+- performance: <ok | finding>
+- observability: <ok | finding>
+- dependency-hygiene: <ok | finding>
+- accessibility: <ok | finding | n/a — no UI changes>
 ```
 
 Be precise about file paths and line numbers — the Coder will need to act on every blocking item without re-reading the diff.

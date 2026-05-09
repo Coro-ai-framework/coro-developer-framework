@@ -388,3 +388,103 @@ fields / tool names:
 
 These are deliberately not answered now; they're the next questions
 the implementation surfaces.
+
+---
+
+## 7. User-supplied workflow invariants (sized-lane release)
+
+The base intelligence layer ships three sized job workflows
+(`workflows/job-fast/workflow.md`, `workflows/job/workflow.md`,
+`workflows/job-deep/workflow.md`) and a planner-driven lane router that
+calls `switch_workflow` to move between them. **None of this is
+mandatory** for user-supplied workflows. The following invariants
+guarantee that a tenant or repo overlay can ignore the lane router,
+add new lanes, or define entirely orthogonal workflow trees without
+the harness fighting back.
+
+### Invariant 1 — Lane decision is intelligence, not infrastructure
+
+The Planner agent's lane router (the FAST / STANDARD / DEEP /
+CAMPAIGN matrix) lives in `agents/planner.md`, not in TypeScript. A
+user workflow whose first phase uses a different planner agent — or
+whose phase set does not include any planning step — is free to skip
+lanes entirely. The runner has no concept of "lane."
+
+### Invariant 2 — `switch_workflow` validates path-existence, never an allowlist
+
+The MCP tool checks that the target `workflowPath` resolves through
+the layered intelligence merge, parses as a valid workflow YAML, and
+(when `toPhase` is supplied) names a phase that exists in the target.
+There is **no** hard-coded list of "blessed" workflows. A user
+workflow may target its own files (e.g. `workflows/release-train/workflow.md`)
+or another tenant overlay's files.
+
+### Invariant 3 — Workflow paths are stable; merge is last-wins per path
+
+Tenant and repo overlays follow the resolver's last-wins rule for
+non-memory, non-CLAUDE.md files. A tenant that wants to override
+FAST for one repo can ship a `.coro/workflows/job-fast/workflow.md`
+and the resolver will pick it up at the next phase boundary. Phase
+names, agent paths, and subagent names inside a workflow are part of
+that contract — overlays can replace them, but should preserve the
+shape downstream agents expect (or replace those agents too).
+
+### Invariant 4 — `switch_workflow` is a normal MCP tool
+
+It carries the `mcp__coro__` prefix, lives in `mcp-handlers.ts` next
+to `convert_to_campaign`, and is callable from any agent in any
+workflow. Subagents do not have it (they are scoped narrower by
+`tools:`); top-level agents always do. There is no "phase-restricted"
+gate — calling it from an unexpected phase just resets the workflow
+at the next boundary.
+
+### Invariant 5 — `Job.workflowPathHistory[]` is the audit surface
+
+Every successful switch appends `{ at, from, to, fromPhase, toPhase, reason, by }`
+to `Job.workflowPathHistory`. The dashboard surfaces this on the job
+detail page so developers can trace why a job moved between
+workflows. `by` records whether the switch came from
+`switch_workflow` (agent-initiated) or `convert_to_campaign` (the
+sugar wrapper). User workflows that introduce their own switching
+mechanisms should write through `switch_workflow` so they get the
+same audit trail for free.
+
+### Invariant 6 — User workflows opt out of base behaviour by default
+
+The Planner's lane router (in the base `agents/planner.md`) checks
+two opt-out conditions before classifying:
+
+1. The active workflow is **not** one of the three sized base job
+   workflows. If the active workflow path is anything else, the
+   router skips classification entirely and lets the user-supplied
+   workflow run as authored.
+2. `params.lane` is already set, `params.epicAllowed === false`, or a
+   prior switch is recorded in `workflowPathHistory[]`.
+
+The contract a user workflow must keep is small:
+
+- The workflow YAML parses (frontmatter + phases array).
+- Each phase's `agent:` path resolves through the layered merge.
+- If the workflow expects to be entered via `switch_workflow`, its
+  `initial_phase` is reachable.
+
+Everything else — lane classification, register.json discipline,
+4-lens reviewer, CI-green precondition — is opt-in. A user workflow
+that does not invoke those skills simply does not get those checks,
+and that is a deliberate property of the system, not a bug.
+
+### What this means in practice
+
+- A tenant can ship `workflows/security-audit/workflow.md` with a
+  five-phase pipeline of its own design and the Planner's lane router
+  will leave it alone (Invariant 6.1).
+- A repo can override `workflows/job-fast/workflow.md` to add a
+  required `compliance-check` phase, and every job classified FAST
+  for that repo will pick it up at the next phase boundary
+  (Invariants 3 + 4).
+- A user workflow can call `switch_workflow` to escalate from its
+  own `light` lane to its own `heavy` lane without touching any base
+  intelligence (Invariants 2 + 4 + 5).
+
+The base content can grow more opinionated over time — the contract
+above bounds how much that opinionation can leak into user workflows.

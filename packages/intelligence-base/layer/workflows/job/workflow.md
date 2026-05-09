@@ -3,7 +3,7 @@ display_name: Implementation Job
 description: General-purpose work-item workflow for scoped changes in an existing repository. Coro plans, codes, reviews, and ships a pull request.
 kind: job
 
-initial_phase: planning
+initial_phase: spec-writing
 initial_status: queued
 
 phases:
@@ -43,9 +43,9 @@ phases:
 
 overrides:
   # `triggerSource` matches the value the runner stamps on inbound jobs.
-  # Today only `jira` exists; once the cloud control plane stamps a
-  # generic `tracker` trigger source for plugin-driven webhooks, mirror
-  # this entry under that key as well.
+  # The base initial_phase is `spec-writing` so CLI and tracker-triggered
+  # jobs both produce a structured spec before planning. Tenants that
+  # want to skip spec-writing for free-form CLI jobs can override here.
   jira:
     initial_phase: spec-writing
 ---

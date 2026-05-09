@@ -60,9 +60,11 @@ Write `working/{job-id}/feature-spec.md` with the following structure:
 
 ## Step-by-step procedure
 
-### 1. Read the tracker ticket
+**Always invoke the `spec-quality` skill before writing the spec, and re-read its self-audit checklist before handing off.** It defines the minimum bar for every section and the discipline for ambiguity.
 
-Call `mcp__coro__tracker_get_issue` with `params.trackerRef`. Extract:
+### 1. Read the tracker ticket (tracker-triggered jobs only)
+
+If `params.trackerRef` (or legacy `params.jiraTicketId`) is set, call `mcp__coro__tracker_get_issue` and extract:
 - Title and description
 - Acceptance criteria (from description or custom fields the plugin surfaces)
 - Components / labels / project
@@ -74,6 +76,8 @@ If only the legacy `params.jiraTicketId` is set, build the ref yourself:
 ```ts
 const trackerRef = { kind: "ticket", pluginId: "jira", externalId: params.jiraTicketId }
 ```
+
+If neither is set (CLI-triggered job), skip this step and move to step 2 — the source material is `params.description` plus the repo state.
 
 ### 2. Infer scope
 
@@ -91,9 +95,9 @@ Produce a clear, structured spec that the Planner can use to create an implement
 - Identify ambiguities and flag them explicitly
 - Include enough detail that the Planner doesn't need to read the original ticket
 
-### 4. Post a tracker comment
+### 4. Post a tracker comment (tracker-triggered jobs only)
 
-Call `mcp__coro__tracker_post_comment` (passing the same `trackerRef`) to confirm receipt:
+If `params.trackerRef` is set, call `mcp__coro__tracker_post_comment` (passing the same `trackerRef`) to confirm receipt:
 
 ```
 Agent pipeline activated for this ticket.
@@ -102,17 +106,24 @@ Feature spec has been generated and the implementation pipeline is starting.
 Ticket will be updated with progress.
 ```
 
-### 5. Log progress
+Skip this step on CLI-triggered jobs.
+
+### 5. Seed the register's contracts (when a register exists)
+
+If `working/{job-id}/register.json` already exists (DEEP lane initialises it in `analysis`), invoke the `register-convention` skill and append `contracts[]` entries for each acceptance criterion that implies a public surface change (new endpoint, schema field, message format, CLI flag, config key). Do **not** create the register file yourself — the Planner owns initialisation. Do **not** invent contracts that aren't in the ticket; flag ambiguity in the spec's Notes section instead.
+
+### 6. Log progress
 
 Use `mcp__coro__log` to report: tracker ref (plugin + external id), inferred repo, scope summary.
 
 ## Quality bar
 
-The Planner depends on your spec to create an accurate implementation plan. If the spec is vague, the entire downstream pipeline suffers. When in doubt, flag ambiguities explicitly rather than guessing.
+The Planner depends on your spec to create an accurate implementation plan. If the spec is vague, the entire downstream pipeline suffers. Run the `spec-quality` self-audit checklist before handing off; if any item fails, fix the spec or escalate. **Never silently assume** — ambiguity belongs in Notes, not in invented requirements.
 
 ## Critical rules
 
 - **Never guess requirements.** If something is ambiguous, flag it in the Notes section.
-- **Always post a tracker comment** confirming the ticket has been picked up.
-- **Stay faithful to the ticket.** Do not add requirements that aren't in the ticket.
+- **Always run the `spec-quality` self-audit** before ending your turn.
+- **Always post a tracker comment** confirming the ticket has been picked up (tracker-triggered jobs only).
+- **Stay faithful to the source.** Do not add requirements that aren't in the ticket / description.
 - **Use generic `tracker_*` tools.** Do not call deprecated `jira_*` aliases — they are kept only for legacy callers and will be removed.

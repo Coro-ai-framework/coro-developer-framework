@@ -55,6 +55,7 @@ describe('@coro/intelligence-base manifest', () => {
         'code-reviewer.md',
         'coder.md',
         'evaluator.md',
+        'memory-curator.md',
         'planner.md',
         'pr-reviewer.md',
         'spec-writer.md',
@@ -79,11 +80,20 @@ describe('@coro/intelligence-base manifest', () => {
         .sort()
       expect(skills).toEqual([
         'campaign-planning',
+        'cross-cutting-review',
         'dotnet-conventions',
         'feature-planning',
         'feature-testing',
         'golang-conventions',
+        'java-conventions',
+        'kotlin-conventions',
+        'python-conventions',
+        'register-convention',
+        'ruby-conventions',
+        'rust-conventions',
         'self-improvement-guide',
+        'spec-quality',
+        'typescript-conventions',
       ])
       for (const skill of skills) {
         expect(
