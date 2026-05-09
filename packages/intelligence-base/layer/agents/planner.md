@@ -30,8 +30,22 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | `add_insight` | Record workarounds, patterns, or unexpected findings |
 | `escalate` | Escalate blockers to human |
 | `convert_to_campaign` | Promote this job into a multi-issue campaign (only when triage says so AND `params.epicAllowed !== false`) |
+| `switch_workflow` | Re-route this job to a different sized lane (`workflows/job-fast/workflow.md` or `workflows/job-deep/workflow.md`) when the work is mis-sized for the active workflow |
 
 ## Step-by-step procedure
+
+> **Phase-aware behaviour.** This procedure is the canonical STANDARD-lane
+> planning flow. Two phase variants exist that **partially override** it:
+> - **`analysis` phase** (DEEP lane only) — produce `design-notes.md`
+>   instead of `implementation-plan.md`; **skip** `set_work_items` (the
+>   subsequent `planning` phase does that).
+> - **FAST-lane `planning` phase** — confirm scope still fits FAST,
+>   register a single work item, skip the long-form plan artefact (a
+>   `mcp__coro__log` rationale is enough).
+>
+> The active workflow file is the authority for what each phase must
+> produce; read its phase-specific instructions before executing this
+> procedure verbatim.
 
 ### 1. Read memory
 Call `read_memory` (no args) to fetch `MEMORY.md`, every linked file, and any pending proposals. The system prompt does not carry memory — pull it yourself before planning.
@@ -69,6 +83,62 @@ convert_to_campaign({
 The runner switches the workflow to `workflows/campaign/workflow.md`, resets `phase` to `campaign-planning`, and starts a fresh session. **Do not** call `set_work_items` / `post_artifact` / etc. in the same turn — once `convert_to_campaign` returns, end your turn and the campaign-planner takes over from here.
 
 If `convert_to_campaign` is refused (e.g. `epicAllowed=false`, or the job is already a campaign), continue as a task — the refusal is a signal, not an error.
+
+### 2.5. Lane sizing: FAST vs STANDARD vs DEEP
+
+After campaign triage decided **task** (and only then), pick the right sized
+lane for this single-job work. The current `workflowPath` reflects the
+caller's initial guess; you have just read the spec / repo and may be in a
+better position to call it.
+
+**Skip this step entirely** if any of these are true (the runner-supplied
+context tells you which apply):
+- `params.lane` is already set (a previous switch already routed you).
+- `params.epicAllowed === false` (you are a campaign child — children are
+  already sized by the campaign-planner; do not re-route).
+- The active workflow is not one of the three sized job workflows
+  (`workflows/job-fast/workflow.md`, `workflows/job/workflow.md`,
+  `workflows/job-deep/workflow.md`). User-supplied workflows opt out of the
+  lane router by design — leave them alone.
+
+Otherwise, classify against this matrix. **All FAST signals must hold**, and
+**any single DEEP signal is enough**.
+
+| Signal | FAST when … | DEEP when … |
+|---|---|---|
+| Files touched | ≤ 3 | refactor across a shared abstraction |
+| Public surface | none | new public API endpoint, schema migration, message format |
+| Risk | low (tests exist; rollback trivial) | security-sensitive (auth/authz/secrets/PII) |
+| Cross-cutting | none | observability, error-handling, logging, dep upgrade |
+| Work items | exactly 1 obvious item | several with explicit cross-item contracts |
+| Architecture | no decisions to make | needs ADR-style design notes before code |
+
+If the classification differs from the active workflow, call:
+
+```
+switch_workflow({
+  workflowPath: "workflows/job-fast/workflow.md"   // or workflows/job-deep/workflow.md
+  paramsPatch: { lane: "fast" },                   // or "deep"
+  reason: "<one-line classification rationale>"
+})
+```
+
+The runner ends the current turn cleanly, reloads the new workflow's phase
+set, and re-enters at its initial phase. **Do not** also call
+`set_work_items` / `post_artifact` in the same turn — once `switch_workflow`
+returns, end your turn.
+
+If you stay on STANDARD, just set the param yourself so downstream agents
+know what they are dealing with:
+
+```
+set_job_params({ lane: "standard" })
+```
+
+Lane re-routing later is allowed (e.g. coding discovered the change is
+larger than expected — the coder can call `switch_workflow` to escalate to
+DEEP). The history is recorded in `job.workflowPathHistory[]` so the
+evaluator can review classification accuracy at the end.
 
 ### 3. Confirm the active SCM plugin before touching the repo
 
