@@ -75,6 +75,64 @@ function isRedacted(value: unknown): boolean {
 }
 
 /**
+ * Heuristic: does a plugin-config field name look like a secret?
+ *
+ * Plugin manifests (`PluginManifest.configSchema`) use arbitrary
+ * field names — we don't have a "this is a secret" annotation in the
+ * schema today. Rather than force every plugin to declare a secret
+ * list, we redact based on common naming conventions. Callers should
+ * still treat the heuristic as best-effort and prefer to rotate
+ * tokens that ever leaked through the dashboard.
+ */
+function isSecretFieldName(name: string): boolean {
+  return /token|apikey|api_key|password|secret|appPassword/i.test(name)
+}
+
+/**
+ * Walk a plugin-config object and replace every secret-shaped field
+ * with the standard `...`-redaction. Used by GET /config so the
+ * dashboard can hint that a value is set without ever shipping the
+ * real credential to the browser. The PUT handler reverses the round
+ * trip via {@link isRedacted}.
+ */
+function redactPluginConfig(cfg: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!cfg) return {}
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(cfg)) {
+    if (typeof v === 'string' && isSecretFieldName(k)) {
+      out[k] = redactSecret(v)
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
+/**
+ * Per-key merge that preserves on-disk values when the incoming
+ * value is the redacted `...` placeholder. Mirrors the round-trip
+ * pattern used for git/tracker/anthropic/MCP secrets.
+ */
+function mergePluginConfig(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const prev = existing ?? {}
+  if (!incoming) return { ...prev }
+  const out: Record<string, unknown> = { ...prev }
+  for (const [k, v] of Object.entries(incoming)) {
+    if (v === undefined) continue
+    if (isSecretFieldName(k) && isRedacted(v)) {
+      // keep prior secret
+      if (!(k in out)) continue
+      continue
+    }
+    out[k] = v
+  }
+  return out
+}
+
+/**
  * Drop `undefined`-valued keys from a partial-update payload before
  * merging it into the existing config. JS spread-merge would otherwise
  * overwrite `existing.foo = 'bar'` with `undefined` when the dashboard
@@ -179,6 +237,40 @@ function pruneEmptyConfigSections(config: Record<string, unknown>): Record<strin
       delete out.tracker
     } else {
       out.tracker = cleaned
+    }
+  }
+
+  // Plugins block: drop installed entries with no config and `enabled !== false`
+  // is harmless to persist. We always drop entries that have neither config
+  // keys nor an explicit enabled flag so the file stays tidy.
+  const plugins = out.plugins as
+    | { defaults?: { scm?: unknown; tracker?: unknown }; installed?: Record<string, { enabled?: unknown; config?: unknown }> }
+    | undefined
+  if (plugins) {
+    const cleaned: { defaults?: Record<string, string>; installed: Record<string, { enabled?: boolean; config: Record<string, unknown> }> } = {
+      installed: {},
+    }
+    if (plugins.defaults) {
+      const d: Record<string, string> = {}
+      if (typeof plugins.defaults.scm === 'string' && plugins.defaults.scm.length > 0) d['scm'] = plugins.defaults.scm
+      if (typeof plugins.defaults.tracker === 'string' && plugins.defaults.tracker.length > 0) d['tracker'] = plugins.defaults.tracker
+      if (Object.keys(d).length > 0) cleaned.defaults = d
+    }
+    for (const [id, raw] of Object.entries(plugins.installed ?? {})) {
+      if (!raw || typeof raw !== 'object') continue
+      const cfg = (raw.config && typeof raw.config === 'object' ? raw.config : {}) as Record<string, unknown>
+      const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : undefined
+      const hasConfig = Object.keys(cfg).length > 0
+      if (!hasConfig && enabled === undefined) continue
+      cleaned.installed[id] = {
+        ...(enabled !== undefined ? { enabled } : {}),
+        config: cfg,
+      }
+    }
+    if (Object.keys(cleaned.installed).length === 0 && !cleaned.defaults) {
+      delete out.plugins
+    } else {
+      out.plugins = cleaned
     }
   }
 
@@ -1382,6 +1474,25 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
               }),
             )
           : undefined,
+        // Plugins (PluginsConfig). Each `installed[id].config` may
+        // hold per-plugin secrets — redact field names that look
+        // secret-shaped (token / apiKey / password / secret) so the
+        // dashboard can hint that the value is set without ever
+        // shipping the real credential. PUT restores via isRedacted().
+        plugins: config.plugins
+          ? {
+              ...(config.plugins.defaults ? { defaults: config.plugins.defaults } : {}),
+              installed: Object.fromEntries(
+                Object.entries(config.plugins.installed ?? {}).map(([id, entry]) => [
+                  id,
+                  {
+                    enabled: entry.enabled,
+                    config: redactPluginConfig(entry.config as Record<string, unknown> | undefined),
+                  },
+                ]),
+              ),
+            }
+          : undefined,
       } : null
 
       // `resolved` mirrors what the runner will actually use on disk:
@@ -1606,6 +1717,47 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             next[id] = cleaned
           }
           ;(merged as Record<string, unknown>).mcpServers = next
+        }
+      }
+
+      // Plugins block. Replaces the legacy per-provider git/tracker
+      // shape with a uniform `installed[id]` map. Each entry's
+      // `config` is deep-merged per-key against the existing config
+      // so partial saves only touch the keys the dashboard sent;
+      // secret-shaped fields (token / apiKey / password / secret)
+      // that come back as the redacted `...` placeholder fall through
+      // to the on-disk value via mergePluginConfig().
+      if (Object.prototype.hasOwnProperty.call(updates, 'plugins')) {
+        const incoming = (updates as Record<string, unknown>)['plugins'] as
+          | { defaults?: { scm?: string; tracker?: string }; installed?: Record<string, { enabled?: boolean; config?: Record<string, unknown> }> }
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).plugins
+        } else if (incoming && typeof incoming === 'object') {
+          const existingPlugins = existing.plugins ?? { installed: {} }
+          const nextInstalled: Record<string, { enabled?: boolean; config: Record<string, unknown> }> = {
+            ...(existingPlugins.installed ?? {}),
+          }
+          for (const [id, raw] of Object.entries(incoming.installed ?? {})) {
+            if (!raw || typeof raw !== 'object') continue
+            const prev = existingPlugins.installed?.[id]
+            const mergedCfg = mergePluginConfig(
+              prev?.config as Record<string, unknown> | undefined,
+              raw.config,
+            )
+            nextInstalled[id] = {
+              ...(typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : prev?.enabled !== undefined ? { enabled: prev.enabled } : {}),
+              config: mergedCfg,
+            }
+          }
+          const nextDefaults = incoming.defaults
+            ? { ...(existingPlugins.defaults ?? {}), ...incoming.defaults }
+            : existingPlugins.defaults
+          ;(merged as Record<string, unknown>).plugins = {
+            ...(nextDefaults ? { defaults: nextDefaults } : {}),
+            installed: nextInstalled,
+          }
         }
       }
 

@@ -1,60 +1,105 @@
-import { Input } from '../../../components/ui/input'
-import Field from '../../../components/forms/field'
+import { useMemo } from 'react'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
-import ChoiceGroup from '../../../components/settings/ChoiceGroup'
-import SecretInput from '../../../components/settings/SecretInput'
-import TestConnectionButton, {
-  type TestConnectionResult,
-} from '../../../components/settings/TestConnectionButton'
-import { useSettings, type TrackerProvider } from '../SettingsContext'
+import Field from '../../../components/forms/field'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
+import { useSettings, type PluginEntry } from '../SettingsContext'
 import { evaluateReadiness } from '../readiness'
-
-const TRACKER_OPTIONS = [
-  { value: 'none' as const, label: 'None', description: 'Run campaigns without tracker round-trips.' },
-  { value: 'jira' as const, label: 'Jira', description: 'Create issues through Jira Cloud or Server.' },
-  { value: 'github' as const, label: 'GitHub Issues', description: 'Reuse the GitHub credentials from Source control.' },
-  { value: 'linear' as const, label: 'Linear', description: 'Create issues through Linear.' },
-]
+import PluginConfigCard from './PluginConfigCard'
+import type { TestConnectionResult } from '../../../components/settings/TestConnectionButton'
 
 interface TrackerTestResponse {
   ok: boolean
   message?: string
 }
 
-export default function IssueTrackerSection() {
-  const { draft, setDraft, claudeLogin, claudeLoginAccount } = useSettings()
-  const readiness = evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }).byId['issue-tracker']
+/**
+ * Translate the per-plugin draft config into the legacy /test/tracker
+ * payload shape so the user gets a real connectivity check for the
+ * built-in trackers. Returns null for unknown plugin ids (drop-ins
+ * fall through to a soft "no generic test" notice).
+ */
+function buildTrackerTestPayload(
+  pluginId: string,
+  config: Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (pluginId === 'jira') {
+    return {
+      provider: 'jira',
+      jira: {
+        baseUrl: String(config['baseUrl'] ?? ''),
+        username: String(config['username'] ?? ''),
+        apiToken: String(config['apiToken'] ?? ''),
+      },
+    }
+  }
+  if (pluginId === 'linear') {
+    return {
+      provider: 'linear',
+      linear: {
+        apiKey: String(config['apiKey'] ?? ''),
+        teamKey: String(config['teamKey'] ?? ''),
+      },
+    }
+  }
+  if (pluginId === 'github-issues') {
+    return {
+      provider: 'github',
+      git: {
+        provider: 'github',
+        username: String(config['defaultOwner'] ?? ''),
+        token: String(config['token'] ?? ''),
+        workspace: String(config['defaultOwner'] ?? ''),
+      },
+    }
+  }
+  return null
+}
 
-  async function runTest(): Promise<TestConnectionResult> {
+export default function IssueTrackerSection() {
+  const {
+    draft,
+    claudeLogin,
+    claudeLoginAccount,
+    pluginsCatalogue,
+    pluginsCatalogueError,
+    setPluginDefault,
+  } = useSettings()
+  const readiness = evaluateReadiness({ draft, claudeLogin, claudeLoginAccount, pluginsCatalogue }).byId['issue-tracker']
+
+  const trackerPlugins: PluginEntry[] = useMemo(() => {
+    if (!pluginsCatalogue) return []
+    return pluginsCatalogue.plugins
+      .filter(p => p.manifest.kind === 'tracker')
+      .sort((a, b) => {
+        if (a.source !== b.source) return a.source === 'builtin' ? -1 : 1
+        return a.manifest.displayName.localeCompare(b.manifest.displayName)
+      })
+  }, [pluginsCatalogue])
+
+  const enabledIds = useMemo(
+    () =>
+      trackerPlugins
+        .filter(p => {
+          const e = draft.pluginInstalled[p.manifest.id]
+          return e !== undefined && e.enabled !== false
+        })
+        .map(p => p.manifest.id),
+    [trackerPlugins, draft.pluginInstalled],
+  )
+
+  async function runTrackerTest(
+    pluginId: string,
+    config: Record<string, unknown>,
+  ): Promise<TestConnectionResult> {
+    const payload = buildTrackerTestPayload(pluginId, config)
+    if (!payload) {
+      return {
+        ok: false,
+        message: 'No generic connection test available for drop-in plugins yet — save and check the plugin healthcheck.',
+      }
+    }
     try {
-      const payload =
-        draft.trackerProvider === 'jira'
-          ? {
-              provider: 'jira' as const,
-              jira: {
-                baseUrl: draft.jiraBaseUrl,
-                username: draft.jiraUsername,
-                apiToken: draft.jiraApiToken,
-              },
-            }
-          : draft.trackerProvider === 'linear'
-            ? {
-                provider: 'linear' as const,
-                linear: { apiKey: draft.linearApiKey, teamKey: draft.linearTeamKey },
-              }
-            : draft.trackerProvider === 'github'
-              ? {
-                  provider: 'github' as const,
-                  git: {
-                    provider: draft.gitProvider,
-                    username: draft.gitUsername,
-                    token: draft.gitToken,
-                    workspace: draft.gitWorkspace,
-                  },
-                }
-              : { provider: 'none' as const }
       const response = await requestJson<TrackerTestResponse>(
         '/test/tracker',
         jsonRequest(payload, { method: 'POST' }),
@@ -72,85 +117,55 @@ export default function IssueTrackerSection() {
   return (
     <SettingsSection
       title="Issue tracker"
-      description="Used by campaign workflows when they need to file an epic and child issues. Optional for one-off jobs."
+      description="Tracker plugins. Each plugin maps Coro work units (epics + child issues) to a backlog system. Optional — leave all disabled to run jobs without tracker round-trips."
       status={readiness.status}
       statusLabel={readiness.status === 'optional' ? 'Optional' : readiness.label}
     >
-      <Field label="Provider">
-        <ChoiceGroup<TrackerProvider>
-          name="tracker-provider"
-          value={draft.trackerProvider}
-          onChange={value => setDraft('trackerProvider', value)}
-          options={TRACKER_OPTIONS}
-          cols={4}
-        />
-      </Field>
-
-      {draft.trackerProvider === 'jira' ? (
-        <div className="grid gap-4 rounded-2xl border border-line bg-overlay/40 p-4">
-          <Field label="Base URL" required hint="Your Jira Cloud or Server site, including protocol.">
-            <Input
-              value={draft.jiraBaseUrl}
-              onChange={event => setDraft('jiraBaseUrl', event.target.value)}
-              placeholder="https://your-org.atlassian.net"
-            />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Username (email)" required>
-              <Input
-                value={draft.jiraUsername}
-                onChange={event => setDraft('jiraUsername', event.target.value)}
-                placeholder="you@company.com"
-                autoComplete="email"
-              />
-            </Field>
-            <Field label="API token" required>
-              <SecretInput
-                value={draft.jiraApiToken}
-                onChange={event => setDraft('jiraApiToken', event.target.value)}
-                placeholder="Atlassian API token"
-              />
-            </Field>
-          </div>
-        </div>
-      ) : null}
-
-      {draft.trackerProvider === 'github' ? (
-        <SettingsNotice tone={draft.gitProvider === 'github' && draft.gitToken ? 'success' : 'warning'}>
-          {draft.gitProvider === 'github' && draft.gitToken
-            ? `GitHub Issues will reuse the configured GitHub token for ${draft.gitWorkspace || 'the current owner'}. Ensure it includes repo + issues write scopes.`
-            : 'Set the source control provider to GitHub and fill in a token + organization. The tracker reuses those credentials.'}
+      {pluginsCatalogueError ? (
+        <SettingsNotice tone="warning">
+          Couldn't load the plugin catalogue from the runner: {pluginsCatalogueError}.
         </SettingsNotice>
       ) : null}
 
-      {draft.trackerProvider === 'linear' ? (
-        <div className="grid gap-4 rounded-2xl border border-line bg-overlay/40 p-4">
-          <Field label="API key" required hint="Personal API key from linear.app/settings/api.">
-            <SecretInput
-              value={draft.linearApiKey}
-              onChange={event => setDraft('linearApiKey', event.target.value)}
-              placeholder="lin_api_…"
+      {trackerPlugins.length === 0 ? (
+        <SettingsNotice tone="neutral">
+          No tracker plugins discovered. Built-ins are bundled with the runner — restart it if this looks wrong.
+        </SettingsNotice>
+      ) : (
+        <div className="space-y-3">
+          {trackerPlugins.map(plugin => (
+            <PluginConfigCard
+              key={plugin.manifest.id}
+              plugin={plugin}
+              onTest={config => runTrackerTest(plugin.manifest.id, config)}
             />
-          </Field>
+          ))}
+        </div>
+      )}
+
+      {enabledIds.length > 1 ? (
+        <div className="rounded-2xl border border-line bg-overlay/30 px-4 py-3.5">
           <Field
-            label="Default team key"
-            hint="Used when the campaign planner does not override the target team."
+            label="Default for new jobs"
+            hint="When more than one tracker plugin is enabled, jobs use this one unless they specify a different tracker at creation time."
           >
-            <Input
-              value={draft.linearTeamKey}
-              onChange={event => setDraft('linearTeamKey', event.target.value)}
-              placeholder="ENG"
-            />
+            <select
+              value={draft.pluginDefaultTracker}
+              onChange={e => setPluginDefault('tracker', e.target.value)}
+              className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg"
+            >
+              <option value="">(let the registry choose)</option>
+              {enabledIds.map(id => (
+                <option key={id} value={id}>
+                  {trackerPlugins.find(p => p.manifest.id === id)?.manifest.displayName ?? id}
+                </option>
+              ))}
+            </select>
           </Field>
         </div>
       ) : null}
 
-      {draft.trackerProvider !== 'none' ? (
-        <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
-          <TestConnectionButton onTest={runTest} />
-          <span className="text-xs text-fg-subtle">{readiness.detail}</span>
-        </div>
-      ) : null}
+      <div className="text-xs text-fg-subtle">{readiness.detail}</div>
     </SettingsSection>
   )
 }

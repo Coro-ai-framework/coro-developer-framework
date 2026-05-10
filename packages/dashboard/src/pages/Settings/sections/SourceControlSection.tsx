@@ -1,139 +1,160 @@
-import { useState } from 'react'
-import { GitBranch, Loader2 } from 'lucide-react'
-import { Input } from '../../../components/ui/input'
-import Field from '../../../components/forms/field'
+import { useMemo } from 'react'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
-import ChoiceGroup from '../../../components/settings/ChoiceGroup'
-import SecretInput from '../../../components/settings/SecretInput'
-import TestConnectionButton, {
-  type TestConnectionResult,
-} from '../../../components/settings/TestConnectionButton'
-import { useSettings, type GitProvider } from '../SettingsContext'
+import Field from '../../../components/forms/field'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
+import { useSettings, type PluginEntry } from '../SettingsContext'
 import { evaluateReadiness } from '../readiness'
-
-const GIT_OPTIONS = [
-  { value: 'github' as const, label: 'GitHub', description: 'Built-in GitHub plugin (PRs, branches, reviews).' },
-  { value: 'bitbucket' as const, label: 'Bitbucket', description: 'Built-in Bitbucket plugin (PRs, branches, reviews).' },
-  { value: 'gitlab' as const, label: 'GitLab', description: 'Requires a GitLab drop-in plugin (not built in).' },
-]
+import PluginConfigCard from './PluginConfigCard'
+import type { TestConnectionResult } from '../../../components/settings/TestConnectionButton'
 
 interface GitTestResponse {
   ok: boolean
   message?: string
 }
 
+/**
+ * Translate the per-plugin draft config into the legacy /test/git
+ * payload shape so the user gets a real "did this credential work"
+ * check for the three built-in SCMs. Drop-in plugins fall through to
+ * a soft "no generic test" notice (returns null).
+ */
+function buildGitTestPayload(pluginId: string, config: Record<string, unknown>): Record<string, unknown> | null {
+  if (pluginId === 'github') {
+    return {
+      provider: 'github',
+      username: String(config['owner'] ?? ''),
+      token: String(config['token'] ?? ''),
+      workspace: String(config['owner'] ?? ''),
+    }
+  }
+  if (pluginId === 'bitbucket') {
+    return {
+      provider: 'bitbucket',
+      username: String(config['coderUsername'] ?? ''),
+      token: String(config['coderToken'] ?? ''),
+      workspace: String(config['workspace'] ?? ''),
+    }
+  }
+  if (pluginId === 'gitlab') {
+    return {
+      provider: 'gitlab',
+      username: String(config['username'] ?? config['user'] ?? ''),
+      token: String(config['token'] ?? ''),
+      workspace: String(config['workspace'] ?? config['group'] ?? ''),
+    }
+  }
+  return null
+}
+
 export default function SourceControlSection() {
-  const { draft, setDraft, claudeLogin, claudeLoginAccount } = useSettings()
-  const readiness = evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }).byId['source-control']
-  const [_, setLastTest] = useState<TestConnectionResult | null>(null)
+  const {
+    draft,
+    claudeLogin,
+    claudeLoginAccount,
+    pluginsCatalogue,
+    pluginsCatalogueError,
+    setPluginDefault,
+  } = useSettings()
+  const readiness = evaluateReadiness({ draft, claudeLogin, claudeLoginAccount, pluginsCatalogue }).byId['source-control']
 
-  const tokenLabel = draft.gitProvider === 'github' ? 'Personal access token' : 'App password'
-  const workspaceLabel = draft.gitProvider === 'bitbucket' ? 'Workspace slug' : 'Organization / owner'
-  const workspaceHint =
-    draft.gitProvider === 'bitbucket'
-      ? 'Required for the built-in Bitbucket plugin and PR APIs.'
-      : draft.gitProvider === 'github'
-        ? 'Required for the built-in GitHub plugin and repo/PR APIs.'
-        : 'Used by GitLab drop-in plugins.'
+  const scmPlugins: PluginEntry[] = useMemo(() => {
+    if (!pluginsCatalogue) return []
+    return pluginsCatalogue.plugins
+      .filter(p => p.manifest.kind === 'scm')
+      .sort((a, b) => {
+        if (a.source !== b.source) return a.source === 'builtin' ? -1 : 1
+        return a.manifest.displayName.localeCompare(b.manifest.displayName)
+      })
+  }, [pluginsCatalogue])
 
-  async function runTest(): Promise<TestConnectionResult> {
+  const enabledIds = useMemo(
+    () =>
+      scmPlugins
+        .filter(p => {
+          const e = draft.pluginInstalled[p.manifest.id]
+          return e !== undefined && e.enabled !== false
+        })
+        .map(p => p.manifest.id),
+    [scmPlugins, draft.pluginInstalled],
+  )
+
+  async function runGitTest(pluginId: string, config: Record<string, unknown>): Promise<TestConnectionResult> {
+    const payload = buildGitTestPayload(pluginId, config)
+    if (!payload) {
+      return {
+        ok: false,
+        message: 'No generic connection test available for drop-in plugins yet — save and check the plugin healthcheck.',
+      }
+    }
     try {
       const response = await requestJson<GitTestResponse>(
         '/test/git',
-        jsonRequest(
-          {
-            provider: draft.gitProvider,
-            username: draft.gitUsername,
-            token: draft.gitToken,
-            workspace: draft.gitWorkspace || undefined,
-          },
-          { method: 'POST' },
-        ),
+        jsonRequest(payload, { method: 'POST' }),
       )
-      const next: TestConnectionResult = {
+      return {
         ok: response.ok,
         message: response.message ?? (response.ok ? 'Authenticated.' : 'Connection failed.'),
       }
-      setLastTest(next)
-      return next
     } catch (err) {
       const message = err instanceof ApiError ? err.message : (err as Error).message
-      const next = { ok: false, message }
-      setLastTest(next)
-      return next
+      return { ok: false, message }
     }
   }
 
   return (
     <SettingsSection
       title="Source control"
-      description="Credentials used for clone, branch, push, PR, and review operations on the host the runner runs jobs against."
+      description="Git provider plugins. Each plugin handles clone, branch, push, PR, and review for one host. Multiple plugins can be configured side-by-side; the default below decides which one new jobs use unless overridden."
       required
       status={readiness.status}
       statusLabel={readiness.label}
     >
-      <Field label="Provider">
-        <ChoiceGroup<GitProvider>
-          name="git-provider"
-          value={draft.gitProvider}
-          onChange={value => setDraft('gitProvider', value)}
-          options={GIT_OPTIONS}
-          cols={3}
-        />
-      </Field>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Username" hint="The account used to authenticate with the git provider.">
-          <Input
-            value={draft.gitUsername}
-            onChange={event => setDraft('gitUsername', event.target.value)}
-            placeholder="your-username"
-            autoComplete="username"
-          />
-        </Field>
-        <Field label={tokenLabel} hint="Stored in the local runner config file.">
-          <SecretInput
-            value={draft.gitToken}
-            onChange={event => setDraft('gitToken', event.target.value)}
-            placeholder={draft.gitProvider === 'github' ? 'ghp_…' : 'Token'}
-          />
-        </Field>
-      </div>
-
-      <Field label={workspaceLabel} hint={workspaceHint}>
-        <Input
-          value={draft.gitWorkspace}
-          onChange={event => setDraft('gitWorkspace', event.target.value)}
-          placeholder={draft.gitProvider === 'bitbucket' ? 'my-workspace' : 'my-org'}
-        />
-      </Field>
-
-      <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
-        <TestConnectionButton
-          onTest={runTest}
-          disabled={!draft.gitUsername || !draft.gitToken}
-          label={
-            <span className="inline-flex items-center gap-1.5">
-              <GitBranch className="size-3.5" /> Test connection
-            </span>
-          }
-        />
-        <span className="text-xs text-fg-subtle">
-          {readiness.detail}
-        </span>
-      </div>
-
-      {draft.gitProvider === 'gitlab' ? (
+      {pluginsCatalogueError ? (
         <SettingsNotice tone="warning">
-          GitLab is not a built-in Coro plugin. Install a GitLab-compatible drop-in plugin from{' '}
-          <strong>Extensions → Plugins</strong> before using GitLab for jobs.
+          Couldn't load the plugin catalogue from the runner: {pluginsCatalogueError}.
         </SettingsNotice>
       ) : null}
+
+      {scmPlugins.length === 0 ? (
+        <SettingsNotice tone="neutral">
+          No source-control plugins discovered. Built-ins are bundled with the runner — restart it if this looks wrong.
+        </SettingsNotice>
+      ) : (
+        <div className="space-y-3">
+          {scmPlugins.map(plugin => (
+            <PluginConfigCard
+              key={plugin.manifest.id}
+              plugin={plugin}
+              onTest={config => runGitTest(plugin.manifest.id, config)}
+            />
+          ))}
+        </div>
+      )}
+
+      {enabledIds.length > 1 ? (
+        <div className="rounded-2xl border border-line bg-overlay/30 px-4 py-3.5">
+          <Field
+            label="Default for new jobs"
+            hint="When more than one source-control plugin is enabled, jobs use this one unless they specify a different SCM at creation time."
+          >
+            <select
+              value={draft.pluginDefaultScm}
+              onChange={e => setPluginDefault('scm', e.target.value)}
+              className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg"
+            >
+              <option value="">(let the registry choose)</option>
+              {enabledIds.map(id => (
+                <option key={id} value={id}>
+                  {scmPlugins.find(p => p.manifest.id === id)?.manifest.displayName ?? id}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      ) : null}
+
+      <div className="text-xs text-fg-subtle">{readiness.detail}</div>
     </SettingsSection>
   )
 }
-
-// Suppress unused warning while we keep the captured value for future inline display.
-void Loader2

@@ -4,12 +4,17 @@ import type {
   SettingsSectionId,
   ClaudeLoginState,
   ClaudeAccountInfo,
+  PluginsCatalogue,
+  PluginEntry,
 } from './SettingsContext'
 
 interface ReadinessInput {
   draft: SettingsDraft
   claudeLogin: ClaudeLoginState
   claudeLoginAccount: ClaudeAccountInfo | null
+  /** Optional — if absent (catalogue still loading) we fall back to a
+   * built-in plugin-id allowlist heuristic so the wizard can still render. */
+  pluginsCatalogue?: PluginsCatalogue | null
 }
 
 export interface ReadinessSummary {
@@ -21,7 +26,39 @@ export interface ReadinessSummary {
   missingRequired: SettingsSectionId[]
 }
 
-export function evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }: ReadinessInput): ReadinessSummary {
+interface JsonSchemaObject {
+  required?: string[]
+  properties?: Record<string, unknown>
+}
+
+function isJsonSchemaObject(schema: unknown): schema is JsonSchemaObject {
+  return typeof schema === 'object' && schema !== null && !Array.isArray(schema)
+}
+
+/** A plugin entry is "configured" when every required-by-schema field
+ * is non-empty in the draft. Falls back to "any value" when no schema. */
+function pluginIsConfigured(
+  draft: SettingsDraft,
+  plugin: PluginEntry | undefined,
+  pluginId: string,
+): boolean {
+  const entry = draft.pluginInstalled[pluginId]
+  if (!entry) return false
+  if (entry.enabled === false) return false
+  const schema = plugin?.manifest.configSchema
+  if (isJsonSchemaObject(schema) && Array.isArray(schema.required)) {
+    return schema.required.every(field => {
+      const v = entry.config[field]
+      return typeof v === 'string' ? v.length > 0 : v != null
+    })
+  }
+  return Object.keys(entry.config).length > 0
+}
+
+const KNOWN_SCM_FALLBACK = ['github', 'bitbucket', 'gitlab']
+const KNOWN_TRACKER_FALLBACK = ['jira', 'linear', 'github-issues']
+
+export function evaluateReadiness({ draft, claudeLogin, claudeLoginAccount, pluginsCatalogue }: ReadinessInput): ReadinessSummary {
   // LLM provider ──
   const account = claudeLogin.account ?? claudeLoginAccount
   const claudeReady = claudeLogin.status === 'connected' || !!account
@@ -42,30 +79,67 @@ export function evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }: Re
           ? 'Legacy token configured'
           : 'Legacy token missing'
 
-  // Source control ──
-  const gitConfigured = Boolean(draft.gitUsername && draft.gitToken)
-  const gitDetail = gitConfigured
-    ? `${draft.gitProvider} · ${draft.gitUsername}`
-    : 'Git credentials missing'
+  // Plugin readiness — required fields come from each plugin's own
+  // JSON Schema (catalogue), so adding a new plugin doesn't require
+  // editing this file.
+  const scmPlugins = pluginsCatalogue?.plugins.filter(p => p.manifest.kind === 'scm') ?? []
+  const trackerPlugins = pluginsCatalogue?.plugins.filter(p => p.manifest.kind === 'tracker') ?? []
 
-  // Issue tracker (optional) ──
-  let trackerStatus: SettingStatus = 'optional'
-  let trackerDetail = 'Tracker disabled'
-  if (draft.trackerProvider === 'jira') {
-    const ok = !!(draft.jiraBaseUrl && draft.jiraUsername && draft.jiraApiToken)
-    trackerStatus = ok ? 'ok' : 'warn'
-    trackerDetail = ok ? 'Jira connected' : 'Jira fields incomplete'
-  } else if (draft.trackerProvider === 'linear') {
-    const ok = draft.linearApiKey.length > 0
-    trackerStatus = ok ? 'ok' : 'warn'
-    trackerDetail = ok ? 'Linear connected' : 'Linear API key missing'
-  } else if (draft.trackerProvider === 'github') {
-    const ok = gitConfigured && draft.gitProvider === 'github'
-    trackerStatus = ok ? 'ok' : 'warn'
-    trackerDetail = ok ? 'GitHub Issues via Git creds' : 'Configure GitHub in Source control first'
+  const isScmId = (id: string): boolean => {
+    if (!pluginsCatalogue) return KNOWN_SCM_FALLBACK.includes(id)
+    return scmPlugins.some(p => p.manifest.id === id)
+  }
+  const isTrackerId = (id: string): boolean => {
+    if (!pluginsCatalogue) return KNOWN_TRACKER_FALLBACK.includes(id)
+    return trackerPlugins.some(p => p.manifest.id === id)
   }
 
-  // Extensions / advanced are informational only ──
+  const configuredScm = Object.entries(draft.pluginInstalled)
+    .filter(([id, entry]) => {
+      if (entry.enabled === false) return false
+      if (!isScmId(id)) return false
+      const plugin = scmPlugins.find(p => p.manifest.id === id)
+      return pluginIsConfigured(draft, plugin, id)
+    })
+    .map(([id]) => id)
+  const gitConfigured = configuredScm.length > 0
+  const gitDetail = gitConfigured
+    ? configuredScm.length === 1
+      ? `${configuredScm[0]} configured`
+      : `${configuredScm.length} SCM plugins configured (default: ${draft.pluginDefaultScm || configuredScm[0]})`
+    : 'No source-control plugin enabled'
+
+  const configuredTrackers = Object.entries(draft.pluginInstalled)
+    .filter(([id, entry]) => {
+      if (entry.enabled === false) return false
+      if (!isTrackerId(id)) return false
+      const plugin = trackerPlugins.find(p => p.manifest.id === id)
+      return pluginIsConfigured(draft, plugin, id)
+    })
+    .map(([id]) => id)
+
+  let trackerStatus: SettingStatus = 'optional'
+  let trackerDetail = 'No tracker plugin enabled'
+  if (configuredTrackers.length > 0) {
+    trackerStatus = 'ok'
+    trackerDetail =
+      configuredTrackers.length === 1
+        ? `${configuredTrackers[0]} configured`
+        : `${configuredTrackers.length} tracker plugins configured (default: ${draft.pluginDefaultTracker || configuredTrackers[0]})`
+  } else {
+    const partiallyConfigured = Object.entries(draft.pluginInstalled).some(([id, entry]) => {
+      if (entry.enabled === false) return false
+      if (!isTrackerId(id)) return false
+      const plugin = trackerPlugins.find(p => p.manifest.id === id)
+      return !pluginIsConfigured(draft, plugin, id)
+    })
+    if (partiallyConfigured) {
+      trackerStatus = 'warn'
+      trackerDetail = 'Tracker plugin enabled but required fields are missing'
+    }
+  }
+
+  // MCP ──
   const mcpDetail = (() => {
     try {
       const parsed = JSON.parse(draft.mcpServersText) as Record<string, unknown>
@@ -95,7 +169,7 @@ export function evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }: Re
     },
     plugins: {
       status: 'optional',
-      detail: 'Built-ins enabled by Source control + Tracker config',
+      detail: 'Drop-in plugin install + uninstall',
     },
     mcp: {
       status: 'optional',
