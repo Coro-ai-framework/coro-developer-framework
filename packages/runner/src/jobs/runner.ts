@@ -629,7 +629,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           BB_CODER_APP_PASSWORD: settings.bitbucket.coderAccount.appPassword,
           BB_BASE_URL: 'https://bitbucket.org',
           BB_GIT_USERNAME: settings.bitbucket.coderAccount.appPassword.startsWith('ATATT')
-            ? 'x-token-auth'
+            ? 'x-bitbucket-api-token-auth'
             : encodeURIComponent(settings.bitbucket.coderAccount.username),
           GH_OWNER: settings.github?.owner ?? '',
           GH_TOKEN: settings.github?.token ?? '',

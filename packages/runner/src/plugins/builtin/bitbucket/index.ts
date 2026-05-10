@@ -156,10 +156,16 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   // ── Clone info ──────────────────────────────────────────────────────────
 
   cloneInfo(args: { repo: string }): ScmCloneInfo {
-    // Atlassian API tokens (ATATT...) require x-token-auth as the git
-    // username; legacy app-passwords use the email/username.
+    // Bitbucket has three token types and each needs a different git
+    // HTTPS username:
+    //   - Legacy App Passwords      -> your Atlassian account email
+    //   - Legacy Access Tokens      -> 'x-token-auth'  (random prefix)
+    //   - New scoped API tokens (ATATT…) -> 'x-bitbucket-api-token-auth'
+    // The ATATT prefix is shared with the old `x-token-auth` scheme in
+    // some integrations, but for git-over-HTTPS the new tokens require
+    // the bitbucket-specific username.
     const username = this.coderToken.startsWith('ATATT')
-      ? 'x-token-auth'
+      ? 'x-bitbucket-api-token-auth'
       : encodeURIComponent(this.coderUsername)
     const token = encodeURIComponent(this.coderToken)
     return {

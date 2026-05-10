@@ -132,10 +132,16 @@ export class GitClient {
 
 export function createGitClient(settings: Settings): GitClient {
   const { coderAccount } = settings.bitbucket
-  // Atlassian API tokens (ATATT...) require x-token-auth as the git username.
-  // Classic app passwords use the account email.
+  // Bitbucket has three token types and each needs a different git
+  // HTTPS username:
+  //   - Legacy App Passwords     -> your Atlassian account email
+  //   - Legacy Access Tokens     -> 'x-token-auth' (random prefix)
+  //   - New API tokens (ATATT…) -> 'x-bitbucket-api-token-auth'
+  // Old code mapped the ATATT prefix to 'x-token-auth' which is the
+  // wrong scheme and produces a 401 the agent then mis-classifies as
+  // "missing repo scope".
   const gitUsername = coderAccount.appPassword.startsWith('ATATT')
-    ? 'x-token-auth'
+    ? 'x-bitbucket-api-token-auth'
     : coderAccount.username
 
   return new GitClient(
