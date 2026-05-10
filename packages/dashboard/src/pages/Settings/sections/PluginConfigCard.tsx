@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from 'react'
-import { Plug } from 'lucide-react'
 import { Input } from '../../../components/ui/input'
+import ProviderLogo from '../../../components/settings/ProviderLogo'
 import Field from '../../../components/forms/field'
 import { Switch } from '../../../components/ui/switch'
 import SecretInput from '../../../components/settings/SecretInput'
@@ -186,7 +186,7 @@ export default function PluginConfigCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Plug className="size-4 text-fg-subtle" />
+            <ProviderLogo pluginId={manifest.id} size={20} />
             <div className="text-[15px] font-medium text-fg">{manifest.displayName}</div>
             <span className="font-mono text-[11px] text-fg-subtle">{manifest.id}</span>
             <span
@@ -232,38 +232,46 @@ export default function PluginConfigCard({
         </label>
       </div>
 
-      {fields.length === 0 ? (
-        <SettingsNotice tone="neutral" className="mt-4">
-          This plugin doesn't expose configuration. Toggle Enable to register it.
-        </SettingsNotice>
-      ) : (
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          {fields.map(field => (
-            <Field
-              key={field.name}
-              label={field.label}
-              required={field.required}
-              hint={field.hint}
-              className={field.kind === 'url' ? 'sm:col-span-2' : undefined}
-            >
-              {renderFieldInput(field)}
-            </Field>
-          ))}
-        </div>
-      )}
+      {/* Body collapses when the plugin is disabled — fewer pixels, less
+          cognitive load when the user has many plugins installed. The
+          header (with the Enable switch) stays visible so it's a
+          one-click expand. */}
+      {enabled ? (
+        <>
+          {fields.length === 0 ? (
+            <SettingsNotice tone="neutral" className="mt-4">
+              This plugin doesn't expose configuration. Toggle Enable to register it.
+            </SettingsNotice>
+          ) : (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              {fields.map(field => (
+                <Field
+                  key={field.name}
+                  label={field.label}
+                  required={field.required}
+                  hint={field.hint}
+                  className={field.kind === 'url' ? 'sm:col-span-2' : undefined}
+                >
+                  {renderFieldInput(field)}
+                </Field>
+              ))}
+            </div>
+          )}
 
-      {(onTest || defaultControl || footerNotice) && (
-        <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
-          {onTest ? (
-            <TestConnectionButton
-              onTest={() => onTest(entry.config)}
-              disabled={!allRequiredFilled}
-            />
-          ) : null}
-          {defaultControl}
-          {footerNotice}
-        </div>
-      )}
+          {(onTest || defaultControl || footerNotice) && (
+            <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+              {onTest ? (
+                <TestConnectionButton
+                  onTest={() => onTest(entry.config)}
+                  disabled={!allRequiredFilled}
+                />
+              ) : null}
+              {defaultControl}
+              {footerNotice}
+            </div>
+          )}
+        </>
+      ) : null}
     </div>
   )
 }
