@@ -64,9 +64,25 @@ export class BitBucketClient {
     appPassword: string,
     baseUrl = 'https://api.bitbucket.org/2.0',
   ) {
-    // BitBucket Repository Access Tokens (ATATT3x...) and App Passwords both
-    // use Basic Auth with username:token. Bearer auth returns 401 for these tokens.
-    this.authHeader = `Basic ${Buffer.from(`${username}:${appPassword}`).toString('base64')}`
+    // Bitbucket auth nuances (mirrors clients/git.ts and the bitbucket SCM
+    // plugin's `cloneInfo`):
+    //   - Legacy App Passwords           -> Basic auth with the Atlassian
+    //                                       account email/username.
+    //   - Legacy Repository Access Tokens -> Basic auth with username
+    //                                       `x-token-auth`.
+    //   - New scoped API tokens (ATATT…) -> Basic auth with the
+    //                                       Bitbucket-specific username
+    //                                       `x-bitbucket-api-token-auth`.
+    //                                       Using the user's email here
+    //                                       returns 401 even when the token
+    //                                       has `pullrequest:write` scope —
+    //                                       this was the cause of the
+    //                                       `scm_post_pr_comment` 401s.
+    // Bearer auth returns 401 for all of these token types; always Basic.
+    const authUsername = appPassword.startsWith('ATATT')
+      ? 'x-bitbucket-api-token-auth'
+      : username
+    this.authHeader = `Basic ${Buffer.from(`${authUsername}:${appPassword}`).toString('base64')}`
     this.baseUrl = baseUrl.replace(/\/$/, '')
   }
 

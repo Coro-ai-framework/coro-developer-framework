@@ -493,6 +493,35 @@ export class Dispatcher {
         parent_tool_use_id: null,
       }
 
+      // Steering pattern (Claude Agent SDK):
+      //
+      //   `streamInput()` ALONE only delivers the message at the next
+      //   read point — i.e. when the agent is between turns. While the
+      //   agent is mid-turn (tool call running, model still streaming),
+      //   the message sits in the SDK queue. For long tool runs
+      //   (clone/test/build) that means messages effectively never
+      //   arrive until the phase ends, which defeats the whole point
+      //   of letting the developer steer.
+      //
+      //   `interrupt()` cancels the current generation/tool turn and
+      //   surfaces an `is_interrupt` result to the model; the model
+      //   then sees the next user message on its next turn. This is
+      //   the same mechanism Claude Code itself uses for the ESC-key
+      //   "stop and steer" UX.
+      //
+      // Order matters: interrupt FIRST so the SDK is back at a read
+      // point, THEN streamInput so the queued message gets picked up
+      // immediately. We tolerate `interrupt` failing (idle agent — no
+      // generation to cancel) and still proceed with streamInput.
+      try {
+        await q.interrupt()
+      } catch (err) {
+        this.ctx.logger.debug(
+          { jobId, err },
+          'interrupt() before streamInput failed (agent likely idle) — continuing',
+        )
+      }
+
       try {
         await q.streamInput((async function* () { yield userMsg })())
       } catch (err) {
@@ -501,7 +530,7 @@ export class Dispatcher {
       }
 
       await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
-      this.ctx.logger.info({ jobId }, 'Developer message injected into running agent')
+      this.ctx.logger.info({ jobId }, 'Developer message injected into running agent (interrupt + streamInput)')
       return
     }
 
