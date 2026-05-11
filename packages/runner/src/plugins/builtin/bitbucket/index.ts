@@ -69,6 +69,13 @@ const bbConfigSchema = z.object({
 
 export type BitBucketPluginConfig = z.infer<typeof bbConfigSchema>
 
+// A username Bitbucket Basic auth will accept: either an email
+// (Atlassian API tokens / App Passwords) or one of the synthetic
+// `x-*-auth` usernames used by repository / API tokens.
+function looksLikeBitbucketUsername(value: string): boolean {
+  return value.includes('@') || /^x-[\w-]+-auth$/.test(value)
+}
+
 // ── Manifest ─────────────────────────────────────────────────────────────────
 
 const MANIFEST: PluginManifest = {
@@ -107,7 +114,7 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   private coderUsername!: string
   private coderToken!: string
 
-  async init(rawConfig: BitBucketPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
+  async init(rawConfig: BitBucketPluginConfig | Record<string, unknown>, deps: PluginDeps): Promise<void> {
     const cfg = bbConfigSchema.parse(rawConfig)
     this.workspace = cfg.workspace
     this.coderUsername = cfg.coderUsername
@@ -118,9 +125,30 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
       cfg.coderToken,
       cfg.baseUrl,
     )
+
+    // Reviewer username sanity check.
+    //
+    // Bitbucket Basic auth requires either the account email
+    // (Atlassian API tokens, App Passwords) or a synthetic username
+    // (`x-token-auth`, `x-bitbucket-api-token-auth`). A display name
+    // like "Jane Doe" 401s every request. We've been bitten by users
+    // pasting their display name into `reviewerUsername` — surface a
+    // clear warning and fall back to the coder username so the
+    // reviewer client at least authenticates against the same
+    // account.
+    let reviewerUsername = cfg.reviewerUsername ?? cfg.coderUsername
+    if (cfg.reviewerUsername && !looksLikeBitbucketUsername(cfg.reviewerUsername)) {
+      deps.logger.warn(
+        { configured: cfg.reviewerUsername, fallback: cfg.coderUsername },
+        'Bitbucket reviewerUsername does not look like an email or x-*-auth synthetic username — falling back to coderUsername. ' +
+        'Update plugins.installed.bitbucket.config.reviewerUsername in ~/.coro/config.json to silence this warning.',
+      )
+      reviewerUsername = cfg.coderUsername
+    }
+
     this.reviewer = new BitBucketClient(
       cfg.workspace,
-      cfg.reviewerUsername ?? cfg.coderUsername,
+      reviewerUsername,
       cfg.reviewerToken ?? cfg.coderToken,
       cfg.baseUrl,
     )

@@ -1154,23 +1154,51 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       continue
     }
   } catch (err) {
-    logger.error({ err, jobId: liveJob.id }, 'Runner crashed — marking job failed')
-    await stateBackend.appendLog(liveJob.id, `Runner crashed: ${String(err)}`)
+    // If the job was just transitioned into a parking status by an
+    // out-of-band controller (most commonly the dispatcher's `pauseJob`
+    // calling `q.interrupt()`), the SDK reports the interrupted tool
+    // call as a synthetic `is_error: true` result with payload like
+    // `[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use`,
+    // and re-throws it from `readMessages()`. That's not a crash — the
+    // park already happened — so we must not flip the job to FAILED and
+    // overwrite the `awaiting-developer-input` patch the pause path
+    // just persisted. Treat the throw as the expected end of the run.
+    let postPark: { status: string } | undefined
     try {
       const current = await stateBackend.getJob(liveJob.id)
-      if (!current || !isTerminalStatus(current.status)) {
-        // Clear sessionId so the next resume starts a fresh Claude Code subprocess.
-        // A crash (529 overload, network error, SDK bug) leaves the MCP transport in
-        // a broken state — resuming the old session would give the agent working
-        // built-in tools but broken mcp__coro__* tools.
-        await stateBackend.updateJob(liveJob.id, {
-          status: STATUS_FAILED,
-          escalationMessage: String(err),
-          sessionId: undefined,
-        })
-      }
+      if (current) postPark = { status: current.status }
     } catch {
-      // Best-effort
+      // Ignore — fall through and treat as a real crash.
+    }
+
+    if (postPark && isParkingStatus(postPark.status)) {
+      logger.info(
+        { jobId: liveJob.id, status: postPark.status, err: String(err) },
+        'Agent stream ended after job entered a parking status — treating as a clean park, not a crash',
+      )
+      await stateBackend.appendLog(
+        liveJob.id,
+        `[control] Agent stream stopped after pause/park — current turn ended at the safe boundary.`,
+      )
+    } else {
+      logger.error({ err, jobId: liveJob.id }, 'Runner crashed — marking job failed')
+      await stateBackend.appendLog(liveJob.id, `Runner crashed: ${String(err)}`)
+      try {
+        const current = await stateBackend.getJob(liveJob.id)
+        if (!current || !isTerminalStatus(current.status)) {
+          // Clear sessionId so the next resume starts a fresh Claude Code subprocess.
+          // A crash (529 overload, network error, SDK bug) leaves the MCP transport in
+          // a broken state — resuming the old session would give the agent working
+          // built-in tools but broken mcp__coro__* tools.
+          await stateBackend.updateJob(liveJob.id, {
+            status: STATUS_FAILED,
+            escalationMessage: String(err),
+            sessionId: undefined,
+          })
+        }
+      } catch {
+        // Best-effort
+      }
     }
   } finally {
     for (const [label, proc] of runningServices) {

@@ -171,6 +171,21 @@ export class PollingTransport implements EventTransport {
 
   // ── PR change detection ────────────────────────────────────────────────────
 
+  /**
+   * Read the parked job's `awaitingEvent` label so the cold-start branch
+   * of `checkPr` can suppress synthetic events the agent is not actually
+   * waiting on. Returns `undefined` on any read failure (we'd rather
+   * over-deliver than crash the poll loop).
+   */
+  private async getJobAwaitingEvent(jobId: string): Promise<string | undefined> {
+    try {
+      const job = await this.stateBackend.getJob(jobId)
+      return job?.awaitingEvent ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
   private async checkPr(jobId: string, scm: ScmPluginRuntime, ref: ExternalRef): Promise<void> {
     const snap = await scm.pollPr(ref)
     // Successful poll — clear any prior failure streak for this ref.
@@ -186,18 +201,36 @@ export class PollingTransport implements EventTransport {
     const previous = this.snapshots.get(key)
     this.snapshots.set(key, current)
 
-    // First poll — if the PR is already in a terminal or actionable state,
-    // fire events immediately instead of silently caching. This handles the
-    // cold-start case where the runner starts after a PR was already merged/approved.
+    // First poll — fire an event ONLY when the current PR state matches
+    // what the parked job is actually awaiting. This covers the legit
+    // cold-start case (runner restarts after a PR was merged/approved
+    // during downtime) without re-firing stale events the agent already
+    // saw and reacted to in a prior session.
+    //
+    // Concrete bug this prevents: a job parks awaiting `pr:approved`
+    // after the agent already handled an earlier `pr:rejected`. The
+    // runner is restarted. Without this filter the in-memory snapshot
+    // map is empty, the PR is still `declined`, and we'd synthetically
+    // re-deliver `pullrequest:rejected` even though no human acted on
+    // the PR — confusing the agent and wasting tokens.
     if (!previous) {
       this.logger.debug({ jobId, ref, state: current.state }, 'Initial PR snapshot cached')
 
-      if (current.state === 'merged') {
+      const awaiting = await this.getJobAwaitingEvent(jobId)
+      const matchesAwaited = (eventKey: string) =>
+        awaiting != null && eventKeyMatchesAwaited(eventKey, awaiting)
+
+      if (current.state === 'merged' && matchesAwaited('pullrequest:fulfilled')) {
         await this.deliver(jobId, ref, 'pullrequest:fulfilled', { state: 'MERGED' })
-      } else if (current.state === 'declined') {
+      } else if (current.state === 'declined' && matchesAwaited('pullrequest:rejected')) {
         await this.deliver(jobId, ref, 'pullrequest:rejected', { state: 'DECLINED' })
-      } else if (current.approvalCount > 0) {
+      } else if (current.approvalCount > 0 && matchesAwaited('pullrequest:approved')) {
         await this.deliver(jobId, ref, 'pullrequest:approved', { approvalCount: current.approvalCount })
+      } else {
+        this.logger.info(
+          { jobId, ref, state: current.state, awaiting },
+          'Cold-start PR poll: state does not match parked job\'s awaitingEvent — suppressing synthetic event',
+        )
       }
       return
     }
@@ -379,4 +412,24 @@ function pickRepoKey(job: { params: Record<string, unknown>; prMappings: PrMappi
   if (typeof job.params['repoSlug'] === 'string') return job.params['repoSlug'] as string
   if (typeof job.params['repo'] === 'string') return job.params['repo'] as string
   return ''
+}
+
+/**
+ * Loose match between the synthetic event the poller wants to fire and
+ * the freeform `awaitingEvent` label the agent set via `await_event`.
+ *
+ * The agent typically sets short labels like `pr:approved`,
+ * `pr:rejected`, `pr:merged`, `pr:fulfilled`, sometimes prefixed
+ * (`pullrequest:approved`). We accept any awaiting-label that contains
+ * the trailing event verb of the synthetic event.
+ */
+function eventKeyMatchesAwaited(eventKey: string, awaiting: string): boolean {
+  const verb = eventKey.includes(':') ? eventKey.split(':').pop()! : eventKey
+  const awaitingLower = awaiting.toLowerCase()
+  if (awaitingLower.includes(verb.toLowerCase())) return true
+  // `merged` ↔ `fulfilled` are Bitbucket vs generic synonyms — allow
+  // either to satisfy the other.
+  if (verb === 'fulfilled' && awaitingLower.includes('merged')) return true
+  if (verb === 'merged' && awaitingLower.includes('fulfilled')) return true
+  return false
 }
