@@ -90,10 +90,13 @@ End your turn — the webhook will resume you when a human approves.
 
 When approval and CI conditions are met:
 
-1. Call `mcp__coro__scm_merge_pr` with the PR's `ExternalRef`.
-2. Verify the merge succeeded by re-checking PR status.
-3. Post a one-line confirmation comment on the PR.
-4. End your turn — the runner advances to `evaluation`, which verifies the merged result.
+1. **Re-verify human approval at the merge boundary.** Call `mcp__coro__scm_get_pr_status` immediately before merging and confirm `approvalCount >= 1` from a human reviewer (you, the agent, do not count). If `approvalCount` is 0, **do not merge** — go back to step 3 and `await_event("pr:approved")`. This recheck is mandatory: webhooks can be lost, polling can lag, and your in-context belief about the approval state can be wrong. The status call is the only ground truth.
+2. Call `mcp__coro__scm_merge_pr` with the PR's `ExternalRef`.
+3. Verify the merge succeeded by re-checking PR status.
+4. Post a one-line confirmation comment on the PR.
+5. End your turn — the runner advances to `evaluation`, which verifies the merged result.
+
+**Hard rule — no exceptions:** if at any point you find yourself about to call `scm_merge_pr` without having just confirmed `approvalCount >= 1` via a fresh `scm_get_pr_status` call in this same turn, stop and run the status check first. "I remember an approval from earlier" is not sufficient. "The reviewer said it looked good in a comment" is not sufficient. Only an `APPROVED` review reflected in `scm_get_pr_status.approvalCount` counts.
 
 ### 5. Capture cross-PR patterns
 

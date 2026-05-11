@@ -58,6 +58,13 @@ export class Dispatcher {
   private readonly activeJobs = new Set<string>()
   private readonly eventQueue = new Map<string, WebhookEvent[]>()
   private readonly activeQueries = new Map<string, Query>()
+  // Jobs that requested a fresh dispatch while a prior run was still
+  // draining (between the SDK turn ending and the runner's `finally`
+  // block clearing `activeJobs`). The finally block re-fires these so
+  // a developer message that resumes a parked job is never silently
+  // dropped just because the previous runner promise hasn't fully
+  // settled yet.
+  private readonly deferredDispatch = new Set<string>()
 
   constructor(
     private readonly ctx: RunnerContext,
@@ -156,26 +163,34 @@ export class Dispatcher {
     const wasActive = this.activeJobs.has(jobId)
     const q = this.activeQueries.get(jobId)
 
-    // Halt the live agent turn at its next safe boundary BEFORE we
-    // persist the parked status. The runner's outer loop will then see
-    // the parking-status flip on its next `refreshJobForBoundary` and
-    // exit cleanly without auto-advancing to the next phase.
-    if (q) {
-      try {
-        await q.interrupt()
-      } catch (err) {
-        this.ctx.logger.debug(
-          { jobId, err },
-          'interrupt() during pause failed (agent likely between turns) — continuing',
-        )
-      }
-    }
-
+    // Persist the parked status FIRST so:
+    //   (a) the HTTP response can return immediately even if the SDK
+    //       interrupt ack is slow (mid-tool-use can take seconds), and
+    //   (b) when the SDK eventually surfaces the aborted-tool error,
+    //       the runner's post-park guard sees a parking status and
+    //       treats it as a clean park rather than a crash.
     const updated = await this.ctx.stateBackend.updateJob(jobId, pausedJobPatch())
 
     // Drop any pending webhook events; the developer is in control now
     // and the events can be re-delivered (or made obsolete) on resume.
     this.eventQueue.delete(jobId)
+
+    // Halt the live agent turn at its next safe boundary. Fire-and-forget:
+    // `interrupt()` waits for an ACK from the Claude Code subprocess and
+    // can take seconds (or longer) when the agent is mid-tool-use. We
+    // must not block the HTTP response on it — the runner loop's outer
+    // `refreshJobForBoundary` plus the post-park error handler will both
+    // notice the parked status and exit cleanly regardless.
+    if (q) {
+      void Promise.resolve()
+        .then(() => q.interrupt())
+        .catch(err => {
+          this.ctx.logger.debug(
+            { jobId, err },
+            'interrupt() during pause failed (agent likely between turns) — ignored',
+          )
+        })
+    }
 
     const reasonSuffix = reason ? `: ${reason}` : ''
     await this.ctx.stateBackend.appendLog(jobId, `[control] Job paused by developer${reasonSuffix}`)
@@ -562,7 +577,13 @@ export class Dispatcher {
       throw new Error(`Cannot send message to cancelled job ${jobId}`)
     }
 
-    const q = this.activeQueries.get(jobId)
+    // If the job has been parked (paused or awaiting external input) the
+    // live SDK query is on its way out and any streamInput()/interrupt()
+    // call against it will race the abort and throw "query may have just
+    // finished". Skip the live-injection branch in that case and fall
+    // through to the parked-resume path, which builds a framed prompt
+    // and re-fires the runner.
+    const q = isParkingStatus(job.status) ? undefined : this.activeQueries.get(jobId)
 
     if (q) {
       const framedText =
@@ -640,9 +661,12 @@ export class Dispatcher {
       )
     }
 
-    if (this.activeJobs.has(jobId)) {
-      throw new Error('Job is transitioning — try again in a moment')
-    }
+    // We intentionally do NOT throw if `activeJobs.has(jobId)` here. After
+    // a pause the dispatcher persists the parked status immediately but
+    // the prior runner promise can take a beat to drain its final SDK
+    // result. `fireAndForget` already handles this race via the
+    // `deferredDispatch` set: if the slot is busy, the re-dispatch is
+    // queued and the finally block re-fires once the slot frees.
 
     const currentPhaseArtifacts = (job.artifacts ?? []).filter(a => a.phase === job.phase)
     const pendingPrompt = escalated
@@ -996,7 +1020,15 @@ export class Dispatcher {
 
   private fireAndForget(jobId: string): void {
     if (this.activeJobs.has(jobId)) {
-      this.ctx.logger.warn({ jobId }, 'Runner already active for this job — skipping')
+      // The previous runner promise hasn't settled yet (typical right
+      // after a pause / interrupt while the SDK is draining its final
+      // result). Mark this jobId for re-dispatch — the finally block
+      // below will pick it up once the current run releases the slot.
+      this.deferredDispatch.add(jobId)
+      this.ctx.logger.debug(
+        { jobId },
+        'Runner already active — deferring re-dispatch until current run drains',
+      )
       return
     }
 
@@ -1056,6 +1088,14 @@ export class Dispatcher {
         const queued = this.eventQueue.get(jobId)
         if (!queued || queued.length === 0) {
           this.eventQueue.delete(jobId)
+          // No queued webhook events — but a developer message may have
+          // arrived while we were draining and asked us to re-dispatch.
+          if (this.deferredDispatch.delete(jobId)) {
+            const job = await this.ctx.stateBackend.getJob(jobId)
+            if (job && isResumableStatus(job.status)) {
+              this.fireAndForget(jobId)
+            }
+          }
           return
         }
 
