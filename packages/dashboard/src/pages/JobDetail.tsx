@@ -750,6 +750,8 @@ export default function JobDetail() {
   const [clearSession, setClearSession] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
+  const [pausing, setPausing] = useState(false)
+  const [pauseError, setPauseError] = useState<string | null>(null)
   const [resuming, setResuming] = useState(false)
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [messageText, setMessageText] = useState('')
@@ -864,6 +866,20 @@ export default function JobDetail() {
       setCancelError(cancelIssue instanceof Error ? cancelIssue.message : 'Cancel failed')
     } finally {
       setCancelling(false)
+    }
+  }
+
+  async function handlePause() {
+    if (!jobId) return
+    setPausing(true)
+    setPauseError(null)
+    try {
+      await requestJson(`/jobs/${jobId}/pause`, jsonRequest({}, { method: 'POST' }))
+      await refetch()
+    } catch (pauseIssue) {
+      setPauseError(pauseIssue instanceof Error ? pauseIssue.message : 'Pause failed')
+    } finally {
+      setPausing(false)
     }
   }
 
@@ -998,6 +1014,9 @@ export default function JobDetail() {
         cancelling={cancelling}
         cancelError={cancelError}
         onCancel={handleCancel}
+        pausing={pausing}
+        pauseError={pauseError}
+        onPause={handlePause}
         resuming={resuming}
         resumeError={resumeError}
         resumePhase={resumePhase}

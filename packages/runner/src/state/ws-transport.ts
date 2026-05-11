@@ -371,6 +371,19 @@ export class WebSocketTransport implements EventTransport {
         }
         return
 
+      case 'event:pause':
+        if (this.eventHandler) {
+          this.eventHandler({
+            source: 'cloud',
+            eventKey: 'job:pause',
+            payload: { jobId: msg.jobId, reason: msg.reason },
+            receivedAt: new Date().toISOString(),
+          }).catch(err => {
+            this.config.logger.error({ err }, 'Error handling pause event')
+          })
+        }
+        return
+
       case 'event:message':
         if (this.eventHandler) {
           this.eventHandler({

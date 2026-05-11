@@ -27,6 +27,18 @@ export const STATUS_AWAITING_DEVELOPER_INPUT    = 'awaiting-developer-input'
 export const STATUS_AWAITING_CHILDREN           = 'awaiting-children'
 export const STATUS_CODING                      = 'coding'
 
+/**
+ * Marker `awaitingEvent` used when a developer pauses the job from the
+ * dashboard (Pause button). Differentiates a developer-initiated park
+ * from an agent-initiated one (which uses `developer-input: <reason>`
+ * via the `await_event` tool). Both share the same lifecycle status —
+ * `awaiting-developer-input` — so all the existing send-message-to-resume
+ * machinery works unchanged. The dashboard reads `awaitingEvent` to
+ * render a "Paused" badge instead of "Awaiting input" when this marker
+ * is present.
+ */
+export const PAUSED_AWAITING_EVENT = 'developer-input: paused by developer'
+
 // ── PR tracking ───────────────────────────────────────────────────────────────
 
 export interface PrMapping {
@@ -499,6 +511,25 @@ export function cancelledJobPatch(): Partial<Job> {
   return {
     status: STATUS_CANCELLED,
     awaitingEvent: undefined,
+    awaitingPrId: undefined,
+    awaitingNextPhase: undefined,
+    approvedAdvanceFromPhase: undefined,
+    pendingPrompt: undefined,
+    escalationMessage: undefined,
+  }
+}
+
+/**
+ * Canonical state mutation applied when a developer pauses a running job
+ * from the dashboard. Parks the job in `awaiting-developer-input` with a
+ * marker `awaitingEvent` so the existing send-message-to-resume path
+ * works unchanged. The dashboard reads the marker to render a "Paused"
+ * label rather than "Awaiting input".
+ */
+export function pausedJobPatch(): Partial<Job> {
+  return {
+    status: STATUS_AWAITING_DEVELOPER_INPUT,
+    awaitingEvent: PAUSED_AWAITING_EVENT,
     awaitingPrId: undefined,
     awaitingNextPhase: undefined,
     approvedAdvanceFromPhase: undefined,

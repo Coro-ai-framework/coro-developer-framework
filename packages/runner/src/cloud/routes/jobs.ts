@@ -205,6 +205,49 @@ export function jobRoutes(db: CloudDb, config: CloudConfig, gateway?: WsGateway)
     res.json({ cancelled: true, jobId, status: STATUS_CANCELLED })
   })
 
+  // ── Pause job on runner ──────────────────────────────────────────────────
+  //
+  // Pause MUST go through the connected runner (not just a state write)
+  // because the runner needs to call `Query.interrupt()` on the live
+  // SDK session to halt the current agent turn at its next safe boundary.
+  // A pure state-write would leave the agent running until phase end.
+
+  router.post('/:jobId/pause', auth, member, async (req: Request, res: Response) => {
+    const teamId = p(req, 'teamId')
+    const jobId = p(req, 'jobId')
+    const backend = backendFor(db, teamId)
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+
+    const job = await backend.getJob(jobId)
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' })
+      return
+    }
+
+    if (isStoppedStatus(job.status)) {
+      res.status(400).json({ error: `Job ${jobId} is ${job.status} and cannot be paused` })
+      return
+    }
+
+    if (!gateway) {
+      res.status(503).json({ error: 'WebSocket gateway not available' })
+      return
+    }
+
+    const result = gateway.sendToJobOrTeam(teamId, jobId, {
+      type: 'event:pause',
+      jobId,
+      ...(reason ? { reason } : {}),
+    })
+
+    if (!result.delivered) {
+      res.status(503).json({ error: 'No runner connected for this team — pause queued' })
+      return
+    }
+
+    res.json({ paused: true, jobId, route: result.route })
+  })
+
   // ── Send developer message to a running job ───────────────────────────────
 
   router.post('/:jobId/message', auth, member, async (req: Request, res: Response) => {

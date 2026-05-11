@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Ban, ChevronDown, Loader2, RefreshCcw, Play } from 'lucide-react'
+import { Ban, ChevronDown, Loader2, Pause, RefreshCcw, Play } from 'lucide-react'
 import ErrorState from './common/error-state'
 import { Button } from './ui/button'
 import { Select } from './ui/select'
@@ -12,7 +12,7 @@ import {
 import { cn } from '../lib/utils'
 import { jsonRequest, requestJson } from '../lib/http'
 import { RUN_NOUN } from '../lib/run-labels'
-import { isCancellableStatus, isResumableStatus } from '../lib/status'
+import { isCancellableStatus, isPausableStatus, isResumableStatus } from '../lib/status'
 import type { Job, WorkflowPhase } from '../types'
 
 export interface JobControlBarProps {
@@ -23,6 +23,9 @@ export interface JobControlBarProps {
   cancelling: boolean
   cancelError: string | null
   onCancel: () => Promise<void>
+  pausing: boolean
+  pauseError: string | null
+  onPause: () => Promise<void>
   resuming: boolean
   resumeError: string | null
   resumePhase: string
@@ -49,6 +52,9 @@ export default function JobControlBar({
   cancelling,
   cancelError,
   onCancel,
+  pausing,
+  pauseError,
+  onPause,
   resuming,
   resumeError,
   resumePhase,
@@ -61,6 +67,7 @@ export default function JobControlBar({
 }: JobControlBarProps) {
   const canResume = isResumableStatus(job.status)
   const canCancel = isCancellableStatus(job.status)
+  const canPause = isPausableStatus(job.status, job.awaitingEvent)
   const interactiveValue = interactiveOverride ?? job.interactive
   const [togglePending, setTogglePending] = useState(false)
   const [toggleError, setToggleError] = useState<string | null>(null)
@@ -115,6 +122,17 @@ export default function JobControlBar({
           {cancelling ? 'Cancelling…' : 'Cancel'}
         </Button>
 
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => void onPause()}
+          disabled={!canPause || pausing || cancelling || resuming}
+          title={canPause ? 'Park the run at the next safe boundary so you can think and steer' : undefined}
+        >
+          {pausing ? <Loader2 className="animate-spin" /> : <Pause />}
+          {pausing ? 'Pausing…' : 'Pause'}
+        </Button>
+
         <ResumeControl
           job={job}
           workflowPhases={workflowPhases}
@@ -149,9 +167,10 @@ export default function JobControlBar({
         </div>
       </div>
 
-      {(cancelError || resumeError || toggleError) ? (
+      {(cancelError || pauseError || resumeError || toggleError) ? (
         <div className="space-y-2">
           {cancelError ? <ErrorState title="Cancel failed" message={cancelError} /> : null}
+          {pauseError ? <ErrorState title="Pause failed" message={pauseError} /> : null}
           {resumeError ? <ErrorState title="Resume failed" message={resumeError} /> : null}
           {toggleError ? <ErrorState title="Interactive toggle failed" message={toggleError} /> : null}
         </div>

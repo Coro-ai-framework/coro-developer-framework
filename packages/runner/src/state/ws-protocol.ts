@@ -286,6 +286,12 @@ export interface WsEventCancel {
   reason?: string
 }
 
+export interface WsEventPause {
+  type: 'event:pause'
+  jobId: string
+  reason?: string
+}
+
 export interface WsEventMessage {
   type: 'event:message'
   jobId: string
@@ -314,6 +320,7 @@ export type CloudMessage =
   | WsEventPluginWebhook
   | WsEventResume
   | WsEventCancel
+  | WsEventPause
   | WsEventMessage
   | WsEventDispatch
   | WsProposalApply

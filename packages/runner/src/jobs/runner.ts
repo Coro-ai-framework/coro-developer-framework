@@ -1261,24 +1261,37 @@ async function refreshJobForBoundary(
   boundary: string,
 ): Promise<{ job: Job; shouldStop: boolean }> {
   const fresh = await stateBackend.getJob(job.id)
-  if (!fresh || !isTerminalStatus(fresh.status)) {
-    return {
-      job,
-      shouldStop: false,
+  if (!fresh) {
+    return { job, shouldStop: false }
+  }
+
+  // Stop on terminal status (already handled before the parking-status
+  // expansion below). Terminal == complete | cancelled.
+  if (isTerminalStatus(fresh.status)) {
+    if (fresh.status === STATUS_CANCELLED && job.status !== STATUS_CANCELLED) {
+      logger.info(
+        { jobId: fresh.id, phase: fresh.phase, boundary },
+        'Job cancelled externally — stopping runner at safe boundary',
+      )
     }
+    return { job: fresh, shouldStop: true }
   }
 
-  if (fresh.status === STATUS_CANCELLED && job.status !== STATUS_CANCELLED) {
+  // ALSO stop when the persisted status flipped to a parking status
+  // *externally* (e.g. dispatcher.pauseJob set awaiting-developer-input).
+  // The runner-internal park path sets the same status and then `break`s
+  // the loop itself, so detecting the divergence between previous
+  // in-memory `job.status` and the freshly-loaded `fresh.status` tells
+  // us the change came from outside the loop.
+  if (isParkingStatus(fresh.status) && fresh.status !== job.status) {
     logger.info(
-      { jobId: fresh.id, phase: fresh.phase, boundary },
-      'Job cancelled externally — stopping runner at safe boundary',
+      { jobId: fresh.id, phase: fresh.phase, boundary, awaitingEvent: fresh.awaitingEvent },
+      'Job parked externally — stopping runner at safe boundary',
     )
+    return { job: fresh, shouldStop: true }
   }
 
-  return {
-    job: fresh,
-    shouldStop: true,
-  }
+  return { job, shouldStop: false }
 }
 
 function resetSignals(s: PhaseSignals): void {

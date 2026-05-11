@@ -95,6 +95,29 @@ export function isCancellableStatus(status: string): boolean {
   return status !== 'complete' && status !== 'cancelled'
 }
 
+/** Marker `awaitingEvent` set by the runner when a developer pauses a job. */
+export const PAUSED_AWAITING_EVENT = 'developer-input: paused by developer'
+
+/**
+ * A job is "developer-paused" when the runner parked it via the Pause
+ * button (status `awaiting-developer-input` + the marker awaitingEvent).
+ * Distinct from agent-initiated `await_event('developer-input: …')` parks,
+ * which the dashboard renders as "Awaiting Input".
+ */
+export function isPausedStatus(status: string, awaitingEvent?: string | null): boolean {
+  return status === 'awaiting-developer-input' && awaitingEvent === PAUSED_AWAITING_EVENT
+}
+
+/**
+ * Pause is only meaningful while the job is actively running. Stopped
+ * jobs (terminal or failed/escalated) and parked jobs should not show
+ * the Pause button.
+ */
+export function isPausableStatus(status: string, awaitingEvent?: string | null): boolean {
+  if (isPausedStatus(status, awaitingEvent)) return false
+  return getStatusMeta(status).category === 'running'
+}
+
 /**
  * Map a legacy tone to its semantic equivalent. Lets components accept either
  * vocabulary while we migrate call sites.

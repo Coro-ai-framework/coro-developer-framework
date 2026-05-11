@@ -1316,6 +1316,19 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  app.post('/jobs/:jobId/pause', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+      const updated = await dispatcher.pauseJob(jobId, reason)
+      res.json({ paused: updated.id, status: updated.status, awaitingEvent: updated.awaitingEvent })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
+    }
+  })
+
   // ── Message injection ───────────────────────────────────────────────────
 
   app.post('/jobs/:jobId/message', async (req: Request, res: Response) => {

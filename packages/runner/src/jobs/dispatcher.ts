@@ -18,6 +18,8 @@ import {
   isResumableStatus,
   isStoppedStatus,
   isTerminalChildStatus,
+  pausedJobPatch,
+  PAUSED_AWAITING_EVENT,
 } from './types'
 import {
   jobStatusToChildStatus,
@@ -109,6 +111,82 @@ export class Dispatcher {
     }
 
     this.ctx.logger.info({ jobId, wasActive, reason }, 'Job cancelled')
+    return updated
+  }
+
+  // ── Pause ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Park a running job at the next safe boundary so the developer can
+   * think / steer / send messages. Uses the same lifecycle status as
+   * `awaiting-developer-input` so the existing send-message-to-resume
+   * pipeline (parked branch in `sendMessage`) works unchanged. The
+   * marker `awaitingEvent` differentiates a developer-initiated pause
+   * from an agent-initiated `await_event('developer-input: …')` park.
+   *
+   * Idempotent: pausing an already-paused job returns it unchanged.
+   * Rejects: stopped jobs (complete/cancelled/failed/escalated) and
+   * jobs already parked on something else (PR merge, plan approval,
+   * awaiting-children) — those wait states must not be clobbered.
+   */
+  async pauseJob(jobId: string, reason?: string): Promise<Job> {
+    const job = await this.requireJob(jobId)
+
+    // Already paused → no-op.
+    if (
+      job.status === STATUS_AWAITING_DEVELOPER_INPUT
+      && job.awaitingEvent === PAUSED_AWAITING_EVENT
+    ) {
+      return job
+    }
+
+    if (isStoppedStatus(job.status)) {
+      throw new Error(`Job ${jobId} is ${job.status} and cannot be paused`)
+    }
+
+    // Refuse to overwrite a real wait-state — those parks have semantics
+    // (PR merge, plan approval, awaiting children, agent-initiated input
+    // request) the developer should resolve via the normal channels.
+    if (isParkingStatus(job.status)) {
+      throw new Error(
+        `Job ${jobId} is already parked (${job.status}); pause is only valid on running jobs`,
+      )
+    }
+
+    const wasActive = this.activeJobs.has(jobId)
+    const q = this.activeQueries.get(jobId)
+
+    // Halt the live agent turn at its next safe boundary BEFORE we
+    // persist the parked status. The runner's outer loop will then see
+    // the parking-status flip on its next `refreshJobForBoundary` and
+    // exit cleanly without auto-advancing to the next phase.
+    if (q) {
+      try {
+        await q.interrupt()
+      } catch (err) {
+        this.ctx.logger.debug(
+          { jobId, err },
+          'interrupt() during pause failed (agent likely between turns) — continuing',
+        )
+      }
+    }
+
+    const updated = await this.ctx.stateBackend.updateJob(jobId, pausedJobPatch())
+
+    // Drop any pending webhook events; the developer is in control now
+    // and the events can be re-delivered (or made obsolete) on resume.
+    this.eventQueue.delete(jobId)
+
+    const reasonSuffix = reason ? `: ${reason}` : ''
+    await this.ctx.stateBackend.appendLog(jobId, `[control] Job paused by developer${reasonSuffix}`)
+    if (wasActive) {
+      await this.ctx.stateBackend.appendLog(
+        jobId,
+        '[control] Pause requested during an active run — the current agent turn will stop at the next safe boundary. Send a message to resume.',
+      )
+    }
+
+    this.ctx.logger.info({ jobId, wasActive, reason }, 'Job paused')
     return updated
   }
 
@@ -331,6 +409,15 @@ export class Dispatcher {
           await this.cancelJob(jobId, reason)
         } catch (err) {
           this.ctx.logger.warn({ err, jobId }, 'Cloud cancel failed — job state may have changed')
+        }
+        return
+      }
+      case 'job:pause': {
+        const reason = typeof payload['reason'] === 'string' ? payload['reason'] : undefined
+        try {
+          await this.pauseJob(jobId, reason)
+        } catch (err) {
+          this.ctx.logger.warn({ err, jobId }, 'Cloud pause failed — job state may have changed')
         }
         return
       }
