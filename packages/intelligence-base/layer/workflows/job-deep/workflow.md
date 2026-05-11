@@ -11,6 +11,7 @@ phases:
     agent: agents/spec-writer.md
     model: planning
     status: spec-writing
+    interactive_checkpoint: true
 
   - name: analysis
     agent: agents/analyzer.md
