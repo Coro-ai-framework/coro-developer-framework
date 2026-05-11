@@ -11,6 +11,8 @@
     "forceConsistentCasingInFileNames": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noImplicitReturns": true
+    "noImplicitReturns": true,
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "5.0"
   }
 }
