@@ -54,7 +54,7 @@ import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
-import { isRunningStatus, isTerminalStatus } from '../lib/status'
+import { isRunningStatus, isTerminalStatus, isWaitingStatus } from '../lib/status'
 
 type DetailTab = 'activity' | 'work' | 'diagnostics'
 
@@ -997,7 +997,16 @@ export default function JobDetail() {
     )
   }
 
-  const canSendLiveMessage = isRunningStatus(job.status) && connectionStatus !== 'disconnected'
+  // The composer accepts messages whenever the agent could plausibly
+  // act on them — while running, AND while parked on any waiting
+  // status (awaiting-pr-merge, awaiting-plan-approval,
+  // awaiting-developer-input, awaiting-children). The dispatcher
+  // routes parked-message sends through the resume path, so a
+  // developer can steer / cancel the wait / add context without
+  // having to wait for a webhook.
+  const canSendLiveMessage =
+    (isRunningStatus(job.status) && connectionStatus !== 'disconnected')
+    || isWaitingStatus(job.status)
   const canReplyToEscalation = job.status === 'escalated'
 
   return (

@@ -50,6 +50,13 @@ export interface PullRequest {
   created_on: string
   updated_on: string
   links: { html: { href: string } }
+  /**
+   * Bitbucket Cloud embeds reviewer/approval state directly on the PR
+   * object — there is NO `/pullrequests/{id}/participants` endpoint
+   * (returns 404 "no API hosted at this URL"). Approvals are derived
+   * by counting `participants[].approved === true`.
+   */
+  participants?: { approved: boolean; role?: string; user?: { display_name?: string } }[]
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -157,12 +164,11 @@ export class BitBucketClient {
   }
 
   async getPrStatus(repoSlug: string, prId: number): Promise<{ state: string; approvalCount: number }> {
+    // Bitbucket Cloud embeds participant/approval data on the PR
+    // resource itself; there is no `/participants` sub-resource (it
+    // 404s with "no API hosted at this URL"). One GET is enough.
     const pr = await this.getPr(repoSlug, prId)
-    const participants = await this.request<{ values: { approved: boolean }[] }>(
-      'GET',
-      `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}/participants`,
-    )
-    const approvalCount = participants.values.filter(p => p.approved).length
+    const approvalCount = (pr.participants ?? []).filter(p => p.approved).length
     return { state: pr.state, approvalCount }
   }
 

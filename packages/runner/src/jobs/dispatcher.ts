@@ -622,13 +622,21 @@ export class Dispatcher {
     }
 
     // No live query — check if the job is parked waiting for human follow-up.
-    const awaitingDeveloperInput = job.status === STATUS_AWAITING_DEVELOPER_INPUT
-    const escalated = job.status === STATUS_ESCALATED
+    //
+    // We accept a message on any parking status, not just
+    // `awaiting-developer-input`. A job parked on `awaiting-pr-merge`
+    // (PR not yet approved/merged), `awaiting-plan-approval`, or
+    // `awaiting-children` is still steerable: the developer might want
+    // to add context, retarget, abort the wait early, or escalate.
+    // Sending a message clears the wait and resumes the current phase
+    // with the developer's note framed as guidance.
+    const escalated = job.status === STATUS_ESCALATED || job.status === STATUS_FAILED
+    const parked = isParkingStatus(job.status) && !escalated
 
-    if (!awaitingDeveloperInput && !escalated) {
+    if (!parked && !escalated) {
       throw new Error(
         `Cannot send message to job with status "${job.status}" — ` +
-        `only running jobs, escalated jobs, and jobs awaiting developer input accept messages.`,
+        `only running, parked, escalated, or failed jobs accept messages.`,
       )
     }
 
@@ -647,13 +655,13 @@ export class Dispatcher {
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
-      approvedAdvanceFromPhase: awaitingDeveloperInput && job.awaitingNextPhase ? job.phase : undefined,
+      approvedAdvanceFromPhase: parked && job.awaitingNextPhase ? job.phase : undefined,
       pendingPrompt,
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
     this.ctx.logger.info(
-      { jobId, phase: job.phase, escalated },
+      { jobId, phase: job.phase, escalated, fromStatus: job.status },
       escalated ? 'Resuming escalated job with developer message' : 'Resuming parked job with developer message',
     )
 
