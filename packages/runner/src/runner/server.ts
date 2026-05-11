@@ -1871,13 +1871,20 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           res.json({ ok: false, message: 'Bitbucket requires a username for app-password auth.' })
           return
         }
+        // Trust the configured username — see clients/bitbucket.ts for
+        // the rationale (the `ATATT…` prefix is shared by Atlassian API
+        // tokens that need the email and Bitbucket-scoped tokens that
+        // need `x-bitbucket-api-token-auth`).
         const auth = Buffer.from(`${username}:${token}`).toString('base64')
         const r = await fetch('https://api.bitbucket.org/2.0/user', {
           headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
         })
         if (!r.ok) {
           const text = await r.text().catch(() => '')
-          res.json({ ok: false, message: `Bitbucket ${r.status}: ${text.slice(0, 200) || r.statusText}` })
+          const detail = text && text.trim().length > 0
+            ? text.slice(0, 200)
+            : `${r.statusText || 'Unauthorized'} (www-authenticate: ${r.headers.get('www-authenticate') ?? 'n/a'})`
+          res.json({ ok: false, message: `Bitbucket ${r.status}: ${detail}` })
           return
         }
         const data = (await r.json()) as { username?: string; display_name?: string }
