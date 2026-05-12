@@ -511,7 +511,7 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
 
       tool(
         'campaign_cancel_child',
-        'Cancel a running or pending campaign child. Marks the child failed; downstream children with this as dependsOn stay blocked unless campaign_skip_child is called instead.',
+        'Cancel/descope a campaign child. Allowed from any status except complete, skipped, or already cancelled — including failed and escalated children whose work has been abandoned (e.g. supplanted by a re-plan). Marks the child cancelled (terminal, treated as satisfied for dependency resolution — downstream proceeds and the parent does NOT halt). If the child has been dispatched and is still running, the underlying child Job is cancelled too.',
         { name: z.string(), reason: z.string().optional() },
         h.campaign_cancel_child,
       ),

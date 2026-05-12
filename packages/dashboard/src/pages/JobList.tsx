@@ -57,7 +57,7 @@ function getSubRunProgress(job: Job): SubRunProgress {
   return subRuns.reduce<SubRunProgress>(
     (acc, child) => {
       acc.total += 1
-      if (child.status === 'complete' || child.status === 'skipped') acc.done += 1
+      if (child.status === 'complete' || child.status === 'skipped' || child.status === 'cancelled') acc.done += 1
       if (child.status === 'ready' || child.status === 'dispatched') acc.active += 1
       if (child.status === 'failed' || child.status === 'escalated') acc.blocked += 1
       return acc

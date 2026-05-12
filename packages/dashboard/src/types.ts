@@ -82,6 +82,7 @@ export type CampaignChildStatus =
   | 'failed'
   | 'escalated'
   | 'skipped'
+  | 'cancelled'
 
 export interface TrackerRef {
   provider: 'jira' | 'github' | 'linear'

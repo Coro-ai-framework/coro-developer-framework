@@ -149,7 +149,8 @@ export type CampaignChildStatus =
   | 'complete'        // child Job reached complete
   | 'failed'          // child Job failed
   | 'escalated'       // child Job escalated to human
-  | 'skipped'         // human or evaluator skipped this child
+  | 'skipped'         // human or evaluator skipped this child (downstream proceeds)
+  | 'cancelled'       // descoped (e.g. supplanted by a re-plan); downstream proceeds, parent does not halt
 
 /**
  * Spec for a single child of a campaign. Authored by the campaign-planner
@@ -578,11 +579,12 @@ export function isTerminalChildStatus(status: CampaignChildStatus): boolean {
     status === 'complete' ||
     status === 'failed' ||
     status === 'escalated' ||
-    status === 'skipped'
+    status === 'skipped' ||
+    status === 'cancelled'
   )
 }
 
 /** Status of a child considered "satisfied" for dependency resolution. */
 export function isSatisfiedChildStatus(status: CampaignChildStatus): boolean {
-  return status === 'complete' || status === 'skipped'
+  return status === 'complete' || status === 'skipped' || status === 'cancelled'
 }

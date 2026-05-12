@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Layers3, RotateCcw, SkipForward, SquareSlash } from 'lucide-react'
+import { AlertTriangle, Layers3, RotateCcw, SkipForward, SquareSlash } from 'lucide-react'
 import type { CampaignChild, CampaignChildStatus, Job, TokenUsage } from '../types'
 import { Button } from './ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card'
@@ -20,9 +20,10 @@ const CHILD_TONE: Record<CampaignChildStatus, Tone> = {
   failed: 'danger',
   escalated: 'danger',
   skipped: 'neutral',
+  cancelled: 'neutral',
 }
 
-const TERMINAL_CHILD: CampaignChildStatus[] = ['complete', 'failed', 'escalated', 'skipped']
+const TERMINAL_CHILD: CampaignChildStatus[] = ['complete', 'failed', 'escalated', 'skipped', 'cancelled']
 
 function ChildStatusPill({ status }: { status: CampaignChildStatus }) {
   const tone = CHILD_TONE[status]
@@ -162,8 +163,14 @@ function ChildActions({ jobId, child, onMutated }: ChildActionsProps) {
 
   const isTerminal = TERMINAL_CHILD.includes(child.status)
   const canSkip = !isTerminal
-  const canRerun = isTerminal && child.status !== 'complete'
-  const canCancel = child.status === 'dispatched' || child.status === 'ready'
+  const canRerun = isTerminal && child.status !== 'complete' && child.status !== 'cancelled'
+  // Cancellation = descope. Allowed from any non-accepted status, including
+  // failed/escalated children whose work was abandoned. Disallowed only when
+  // already cancelled, complete, or skipped (those are accepted outcomes).
+  const canCancel =
+    child.status !== 'cancelled' &&
+    child.status !== 'complete' &&
+    child.status !== 'skipped'
 
   return (
     <div className="flex items-center gap-1.5">
@@ -230,6 +237,125 @@ function MetricCell({ label, value, detail }: { label: string; value: string; de
   )
 }
 
+// ── Halted banner ──────────────────────────────────────────────────────────
+//
+// Surfaced when a campaign is parked at `awaiting-developer-input` because
+// one or more children failed/escalated. Provides bulk shortcuts so the
+// developer doesn't have to click Skip / Cancel / Rerun on each row.
+// We restrict bulk actions to the failed/escalated subset so a stray click
+// can't disturb children that were progressing fine.
+
+function HaltedBanner({
+  job,
+  children,
+  onMutated,
+}: {
+  job: Job
+  children: CampaignChild[]
+  onMutated: () => void
+}) {
+  const [busy, setBusy] = useState<'skip' | 'cancel' | 'rerun' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const halted = useMemo(
+    () => children.filter(c => c.status === 'failed' || c.status === 'escalated'),
+    [children],
+  )
+
+  // Show only when the campaign is actually halted on a failure. We key off
+  // halted.length rather than the awaitingEvent string so a stale park
+  // marker doesn't render an empty banner.
+  if (job.status !== 'awaiting-developer-input' || halted.length === 0) return null
+
+  const reason = `bulk action from dashboard halt banner`
+
+  const bulk = async (action: 'skip' | 'cancel' | 'rerun') => {
+    setBusy(action)
+    setError(null)
+    // Sequential POSTs: each call re-runs the coordinator sweep, so order
+    // doesn't matter for correctness, but sequential keeps log lines and
+    // status badges updating in a predictable order.
+    const failures: string[] = []
+    for (const c of halted) {
+      try {
+        await requestJson(
+          `/jobs/${job.id}/children/${encodeURIComponent(c.name)}/${action}`,
+          jsonRequest({ reason }, { method: 'POST' }),
+        )
+      } catch (err) {
+        failures.push(`${c.name}: ${err instanceof Error ? err.message : 'failed'}`)
+      }
+    }
+    setBusy(null)
+    if (failures.length > 0) {
+      setError(`${failures.length} action(s) failed — ${failures.slice(0, 2).join('; ')}${failures.length > 2 ? '…' : ''}`)
+    }
+    onMutated()
+  }
+
+  const noun = halted.length === 1 ? SUB_RUN_NOUN.singularLower : SUB_RUN_NOUN.pluralLower
+  const haltedLabel = `${halted.length} failed ${noun}`
+
+  return (
+    <div className="rounded-xl border border-warning-500/40 bg-warning-500/10 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning-400" />
+          <div className="space-y-1">
+            <div className="text-sm font-medium text-fg">Campaign halted on failure</div>
+            <p className="text-[12px] leading-snug text-fg-muted">
+              {haltedLabel} — pick a resolution to apply to all of them, or use the
+              per-row buttons below for finer control. Children that succeeded are
+              never touched.
+            </p>
+            <p className="text-[11px] font-mono text-fg-subtle">
+              {halted.map(c => c.name).join(', ')}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            onClick={() => void bulk('rerun')}
+            disabled={busy !== null}
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            title={`Re-dispatch all ${haltedLabel}`}
+          >
+            <RotateCcw className="size-3.5" />
+            {busy === 'rerun' ? '…' : `Rerun all (${halted.length})`}
+          </Button>
+          <Button
+            onClick={() => void bulk('skip')}
+            disabled={busy !== null}
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            title={`Skip all ${haltedLabel} — unblocks dependents, treats work as not-needed`}
+          >
+            <SkipForward className="size-3.5" />
+            {busy === 'skip' ? '…' : `Skip all (${halted.length})`}
+          </Button>
+          <Button
+            onClick={() => void bulk('cancel')}
+            disabled={busy !== null}
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-[11px] text-danger-400 hover:bg-danger-500/10 hover:text-danger-400"
+            title={`Cancel all ${haltedLabel} — descope and let the campaign continue`}
+          >
+            <SquareSlash className="size-3.5" />
+            {busy === 'cancel' ? '…' : `Cancel all (${halted.length})`}
+          </Button>
+        </div>
+      </div>
+      {error ? (
+        <div className="mt-2 text-[11px] text-danger-400">{error}</div>
+      ) : null}
+    </div>
+  )
+}
+
 export default function CampaignView({ job, onMutated }: CampaignViewProps) {
   const children = job.campaignChildren ?? []
   const usage = aggregateUsage(children)
@@ -237,7 +363,7 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
   const counts = children.reduce<Record<CampaignChildStatus, number>>((acc, c) => {
     acc[c.status] = (acc[c.status] ?? 0) + 1
     return acc
-  }, { pending: 0, ready: 0, dispatched: 0, complete: 0, failed: 0, escalated: 0, skipped: 0 })
+  }, { pending: 0, ready: 0, dispatched: 0, complete: 0, failed: 0, escalated: 0, skipped: 0, cancelled: 0 })
 
   if (children.length === 0) {
     return (
@@ -303,6 +429,8 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
       </CardHeader>
 
       <CardContent className="space-y-5 pt-5">
+        <HaltedBanner job={job} children={children} onMutated={onMutated} />
+
         <div>
           <div className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.16em] text-fg-subtle">
             <Layers3 className="size-3.5" />

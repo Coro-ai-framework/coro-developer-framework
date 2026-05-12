@@ -36,12 +36,15 @@ import type { ToolContext, PhaseSignals } from './types'
 import {
   CAMPAIGN_WORKFLOW_PATH,
   STATUS_AWAITING_CHILDREN,
+  STATUS_CANCELLED,
   STATUS_COMPLETE,
   STATUS_ESCALATED,
   STATUS_FAILED,
+  cancelledJobPatch,
   isCampaignJob,
   isEpicAllowed,
   isSatisfiedChildStatus,
+  isStoppedStatus,
   isTerminalChildStatus,
   type CampaignChild,
   type CampaignChildStatus,
@@ -305,6 +308,7 @@ export async function campaignStatus(ctx: ToolContext): Promise<CampaignStatusSu
     failed: 0,
     escalated: 0,
     skipped: 0,
+    cancelled: 0,
   }
   for (const c of children) byStatus[c.status]++
 
@@ -383,14 +387,39 @@ export async function campaignCancelChild(
   args: CampaignChildOpArgs,
   ctx: ToolContext,
 ): Promise<{ ok: true; name: string; status: CampaignChildStatus }> {
-  return mutateChild(ctx, args.name, current => {
-    if (isTerminalChildStatus(current.status)) {
-      throw new Error(
-        `Cannot cancel "${args.name}": already ${current.status}. ` +
-          `Use campaign_rerun_child if you want to re-execute.`,
+  // Cascade-cancel the underlying child Job (if any) before mutating the
+  // child record. Doing it first means an in-flight job can't keep emitting
+  // status updates that would re-flip the child after we mark it cancelled.
+  // We deliberately ignore failures here — if the cascade write fails the
+  // mutateChild call below still escalates a clear error.
+  const job = (await ctx.stateBackend.getJob(ctx.job.id)) as Job
+  const child = (job.campaignChildren ?? []).find(c => c.name === args.name)
+  if (child?.jobId) {
+    const childJob = await ctx.stateBackend.getJob(child.jobId)
+    if (childJob && !isStoppedStatus(childJob.status)) {
+      await ctx.stateBackend.updateJob(child.jobId, cancelledJobPatch())
+      await ctx.stateBackend.appendLog(
+        child.jobId,
+        `[cancelled] Cancelled by parent campaign ${ctx.job.id}` +
+          (args.reason ? ` — ${args.reason}` : ''),
       )
     }
-    return { ...current, status: 'failed' as const, completedAt: new Date().toISOString() }
+  }
+
+  return mutateChild(ctx, args.name, current => {
+    if (current.status === 'cancelled') {
+      throw new Error(`Cannot cancel "${args.name}": already cancelled.`)
+    }
+    if (current.status === 'complete' || current.status === 'skipped') {
+      throw new Error(
+        `Cannot cancel "${args.name}": already ${current.status} (work was already accepted as done). ` +
+          `Cancellation is for descoping work that has not been accepted.`,
+      )
+    }
+    // failed / escalated / pending / ready / dispatched all transition to
+    // cancelled. The cascade above handles in-flight Job termination; here
+    // we just mutate the parent's child record.
+    return { ...current, status: 'cancelled' as const, completedAt: new Date().toISOString() }
   }, `[campaign] Cancelled child "${args.name}"${args.reason ? ` — ${args.reason}` : ''}`)
 }
 
@@ -402,10 +431,17 @@ async function mutateChild(
   apply: (current: CampaignChild) => CampaignChild,
   logLine: string,
 ): Promise<{ ok: true; name: string; status: CampaignChildStatus }> {
-  if (!isCampaignJob(ctx.job)) {
+  // Load the live job first. We deliberately do NOT validate against
+  // `ctx.job`: HTTP/CLI live-control paths build a stub ToolContext with
+  // only `id` populated, so `isCampaignJob(ctx.job)` would spuriously
+  // reject every mutation. Validate against the persisted job instead.
+  const job = (await ctx.stateBackend.getJob(ctx.job.id)) as Job | null
+  if (!job) {
+    throw new Error(`Mutation refused: campaign job ${ctx.job.id} not found.`)
+  }
+  if (!isCampaignJob(job)) {
     throw new Error('Mutation refused: this job is not a campaign.')
   }
-  const job = (await ctx.stateBackend.getJob(ctx.job.id)) as Job
   const children = job.campaignChildren ?? []
   const idx = children.findIndex(c => c.name === name)
   if (idx === -1) {
@@ -503,6 +539,7 @@ export function jobStatusToChildStatus(jobStatus: string): CampaignChildStatus |
   if (jobStatus === STATUS_COMPLETE) return 'complete'
   if (jobStatus === STATUS_FAILED) return 'failed'
   if (jobStatus === STATUS_ESCALATED) return 'escalated'
+  if (jobStatus === STATUS_CANCELLED) return 'cancelled'
   return null
 }
 
