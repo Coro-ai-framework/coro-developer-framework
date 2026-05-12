@@ -6,6 +6,7 @@ import { Button } from './ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card'
 import Progress from './ui/progress'
 import { Badge } from './ui/badge'
+import { Switch } from './ui/switch'
 import { requestJson, jsonRequest } from '../lib/http'
 import { formatCompactNumber, formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { cn } from '../lib/utils'
@@ -365,6 +366,14 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
     return acc
   }, { pending: 0, ready: 0, dispatched: 0, complete: 0, failed: 0, escalated: 0, skipped: 0, cancelled: 0 })
 
+  // Cancelled children are descoped work — they're noise once you're done
+  // triaging. Hide them by default; counts/metrics still reflect reality.
+  const [hideCancelled, setHideCancelled] = useState(true)
+  const visibleChildren = useMemo(
+    () => (hideCancelled ? children.filter(c => c.status !== 'cancelled') : children),
+    [children, hideCancelled],
+  )
+
   if (children.length === 0) {
     return (
       <Card>
@@ -436,8 +445,20 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
             <Layers3 className="size-3.5" />
             Dependency graph
           </div>
-          <DependencyGraph children={children} />
+          <DependencyGraph children={visibleChildren} />
         </div>
+
+        {counts.cancelled > 0 ? (
+          <div className="flex items-center justify-end gap-2 text-[11px] text-fg-muted">
+            <span>Hide cancelled ({counts.cancelled})</span>
+            <Switch
+              size="sm"
+              checked={hideCancelled}
+              onCheckedChange={setHideCancelled}
+              ariaLabel="Hide cancelled children"
+            />
+          </div>
+        ) : null}
 
         <div className="overflow-x-auto rounded-2xl border border-line">
           <table className="w-full text-xs">
@@ -454,7 +475,7 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {children.map(c => {
+              {visibleChildren.map(c => {
                 const phase = c.summary?.phase ?? '—'
                 const prs = c.summary?.prMappings.length ?? 0
                 const tokenTotal = (c.summary?.tokenUsage?.inputTokens ?? 0) + (c.summary?.tokenUsage?.outputTokens ?? 0)
