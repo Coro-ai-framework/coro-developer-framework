@@ -18,6 +18,7 @@ import {
   isResumableStatus,
   isStoppedStatus,
   isTerminalChildStatus,
+  isTerminalStatus,
   pausedJobPatch,
   PAUSED_AWAITING_EVENT,
 } from './types'
@@ -617,44 +618,76 @@ export class Dispatcher {
       //   the same mechanism Claude Code itself uses for the ESC-key
       //   "stop and steer" UX.
       //
-      // Order matters: interrupt FIRST so the SDK is back at a read
-      // point, THEN streamInput so the queued message gets picked up
-      // immediately. We tolerate `interrupt` failing (idle agent — no
-      // generation to cancel) and still proceed with streamInput.
+      // We must NOT block the HTTP response on either call:
+      //   - `interrupt()` waits for an ACK from the Claude Code
+      //     subprocess and can take seconds (or longer) when the agent
+      //     is mid-tool-use.
+      //   - `streamInput()` writes to the SDK's input pipe; in some
+      //     mid-tool-use windows it can block until the pipe drains.
+      // If either hangs, the dashboard sees the message stuck in
+      // "Pending" for minutes. So we fire the interrupt as
+      // fire-and-forget, then bound `streamInput` with a short timeout
+      // and fall through to the persisted-queue branch on miss.
+      void Promise.resolve()
+        .then(() => q.interrupt())
+        .catch(err => {
+          this.ctx.logger.debug(
+            { jobId, err },
+            'interrupt() before streamInput failed (agent likely idle) — continuing',
+          )
+        })
+
+      const STREAM_INPUT_TIMEOUT_MS = 3000
+      let streamed = false
       try {
-        await q.interrupt()
+        await Promise.race([
+          q.streamInput((async function* () { yield userMsg })()).then(() => { streamed = true }),
+          new Promise<void>((resolve) => setTimeout(resolve, STREAM_INPUT_TIMEOUT_MS)),
+        ])
       } catch (err) {
-        this.ctx.logger.debug(
-          { jobId, err },
-          'interrupt() before streamInput failed (agent likely idle) — continuing',
-        )
+        this.ctx.logger.warn({ jobId, err }, 'streamInput failed — falling back to persisted queue')
       }
 
-      try {
-        await q.streamInput((async function* () { yield userMsg })())
-      } catch (err) {
-        this.ctx.logger.warn({ jobId, err }, 'streamInput failed — query may have ended')
-        throw new Error('Failed to inject message — the agent query may have just finished')
+      if (streamed) {
+        await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
+        this.ctx.logger.info({ jobId }, 'Developer message injected into running agent (interrupt + streamInput)')
+        return
       }
 
-      await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
-      this.ctx.logger.info({ jobId }, 'Developer message injected into running agent (interrupt + streamInput)')
-      return
+      // streamInput did not complete in time (or threw). Persist the
+      // message so the runner picks it up at the next phase boundary
+      // instead of losing it. We fall through into the queueing branch
+      // below, treating the (still-running) job the same as a
+      // between-phase job.
+      this.ctx.logger.info(
+        { jobId, timeoutMs: STREAM_INPUT_TIMEOUT_MS },
+        'Live message injection timed out — queueing for next phase boundary',
+      )
     }
 
-    // No live query — check if the job is parked waiting for human follow-up.
+    // No live query (or live injection just timed out) — accept the
+    // message anyway. There are three sub-cases:
     //
-    // We accept a message on any parking status, not just
-    // `awaiting-developer-input`. A job parked on `awaiting-pr-merge`
-    // (PR not yet approved/merged), `awaiting-plan-approval`, or
-    // `awaiting-children` is still steerable: the developer might want
-    // to add context, retarget, abort the wait early, or escalate.
-    // Sending a message clears the wait and resumes the current phase
-    // with the developer's note framed as guidance.
+    //   (a) Job is parked / escalated / failed → resume the runner with
+    //       the developer note framed as guidance.
+    //   (b) Job is between phases (status=coding but no `q` yet because
+    //       the previous phase's query just ended and the next hasn't
+    //       registered) → persist the message into `pendingPrompt`. The
+    //       runner reads `pendingPrompt` at the top of every phase and
+    //       uses it instead of the kickoff text. No fireAndForget here;
+    //       the runner is already running.
+    //   (c) Live-injection branch above timed out → same as (b).
+    //
+    // The previous code threw in (b)/(c), which surfaced as
+    // "Cannot send message to job with status coding" whenever the
+    // developer sent a quick second message after the first resumed a
+    // parked job. Persisting instead means the dashboard's POST always
+    // returns 200 and the message is never silently lost.
     const escalated = job.status === STATUS_ESCALATED || job.status === STATUS_FAILED
     const parked = isParkingStatus(job.status) && !escalated
+    const betweenPhases = !parked && !escalated && !isTerminalStatus(job.status)
 
-    if (!parked && !escalated) {
+    if (!parked && !escalated && !betweenPhases) {
       throw new Error(
         `Cannot send message to job with status "${job.status}" — ` +
         `only running, parked, escalated, or failed jobs accept messages.`,
@@ -669,9 +702,26 @@ export class Dispatcher {
     // queued and the finally block re-fires once the slot frees.
 
     const currentPhaseArtifacts = (job.artifacts ?? []).filter(a => a.phase === job.phase)
-    const pendingPrompt = escalated
+    const framedPrompt = escalated
       ? buildEscalationResponseMessage(message, job.phase, job.escalationMessage, currentPhaseArtifacts)
       : buildDeveloperInputMessage(message, job.phase, job.awaitingEvent, currentPhaseArtifacts)
+
+    if (betweenPhases) {
+      // Concatenate against any prior pendingPrompt so back-to-back
+      // messages while the runner is between phases all reach the agent
+      // at the next phase top.
+      const merged = job.pendingPrompt
+        ? `${job.pendingPrompt}\n\n---\n\n${framedPrompt}`
+        : framedPrompt
+
+      await this.ctx.stateBackend.updateJob(jobId, { pendingPrompt: merged })
+      await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
+      this.ctx.logger.info(
+        { jobId, phase: job.phase, fromStatus: job.status },
+        'Queued developer message for next phase boundary (no live query / between phases)',
+      )
+      return
+    }
 
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
@@ -680,7 +730,7 @@ export class Dispatcher {
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
       approvedAdvanceFromPhase: parked && job.awaitingNextPhase ? job.phase : undefined,
-      pendingPrompt,
+      pendingPrompt: framedPrompt,
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)

@@ -25,7 +25,7 @@ The runner **auto-advances** to the next phase (`evaluation`) when you finish. Y
 | Situation | What to do |
 |-----------|------------|
 | Human reviewer posted a blocking comment | Call `mcp__coro__goto_phase("coding")` so the Coder addresses it |
-| Waiting for a **human** to approve | Call `mcp__coro__await_event` with `eventName: "pr:approved"` and the PR's `ExternalRef` |
+| Waiting for a **human** to approve | Call `mcp__coro__await_event` with `eventName: "pr:approved"` and the numeric `prId` from the PR's `ExternalRef.externalId` |
 | PR is approved, all checks green | Call `mcp__coro__scm_merge_pr`, record the merge, then end your turn |
 | Something is broken you cannot resolve | Call `mcp__coro__escalate` with reason |
 
@@ -81,7 +81,7 @@ For each new human comment:
 If there are no blocking comments and not enough approvals yet, call:
 
 ```
-await_event({ eventName: "pr:approved", externalRef: <pr-external-ref> })
+await_event({ eventName: "pr:approved", prId: <numeric pr id from ExternalRef.externalId> })
 ```
 
 End your turn — the webhook will resume you when a human approves.

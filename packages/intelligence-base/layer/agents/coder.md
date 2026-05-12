@@ -134,6 +134,8 @@ git push origin <work-item-branch-name>
 
 Call `mcp__coro__scm_create_pr` — the runner routes it to whichever SCM plugin is active. The tool returns an `ExternalRef` of kind `pull_request` (always carrying `repoKey`); save it for step 11. Opening the PR via this tool also registers it with the job system so webhooks route events back to this job.
 
+**`scm_create_pr` is idempotent.** Call it unconditionally — even on a re-push or a fix-loop where you suspect a PR already exists for this branch. The plugin looks up any open PR on the same source branch and returns its `ExternalRef` instead of erroring. **Do not** `curl` the SCM REST API to dedupe first: Bitbucket has three token/username combinations (App Password + email, repo access token + `x-token-auth`, Bitbucket-scoped API token + `x-bitbucket-api-token-auth`) and the token prefix cannot disambiguate them — guessing wrong burns the rest of your turn on 401s. The plugin is the only thing that knows which combo is configured.
+
 Include in the PR description:
 - Which work item from the plan this implements
 - What was changed and why

@@ -260,6 +260,32 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   // ── Pull requests ──────────────────────────────────────────────────────
 
   async createPr(args: ScmCreatePrArgs): Promise<ExternalRef> {
+    // Idempotent: Bitbucket rejects a second POST for the same source
+    // branch with `400 There is already an open pull request for this
+    // source branch`. The agent's natural reflex is to dedupe with raw
+    // `curl` — which fails because BB has three token/username combos
+    // and the agent guesses wrong. Dedupe inside the plugin so the
+    // agent can call `scm_create_pr` unconditionally.
+    try {
+      const openPrs = await this.coder.listPrs(args.repoSlug, 'OPEN')
+      const existing = openPrs.find(
+        p => p.source?.branch?.name === args.sourceBranch,
+      )
+      if (existing) {
+        return {
+          kind: 'pull_request',
+          pluginId: this.manifest.id,
+          repoKey: args.repoSlug,
+          externalId: externalIdString(existing.id),
+          url: existing.links.html.href,
+        }
+      }
+    } catch {
+      // Lookup failed — fall through to POST. The POST itself will
+      // surface the real auth/permission error in a single place
+      // instead of two.
+    }
+
     const opts: CreatePrOptions = {
       repoSlug: args.repoSlug,
       title: args.title,
