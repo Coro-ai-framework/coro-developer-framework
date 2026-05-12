@@ -305,6 +305,17 @@ export interface ScmCreatePrArgs {
   reviewers?: ReadonlyArray<string>
 }
 
+export interface ScmAddReviewersArgs {
+  repoSlug: string
+  prId: number | string
+  /**
+   * Provider-specific reviewer identifiers. Bitbucket accepts
+   * `{username}` or `{uuid}`; GitHub accepts login names. Display
+   * names ("Jane Doe") are rejected by every provider.
+   */
+  reviewers: ReadonlyArray<string>
+}
+
 export interface ScmPrComment {
   id: string
   body: string
@@ -370,6 +381,12 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   // without a usable upstream MCP (currently BitBucket) keep
   // implementing them and the `scm_*` proxy falls back to them.
   createPr?(args: ScmCreatePrArgs): Promise<ExternalRef>
+  /**
+   * Add reviewers to an already-open PR. The plugin merges with any
+   * existing reviewers (no replacement). Used by the merge gatekeeper
+   * when a developer asks to loop in another reviewer mid-flight.
+   */
+  addReviewers?(args: ScmAddReviewersArgs): Promise<void>
   getPrStatus?(ref: ExternalRef): Promise<ScmPrStatus>
   listPrComments?(ref: ExternalRef): Promise<ScmPrComment[]>
   postPrComment?(ref: ExternalRef, body: string): Promise<ScmPrComment>

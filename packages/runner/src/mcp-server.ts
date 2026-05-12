@@ -132,6 +132,18 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
       ),
 
       tool(
+        'scm_add_pr_reviewers',
+        'Add reviewers to an already-open pull request via the configured SCM plugin. Pass usernames or uuids — never display names. Reviewers are merged with the existing list, not replaced. If the active plugin does not support this op, falls back to a clear error so the agent can post a PR comment instead.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+          prId: z.union([z.number(), z.string()]),
+          reviewers: z.array(z.string()).min(1),
+        },
+        h.scm_add_pr_reviewers,
+      ),
+
+      tool(
         'scm_merge_pr',
         'Merge a pull request via the configured SCM plugin. Only call when approved and conversations are resolved.',
         {

@@ -118,6 +118,7 @@ ops below work the same regardless of the active SCM plugin:
 - `scm_get_pr_status` — Get state and approval count of a PR
 - `scm_list_pr_comments` — List comments on a PR
 - `scm_post_pr_comment` — Post a top-level comment on a PR
+- `scm_add_pr_reviewers` — Add reviewers (usernames or uuids, never display names) to an open PR; merges with the existing list
 - `scm_merge_pr` — Merge a PR (squash, only after approval + all comments resolved)
 
 Each tool accepts an optional `pluginId` to override the resolved default — use it when the job needs to talk to a non-default plugin (rare).

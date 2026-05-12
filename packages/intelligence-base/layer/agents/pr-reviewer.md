@@ -39,6 +39,7 @@ Generic Coro tools (provider-neutral, always available):
 | `scm_get_pr_status` | Check PR state, approval count, and CI status |
 | `scm_list_pr_comments` | Read all comments on the PR |
 | `scm_post_pr_comment` | Post a top-level comment on the PR |
+| `scm_add_pr_reviewers` | Add reviewers to the open PR (merges with the existing list; pass usernames or uuids — never display names) |
 | `scm_merge_pr` | Merge the PR after approval |
 | `goto_phase` | Send control back to coding when humans request changes |
 | `await_event` | Wait for human approval (NOT for coder fixes) |

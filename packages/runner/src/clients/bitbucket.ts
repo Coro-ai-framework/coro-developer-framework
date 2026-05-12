@@ -61,6 +61,34 @@ export interface PullRequest {
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
+/**
+ * Map a free-form reviewer identifier to the right Bitbucket Cloud
+ * reviewer-object field. Bitbucket rejects mixed/wrong fields with
+ * `400 Malformed reviewers list` — we have to pick the correct field
+ * per identifier shape:
+ *
+ *   - `{...}` UUID or bare hex UUID (8-4-4-4-12)         → `uuid`
+ *   - Modern account_id (`557058:...`)                   → `account_id`
+ *   - Legacy 24-hex Atlassian account_id                 → `account_id`
+ *   - Anything else (treated as nickname / username)     → `username`
+ *
+ * The `username` branch is the legacy field; some workspaces have
+ * disabled it. Callers should prefer uuid or account_id when they
+ * have it.
+ */
+export function bbReviewerEntry(value: string): { uuid: string } | { account_id: string } | { username: string } {
+  const v = value.trim()
+  // {uuid} braced form
+  if (/^\{[0-9a-f-]{32,}\}$/i.test(v)) return { uuid: v }
+  // bare hyphenated UUID -> brace it for Bitbucket
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) return { uuid: `{${v}}` }
+  // modern account_id ("557058:...") — colon is the marker
+  if (/^[0-9]+:[0-9a-f-]+$/i.test(v)) return { account_id: v }
+  // legacy 24-hex account_id
+  if (/^[0-9a-f]{24}$/i.test(v)) return { account_id: v }
+  return { username: v }
+}
+
 export class BitBucketClient {
   private readonly authHeader: string
   private readonly baseUrl: string
@@ -125,7 +153,7 @@ export class BitBucketClient {
     // not username — if reviewers cause a 400, fall back to creating without them.
     if (opts.reviewerUsernames && opts.reviewerUsernames.length > 0) {
       try {
-        const reviewers = opts.reviewerUsernames.map(u => ({ username: u }))
+        const reviewers = opts.reviewerUsernames.map(u => bbReviewerEntry(u))
         return await this.request('POST', `/repositories/${this.workspace}/${opts.repoSlug}/pullrequests`, {
           ...body,
           reviewers,
@@ -152,6 +180,24 @@ export class BitBucketClient {
 
   async approvePr(repoSlug: string, prId: number): Promise<void> {
     await this.request('POST', `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}/approve`)
+  }
+
+  /**
+   * Set the reviewer list on an open PR. Bitbucket Cloud's PUT
+   * /pullrequests/{id} replaces the reviewers array — pass the merged
+   * list (existing + additions) to avoid dropping reviewers added by
+   * the original author.
+   *
+   * Each entry can be a uuid (`{...}` or bare hex), an account_id
+   * (legacy 24-hex or modern `557058:...`), or a nickname. We map to
+   * the right field per Bitbucket's reviewer schema; nickname is the
+   * legacy `username` field and may be rejected by workspaces that
+   * disabled it.
+   */
+  async updatePrReviewers(repoSlug: string, prId: number, reviewers: ReadonlyArray<string>): Promise<void> {
+    await this.request('PUT', `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}`, {
+      reviewers: reviewers.map(r => bbReviewerEntry(r)),
+    })
   }
 
   async mergePr(repoSlug: string, prId: number, message?: string): Promise<PullRequest> {

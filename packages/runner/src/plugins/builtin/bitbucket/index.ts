@@ -324,6 +324,24 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     }
   }
 
+  async addReviewers(args: { repoSlug: string; prId: number | string; reviewers: ReadonlyArray<string> }): Promise<void> {
+    const prId = Number(args.prId)
+    if (!Number.isFinite(prId)) {
+      throw new Error(`addReviewers: prId must be numeric, got "${args.prId}"`)
+    }
+    // Bitbucket's PUT replaces the reviewer list \u2014 read the current
+    // PR first and merge so we don't drop the original author's
+    // reviewers. Dedupe by username.
+    const pr = await this.coder.getPr(args.repoSlug, prId)
+    const existing = new Set<string>(
+      ((pr as unknown as { reviewers?: { username?: string; uuid?: string }[] }).reviewers ?? [])
+        .map(r => r.username ?? r.uuid ?? '')
+        .filter(Boolean),
+    )
+    for (const u of args.reviewers) existing.add(u)
+    await this.coder.updatePrReviewers(args.repoSlug, prId, [...existing])
+  }
+
   async listPrComments(ref: ExternalRef): Promise<ScmPrComment[]> {
     const { repoSlug, prId } = this.parseRef(ref)
     const comments = await this.coder.getComments(repoSlug, prId)

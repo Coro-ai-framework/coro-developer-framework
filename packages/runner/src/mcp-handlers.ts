@@ -333,6 +333,39 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     return text(comment)
   }
 
+  const scm_add_pr_reviewers = async (args: {
+    pluginId?: string; repo: string; prId: number | string; reviewers: string[]
+  }) => {
+    const r = resolveScm(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!args.reviewers || args.reviewers.length === 0) {
+      return error('reviewers must be a non-empty array of usernames or uuids')
+    }
+    if (!r.scm.addReviewers) {
+      // MCP-mode plugin (e.g. github). Redirect to the upstream tool
+      // when the plugin manifest exposes a mapping; otherwise surface
+      // a clear "not supported" error so the agent stops looking.
+      const mapped = r.scm.manifest.mcpToolMap?.scm_add_pr_reviewers
+      if (mapped) {
+        return mcpRedirect(r.scm.manifest.id, 'scm_add_pr_reviewers', mapped, {
+          repo: args.repo,
+          pull_number: Number(args.prId),
+          reviewers: args.reviewers,
+        })
+      }
+      return error(
+        `SCM plugin "${r.scm.manifest.id}" does not support adding reviewers to an existing PR. ` +
+        'Post a PR comment tagging the reviewer instead.',
+      )
+    }
+    await r.scm.addReviewers({
+      repoSlug: args.repo,
+      prId: args.prId,
+      reviewers: args.reviewers,
+    })
+    return text({ added: args.reviewers.length })
+  }
+
   const scm_merge_pr = async (args: {
     pluginId?: string; repo: string; prId: number | string; message?: string; strategy?: 'merge' | 'squash' | 'rebase'
   }) => {
@@ -486,6 +519,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     scm_get_pr_status,
     scm_list_pr_comments,
     scm_post_pr_comment,
+    scm_add_pr_reviewers,
     scm_merge_pr,
     scm_get_clone_info,
     scm_clone_repo,
