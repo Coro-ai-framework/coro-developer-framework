@@ -58,7 +58,7 @@ const logger = pino({ level: 'silent' })
 const VALID_CONFIGS: Record<string, Record<string, unknown>> = {
   bitbucket: {
     workspace: 'acme',
-    coderUsername: 'coder',
+    coderUsername: 'coder@example.com',
     coderToken: 'tok',
   },
   github: {

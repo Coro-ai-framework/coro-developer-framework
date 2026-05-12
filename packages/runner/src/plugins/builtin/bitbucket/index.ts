@@ -58,13 +58,41 @@ import type {
 
 // ── Config schema ────────────────────────────────────────────────────────────
 
+// Token-type guidance shared between zod field hints, init() validation
+// errors, and the dashboard's auto-rendered config card. Keeping a
+// single string means the user sees the *exact* same instructions
+// regardless of where the misconfiguration is caught.
+const USERNAME_HELP =
+  'Use the Atlassian account email for App Passwords / Atlassian API tokens, ' +
+  '`x-token-auth` for legacy repository access tokens, or ' +
+  '`x-bitbucket-api-token-auth` for Bitbucket-scoped API tokens. ' +
+  'A display name (e.g. "Jane Doe") will 401 every request.'
+
 const bbConfigSchema = z.object({
-  workspace: z.string().min(1),
-  coderUsername: z.string().min(1),
-  coderToken: z.string().min(1),
-  reviewerUsername: z.string().optional(),
-  reviewerToken: z.string().optional(),
-  baseUrl: z.string().optional(),
+  workspace: z
+    .string()
+    .min(1)
+    .describe('Bitbucket workspace slug (the part after `bitbucket.org/`).'),
+  coderUsername: z
+    .string()
+    .min(1)
+    .describe(`Account that opens PRs. ${USERNAME_HELP}`),
+  coderToken: z
+    .string()
+    .min(1)
+    .describe('App Password, repository access token, or API token paired with the username above.'),
+  reviewerUsername: z
+    .string()
+    .optional()
+    .describe(`Reviewer account (defaults to coder). ${USERNAME_HELP}`),
+  reviewerToken: z
+    .string()
+    .optional()
+    .describe('Reviewer credential (defaults to coder token).'),
+  baseUrl: z
+    .string()
+    .optional()
+    .describe('Override the Bitbucket Cloud REST base URL (Server/DC installs).'),
 })
 
 export type BitBucketPluginConfig = z.infer<typeof bbConfigSchema>
@@ -116,6 +144,19 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
 
   async init(rawConfig: BitBucketPluginConfig | Record<string, unknown>, deps: PluginDeps): Promise<void> {
     const cfg = bbConfigSchema.parse(rawConfig)
+
+    // Hard-fail at startup on a malformed coderUsername. The most
+    // common foot-gun is pasting an Atlassian display name ("Jane
+    // Doe") into the username field — Basic auth then 401s every
+    // request, the agent reads it as a missing scope, and we waste a
+    // job. We catch it here so the user gets a single clear error
+    // before any tool runs.
+    if (!looksLikeBitbucketUsername(cfg.coderUsername)) {
+      throw new Error(
+        `Invalid Bitbucket coderUsername "${cfg.coderUsername}". ${USERNAME_HELP}`,
+      )
+    }
+
     this.workspace = cfg.workspace
     this.coderUsername = cfg.coderUsername
     this.coderToken = cfg.coderToken
@@ -126,22 +167,15 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
       cfg.baseUrl,
     )
 
-    // Reviewer username sanity check.
-    //
-    // Bitbucket Basic auth requires either the account email
-    // (Atlassian API tokens, App Passwords) or a synthetic username
-    // (`x-token-auth`, `x-bitbucket-api-token-auth`). A display name
-    // like "Jane Doe" 401s every request. We've been bitten by users
-    // pasting their display name into `reviewerUsername` — surface a
-    // clear warning and fall back to the coder username so the
-    // reviewer client at least authenticates against the same
-    // account.
+    // Reviewer username sanity check. Same shape as coderUsername but
+    // we fall back instead of throwing so a misconfigured reviewer
+    // doesn't wedge the whole plugin — the coder credentials still
+    // work for everything except approving the agent's own PR.
     let reviewerUsername = cfg.reviewerUsername ?? cfg.coderUsername
     if (cfg.reviewerUsername && !looksLikeBitbucketUsername(cfg.reviewerUsername)) {
       deps.logger.warn(
         { configured: cfg.reviewerUsername, fallback: cfg.coderUsername },
-        'Bitbucket reviewerUsername does not look like an email or x-*-auth synthetic username — falling back to coderUsername. ' +
-        'Update plugins.installed.bitbucket.config.reviewerUsername in ~/.coro/config.json to silence this warning.',
+        `Bitbucket reviewerUsername "${cfg.reviewerUsername}" is not an email or x-*-auth synthetic — falling back to coderUsername. ${USERNAME_HELP}`,
       )
       reviewerUsername = cfg.coderUsername
     }
@@ -155,9 +189,30 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   }
 
   async healthcheck(): Promise<PluginHealth> {
-    // No cheap "ping" endpoint; assume reachable. Concrete health checks
-    // would issue a low-cost call (e.g. /user) — left for a follow-up.
-    return { ok: true }
+    // Cheap ping against /2.0/user with the coder credentials. This
+    // catches the most common failure mode (wrong username for the
+    // token type) at startup instead of mid-job. We don't probe the
+    // workspace explicitly — listing the user is enough to confirm
+    // Basic auth is accepted.
+    try {
+      const baseUrl = (this.coder as unknown as { baseUrl?: string }).baseUrl ?? 'https://api.bitbucket.org/2.0'
+      const auth = Buffer.from(`${this.coderUsername}:${this.coderToken}`).toString('base64')
+      const r = await fetch(`${baseUrl}/user`, {
+        headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
+      })
+      if (!r.ok) {
+        const detail = await r.text().catch(() => '')
+        return {
+          ok: false,
+          reason:
+            `Bitbucket auth check failed (${r.status}): ${detail.slice(0, 200) || r.statusText}. ` +
+            `${USERNAME_HELP}`,
+        }
+      }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: `Bitbucket auth check threw: ${(err as Error).message}` }
+    }
   }
 
   async dispose(): Promise<void> {
@@ -184,17 +239,17 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   // ── Clone info ──────────────────────────────────────────────────────────
 
   cloneInfo(args: { repo: string }): ScmCloneInfo {
-    // Bitbucket has three token types and each needs a different git
-    // HTTPS username:
-    //   - Legacy App Passwords      -> your Atlassian account email
-    //   - Legacy Access Tokens      -> 'x-token-auth'  (random prefix)
-    //   - New scoped API tokens (ATATT…) -> 'x-bitbucket-api-token-auth'
-    // The ATATT prefix is shared with the old `x-token-auth` scheme in
-    // some integrations, but for git-over-HTTPS the new tokens require
-    // the bitbucket-specific username.
-    const username = this.coderToken.startsWith('ATATT')
-      ? 'x-bitbucket-api-token-auth'
-      : encodeURIComponent(this.coderUsername)
+    // Trust the configured `coderUsername`. Bitbucket has three token
+    // types and each requires its own username (Atlassian email,
+    // `x-token-auth`, or `x-bitbucket-api-token-auth`); the token
+    // prefix cannot disambiguate them. An earlier auto-map of every
+    // `ATATT…` token to `x-bitbucket-api-token-auth` broke plain
+    // Atlassian API tokens (which need the email) — git push appeared
+    // to work but every REST call 401'd, and the agent then
+    // misclassified the failure as a missing scope. The init()
+    // validator above guarantees the username is in a shape Bitbucket
+    // Basic auth can accept.
+    const username = encodeURIComponent(this.coderUsername)
     const token = encodeURIComponent(this.coderToken)
     return {
       url: `https://${username}:${token}@bitbucket.org/${this.workspace}/${args.repo}.git`,

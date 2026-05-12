@@ -1,7 +1,7 @@
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { ToolContext, PhaseSignals } from './tools/types'
-import { createMcpToolHandlers, mcpError, mcpText } from './mcp-handlers'
+import { createMcpToolHandlers, mcpError, mcpText, wrapHandlersSafely } from './mcp-handlers'
 
 // Legacy `bb_*` / `gh_*` / `jira_*` tools were removed entirely in
 // S6 of the MCP-first plugins pivot. Workflow markdown that still
@@ -29,7 +29,12 @@ import { createMcpToolHandlers, mcpError, mcpText } from './mcp-handlers'
  * the `mcp__coro__` prefix.
  */
 export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
-  const h = createMcpToolHandlers(ctx, signals)
+  // Wrap every native handler in a try/catch so an unhandled throw
+  // can't tear down the in-process MCP transport (the cause of the
+  // "Stream closed" loop agents used to hit when e.g. a Bitbucket
+  // REST call 401'd inside `scm_create_pr`). Extension tools below
+  // are wrapped separately at registration.
+  const h = wrapHandlersSafely(createMcpToolHandlers(ctx, signals))
 
   // Plugin extension tools — provider-specific tools that don't fit
   // the generic `scm_*` / `tracker_*` surface (e.g. `gh_create_release`,

@@ -132,21 +132,18 @@ export class GitClient {
 
 export function createGitClient(settings: Settings): GitClient {
   const { coderAccount } = settings.bitbucket
-  // Bitbucket has three token types and each needs a different git
-  // HTTPS username:
-  //   - Legacy App Passwords     -> your Atlassian account email
-  //   - Legacy Access Tokens     -> 'x-token-auth' (random prefix)
-  //   - New API tokens (ATATT…) -> 'x-bitbucket-api-token-auth'
-  // Old code mapped the ATATT prefix to 'x-token-auth' which is the
-  // wrong scheme and produces a 401 the agent then mis-classifies as
-  // "missing repo scope".
-  const gitUsername = coderAccount.appPassword.startsWith('ATATT')
-    ? 'x-bitbucket-api-token-auth'
-    : coderAccount.username
-
+  // Trust the configured username. Bitbucket has three token types
+  // and each requires its own git-HTTPS username (Atlassian email,
+  // `x-token-auth`, or `x-bitbucket-api-token-auth`); the token
+  // prefix cannot disambiguate them. An earlier auto-map of every
+  // `ATATT…` token to `x-bitbucket-api-token-auth` broke plain
+  // Atlassian API tokens (which need the email) — git push appeared
+  // to work but every REST call 401'd. The Bitbucket plugin's init()
+  // validator now rejects malformed usernames at startup, so by the
+  // time we reach this factory the username is safe to use as-is.
   return new GitClient(
     settings.paths.workingDir,
-    gitUsername,
+    coderAccount.username,
     coderAccount.appPassword,
     settings.bitbucket.workspace,
     'bitbucket.org',

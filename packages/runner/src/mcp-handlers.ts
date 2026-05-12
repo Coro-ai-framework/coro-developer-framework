@@ -17,6 +17,38 @@ export function mcpError(msg: string) {
   return { content: [{ type: 'text' as const, text: msg }], isError: true as const }
 }
 
+/**
+ * Wrap every handler returned by {@link createMcpToolHandlers} in a
+ * try/catch that converts unhandled throws into a structured
+ * {@link mcpError} response.
+ *
+ * Without this safety net, a thrown exception inside a tool callback
+ * propagates out of the SDK's in-process MCP transport and tears it
+ * down — every subsequent tool invocation in the same session then
+ * returns a generic "Stream closed" error and the agent gives up. The
+ * extension-tool registration in `mcp-server.ts` already wraps its
+ * handlers the same way; this helper extends the same guarantee to
+ * the native `scm_*` / `tracker_*` / etc. handlers so any plugin or
+ * client error surfaces as a recoverable tool error rather than a
+ * transport crash.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function wrapHandlersSafely<T extends Record<string, (...args: any[]) => any>>(handlers: T): T {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const out: Record<string, (...args: any[]) => any> = {}
+  for (const [name, fn] of Object.entries(handlers)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    out[name] = async (...args: any[]) => {
+      try {
+        return await (fn as (...a: unknown[]) => unknown)(...args)
+      } catch (err) {
+        return mcpError(`${name} failed: ${(err as Error).message ?? String(err)}`)
+      }
+    }
+  }
+  return out as T
+}
+
 // ── Plugin resolution helpers ────────────────────────────────────────────────
 //
 // `scm_*` and `tracker_*` handlers all need the same boilerplate: pick

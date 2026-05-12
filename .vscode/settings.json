@@ -1,6 +1,7 @@
 {
     "chat.tools.terminal.autoApprove": {
         "npx tsc": true,
-        "./node_modules/.bin/tsc": true
+        "./node_modules/.bin/tsc": true,
+        "sqlite3": true
     }
 }
