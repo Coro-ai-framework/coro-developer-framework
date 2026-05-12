@@ -398,7 +398,11 @@ describe('runJob (mocked Agent SDK query)', () => {
     stateBackend = createMockStateBackend(
       makeJob({
         phase: 'alpha',
-        status: STATUS_AWAITING_DEVELOPER_INPUT,
+        // Status is post-resume here: the dispatcher has already
+        // cleared the parking status and stamped
+        // `approvedAdvanceFromPhase` so the runner advances past the
+        // checkpoint instead of immediately re-parking.
+        status: 'queued',
         interactive: true,
         approvedAdvanceFromPhase: 'alpha',
       }),

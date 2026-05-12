@@ -56,11 +56,12 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
 
       expect(job.type).toBe(JobType.Job)
       expect(job.workflowPath).toBe('workflows/job/workflow.md')
-      // The workflow declares `initial_phase: planning` and the planning
-      // phase's `status` is `planning`. Jobs are now created in that
-      // state directly, no transient `init` phase any more.
-      expect(job.phase).toBe('planning')
-      expect(job.status).toBe('planning')
+      // The workflow declares `initial_phase: spec-writing` and the
+      // spec-writing phase's `status` is `spec-writing`. Jobs are now
+      // created in that state directly, no transient `init` phase any
+      // more.
+      expect(job.phase).toBe('spec-writing')
+      expect(job.status).toBe('spec-writing')
       expect(job.params['serviceName']).toBe('svc-a')
 
       const loaded = await backend.getJob(job.id)
@@ -87,7 +88,7 @@ describe.skipIf(skipRedis)('RedisStateBackend (Redis integration)', () => {
         params: { serviceName: 'feat-y', repoSlug: 'feat-y' },
       })
 
-      expect(job.phase).toBe('planning')
+      expect(job.phase).toBe('spec-writing')
     })
 
     it('creates self-update jobs against the bundled tracking workflow', async () => {

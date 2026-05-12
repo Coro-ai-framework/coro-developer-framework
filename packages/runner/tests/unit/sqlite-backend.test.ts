@@ -43,7 +43,7 @@ describe('SqliteStateBackend', () => {
 
       expect(job.type).toBe(JobType.Job)
       expect(job.workflowPath).toBe('workflows/job/workflow.md')
-      expect(job.phase).toBe('planning')
+      expect(job.phase).toBe('spec-writing')
       expect(job.id).toContain('svc-a-job-')
 
       const loaded = await backend.getJob(job.id)

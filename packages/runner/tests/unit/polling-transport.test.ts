@@ -53,7 +53,7 @@ function makeMockBackend(jobs: Job[]): StateBackend {
   return {
     listJobs: vi.fn().mockResolvedValue(jobs),
     createJob: vi.fn(),
-    getJob: vi.fn(),
+    getJob: vi.fn(async (id: string) => jobs.find((j) => j.id === id) ?? null),
     updateJob: vi.fn(),
     listJobsByType: vi.fn(),
     listChildJobs: vi.fn().mockResolvedValue([]),
@@ -229,7 +229,7 @@ describe('PollingTransport', () => {
     })
 
     it('fires pullrequest:fulfilled immediately when PR is already merged on first poll', async () => {
-      const job = makeJob()
+      const job = makeJob({ awaitingEvent: 'pullrequest:fulfilled' })
       const backend = makeMockBackend([job])
       const { plugin } = makeMockScmPlugin({ state: 'merged', approvalCount: 1, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
@@ -243,7 +243,7 @@ describe('PollingTransport', () => {
     })
 
     it('fires pullrequest:rejected immediately when PR is already declined on first poll', async () => {
-      const job = makeJob()
+      const job = makeJob({ awaitingEvent: 'pullrequest:rejected' })
       const backend = makeMockBackend([job])
       const { plugin } = makeMockScmPlugin({ state: 'declined', approvalCount: 0, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []
@@ -257,7 +257,7 @@ describe('PollingTransport', () => {
     })
 
     it('fires pullrequest:approved immediately when PR already has approvals on first poll', async () => {
-      const job = makeJob()
+      const job = makeJob({ awaitingEvent: 'pullrequest:approved' })
       const backend = makeMockBackend([job])
       const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 2, commentCount: 0, comments: [] })
       const events: InboundEvent[] = []

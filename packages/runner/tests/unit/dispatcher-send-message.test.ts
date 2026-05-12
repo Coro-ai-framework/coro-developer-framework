@@ -39,7 +39,7 @@ function makeJob(): Job {
 }
 
 describe('Dispatcher.sendMessage', () => {
-  it('clears sessionId when resuming a parked developer-input job', async () => {
+  it('resumes a parked developer-input job and stamps the approved advance', async () => {
     const job = makeJob()
     const getJob = vi.fn(async () => job)
     const updateJob = vi.fn(async (_jobId: string, patch: Partial<Job>) => ({ ...job, ...patch }))
@@ -69,7 +69,7 @@ describe('Dispatcher.sendMessage', () => {
         awaitingPrId: undefined,
         awaitingNextPhase: undefined,
         approvedAdvanceFromPhase: 'coding',
-        sessionId: undefined,
+        escalationMessage: undefined,
         pendingPrompt: expect.stringContaining('[DEVELOPER RESPONSE]'),
       }),
     )
