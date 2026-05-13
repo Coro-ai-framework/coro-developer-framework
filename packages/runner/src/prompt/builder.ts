@@ -137,6 +137,15 @@ export function computeScmPromptContext(
  *   {@link resolveJobIntelligence}. The runner passes its resolved path
  *   here so workflow + agent reads see the correct stack of layers
  *   (base → tenant → repo) for this specific job.
+ * @param executorCapabilities Capability descriptor for the phase
+ *   executor that will run this prompt. Optional — when undefined the
+ *   builder preserves its historical behaviour and assumes the
+ *   Anthropic SDK's native `.claude/CLAUDE.md` walk-up will inject the
+ *   ambient runtime instructions. When the caller passes a descriptor
+ *   whose `supportsClaudeMdNativeWalkUp` is `false` (any non-Anthropic
+ *   executor), the builder prepends the resolved overlay's
+ *   `.claude/CLAUDE.md` directly so the model sees the same ambient
+ *   guidance regardless of provider.
  */
 export async function buildSystemPrompt(
   job: Job,
@@ -144,8 +153,28 @@ export async function buildSystemPrompt(
   logger: Logger,
   trackerInfo?: TrackerPromptContext,
   scmInfo?: ScmPromptContext,
+  executorCapabilities?: { supportsClaudeMdNativeWalkUp: boolean },
 ): Promise<string> {
   const sections: string[] = []
+
+  // When the active executor cannot natively walk `.claude/CLAUDE.md`
+  // up the directory tree (everything except the Anthropic SDK), inject
+  // the per-job overlay's CLAUDE.md as the first system block. The
+  // resolver guarantees the file exists at the layered intelligence
+  // root for every tenant; if it is missing we log and continue so a
+  // partial overlay never crashes the prompt build.
+  if (executorCapabilities && !executorCapabilities.supportsClaudeMdNativeWalkUp) {
+    const claudeMdPath = path.join(intelligenceDir, '.claude', 'CLAUDE.md')
+    const claudeMd = await readSafe(claudeMdPath, logger)
+    if (claudeMd) {
+      sections.push(banner('Ambient Runtime Instructions', '.claude/CLAUDE.md') + claudeMd)
+    } else {
+      logger.warn(
+        { claudeMdPath },
+        'Executor lacks native CLAUDE.md walk-up but the overlay has no .claude/CLAUDE.md to inject',
+      )
+    }
+  }
 
   const workflowAbsPath = path.join(intelligenceDir, job.workflowPath)
   const workflowMd = await readSafe(workflowAbsPath, logger)

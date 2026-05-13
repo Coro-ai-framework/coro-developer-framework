@@ -83,6 +83,28 @@ export type PluginMcpServerConfig =
 
 // ── Plugin kinds ─────────────────────────────────────────────────────────────
 
+// ── Executor contract re-exports (multi-provider LLM) ───────────────────────
+//
+// The phase-executor surface is authored in `@coro/plugin-sdk` so external
+// LLM provider plugins can implement `PhaseExecutorRuntime` without
+// pulling in the runner's transitive deps. The runner re-exports the
+// shapes here so internal call sites import from a single place
+// (`./plugins/types`) regardless of whether a type is "internal SDK
+// shape" or "shared executor shape".
+export type {
+  PhaseExecutorRuntime,
+  PhaseExecutionRequest,
+  PhaseExecutorEvent,
+  ExecutorCapabilities,
+  HookPolicy,
+  NormalizedTokenUsage,
+  ExecutorSessionState,
+  ExecutorModelDescriptor,
+  ExecutorSubagentSpec,
+  McpServerDescriptor,
+  ConversationMessage,
+} from '@coro/plugin-sdk'
+
 /**
  * Open-ended plugin kind. v1 ships `scm` and `tracker`; later cuts may
  * add `notifier`, `observability`, `secrets`, etc. The registry treats

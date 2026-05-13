@@ -228,6 +228,9 @@ importers:
       '@coro/intelligence-base':
         specifier: workspace:*
         version: link:../intelligence-base
+      '@coro/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3

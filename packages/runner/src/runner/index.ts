@@ -109,6 +109,9 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
   const intelligenceDir = resolveIntelligenceDir(config)
   const workingDir = resolveLocalWorkingDir(config)
 
+  const planningModel = process.env.CLAUDE_PLANNING_MODEL ?? 'claude-opus-4-6'
+  const codingModel = process.env.CLAUDE_CODING_MODEL ?? 'claude-sonnet-4-6'
+
   return {
     host: {
       port: 0,
@@ -122,8 +125,8 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
         oauthToken: config.anthropic.oauthToken,
         account: config.anthropic.account,
       },
-      planningModel: process.env.CLAUDE_PLANNING_MODEL ?? 'claude-opus-4-6',
-      codingModel: process.env.CLAUDE_CODING_MODEL ?? 'claude-sonnet-4-6',
+      planningModel,
+      codingModel,
     },
     bitbucket: {
       workspace: config.git?.workspace ?? process.env.BITBUCKET_WORKSPACE ?? '',
@@ -191,6 +194,21 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       staticDomain: '',
     },
     proposals: resolveProposalsConfig(config),
+    // Phase 2 multi-provider seed. Until tenants opt in via the
+    // dashboard's LLM settings page (Phase 4+), we synthesise a
+    // single-provider Anthropic config from the legacy `claude` block
+    // so the executor registry has a default provider plus the two
+    // canonical aliases (`planning`, `coding`) workflows have always
+    // referenced. Removing this synth requires every tenant to
+    // explicitly enumerate providers — deferred to a later phase.
+    llm: {
+      defaultProvider: 'anthropic',
+      providers: {},
+      aliases: {
+        planning: { provider: 'anthropic', model: planningModel },
+        coding:   { provider: 'anthropic', model: codingModel },
+      },
+    },
   }
 }
 

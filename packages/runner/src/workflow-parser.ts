@@ -8,14 +8,31 @@ import { Logger } from 'pino'
 export interface SubagentConfig {
   name: string
   agent?: string
+  /**
+   * Model alias (e.g. `planning`, `coding`) or a provider-qualified
+   * concrete model id (e.g. `claude-sonnet-4-6`, `gpt-5-codex`). The
+   * runner resolves alias keys via `settings.llm.aliases` and concrete
+   * ids via `provider`-aware lookup at phase boot.
+   */
   model?: string
+  /** Optional executor plugin id pin (e.g. `anthropic`, `openai`). */
+  provider?: string
   tools?: string[]
 }
 
 export interface PhaseConfig {
   name: string
   agent: string | null
-  model: 'planning' | 'coding'
+  /**
+   * Model selector for the phase. Historically restricted to the
+   * `'planning'` / `'coding'` literal aliases; relaxed to `string` in
+   * Phase 2 of the multi-provider migration so workflows can name any
+   * tenant-defined alias or pin a concrete provider model directly.
+   * Resolution rules live in `resolvePhaseAssignment`.
+   */
+  model: string
+  /** Optional executor plugin id pin (e.g. `anthropic`, `openai`). */
+  provider?: string
   status: string
   subagents?: SubagentConfig[]
   /**
@@ -65,6 +82,7 @@ interface RawSubagent {
   name?: string
   agent?: string
   model?: string
+  provider?: string
   tools?: string[]
 }
 
@@ -72,6 +90,7 @@ interface RawPhase {
   name?: string
   agent?: string | null
   model?: string
+  provider?: string
   status?: string
   subagents?: RawSubagent[]
   interactive_checkpoint?: boolean
@@ -105,11 +124,23 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
   const phases: PhaseConfig[] = parsed.phases
     .filter((p): p is RawPhase & { name: string } => typeof p.name === 'string')
     .map(p => {
+      // Phase 2 multi-provider: `model` is now an open string (alias key
+      // or provider-qualified concrete id). The historic `'planning'` /
+      // `'coding'` literal coercion is preserved as the default when the
+      // YAML omits or sets a value other than `'coding'`, so existing
+      // workflows continue to map onto the legacy aliases unchanged.
+      const rawModel = typeof p.model === 'string' && p.model.length > 0
+        ? p.model
+        : 'planning'
       const phase: PhaseConfig = {
         name: p.name,
         agent: p.agent ?? null,
-        model: p.model === 'coding' ? 'coding' : 'planning',
+        model: rawModel,
         status: p.status ?? p.name,
+      }
+
+      if (typeof p.provider === 'string' && p.provider.length > 0) {
+        phase.provider = p.provider
       }
 
       if (p.interactive_checkpoint === true) {
@@ -123,12 +154,14 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
       if (Array.isArray(p.subagents) && p.subagents.length > 0) {
         phase.subagents = p.subagents
           .filter((sa): sa is RawSubagent & { name: string } => typeof sa.name === 'string')
-          .map(sa => ({
-            name: sa.name,
-            agent: sa.agent,
-            model: sa.model,
-            tools: sa.tools,
-          }))
+          .map(sa => {
+            const out: SubagentConfig = { name: sa.name }
+            if (sa.agent !== undefined) out.agent = sa.agent
+            if (sa.model !== undefined) out.model = sa.model
+            if (sa.provider !== undefined) out.provider = sa.provider
+            if (sa.tools !== undefined) out.tools = sa.tools
+            return out
+          })
       }
 
       return phase

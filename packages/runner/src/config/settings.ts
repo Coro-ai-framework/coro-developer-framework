@@ -137,4 +137,42 @@ export interface Settings {
       strategy: 'path' | 'agent'
     }
   }
+  /**
+   * Multi-provider LLM configuration. Optional — when absent the runner
+   * synthesises a single Anthropic provider entry from the legacy
+   * {@link Settings.claude} block so existing tenants keep working
+   * without any config change. Phase 2+ wiring; Phase 3 removes the
+   * synth fallback once `@coro/llm-anthropic` ships its own provider
+   * config schema.
+   *
+   * Provider configs are intentionally typed as `unknown` here — each
+   * provider plugin owns its own zod schema and validates at registry
+   * registration time.
+   */
+  llm?: {
+    /**
+     * Default executor plugin id when an alias or phase doesn't pin
+     * one explicitly. When unset and only one executor plugin is
+     * installed, the registry picks it; with multiple, the registry
+     * throws unless every consumer is explicit.
+     */
+    defaultProvider?: string
+    /**
+     * Per-plugin-id config blob. Forwarded verbatim to the plugin's
+     * `init()` at bootstrap.
+     */
+    providers?: Record<string, unknown>
+    /**
+     * Workflow-author-friendly aliases. Workflows reference
+     * `model: 'planning'` or `model: 'coding'` (or any other key); the
+     * runner resolves each alias to a concrete `{provider, model}`
+     * pair via this map.
+     */
+    aliases?: Record<string, {
+      provider: string
+      model: string
+      /** OpenAI o-series / Anthropic extended-thinking effort hint. */
+      reasoningEffort?: 'low' | 'medium' | 'high'
+    }>
+  }
 }
