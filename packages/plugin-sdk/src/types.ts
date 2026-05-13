@@ -71,7 +71,7 @@ export type PluginMcpServerConfig =
 
 // ── Manifest ────────────────────────────────────────────────────────────────
 
-export type PluginKind = 'scm' | 'tracker' | (string & {})
+export type PluginKind = 'scm' | 'tracker' | 'executor' | (string & {})
 
 export interface PluginWebhookDescriptor {
   pathSuffix?: string
@@ -274,4 +274,326 @@ export interface DropinManifest {
   hostCompatibility: string
   /** Relative path (from the manifest dir) to a CJS/ESM module exporting `createPlugin`. */
   entry: string
+}
+
+// ── Phase executor plugin ───────────────────────────────────────────────────
+//
+// `executor` is the third plugin kind alongside `scm` and `tracker`. An
+// executor is the per-phase LLM driver: each provider (Anthropic via the
+// Claude Agent SDK, OpenAI via the Responses API, Foundry/OpenRouter
+// aggregators, local Ollama, …) ships its own executor plugin and owns
+// the full per-phase invocation — tool loop, hooks, subagents, session
+// resume, cost accounting.
+//
+// The runner core stays provider-agnostic. It resolves an executor for
+// each phase, builds a {@link PhaseExecutionRequest}, and consumes the
+// returned {@link PhaseExecutorEvent} stream. See `runner/jobs/runner.ts`
+// for the call site.
+//
+// Why an `executePhase` seam (rather than a thinner token streamer):
+// the Claude Agent SDK already runs the tool loop, hooks, and subagents
+// internally, and stateless providers (OpenAI, Ollama) need different
+// tool-call shapes and session strategies. Wrapping at any thinner level
+// fights every provider's design.
+
+/**
+ * Normalized token / cost accounting reported by an executor for one
+ * phase. Providers may also report `totalCostUsd` directly (Anthropic
+ * does); for providers that don't, the runner uses the executor's
+ * {@link PhaseExecutorRuntime.calculateCost} hook to derive cost from
+ * tokens against a bundled pricing table.
+ */
+export interface NormalizedTokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  /** Optional — provider may report it directly (Anthropic does). */
+  totalCostUsd?: number
+}
+
+/**
+ * One conversation turn for stateless providers that resume by replaying
+ * history rather than by sessionId. Anthropic-flavoured executors leave
+ * `conversationHistory` empty and round-trip via {@link ExecutorSessionState.sessionId}.
+ *
+ * The shape is intentionally minimal — providers translate their native
+ * tool-call wire formats into this normalized envelope at the executor
+ * boundary so the persisted state is portable across executor plugins.
+ */
+export interface ConversationMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  /** Plain text content. Tool calls live in `toolCalls`/`toolResults`. */
+  content: string
+  /** Tool calls the assistant requested in this turn. */
+  toolCalls?: ReadonlyArray<{
+    id: string
+    name: string
+    input: unknown
+  }>
+  /** Tool results the runner is feeding back to the assistant. */
+  toolResults?: ReadonlyArray<{
+    toolCallId: string
+    output: unknown
+    isError?: boolean
+  }>
+  /** Provider-specific metadata round-tripped between turns. */
+  meta?: Record<string, unknown>
+}
+
+/**
+ * Dual-shape session state. An executor populates the field that matches
+ * its resume strategy:
+ *
+ *   - Claude SDK executors persist `sessionId` and ignore `conversationHistory`.
+ *   - Stateless executors (OpenAI Responses, Ollama) persist `conversationHistory`
+ *     and ignore `sessionId`.
+ *
+ * Both fields coexist on the persisted Job so a workflow that mixes
+ * providers across phases (e.g. planning on Claude, coding on GPT) can
+ * still resume each phase against the executor that wrote the state.
+ */
+export interface ExecutorSessionState {
+  sessionId?: string
+  conversationHistory?: ReadonlyArray<ConversationMessage>
+}
+
+/**
+ * One model entry returned by {@link PhaseExecutorRuntime.listModels}.
+ * Aggregator plugins (OpenRouter, Foundry) return many; single-provider
+ * plugins typically return a small fixed list. The runner uses this to
+ * power the dashboard's per-provider model picker and to validate
+ * `provider`+`model` pairs in workflow YAML.
+ */
+export interface ExecutorModelDescriptor {
+  id: string
+  displayName: string
+  contextTokens: number
+  /** Suggested role — runner uses this for default alias seeding only. */
+  tier?: 'planning' | 'coding' | 'mini'
+  /** True when the model supports `modelHints.reasoningEffort`. */
+  supportsThinking?: boolean
+  /** Static pricing snapshot in USD per 1M tokens; aggregators may omit. */
+  pricing?: {
+    inputPerMTokens?: number
+    outputPerMTokens?: number
+    cacheReadPerMTokens?: number
+    cacheCreationPerMTokens?: number
+  }
+}
+
+/**
+ * Capability flags an executor MUST publish at registration time. The
+ * runner uses these to decide whether to:
+ *   - inject `.claude/CLAUDE.md` into the system prompt manually
+ *     (false → runner prepends; true → executor's SDK does its own walk-up).
+ *   - register the file-tools MCP server for this phase
+ *     (false → runner registers `file_read`/`file_write`/etc.; true →
+ *     executor brings native equivalents).
+ *   - allow `req.subagents` to be non-empty
+ *     (false → runner falls back to the `run_subagent` MCP tool, see Phase 9).
+ *   - persist `sessionId` vs `conversationHistory` after each phase.
+ */
+export interface ExecutorCapabilities {
+  /** True when the executor runs subagents itself (Anthropic SDK). */
+  supportsNativeSubagents: boolean
+  /** True when the executor's SDK loads `.claude/CLAUDE.md` via its own walk-up. */
+  supportsClaudeMdNativeWalkUp: boolean
+  /** True when the executor brings native Read/Write/Edit/Glob/Grep tools. */
+  supportsNativeFileTools: boolean
+  /** True when resume by sessionId is supported (Claude SDK). */
+  supportsSessionResume: boolean
+  /** True when resume by conversation replay is supported (most others). */
+  supportsConversationReplay: boolean
+  /** True when `modelHints.reasoningEffort` has any effect. */
+  supportsThinking: boolean
+  /** True when image content blocks may be passed in user messages. */
+  supportsImageInput: boolean
+  /** Hard ceiling — runner refuses oversized prompts. */
+  maxContextTokens: number
+}
+
+/**
+ * Hook policy the runner hands to every executor. The executor enforces
+ * the policy at every tool-call site (typically via the SDK helpers in
+ * `executor-helpers.ts`).
+ *
+ * `writeRoots` are absolute paths; the runner resolves the workflow's
+ * working dir, repo clone dir, and `_intelligence/` mirror up front so
+ * each executor only does string-prefix membership checks.
+ */
+export interface HookPolicy {
+  /** null → no whitelist; every tool the SDK exposes is allowed. */
+  allowedTools: ReadonlyArray<string> | null
+  /** Absolute paths the agent may write to. */
+  writeRoots: ReadonlyArray<string>
+  /** Optional extra gate the runner injects (e.g. for proposal review). */
+  onPreToolUse?(
+    toolName: string,
+    input: unknown,
+  ): { allow: boolean; reason?: string }
+}
+
+/**
+ * Subagent specification handed to an executor. The runner builds these
+ * from workflow YAML's `subagents:` block. Each entry corresponds to one
+ * agent file (`agents/<name>.md`) plus runtime knobs.
+ *
+ * Anthropic-flavoured executors map this onto the SDK's `agents:` field;
+ * non-native executors invoke them via the runner's `run_subagent` MCP
+ * tool (Phase 9).
+ */
+export interface ExecutorSubagentSpec {
+  /** Subagent identifier (matches the `agents:` key in workflow YAML). */
+  name: string
+  /** Already-loaded agent prompt (`.claude/CLAUDE.md` is prepended for you). */
+  systemPrompt: string
+  /** Optional per-subagent model override (literal — not an alias). */
+  model?: string
+  /** Optional per-subagent provider override; required when crossing executors. */
+  provider?: string
+  /** Tool whitelist for this subagent (subset of the parent phase's). */
+  allowedTools?: ReadonlyArray<string>
+  /** MCP servers the subagent may invoke (subset of the parent's set). */
+  mcpServerIds?: ReadonlyArray<string>
+}
+
+/**
+ * Stable descriptor for the in-process Coro MCP server that every
+ * executor receives. The runner constructs the underlying SDK MCP
+ * server once per job and hands the executor the descriptor it needs to
+ * register the tools (under the reserved `coro` server id) with the
+ * provider's tool loop.
+ *
+ * The shape is intentionally narrow so that future MCP transports
+ * (`http`, `sse`) can be added without breaking plugin authors. Today
+ * only `kind: 'sdk-instance'` exists; it carries the live SDK MCP
+ * server reference under `instance: unknown` (the runner re-types it at
+ * the call site against the Anthropic SDK's `McpSdkServerConfig`).
+ */
+export interface McpServerDescriptor {
+  kind: 'sdk-instance'
+  /** Reserved id under which the runner expects the executor to register the server. */
+  id: 'coro'
+  /** Opaque SDK instance — runtime cast at the executor boundary. */
+  instance: unknown
+}
+
+/**
+ * Single per-phase invocation request. The runner builds this from the
+ * resolved workflow phase config + intelligence layer + plugin registry.
+ *
+ * All paths are absolute. All timestamps are runtime concerns the
+ * executor never needs to know about.
+ */
+export interface PhaseExecutionRequest {
+  /** Already-built system prompt; do not append your own header. */
+  systemPrompt: string
+  /** User prompt for this phase. May be a fresh task or a resume payload. */
+  userPrompt: string
+  /** Literal model id (alias resolution happens upstream in the runner). */
+  model: string
+  /** Optional per-invocation knobs (reasoning effort, etc.). */
+  modelHints?: { reasoningEffort?: 'low' | 'medium' | 'high' }
+  /** Working dir the agent's tools may operate within (absolute). */
+  cwd: string
+  /** Materialized intelligence layer for this job (absolute). */
+  intelligenceDir: string
+  /** In-process Coro MCP server descriptor; always provided. */
+  mcpServer: McpServerDescriptor
+  /** External plugin MCP servers (SCM, tracker, …) keyed by plugin id. */
+  pluginMcpServers: Record<string, PluginMcpServerConfig>
+  /** Optional subagent specs the executor may dispatch. */
+  subagents?: ReadonlyArray<ExecutorSubagentSpec>
+  /** Hook policy — write-root guard + tool whitelist; executor enforces. */
+  hookPolicy: HookPolicy
+  /** Prior session state to resume from. Empty on the first phase of a job. */
+  sessionState: ExecutorSessionState
+  /** Hard ceiling on tool-loop turns this phase. */
+  maxTurns: number
+  /** Cancellation signal — runner aborts on job cancel / shutdown. */
+  signal: AbortSignal
+}
+
+/**
+ * Normalized event the executor yields during {@link PhaseExecutorRuntime.executePhase}.
+ * The runner translates these into log lines, token accounting, and
+ * dashboard updates without ever inspecting provider-native shapes.
+ *
+ * Executors MUST emit `done` exactly once at the end of a successful
+ * stream and MUST emit at least one `usage` event before `done`. The
+ * runner treats absence of `usage` as `tokens=0, cost=0` rather than
+ * an error, but it is the executor's responsibility to report what it
+ * knows.
+ */
+export type PhaseExecutorEvent =
+  | { type: 'session_start'; sessionId?: string }
+  | { type: 'text'; content: string }
+  | { type: 'thinking'; content: string }
+  | {
+      type: 'tool_call'
+      toolName: string
+      input: unknown
+      /** True when the tool came from an MCP server (vs. a built-in like Bash). */
+      isMcp: boolean
+    }
+  | {
+      type: 'tool_result'
+      toolName: string
+      output: unknown
+      isError?: boolean
+    }
+  | {
+      type: 'usage'
+      tokens: NormalizedTokenUsage
+      /** Per-model breakdown when the executor multiplexes (aggregators). */
+      modelUsage?: Record<string, NormalizedTokenUsage>
+    }
+  | {
+      type: 'done'
+      stopReason: string
+      sessionState: ExecutorSessionState
+    }
+  | {
+      type: 'log'
+      level: 'info' | 'warn' | 'error'
+      message: string
+      meta?: Record<string, unknown>
+    }
+
+/**
+ * Phase executor runtime contract. Implementations live in their own
+ * package (`@coro/llm-anthropic`, `@coro/llm-openai`, …) and register
+ * themselves under `kind: 'executor'` via the standard plugin loader.
+ *
+ * Every executor MUST:
+ *   1. Publish capabilities at construction time so the runner can
+ *      decide whether to inject `.claude/CLAUDE.md` and register
+ *      file-tools MCP shims.
+ *   2. Honor {@link PhaseExecutionRequest.signal} — abort the in-flight
+ *      tool loop within ~1s of cancellation.
+ *   3. Enforce {@link HookPolicy} at every tool-call site (use the
+ *      helpers from `executor-helpers.ts` to avoid drift).
+ *   4. Yield exactly one `done` event with the next session state.
+ */
+export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Config> {
+  readonly kind: 'executor'
+  readonly capabilities: ExecutorCapabilities
+
+  /** What models this executor can run. Aggregators return many. */
+  listModels(): ReadonlyArray<ExecutorModelDescriptor>
+
+  /** Cheap predicate the registry uses for model → executor routing. */
+  supports(model: string): boolean
+
+  /** The single per-phase entry point. */
+  executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent>
+
+  /**
+   * Optional per-provider cost calculation. Plugins that trust an
+   * upstream `total_cost_usd` (Anthropic) leave this undefined; the
+   * runner reads `usage.tokens.totalCostUsd` directly. Plugins that
+   * own their pricing tables (OpenAI, Foundry, Ollama=$0) implement it.
+   */
+  calculateCost?(model: string, usage: NormalizedTokenUsage): number
 }

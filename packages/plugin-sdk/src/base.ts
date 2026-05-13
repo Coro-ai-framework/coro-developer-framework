@@ -12,8 +12,14 @@
 // correct for stateless plugins.
 
 import type {
+  ExecutorCapabilities,
+  ExecutorModelDescriptor,
   ExternalRef,
   NormalizedEvent,
+  NormalizedTokenUsage,
+  PhaseExecutionRequest,
+  PhaseExecutorEvent,
+  PhaseExecutorRuntime,
   PluginDeps,
   PluginHealth,
   PluginManifest,
@@ -92,4 +98,39 @@ export abstract class TrackerPluginBase<Config = unknown>
     headers: Record<string, string | string[] | undefined>
     rawBody: Buffer
   }): NormalizedEvent | null
+}
+
+/**
+ * Phase executor authoring base. Subclasses MUST set `manifest` and
+ * `capabilities`, implement `init`, `listModels`, `supports`, and
+ * `executePhase`. Optional methods (`calculateCost`, `mcpServer`) can
+ * be provided as needed.
+ *
+ * The default `healthcheck` returns `{ ok: true }`; providers that
+ * round-trip an upstream API should override to surface auth/rate
+ * problems early.
+ *
+ * The base class deliberately does NOT default `capabilities` — every
+ * provider has to declare them explicitly so silent gaps in the runner
+ * contract surface as type errors at the plugin boundary.
+ */
+export abstract class PhaseExecutorBase<Config = unknown>
+  extends PluginBase
+  implements PhaseExecutorRuntime<Config>
+{
+  readonly kind = 'executor' as const
+  abstract readonly manifest: PluginManifest
+  abstract readonly capabilities: ExecutorCapabilities
+
+  abstract init(config: Config, deps: PluginDeps): Promise<void>
+  abstract listModels(): ReadonlyArray<ExecutorModelDescriptor>
+  abstract supports(model: string): boolean
+  abstract executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent>
+
+  /** Optional — providers that own pricing tables override. */
+  calculateCost?(model: string, usage: NormalizedTokenUsage): number
+
+  mcpServer(): PluginMcpServerConfig | undefined {
+    return undefined
+  }
 }

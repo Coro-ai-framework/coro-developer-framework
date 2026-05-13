@@ -7,6 +7,7 @@
 export * from './types'
 export * from './helpers'
 export * from './base'
+export * from './executor-helpers'
 
 /**
  * The plugin-API host version this SDK release was built against.
