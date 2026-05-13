@@ -112,6 +112,26 @@ export interface QueryInvocation {
 }
 
 /**
+ * Live developer-input pushable. The runner creates one of these per
+ * phase and passes its `iterable` as the SDK `query()` prompt. While
+ * the iterable is open, the SDK keeps stdin open and the in-process
+ * SDK MCP servers (`mcp__coro__*`) keep working — the closed-stdin
+ * bug from the prior one-yield generator approach goes away entirely.
+ *
+ * The dispatcher gets a reference to this object and calls `push()`
+ * to inject a developer message mid-phase (paired with `q.interrupt()`
+ * so the agent yields its current turn and reads the new message
+ * immediately). The runner calls `close()` once the phase's for-await
+ * loop has exited, which lets the SDK's `streamInput` consumer
+ * complete and finally call `transport.endInput()` cleanly.
+ */
+export interface PushableInput {
+  iterable: AsyncIterable<SDKUserMessage>
+  push(msg: SDKUserMessage): void
+  close(): void
+}
+
+/**
  * Optional hooks for tests and future instrumentation.
  * Production code should omit this (defaults apply).
  */
@@ -126,15 +146,83 @@ export interface RunJobOptions {
    */
   workflowConfigOverride?: WorkflowConfig | null
   /**
-   * Called when a real SDK Query is created. The dispatcher uses this to store
-   * a reference for human message injection via Query.streamInput().
+   * Called BEFORE `query()` is invoked, with the freshly created
+   * pushable input handle. The dispatcher registers it under the job
+   * id so a developer message arriving in the (small) gap between
+   * this call and `onQueryStart` can already be queued — the SDK
+   * will read it on its very first iteration of the prompt iterable.
+   */
+  onPhasePrepare?: (jobId: string, input: PushableInput) => void
+  /**
+   * Called when a real SDK Query is created. The dispatcher uses this
+   * to store a reference for `q.interrupt()` so a developer message
+   * can preempt an in-flight model turn / tool call.
    */
   onQueryStart?: (jobId: string, query: Query) => void
   /**
    * Called when the SDK Query's for-await loop exits (phase done, signal, or error).
-   * The dispatcher uses this to remove the Query reference.
+   * The dispatcher uses this to remove the Query and pushable references.
    */
   onQueryEnd?: (jobId: string) => void
+}
+
+/**
+ * Build a {@link PushableInput} backed by an internal queue. Multiple
+ * pushes before a single read are buffered FIFO. Pushing after `close()`
+ * is a no-op. The iterable returns once the queue has drained AND
+ * `close()` has been called — this matches the AsyncIterator contract
+ * the SDK's `streamInput` for-await consumer expects.
+ */
+function createPushableInput(): PushableInput {
+  const buffer: SDKUserMessage[] = []
+  // When a consumer is awaiting `next()` and the buffer is empty, we
+  // park a resolver here. The next push() (or close()) calls it.
+  let waiting: (() => void) | null = null
+  let closed = false
+
+  const wakeup = () => {
+    const w = waiting
+    waiting = null
+    if (w) w()
+  }
+
+  const iterable: AsyncIterable<SDKUserMessage> = {
+    [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+      return {
+        async next(): Promise<IteratorResult<SDKUserMessage>> {
+          // Drain whatever's buffered first.
+          while (true) {
+            if (buffer.length > 0) {
+              return { value: buffer.shift()!, done: false }
+            }
+            if (closed) {
+              return { value: undefined, done: true }
+            }
+            await new Promise<void>((resolve) => { waiting = resolve })
+          }
+        },
+        async return(): Promise<IteratorResult<SDKUserMessage>> {
+          closed = true
+          wakeup()
+          return { value: undefined, done: true }
+        },
+      }
+    },
+  }
+
+  return {
+    iterable,
+    push(msg: SDKUserMessage): void {
+      if (closed) return
+      buffer.push(msg)
+      wakeup()
+    },
+    close(): void {
+      if (closed) return
+      closed = true
+      wakeup()
+    },
+  }
 }
 
 // ── Runner ────────────────────────────────────────────────────────────────────
@@ -437,13 +525,23 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       //
       // Passing an `AsyncIterable<SDKUserMessage>` flips the SDK to
       // bidirectional mode, so `mcp__coro__*` tools actually register.
-      const prompt = (async function* (): AsyncIterable<SDKUserMessage> {
-        yield {
-          type: 'user',
-          message: { role: 'user', content: [{ type: 'text', text: promptText }] },
-          parent_tool_use_id: null,
-        }
-      })()
+      // Build a long-lived input pushable for this phase. The kickoff
+      // message goes in immediately. While this iterable stays open the
+      // SDK keeps stdin to the Claude Code subprocess open, which is
+      // what allows in-process MCP servers (`mcp__coro__*`) to keep
+      // exchanging control_request traffic across multiple model turns
+      // and what allows the dispatcher to inject developer steering
+      // messages via `pushable.push()` mid-phase. The previous one-yield
+      // generator caused the SDK to call `transport.endInput()` (i.e.
+      // `processStdin.end()`) right at boot, which silently broke MCP
+      // and made any subsequent steering message fail to deliver.
+      const pushable = createPushableInput()
+      pushable.push({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: promptText }] },
+        parent_tool_use_id: null,
+      })
+      const prompt = pushable.iterable
 
       // Clear pendingPrompt immediately so it isn't replayed on the next turn.
       if (liveJob.pendingPrompt) {
@@ -676,6 +774,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // (backwards-compatible with the QueryInvocation contract). The real
       // SDK query is given the async-iterable form so bidirectional mode
       // (and thus SDK MCP registration) is preserved.
+      //
+      // Register the pushable BEFORE we hand it to query() so that any
+      // developer message racing with phase startup lands in the queue
+      // and is read by the SDK on its very first iteration. The query
+      // handle is registered separately on the next line — between
+      // `query()` returning and the activeQueries set, sendMessage can
+      // still push() (for the next read) but cannot interrupt(). That's
+      // fine: nothing is in flight yet.
+      if (!options?.queryImpl) {
+        options?.onPhasePrepare?.(liveJob.id, pushable)
+      }
       const queryStream = options?.queryImpl
         ? options.queryImpl({ prompt: promptText, options: queryOptions, signals, toolCtx })
         : query({
@@ -908,6 +1017,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
       }
       } finally {
+        // Close the pushable so the SDK's `streamInput` for-await loop
+        // can finish and call `transport.endInput()` cleanly. Safe to
+        // call even when queryImpl is injected (the iterable just isn't
+        // being read by anyone in that case).
+        pushable.close()
         if (isRealQuery) {
           options?.onQueryEnd?.(liveJob.id)
         }

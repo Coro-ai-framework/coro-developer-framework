@@ -26,7 +26,7 @@ import {
   jobStatusToChildStatus,
   reconcileReady,
 } from '../tools/campaign'
-import { runJob, RunnerContext } from './runner'
+import { runJob, RunnerContext, type PushableInput } from './runner'
 import type { EventTransport } from '../state/transport'
 import type { InboundEvent, InboundEventSource } from '../state/events'
 import type { ExternalRef } from '../plugins/refs'
@@ -59,6 +59,13 @@ export class Dispatcher {
   private readonly activeJobs = new Set<string>()
   private readonly eventQueue = new Map<string, WebhookEvent[]>()
   private readonly activeQueries = new Map<string, Query>()
+  /**
+   * Live developer-input pushable per job. Registered by the runner via
+   * `onPhasePrepare` BEFORE `query()` is created so a steering message
+   * arriving during the (small) startup gap is never lost. Cleared in
+   * `onQueryEnd` together with `activeQueries`.
+   */
+  private readonly activeInputQueues = new Map<string, PushableInput>()
   // Jobs that requested a fresh dispatch while a prior run was still
   // draining (between the SDK turn ending and the runner's `finally`
   // block clearing `activeJobs`). The finally block re-fires these so
@@ -192,6 +199,9 @@ export class Dispatcher {
           )
         })
     }
+    // Close the input queue so the SDK's streamInput for-await loop can
+    // exit and the CLI subprocess can shut its stdin cleanly.
+    this.activeInputQueues.get(jobId)?.close()
 
     const reasonSuffix = reason ? `: ${reason}` : ''
     await this.ctx.stateBackend.appendLog(jobId, `[control] Job paused by developer${reasonSuffix}`)
@@ -579,14 +589,14 @@ export class Dispatcher {
     }
 
     // If the job has been parked (paused or awaiting external input) the
-    // live SDK query is on its way out and any streamInput()/interrupt()
-    // call against it will race the abort and throw "query may have just
-    // finished". Skip the live-injection branch in that case and fall
-    // through to the parked-resume path, which builds a framed prompt
-    // and re-fires the runner.
+    // live SDK query is on its way out and any push()/interrupt() call
+    // against it will race the abort. Skip the live-injection branch in
+    // that case and fall through to the parked-resume path, which builds
+    // a framed prompt and re-fires the runner.
+    const inputQueue = isParkingStatus(job.status) ? undefined : this.activeInputQueues.get(jobId)
     const q = isParkingStatus(job.status) ? undefined : this.activeQueries.get(jobId)
 
-    if (q) {
+    if (inputQueue) {
       const framedText =
         `[DEVELOPER MESSAGE]\n` +
         `The developer watching this job has sent you a message:\n\n` +
@@ -602,83 +612,74 @@ export class Dispatcher {
         parent_tool_use_id: null,
       }
 
-      // Steering pattern (Claude Agent SDK):
+      // Steering pattern (final, post-redesign — see
+      // memory/repo/agent-steering-flow if it exists):
       //
-      //   `streamInput()` ALONE only delivers the message at the next
-      //   read point — i.e. when the agent is between turns. While the
-      //   agent is mid-turn (tool call running, model still streaming),
-      //   the message sits in the SDK queue. For long tool runs
-      //   (clone/test/build) that means messages effectively never
-      //   arrive until the phase ends, which defeats the whole point
-      //   of letting the developer steer.
+      //   1. Push the user message into the long-lived per-phase
+      //      pushable. The SDK reads it on its next streamInput
+      //      iteration. The pushable stays open for the entire phase,
+      //      so stdin to the Claude Code subprocess is never closed
+      //      mid-phase — MCP keeps working, no race, no timeout.
+      //   2. If a Query handle is registered (the agent is mid-turn /
+      //      mid-tool-use), call `q.interrupt()` so the agent yields
+      //      and reads the queued message immediately. We `await` it
+      //      with a generous timeout so the dashboard reflects when
+      //      the agent has actually acknowledged the steering — but
+      //      we never block the HTTP response indefinitely. If the
+      //      interrupt times out the message still goes through; the
+      //      agent will pick it up when it finishes its current turn.
+      //   3. If no Query is registered yet (push() raced ahead of
+      //      query()'s synchronous return), the SDK will read the
+      //      message on its very first iteration. No interrupt needed
+      //      — nothing is in flight.
       //
-      //   `interrupt()` cancels the current generation/tool turn and
-      //   surfaces an `is_interrupt` result to the model; the model
-      //   then sees the next user message on its next turn. This is
-      //   the same mechanism Claude Code itself uses for the ESC-key
-      //   "stop and steer" UX.
-      //
-      // We must NOT block the HTTP response on either call:
-      //   - `interrupt()` waits for an ACK from the Claude Code
-      //     subprocess and can take seconds (or longer) when the agent
-      //     is mid-tool-use.
-      //   - `streamInput()` writes to the SDK's input pipe; in some
-      //     mid-tool-use windows it can block until the pipe drains.
-      // If either hangs, the dashboard sees the message stuck in
-      // "Pending" for minutes. So we fire the interrupt as
-      // fire-and-forget, then bound `streamInput` with a short timeout
-      // and fall through to the persisted-queue branch on miss.
-      void Promise.resolve()
-        .then(() => q.interrupt())
-        .catch(err => {
-          this.ctx.logger.debug(
+      // We deliberately do NOT call `q.streamInput()` from here. That
+      // method calls `transport.endInput()` when its iterable returns,
+      // which closes the CLI's stdin pipe and silently breaks every
+      // subsequent MCP control_request. The pushable approach above
+      // avoids that bug entirely.
+      inputQueue.push(userMsg)
+
+      if (q) {
+        const INTERRUPT_TIMEOUT_MS = 10_000
+        try {
+          await Promise.race([
+            q.interrupt(),
+            new Promise<void>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`interrupt() did not ack within ${INTERRUPT_TIMEOUT_MS}ms`)),
+                INTERRUPT_TIMEOUT_MS,
+              ),
+            ),
+          ])
+        } catch (err) {
+          this.ctx.logger.warn(
             { jobId, err },
-            'interrupt() before streamInput failed (agent likely idle) — continuing',
+            'q.interrupt() failed or timed out — message is queued and will be read at next agent turn',
           )
-        })
-
-      const STREAM_INPUT_TIMEOUT_MS = 3000
-      let streamed = false
-      try {
-        await Promise.race([
-          q.streamInput((async function* () { yield userMsg })()).then(() => { streamed = true }),
-          new Promise<void>((resolve) => setTimeout(resolve, STREAM_INPUT_TIMEOUT_MS)),
-        ])
-      } catch (err) {
-        this.ctx.logger.warn({ jobId, err }, 'streamInput failed — falling back to persisted queue')
+        }
       }
 
-      if (streamed) {
-        await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
-        this.ctx.logger.info({ jobId }, 'Developer message injected into running agent (interrupt + streamInput)')
-        return
-      }
-
-      // streamInput did not complete in time (or threw). Persist the
-      // message so the runner picks it up at the next phase boundary
-      // instead of losing it. We fall through into the queueing branch
-      // below, treating the (still-running) job the same as a
-      // between-phase job.
+      await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)
       this.ctx.logger.info(
-        { jobId, timeoutMs: STREAM_INPUT_TIMEOUT_MS },
-        'Live message injection timed out — queueing for next phase boundary',
+        { jobId, hadLiveQuery: Boolean(q) },
+        'Developer message injected into running agent',
       )
+      return
     }
 
-    // No live query (or live injection just timed out) — accept the
-    // message anyway. There are three sub-cases:
+    // No live query / pushable. Two sub-cases:
     //
     //   (a) Job is parked / escalated / failed → resume the runner with
     //       the developer note framed as guidance.
-    //   (b) Job is between phases (status=coding but no `q` yet because
-    //       the previous phase's query just ended and the next hasn't
-    //       registered) → persist the message into `pendingPrompt`. The
-    //       runner reads `pendingPrompt` at the top of every phase and
-    //       uses it instead of the kickoff text. No fireAndForget here;
-    //       the runner is already running.
-    //   (c) Live-injection branch above timed out → same as (b).
+    //   (b) Job is between phases (status=coding but no input queue
+    //       registered yet because the previous phase's query just
+    //       ended and the next hasn't started) → persist the message
+    //       into `pendingPrompt`. The runner reads `pendingPrompt` at
+    //       the top of every phase and uses it instead of the kickoff
+    //       text. No fireAndForget here; the runner is already running.
     //
-    // The previous code threw in (b)/(c), which surfaced as
+    // The previous code threw in (b), which surfaced as
     // "Cannot send message to job with status coding" whenever the
     // developer sent a quick second message after the first resumed a
     // parked job. Persisting instead means the dashboard's POST always
@@ -1089,8 +1090,12 @@ export class Dispatcher {
       .then(job => {
         if (!job) throw new Error(`Job not found: ${jobId}`)
         return runJob(job, this.ctx, {
+          onPhasePrepare: (id, push) => this.activeInputQueues.set(id, push),
           onQueryStart: (id, q) => this.activeQueries.set(id, q),
-          onQueryEnd: (id) => this.activeQueries.delete(id),
+          onQueryEnd: (id) => {
+            this.activeQueries.delete(id)
+            this.activeInputQueues.delete(id)
+          },
         })
       })
       .catch(err => {
