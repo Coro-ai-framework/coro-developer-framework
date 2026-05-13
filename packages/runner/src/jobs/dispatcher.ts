@@ -1,4 +1,8 @@
-import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type {
+  ConversationMessage,
+  DeveloperInputChannel,
+  ExecutorSessionController,
+} from '@coro/plugin-sdk'
 import {
   Artifact,
   CampaignChild,
@@ -27,7 +31,6 @@ import {
   reconcileReady,
 } from '../tools/campaign'
 import { runJob, RunnerContext } from './runner'
-import { type PushableInput } from '@coro/llm-anthropic'
 import type { EventTransport } from '../state/transport'
 import type { InboundEvent, InboundEventSource } from '../state/events'
 import type { ExternalRef } from '../plugins/refs'
@@ -59,14 +62,14 @@ const DEFAULT_MAX_PARALLEL_CHILDREN = 1
 export class Dispatcher {
   private readonly activeJobs = new Set<string>()
   private readonly eventQueue = new Map<string, WebhookEvent[]>()
-  private readonly activeQueries = new Map<string, Query>()
+  private readonly activeSessions = new Map<string, ExecutorSessionController>()
   /**
-   * Live developer-input pushable per job. Registered by the runner via
-   * `onPhasePrepare` BEFORE `query()` is created so a steering message
-   * arriving during the (small) startup gap is never lost. Cleared in
-   * `onQueryEnd` together with `activeQueries`.
+   * Live developer-input channel per job. Registered by the runner via
+   * `onPhasePrepare` BEFORE the executor session starts so a steering
+   * message arriving during the (small) startup gap is never lost.
+   * Cleared in `onSessionEnd` together with `activeSessions`.
    */
-  private readonly activeInputQueues = new Map<string, PushableInput>()
+  private readonly activeInputQueues = new Map<string, DeveloperInputChannel>()
   // Jobs that requested a fresh dispatch while a prior run was still
   // draining (between the SDK turn ending and the runner's `finally`
   // block clearing `activeJobs`). The finally block re-fires these so
@@ -170,7 +173,7 @@ export class Dispatcher {
     }
 
     const wasActive = this.activeJobs.has(jobId)
-    const q = this.activeQueries.get(jobId)
+    const q = this.activeSessions.get(jobId)
 
     // Persist the parked status FIRST so:
     //   (a) the HTTP response can return immediately even if the SDK
@@ -595,7 +598,7 @@ export class Dispatcher {
     // that case and fall through to the parked-resume path, which builds
     // a framed prompt and re-fires the runner.
     const inputQueue = isParkingStatus(job.status) ? undefined : this.activeInputQueues.get(jobId)
-    const q = isParkingStatus(job.status) ? undefined : this.activeQueries.get(jobId)
+    const q = isParkingStatus(job.status) ? undefined : this.activeSessions.get(jobId)
 
     if (inputQueue) {
       const framedText =
@@ -607,10 +610,9 @@ export class Dispatcher {
         `If this guidance represents a reusable pattern or convention that should apply to future jobs, ` +
         `record it via the \`add_insight\` tool so the Evaluator can review it.`
 
-      const userMsg: SDKUserMessage = {
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'text', text: framedText }] },
-        parent_tool_use_id: null,
+      const userMsg: ConversationMessage = {
+        role: 'user',
+        content: framedText,
       }
 
       // Steering pattern (final, post-redesign — see
@@ -1091,10 +1093,10 @@ export class Dispatcher {
       .then(job => {
         if (!job) throw new Error(`Job not found: ${jobId}`)
         return runJob(job, this.ctx, {
-          onPhasePrepare: (id, push) => this.activeInputQueues.set(id, push),
-          onQueryStart: (id, q) => this.activeQueries.set(id, q),
-          onQueryEnd: (id) => {
-            this.activeQueries.delete(id)
+          onPhasePrepare: (id, channel) => this.activeInputQueues.set(id, channel),
+          onSessionStart: (id, controller) => this.activeSessions.set(id, controller),
+          onSessionEnd: (id) => {
+            this.activeSessions.delete(id)
             this.activeInputQueues.delete(id)
           },
         })

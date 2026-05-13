@@ -228,6 +228,10 @@ importers:
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
 
   packages/plugin-sdk:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.2.92
+        version: 0.2.119(zod@4.3.6)
     devDependencies:
       '@types/node':
         specifier: ^22.13.14
@@ -247,9 +251,6 @@ importers:
 
   packages/runner:
     dependencies:
-      '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.2.92
-        version: 0.2.119(zod@4.3.6)
       '@coro/intelligence-base':
         specifier: workspace:*
         version: link:../intelligence-base

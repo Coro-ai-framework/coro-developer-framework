@@ -1,8 +1,3 @@
-import {
-  type McpServerConfig,
-  type Query,
-  type SDKUserMessage,
-} from '@anthropic-ai/claude-agent-sdk'
 import { mkdirSync, readFileSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
@@ -64,12 +59,6 @@ import {
   emptyTokenUsage,
 } from './types'
 import { assertJobPluginRequirements } from './plugin-preflight'
-import {
-  ensureClaudeCodeCliExecutable,
-  ensureClaudeConfigSymlink,
-  resolveClaudeCodeCliPath,
-  type PushableInput,
-} from '@coro/llm-anthropic'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -143,29 +132,27 @@ export interface RunJobOptions {
    */
   workflowConfigOverride?: WorkflowConfig | null
   /**
-   * Called BEFORE the phase executor is invoked, with a pushable input
-   * handle. The dispatcher registers it under the job id so a developer
-   * message arriving in the (small) gap between this call and
-   * `onQueryStart` can already be queued — the executor will read it on
-   * its very first iteration. Under the hood this is a runner-built
-   * bridge that translates dispatcher pushes into
-   * {@link DeveloperInputChannel} messages the executor consumes.
+   * Called BEFORE the phase executor is invoked, with the
+   * {@link DeveloperInputChannel} the executor will consume. The
+   * dispatcher registers it under the job id so a developer message
+   * arriving in the (small) gap between this call and
+   * `onSessionStart` is queued and read by the executor on its very
+   * first iteration.
    */
-  onPhasePrepare?: (jobId: string, input: PushableInput) => void
+  onPhasePrepare?: (jobId: string, input: DeveloperInputChannel) => void
   /**
-   * Called when the executor has set up its native session. The runner
-   * passes a thin {@link Query}-shaped adapter whose `interrupt()`
-   * delegates to the executor's session controller. The dispatcher uses
-   * this to store a reference for `q.interrupt()` so a developer message
-   * can preempt an in-flight model turn / tool call.
+   * Called when the executor has set up its native session and exposes
+   * an {@link ExecutorSessionController}. The dispatcher uses this to
+   * store a reference so a developer message can preempt an in-flight
+   * model turn / tool call via `controller.interrupt()`.
    */
-  onQueryStart?: (jobId: string, query: Query) => void
+  onSessionStart?: (jobId: string, controller: ExecutorSessionController) => void
   /**
    * Called when the executor's per-phase invocation has fully terminated
-   * (success, error, or abort). The dispatcher uses this to remove the
-   * Query and pushable references.
+   * (success, error, or abort). The dispatcher uses this to drop the
+   * controller and developer-input references.
    */
-  onQueryEnd?: (jobId: string) => void
+  onSessionEnd?: (jobId: string) => void
   /**
    * **Test-only.** Invoked synchronously immediately before each phase
    * executor is called, with the live {@link PhaseSignals} and
@@ -327,10 +314,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     return
   }
 
-  /** Bundled Claude Code entrypoint; npm ships it as non-executable — we chmod if needed. */
-  const claudeCodeCliPath = resolveClaudeCodeCliPath()
-  ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
-
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
@@ -474,7 +457,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
       /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as "cli.js not found". */
       mkdirSync(workingDir, { recursive: true })
-      ensureClaudeConfigSymlink(workingDir, jobIntelligenceDir, logger)
 
       // Resolve the executor early so its `capabilities` can drive
       // prompt/subagent assembly (CLAUDE.md injection, etc.). Test
@@ -590,10 +572,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // The runner's job here is:
       //   1. Build the {@link PhaseExecutionRequest} from the resolved
       //      phase config + intelligence layer + plugin registry.
-      //   2. Bridge the dispatcher's pre-existing {@link PushableInput}
-      //      contract (raw SDKUserMessage push + Query.interrupt()) onto
-      //      the executor's normalized {@link DeveloperInputChannel} +
-      //      {@link ExecutorSessionController} surfaces.
+      //   2. Hand the dispatcher the executor's neutral
+      //      {@link DeveloperInputChannel} (so steering messages reach
+      //      the live tool loop) and {@link ExecutorSessionController}
+      //      (so cancel/preempt is provider-agnostic).
       //   3. Translate normalized events into the same log/state side
       //      effects the runner has always produced (appendLog, syncJob,
       //      phaseUsage snapshots, MCP-usage counters).
@@ -604,59 +586,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Developer-input channel handed to the executor. It starts as a
       // no-op pair; the executor reassigns `push`/`close` early in
       // `executePhase` (synchronously, before any await) so that
-      // dispatcher messages routed through the bridge end up in the
+      // dispatcher messages routed via this channel end up in the
       // executor's live SDK input pushable. The mutation is observed
-      // here because the bridge looks up `.push` on every call.
+      // by every subsequent `.push` because the dispatcher captured the
+      // same object reference via `onPhasePrepare` below.
       const developerInput: DeveloperInputChannel = {
         push: () => { /* replaced by executor on session start */ },
         close: () => { /* replaced by executor on session start */ },
       }
 
-      // The dispatcher tracks long-lived pushables under each job id and
-      // pushes raw {@link SDKUserMessage}s when a developer steers the
-      // agent mid-phase. Under the executor model we accept the same
-      // shape (so the dispatcher contract is unchanged) and translate
-      // each push into a {@link ConversationMessage} pushed into the
-      // executor's developer-input channel. The `meta.sdkUserMessage`
-      // round-trip lets Anthropic-flavoured executors short-circuit
-      // back to the original SDK message without information loss.
-      const dummyIterable: AsyncIterable<SDKUserMessage> = {
-        [Symbol.asyncIterator]() {
-          return {
-            async next(): Promise<IteratorResult<SDKUserMessage>> {
-              return { value: undefined as unknown as SDKUserMessage, done: true }
-            },
-          }
-        },
-      }
-      const bridgePushable: PushableInput = {
-        iterable: dummyIterable,
-        push(msg: SDKUserMessage): void {
-          const c = msg.message?.content
-          const text = typeof c === 'string'
-            ? c
-            : Array.isArray(c)
-              ? c
-                .map(b => (typeof b === 'object' && b && 'text' in b
-                  ? String((b as { text?: unknown }).text ?? '')
-                  : ''))
-                .join('')
-              : ''
-          developerInput.push({
-            role: 'user',
-            content: text,
-            meta: { sdkUserMessage: msg },
-          })
-        },
-        close(): void {
-          developerInput.close()
-        },
-      }
-
       // Register BEFORE the executor runs so any developer message that
       // races with phase startup lands in the executor's input on its
       // first iteration. Mirrors the legacy `onPhasePrepare` contract.
-      options?.onPhasePrepare?.(liveJob.id, bridgePushable)
+      options?.onPhasePrepare?.(liveJob.id, developerInput)
 
       const pluginMcpServers = collectPluginMcpServers({ plugins: ctx.plugins, logger })
       const userMcpServers = collectUserMcpServers({ logger })
@@ -703,15 +645,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         phase: liveJob.phase,
         lifecycle: {
           onSessionStart: (controller: ExecutorSessionController) => {
-            // Adapt the executor's controller to the SDK Query shape so
-            // the dispatcher's existing `onQueryStart` consumer keeps
-            // calling `q.interrupt()` unchanged.
-            options?.onQueryStart?.(
-              liveJob.id,
-              { interrupt: () => controller.interrupt() } as unknown as Query,
-            )
+            options?.onSessionStart?.(liveJob.id, controller)
           },
-          onSessionEnd: () => options?.onQueryEnd?.(liveJob.id),
+          onSessionEnd: () => options?.onSessionEnd?.(liveJob.id),
         },
         developerInput,
       }
@@ -882,7 +818,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         // Close the developer-input channel so the executor's internal
         // SDK iterable can finish cleanly. The executor's
         // `lifecycle.onSessionEnd` is responsible for calling
-        // `options?.onQueryEnd` itself.
+        // `options?.onSessionEnd` itself.
         try { developerInput.close() } catch { /* best-effort */ }
       }
 
@@ -1385,7 +1321,8 @@ export function selectModel(
 
 /**
  * Collects every active plugin's `mcpServer()` descriptor and returns a
- * `Record<pluginId, McpServerConfig>` ready to merge into the SDK's
+ * `Record<pluginId, PluginMcpServerConfig>` ready to merge into the
+ * executor's `pluginMcpServers` request field.
  * `mcpServers` option. Plugins without an `mcpServer()` (e.g. BitBucket
  * pre-MCP) are silently skipped — the hybrid `scm_*`/`tracker_*` proxy
  * is responsible for falling back to the plugin's native methods.
@@ -1399,8 +1336,8 @@ export function selectModel(
 export function collectPluginMcpServers(args: {
   plugins: PluginRegistry
   logger: Logger
-}): Record<string, McpServerConfig> {
-  const result: Record<string, McpServerConfig> = {}
+}): Record<string, PluginMcpServerConfig> {
+  const result: Record<string, PluginMcpServerConfig> = {}
   const reservedIds = new Set<string>(['coro', 'a5'])
 
   for (const runtime of args.plugins.all()) {
@@ -1443,9 +1380,9 @@ export function collectPluginMcpServers(args: {
     const toolsPolicy = buildPluginMcpToolPolicy(allowed, disallowed)
 
     if (descriptor.type === 'http' || descriptor.type === 'sse') {
-      result[id] = toolsPolicy
+      result[id] = (toolsPolicy
         ? { ...descriptor, tools: toolsPolicy }
-        : descriptor
+        : descriptor) as unknown as PluginMcpServerConfig
     } else {
       // stdio descriptors don't accept `tools` directly in the SDK
       // typing; the SDK's `setMcpServers` ignores the field for stdio,
@@ -1453,7 +1390,7 @@ export function collectPluginMcpServers(args: {
       // `allowedTools` in the SDK's permission system. We pass it
       // through unchanged here and rely on the per-plugin manifest's
       // capability flags to drive the prompt-side curation in S2.
-      result[id] = descriptor
+      result[id] = descriptor as unknown as PluginMcpServerConfig
     }
   }
 
@@ -1463,8 +1400,9 @@ export function collectPluginMcpServers(args: {
 /**
  * Collects bring-your-own MCP servers from the local config
  * (`~/.coro/config.json` → `mcpServers`). Returns a `Record<id,
- * McpServerConfig>` ready to merge into the SDK's `mcpServers`
- * option, exactly mirroring the shape `collectPluginMcpServers` emits.
+ * PluginMcpServerConfig>` ready to merge into the executor's
+ * `pluginMcpServers` request field, exactly mirroring the shape
+ * `collectPluginMcpServers` emits.
  *
  * Servers with `enabled: false` are skipped. The reserved id `coro`
  * is rejected with a warning. `allowedTools` / `disallowedTools` are
@@ -1476,8 +1414,8 @@ export function collectPluginMcpServers(args: {
  * developer mis-edited the config. The SDK reports unreachable MCP
  * servers in its `init` message anyway.
  */
-export function collectUserMcpServers(args: { logger: Logger }): Record<string, McpServerConfig> {
-  const result: Record<string, McpServerConfig> = {}
+export function collectUserMcpServers(args: { logger: Logger }): Record<string, PluginMcpServerConfig> {
+  const result: Record<string, PluginMcpServerConfig> = {}
   let config: ReturnType<typeof loadLocalConfig>
   try {
     config = loadLocalConfig()
@@ -1538,7 +1476,7 @@ export function collectUserMcpServers(args: { logger: Logger }): Record<string, 
         url: raw.url,
         ...(raw.headers ? { headers: raw.headers } : {}),
       }
-      result[id] = (toolsPolicy ? { ...desc, tools: toolsPolicy } : desc) as McpServerConfig
+      result[id] = (toolsPolicy ? { ...desc, tools: toolsPolicy } : desc) as unknown as PluginMcpServerConfig
     } else if (raw.type === 'stdio') {
       const desc = {
         type: 'stdio' as const,
@@ -1546,7 +1484,7 @@ export function collectUserMcpServers(args: { logger: Logger }): Record<string, 
         ...(raw.args ? { args: raw.args } : {}),
         ...(raw.env ? { env: raw.env } : {}),
       }
-      result[id] = desc as McpServerConfig
+      result[id] = desc as unknown as PluginMcpServerConfig
     }
   }
 

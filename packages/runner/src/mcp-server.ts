@@ -1,4 +1,4 @@
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
+import { tool, createSdkMcpServer } from '@coro/plugin-sdk'
 import { z } from 'zod'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { createMcpToolHandlers, mcpError, mcpText, wrapHandlersSafely } from './mcp-handlers'
