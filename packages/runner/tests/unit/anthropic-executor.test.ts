@@ -173,20 +173,10 @@ describe('AnthropicExecutor — healthcheck', () => {
   })
 })
 
-describe('AnthropicExecutor — executePhase', () => {
-  it('throws the Phase 2 stub error (will be wired in Phase 2c)', async () => {
-    const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
-      logger: silentLogger,
-    })
-
-    // executePhase returns an async iterable that throws on first iteration.
-    const iter = ex.executePhase({} as never)
-    await expect((async () => {
-      for await (const _ev of iter) { void _ev }
-    })()).rejects.toThrow(/not yet wired into the runner/)
-  })
-})
+// `executePhase` is wired up in Phase 2c. Its end-to-end behaviour
+// (event mapping, signal propagation, session resume) is exercised by
+// the runner integration tests in `tests/runner/runner.test.ts`,
+// which drive a stub executor against the real `runJob` loop.
 
 describe('AnthropicExecutor — mcpServer', () => {
   it('returns undefined (Anthropic consumes the runner-supplied Coro MCP server)', () => {

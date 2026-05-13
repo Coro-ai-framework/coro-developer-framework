@@ -1,6 +1,13 @@
+import path from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { z } from 'zod'
-import { reattachDynamicMcpServers, runJob, type RunnerContext, type QueryInvocation } from '../../src/jobs/runner'
+import {
+  buildPhaseHooks,
+  reattachDynamicMcpServers,
+  runJob,
+  type RunJobOptions,
+  type RunnerContext,
+} from '../../src/jobs/runner'
 import {
   STATUS_CANCELLED,
   JobType,
@@ -17,6 +24,12 @@ import type { WorkflowConfig } from '../../src/workflow-parser'
 import type { Settings } from '../../src/config/settings'
 import { PluginRegistry } from '../../src/plugins/registry'
 import type { ScmPluginRuntime } from '../../src/plugins'
+import type {
+  PhaseExecutionRequest,
+  PhaseExecutorEvent,
+  PhaseExecutorRuntime,
+} from '../../src/plugins/types'
+import type { PhaseSignals, ToolContext } from '../../src/tools/types'
 
 vi.mock('../../src/prompt/builder', () => ({
   buildSystemPrompt: vi.fn().mockResolvedValue('# Mock system prompt for runner tests'),
@@ -210,22 +223,122 @@ async function capturePreToolUseHook(
   ctx: RunnerContext,
   workflowConfig: WorkflowConfig = workflowSingle,
 ): Promise<(input: Record<string, unknown>) => Promise<unknown>> {
-  let hooks: Record<string, Array<{ hooks: Array<(input: Record<string, unknown>) => Promise<unknown>> }>> | undefined
-
-  await runJob(makeJob({ phase: 'only', status: 'queued' }), ctx, {
-    queryImpl: (inv) =>
-      (async function* () {
-        hooks = inv.options['hooks'] as typeof hooks
-        yield { type: 'system', session_id: 'hook-capture' }
-      })(),
-    workflowConfigOverride: workflowConfig,
+  // Hooks are now built INSIDE the executor (`AnthropicExecutor` calls
+  // `buildPhaseHooks` from the runner-supplied {@link HookPolicy}). The
+  // test reproduces the same call shape the runner uses to wire the
+  // hook into a phase, then invokes it directly.
+  const phase = workflowConfig.phases[0]!
+  const hooks = buildPhaseHooks({
+    liveJobRef: () => ({ phase: phase.name }),
+    workingDir: path.join(ctx.settings.paths.workingDir, 'runner-job-1'),
+    coroIntelligenceDir: ctx.settings.paths.coroIntelligenceDir,
+    allowedTools: phase.tools,
+    logger: ctx.logger,
   })
-
-  const preToolUse = hooks?.PreToolUse?.[0]?.hooks?.[0]
+  const preToolUse = hooks.PreToolUse?.[0]?.hooks?.[0] as
+    | ((input: Record<string, unknown>) => Promise<unknown>)
+    | undefined
   if (!preToolUse) {
-    throw new Error('PreToolUse hook was not attached to the query options')
+    throw new Error('PreToolUse hook was not produced by buildPhaseHooks')
   }
   return preToolUse
+}
+
+// ── Stub PhaseExecutorRuntime helpers ──────────────────────────────────────
+//
+// The runner's contract with executors is the {@link PhaseExecutorRuntime}
+// interface: a per-phase `executePhase(req)` returning an
+// `AsyncIterable<PhaseExecutorEvent>`. Tests build a small stub whose
+// generator function gets a captured handle to the live
+// {@link PhaseSignals} + {@link ToolContext} so it can mutate signals
+// (`nextPhase`, `awaitingEvent`, `escalated`) the way a real
+// `mcp__coro__*` tool call would.
+
+type StubGenerator = (
+  req: PhaseExecutionRequest,
+  helpers: { signals: PhaseSignals; toolCtx: ToolContext },
+) => AsyncIterable<PhaseExecutorEvent>
+
+interface StubExecutorBundle {
+  executor: PhaseExecutorRuntime
+  bootHook: NonNullable<RunJobOptions['onPhaseExecutorBoot']>
+  /** Records of every PhaseExecutionRequest the runner handed to the executor. */
+  capturedRequests: PhaseExecutionRequest[]
+}
+
+function makeStubExecutor(generate: StubGenerator): StubExecutorBundle {
+  const helpers: { signals?: PhaseSignals; toolCtx?: ToolContext } = {}
+  const capturedRequests: PhaseExecutionRequest[] = []
+  const executor = {
+    kind: 'executor' as const,
+    capabilities: {
+      supportsClaudeMdNativeWalkUp: false,
+      supportsStreamingTokenUsage: true,
+      supportsThinking: true,
+      supportsResumeSession: true,
+      supportsSubagents: true,
+    },
+    manifest: {
+      id: 'test-stub-executor',
+      kind: 'executor' as const,
+      version: '0.0.1',
+      displayName: 'Test stub executor',
+      hostCompatibility: '*',
+      configSchema: z.object({}),
+    },
+    supports: () => true,
+    listModels: () => [],
+    init: async () => {},
+    healthcheck: async () => ({ ok: true }),
+    dispose: async () => {},
+    executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent> {
+      capturedRequests.push(req)
+      return generate(req, helpers as { signals: PhaseSignals; toolCtx: ToolContext })
+    },
+  } as unknown as PhaseExecutorRuntime
+  return {
+    executor,
+    bootHook: (_jobId, ctx) => {
+      helpers.signals = ctx.signals
+      helpers.toolCtx = ctx.toolCtx
+    },
+    capturedRequests,
+  }
+}
+
+/**
+ * Convenience wrapper that runs a job against a stub executor and
+ * wires both the executor and the boot hook. Tests that need to
+ * inspect captured requests should create the bundle manually.
+ */
+async function runWithStubExecutor(
+  job: Job,
+  ctx: RunnerContext,
+  generate: StubGenerator,
+  options: Omit<RunJobOptions, 'executorImpl' | 'onPhaseExecutorBoot'> = {},
+): Promise<StubExecutorBundle> {
+  const bundle = makeStubExecutor(generate)
+  await runJob(job, ctx, {
+    ...options,
+    executorImpl: bundle.executor,
+    onPhaseExecutorBoot: bundle.bootHook,
+  })
+  return bundle
+}
+
+/**
+ * Helper: yield the canonical "phase ran with no model turns" sequence
+ * — a session_start sets the sessionId, a done event closes the phase
+ * with zero metrics. Used by tests that don't care about token usage.
+ */
+async function* yieldEmptyPhase(sessionId: string): AsyncIterable<PhaseExecutorEvent> {
+  yield { type: 'session_start', sessionId }
+  yield {
+    type: 'done',
+    stopReason: 'end_turn',
+    sessionState: { sessionId },
+    metrics: { numTurns: 0 },
+  }
 }
 
 describe('runJob (mocked Agent SDK query)', () => {
@@ -238,15 +351,12 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('completes a single-phase workflow when the stream ends', async () => {
-    const queryImpl = () =>
-      (async function* () {
-        yield { type: 'system', session_id: 'sess-single' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      () => yieldEmptyPhase('sess-single'),
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
     expect(stateBackend.updateJob).toHaveBeenCalledWith(
@@ -257,16 +367,15 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('advances phases then completes', async () => {
     let call = 0
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* () {
         call += 1
-        yield { type: 'system', session_id: `sess-${call}` }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+        yield* yieldEmptyPhase(`sess-${call}`)
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(call).toBe(2)
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
@@ -280,17 +389,16 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('parks with awaiting-pr-merge when event name has no "plan" substring', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
-        inv.signals.awaitingEvent = 'pr:merged'
-        inv.signals.awaitingPrId = 99
-        yield { type: 'system', session_id: 's1' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.awaitingEvent = 'pr:merged'
+        h.signals.awaitingPrId = 99
+        yield* yieldEmptyPhase('s1')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_AWAITING_PR_MERGE)
     expect(stateBackend.current.awaitingEvent).toBe('pr:merged')
@@ -298,16 +406,15 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('parks with awaiting-developer-input when event name starts with "developer-input"', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
-        inv.signals.awaitingEvent = 'developer-input: unclear if X should be idempotent'
-        yield { type: 'system' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.awaitingEvent = 'developer-input: unclear if X should be idempotent'
+        yield* yieldEmptyPhase('dev-input')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
     expect(stateBackend.current.awaitingEvent).toBe(
@@ -333,15 +440,12 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = () =>
-      (async function* () {
-        yield { type: 'system', session_id: 'sess-cp' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha', interactive: true }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowCheckpoint,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha', interactive: true }),
+      ctx,
+      () => yieldEmptyPhase('sess-cp'),
+      { workflowConfigOverride: workflowCheckpoint },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
     expect(stateBackend.current.phase).toBe('alpha')
@@ -365,16 +469,15 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
-        inv.signals.awaitingEvent = 'developer-input: Approve implementation plan for alpha'
-        yield { type: 'system', session_id: 'sess-agent-approval' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha', interactive: true }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowCheckpoint,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha', interactive: true }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.awaitingEvent = 'developer-input: Approve implementation plan for alpha'
+        yield* yieldEmptyPhase('sess-agent-approval')
+      },
+      { workflowConfigOverride: workflowCheckpoint },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
     expect(stateBackend.current.phase).toBe('alpha')
@@ -410,16 +513,15 @@ describe('runJob (mocked Agent SDK query)', () => {
     ctx = makeRunnerContext(stateBackend)
 
     let call = 0
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha', interactive: true, approvedAdvanceFromPhase: 'alpha' }),
+      ctx,
+      async function* () {
         call += 1
-        yield { type: 'system', session_id: `sess-approved-${call}` }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha', interactive: true, approvedAdvanceFromPhase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowCheckpoint,
-    })
+        yield* yieldEmptyPhase(`sess-approved-${call}`)
+      },
+      { workflowConfigOverride: workflowCheckpoint },
+    )
 
     expect(call).toBe(2)
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
@@ -428,32 +530,30 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('parks with awaiting-plan-approval when event name includes "plan"', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
-        inv.signals.awaitingEvent = 'plan:approved'
-        yield { type: 'system' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.awaitingEvent = 'plan:approved'
+        yield* yieldEmptyPhase('plan-park')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_AWAITING_PLAN_APPROVAL)
   })
 
   it('auto-advances when query ends without any signal (no escalation)', async () => {
     let call = 0
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* () {
         call += 1
-        yield { type: 'system', session_id: `auto-${call}` }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+        yield* yieldEmptyPhase(`auto-${call}`)
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(call).toBe(2)
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
@@ -461,16 +561,15 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('stops at a safe boundary when the job is cancelled during the live turn', async () => {
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
         await stateBackend.updateJob('runner-job-1', { ...cancellationPatch, phase: 'only' })
-        yield { type: 'system', session_id: 'sess-cancelled' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+        yield* yieldEmptyPhase('sess-cancelled')
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
     expect(stateBackend.current.phase).toBe('only')
@@ -481,18 +580,17 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('does not park a cancelled job even if the agent already requested await_event', async () => {
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
         await stateBackend.updateJob('runner-job-1', cancellationPatch)
-        inv.signals.awaitingEvent = 'pr:merged'
-        inv.signals.awaitingPrId = 99
-        yield { type: 'system', session_id: 'sess-cancelled-await' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+        h.signals.awaitingEvent = 'pr:merged'
+        h.signals.awaitingPrId = 99
+        yield* yieldEmptyPhase('sess-cancelled-await')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
     expect(stateBackend.current.awaitingEvent).toBeUndefined()
@@ -500,16 +598,16 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('does not overwrite a cancelled job with failed when the active turn crashes', async () => {
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
         await stateBackend.updateJob('runner-job-1', cancellationPatch)
         throw new Error('query crashed after cancel')
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+        yield { type: 'session_start', sessionId: 'never' } as PhaseExecutorEvent
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_CANCELLED)
     expect(stateBackend.updateJob).not.toHaveBeenCalledWith(
@@ -519,55 +617,40 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('persists sessionId from system messages', async () => {
-    const queryImpl = () =>
-      (async function* () {
-        yield { type: 'system', session_id: 'persist-me' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      () => yieldEmptyPhase('persist-me'),
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.current.sessionId).toBe('persist-me')
   })
 
   it('logs assistant text from BetaMessage content blocks', async () => {
-    const queryImpl = () =>
-      (async function* () {
-        yield {
-          type: 'assistant',
-          message: { content: [{ type: 'text', text: 'Hello from the assistant' }] },
-          session_id: 'x',
-        }
-        yield { type: 'system', session_id: 'x' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
+        yield { type: 'text', content: 'Hello from the assistant' }
+        yield* yieldEmptyPhase('x')
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.appendLog).toHaveBeenCalledWith('runner-job-1', 'Hello from the assistant')
   })
 
   it('logs tool_use blocks from assistant message', async () => {
-    const queryImpl = () =>
-      (async function* () {
-        yield {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'tool_use', name: 'Read', input: { path: '/tmp/foo' } }],
-          },
-          session_id: 'x',
-        }
-        yield { type: 'system', session_id: 'x' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
+        yield { type: 'tool_call', toolName: 'Read', input: { path: '/tmp/foo' }, isMcp: false }
+        yield* yieldEmptyPhase('x')
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.appendLog).toHaveBeenCalledWith(
       'runner-job-1',
@@ -576,16 +659,18 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('logs tool_use_summary with summary text', async () => {
-    const queryImpl = () =>
-      (async function* () {
-        yield { type: 'tool_use_summary', summary: 'Read 3 files in src/' }
-        yield { type: 'system', session_id: 'x' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+    // The Anthropic executor maps the SDK's `tool_use_summary` event to
+    // a `log` event with a `[tool_summary] ` prefix; the runner mirrors
+    // every executor `log` event into the per-job log.
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
+        yield { type: 'log', level: 'info', message: '[tool_summary] Read 3 files in src/' }
+        yield* yieldEmptyPhase('x')
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.appendLog).toHaveBeenCalledWith(
       'runner-job-1',
@@ -595,21 +680,15 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('chunks long thinking logs instead of truncating them', async () => {
     const longThinking = 'x'.repeat(4_200)
-    const queryImpl = () =>
-      (async function* () {
-        yield {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'thinking', thinking: longThinking }],
-          },
-        }
-        yield { type: 'system', session_id: 'x' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
+        yield { type: 'thinking', content: longThinking }
+        yield* yieldEmptyPhase('x')
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     const thinkingLogs = stateBackend.appendLog.mock.calls
       .filter((call: unknown[]) => call[0] === 'runner-job-1' && typeof call[1] === 'string' && (call[1] as string).startsWith('[thinking] '))
@@ -620,16 +699,15 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('marks job failed when query throws', async () => {
-    const queryImpl = () =>
-      (async function* () {
-        yield { type: 'system' }
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
+        yield { type: 'session_start', sessionId: 'crash' }
         throw new Error('SDK exploded')
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_FAILED)
     expect(stateBackend.current.escalationMessage).toContain('SDK exploded')
@@ -637,21 +715,15 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('warns but still auto-advances when built-in tools ran but no A5 MCP tool was used', async () => {
-    const queryImpl = () =>
-      (async function* () {
-        yield {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'tool_use', name: 'Bash', input: { command: 'git status' } }],
-          },
-        }
-        yield { type: 'system', session_id: 'missing-mcp' }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* () {
+        yield { type: 'tool_call', toolName: 'Bash', input: { command: 'git status' }, isMcp: false }
+        yield* yieldEmptyPhase('missing-mcp')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
     expect(stateBackend.current.phase).toBe('beta')
@@ -783,39 +855,35 @@ describe('runJob (mocked Agent SDK query)', () => {
       overrides: {},
     }
 
-    let capturedAgents: Record<string, unknown> | undefined
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
-        capturedAgents = inv.options['agents'] as Record<string, unknown>
-        yield { type: 'system', session_id: 'subagent-tools' }
-      })()
+    const bundle = await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      () => yieldEmptyPhase('subagent-tools'),
+      { workflowConfigOverride: workflowWithSubagent },
+    )
 
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowWithSubagent,
-    })
-
-    expect(capturedAgents).toMatchObject({
-      reviewer: {
-        tools: ['Read', 'Bash', 'mcp__coro__log'],
-      },
-    })
+    // The runner translates phase-config subagents into the executor
+    // contract's `subagents` payload. Each entry carries the agent's
+    // model + tool whitelist so the executor can encode the SDK shape.
+    const reviewer = bundle.capturedRequests[0]?.subagents?.find(s => s.name === 'reviewer')
+    expect(reviewer).toBeDefined()
+    expect(reviewer!.allowedTools).toEqual(['Read', 'Bash', 'mcp__coro__log'])
   })
 
   it('stops when escalated signal is set (after stateBackend update)', async () => {
-    const queryImpl = async function* (inv: QueryInvocation) {
-      await inv.toolCtx.stateBackend.updateJob(inv.toolCtx.job.id, {
-        status: STATUS_ESCALATED,
-        escalationMessage: 'Human needed',
-      })
-      inv.signals.escalated = true
-      yield { type: 'system' }
-    }
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
+        await h.toolCtx.stateBackend.updateJob(h.toolCtx.job.id, {
+          status: STATUS_ESCALATED,
+          escalationMessage: 'Human needed',
+        })
+        h.signals.escalated = true
+        yield* yieldEmptyPhase('escalated')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(stateBackend.current.status).toBe(STATUS_ESCALATED)
     expect(stateBackend.current.escalationMessage).toBe('Human needed')
@@ -823,19 +891,18 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('goto_phase overrides the next phase via nextPhase signal', async () => {
     let call = 0
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
         call += 1
         if (call === 1) {
-          inv.signals.nextPhase = 'beta'
+          h.signals.nextPhase = 'beta'
         }
-        yield { type: 'system', session_id: `goto-${call}` }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+        yield* yieldEmptyPhase(`goto-${call}`)
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(call).toBe(2)
     expect(stateBackend.current.phase).toBe('beta')
@@ -846,18 +913,17 @@ describe('runJob (mocked Agent SDK query)', () => {
     const prompts: string[] = []
     const resumes: Array<string | undefined> = []
     let n = 0
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (req) {
         n += 1
-        prompts.push(inv.prompt)
-        resumes.push(inv.options['resume'] as string | undefined)
-        yield { type: 'system', session_id: `sess-${n}` }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+        prompts.push(req.userPrompt)
+        resumes.push(req.sessionState?.sessionId)
+        yield* yieldEmptyPhase(`sess-${n}`)
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     expect(prompts).toHaveLength(2)
     expect(resumes).toEqual([undefined, 'sess-1'])
@@ -898,34 +964,33 @@ describe('runJob (mocked Agent SDK query)', () => {
     // completes. Without this guard the generator would keep setting
     // nextPhase='beta' when already on beta, looping forever.
     let call = 0
-    const queryImpl = (inv: QueryInvocation) =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
         call++
         if (call === 1) {
+          // Cumulative usage snapshot mirroring what the executor emits
+          // after the first assistant turn.
           yield {
-            type: 'assistant',
-            message: {
-              content: [{ type: 'text', text: 'Working...' }],
-              usage: {
-                input_tokens: 1000,
-                output_tokens: 200,
-                cache_read_input_tokens: 500,
-                cache_creation_input_tokens: 100,
-              },
+            type: 'usage',
+            tokens: {
+              inputTokens: 1000,
+              outputTokens: 200,
+              cacheReadInputTokens: 500,
+              cacheCreationInputTokens: 100,
             },
           }
-          // Agent calls goto_phase — sets signal, stream breaks before result event
-          inv.signals.nextPhase = 'beta'
-          yield { type: 'system', session_id: 'sig-break' }
+          // Agent calls goto_phase — sets signal, stream breaks before
+          // a `done` event would normally finalise the phase.
+          h.signals.nextPhase = 'beta'
+          yield { type: 'session_start', sessionId: 'sig-break' }
         } else {
-          yield { type: 'system', session_id: 'beta-done' }
+          yield* yieldEmptyPhase('beta-done')
         }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     // Phase alpha should have a PhaseUsage entry despite no result event
     const alphaUsage = stateBackend.current.phaseUsage.find(
@@ -947,32 +1012,41 @@ describe('runJob (mocked Agent SDK query)', () => {
     stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* () {
+        // Per-turn cumulative usage from the assistant turn.
         yield {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'text', text: 'Done' }],
-            usage: { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          type: 'usage',
+          tokens: {
+            inputTokens: 500,
+            outputTokens: 100,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
           },
         }
-        // Result event with authoritative totals
+        // Final cumulative usage with authoritative totals + cost,
+        // mirroring how the executor maps a `result` event.
         yield {
-          type: 'result',
-          result: 'Phase complete',
-          usage: { input_tokens: 2000, output_tokens: 500 },
-          total_cost_usd: 1.2345,
-          duration_ms: 45000,
-          duration_api_ms: 30000,
-          num_turns: 5,
+          type: 'usage',
+          tokens: {
+            inputTokens: 2000,
+            outputTokens: 500,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            totalCostUsd: 1.2345,
+          },
         }
-        yield { type: 'system', session_id: 'res-ok' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+        yield {
+          type: 'done',
+          stopReason: 'end_turn',
+          sessionState: { sessionId: 'res-ok' },
+          metrics: { durationMs: 45000, durationApiMs: 30000, numTurns: 5 },
+        }
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     const onlyUsage = stateBackend.current.phaseUsage.find(
       (p: { phase: string }) => p.phase === 'only',
@@ -1017,29 +1091,29 @@ describe('runJob (mocked Agent SDK query)', () => {
     }))
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'only', sessionId: 'resume-phase-cost' }),
+      ctx,
+      async function* () {
         yield {
-          type: 'result',
-          result: 'Resumed phase complete',
-          usage: {
-            input_tokens: 1800,
-            output_tokens: 450,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
+          type: 'usage',
+          tokens: {
+            inputTokens: 1800,
+            outputTokens: 450,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            totalCostUsd: 2.49,
           },
-          total_cost_usd: 2.49,
-          duration_ms: 10_000,
-          duration_api_ms: 8_000,
-          num_turns: 2,
         }
-        yield { type: 'system', session_id: 'resume-phase-cost' }
-      })()
-
-    await runJob(makeJob({ phase: 'only', sessionId: 'resume-phase-cost' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+        yield {
+          type: 'done',
+          stopReason: 'end_turn',
+          sessionState: { sessionId: 'resume-phase-cost' },
+          metrics: { durationMs: 10_000, durationApiMs: 8_000, numTurns: 2 },
+        }
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     const onlyUsage = stateBackend.current.phaseUsage.at(-1)
     expect(onlyUsage).toBeDefined()
@@ -1075,30 +1149,32 @@ describe('runJob (mocked Agent SDK query)', () => {
     }))
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'only', sessionId: 'resume-no-usage' }),
+      ctx,
+      async function* () {
+        // The Anthropic executor surfaces an `is_error` result via a
+        // log event before yielding the final usage / done.
+        yield { type: 'log', level: 'error', message: '[error] Credits exhausted' }
         yield {
-          type: 'result',
-          is_error: true,
-          errors: ['Credits exhausted'],
-          usage: {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
+          type: 'usage',
+          tokens: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            totalCostUsd: 1.99,
           },
-          total_cost_usd: 1.99,
-          duration_ms: 0,
-          duration_api_ms: 0,
-          num_turns: 1,
         }
-        yield { type: 'system', session_id: 'resume-no-usage' }
-      })()
-
-    await runJob(makeJob({ phase: 'only', sessionId: 'resume-no-usage' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+        yield {
+          type: 'done',
+          stopReason: 'error',
+          sessionState: { sessionId: 'resume-no-usage' },
+          metrics: { durationMs: 0, durationApiMs: 0, numTurns: 1 },
+        }
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
 
     const onlyUsage = stateBackend.current.phaseUsage.at(-1)
     expect(onlyUsage).toBeDefined()
@@ -1111,28 +1187,24 @@ describe('runJob (mocked Agent SDK query)', () => {
 
   it('accumulates PhaseUsage entries across multiple phases', async () => {
     let call = 0
-    const queryImpl = () =>
-      (async function* () {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* () {
         call++
         yield {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'text', text: `Phase ${call}` }],
-            usage: {
-              input_tokens: call * 1000,
-              output_tokens: call * 200,
-              cache_read_input_tokens: 0,
-              cache_creation_input_tokens: 0,
-            },
+          type: 'usage',
+          tokens: {
+            inputTokens: call * 1000,
+            outputTokens: call * 200,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
           },
         }
-        yield { type: 'system', session_id: `multi-${call}` }
-      })()
-
-    await runJob(makeJob({ phase: 'alpha' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowTwoPhase,
-    })
+        yield* yieldEmptyPhase(`multi-${call}`)
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
 
     // Both phases should have entries
     expect(stateBackend.current.phaseUsage).toHaveLength(2)
@@ -1150,15 +1222,12 @@ describe('runJob (mocked Agent SDK query)', () => {
     stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
     ctx = makeRunnerContext(stateBackend)
 
-    const queryImpl = () =>
-      (async function* () {
-        yield { type: 'system', session_id: 'no-turns' }
-      })()
-
-    await runJob(makeJob({ phase: 'only' }), ctx, {
-      queryImpl,
-      workflowConfigOverride: workflowSingle,
-    })
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      () => yieldEmptyPhase('no-turns'),
+      { workflowConfigOverride: workflowSingle },
+    )
 
     expect(stateBackend.current.phaseUsage).toHaveLength(1)
     expect(stateBackend.current.phaseUsage[0].phase).toBe('only')
