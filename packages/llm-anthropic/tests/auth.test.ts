@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildAnthropicAuthEnv } from '../../src/jobs/runner'
+import { buildAnthropicAuthEnv } from '../src/auth'
 
 // The Claude Code CLI silently prefers ANTHROPIC_API_KEY when both env vars
 // are present, so `buildAnthropicAuthEnv` must blank the unused key (not just

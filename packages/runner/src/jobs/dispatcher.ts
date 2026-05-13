@@ -26,7 +26,8 @@ import {
   jobStatusToChildStatus,
   reconcileReady,
 } from '../tools/campaign'
-import { runJob, RunnerContext, type PushableInput } from './runner'
+import { runJob, RunnerContext } from './runner'
+import { type PushableInput } from '@coro/llm-anthropic'
 import type { EventTransport } from '../state/transport'
 import type { InboundEvent, InboundEventSource } from '../state/events'
 import type { ExternalRef } from '../plugins/refs'

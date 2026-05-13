@@ -72,7 +72,7 @@ import {
 } from '../config/local-config'
 import { buildBuiltinPluginRegistry } from '../plugins/builtin'
 import { makePluginWebhookNormalizer } from '../plugins/webhook-bridge'
-import { createAnthropicExecutor } from '../jobs/anthropic-executor'
+import { createAnthropicExecutor } from '@coro/llm-anthropic'
 import type { PluginRegistry } from '../plugins/registry'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 

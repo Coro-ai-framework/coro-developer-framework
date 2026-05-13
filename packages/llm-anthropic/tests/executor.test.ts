@@ -8,8 +8,8 @@ import pino from 'pino'
 import {
   AnthropicExecutor,
   createAnthropicExecutor,
-} from '../../src/jobs/anthropic-executor'
-import type { Settings } from '../../src/config/settings'
+} from '../src/executor'
+import type { AnthropicExecutorSettings as Settings } from '../src/types'
 
 function makeSettings(auth: Settings['claude']['auth']): Settings {
   return {

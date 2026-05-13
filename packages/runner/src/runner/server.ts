@@ -28,12 +28,11 @@ import {
   type LocalConfig,
 } from '../config/local-config'
 import { z } from 'zod'
-import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable } from '../claude-code-path'
+import { resolveClaudeCodeCliPath, ensureClaudeCodeCliExecutable, ClaudeLoginManager } from '@coro/llm-anthropic'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
 import { isStoppedStatus, type Job, type CampaignChild } from '../jobs/types'
 import { resolveDashboardDist } from '../dashboard-dist'
-import { ClaudeLoginManager } from './claude-login'
 import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata } from '../plugins/builtin'
 import { discoverWorkflows } from '../workflow-discovery'

@@ -1,7 +1,7 @@
 import { query, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { Logger } from 'pino'
-import type { ClaudeAccountInfo } from '../config/settings'
-import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
+import type { ClaudeAccountInfo } from './types'
+import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-path'
 
 export type ClaudeLoginStatus = 'idle' | 'authorizing' | 'connected' | 'error'
 

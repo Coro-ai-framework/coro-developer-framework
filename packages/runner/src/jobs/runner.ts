@@ -1,13 +1,10 @@
 import {
-  type HookCallback,
-  type HookJSONOutput,
   type McpServerConfig,
   type McpSdkServerConfig,
-  type McpSetServersResult,
   type Query,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
-import { lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'fs'
+import { mkdirSync, readFileSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
 import path from 'path'
@@ -68,7 +65,12 @@ import {
   emptyTokenUsage,
 } from './types'
 import { assertJobPluginRequirements } from './plugin-preflight'
-import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
+import {
+  ensureClaudeCodeCliExecutable,
+  ensureClaudeConfigSymlink,
+  resolveClaudeCodeCliPath,
+  type PushableInput,
+} from '@coro/llm-anthropic'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -124,25 +126,6 @@ export interface RunnerContext {
  * and `tests/unit/runner-internals.test.ts` (locks pure helpers).
  */
 
-/**
- * Live developer-input pushable. The runner creates one of these per
- * phase and passes its `iterable` as the SDK `query()` prompt. While
- * the iterable is open, the SDK keeps stdin open and the in-process
- * SDK MCP servers (`mcp__coro__*`) keep working — the closed-stdin
- * bug from the prior one-yield generator approach goes away entirely.
- *
- * The dispatcher gets a reference to this object and calls `push()`
- * to inject a developer message mid-phase (paired with `q.interrupt()`
- * so the agent yields its current turn and reads the new message
- * immediately). The runner calls `close()` once the phase's for-await
- * loop has exited, which lets the SDK's `streamInput` consumer
- * complete and finally call `transport.endInput()` cleanly.
- */
-export interface PushableInput {
-  iterable: AsyncIterable<SDKUserMessage>
-  push(msg: SDKUserMessage): void
-  close(): void
-}
 
 /**
  * Optional hooks for tests and future instrumentation.
@@ -193,65 +176,6 @@ export interface RunJobOptions {
    * Production code never sets this.
    */
   onPhaseExecutorBoot?: (jobId: string, ctx: { signals: PhaseSignals; toolCtx: ToolContext }) => void
-}
-
-/**
- * Build a {@link PushableInput} backed by an internal queue. Multiple
- * pushes before a single read are buffered FIFO. Pushing after `close()`
- * is a no-op. The iterable returns once the queue has drained AND
- * `close()` has been called — this matches the AsyncIterator contract
- * the SDK's `streamInput` for-await consumer expects.
- */
-export function createPushableInput(): PushableInput {
-  const buffer: SDKUserMessage[] = []
-  // When a consumer is awaiting `next()` and the buffer is empty, we
-  // park a resolver here. The next push() (or close()) calls it.
-  let waiting: (() => void) | null = null
-  let closed = false
-
-  const wakeup = () => {
-    const w = waiting
-    waiting = null
-    if (w) w()
-  }
-
-  const iterable: AsyncIterable<SDKUserMessage> = {
-    [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
-      return {
-        async next(): Promise<IteratorResult<SDKUserMessage>> {
-          // Drain whatever's buffered first.
-          while (true) {
-            if (buffer.length > 0) {
-              return { value: buffer.shift()!, done: false }
-            }
-            if (closed) {
-              return { value: undefined, done: true }
-            }
-            await new Promise<void>((resolve) => { waiting = resolve })
-          }
-        },
-        async return(): Promise<IteratorResult<SDKUserMessage>> {
-          closed = true
-          wakeup()
-          return { value: undefined, done: true }
-        },
-      }
-    },
-  }
-
-  return {
-    iterable,
-    push(msg: SDKUserMessage): void {
-      if (closed) return
-      buffer.push(msg)
-      wakeup()
-    },
-    close(): void {
-      if (closed) return
-      closed = true
-      wakeup()
-    },
-  }
 }
 
 // ── Runner ────────────────────────────────────────────────────────────────────
@@ -1403,32 +1327,6 @@ export function selectModel(
 }
 
 /**
- * Build the subset of env vars Claude Code uses for authentication. Returns
- * both keys, with the unused one set to `undefined` so it is stripped from the
- * final env map (Node spawn treats `undefined` as "don't pass this key").
- * The `claudeLogin` mode deliberately passes neither variable so the CLI can
- * use its own persisted session and refresh flow.
- */
-export function buildAnthropicAuthEnv(auth: Settings['claude']['auth']): Record<string, string | undefined> {
-  if (auth.method === 'claudeLogin') {
-    return {
-      ANTHROPIC_API_KEY: undefined,
-      CLAUDE_CODE_OAUTH_TOKEN: undefined,
-    }
-  }
-  if (auth.method === 'oauth') {
-    return {
-      ANTHROPIC_API_KEY: undefined,
-      CLAUDE_CODE_OAUTH_TOKEN: auth.oauthToken ?? '',
-    }
-  }
-  return {
-    ANTHROPIC_API_KEY: auth.apiKey ?? '',
-    CLAUDE_CODE_OAUTH_TOKEN: undefined,
-  }
-}
-
-/**
  * Collects every active plugin's `mcpServer()` descriptor and returns a
  * `Record<pluginId, McpServerConfig>` ready to merge into the SDK's
  * `mcpServers` option. Plugins without an `mcpServer()` (e.g. BitBucket
@@ -1613,42 +1511,6 @@ function buildPluginMcpToolPolicy(
   return policy.length > 0 ? policy : undefined
 }
 
-type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconnectMcpServer'>
-
-export async function reattachDynamicMcpServers(
-  liveQuery: DynamicMcpQuery,
-  dynamicMcpServers: Record<string, McpServerConfig>,
-  serverName: string,
-): Promise<{
-  setResult: McpSetServersResult
-  initialStatus: string | null
-  finalStatus: string | null
-  reconnected: boolean
-}> {
-  const setResult = await liveQuery.setMcpServers(dynamicMcpServers)
-  const readStatus = async () => {
-    const statuses = await liveQuery.mcpServerStatus()
-    return statuses.find(status => status.name === serverName)?.status ?? null
-  }
-
-  const initialStatus = await readStatus()
-  let finalStatus = initialStatus
-  let reconnected = false
-
-  if (finalStatus && finalStatus !== 'connected' && !setResult.errors[serverName]) {
-    await liveQuery.reconnectMcpServer(serverName)
-    reconnected = true
-    finalStatus = await readStatus()
-  }
-
-  return {
-    setResult,
-    initialStatus,
-    finalStatus,
-    reconnected,
-  }
-}
-
 export function buildSubagentDefinitions(
   subagents: SubagentConfig[],
   intelligenceDir: string,
@@ -1774,28 +1636,6 @@ export function buildExecutorSubagentSpecs(
 }
 
 /**
- * Symlink {coroIntelligenceDir}/.claude into the job working directory so the Agent SDK's
- * native settingSources: ['project'] discovers .claude/CLAUDE.md and skills.
- * Uses a symlink (not copy) so the per-job overlay always reflects the
- * latest layered intelligence (base + tenant + repo) without copies
- * needing to be re-synced.
- */
-export function ensureClaudeConfigSymlink(workingDir: string, coroIntelligenceDir: string, logger: Logger): void {
-  const target = path.join(coroIntelligenceDir, '.claude')
-  const link = path.join(workingDir, '.claude')
-  try {
-    const stat = lstatSync(link)
-    if (stat.isSymbolicLink()) return
-    rmSync(link, { recursive: true })
-  } catch { /* doesn't exist yet — expected */ }
-  try {
-    symlinkSync(target, link, 'dir')
-  } catch (err) {
-    logger.warn({ err, target, link }, 'Could not create .claude symlink')
-  }
-}
-
-/**
  * Very short per-phase kickoff message. The system prompt already carries
  * the workflow, agent role, and job state — this message just nudges the
  * agent to start (or continue) work in the current phase.
@@ -1815,222 +1655,3 @@ function buildPhaseKickoffMessage(job: Job): string {
   )
 }
 
-// ── SDK hooks ─────────────────────────────────────────────────────────────────
-//
-// PreToolUse hooks fire before every tool call the model makes (builtins AND
-// mcp__coro__*). Returning a `permissionDecision: 'deny'` rejects the call and
-// surfaces `permissionDecisionReason` back to the model so it can course-
-// correct. We use this to encode a filesystem safety guard rail that used to
-// live as prose in agent MDs:
-//
-//   `Write` / `Edit` operations must stay inside the job's working directory
-//   or `coroIntelligenceDir/memory/` — this prevents a runaway agent from clobbering
-//   files elsewhere on the dev machine.
-//
-// Both checks are cheap and deterministic, so moving them from prose to
-// code trades a few kB of tokens for actual enforcement.
-
-export interface BuildHookOpts {
-  /** Closure that returns the current phase name — phase can change between calls. */
-  liveJobRef: () => { phase: string }
-  /** Absolute path to the job's working directory. */
-  workingDir: string
-  /** Absolute path to the Coro intelligence dir. */
-  coroIntelligenceDir: string
-  /** Optional exact tool whitelist for this phase. */
-  allowedTools?: ReadonlyArray<string>
-  logger: Logger
-}
-
-export function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
-  const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
-  const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
-    ? new Set(opts.allowedTools)
-    : null
-
-  const deny = (reason: string): HookJSONOutput => ({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  })
-
-  const preToolUse: HookCallback = async (input) => {
-    if (input.hook_event_name !== 'PreToolUse') return {}
-    const toolName = input.tool_name
-    const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
-
-    if (allowedTools && !allowedTools.has(toolName)) {
-      const reason =
-        `Blocked ${toolName}: phase ${opts.liveJobRef().phase} only allows ` +
-        `${Array.from(allowedTools).join(', ')}. Update the workflow if this phase ` +
-        `needs broader tool access.`
-      opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
-      return deny(reason)
-    }
-
-    // Guard rail: Write/Edit must stay inside working dir or memory/.
-    // Bash commands with obvious write intent (e.g. `rm -rf /`) are harder
-    // to validate generically, so we do the simple path check and rely on
-    // the model's prose instructions for shell safety.
-    if (toolName === 'Write' || toolName === 'Edit') {
-      const rawPath = (toolInput['file_path'] ?? toolInput['path']) as unknown
-      if (typeof rawPath === 'string' && rawPath.length > 0) {
-        const abs = path.resolve(opts.workingDir, rawPath)
-        const insideWorking = isInside(abs, opts.workingDir)
-        const insideMemory = isInside(abs, memoryRoot)
-        if (!insideWorking && !insideMemory) {
-          const reason =
-            `Blocked ${toolName}: "${rawPath}" resolves to ${abs}, which is outside the ` +
-            `allowed write roots. Permitted: ${opts.workingDir}/** and ${memoryRoot}/**. ` +
-            `Use \`propose_change\` for changes to the intelligence repo.`
-          opts.logger.warn({ phase: opts.liveJobRef().phase, path: abs }, reason)
-          return deny(reason)
-        }
-      }
-    }
-
-    if (toolName === 'Bash') {
-      const command = toolInput['command']
-      if (typeof command === 'string' && command.trim().length > 0) {
-        const denialReason = getBashPathDenialReason(command, opts.workingDir, memoryRoot)
-        if (denialReason) {
-          opts.logger.warn({ phase: opts.liveJobRef().phase, command }, denialReason)
-          return deny(denialReason)
-        }
-      }
-    }
-
-    return {}
-  }
-
-  return {
-    PreToolUse: [{ hooks: [preToolUse] }],
-  }
-}
-
-/** Path containment check, defends against '..' escapes. */
-function isInside(candidate: string, root: string): boolean {
-  const rel = path.relative(root, candidate)
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
-}
-
-function getBashPathDenialReason(command: string, workingDir: string, memoryRoot: string): string | null {
-  for (const rawToken of tokenizeShellCommand(command)) {
-    const candidate = extractPathCandidate(rawToken)
-    if (!candidate) continue
-
-    if (isClaudeTaskOutputPath(candidate)) {
-      return (
-        `Blocked Bash: command "${command}" references Claude runtime task output ` +
-        `via "${candidate}". Do not poll or read /private/tmp/claude-*/tasks/*.output ` +
-        `directly. Rerun the underlying command with output redirected to a file inside ` +
-        `${workingDir}/** and read that workspace file instead.`
-      )
-    }
-
-    if (candidate === '~' || candidate.startsWith('~/')) {
-      return bashPathReason(command, candidate, 'home-relative path', workingDir, memoryRoot)
-    }
-
-    if (
-      candidate.includes('$HOME') || candidate.includes('${HOME}') ||
-      candidate.includes('$OLDPWD') || candidate.includes('${OLDPWD}')
-    ) {
-      return bashPathReason(command, candidate, 'home-directory environment reference', workingDir, memoryRoot)
-    }
-
-    const pwdExpanded = expandPwdPath(candidate, workingDir)
-    if (pwdExpanded) {
-      if (!isInside(pwdExpanded, workingDir) && !isInside(pwdExpanded, memoryRoot)) {
-        return bashPathReason(command, candidate, `path ${pwdExpanded}`, workingDir, memoryRoot)
-      }
-      continue
-    }
-
-    if (hasParentTraversal(candidate)) {
-      return bashPathReason(command, candidate, 'parent-directory traversal', workingDir, memoryRoot)
-    }
-
-    if (candidate.startsWith('/')) {
-      const abs = path.resolve(candidate)
-      if (!isInside(abs, workingDir) && !isInside(abs, memoryRoot)) {
-        return bashPathReason(command, candidate, `path ${abs}`, workingDir, memoryRoot)
-      }
-    }
-  }
-
-  return null
-}
-
-function isClaudeTaskOutputPath(token: string): boolean {
-  return token.startsWith('/private/tmp/claude-')
-    && token.includes('/tasks/')
-    && token.endsWith('.output')
-}
-
-function tokenizeShellCommand(command: string): string[] {
-  return command.match(/'[^']*'|"[^"]*"|`[^`]*`|\S+/g) ?? []
-}
-
-function extractPathCandidate(token: string): string | null {
-  const unquoted = stripShellQuotes(token)
-  const value = extractAssignmentValue(unquoted)
-  if (!looksLikePathReference(value)) return null
-  return value
-}
-
-function stripShellQuotes(token: string): string {
-  if (token.length >= 2) {
-    const first = token[0]
-    const last = token[token.length - 1]
-    if ((first === '"' || first === '\'' || first === '`') && first === last) {
-      return token.slice(1, -1)
-    }
-  }
-  return token
-}
-
-function extractAssignmentValue(token: string): string {
-  const envMatch = token.match(/^[A-Za-z_][A-Za-z0-9_]*=(.+)$/)
-  if (envMatch) return envMatch[1]
-
-  const flagMatch = token.match(/^--[^=]+=(.+)$/)
-  if (flagMatch) return flagMatch[1]
-
-  return token
-}
-
-function looksLikePathReference(token: string): boolean {
-  return token === '~' || token === '..' || token === '-' ||
-    token.startsWith('~/') || token.startsWith('../') || token.startsWith('./') ||
-    token.startsWith('/') || token.startsWith('$HOME') || token.startsWith('${HOME}') ||
-    token.startsWith('$OLDPWD') || token.startsWith('${OLDPWD}') ||
-    token.startsWith('$PWD/') || token.startsWith('${PWD}/') ||
-    token.includes('/..') || token.includes('../')
-}
-
-function hasParentTraversal(token: string): boolean {
-  return /(^|\/)(\.\.)(\/|$)/.test(token)
-}
-
-function expandPwdPath(token: string, workingDir: string): string | null {
-  if (token === '$PWD' || token === '${PWD}') return workingDir
-  if (token.startsWith('$PWD/')) return path.resolve(workingDir, token.slice('$PWD/'.length))
-  if (token.startsWith('${PWD}/')) return path.resolve(workingDir, token.slice('${PWD}/'.length))
-  return null
-}
-
-function bashPathReason(
-  command: string,
-  matched: string,
-  kind: string,
-  workingDir: string,
-  memoryRoot: string,
-): string {
-  return (
-    `Blocked Bash: command "${command}" references ${kind} via "${matched}". ` +
-    `Shell access must stay inside ${workingDir}/** or ${memoryRoot}/**.`
-  )
-}

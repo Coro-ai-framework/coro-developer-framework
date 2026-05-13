@@ -180,6 +180,31 @@ importers:
         specifier: ^8.0.4
         version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
 
+  packages/llm-anthropic:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.2.92
+        version: 0.2.119(zod@4.3.6)
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@coro/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.17
+      pino:
+        specifier: ^9.6.0
+        version: 9.14.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
+
   packages/plugin-gitlab:
     dependencies:
       '@coro/plugin-sdk':
@@ -228,6 +253,9 @@ importers:
       '@coro/intelligence-base':
         specifier: workspace:*
         version: link:../intelligence-base
+      '@coro/llm-anthropic':
+        specifier: workspace:*
+        version: link:../llm-anthropic
       '@coro/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk

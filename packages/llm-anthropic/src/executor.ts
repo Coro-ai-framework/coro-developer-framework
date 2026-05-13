@@ -38,30 +38,26 @@ import {
   type Query,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
-import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
-import type { Settings } from '../config/settings'
+import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-path'
 import type {
+  ConversationMessage,
   ExecutorCapabilities,
   ExecutorModelDescriptor,
   ExecutorSessionController,
   PhaseExecutionRequest,
   PhaseExecutorEvent,
   PhaseExecutorRuntime,
-} from '../plugins/types'
-import type {
-  ConversationMessage,
   PluginDeps,
   PluginHealth,
   PluginManifest,
   PluginMcpServerConfig,
 } from '@coro/plugin-sdk'
-import {
-  buildAnthropicAuthEnv,
-  buildPhaseHooks,
-  createPushableInput,
-  ensureClaudeConfigSymlink,
-  reattachDynamicMcpServers,
-} from './runner'
+import { buildAnthropicAuthEnv } from './auth'
+import { buildPhaseHooks } from './hooks'
+import { createPushableInput } from './pushable'
+import { ensureClaudeConfigSymlink } from './intelligence-symlink'
+import { reattachDynamicMcpServers } from './mcp-reattach'
+import type { AnthropicExecutorSettings } from './types'
 
 /** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
 interface NormalizedTokensMutable {
@@ -158,7 +154,7 @@ const ANTHROPIC_MANIFEST: PluginManifest = {
 
 export interface AnthropicExecutorOptions {
   /** Reference to the runner's resolved Settings. Used to read `claude.auth` etc. */
-  settings: Settings
+  settings: AnthropicExecutorSettings
   /** Pino logger; the runner injects its own scoped child logger. */
   logger: Logger
 }
@@ -168,7 +164,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   readonly kind = 'executor' as const
   readonly capabilities = ANTHROPIC_CAPABILITIES
 
-  private readonly settings: Settings
+  private readonly settings: AnthropicExecutorSettings
   private readonly logger: Logger
 
   constructor(opts: AnthropicExecutorOptions) {

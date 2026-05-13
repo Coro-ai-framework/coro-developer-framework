@@ -2,12 +2,11 @@ import path from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { z } from 'zod'
 import {
-  buildPhaseHooks,
-  reattachDynamicMcpServers,
   runJob,
   type RunJobOptions,
   type RunnerContext,
 } from '../../src/jobs/runner'
+import { buildPhaseHooks, reattachDynamicMcpServers } from '@coro/llm-anthropic'
 import {
   STATUS_CANCELLED,
   JobType,
@@ -41,10 +40,14 @@ vi.mock('../../src/prompt/builder', () => ({
   computeTrackerPromptContext: vi.fn().mockReturnValue({ provider: 'none', available: false }),
 }))
 
-vi.mock('../../src/claude-code-path', () => ({
-  resolveClaudeCodeCliPath: vi.fn().mockReturnValue('/tmp/mock-claude-cli.js'),
-  ensureClaudeCodeCliExecutable: vi.fn(),
-}))
+vi.mock('@coro/llm-anthropic', async () => {
+  const actual = await vi.importActual<typeof import('@coro/llm-anthropic')>('@coro/llm-anthropic')
+  return {
+    ...actual,
+    resolveClaudeCodeCliPath: vi.fn().mockReturnValue('/tmp/mock-claude-cli.js'),
+    ensureClaudeCodeCliExecutable: vi.fn(),
+  }
+})
 
 function makeSettings(): Settings {
   return {
