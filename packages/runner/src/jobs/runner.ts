@@ -1,6 +1,5 @@
 import {
   type McpServerConfig,
-  type McpSdkServerConfig,
   type Query,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk'
@@ -383,13 +382,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // between phases.
       const trackerInfo = computeTrackerPromptContext(settings, ctx.trackerClient)
       const scmInfo = computeScmPromptContext(liveJob, ctx.plugins)
-      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo, scmInfo)
-      const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
-      logger.info(
-        { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
-        `System prompt assembled: ${promptSizeKb} KB`,
-      )
-      await stateBackend.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
+      // System prompt build is deferred until after the executor is
+      // resolved — we need its `capabilities.supportsClaudeMdNativeWalkUp`
+      // to decide whether to inject `.claude/CLAUDE.md` ourselves
+      // (Anthropic SDK walks it natively; everyone else needs us to
+      // prepend it).
 
       // Mid-job workflow switches (`switch_workflow`, `convert_to_campaign`)
       // mutate `liveJob.workflowPath` while the cached `workflowConfig`
@@ -478,14 +475,42 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       mkdirSync(workingDir, { recursive: true })
       ensureClaudeConfigSymlink(workingDir, jobIntelligenceDir, logger)
 
+      // Resolve the executor early so its `capabilities` can drive
+      // prompt/subagent assembly (CLAUDE.md injection, etc.). Test
+      // injection still wins via `options.executorImpl`.
+      const executor: PhaseExecutorRuntime =
+        options?.executorImpl ?? ctx.plugins.resolveExecutor({ model })
+
+      const systemPrompt = await buildSystemPrompt(
+        liveJob,
+        jobIntelligenceDir,
+        logger,
+        trackerInfo,
+        scmInfo,
+        executor.capabilities,
+      )
+      const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
+      logger.info(
+        { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
+        `System prompt assembled: ${promptSizeKb} KB`,
+      )
+      await stateBackend.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
+
       // Build subagent specs from workflow config. Agent prompts are
-      // loaded here (with .claude/CLAUDE.md prepended) and handed to the
-      // executor via {@link PhaseExecutionRequest.subagents}; the
-      // executor decides how to dispatch them (Anthropic's native SDK
-      // `agents:` map vs. the runner's `run_subagent` MCP tool fallback
-      // for non-native executors).
+      // loaded here and handed to the executor via
+      // {@link PhaseExecutionRequest.subagents}; the executor decides
+      // how to dispatch them (Anthropic's native SDK `agents:` map vs.
+      // the runner's `run_subagent` MCP tool fallback for non-native
+      // executors). `.claude/CLAUDE.md` is prepended only when the
+      // executor lacks native walk-up — mirrors the system-prompt
+      // injection above.
       const subagentSpecs: ReadonlyArray<ExecutorSubagentSpec> | undefined = phaseConf?.subagents
-        ? buildExecutorSubagentSpecs(phaseConf.subagents, jobIntelligenceDir, settings)
+        ? buildExecutorSubagentSpecs(
+            phaseConf.subagents,
+            jobIntelligenceDir,
+            settings,
+            { prependClaudeMd: !executor.capabilities.supportsClaudeMdNativeWalkUp },
+          )
         : undefined
 
       // Update job status for the current phase
@@ -563,8 +588,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       //   3. Translate normalized events into the same log/state side
       //      effects the runner has always produced (appendLog, syncJob,
       //      phaseUsage snapshots, MCP-usage counters).
-      const executor: PhaseExecutorRuntime =
-        options?.executorImpl ?? ctx.plugins.resolveExecutor({ model })
+      //
+      // (`executor` is resolved earlier in the loop so its capabilities
+      // can drive system-prompt + subagent assembly.)
 
       // Developer-input channel handed to the executor. It starts as a
       // no-op pair; the executor reassigns `push`/`close` early in
@@ -1318,12 +1344,34 @@ export function derivePhaseCostUsd(args: {
   return rawCostUsd
 }
 
+/**
+ * Resolve the concrete model id a phase (or subagent) should run on.
+ *
+ * Resolution order (executor-agnostic):
+ *   1. `phaseConf.model` is treated as an alias key — if present in
+ *      `settings.llm.aliases`, return the alias's `model` field.
+ *   2. Otherwise treat `phaseConf.model` as a literal model id and
+ *      return it verbatim. This is how workflows pin a specific model
+ *      (e.g. `gpt-5-codex`, `claude-sonnet-4-7`).
+ *   3. When no model is specified, default to the `planning` alias.
+ *   4. Final legacy fallback (only when neither the alias nor any
+ *      llm.aliases entry resolves): the historical
+ *      `settings.claude.{coding,planning}Model` strings. This keeps
+ *      tenants that haven't migrated to `settings.llm` working until
+ *      Phase 7 retires the legacy block.
+ */
 export function selectModel(
   phaseConf: { model?: string } | null | undefined,
   settings: Settings,
 ): string {
-  const model = phaseConf?.model ?? 'planning'
-  return model === 'coding' ? settings.claude.codingModel : settings.claude.planningModel
+  const requested = phaseConf?.model || 'planning'
+  const alias = settings.llm?.aliases?.[requested]
+  if (alias) return alias.model
+  // If the workflow gave us a literal model id (anything that isn't a
+  // recognised alias key in the legacy two-alias world), pass it
+  // through unchanged. Executors validate via `supports(model)`.
+  if (requested !== 'planning' && requested !== 'coding') return requested
+  return requested === 'coding' ? settings.claude.codingModel : settings.claude.planningModel
 }
 
 /**
@@ -1511,98 +1559,42 @@ function buildPluginMcpToolPolicy(
   return policy.length > 0 ? policy : undefined
 }
 
-export function buildSubagentDefinitions(
-  subagents: SubagentConfig[],
-  intelligenceDir: string,
-  settings: Settings,
-  mcpServer: McpSdkServerConfig,
-  pluginMcpServers: Record<string, McpServerConfig> = {},
-) {
-  // Load .claude/CLAUDE.md once — subagents need behavior rules, company context,
-  // git conventions, and infrastructure context that the main agent receives
-  // natively via settingSources. Subagents get their own prompt (not the parent's
-  // system prompt), so we prepend this to ensure they have the foundational context.
-  let claudeMdContent = ''
-  try {
-    claudeMdContent = readFileSync(
-      path.join(intelligenceDir, '.claude', 'CLAUDE.md'),
-      'utf-8',
-    )
-  } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
-
-  const defs: Record<string, unknown> = {}
-  for (const sa of subagents) {
-    let agentPrompt = `You are a helper subagent named ${sa.name}.`
-    if (sa.agent) {
-      try {
-        const agentMd = readFileSync(
-          path.join(intelligenceDir, sa.agent),
-          'utf-8',
-        )
-        agentPrompt = agentMd
-      } catch {
-        agentPrompt = `You are the ${sa.name} subagent. Follow your instructions carefully.`
-      }
-    }
-
-    if (claudeMdContent) {
-      agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
-    }
-
-    // The SDK accepts subagent `mcpServers` as an array of either named
-    // strings or full records. We pass one record carrying both the
-    // Coro in-process server and every plugin-provided MCP server so
-    // subagents see `mcp__coro__*` AND `mcp__<pluginId>__*` tools.
-    //
-    // The cast is needed because `mcpServer` is a `McpSdkServerConfig`
-    // (without `instance`) which the SDK's runtime accepts but its
-    // typing only matches `McpSdkServerConfigWithInstance`. Mirrors the
-    // existing `[mcpServer]` form this function already used.
-    const subagentMcpRecord = {
-      coro: mcpServer,
-      ...pluginMcpServers,
-    } as unknown as Record<string, McpServerConfig>
-    defs[sa.name] = {
-      description: `Subagent: ${sa.name}`,
-      prompt: agentPrompt,
-      ...(sa.tools && sa.tools.length > 0 ? { tools: sa.tools } : {}),
-      model: sa.model === 'coding'
-        ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
-        : (sa.model ?? 'inherit'),
-      mcpServers: [subagentMcpRecord],
-    }
-  }
-  return defs
-}
-
 /**
  * Build {@link ExecutorSubagentSpec}s from workflow subagent config.
  *
- * Mirrors {@link buildSubagentDefinitions} but emits the executor-facing
- * shape: just `name`, prepared `systemPrompt`, optional `model`, and
- * optional `allowedTools`. MCP server propagation is the executor's
- * responsibility (the runner hands it the full `pluginMcpServers` map
- * and a single `mcpServer`; how those reach subagents is the
- * executor's call — Anthropic-flavoured executors merge both onto
- * every subagent in the SDK `agents:` map).
+ * Emits the executor-facing shape: just `name`, prepared `systemPrompt`,
+ * optional `model`, and optional `allowedTools`. MCP server propagation
+ * is the executor's responsibility (the runner hands it the full
+ * `pluginMcpServers` map and a single `mcpServer`; how those reach
+ * subagents is the executor's call — Anthropic-flavoured executors
+ * merge both onto every subagent in the SDK `agents:` map).
  *
- * The agent prompt is `.claude/CLAUDE.md` (when present) followed by
- * the per-agent markdown — same precedence as the legacy helper, so
- * subagents continue to receive the foundational behaviour rules and
- * company context the parent agent gets natively via `settingSources`.
+ * Provider neutrality: subagent `model` is resolved through
+ * {@link selectModel} (alias-first, literal-passthrough). Any
+ * provider-specific model coercion (e.g. Anthropic's `'opus' | 'sonnet'`
+ * tier shorthand) is the executor's responsibility, not the runner's.
+ *
+ * `.claude/CLAUDE.md` is prepended only when the resolved executor
+ * lacks native walk-up (`!capabilities.supportsClaudeMdNativeWalkUp`).
+ * Anthropic's SDK loads CLAUDE.md natively via `settingSources:
+ * ['project']`, so prepending would duplicate it; non-Claude executors
+ * need the file injected manually for parity.
  */
 export function buildExecutorSubagentSpecs(
   subagents: SubagentConfig[],
   intelligenceDir: string,
   settings: Settings,
+  options: { prependClaudeMd: boolean } = { prependClaudeMd: true },
 ): ExecutorSubagentSpec[] {
   let claudeMdContent = ''
-  try {
-    claudeMdContent = readFileSync(
-      path.join(intelligenceDir, '.claude', 'CLAUDE.md'),
-      'utf-8',
-    )
-  } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
+  if (options.prependClaudeMd) {
+    try {
+      claudeMdContent = readFileSync(
+        path.join(intelligenceDir, '.claude', 'CLAUDE.md'),
+        'utf-8',
+      )
+    } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
+  }
 
   const out: ExecutorSubagentSpec[] = []
   for (const sa of subagents) {
@@ -1621,9 +1613,13 @@ export function buildExecutorSubagentSpecs(
       agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
     }
 
-    const resolvedModel = sa.model === 'coding'
-      ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
-      : sa.model
+    // Resolve the model alias-first, literal-passthrough. The executor
+    // applies any provider-specific coercion (Anthropic's SDK accepts a
+    // tier shorthand like `'opus'/'sonnet'`; OpenAI / others want a
+    // literal model id).
+    const resolvedModel = sa.model
+      ? selectModel({ model: sa.model }, settings)
+      : undefined
 
     out.push({
       name: sa.name,
