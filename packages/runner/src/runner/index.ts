@@ -72,6 +72,8 @@ import {
 } from '../config/local-config'
 import { buildBuiltinPluginRegistry } from '../plugins/builtin'
 import { makePluginWebhookNormalizer } from '../plugins/webhook-bridge'
+import { createAnthropicExecutor } from '../jobs/anthropic-executor'
+import type { PluginRegistry } from '../plugins/registry'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 import { Settings } from '../config/settings'
@@ -98,6 +100,39 @@ export interface RunnerOptions {
 }
 
 // ── Build Settings from LocalConfig ──────────────────────────────────────────
+
+/**
+ * Register the built-in Anthropic phase executor on the plugin registry.
+ *
+ * Phase 2 wires the executor inside the runner package so it can read
+ * `Settings.claude.auth` directly. Phase 3 will relocate the executor to
+ * `@coro/llm-anthropic` and replace this helper with the standard
+ * built-in factory path (which only carries an opaque `config` blob).
+ *
+ * Idempotent: returns immediately when an `anthropic` plugin is already
+ * registered (lets external plugin overrides win without a startup
+ * crash on the duplicate-id guard).
+ */
+async function registerAnthropicExecutor(args: {
+  plugins: PluginRegistry
+  settings: Settings
+  logger: pino.Logger
+}): Promise<void> {
+  if (args.plugins.byId('anthropic')) {
+    args.logger.info('Anthropic executor already registered (override) — skipping built-in registration')
+    return
+  }
+  const executor = createAnthropicExecutor({ settings: args.settings, logger: args.logger })
+  await executor.init({}, { logger: args.logger, fetch: globalThis.fetch })
+  args.plugins.register(executor)
+  // Mark Anthropic as the default executor so phase resolution that
+  // doesn't name a `provider:` falls back to it. Mirrors the
+  // synth in `buildSettingsFromLocal` (`llm.defaultProvider`).
+  args.plugins.setDefaults({
+    ...args.plugins.getDefaults(),
+    executor: args.settings.llm?.defaultProvider ?? 'anthropic',
+  })
+}
 
 /**
  * Build the in-memory `Settings` object that the runner hands to its API
@@ -266,6 +301,7 @@ export async function startLocalRunner(
   // client fields above stay populated for back-compat MCP wrappers.
   const pluginsConfig = resolvePluginsConfig(effectiveConfig)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
+  await registerAnthropicExecutor({ plugins, settings, logger })
 
   // Create polling transport for PR event detection. Plugin-aware
   // polling lives in the SCM plugins themselves (`pollPr`); the
@@ -360,6 +396,7 @@ export async function startHybridRunner(
   // transport with a closure that normalises plugin webhooks.
   const pluginsConfig = resolvePluginsConfig(config)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
+  await registerAnthropicExecutor({ plugins, settings, logger })
 
   // Create WebSocket transport to cloud
   const transport = new WebSocketTransport({

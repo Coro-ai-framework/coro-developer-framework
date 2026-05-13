@@ -196,7 +196,7 @@ export interface RunJobOptions {
  * `close()` has been called — this matches the AsyncIterator contract
  * the SDK's `streamInput` for-await consumer expects.
  */
-function createPushableInput(): PushableInput {
+export function createPushableInput(): PushableInput {
   const buffer: SDKUserMessage[] = []
   // When a consumer is awaiting `next()` and the buffer is empty, we
   // park a resolver here. The next push() (or close()) calls it.
@@ -1391,7 +1391,7 @@ function splitLogTextIntoChunks(text: string, maxChars: number): string[] {
   return chunks
 }
 
-async function appendChunkedLog(
+export async function appendChunkedLog(
   stateBackend: StateBackend,
   jobId: string,
   prefix: string,
@@ -1843,7 +1843,7 @@ export function buildSubagentDefinitions(
  * latest layered intelligence (base + tenant + repo) without copies
  * needing to be re-synced.
  */
-function ensureClaudeConfigSymlink(workingDir: string, coroIntelligenceDir: string, logger: Logger): void {
+export function ensureClaudeConfigSymlink(workingDir: string, coroIntelligenceDir: string, logger: Logger): void {
   const target = path.join(coroIntelligenceDir, '.claude')
   const link = path.join(workingDir, '.claude')
   try {
@@ -1893,9 +1893,9 @@ function buildPhaseKickoffMessage(job: Job): string {
 // Both checks are cheap and deterministic, so moving them from prose to
 // code trades a few kB of tokens for actual enforcement.
 
-interface BuildHookOpts {
-  /** Closure that returns the current live job — phase can change between calls. */
-  liveJobRef: () => Job
+export interface BuildHookOpts {
+  /** Closure that returns the current phase name — phase can change between calls. */
+  liveJobRef: () => { phase: string }
   /** Absolute path to the job's working directory. */
   workingDir: string
   /** Absolute path to the Coro intelligence dir. */
@@ -1905,7 +1905,7 @@ interface BuildHookOpts {
   logger: Logger
 }
 
-function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
+export function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
   const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
   const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
     ? new Set(opts.allowedTools)

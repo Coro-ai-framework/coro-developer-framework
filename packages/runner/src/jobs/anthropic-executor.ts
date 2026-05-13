@@ -1,0 +1,673 @@
+// ── Anthropic phase executor ────────────────────────────────────────────────
+//
+// The default LLM provider that ships with every Coro install. Wraps the
+// Claude Agent SDK's `query()` function and exposes it through the
+// {@link PhaseExecutorRuntime} contract so the runner can call providers
+// uniformly.
+//
+// Phase 2 scope (this file):
+//   - Capability declaration, model catalogue, supports() predicate.
+//   - Lifecycle (init/healthcheck/dispose) — no-ops aside from auth shape
+//     validation, since the SDK lazy-validates the API key on first call.
+//   - `executePhase()` is intentionally NOT YET WIRED in the runner. The
+//     runner still calls `query()` directly via the existing path in
+//     `runner.ts`. The executor is registered with the registry so that
+//     `resolveExecutor()` succeeds and tests can introspect capabilities.
+//
+// Phase 2c scope (next sub-phase):
+//   - Move the 175-line raw-SDK-message → PhaseExecutorEvent translation
+//     loop from `runner.ts` into this file's `executePhase()`.
+//   - Move `buildPhaseHooks` invocation here (the executor owns hook
+//     enforcement; the runner only supplies HookPolicy).
+//   - Switch `runJob` to consume `executor.executePhase()` and rewrite
+//     the test harness against PhaseExecutorEvent fixtures.
+//
+// Phase 3 scope (later):
+//   - Relocate this entire file to `@coro/llm-anthropic`. The runner
+//     constructor-side coupling to `Settings.claude.auth` is replaced by
+//     the plugin's Zod-validated `config` blob. Until then this file
+//     lives inside the runner package and is allowed to import runner
+//     internals.
+
+import { z } from 'zod'
+import { mkdirSync } from 'fs'
+import type { Logger } from 'pino'
+import {
+  query,
+  type McpServerConfig,
+  type Query,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk'
+import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
+import type { Settings } from '../config/settings'
+import type {
+  ExecutorCapabilities,
+  ExecutorModelDescriptor,
+  ExecutorSessionController,
+  PhaseExecutionRequest,
+  PhaseExecutorEvent,
+  PhaseExecutorRuntime,
+} from '../plugins/types'
+import type {
+  ConversationMessage,
+  PluginDeps,
+  PluginHealth,
+  PluginManifest,
+  PluginMcpServerConfig,
+} from '@coro/plugin-sdk'
+import {
+  buildAnthropicAuthEnv,
+  buildPhaseHooks,
+  createPushableInput,
+  ensureClaudeConfigSymlink,
+  reattachDynamicMcpServers,
+} from './runner'
+
+/** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
+interface NormalizedTokensMutable {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  totalCostUsd?: number
+}
+
+/** Translate a generic ConversationMessage into the SDK's user-message shape. */
+function toSdkUserMessage(msg: ConversationMessage): SDKUserMessage {
+  return {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: msg.content }],
+    },
+    parent_tool_use_id: null,
+  }
+}
+
+// ── Static manifest data ─────────────────────────────────────────────────────
+
+const ANTHROPIC_PLUGIN_ID = 'anthropic' as const
+
+/**
+ * Static catalogue of Anthropic models the executor recommends. Used by:
+ *   - The dashboard's model picker (per-provider dropdown).
+ *   - `resolveExecutor({ model })` model-→-provider inference.
+ *   - The conformance harness to validate `supports()` consistency.
+ *
+ * Pricing fields are intentionally omitted — Anthropic reports
+ * `total_cost_usd` directly on every result event, so we trust upstream
+ * accounting and do not maintain a parallel pricing table.
+ */
+const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
+  {
+    id: 'claude-sonnet-4-5',
+    displayName: 'Claude Sonnet 4.5',
+    contextTokens: 200_000,
+    tier: 'coding',
+    supportsThinking: true,
+  },
+  {
+    id: 'claude-opus-4-1',
+    displayName: 'Claude Opus 4.1',
+    contextTokens: 200_000,
+    tier: 'planning',
+    supportsThinking: true,
+  },
+  {
+    id: 'claude-haiku-4-5',
+    displayName: 'Claude Haiku 4.5',
+    contextTokens: 200_000,
+    tier: 'mini',
+    supportsThinking: false,
+  },
+]
+
+const ANTHROPIC_CAPABILITIES: ExecutorCapabilities = {
+  supportsNativeSubagents: true,
+  supportsClaudeMdNativeWalkUp: true,
+  supportsNativeFileTools: true,
+  supportsSessionResume: true,
+  supportsConversationReplay: false,
+  supportsThinking: true,
+  supportsImageInput: true,
+  maxContextTokens: 200_000,
+}
+
+// Empty config schema — the executor's auth and CLI path are sourced
+// from `Settings.claude` in Phase 2. Phase 3 will widen this to
+// `{ auth, claudeCodeCliPath?, env? }` once the executor leaves the
+// runner package.
+const anthropicConfigSchema = z.object({}).passthrough()
+
+const ANTHROPIC_MANIFEST: PluginManifest = {
+  id: ANTHROPIC_PLUGIN_ID,
+  kind: 'executor',
+  version: '1.0.0',
+  displayName: 'Anthropic (Claude Agent SDK)',
+  // Pinned to the runner's host plugin-API version. Bumped via the
+  // standard semver process when the executor contract evolves.
+  hostCompatibility: '^1.0.0',
+  configSchema: anthropicConfigSchema,
+  capabilities: {
+    /** True when the executor's tool loop and MCP plumbing are complete. */
+    supportsClaudeAgentSdk: true,
+  },
+}
+
+// ── Runtime ──────────────────────────────────────────────────────────────────
+
+export interface AnthropicExecutorOptions {
+  /** Reference to the runner's resolved Settings. Used to read `claude.auth` etc. */
+  settings: Settings
+  /** Pino logger; the runner injects its own scoped child logger. */
+  logger: Logger
+}
+
+export class AnthropicExecutor implements PhaseExecutorRuntime {
+  readonly manifest = ANTHROPIC_MANIFEST
+  readonly kind = 'executor' as const
+  readonly capabilities = ANTHROPIC_CAPABILITIES
+
+  private readonly settings: Settings
+  private readonly logger: Logger
+
+  constructor(opts: AnthropicExecutorOptions) {
+    this.settings = opts.settings
+    this.logger = opts.logger.child({ component: 'AnthropicExecutor' })
+  }
+
+  // ── Plugin lifecycle ───────────────────────────────────────────────────────
+
+  /**
+   * No-op for now. The Claude Agent SDK validates auth lazily on first
+   * `query()` call; we surface auth issues there rather than reproducing
+   * the validation ladder in two places. `_config` and `_deps` accepted
+   * for contract conformance.
+   */
+  async init(_config: unknown, _deps: PluginDeps): Promise<void> {
+    // Intentional no-op. See JSDoc above.
+  }
+
+  /**
+   * Reports `ok` whenever some form of Anthropic auth is configured.
+   * Does NOT round-trip to the Anthropic API — that would burn tokens
+   * on every dashboard refresh. The dashboard's "Test connection" button
+   * is the right place for an active probe.
+   */
+  async healthcheck(): Promise<PluginHealth> {
+    const { auth } = this.settings.claude
+    if (auth.method === 'apiKey' && !auth.apiKey) {
+      return { ok: false, reason: 'Anthropic auth method is "apiKey" but no apiKey is configured.' }
+    }
+    if (auth.method === 'oauth' && !auth.oauthToken) {
+      return { ok: false, reason: 'Anthropic auth method is "oauth" but no oauthToken is configured.' }
+    }
+    // `claudeLogin` defers to Claude Code's persisted session — nothing
+    // to verify in-process; it either works on first call or doesn't.
+    return { ok: true }
+  }
+
+  async dispose(): Promise<void> {
+    // The Claude Agent SDK owns its own subprocess lifecycle and tears
+    // down on stream close. Nothing executor-owned to release here.
+  }
+
+  // ── Executor surface ───────────────────────────────────────────────────────
+
+  listModels(): ReadonlyArray<ExecutorModelDescriptor> {
+    return ANTHROPIC_MODELS
+  }
+
+  /**
+   * True for any model id that starts with `claude-`. We deliberately
+   * accept models not listed in {@link listModels} (e.g. dated snapshots
+   * like `claude-sonnet-4-5-20251022`) so workflow YAML can pin to a
+   * specific revision without us having to ship a release of the
+   * runner every time Anthropic publishes a new snapshot.
+   */
+  supports(model: string): boolean {
+    return typeof model === 'string' && model.startsWith('claude-')
+  }
+
+  /**
+   * Run a single workflow phase against the Claude Agent SDK.
+   *
+   * Owns:
+   *   - SDK queryOptions construction (env, hooks, agents, MCP servers).
+   *   - The bidirectional `pushable` that keeps stdin to the Claude Code
+   *     subprocess open across model turns (so in-process MCP servers and
+   *     mid-phase developer steering keep working).
+   *   - Translation of raw SDK messages into provider-agnostic
+   *     {@link PhaseExecutorEvent}s for the runner's bookkeeping loop.
+   *   - Re-attachment of the Coro MCP server when resuming a session
+   *     (the SDK is historically flaky there).
+   *
+   * Does NOT own:
+   *   - Phase advancement, `goto_phase`, escalation, parking — the runner
+   *     watches `req.signals` (via its tools) and stops consuming events
+   *     once a control signal fires.
+   *   - PhaseUsage construction / cost derivation — the runner combines
+   *     the cumulative `usage` snapshot with its prePhase totals.
+   *   - StateBackend writes — the runner is the only writer.
+   */
+  async *executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent> {
+    const claudeCodeCliPath = resolveClaudeCodeCliPath()
+    ensureClaudeCodeCliExecutable(claudeCodeCliPath, this.logger)
+
+    /** SDK spawns `cwd: req.cwd`. Missing dir reports as the (misleading) "cli.js not found" error. */
+    mkdirSync(req.cwd, { recursive: true })
+    ensureClaudeConfigSymlink(req.cwd, req.intelligenceDir, this.logger)
+
+    // Translate the contract-level subagent specs into the SDK-shape
+    // `agents` map. The runner pre-loads each subagent's prompt so the
+    // executor doesn't need to know intelligence-dir layout.
+    const agents = this.buildSdkAgentsFromRequest(req)
+
+    // Hook policy → SDK PreToolUse hooks. The executor enforces tool
+    // whitelist + write-root containment + bash safety — the runner
+    // only declares the policy; the executor encodes it into the
+    // SDK-native shape.
+    const hooks = buildPhaseHooks({
+      // The hook only reads phase for log context; we surface whatever
+      // the runner labelled the request with.
+      liveJobRef: () => ({ phase: req.phase ?? 'unknown' }),
+      workingDir: req.cwd,
+      coroIntelligenceDir: req.intelligenceDir,
+      allowedTools: req.hookPolicy.allowedTools ?? undefined,
+      logger: this.logger,
+    })
+
+    // Build the dynamic MCP server map. `coro` is reserved for the
+    // runner-supplied SDK server descriptor; plugin servers are merged
+    // alongside (collisions on `coro` are blocked upstream by
+    // collectPluginMcpServers, so casting is safe).
+    const dynamicMcpServers: Record<string, McpServerConfig> = {
+      coro: req.mcpServer.instance as unknown as McpServerConfig,
+      ...(req.pluginMcpServers as unknown as Record<string, McpServerConfig>),
+    }
+
+    // Long-lived bidirectional input. The kickoff prompt is queued
+    // immediately; the runner can push more SDKUserMessages via the
+    // developerInput channel for the duration of the phase.
+    const pushable = createPushableInput()
+    pushable.push({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: req.userPrompt }] },
+      parent_tool_use_id: null,
+    })
+
+    // Wire the developerInput channel so the runner-side bridge can
+    // forward dispatcher steering messages into the live SDK stream.
+    if (req.developerInput) {
+      const channelClose = req.developerInput.close
+      req.developerInput.push = (msg: ConversationMessage) => {
+        const sdkMsg = (msg.meta?.['sdkUserMessage'] as SDKUserMessage | undefined) ?? toSdkUserMessage(msg)
+        pushable.push(sdkMsg)
+      }
+      req.developerInput.close = () => {
+        try { channelClose?.() } finally { pushable.close() }
+      }
+    }
+
+    const resumeSessionId = req.sessionState.sessionId
+    const queryOptions: Record<string, unknown> = {
+      pathToClaudeCodeExecutable: claudeCodeCliPath,
+      systemPrompt: req.systemPrompt,
+      model: req.model,
+      cwd: req.cwd,
+      settingSources: ['project'],
+      mcpServers: dynamicMcpServers,
+      hooks,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      maxTurns: req.maxTurns ?? 200,
+      thinking: { type: 'adaptive' },
+      systemPromptCacheControl: 'ephemeral',
+      persistSession: true,
+      ...(resumeSessionId ? { resume: resumeSessionId } : {}),
+      env: {
+        ...process.env,
+        ...buildAnthropicAuthEnv(this.settings.claude.auth),
+        BB_WORKSPACE: this.settings.bitbucket.workspace,
+        BB_CODER_APP_PASSWORD: this.settings.bitbucket.coderAccount.appPassword,
+        BB_BASE_URL: 'https://bitbucket.org',
+        BB_GIT_USERNAME: this.settings.bitbucket.coderAccount.appPassword.startsWith('ATATT')
+          ? 'x-bitbucket-api-token-auth'
+          : encodeURIComponent(this.settings.bitbucket.coderAccount.username),
+        GH_OWNER: this.settings.github?.owner ?? '',
+        GH_TOKEN: this.settings.github?.token ?? '',
+        CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000',
+        ENABLE_TOOL_SEARCH: 'true',
+        DEBUG_CLAUDE_AGENT_SDK: '1',
+      },
+      stderr: (chunk: string) => {
+        const text = String(chunk).trim()
+        if (!text) return
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          this.logger.debug({ phase: req.phase }, `[sdk-stderr] ${trimmed}`)
+          // MCP / Transport / control_request lines are surfaced into
+          // the job log via a `log` event so the runner can chunk them.
+          if (/mcp|Transport|sdkMcp|control_request/i.test(trimmed)) {
+            // Buffered into the per-iteration emit below — see _stderrBuffer.
+            this._stderrBuffer.push(trimmed)
+          }
+        }
+      },
+    }
+
+    if (agents) {
+      queryOptions.agents = agents
+    }
+
+    // Cumulative phase totals. Anthropic emits per-turn assistant.usage
+    // deltas plus a final canonical totals snapshot in `result`. The
+    // executor accumulates internally and emits cumulative snapshots so
+    // the runner doesn't need to know the difference.
+    const cumulative: NormalizedTokensMutable = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    }
+    let sessionId: string | undefined
+    let stopReason = 'end_turn'
+    let durationMs: number | undefined
+    let durationApiMs: number | undefined
+    let numTurns = 0
+    let phaseTurns = 0
+    let resultModelUsage: Record<string, NormalizedTokensMutable> | undefined
+    let totalCostUsd: number | undefined
+
+    const queryStream = query({
+      prompt: pushable.iterable,
+      options: queryOptions as Parameters<typeof query>[0]['options'],
+    })
+
+    // Capture the live Query handle and surface it through the
+    // lifecycle controller so the runner / dispatcher can interrupt.
+    const liveQuery = queryStream as Query
+    const controller: ExecutorSessionController = {
+      interrupt: () => liveQuery.interrupt(),
+    }
+    req.lifecycle?.onSessionStart?.(controller)
+
+    if (resumeSessionId) {
+      try {
+        const mcpRefresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'a5')
+        this.logger.debug(
+          {
+            phase: req.phase,
+            resumedFrom: resumeSessionId,
+            added: mcpRefresh.setResult.added,
+            removed: mcpRefresh.setResult.removed,
+            errors: mcpRefresh.setResult.errors,
+          },
+          'Refreshed dynamic A5 MCP server on resumed query',
+        )
+        if (mcpRefresh.setResult.errors['a5'] || mcpRefresh.finalStatus === 'failed') {
+          yield {
+            type: 'log',
+            level: 'warn',
+            message:
+              `[warning] A5 MCP refresh reported issues on resumed session. ` +
+              `errors=${JSON.stringify(mcpRefresh.setResult.errors)} ` +
+              `status=${mcpRefresh.finalStatus ?? 'unknown'}`,
+          }
+        }
+      } catch (err) {
+        this.logger.warn(
+          { err, phase: req.phase, resumedFrom: resumeSessionId },
+          'Failed to refresh dynamic A5 MCP server on resumed query',
+        )
+        yield {
+          type: 'log',
+          level: 'warn',
+          message:
+            '[warning] Failed to refresh A5 MCP server on resumed session; MCP tools may be unavailable.',
+        }
+      }
+    }
+
+    try {
+      for await (const raw of queryStream) {
+        // Drain any buffered stderr lines as log events.
+        while (this._stderrBuffer.length > 0) {
+          yield { type: 'log', level: 'info', message: `[sdk-stderr] ${this._stderrBuffer.shift()!}` }
+        }
+
+        if (req.signal?.aborted) {
+          try { await liveQuery.interrupt() } catch { /* best-effort */ }
+          break
+        }
+
+        const message = raw as Record<string, unknown>
+        const eventType = String(message['type'] ?? '')
+
+        if (eventType === 'system') {
+          const sid = message['session_id']
+          if (typeof sid === 'string') {
+            sessionId = sid
+            yield { type: 'session_start', sessionId: sid }
+          }
+          if (message['subtype'] === 'init') {
+            const mcpServers = Array.isArray(message['mcp_servers'])
+              ? (message['mcp_servers'] as Array<{ name?: unknown; status?: unknown }>)
+              : []
+            const tools = Array.isArray(message['tools']) ? (message['tools'] as string[]) : []
+            const mcpToolCount = tools.filter(
+              t => typeof t === 'string' && t.startsWith('mcp__coro__'),
+            ).length
+            yield {
+              type: 'log',
+              level: 'info',
+              message:
+                `[init] session started — ${tools.length} tools at boot, ${mcpToolCount} mcp__coro__* tools` +
+                (resumeSessionId ? ` (resumed from ${resumeSessionId})` : ''),
+              meta: {
+                mcpServersAtInit: mcpServers.map(s => ({ name: s.name, status: s.status })),
+                totalToolsAtInit: tools.length,
+                mcpToolCountAtInit: mcpToolCount,
+                resumedFrom: resumeSessionId ?? null,
+              },
+            }
+          }
+          continue
+        }
+
+        if (eventType === 'assistant') {
+          const betaMsg = message['message'] as Record<string, unknown> | undefined
+          const content = betaMsg?.['content']
+          if (Array.isArray(content)) {
+            for (const block of content as Array<Record<string, unknown>>) {
+              const bt = String(block['type'] ?? '')
+              if (bt === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
+                yield { type: 'text', content: block['text'] as string }
+              } else if (bt === 'thinking' && typeof block['thinking'] === 'string') {
+                yield { type: 'thinking', content: block['thinking'] as string }
+              } else if (bt === 'tool_use' || bt === 'mcp_tool_use') {
+                const toolName = String(block['name'] ?? 'unknown')
+                yield {
+                  type: 'tool_call',
+                  toolName,
+                  input: block['input'],
+                  isMcp: toolName.startsWith('mcp__'),
+                }
+              }
+            }
+          }
+
+          const turnUsage = betaMsg?.['usage'] as Record<string, unknown> | undefined
+          if (turnUsage) {
+            cumulative.inputTokens += Number(turnUsage['input_tokens'] ?? 0)
+            cumulative.outputTokens += Number(turnUsage['output_tokens'] ?? 0)
+            cumulative.cacheReadInputTokens += Number(turnUsage['cache_read_input_tokens'] ?? 0)
+            cumulative.cacheCreationInputTokens += Number(turnUsage['cache_creation_input_tokens'] ?? 0)
+            phaseTurns++
+            yield { type: 'usage', tokens: { ...cumulative } }
+          }
+          continue
+        }
+
+        if (eventType === 'tool_use_summary') {
+          const summary = message['summary']
+          if (typeof summary === 'string' && summary.trim()) {
+            yield { type: 'log', level: 'info', message: `[tool_summary] ${summary}` }
+          }
+          continue
+        }
+
+        if (eventType === 'tool_progress') {
+          const toolName = message['tool_name']
+          const elapsed = message['elapsed_time_seconds']
+          if (typeof toolName === 'string' && typeof elapsed === 'number' && elapsed >= 10) {
+            yield {
+              type: 'log',
+              level: 'info',
+              message: `⏳ ${toolName} running (${Math.round(elapsed)}s)`,
+            }
+          }
+          continue
+        }
+
+        if (eventType === 'result') {
+          const isError = message['is_error']
+          if (isError) {
+            stopReason = 'error'
+            const errors = message['errors']
+            const errStr = Array.isArray(errors) ? (errors as string[]).join('; ') : 'unknown error'
+            yield { type: 'log', level: 'error', message: `[error] ${errStr}` }
+          } else {
+            const result = message['result']
+            if (typeof result === 'string' && result.trim()) {
+              yield { type: 'log', level: 'info', message: `[result] ${result}` }
+            }
+            const sr = message['stop_reason']
+            if (typeof sr === 'string') stopReason = sr
+          }
+
+          const resultUsage = message['usage'] as Record<string, number> | undefined
+          if (resultUsage) {
+            cumulative.inputTokens = Number(resultUsage['input_tokens'] ?? cumulative.inputTokens)
+            cumulative.outputTokens = Number(resultUsage['output_tokens'] ?? cumulative.outputTokens)
+            cumulative.cacheReadInputTokens = Number(
+              resultUsage['cache_read_input_tokens'] ?? cumulative.cacheReadInputTokens,
+            )
+            cumulative.cacheCreationInputTokens = Number(
+              resultUsage['cache_creation_input_tokens'] ?? cumulative.cacheCreationInputTokens,
+            )
+          }
+          if (typeof message['total_cost_usd'] === 'number') {
+            totalCostUsd = message['total_cost_usd'] as number
+          }
+          if (typeof message['duration_ms'] === 'number') durationMs = message['duration_ms'] as number
+          if (typeof message['duration_api_ms'] === 'number') durationApiMs = message['duration_api_ms'] as number
+          if (typeof message['num_turns'] === 'number') numTurns = message['num_turns'] as number
+
+          const rawModelUsage = message['modelUsage'] as Record<string, Record<string, unknown>> | undefined
+          if (rawModelUsage) {
+            resultModelUsage = Object.fromEntries(
+              Object.entries(rawModelUsage).map(([m, u]) => [m, {
+                inputTokens: Number(u['inputTokens'] ?? 0),
+                outputTokens: Number(u['outputTokens'] ?? 0),
+                cacheReadInputTokens: 0,
+                cacheCreationInputTokens: 0,
+                totalCostUsd: Number(u['costUSD'] ?? 0),
+              }]),
+            )
+          }
+
+          // Final cumulative snapshot includes total cost (Anthropic-reported,
+          // not yet derived — the runner runs derivePhaseCostUsd on top).
+          yield {
+            type: 'usage',
+            tokens: { ...cumulative, ...(totalCostUsd !== undefined ? { totalCostUsd } : {}) },
+            ...(resultModelUsage ? { modelUsage: resultModelUsage } : {}),
+          }
+          continue
+        }
+
+        const handledTypes = new Set(['system', 'assistant', 'tool_use_summary', 'tool_progress', 'result',
+          'user', 'stream_event', 'auth_status'])
+        if (!handledTypes.has(eventType)) {
+          yield {
+            type: 'log',
+            level: 'info',
+            message: `[event:${eventType}] ${JSON.stringify(message)}`,
+          }
+        }
+      }
+
+      // Final 'done' event. Always emitted exactly once per executePhase
+      // call so the runner can finalise PhaseUsage even when the SDK
+      // never emitted a `result` (early break, transport crash).
+      yield {
+        type: 'done',
+        stopReason,
+        sessionState: { sessionId },
+        metrics: {
+          ...(durationMs !== undefined ? { durationMs } : {}),
+          ...(durationApiMs !== undefined ? { durationApiMs } : {}),
+          numTurns: numTurns || phaseTurns,
+        },
+      }
+    } finally {
+      pushable.close()
+      req.lifecycle?.onSessionEnd?.()
+    }
+  }
+
+  /**
+   * Translate the runner's pre-loaded {@link ExecutorSubagentSpec}s into
+   * the Claude Agent SDK's `agents` map shape. Returns `undefined` when
+   * no subagents are declared so the option key is omitted entirely.
+   */
+  private buildSdkAgentsFromRequest(
+    req: PhaseExecutionRequest,
+  ): Record<string, { description: string; prompt: string; tools?: string[]; model?: string; mcpServers?: Record<string, McpServerConfig> }> | undefined {
+    if (!req.subagents || req.subagents.length === 0) return undefined
+    const subagentMcpServers = req.pluginMcpServers as unknown as Record<string, McpServerConfig>
+    const out: Record<string, { description: string; prompt: string; tools?: string[]; model?: string; mcpServers?: Record<string, McpServerConfig> }> = {}
+    for (const sa of req.subagents) {
+      out[sa.name] = {
+        description: `Subagent: ${sa.name}`,
+        prompt: sa.systemPrompt,
+        ...(sa.allowedTools ? { tools: [...sa.allowedTools] } : {}),
+        ...(sa.model ? { model: sa.model } : {}),
+        ...(Object.keys(subagentMcpServers).length > 0 ? { mcpServers: subagentMcpServers } : {}),
+      }
+    }
+    return out
+  }
+
+  /**
+   * Buffer for stderr-derived log lines. The SDK's `stderr` callback is
+   * synchronous so we cannot `yield` from it directly — lines accumulate
+   * here and are drained on the next iteration of the message loop.
+   */
+  private readonly _stderrBuffer: string[] = []
+
+  /**
+   * Optional MCP server descriptor — Anthropic does not bring its own
+   * MCP server (it consumes the Coro server passed via PhaseExecutionRequest).
+   */
+  mcpServer(): PluginMcpServerConfig | undefined {
+    return undefined
+  }
+}
+
+// ── Factory (used by the runner's bootstrap path) ───────────────────────────
+
+/**
+ * Standard plugin factory shape. Mirrors the built-in SCM/tracker
+ * factories so the bootstrap loop in `plugins/builtin/index.ts` can
+ * wire the executor through the same path. Currently invoked from
+ * runner/index.ts (not the built-in factory map) because the executor
+ * needs `Settings` access — the built-in factory contract only carries
+ * `config: Record<string, unknown>`. Phase 3 normalises this when the
+ * executor moves out of the runner package.
+ */
+export function createAnthropicExecutor(opts: AnthropicExecutorOptions): AnthropicExecutor {
+  return new AnthropicExecutor(opts)
+}

@@ -511,8 +511,73 @@ export interface PhaseExecutionRequest {
   sessionState: ExecutorSessionState
   /** Hard ceiling on tool-loop turns this phase. */
   maxTurns: number
+  /** Optional log-context label — the runner labels with the workflow phase name. */
+  phase?: string
   /** Cancellation signal — runner aborts on job cancel / shutdown. */
   signal: AbortSignal
+  /**
+   * Optional lifecycle hooks. The dispatcher uses these to register the
+   * in-flight session for cancellation/preemption. Executors that don't
+   * support mid-turn preemption may treat them as no-ops.
+   */
+  lifecycle?: ExecutorLifecycleHooks
+  /**
+   * Optional live developer-input channel. The dispatcher pushes
+   * additional user messages mid-phase (e.g. clarifications, follow-up
+   * instructions). Streaming-input executors (Anthropic Claude SDK) push
+   * straight into the live tool loop; non-streaming executors may buffer
+   * and replay on the next turn.
+   */
+  developerInput?: DeveloperInputChannel
+}
+
+/**
+ * Per-phase metrics surfaced on the terminal `done` event. All fields
+ * are optional because non-Anthropic providers may not report them.
+ */
+export interface PhaseExecutorMetrics {
+  durationMs?: number
+  durationApiMs?: number
+  numTurns?: number
+}
+
+/**
+ * Live session controller exposed by the executor at session-start time.
+ * The dispatcher uses {@link ExecutorSessionController.interrupt} to
+ * cancel an in-flight tool loop (e.g. on developer escalation).
+ */
+export interface ExecutorSessionController {
+  interrupt(): Promise<void>
+}
+
+/**
+ * Channel the executor receives so the dispatcher can stream additional
+ * developer messages into the in-flight session. Non-streaming executors
+ * may treat `push` as a buffer and consume on the next turn.
+ */
+export interface DeveloperInputChannel {
+  push(message: ConversationMessage): void
+  close(): void
+}
+
+/**
+ * Executor → runner lifecycle callbacks. The runner registers handles
+ * the dispatcher needs for cancellation/preemption; the executor invokes
+ * them at well-defined points in the per-phase lifecycle.
+ */
+export interface ExecutorLifecycleHooks {
+  /**
+   * Called once after the executor has set up its native session but
+   * before the model produces any output. The runner records the
+   * controller so the dispatcher can interrupt mid-turn.
+   */
+  onSessionStart?(controller: ExecutorSessionController): void
+  /**
+   * Called exactly once when the executor's per-phase invocation has
+   * fully terminated (success, error, or abort). The runner uses this
+   * to drop the controller reference and any developer-input buffer.
+   */
+  onSessionEnd?(): void
 }
 
 /**
@@ -553,6 +618,8 @@ export type PhaseExecutorEvent =
       type: 'done'
       stopReason: string
       sessionState: ExecutorSessionState
+      /** Optional per-phase metrics (duration, turn count). */
+      metrics?: PhaseExecutorMetrics
     }
   | {
       type: 'log'
