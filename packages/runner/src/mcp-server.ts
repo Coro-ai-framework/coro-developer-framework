@@ -28,7 +28,11 @@ import { createMcpToolHandlers, mcpError, mcpText, wrapHandlersSafely } from './
  * (`mcp__coro__*`). All agent markdown that references these tools must use
  * the `mcp__coro__` prefix.
  */
-export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
+export function createCoroMcpServer(
+  ctx: ToolContext,
+  signals: PhaseSignals,
+  options: { registerFileTools?: boolean } = {},
+) {
   // Wrap every native handler in a try/catch so an unhandled throw
   // can't tear down the in-process MCP transport (the cause of the
   // "Stream closed" loop agents used to hit when e.g. a Bitbucket
@@ -542,6 +546,66 @@ export function createCoroMcpServer(ctx: ToolContext, signals: PhaseSignals) {
         h.read_memory,
         { annotations: { readOnlyHint: true } },
       ),
+
+      // ── File / skill tools (Phase 4) ──────────────────────────────────────
+      //
+      // Only registered when the executor doesn't bring native equivalents
+      // (Claude SDK ships its own Read/Write/Edit/Glob/Grep + Skill tools).
+      // Paths are scoped to the per-job working dir; `read_skill` reads
+      // from the materialised intelligence overlay.
+      ...(options.registerFileTools ? [
+        tool(
+          'file_read',
+          'Read a UTF-8 file from the per-job working directory. Path is resolved relative to the working dir; absolute or `..`-escaping paths are rejected.',
+          { path: z.string().describe('Path relative to the per-job working dir.') },
+          h.file_read,
+          { annotations: { readOnlyHint: true } },
+        ),
+        tool(
+          'file_write',
+          'Write a UTF-8 file to the per-job working directory, creating parent directories as needed. Overwrites existing content.',
+          {
+            path: z.string().describe('Path relative to the per-job working dir.'),
+            content: z.string().describe('Full file contents to write.'),
+          },
+          h.file_write,
+        ),
+        tool(
+          'file_edit',
+          'Replace exactly one occurrence of `oldStr` with `newStr` in a file. Errors if `oldStr` is missing or matches multiple times.',
+          {
+            path: z.string().describe('Path relative to the per-job working dir.'),
+            oldStr: z.string().describe('Exact substring to find (must appear exactly once).'),
+            newStr: z.string().describe('Replacement text.'),
+          },
+          h.file_edit,
+        ),
+        tool(
+          'file_glob',
+          'Find files matching a glob pattern (`**`, `*`, `?`) under the per-job working dir. Returns a sorted list of paths relative to the working dir.',
+          { pattern: z.string().describe('Glob pattern, e.g. `src/**/*.ts`.') },
+          h.file_glob,
+          { annotations: { readOnlyHint: true } },
+        ),
+        tool(
+          'file_grep',
+          'Search file contents under the per-job working dir for a literal substring (default) or regex (`isRegex: true`). Returns up to one hit per matching line.',
+          {
+            pattern: z.string().describe('Substring or regex to search for.'),
+            path: z.string().optional().describe('Optional sub-path to restrict the search (relative to working dir).'),
+            isRegex: z.boolean().optional().describe('Treat `pattern` as a regex (default: literal substring).'),
+          },
+          h.file_grep,
+          { annotations: { readOnlyHint: true } },
+        ),
+        tool(
+          'read_skill',
+          'Load a skill\'s SKILL.md from the materialised intelligence overlay (`.claude/skills/<name>/SKILL.md`). Use this on-demand for domain knowledge instead of preloading everything at phase start.',
+          { name: z.string().describe('Skill directory name, e.g. `feature-planning`.') },
+          h.read_skill,
+          { annotations: { readOnlyHint: true } },
+        ),
+      ] : []),
 
     ],
   })

@@ -511,6 +511,113 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
   }
 
+  // ── File / skill tools (Phase 4 of multi-AI plan) ─────────────────────────
+  //
+  // Provider-agnostic Read/Write/Edit/Glob/Grep/Skill surface for
+  // executors that do NOT bring native equivalents. Claude's SDK
+  // ships its own Read/Write/Edit/Glob/Grep + Skill tools, so the
+  // MCP server only registers these when
+  // `executor.capabilities.supportsNativeFileTools === false`.
+  //
+  // All paths are resolved relative to the per-job working dir
+  // (`settings.paths.workingDir/<jobId>`) and a path-traversal guard
+  // forces every resolved path to live inside one of the allowed
+  // roots: the working dir (read+write) and the materialised
+  // intelligence overlay (read-only via `read_skill`).
+
+  const jobWorkingDir = () => path.resolve(ctx.settings.paths.workingDir, ctx.job.id)
+
+  const resolveUnderRoot = (root: string, requested: string): string | null => {
+    const resolved = path.resolve(root, requested)
+    const rel = path.relative(root, resolved)
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return null
+    return resolved
+  }
+
+  const file_read = async ({ path: requested }: { path: string }) => {
+    const root = jobWorkingDir()
+    const abs = resolveUnderRoot(root, requested)
+    if (!abs) return error(`path escapes working dir: ${requested}`)
+    const content = await fs.readFile(abs, 'utf8')
+    return text({ path: requested, content })
+  }
+
+  const file_write = async ({ path: requested, content }: { path: string; content: string }) => {
+    const root = jobWorkingDir()
+    const abs = resolveUnderRoot(root, requested)
+    if (!abs) return error(`path escapes working dir: ${requested}`)
+    await fs.mkdir(path.dirname(abs), { recursive: true })
+    await fs.writeFile(abs, content, 'utf8')
+    return text({ path: requested, bytesWritten: Buffer.byteLength(content, 'utf8') })
+  }
+
+  const file_edit = async ({ path: requested, oldStr, newStr }: {
+    path: string; oldStr: string; newStr: string
+  }) => {
+    const root = jobWorkingDir()
+    const abs = resolveUnderRoot(root, requested)
+    if (!abs) return error(`path escapes working dir: ${requested}`)
+    const existing = await fs.readFile(abs, 'utf8')
+    // Count occurrences (non-overlapping) for safety. If oldStr is empty,
+    // refuse — that would match everywhere.
+    if (oldStr.length === 0) return error('oldStr must be non-empty')
+    let count = 0
+    let idx = 0
+    while ((idx = existing.indexOf(oldStr, idx)) !== -1) { count++; idx += oldStr.length }
+    if (count === 0) return error(`oldStr not found in ${requested}`)
+    if (count > 1) return error(`oldStr matches ${count} times in ${requested}; must be unique`)
+    const updated = existing.replace(oldStr, newStr)
+    await fs.writeFile(abs, updated, 'utf8')
+    return text({ path: requested, replaced: 1 })
+  }
+
+  const file_glob = async ({ pattern }: { pattern: string }) => {
+    const root = jobWorkingDir()
+    const re = globToRegex(pattern)
+    const matches: string[] = []
+    await walkDir(root, root, async (rel, entry) => {
+      if (entry.isFile() && re.test(rel)) matches.push(rel)
+    })
+    matches.sort()
+    return text({ pattern, matches })
+  }
+
+  const file_grep = async (
+    { pattern, path: subPath, isRegex }: { pattern: string; path?: string; isRegex?: boolean },
+  ) => {
+    const root = jobWorkingDir()
+    const searchRoot = subPath
+      ? (resolveUnderRoot(root, subPath) ?? root)
+      : root
+    if (!searchRoot) return error(`path escapes working dir: ${subPath}`)
+    const re = isRegex
+      ? new RegExp(pattern)
+      : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    const hits: { path: string; line: number; text: string }[] = []
+    await walkDir(searchRoot, root, async (rel, entry) => {
+      if (!entry.isFile()) return
+      let buf: string
+      try { buf = await fs.readFile(path.join(root, rel), 'utf8') }
+      catch { return }
+      const lines = buf.split('\n')
+      for (let i = 0; i < lines.length; i++) {
+        if (re.test(lines[i])) hits.push({ path: rel, line: i + 1, text: lines[i] })
+      }
+    })
+    return text({ pattern, isRegex: !!isRegex, hits })
+  }
+
+  const read_skill = async ({ name }: { name: string }) => {
+    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(name)) return error(`invalid skill name: ${name}`)
+    const skillPath = path.join(ctx.jobIntelligenceDir, '.claude', 'skills', name, 'SKILL.md')
+    try {
+      const content = await fs.readFile(skillPath, 'utf8')
+      return text({ name, path: skillPath, content })
+    } catch {
+      return error(`skill not found: ${name}`)
+    }
+  }
+
   return {
     // ── Generic surface (preferred, post-pivot — 9 tools total) ────────
     //
@@ -527,6 +634,13 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     tracker_get_issue,
     tracker_comment_issue,
     tracker_transition_issue,
+    // File / skill (Phase 4 — registered only when executor lacks native equivalents):
+    file_read,
+    file_write,
+    file_edit,
+    file_glob,
+    file_grep,
+    read_skill,
 
     // ── Legacy bb_*/gh_*/jira_* shims removed in S6 ──────────────────────
     //
@@ -979,3 +1093,44 @@ function buildCloneGit(cwd: string, extraEnv: Record<string, string>): SimpleGit
 }
 
 export type McpToolHandlers = ReturnType<typeof createMcpToolHandlers>
+
+// ── Glob/walk helpers for file_glob / file_grep ──────────────────────────────
+
+const SKIP_DIRS = new Set(['node_modules', '.git', '.coro', 'dist', 'build', '.next', '.cache'])
+
+async function walkDir(
+  start: string,
+  rootForRel: string,
+  visit: (relFromRoot: string, entry: import('fs').Dirent) => Promise<void>,
+): Promise<void> {
+  let entries: import('fs').Dirent[]
+  try { entries = await fs.readdir(start, { withFileTypes: true }) }
+  catch { return }
+  for (const entry of entries) {
+    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue
+    const abs = path.join(start, entry.name)
+    const rel = path.relative(rootForRel, abs)
+    await visit(rel, entry)
+    if (entry.isDirectory()) await walkDir(abs, rootForRel, visit)
+  }
+}
+
+function globToRegex(pattern: string): RegExp {
+  // Translate a minimal glob (`**`, `*`, `?`) into a regex anchored at both ends.
+  // `**` matches any number of path segments (including none); `*` matches
+  // anything except `/`; `?` matches a single non-`/` char.
+  let re = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === '*') {
+      if (pattern[i + 1] === '*') {
+        // `**/` → match zero+ segments incl. trailing slash
+        if (pattern[i + 2] === '/') { re += '(?:.*/)?'; i += 2 }
+        else { re += '.*'; i += 1 }
+      } else { re += '[^/]*' }
+    } else if (c === '?') { re += '[^/]' }
+    else if ('.+^$(){}|[]\\'.includes(c)) { re += '\\' + c }
+    else { re += c }
+  }
+  return new RegExp('^' + re + '$')
+}

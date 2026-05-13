@@ -2,6 +2,10 @@
     "chat.tools.terminal.autoApprove": {
         "npx tsc": true,
         "./node_modules/.bin/tsc": true,
-        "sqlite3": true
+        "sqlite3": true,
+        "/^node -e \"console\\.log\\(typeof require\\('fs/promises'\\)\\.glob, process\\.versions\\.node\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }

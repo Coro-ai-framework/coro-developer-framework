@@ -345,11 +345,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       toolCtx.job = liveJob
       if (shouldStopLoop) break
 
-      // Reset signals and create a fresh MCP server for each phase.
+      // Reset signals at the start of each phase. The MCP server is
+      // (re-)created below, after the executor is resolved, so we can
+      // gate file-tool registration on `executor.capabilities`.
       // Reusing the MCP server across phases can leave the transport in a
       // broken state if the previous Claude Code subprocess exited uncleanly.
       resetSignals(signals)
-      const mcpServer = createCoroMcpServer(toolCtx, signals)
 
       // Re-resolve intelligence at every phase boundary. This is
       // idempotent (same materialised path) and cheap (file copies +
@@ -480,6 +481,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // injection still wins via `options.executorImpl`.
       const executor: PhaseExecutorRuntime =
         options?.executorImpl ?? ctx.plugins.resolveExecutor({ model })
+
+      // Fresh MCP server per phase. File/skill tools are registered only
+      // for executors that don't bring native equivalents — Claude SDK
+      // ships its own Read/Write/Edit/Glob/Grep + Skill, so we skip them
+      // there to avoid a doubled tool surface.
+      const mcpServer = createCoroMcpServer(toolCtx, signals, {
+        registerFileTools: !executor.capabilities.supportsNativeFileTools,
+      })
 
       const systemPrompt = await buildSystemPrompt(
         liveJob,
