@@ -102,6 +102,29 @@ export interface RunnerContext {
   logger: Logger
 }
 
+/**
+ * ─── Test injection seam: phase executor ───────────────────────────────────
+ *
+ * The runner accepts `RunJobOptions.queryImpl` so tests can replace the
+ * Claude Agent SDK `query()` stream with a deterministic generator that
+ * yields synthetic SDK messages and sets {@link PhaseSignals}. This is
+ * the ONLY supported way to exercise runner.ts without an Anthropic key.
+ *
+ * **Phase 2 evolution (multi-provider plan, see /memories/session/plan.md):**
+ *   `queryImpl` will be renamed to `executorImpl` and re-typed against the
+ *   `PhaseExecutor` interface from `@coro/llm-core`. Semantics stay
+ *   identical — the executor is invoked once per phase, returns an
+ *   `AsyncIterable` of provider-agnostic events, and the runner translates
+ *   them into PhaseSignals exactly as it does today. The {@link QueryInvocation}
+ *   shape (prompt + options + signals + toolCtx) becomes the
+ *   `PhaseExecutorInvocation` with the same four fields. Existing tests
+ *   that pass a `queryImpl` will compile against the new contract via a
+ *   thin shim until the SDK contract type lands.
+ *
+ * Lockdown coverage: see `tests/runner/runner.test.ts` (uses the seam end-to-end)
+ * and `tests/unit/runner-internals.test.ts` (locks pure helpers).
+ */
+
 /** Arguments passed to a test/injected `query` implementation. */
 export interface QueryInvocation {
   prompt: string
@@ -1470,7 +1493,7 @@ function mergeTokenUsage(base: TokenUsage, phase: TokenUsage): TokenUsage {
  * pre-phase cost baseline. We also never book non-zero cost for phases with no
  * billable token usage.
  */
-function derivePhaseCostUsd(args: {
+export function derivePhaseCostUsd(args: {
   reportedTotalCostUsd: unknown
   phaseTokens: Pick<TokenUsage, 'inputTokens' | 'outputTokens' | 'cacheReadInputTokens' | 'cacheCreationInputTokens'>
   prePhaseCostUsd: number
@@ -1494,7 +1517,7 @@ function derivePhaseCostUsd(args: {
   return rawCostUsd
 }
 
-function selectModel(
+export function selectModel(
   phaseConf: { model?: string } | null | undefined,
   settings: Settings,
 ): string {
@@ -1749,7 +1772,7 @@ export async function reattachDynamicMcpServers(
   }
 }
 
-function buildSubagentDefinitions(
+export function buildSubagentDefinitions(
   subagents: SubagentConfig[],
   intelligenceDir: string,
   settings: Settings,
