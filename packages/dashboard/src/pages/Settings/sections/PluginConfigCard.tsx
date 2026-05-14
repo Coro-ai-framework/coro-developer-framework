@@ -15,6 +15,7 @@ import {
   type PluginEntry,
   type PluginInstalledEntry,
 } from '../SettingsContext'
+import { customPanels } from './customPanels'
 
 // ── JSON-Schema → form field decoder ───────────────────────────────────────
 //
@@ -111,6 +112,8 @@ interface PluginConfigCardProps {
   defaultControl?: ReactNode
   /** Extra notice slot for cross-plugin guidance (e.g. "reuses GitHub creds"). */
   footerNotice?: ReactNode
+  /** Forwarded to a custom panel (if the plugin opts into one). */
+  onConnected?: () => void
 }
 
 /**
@@ -126,6 +129,7 @@ export default function PluginConfigCard({
   onTest,
   defaultControl,
   footerNotice,
+  onConnected,
 }: PluginConfigCardProps) {
   const { draft, setPluginField, setPluginEnabled, dirtyPluginIds } = useSettings()
   const { manifest, source, configured, active, activationHint } = plugin
@@ -133,6 +137,12 @@ export default function PluginConfigCard({
   const enabled = entry.enabled !== false
   const fields = useMemo(() => decodeSchema(manifest.configSchema), [manifest.configSchema])
   const dirty = dirtyPluginIds.has(manifest.id)
+  // Plugins may opt into a custom configuration UI via
+  // `manifest.ui.customPanel`. We still render the standard header so
+  // the activation/source badges + Enable switch remain consistent.
+  const CustomPanel = manifest.ui?.customPanel
+    ? customPanels[manifest.ui.customPanel]
+    : undefined
 
   const allRequiredFilled = fields
     .filter(f => f.required)
@@ -238,7 +248,11 @@ export default function PluginConfigCard({
           one-click expand. */}
       {enabled ? (
         <>
-          {fields.length === 0 ? (
+          {CustomPanel ? (
+            <div className="mt-4">
+              <CustomPanel pluginId={manifest.id} onConnected={onConnected} />
+            </div>
+          ) : fields.length === 0 ? (
             <SettingsNotice tone="neutral" className="mt-4">
               This plugin doesn't expose configuration. Toggle Enable to register it.
             </SettingsNotice>
@@ -260,7 +274,7 @@ export default function PluginConfigCard({
 
           {(onTest || defaultControl || footerNotice) && (
             <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
-              {onTest ? (
+              {onTest && !CustomPanel ? (
                 <TestConnectionButton
                   onTest={() => onTest(entry.config)}
                   disabled={!allRequiredFilled}

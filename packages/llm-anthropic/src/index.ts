@@ -5,6 +5,7 @@
 
 export {
   AnthropicExecutor,
+  ANTHROPIC_MANIFEST,
   createAnthropicExecutor,
   type AnthropicExecutorOptions,
 } from './executor'

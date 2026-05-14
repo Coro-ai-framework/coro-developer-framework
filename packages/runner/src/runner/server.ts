@@ -748,7 +748,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const resolved = resolvePluginsConfig(config)
 
       const dropinIds = listDropinPluginIds()
-      const builtinMetadata = listBuiltinPluginMetadata(logger)
+      const builtinMetadata = await listBuiltinPluginMetadata(logger)
       const builtinById = new Map(builtinMetadata.map(entry => [entry.manifest.id, entry]))
 
       const runtimes = plugins?.all() ?? []
@@ -812,6 +812,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
                 format: m.webhook.format,
               },
             } : {}),
+            ...(m.ui ? { ui: m.ui } : {}),
             configSchema: configSchemaJson,
           },
           installed: configured,
@@ -901,6 +902,65 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       })
     } catch (err) {
       logger.error({ err }, 'DELETE /plugins/:id failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // GET /plugins/:id/models — proxies the executor plugin's static
+  // model catalogue to the dashboard so the aliases editor can offer a
+  // dropdown without hard-coding model ids per provider. Returns 404
+  // for unknown plugin ids and 400 for non-executor plugins.
+  app.get('/plugins/:id/models', (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id']
+      const id = typeof rawId === 'string' ? rawId : Array.isArray(rawId) ? rawId[0] : undefined
+      if (!id) {
+        res.status(400).json({ error: 'Plugin id is required' })
+        return
+      }
+      const runtime = plugins?.all().find(r => r.manifest.id === id)
+      if (!runtime) {
+        res.status(404).json({ error: `Plugin "${id}" is not registered` })
+        return
+      }
+      if (runtime.manifest.kind !== 'executor') {
+        res.status(400).json({ error: `Plugin "${id}" is not an executor plugin` })
+        return
+      }
+      const exec = runtime as unknown as { listModels?: () => ReadonlyArray<{ id: string; displayName?: string; capabilities?: Record<string, boolean> }> }
+      if (typeof exec.listModels !== 'function') {
+        res.json({ models: [] })
+        return
+      }
+      res.json({ models: exec.listModels() })
+    } catch (err) {
+      logger.error({ err }, 'GET /plugins/:id/models failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // POST /plugins/:id/healthcheck — proxies the plugin's
+  // `healthcheck()` so the dashboard can verify a provider is
+  // configured without dispatching a real job. Generic across plugin
+  // kinds; the dashboard's "Test connection" buttons + the Home
+  // readiness banner both use this.
+  app.post('/plugins/:id/healthcheck', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id']
+      const id = typeof rawId === 'string' ? rawId : Array.isArray(rawId) ? rawId[0] : undefined
+      if (!id) {
+        res.status(400).json({ error: 'Plugin id is required' })
+        return
+      }
+      const runtime = plugins?.all().find(r => r.manifest.id === id)
+      if (!runtime) {
+        res.status(404).json({ error: `Plugin "${id}" is not registered` })
+        return
+      }
+      const health = await runtime.healthcheck()
+      res.json(health)
+    } catch (err) {
+      logger.error({ err }, 'POST /plugins/:id/healthcheck failed')
       res.status(500).json({ error: (err as Error).message })
     }
   })
@@ -1638,6 +1698,44 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           ;(merged as Record<string, unknown>).plugins = {
             ...(nextDefaults ? { defaults: nextDefaults } : {}),
             installed: nextInstalled,
+          }
+        }
+      }
+
+      // LLM block (multi-provider routing). Holds only the
+      // `defaultProvider` selection and `aliases` map; provider configs
+      // (auth, etc.) live under `plugins.installed.<id>.config` and are
+      // saved via the `plugins` branch above. The dashboard sends the
+      // full block back so we can replace wholesale rather than merge.
+      if (Object.prototype.hasOwnProperty.call(updates, 'llm')) {
+        const incoming = (updates as Record<string, unknown>)['llm'] as
+          | { defaultProvider?: string; aliases?: Record<string, { provider: string; model: string; reasoningEffort?: 'low' | 'medium' | 'high' }> }
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).llm
+        } else if (incoming && typeof incoming === 'object') {
+          const next: NonNullable<LocalConfig['llm']> = {}
+          if (typeof incoming.defaultProvider === 'string' && incoming.defaultProvider.length > 0) {
+            next.defaultProvider = incoming.defaultProvider
+          }
+          if (incoming.aliases && typeof incoming.aliases === 'object') {
+            const aliases: NonNullable<NonNullable<LocalConfig['llm']>['aliases']> = {}
+            for (const [k, v] of Object.entries(incoming.aliases)) {
+              if (!v || typeof v !== 'object') continue
+              if (typeof v.provider !== 'string' || typeof v.model !== 'string') continue
+              aliases[k] = {
+                provider: v.provider,
+                model: v.model,
+                ...(v.reasoningEffort ? { reasoningEffort: v.reasoningEffort } : {}),
+              }
+            }
+            if (Object.keys(aliases).length > 0) next.aliases = aliases
+          }
+          if (Object.keys(next).length > 0) {
+            ;(merged as Record<string, unknown>).llm = next
+          } else {
+            delete (merged as Record<string, unknown>).llm
           }
         }
       }

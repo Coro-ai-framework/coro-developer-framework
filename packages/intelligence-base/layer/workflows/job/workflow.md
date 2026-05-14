@@ -62,7 +62,7 @@ Implement a scoped change in an existing service or repository. The change can b
 This workflow is executed by the **Coro Runner Service**. The Coro Runner:
 1. Receives a job request from the CLI, UI, or a webhook-driven job source
 2. Loads this file and the relevant agent MD files as system prompts
-3. Calls the Claude API in a loop, dispatching tool calls, until the workflow reaches `complete`
+3. Calls the configured LLM in a loop, dispatching tool calls, until the workflow reaches `complete`
 4. Parks the job and resumes it when SCM webhooks (delivered via the active SCM plugin) arrive
 
 ## Trigger

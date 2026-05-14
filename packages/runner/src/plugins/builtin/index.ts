@@ -7,6 +7,7 @@
 
 import type { Logger } from 'pino'
 import type { PluginsConfig } from '../../config/plugins-config'
+import type { Settings } from '../../config/settings'
 import { PluginRegistry } from '../registry'
 import type { PluginManifest, PluginRuntime } from '../types'
 import { buildDropinFactoryMap, type DropinPluginFactory } from '../loader'
@@ -18,16 +19,21 @@ import { createGitHubTrackerPlugin } from './github-tracker'
 
 // ── Built-in plugin factories ────────────────────────────────────────────────
 //
-// Each entry maps a built-in plugin id to its factory. Factories are
-// pure: they accept `{ config }` and return a not-yet-initialised
-// runtime. The registry calls `init()` on every runtime after
-// construction so plugins can validate their config before any
-// downstream code observes them.
+// Each entry maps a built-in plugin id to its factory. Factories accept
+// `{ config, logger, settings? }` and return a not-yet-initialised
+// runtime (sync or async). The registry calls `init()` on every
+// runtime after construction so plugins can validate their config
+// before any downstream code observes them.
+//
+// `settings` is forwarded for executor plugins that need ambient SCM
+// env (e.g. Anthropic injects BB_*/GH_* into the agent's git env);
+// SCM/tracker plugins can ignore it.
 
 export type BuiltinPluginFactory = (args: {
   config: Record<string, unknown>
   logger: Logger
-}) => PluginRuntime
+  settings?: Settings
+}) => PluginRuntime | Promise<PluginRuntime>
 
 export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
   bitbucket: createBitBucketScmPlugin,
@@ -38,6 +44,19 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
   // id so the SCM and Tracker halves can be enabled independently —
   // a tenant might want GH Issues for tracking but BitBucket for SCM.
   'github-issues': createGitHubTrackerPlugin,
+  // Anthropic ships in-box as the canonical built-in executor. The
+  // factory dynamic-imports `@coro/llm-anthropic` so the runner core
+  // never carries a top-level `import` from the plugin (lint-enforced
+  // by `runner-no-claude-imports.test.ts`). Additional executor
+  // plugins (OpenAI, Foundry, Ollama, …) ship as drop-ins under
+  // `~/.coro/plugins/<id>/` and are loaded by the same code path.
+  anthropic: async ({ logger, settings }) => {
+    if (!settings) {
+      throw new Error("Anthropic executor requires runner settings (built-in registry must be built with `settings`)")
+    }
+    const mod = await import('@coro/llm-anthropic')
+    return mod.createAnthropicExecutor({ settings, logger })
+  },
 }
 
 /**
@@ -46,9 +65,10 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
  * every plugin (which would require valid config). Keep this list in
  * sync with {@link BUILTIN_PLUGIN_FACTORIES}.
  */
-export const BUILTIN_PLUGIN_IDS_BY_KIND: Readonly<Record<'scm' | 'tracker', readonly string[]>> = {
+export const BUILTIN_PLUGIN_IDS_BY_KIND: Readonly<Record<'scm' | 'tracker' | 'executor', readonly string[]>> = {
   scm: ['bitbucket', 'github'],
   tracker: ['jira', 'linear', 'github-issues'],
+  executor: ['anthropic'],
 }
 
 export interface BuiltinPluginMetadata {
@@ -67,20 +87,38 @@ const BUILTIN_PLUGIN_ACTIVATION_HINTS: Readonly<Record<string, string>> = {
     'Built in. Configure Settings > Tracker with provider Linear and an API key to enable it.',
   'github-issues':
     'Built in. Configure Settings > Tracker with provider GitHub and complete the GitHub settings to enable GitHub Issues.',
+  anthropic:
+    'Built in. Configure Settings > LLM provider with an Anthropic API key, an OAuth token, or the Claude Code login flow to enable it.',
 }
 
 /**
  * Describe the built-in plugins that ship with the runner, even when they are
  * not yet configured for the current tenant. Used by the dashboard so fresh
  * installs can distinguish "built in but not enabled yet" from "not present".
+ *
+ * Async because some built-ins (currently Anthropic) require runner
+ * settings to instantiate, so we dynamic-import their static manifest
+ * instead of constructing the runtime here.
  */
-export function listBuiltinPluginMetadata(logger: Logger): BuiltinPluginMetadata[] {
-  return Object.entries(BUILTIN_PLUGIN_FACTORIES).map(([id, factory]) => ({
-    manifest: factory({ config: {}, logger }).manifest,
-    activationHint:
+export async function listBuiltinPluginMetadata(logger: Logger): Promise<BuiltinPluginMetadata[]> {
+  const out: BuiltinPluginMetadata[] = []
+  for (const [id, factory] of Object.entries(BUILTIN_PLUGIN_FACTORIES)) {
+    const activationHint =
       BUILTIN_PLUGIN_ACTIVATION_HINTS[id]
-      ?? 'Built in. Configure this plugin in Settings before using it in a job.',
-  }))
+      ?? 'Built in. Configure this plugin in Settings before using it in a job.'
+    if (id === 'anthropic') {
+      // Static manifest pulled via dynamic import to avoid a top-level
+      // `@coro/llm-anthropic` import in the runner core. The factory
+      // itself can't be invoked here because the executor's
+      // constructor needs `Settings`.
+      const mod = await import('@coro/llm-anthropic')
+      out.push({ manifest: mod.ANTHROPIC_MANIFEST, activationHint })
+      continue
+    }
+    const runtime = await factory({ config: {}, logger })
+    out.push({ manifest: runtime.manifest, activationHint })
+  }
+  return out
 }
 
 // ── Bootstrap helper ─────────────────────────────────────────────────────────
@@ -88,6 +126,13 @@ export function listBuiltinPluginMetadata(logger: Logger): BuiltinPluginMetadata
 export interface BuildPluginsArgs {
   pluginsConfig: PluginsConfig
   logger: Logger
+  /**
+   * Resolved runner settings. Forwarded to executor plugin factories
+   * (the Anthropic executor needs `settings.bitbucket` / `settings.github`
+   * to inject git env into agent processes). Optional so test setups
+   * that only register SCM/tracker plugins can omit it.
+   */
+  settings?: Settings
   /**
    * Override `~/.coro/plugins/` for the v1.5 drop-in loader. Tests pass
    * an isolated tmpdir; production leaves this undefined so the loader
@@ -131,6 +176,7 @@ export async function buildBuiltinPluginRegistry(
         config: slot.config ?? {},
         logger,
         dropinFactories,
+        ...(args.settings ? { settings: args.settings } : {}),
       })
       if (!runtime) {
         logger.warn(
@@ -146,6 +192,15 @@ export async function buildBuiltinPluginRegistry(
     }
   }
 
+  // Honour the tenant's chosen default LLM provider when one is
+  // configured. The registry's resolveExecutor falls back to "sole
+  // installed executor" when this isn't set, which covers the
+  // single-provider common case.
+  const defaultProvider = args.settings?.llm?.defaultProvider
+  if (defaultProvider) {
+    registry.setDefaults({ ...registry.getDefaults(), executor: defaultProvider })
+  }
+
   return registry
 }
 
@@ -154,10 +209,15 @@ async function instantiatePlugin(args: {
   config: Record<string, unknown>
   logger: Logger
   dropinFactories: Record<string, DropinPluginFactory>
+  settings?: Settings
 }): Promise<PluginRuntime | null> {
   const builtin = BUILTIN_PLUGIN_FACTORIES[args.id]
   if (builtin) {
-    return builtin({ config: args.config, logger: args.logger })
+    return builtin({
+      config: args.config,
+      logger: args.logger,
+      ...(args.settings ? { settings: args.settings } : {}),
+    })
   }
   const dropin = args.dropinFactories[args.id]
   if (dropin) {

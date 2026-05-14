@@ -2,16 +2,12 @@ import type { SettingStatus } from '../../components/settings/StatusBadge'
 import type {
   SettingsDraft,
   SettingsSectionId,
-  ClaudeLoginState,
-  ClaudeAccountInfo,
   PluginsCatalogue,
   PluginEntry,
 } from './SettingsContext'
 
 interface ReadinessInput {
   draft: SettingsDraft
-  claudeLogin: ClaudeLoginState
-  claudeLoginAccount: ClaudeAccountInfo | null
   /** Optional — if absent (catalogue still loading) we fall back to a
    * built-in plugin-id allowlist heuristic so the wizard can still render. */
   pluginsCatalogue?: PluginsCatalogue | null
@@ -57,27 +53,31 @@ function pluginIsConfigured(
 
 const KNOWN_SCM_FALLBACK = ['github', 'bitbucket', 'gitlab']
 const KNOWN_TRACKER_FALLBACK = ['jira', 'linear', 'github-issues']
+const KNOWN_EXECUTOR_FALLBACK = ['anthropic']
 
-export function evaluateReadiness({ draft, claudeLogin, claudeLoginAccount, pluginsCatalogue }: ReadinessInput): ReadinessSummary {
+export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): ReadinessSummary {
   // LLM provider ──
-  const account = claudeLogin.account ?? claudeLoginAccount
-  const claudeReady = claudeLogin.status === 'connected' || !!account
+  // Readiness = the configured default executor plugin exists in the
+  // catalogue, has an entry under `pluginInstalled`, and every
+  // required-by-schema field on that entry is filled. Everything else
+  // ("is Claude logged in?", "is the API key non-empty?") is the
+  // plugin's own concern via its config schema or custom panel.
+  const executorPlugins = pluginsCatalogue?.plugins.filter(p => p.manifest.kind === 'executor') ?? []
+  const isExecutorId = (id: string): boolean => {
+    if (!pluginsCatalogue) return KNOWN_EXECUTOR_FALLBACK.includes(id)
+    return executorPlugins.some(p => p.manifest.id === id)
+  }
+  const defaultExecutorId = draft.llmDefaultProvider || executorPlugins[0]?.manifest.id || ''
+  const defaultExecutor = executorPlugins.find(p => p.manifest.id === defaultExecutorId)
   const llmReady =
-    (draft.anthropicMethod === 'claudeLogin' && claudeReady) ||
-    (draft.anthropicMethod === 'apiKey' && draft.apiKey.length > 0) ||
-    (draft.anthropicMethod === 'oauth' && draft.oauthToken.length > 0)
-  const llmDetail =
-    draft.anthropicMethod === 'claudeLogin'
-      ? claudeReady
-        ? 'Claude login connected'
-        : 'Claude login not connected'
-      : draft.anthropicMethod === 'apiKey'
-        ? draft.apiKey
-          ? 'API key configured'
-          : 'API key missing'
-        : draft.oauthToken
-          ? 'Legacy token configured'
-          : 'Legacy token missing'
+    !!defaultExecutorId
+    && isExecutorId(defaultExecutorId)
+    && pluginIsConfigured(draft, defaultExecutor, defaultExecutorId)
+  const llmDetail = !defaultExecutorId
+    ? 'No LLM provider selected'
+    : llmReady
+      ? `${defaultExecutor?.manifest.displayName ?? defaultExecutorId} configured`
+      : `${defaultExecutor?.manifest.displayName ?? defaultExecutorId} needs configuration`
 
   // Plugin readiness — required fields come from each plugin's own
   // JSON Schema (catalogue), so adding a new plugin doesn't require

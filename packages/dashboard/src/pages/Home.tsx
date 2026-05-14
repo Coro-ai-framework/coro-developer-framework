@@ -38,9 +38,11 @@ import type { Job } from '../types'
 
 interface ConfigSnapshot {
   config: {
-    anthropic?: { method?: string; apiKey?: string; oauthToken?: string }
+    llm?: { defaultProvider?: string }
     git?: { provider?: string; username?: string; token?: string }
   } | null
+  /** Result of the live healthcheck for the configured default LLM provider. */
+  llmHealthy?: boolean
 }
 
 type SetupState = 'loading' | 'not-configured' | 'partial' | 'configured'
@@ -55,10 +57,12 @@ function summariseConfig(snapshot: ConfigSnapshot | null): SetupSummary {
   if (snapshot.config === null) return { state: 'not-configured', missing: [] }
 
   const missing: string[] = []
-  const { anthropic, git } = snapshot.config
-  const hasAnthropicCreds = anthropic?.method === 'claudeLogin' || Boolean(anthropic?.apiKey) || Boolean(anthropic?.oauthToken)
-
-  if (!hasAnthropicCreds) missing.push('Anthropic credentials')
+  const { llm, git } = snapshot.config
+  // Treat the LLM as ready only when the runner can actually talk to
+  // the configured default provider. The defaultProvider field on its
+  // own only proves the user picked a name; healthcheck proves the
+  // credentials work.
+  if (!llm?.defaultProvider || snapshot.llmHealthy !== true) missing.push('LLM provider')
   if (!git?.provider) missing.push('Git provider')
   if (!git?.username || !git?.token) missing.push('Git credentials')
 
@@ -188,13 +192,30 @@ function HomeInner() {
 
   useEffect(() => {
     let cancelled = false
-    void requestJson<ConfigSnapshot>('/config')
-      .then(data => {
-        if (!cancelled) setSnapshot(data)
-      })
-      .catch(() => {
+    void (async () => {
+      try {
+        const data = await requestJson<ConfigSnapshot>('/config')
+        // Probe the configured default executor's healthcheck so the
+        // banner reflects "can the runner actually reach the model?"
+        // rather than "did the user fill out the form?".
+        const providerId = data.config?.llm?.defaultProvider
+        let llmHealthy: boolean | undefined
+        if (providerId) {
+          try {
+            const result = await requestJson<{ ok?: boolean }>(
+              `/plugins/${encodeURIComponent(providerId)}/healthcheck`,
+              { method: 'POST' },
+            )
+            llmHealthy = result.ok === true
+          } catch {
+            llmHealthy = false
+          }
+        }
+        if (!cancelled) setSnapshot({ ...data, llmHealthy })
+      } catch {
         if (!cancelled) setSnapshot({ config: null })
-      })
+      }
+    })()
 
     return () => {
       cancelled = true

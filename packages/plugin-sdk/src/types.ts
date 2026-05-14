@@ -99,6 +99,16 @@ export interface PluginManifest {
   mcpToolMap?: Record<string, string>
   allowedMcpTools?: ReadonlyArray<string>
   disallowedMcpTools?: ReadonlyArray<string>
+  /**
+   * Optional UI override for the dashboard. When `customPanel` is set,
+   * the dashboard's plugin card delegates to a registered React
+   * component instead of rendering the schema-driven form. Used by
+   * providers (e.g. Anthropic) whose configuration is an OAuth flow
+   * rather than a flat key/value list.
+   */
+  ui?: {
+    customPanel?: string
+  }
 }
 
 // ── Runtime contract ─────────────────────────────────────────────────────────

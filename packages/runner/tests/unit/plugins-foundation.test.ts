@@ -392,14 +392,15 @@ describe('resolvePluginsConfig', () => {
 })
 
 describe('listBuiltinPluginMetadata', () => {
-  it('describes every shipped builtin plugin with activation guidance', () => {
+  it('describes every shipped builtin plugin with activation guidance', async () => {
     const logger = pino({ level: 'silent' })
-    const got = listBuiltinPluginMetadata(logger)
+    const got = await listBuiltinPluginMetadata(logger)
     const ids = got.map(entry => entry.manifest.id).sort()
 
     expect(ids).toEqual([
       ...BUILTIN_PLUGIN_IDS_BY_KIND['scm'],
       ...BUILTIN_PLUGIN_IDS_BY_KIND['tracker'],
+      ...BUILTIN_PLUGIN_IDS_BY_KIND['executor'],
     ].sort())
     for (const entry of got) {
       expect(entry.manifest.displayName.length).toBeGreaterThan(0)

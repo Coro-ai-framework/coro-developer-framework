@@ -151,7 +151,7 @@ const anthropicConfigSchema = z.object({
   }).partial().optional(),
 }).passthrough()
 
-const ANTHROPIC_MANIFEST: PluginManifest = {
+export const ANTHROPIC_MANIFEST: PluginManifest = {
   id: ANTHROPIC_PLUGIN_ID,
   kind: 'executor',
   version: '1.0.0',
@@ -163,6 +163,15 @@ const ANTHROPIC_MANIFEST: PluginManifest = {
   capabilities: {
     /** True when the executor's tool loop and MCP plumbing are complete. */
     supportsClaudeAgentSdk: true,
+  },
+  ui: {
+    /**
+     * The dashboard renders {@link AnthropicAuthPanel} (claude-login
+     * + api-key + legacy oauth) instead of the schema-driven form,
+     * because Anthropic auth is an OAuth flow rather than a flat
+     * key/value config.
+     */
+    customPanel: 'anthropic-auth',
   },
 }
 

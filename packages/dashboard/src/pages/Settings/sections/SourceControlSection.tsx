@@ -50,13 +50,11 @@ function buildGitTestPayload(pluginId: string, config: Record<string, unknown>):
 export default function SourceControlSection() {
   const {
     draft,
-    claudeLogin,
-    claudeLoginAccount,
     pluginsCatalogue,
     pluginsCatalogueError,
     setPluginDefault,
   } = useSettings()
-  const readiness = evaluateReadiness({ draft, claudeLogin, claudeLoginAccount, pluginsCatalogue }).byId['source-control']
+  const readiness = evaluateReadiness({ draft, pluginsCatalogue }).byId['source-control']
 
   const scmPlugins: PluginEntry[] = useMemo(() => {
     if (!pluginsCatalogue) return []

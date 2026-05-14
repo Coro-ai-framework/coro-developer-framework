@@ -211,6 +211,27 @@ const mcpServersConfigSchema = z.record(z.string().min(1), userMcpServerSchema).
 export type UserMcpServerConfig = z.infer<typeof userMcpServerSchema>
 export type UserMcpServersConfig = NonNullable<z.infer<typeof mcpServersConfigSchema>>
 
+// ── LLM (multi-provider) ─────────────────────────────────────────────────────
+//
+// Persisted counterpart of `Settings.llm`. Lets operators pick a default
+// executor plugin and pin alias → {provider, model} mappings without
+// editing workflow YAML. Provider configs themselves live under
+// `plugins.installed.<id>.config` — no duplication here.
+
+const llmAliasSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
+})
+
+const llmConfigSchema = z.object({
+  defaultProvider: z.string().min(1).optional(),
+  aliases: z.record(z.string().min(1), llmAliasSchema).optional(),
+}).optional()
+
+export type LlmConfig = NonNullable<z.infer<typeof llmConfigSchema>>
+export type LlmAliasConfig = z.infer<typeof llmAliasSchema>
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   /**
@@ -234,6 +255,17 @@ const localConfigSchema = z.object({
    * configs round-trip without manual edits.
    */
   plugins: pluginsConfigSchema.optional(),
+  /**
+   * Multi-provider LLM configuration. `defaultProvider` selects the
+   * executor plugin used when an alias / phase doesn't pin one
+   * explicitly. `aliases` maps workflow-author shorthands like
+   * `planning` / `coding` to a concrete `{provider, model}` pair.
+   *
+   * Provider configs themselves live under `plugins.installed.<id>.config`
+   * (validated by the plugin's own zod schema) — this block holds only
+   * routing.
+   */
+  llm: llmConfigSchema,
   /**
    * Bring-your-own MCP servers attached to every job session. Lets
    * operators wire arbitrary MCP servers (Slack, Sentry, internal
@@ -412,6 +444,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
     tracker: patch.tracker !== undefined ? patch.tracker : existing.tracker,
     plugins: patch.plugins !== undefined ? patch.plugins : existing.plugins,
+    llm: patch.llm !== undefined ? patch.llm : existing.llm,
     mcpServers: patch.mcpServers !== undefined ? patch.mcpServers : existing.mcpServers,
     inheritClaudeCodeMcps:
       patch.inheritClaudeCodeMcps !== undefined ? patch.inheritClaudeCodeMcps : existing.inheritClaudeCodeMcps,
