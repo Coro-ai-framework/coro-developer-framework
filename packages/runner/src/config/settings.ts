@@ -43,17 +43,6 @@ export interface Settings {
     webhookSecret: string
     logLevel: string
   }
-  claude: {
-    /**
-     * Runtime-selected Anthropic auth. The runner maps this to exactly one of
-     * `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` when needed. The
-     * `claudeLogin` mode intentionally passes neither env var so Claude Code
-     * can use its own persisted login session and refresh handling.
-     */
-    auth: ClaudeAuthConfig
-    planningModel: string
-    codingModel: string
-  }
   bitbucket: {
     workspace: string
     baseUrl: string
@@ -138,12 +127,8 @@ export interface Settings {
     }
   }
   /**
-   * Multi-provider LLM configuration. Optional — when absent the runner
-   * synthesises a single Anthropic provider entry from the legacy
-   * {@link Settings.claude} block so existing tenants keep working
-   * without any config change. Phase 2+ wiring; Phase 3 removes the
-   * synth fallback once `@coro/llm-anthropic` ships its own provider
-   * config schema.
+   * Multi-provider LLM configuration. The runtime treats this as the
+   * single source of truth for executor selection and alias resolution.
    *
    * Provider configs are intentionally typed as `unknown` here — each
    * provider plugin owns its own zod schema and validates at registry

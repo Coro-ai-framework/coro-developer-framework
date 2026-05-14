@@ -59,7 +59,7 @@ import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
 import { reattachDynamicMcpServers } from './mcp-reattach'
-import type { AnthropicExecutorSettings } from './types'
+import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
 
 /** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
 interface NormalizedTokensMutable {
@@ -131,11 +131,25 @@ const ANTHROPIC_CAPABILITIES: ExecutorCapabilities = {
   maxContextTokens: 200_000,
 }
 
-// Empty config schema — the executor's auth and CLI path are sourced
-// from `Settings.claude` in Phase 2. Phase 3 will widen this to
-// `{ auth, claudeCodeCliPath?, env? }` once the executor leaves the
-// runner package.
-const anthropicConfigSchema = z.object({}).passthrough()
+// Plugin config schema. The runner persists this verbatim under
+// `plugins.installed.anthropic.config` and hands it to {@link
+// AnthropicExecutor.init}. Mirrors {@link ClaudeAuthConfig} so the
+// dashboard can edit it directly without translation. All fields are
+// optional so a freshly-bootstrapped install (no creds yet) still
+// passes registration — healthcheck surfaces the missing-cred case.
+const anthropicConfigSchema = z.object({
+  method: z.enum(['apiKey', 'oauth', 'claudeLogin']).optional(),
+  apiKey: z.string().optional(),
+  oauthToken: z.string().optional(),
+  account: z.object({
+    email: z.string().optional(),
+    organization: z.string().optional(),
+    subscriptionType: z.string().optional(),
+    tokenSource: z.string().optional(),
+    apiKeySource: z.string().optional(),
+    apiProvider: z.enum(['firstParty', 'bedrock', 'vertex', 'foundry', 'anthropicAws', 'mantle']).optional(),
+  }).partial().optional(),
+}).passthrough()
 
 const ANTHROPIC_MANIFEST: PluginManifest = {
   id: ANTHROPIC_PLUGIN_ID,
@@ -155,8 +169,19 @@ const ANTHROPIC_MANIFEST: PluginManifest = {
 // ── Runtime ──────────────────────────────────────────────────────────────────
 
 export interface AnthropicExecutorOptions {
-  /** Reference to the runner's resolved Settings. Used to read `claude.auth` etc. */
+  /**
+   * Reference to the runner's resolved Settings. Used to read SCM env
+   * (BitBucket / GitHub) for the agent's git push environment. Auth
+   * is delivered separately via {@link auth} or {@link init}.
+   */
   settings: AnthropicExecutorSettings
+  /**
+   * Initial Anthropic auth config. The runner constructs this from
+   * `plugins.installed.anthropic.config` at registration time. May be
+   * overridden later by {@link init}; defaults to a stub so tests that
+   * don't exercise auth can omit it entirely.
+   */
+  auth?: ClaudeAuthConfig
   /** Pino logger; the runner injects its own scoped child logger. */
   logger: Logger
 }
@@ -167,23 +192,39 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   readonly capabilities = ANTHROPIC_CAPABILITIES
 
   private readonly settings: AnthropicExecutorSettings
+  private auth: ClaudeAuthConfig
   private readonly logger: Logger
 
   constructor(opts: AnthropicExecutorOptions) {
     this.settings = opts.settings
+    this.auth = opts.auth ?? { method: 'apiKey', apiKey: '' }
     this.logger = opts.logger.child({ component: 'AnthropicExecutor' })
   }
 
   // ── Plugin lifecycle ───────────────────────────────────────────────────────
 
   /**
-   * No-op for now. The Claude Agent SDK validates auth lazily on first
-   * `query()` call; we surface auth issues there rather than reproducing
-   * the validation ladder in two places. `_config` and `_deps` accepted
-   * for contract conformance.
+   * Adopts the auth fields from the persisted plugin config. The
+   * Claude Agent SDK validates auth lazily on first `query()` call, so
+   * we surface auth issues there rather than reproducing the
+   * validation ladder in two places. `_deps` accepted for contract
+   * conformance.
    */
-  async init(_config: unknown, _deps: PluginDeps): Promise<void> {
-    // Intentional no-op. See JSDoc above.
+  async init(config: unknown, _deps: PluginDeps): Promise<void> {
+    const parsed = anthropicConfigSchema.safeParse(config ?? {})
+    if (!parsed.success) {
+      this.logger.warn({ err: parsed.error.message }, 'Anthropic plugin config failed schema validation — keeping current auth')
+      return
+    }
+    const cfg = parsed.data
+    if (cfg.method) {
+      this.auth = {
+        method: cfg.method,
+        ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+        ...(cfg.oauthToken ? { oauthToken: cfg.oauthToken } : {}),
+        ...(cfg.account ? { account: cfg.account } : {}),
+      }
+    }
   }
 
   /**
@@ -193,7 +234,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    * is the right place for an active probe.
    */
   async healthcheck(): Promise<PluginHealth> {
-    const { auth } = this.settings.claude
+    const auth = this.auth
     if (auth.method === 'apiKey' && !auth.apiKey) {
       return { ok: false, reason: 'Anthropic auth method is "apiKey" but no apiKey is configured.' }
     }
@@ -224,6 +265,21 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
 
   listModels(): ReadonlyArray<ExecutorModelDescriptor> {
     return ANTHROPIC_MODELS
+  }
+
+  /**
+   * Default alias seed published to the runner. Workflows that
+   * reference `model: 'planning'` / `model: 'coding'` resolve through
+   * here when the tenant has not customised `settings.llm.aliases`.
+   * The model ids match the values the runner historically synthesised
+   * in `buildSettingsFromLocal`, so removing the runner-side defaults
+   * is a no-op for tenants on the built-in Anthropic plugin.
+   */
+  defaultAliases(): Record<string, { provider: string; model: string }> {
+    return {
+      planning: { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-opus-4-6' },
+      coding:   { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-sonnet-4-6' },
+    }
   }
 
   /**
@@ -335,7 +391,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       env: {
         ...process.env,
-        ...buildAnthropicAuthEnv(this.settings.claude.auth),
+        ...buildAnthropicAuthEnv(this.auth),
         BB_WORKSPACE: this.settings.bitbucket.workspace,
         BB_CODER_APP_PASSWORD: this.settings.bitbucket.coderAccount.appPassword,
         BB_BASE_URL: 'https://bitbucket.org',

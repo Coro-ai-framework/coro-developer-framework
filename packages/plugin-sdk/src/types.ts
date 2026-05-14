@@ -701,4 +701,18 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    * own their pricing tables (OpenAI, Foundry, Ollama=$0) implement it.
    */
   calculateCost?(model: string, usage: NormalizedTokenUsage): number
+
+  /**
+   * Optional default alias seed. The runner consults this once at
+   * bootstrap when `settings.llm.aliases` is empty so workflows can
+   * reference `model: 'planning'` / `model: 'coding'` without
+   * tenant-side config. Anthropic returns
+   * `{ planning: { provider: 'anthropic', model: 'claude-opus-4-6' },
+   *   coding:   { provider: 'anthropic', model: 'claude-sonnet-4-6' } }`.
+   * Future providers ship their own tier-appropriate defaults.
+   *
+   * The runner never writes these defaults back to disk — they only
+   * influence in-memory `Settings.llm.aliases` resolution.
+   */
+  defaultAliases?(): Record<string, { provider: string; model: string }>
 }

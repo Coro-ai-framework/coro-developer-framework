@@ -9,16 +9,23 @@ import {
   AnthropicExecutor,
   createAnthropicExecutor,
 } from '../src/executor'
-import type { AnthropicExecutorSettings as Settings } from '../src/types'
+import type { AnthropicExecutorSettings as Settings, ClaudeAuthConfig } from '../src/types'
 
-function makeSettings(auth: Settings['claude']['auth']): Settings {
+function makeSettings(): Settings {
   return {
-    claude: {
-      auth,
-      planningModel: 'claude-opus-4-1',
-      codingModel: 'claude-sonnet-4-5',
+    bitbucket: {
+      workspace: '',
+      coderAccount: { username: '', appPassword: '' },
     },
-  } as unknown as Settings
+  }
+}
+
+function makeExecutor(auth: ClaudeAuthConfig) {
+  return createAnthropicExecutor({
+    settings: makeSettings(),
+    auth,
+    logger: silentLogger,
+  })
 }
 
 const silentLogger = pino({ level: 'silent' })
@@ -26,7 +33,7 @@ const silentLogger = pino({ level: 'silent' })
 describe('AnthropicExecutor — manifest', () => {
   it('declares id="anthropic" / kind="executor" / version=1.x', () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
 
@@ -39,7 +46,7 @@ describe('AnthropicExecutor — manifest', () => {
 
   it('exposes the Claude Agent SDK capability flag on the manifest', () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     expect(ex.manifest.capabilities?.supportsClaudeAgentSdk).toBe(true)
@@ -49,7 +56,7 @@ describe('AnthropicExecutor — manifest', () => {
 describe('AnthropicExecutor — capabilities', () => {
   it('reports the full Anthropic-native capability set', () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     expect(ex.capabilities).toMatchObject({
@@ -68,7 +75,7 @@ describe('AnthropicExecutor — capabilities', () => {
 describe('AnthropicExecutor — listModels', () => {
   it('returns the curated catalogue (sonnet / opus / haiku)', () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     const models = ex.listModels()
@@ -87,7 +94,7 @@ describe('AnthropicExecutor — listModels', () => {
 
   it('omits pricing fields (Anthropic reports total_cost_usd directly)', () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     for (const m of ex.listModels()) {
@@ -99,7 +106,7 @@ describe('AnthropicExecutor — listModels', () => {
 
 describe('AnthropicExecutor — supports()', () => {
   const ex = createAnthropicExecutor({
-    settings: makeSettings({ method: 'claudeLogin' } as never),
+    settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
     logger: silentLogger,
   })
 
@@ -129,7 +136,7 @@ describe('AnthropicExecutor — supports()', () => {
 describe('AnthropicExecutor — healthcheck', () => {
   it('reports ok=true when auth.method=apiKey and apiKey is present', async () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'apiKey', apiKey: 'sk-test-1234' } as never),
+      settings: makeSettings(), auth: { method: 'apiKey', apiKey: 'sk-test-1234' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     await ex.init({}, { logger: silentLogger, fetch: globalThis.fetch })
@@ -138,7 +145,7 @@ describe('AnthropicExecutor — healthcheck', () => {
 
   it('reports ok=false when auth.method=apiKey but apiKey is missing', async () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'apiKey', apiKey: '' } as never),
+      settings: makeSettings(), auth: { method: 'apiKey', apiKey: '' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     const h = await ex.healthcheck()
@@ -148,7 +155,7 @@ describe('AnthropicExecutor — healthcheck', () => {
 
   it('reports ok=true when auth.method=oauth and oauthToken is present', async () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'oauth', oauthToken: 'oauth-tok' } as never),
+      settings: makeSettings(), auth: { method: 'oauth', oauthToken: 'oauth-tok' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     await expect(ex.healthcheck()).resolves.toEqual({ ok: true })
@@ -156,7 +163,7 @@ describe('AnthropicExecutor — healthcheck', () => {
 
   it('reports ok=false when auth.method=oauth but oauthToken is missing', async () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'oauth', oauthToken: '' } as never),
+      settings: makeSettings(), auth: { method: 'oauth', oauthToken: '' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     const h = await ex.healthcheck()
@@ -166,7 +173,7 @@ describe('AnthropicExecutor — healthcheck', () => {
 
   it('reports ok=true for claudeLogin (defers to Claude Code persisted session)', async () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     await expect(ex.healthcheck()).resolves.toEqual({ ok: true })
@@ -181,7 +188,7 @@ describe('AnthropicExecutor — healthcheck', () => {
 describe('AnthropicExecutor — mcpServer', () => {
   it('returns undefined (Anthropic consumes the runner-supplied Coro MCP server)', () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     // Non-public protocol method; cast for the test.
@@ -193,7 +200,7 @@ describe('AnthropicExecutor — mcpServer', () => {
 describe('AnthropicExecutor — class identity', () => {
   it('factory returns an instance of AnthropicExecutor', () => {
     const ex = createAnthropicExecutor({
-      settings: makeSettings({ method: 'claudeLogin' } as never),
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     expect(ex).toBeInstanceOf(AnthropicExecutor)

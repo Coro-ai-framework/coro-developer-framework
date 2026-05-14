@@ -1299,11 +1299,11 @@ export function derivePhaseCostUsd(args: {
  *      return it verbatim. This is how workflows pin a specific model
  *      (e.g. `gpt-5-codex`, `claude-sonnet-4-7`).
  *   3. When no model is specified, default to the `planning` alias.
- *   4. Final legacy fallback (only when neither the alias nor any
- *      llm.aliases entry resolves): the historical
- *      `settings.claude.{coding,planning}Model` strings. This keeps
- *      tenants that haven't migrated to `settings.llm` working until
- *      Phase 7 retires the legacy block.
+ *
+ * `settings.llm.aliases` is seeded from each executor plugin's
+ * {@link PhaseExecutorRuntime.defaultAliases} at bootstrap, so the
+ * built-in Anthropic plugin keeps the historical `planning` / `coding`
+ * shorthands working without any tenant-side config.
  */
 export function selectModel(
   phaseConf: { model?: string } | null | undefined,
@@ -1312,11 +1312,8 @@ export function selectModel(
   const requested = phaseConf?.model || 'planning'
   const alias = settings.llm?.aliases?.[requested]
   if (alias) return alias.model
-  // If the workflow gave us a literal model id (anything that isn't a
-  // recognised alias key in the legacy two-alias world), pass it
-  // through unchanged. Executors validate via `supports(model)`.
-  if (requested !== 'planning' && requested !== 'coding') return requested
-  return requested === 'coding' ? settings.claude.codingModel : settings.claude.planningModel
+  // Pass-through: workflow pinned a literal model id.
+  return requested
 }
 
 /**

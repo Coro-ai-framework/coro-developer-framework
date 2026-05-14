@@ -26,11 +26,12 @@ export interface ClaudeAuthConfig {
  * runtime. Declared structurally so the runner can pass its full `Settings`
  * without an explicit cast — the field set is intentionally narrow so this
  * package never grows a dependency on the runner's other transports.
+ *
+ * `claude.auth` no longer lives here; auth is delivered via the standard
+ * plugin path — `init(config)` receives the anthropic plugin config
+ * (also accepted as a constructor fallback for tests).
  */
 export interface AnthropicExecutorSettings {
-  claude: {
-    auth: ClaudeAuthConfig
-  }
   bitbucket: {
     workspace: string
     coderAccount: {

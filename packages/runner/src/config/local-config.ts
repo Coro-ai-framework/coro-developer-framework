@@ -213,7 +213,14 @@ export type UserMcpServersConfig = NonNullable<z.infer<typeof mcpServersConfigSc
 
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
-  anthropic: anthropicConfigSchema,
+  /**
+   * @deprecated Use `plugins.installed.anthropic.config` instead. The
+   * top-level `anthropic` block is read for one release as a legacy
+   * shape: `loadLocalConfig` mirrors it into
+   * `plugins.installed.anthropic` via {@link legacyConfigToPlugins}.
+   * New saves should write to the plugin location only.
+   */
+  anthropic: anthropicConfigSchema.optional(),
   intelligence: intelligenceConfigSchema,
   paths: pathsConfigSchema,
   git: gitConfigSchema,
@@ -388,16 +395,16 @@ export function saveLocalConfig(config: LocalConfig, configPath?: string): void 
  * Merge partial config into existing. Useful for `coro login` which only sets cloud fields.
  */
 export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: string): LocalConfig {
-  // Fallback seeds `method: 'apiKey'` so the zod refine doesn't reject the
-  // intermediate value; callers are expected to patch in the real credentials.
-  const existing: LocalConfig =
-    loadLocalConfig(configPath) ?? { anthropic: { method: 'apiKey', apiKey: '__placeholder__' } }
+  // `anthropic` is now optional on disk — first-time bootstraps that
+  // haven't run any login flow yet land here with an empty object so
+  // downstream merges don't have to special-case the missing-config path.
+  const existing: LocalConfig = loadLocalConfig(configPath) ?? {}
   const merged: LocalConfig = {
     ...existing,
     ...patch,
     // Deep merge sub-objects
     cloud: patch.cloud !== undefined ? patch.cloud : existing.cloud,
-    anthropic: patch.anthropic ?? existing.anthropic,
+    anthropic: patch.anthropic !== undefined ? patch.anthropic : existing.anthropic,
     intelligence: patch.intelligence !== undefined ? patch.intelligence : existing.intelligence,
     paths: patch.paths !== undefined ? patch.paths : existing.paths,
     git: patch.git !== undefined ? patch.git : existing.git,
@@ -436,6 +443,22 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
   if (!config) return { installed: {} }
 
   const installed: PluginsConfig['installed'] = {}
+
+  // ── LLM (Anthropic) ──
+  // Translate the legacy top-level `anthropic` block into a uniform
+  // plugin-installed entry so the executor receives its config via
+  // the same path as every future LLM plugin (OpenAI, Foundry, …).
+  if (config.anthropic) {
+    installed['anthropic'] = {
+      enabled: true,
+      config: {
+        method: config.anthropic.method,
+        ...(config.anthropic.apiKey ? { apiKey: config.anthropic.apiKey } : {}),
+        ...(config.anthropic.oauthToken ? { oauthToken: config.anthropic.oauthToken } : {}),
+        ...(config.anthropic.account ? { account: config.anthropic.account } : {}),
+      },
+    }
+  }
 
   // ── SCM ──
   if (config.git?.provider === 'bitbucket' && config.git?.workspace && config.git?.username && config.git?.token) {
@@ -517,7 +540,28 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
  *            an explicit `plugins` block — operators must migrate.
  */
 export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
-  if (config?.plugins) return config.plugins
+  // Always synthesise from legacy keys so the result reflects every
+  // legacy block (anthropic / git / tracker). When the user has
+  // hand-authored a `plugins` block, it wins per-id — explicit
+  // entries override the synthesised ones, but absent ids still
+  // fall back to the legacy translation. Without this merge a
+  // partial `plugins` block (e.g. only `bitbucket`) would silently
+  // drop the legacy `anthropic` entry.
+  const synthesised = legacyConfigToPlugins(config)
+  if (config?.plugins) {
+    const stage = legacyConfigKeysBehaviour()
+    if (stage === 'error' && (config.git || config.tracker)) {
+      throw new Error(
+        `Legacy 'git'/'tracker' top-level config keys are no longer supported. ` +
+        `Move them into a 'plugins.installed' block. ` +
+        `Run 'coro init' to regenerate the config in the new shape.`,
+      )
+    }
+    return {
+      defaults: config.plugins.defaults ?? synthesised.defaults,
+      installed: { ...synthesised.installed, ...config.plugins.installed },
+    }
+  }
   const stage = legacyConfigKeysBehaviour()
   if (stage === 'error' && config && (config.git || config.tracker)) {
     throw new Error(
@@ -526,7 +570,7 @@ export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig 
       `Run 'coro init' to regenerate the config in the new shape.`,
     )
   }
-  return legacyConfigToPlugins(config)
+  return synthesised
 }
 
 /**

@@ -52,11 +52,6 @@ vi.mock('@coro/llm-anthropic', async () => {
 function makeSettings(): Settings {
   return {
     host: { port: 3000, webhookSecret: 's', logLevel: 'silent' },
-    claude: {
-      auth: { method: 'apiKey', apiKey: 'k' },
-      planningModel: 'plan-model',
-      codingModel: 'code-model',
-    },
     bitbucket: {
       workspace: 'ws',
       baseUrl: 'https://api.bitbucket.org/2.0',
@@ -75,6 +70,14 @@ function makeSettings(): Settings {
     jira: { baseUrl: '', username: '', apiToken: '', pollIntervalSeconds: 60 },
     ngrok: { authToken: '', staticDomain: '' },
     proposals: { routing: { strategy: 'path' } },
+    llm: {
+      defaultProvider: 'anthropic',
+      providers: {},
+      aliases: {
+        planning: { provider: 'anthropic', model: 'plan-model' },
+        coding: { provider: 'anthropic', model: 'code-model' },
+      },
+    },
   }
 }
 

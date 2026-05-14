@@ -72,8 +72,9 @@ import {
 } from '../config/local-config'
 import { buildBuiltinPluginRegistry } from '../plugins/builtin'
 import { makePluginWebhookNormalizer } from '../plugins/webhook-bridge'
-import { createAnthropicExecutor } from '@coro/llm-anthropic'
+import { createAnthropicExecutor, type ClaudeAuthConfig } from '@coro/llm-anthropic'
 import type { PluginRegistry } from '../plugins/registry'
+import type { PluginsConfig } from '../config/plugins-config'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 import { Settings } from '../config/settings'
@@ -104,10 +105,11 @@ export interface RunnerOptions {
 /**
  * Register the built-in Anthropic phase executor on the plugin registry.
  *
- * Phase 2 wires the executor inside the runner package so it can read
- * `Settings.claude.auth` directly. Phase 3 will relocate the executor to
- * `@coro/llm-anthropic` and replace this helper with the standard
- * built-in factory path (which only carries an opaque `config` blob).
+ * The executor's auth config flows through the standard plugin path:
+ * `pluginsConfig.installed.anthropic.config` is forwarded verbatim to
+ * the constructor (as `auth` seed) and to `init()`, mirroring how every
+ * future LLM plugin will be loaded once the built-in registration
+ * helper is retired.
  *
  * Idempotent: returns immediately when an `anthropic` plugin is already
  * registered (lets external plugin overrides win without a startup
@@ -116,14 +118,27 @@ export interface RunnerOptions {
 async function registerAnthropicExecutor(args: {
   plugins: PluginRegistry
   settings: Settings
+  pluginsConfig: PluginsConfig
   logger: pino.Logger
 }): Promise<void> {
   if (args.plugins.byId('anthropic')) {
     args.logger.info('Anthropic executor already registered (override) — skipping built-in registration')
     return
   }
-  const executor = createAnthropicExecutor({ settings: args.settings, logger: args.logger })
-  await executor.init({}, { logger: args.logger, fetch: globalThis.fetch })
+  // Pull the persisted plugin config (auth method + credentials) out
+  // of the resolved PluginsConfig. Empty config is acceptable here —
+  // healthcheck surfaces the missing-cred case rather than crashing
+  // the runner at boot.
+  const installed = args.pluginsConfig.installed?.['anthropic']
+  const cfg = (installed?.config ?? {}) as Record<string, unknown>
+  const auth: ClaudeAuthConfig = {
+    method: (cfg['method'] as ClaudeAuthConfig['method']) ?? 'apiKey',
+    ...(typeof cfg['apiKey'] === 'string' ? { apiKey: cfg['apiKey'] as string } : {}),
+    ...(typeof cfg['oauthToken'] === 'string' ? { oauthToken: cfg['oauthToken'] as string } : {}),
+    ...(cfg['account'] ? { account: cfg['account'] as ClaudeAuthConfig['account'] } : {}),
+  }
+  const executor = createAnthropicExecutor({ settings: args.settings, auth, logger: args.logger })
+  await executor.init(cfg, { logger: args.logger, fetch: globalThis.fetch })
   args.plugins.register(executor)
   // Mark Anthropic as the default executor so phase resolution that
   // doesn't name a `provider:` falls back to it. Mirrors the
@@ -132,6 +147,33 @@ async function registerAnthropicExecutor(args: {
     ...args.plugins.getDefaults(),
     executor: args.settings.llm?.defaultProvider ?? 'anthropic',
   })
+}
+
+/**
+ * Seed `settings.llm.aliases` from each executor plugin's
+ * {@link PhaseExecutorRuntime.defaultAliases}. Operator-supplied
+ * aliases (loaded from `LocalConfig` in a future phase) win over
+ * plugin defaults. Env var overrides (`CLAUDE_PLANNING_MODEL` /
+ * `CLAUDE_CODING_MODEL`) trump everything for back-compat with the
+ * pre-Phase-C bootstrap behaviour.
+ */
+function seedExecutorDefaultAliases(args: { plugins: PluginRegistry; settings: Settings }): void {
+  const llm = args.settings.llm ?? (args.settings.llm = {})
+  const aliases = llm.aliases ?? (llm.aliases = {})
+  for (const runtime of args.plugins.all()) {
+    if (runtime.manifest.kind !== 'executor') continue
+    const exec = runtime as unknown as { defaultAliases?: () => Record<string, { provider: string; model: string }> }
+    if (typeof exec.defaultAliases !== 'function') continue
+    for (const [k, v] of Object.entries(exec.defaultAliases())) {
+      if (!aliases[k]) aliases[k] = v
+    }
+  }
+  // Legacy env overrides — Anthropic-pinned for back-compat. Future
+  // env knobs will land under provider-neutral names (LLM_*).
+  const planEnv = process.env['CLAUDE_PLANNING_MODEL']
+  if (planEnv) aliases['planning'] = { provider: 'anthropic', model: planEnv }
+  const codeEnv = process.env['CLAUDE_CODING_MODEL']
+  if (codeEnv) aliases['coding'] = { provider: 'anthropic', model: codeEnv }
 }
 
 /**
@@ -144,24 +186,11 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
   const intelligenceDir = resolveIntelligenceDir(config)
   const workingDir = resolveLocalWorkingDir(config)
 
-  const planningModel = process.env.CLAUDE_PLANNING_MODEL ?? 'claude-opus-4-6'
-  const codingModel = process.env.CLAUDE_CODING_MODEL ?? 'claude-sonnet-4-6'
-
   return {
     host: {
       port: 0,
       webhookSecret: '',
       logLevel: process.env.LOG_LEVEL ?? 'info',
-    },
-    claude: {
-      auth: {
-        method: config.anthropic.method,
-        apiKey: config.anthropic.apiKey,
-        oauthToken: config.anthropic.oauthToken,
-        account: config.anthropic.account,
-      },
-      planningModel,
-      codingModel,
     },
     bitbucket: {
       workspace: config.git?.workspace ?? process.env.BITBUCKET_WORKSPACE ?? '',
@@ -229,20 +258,14 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       staticDomain: '',
     },
     proposals: resolveProposalsConfig(config),
-    // Phase 2 multi-provider seed. Until tenants opt in via the
-    // dashboard's LLM settings page (Phase 4+), we synthesise a
-    // single-provider Anthropic config from the legacy `claude` block
-    // so the executor registry has a default provider plus the two
-    // canonical aliases (`planning`, `coding`) workflows have always
-    // referenced. Removing this synth requires every tenant to
-    // explicitly enumerate providers — deferred to a later phase.
+    // Multi-provider LLM configuration. Aliases are seeded post-bootstrap
+    // by {@link seedExecutorDefaultAliases} from each executor plugin's
+    // `defaultAliases()`, so the runner stays provider-agnostic — every
+    // canonical alias originates in a plugin, not the runner.
     llm: {
       defaultProvider: 'anthropic',
       providers: {},
-      aliases: {
-        planning: { provider: 'anthropic', model: planningModel },
-        coding:   { provider: 'anthropic', model: codingModel },
-      },
+      aliases: {},
     },
   }
 }
@@ -301,7 +324,8 @@ export async function startLocalRunner(
   // client fields above stay populated for back-compat MCP wrappers.
   const pluginsConfig = resolvePluginsConfig(effectiveConfig)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
-  await registerAnthropicExecutor({ plugins, settings, logger })
+  await registerAnthropicExecutor({ plugins, settings, pluginsConfig, logger })
+  seedExecutorDefaultAliases({ plugins, settings })
 
   // Create polling transport for PR event detection. Plugin-aware
   // polling lives in the SCM plugins themselves (`pollPr`); the
@@ -396,7 +420,8 @@ export async function startHybridRunner(
   // transport with a closure that normalises plugin webhooks.
   const pluginsConfig = resolvePluginsConfig(config)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
-  await registerAnthropicExecutor({ plugins, settings, logger })
+  await registerAnthropicExecutor({ plugins, settings, pluginsConfig, logger })
+  seedExecutorDefaultAliases({ plugins, settings })
 
   // Create WebSocket transport to cloud
   const transport = new WebSocketTransport({

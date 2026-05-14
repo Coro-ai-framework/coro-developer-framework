@@ -285,6 +285,59 @@ describe('legacyConfigToPlugins', () => {
     expect(plugins.defaults?.scm).toBeUndefined()
     expect(plugins.defaults?.tracker).toBeUndefined()
   })
+
+  // ── C.4 Anthropic migration coverage ──
+  // Confirms the legacy `anthropic` block round-trips into
+  // `plugins.installed.anthropic` so the executor receives its config
+  // through the standard plugin path (and adding a new LLM plugin
+  // requires nothing in the runner core).
+
+  it('translates legacy anthropic apiKey config into plugins.installed.anthropic', () => {
+    const cfg: LocalConfig = {
+      anthropic: { method: 'apiKey', apiKey: 'sk-test' },
+    }
+    const plugins = legacyConfigToPlugins(cfg)
+    expect(plugins.installed['anthropic']).toEqual({
+      enabled: true,
+      config: { method: 'apiKey', apiKey: 'sk-test' },
+    })
+  })
+
+  it('translates legacy anthropic claudeLogin (with account) into plugins.installed.anthropic', () => {
+    const cfg: LocalConfig = {
+      anthropic: {
+        method: 'claudeLogin',
+        account: { email: 'a@b.com', subscriptionType: 'pro' },
+      },
+    }
+    const plugins = legacyConfigToPlugins(cfg)
+    expect(plugins.installed['anthropic']).toEqual({
+      enabled: true,
+      config: {
+        method: 'claudeLogin',
+        account: { email: 'a@b.com', subscriptionType: 'pro' },
+      },
+    })
+  })
+
+  it('translates legacy anthropic oauth token into plugins.installed.anthropic', () => {
+    const cfg: LocalConfig = {
+      anthropic: { method: 'oauth', oauthToken: 'oauth-tok' },
+    }
+    const plugins = legacyConfigToPlugins(cfg)
+    expect(plugins.installed['anthropic']).toEqual({
+      enabled: true,
+      config: { method: 'oauth', oauthToken: 'oauth-tok' },
+    })
+  })
+
+  it('omits anthropic entry when legacy block is absent', () => {
+    const cfg: LocalConfig = {
+      git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
+    }
+    const plugins = legacyConfigToPlugins(cfg)
+    expect(plugins.installed['anthropic']).toBeUndefined()
+  })
 })
 
 describe('resolvePluginsConfig', () => {
@@ -309,6 +362,32 @@ describe('resolvePluginsConfig', () => {
       git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
     }
     expect(resolvePluginsConfig(cfg).installed['github']).toBeDefined()
+  })
+
+  // ── C.4 Anthropic explicit-vs-legacy precedence ──
+
+  it('synthesises plugins.installed.anthropic from legacy anthropic when no explicit entry', () => {
+    const cfg: LocalConfig = {
+      anthropic: { method: 'apiKey', apiKey: 'sk-legacy' },
+    }
+    const got = resolvePluginsConfig(cfg)
+    expect(got.installed['anthropic']).toEqual({
+      enabled: true,
+      config: { method: 'apiKey', apiKey: 'sk-legacy' },
+    })
+  })
+
+  it('explicit plugins.installed.anthropic wins over legacy anthropic block', () => {
+    const cfg: LocalConfig = {
+      anthropic: { method: 'apiKey', apiKey: 'sk-legacy' },
+      plugins: {
+        installed: {
+          'anthropic': { enabled: true, config: { method: 'apiKey', apiKey: 'sk-explicit' } },
+        },
+      },
+    }
+    const got = resolvePluginsConfig(cfg)
+    expect((got.installed['anthropic']?.config as { apiKey?: string })?.apiKey).toBe('sk-explicit')
   })
 })
 

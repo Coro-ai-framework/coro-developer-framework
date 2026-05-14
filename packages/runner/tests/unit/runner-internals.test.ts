@@ -20,10 +20,12 @@ import type { Settings } from '../../src/config/settings'
 
 function makeSettings(overrides: { planning?: string; coding?: string } = {}): Settings {
   return {
-    claude: {
-      auth: { method: 'apiKey', apiKey: 'sk-test' },
-      planningModel: overrides.planning ?? 'claude-opus-4',
-      codingModel: overrides.coding ?? 'claude-sonnet-4',
+    llm: {
+      defaultProvider: 'anthropic',
+      aliases: {
+        planning: { provider: 'anthropic', model: overrides.planning ?? 'claude-opus-4' },
+        coding: { provider: 'anthropic', model: overrides.coding ?? 'claude-sonnet-4' },
+      },
     },
   } as unknown as Settings
 }
@@ -73,6 +75,33 @@ describe('selectModel', () => {
     expect(selectModel({ model: 'coding' }, s)).toBe('gpt-5-codex')
     expect(selectModel({ model: 'planning' }, s)).toBe('claude-opus-4-1')
     expect(selectModel(null, s)).toBe('claude-opus-4-1')
+  })
+
+  // ── C.4 post-removal of legacy claude.* fallback ──
+
+  it('returns the alias name verbatim when no aliases are configured (no claude.* fallback)', () => {
+    // After Phase C.2 there is no `settings.claude.*` block to fall
+    // back to. With aliases empty, `selectModel` passes the requested
+    // value through as a literal model id — including the bare
+    // `'planning'` / `'coding'` shorthands. Documented so any
+    // future regression that re-introduces a hidden default fails
+    // here loudly.
+    const empty = { llm: { aliases: {} } } as unknown as Settings
+    expect(selectModel({ model: 'planning' }, empty)).toBe('planning')
+    expect(selectModel({ model: 'coding' }, empty)).toBe('coding')
+    expect(selectModel(null, empty)).toBe('planning')
+  })
+
+  it('passes any non-aliased value through unchanged (provider-agnostic)', () => {
+    const s = {
+      llm: {
+        aliases: {
+          planning: { provider: 'anthropic', model: 'claude-opus-4-1' },
+        },
+      },
+    } as unknown as Settings
+    expect(selectModel({ model: 'gpt-5-codex' }, s)).toBe('gpt-5-codex')
+    expect(selectModel({ model: 'o3-mini' }, s)).toBe('o3-mini')
   })
 })
 
