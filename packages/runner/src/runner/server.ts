@@ -1387,11 +1387,21 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const configuredExecutorIds = enabledExecutorEntries
         .filter(([, slot]) => Object.keys((slot.config ?? {}) as Record<string, unknown>).length > 0)
         .map(([id]) => id)
+        .sort()
       const candidateExecutorIds = configuredExecutorIds.length > 0
         ? configuredExecutorIds
-        : enabledExecutorEntries.map(([id]) => id)
+        : enabledExecutorEntries.map(([id]) => id).sort()
+      // Pick the first candidate when one or more is available. Earlier
+      // versions of this code only synthesised when exactly one
+      // candidate existed, on the theory that picking between two
+      // configured providers shouldn't be implicit. In practice the
+      // runtime resolver already picks deterministically (first enabled
+      // executor) when no defaultProvider is set, so the dashboard
+      // banner was lying about a non-issue. Mirror the resolver's
+      // pick-first behaviour here so the wire response matches what
+      // jobs actually run on. The user can still override in Settings.
       const synthesisedDefaultProvider =
-        config && !config.llm?.defaultProvider && candidateExecutorIds.length === 1
+        config && !config.llm?.defaultProvider && candidateExecutorIds.length >= 1
           ? candidateExecutorIds[0]
           : undefined
 

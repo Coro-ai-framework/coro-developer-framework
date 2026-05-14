@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
@@ -21,6 +21,72 @@ interface ModelDescriptor {
 
 interface ModelsResponse {
   models?: ModelDescriptor[]
+}
+
+/** A single workflow-phase reference for a given alias name. */
+interface AliasUsage {
+  workflowId: string
+  workflowName: string
+  phaseName: string
+}
+
+interface DiscoveredWorkflowsResponse {
+  workflows: Array<{
+    id: string
+    name: string
+    phases?: Array<{ name: string; model?: string }>
+  }>
+}
+
+/**
+ * Walks every discovered workflow (`GET /workflows`) and indexes which
+ * alias name each phase references via its `model:` field. Two outputs:
+ *
+ *   - `usagesByAlias` — `aliasName → [{workflow, phase}, …]`. Used to
+ *     render the subtle "Used in:" footer under each row, so the user
+ *     can see at a glance whether renaming will break a workflow.
+ *   - `referencedNames` — every distinct `model:` string discovered.
+ *     Surfaced as datalist options so adding a new alias is mostly
+ *     point-and-click on the names workflows actually ask for.
+ *
+ * Falls back silently to empty data if the endpoint is unavailable —
+ * the editor stays fully functional, it just loses the suggestions.
+ */
+function useAliasUsages(): {
+  usagesByAlias: Map<string, AliasUsage[]>
+  referencedNames: string[]
+} {
+  const [usagesByAlias, setUsages] = useState<Map<string, AliasUsage[]>>(new Map())
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const data = await requestJson<DiscoveredWorkflowsResponse>('/workflows')
+        if (cancelled) return
+        const map = new Map<string, AliasUsage[]>()
+        for (const wf of data.workflows ?? []) {
+          for (const phase of wf.phases ?? []) {
+            const m = (phase.model ?? '').trim()
+            if (!m) continue
+            const list = map.get(m) ?? []
+            list.push({ workflowId: wf.id, workflowName: wf.name, phaseName: phase.name })
+            map.set(m, list)
+          }
+        }
+        setUsages(map)
+      } catch {
+        // Non-fatal — suggestions disappear, editor still works.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  const referencedNames = useMemo(
+    () => Array.from(usagesByAlias.keys()).sort(),
+    [usagesByAlias],
+  )
+  return { usagesByAlias, referencedNames }
 }
 
 interface LlmProvidersSectionProps {
@@ -99,8 +165,14 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
   const renameAlias = (oldName: string, newName: string) => {
     if (!newName || newName === oldName) return
     if (draft.llmAliases[newName]) return // refuse to clobber
-    const { [oldName]: row, ...rest } = draft.llmAliases
-    updateAliases({ ...rest, [newName]: row })
+    // Preserve insertion order so the row doesn't visually jump on
+    // rename — the editor's React keys are alias names, and shifting
+    // them around is jarring once you have more than a couple rows.
+    const next: Record<string, LlmAliasConfig> = {}
+    for (const [k, v] of Object.entries(draft.llmAliases)) {
+      next[k === oldName ? newName : k] = v
+    }
+    updateAliases(next)
   }
 
   const updateAliasField = (
@@ -170,6 +242,22 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
     if (defaultProviderValue) void loadModels(defaultProviderValue)
   }, [aliasEntries, defaultProviderValue, loadModels])
 
+  // Workflow → alias index, drives the alias-name datalist + per-row
+  // "Used in" footer.
+  const { usagesByAlias, referencedNames } = useAliasUsages()
+
+  // Names that workflows reference but the user hasn't yet defined as
+  // an alias — these are the highest-value suggestions when adding a
+  // new alias because they're literally what the workflows expect.
+  const undefinedReferenced = useMemo(
+    () => referencedNames.filter(n => !(n in draft.llmAliases)),
+    [referencedNames, draft.llmAliases],
+  )
+
+  // Shared datalist id so every alias-name input pulls from the same
+  // suggestion pool.
+  const aliasNameDatalistId = `alias-name-suggestions-${useId()}`
+
   const body = (
     <div className="space-y-6">
       {pluginsCatalogueError ? (
@@ -234,70 +322,38 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
           </SettingsNotice>
         ) : (
           <div className="space-y-2">
-            {aliasEntries.map(([name, row]) => {
-              const models = modelsByProvider[row.provider]
-              return (
-                <div
-                  key={name}
-                  className="grid gap-2 rounded-xl border border-line bg-canvas/40 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_auto] sm:items-end"
-                >
-                  <Field label="Alias">
-                    <Input
-                      value={name}
-                      onChange={e => renameAlias(name, e.target.value.trim())}
-                      placeholder="coding"
-                    />
-                  </Field>
-                  <Field label="Provider">
-                    <select
-                      value={row.provider}
-                      onChange={e => updateAliasField(name, { provider: e.target.value, model: '' })}
-                      className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg"
-                    >
-                      <option value="">(select)</option>
-                      {enabledIds.map(id => (
-                        <option key={id} value={id}>
-                          {executorPlugins.find(p => p.manifest.id === id)?.manifest.displayName ?? id}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Model">
-                    {models && models.length > 0 ? (
-                      <select
-                        value={row.model}
-                        onChange={e => updateAliasField(name, { model: e.target.value })}
-                        className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg"
-                      >
-                        <option value="">(select)</option>
-                        {models.map(m => (
-                          <option key={m.id} value={m.id}>
-                            {m.displayName}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <Input
-                        value={row.model}
-                        onChange={e => updateAliasField(name, { model: e.target.value })}
-                        placeholder={models === null ? 'Loading…' : 'claude-sonnet-4-5'}
-                      />
-                    )}
-                  </Field>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeAlias(name)}
-                    aria-label={`Remove ${name}`}
-                  >
-                    <Trash2 />
-                  </Button>
-                </div>
-              )
-            })}
+            {aliasEntries.map(([name, row]) => (
+              <AliasRow
+                key={name}
+                name={name}
+                row={row}
+                enabledIds={enabledIds}
+                executorPlugins={executorPlugins}
+                models={modelsByProvider[row.provider]}
+                usages={usagesByAlias.get(name) ?? []}
+                aliasNameDatalistId={aliasNameDatalistId}
+                existingAliasNames={Object.keys(draft.llmAliases)}
+                onRename={renameAlias}
+                onUpdate={updateAliasField}
+                onRemove={removeAlias}
+              />
+            ))}
           </div>
         )}
+
+        {/*
+          Shared <datalist> for every alias-name input. Suggests names
+          the user has referenced from workflow YAML (planning, coding,
+          openai-fast, …) but not yet defined here. Native datalist
+          gives us a real dropdown while still allowing free-text for
+          inventing brand-new alias names — exactly the "choose or
+          type" UX requested.
+        */}
+        <datalist id={aliasNameDatalistId}>
+          {undefinedReferenced.map(n => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
       </div>
 
       <div className="text-xs text-fg-subtle">{readiness.detail}</div>
@@ -318,5 +374,190 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
     >
       {body}
     </SettingsSection>
+  )
+}
+
+// ── AliasRow ──────────────────────────────────────────────────────
+//
+// Single row in the alias table. Lives in its own component so the
+// alias-name input can buffer keystrokes locally and only commit the
+// rename to the parent map on blur / Enter. The parent map is keyed
+// by alias name, so a per-keystroke rename would mutate the React
+// `key`, unmount/remount the row, and eat focus on every character —
+// which is exactly the bug we're fixing.
+//
+// Model is *always* a real <select>: the runner enforces a fixed
+// catalogue per provider, and free-typing model ids is too easy to
+// get wrong. If a provider exposes no catalogue we surface a
+// disabled note rather than a free-text fallback.
+
+interface AliasRowProps {
+  name: string
+  row: LlmAliasConfig
+  enabledIds: string[]
+  executorPlugins: PluginEntry[]
+  models: ModelDescriptor[] | null | undefined
+  usages: AliasUsage[]
+  aliasNameDatalistId: string
+  existingAliasNames: string[]
+  onRename: (oldName: string, newName: string) => void
+  onUpdate: (name: string, patch: Partial<LlmAliasConfig>) => void
+  onRemove: (name: string) => void
+}
+
+function AliasRow({
+  name,
+  row,
+  enabledIds,
+  executorPlugins,
+  models,
+  usages,
+  aliasNameDatalistId,
+  existingAliasNames,
+  onRename,
+  onUpdate,
+  onRemove,
+}: AliasRowProps) {
+  // Buffered alias-name state. Synced from the parent prop whenever
+  // it actually changes, but otherwise owned by the row so typing
+  // doesn't churn the parent map.
+  const [draftName, setDraftName] = useState(name)
+  const lastSyncedName = useRef(name)
+  useEffect(() => {
+    if (name !== lastSyncedName.current) {
+      setDraftName(name)
+      lastSyncedName.current = name
+    }
+  }, [name])
+
+  const trimmed = draftName.trim()
+  const isDirty = trimmed !== name
+  const collides = isDirty && trimmed.length > 0 && existingAliasNames.includes(trimmed)
+  const isEmpty = isDirty && trimmed.length === 0
+
+  const commitRename = () => {
+    if (!isDirty) return
+    if (collides || isEmpty) {
+      // Reject — snap back to the canonical name so the field stays
+      // consistent with the actual config.
+      setDraftName(name)
+      return
+    }
+    onRename(name, trimmed)
+    lastSyncedName.current = trimmed
+  }
+
+  const helpId = `alias-help-${name}`
+  const modelLoading = models === null
+  const modelEmpty = Array.isArray(models) && models.length === 0
+
+  return (
+    <div className="space-y-1.5">
+      <div className="grid gap-2 rounded-xl border border-line bg-canvas/40 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_auto] sm:items-end">
+        <Field label="Alias">
+          <Input
+            value={draftName}
+            list={aliasNameDatalistId}
+            onChange={e => setDraftName(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                ;(e.target as HTMLInputElement).blur()
+              } else if (e.key === 'Escape') {
+                setDraftName(name)
+                ;(e.target as HTMLInputElement).blur()
+              }
+            }}
+            placeholder="coding"
+            aria-invalid={collides || isEmpty || undefined}
+            aria-describedby={helpId}
+            className={collides || isEmpty ? 'border-danger-400/60' : undefined}
+          />
+        </Field>
+        <Field label="Provider">
+          <select
+            value={row.provider}
+            onChange={e => onUpdate(name, { provider: e.target.value, model: '' })}
+            className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg"
+          >
+            <option value="">(select)</option>
+            {enabledIds.map(id => (
+              <option key={id} value={id}>
+                {executorPlugins.find(p => p.manifest.id === id)?.manifest.displayName ?? id}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Model">
+          <select
+            value={row.model}
+            onChange={e => onUpdate(name, { model: e.target.value })}
+            disabled={!row.provider || modelLoading || modelEmpty}
+            className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg disabled:opacity-60"
+          >
+            <option value="">
+              {!row.provider
+                ? '(pick a provider first)'
+                : modelLoading
+                  ? 'Loading…'
+                  : modelEmpty
+                    ? '(no models published by this provider)'
+                    : '(select)'}
+            </option>
+            {/*
+              Include the currently-saved model even if it isn't in
+              the freshly-fetched catalogue, so an out-of-date config
+              still renders its own value instead of silently
+              clearing.
+            */}
+            {row.model && !(models ?? []).some(m => m.id === row.model) ? (
+              <option value={row.model}>{row.model} (unknown)</option>
+            ) : null}
+            {(models ?? []).map(m => (
+              <option key={m.id} value={m.id}>
+                {m.displayName}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => onRemove(name)}
+          aria-label={`Remove ${name}`}
+        >
+          <Trash2 />
+        </Button>
+      </div>
+
+      {/*
+        Footer: validation error first, then workflow usages. The
+        "Used in" line answers "will renaming this break a workflow?"
+        at a glance — the most common follow-up question once you have
+        more than one provider in the mix.
+      */}
+      <div id={helpId} className="px-1 text-[11px] leading-4 text-fg-subtle">
+        {collides ? (
+          <span className="text-danger-400">An alias with that name already exists.</span>
+        ) : isEmpty ? (
+          <span className="text-danger-400">Alias name cannot be empty.</span>
+        ) : usages.length > 0 ? (
+          <span>
+            <span className="text-fg-muted">Used in:</span>{' '}
+            {usages.map((u, i) => (
+              <span key={`${u.workflowId}-${u.phaseName}-${i}`}>
+                {i > 0 ? ', ' : null}
+                <span className="font-mono">{u.workflowId}</span>
+                <span className="text-fg-subtle"> · {u.phaseName}</span>
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="opacity-70">Not referenced by any workflow yet.</span>
+        )}
+      </div>
+    </div>
   )
 }
