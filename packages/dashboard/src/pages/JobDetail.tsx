@@ -903,11 +903,17 @@ export default function JobDetail() {
   function updatePendingOutgoingMessages(
     updater: (messages: PendingOutgoingMessage[]) => PendingOutgoingMessage[],
   ) {
-    setPendingOutgoingMessages(current => {
-      const next = updater(current)
-      pendingOutgoingMessagesRef.current = next
-      return next
-    })
+    // Update the ref synchronously *before* scheduling the React state
+    // update. The drain loop reads `pendingOutgoingMessagesRef.current`
+    // immediately after we enqueue a message — if we only mutated the
+    // ref inside the setState updater (which React runs later, during
+    // render), the drain would see an empty queue, exit, and the
+    // message would sit in the UI as "Pending" forever without ever
+    // being POSTed to /jobs/:id/message. Mirror to React state second
+    // so the UI re-renders with the latest queue.
+    const next = updater(pendingOutgoingMessagesRef.current)
+    pendingOutgoingMessagesRef.current = next
+    setPendingOutgoingMessages(next)
   }
 
   async function postMessage(message: string) {
