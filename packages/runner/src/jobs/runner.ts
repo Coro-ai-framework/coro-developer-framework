@@ -464,6 +464,23 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const executor: PhaseExecutorRuntime =
         options?.executorImpl ?? ctx.plugins.resolveExecutor({ model })
 
+      // Surface the resolved provider/model in the activity log so
+      // developers can see, per phase, which executor + model is
+      // actually running. With per-phase model overrides this is no
+      // longer obvious from the workflow file alone (alias indirection,
+      // tenant defaults, sole-installed fallback).
+      {
+        const aliasKey =
+          phaseConf?.model && settings.llm?.aliases?.[phaseConf.model]
+            ? phaseConf.model
+            : undefined
+        const aliasEntry = aliasKey ? settings.llm?.aliases?.[aliasKey] : undefined
+        const parts = [`provider=${executor.manifest.id}`, `model=${model || '<default>'}`]
+        if (aliasKey) parts.push(`alias=${aliasKey}`)
+        if (aliasEntry?.reasoningEffort) parts.push(`effort=${aliasEntry.reasoningEffort}`)
+        await stateBackend.appendLog(liveJob.id, `Model: ${parts.join(' ')}`)
+      }
+
       // Fresh MCP server per phase. File/skill tools are registered only
       // for executors that don't bring native equivalents — Claude SDK
       // ships its own Read/Write/Edit/Glob/Grep + Skill, so we skip them
