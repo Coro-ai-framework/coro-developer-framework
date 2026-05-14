@@ -1,9 +1,9 @@
 // ── Local config reader/writer (~/.coro/config.json) ─────────────────────────
 //
-// Manages the runner's local configuration file. In hybrid mode this holds the
-// cloud URL, runner token, and Anthropic API key. In local mode, it stores
-// paths and git credentials. The runner reads this at startup to determine its
-// deployment mode.
+// Manages the runner's local configuration file. It carries cloud pairing
+// (hybrid mode), local paths, git credentials, and the `plugins.installed`
+// blob (executor + SCM + tracker plugin configs). The runner reads this at
+// startup to determine its deployment mode and to seed the plugin registry.
 
 import fs from 'fs'
 import path from 'path'

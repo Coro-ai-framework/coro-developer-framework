@@ -38,8 +38,8 @@ them.
 | Choice                                | Rationale                                                                   |
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | TypeScript / Node.js (>= 20)          | Strong typing for job state; ecosystem for SDKs and MCP tooling             |
-| pnpm workspaces                       | Local linking between `@coro/runner`, `@coro/dashboard`, `@coro/intelligence-base` |
-| `@anthropic-ai/claude-agent-sdk`      | Drives the agent; manages the SDK MCP transport                             |
+| pnpm workspaces                       | Local linking between `@coro/runner`, `@coro/dashboard`, `@coro/intelligence-base`, `@coro/plugin-sdk`, `@coro/llm-anthropic` |
+| `@coro/plugin-sdk` + `@coro/llm-anthropic` | Plugin contract (`PhaseExecutor`) + the built-in Anthropic executor that wraps `@anthropic-ai/claude-agent-sdk`. The runner core never imports the Anthropic SDK directly. |
 | Express + `ws`                        | Local REST server, plus WebSocket transport (hybrid mode)                   |
 | `better-sqlite3`                      | Local-mode state (`~/.coro/state.db`)                                       |
 | Drizzle ORM + Postgres                | Cloud control plane state (hybrid mode)                                     |
@@ -74,6 +74,10 @@ packages/runner/
     │   ├── ws/                 ← gateway + runner registry (WebSocket fan-out)
     │   └── db/                 ← Drizzle schema + connection
     ├── jobs/                   ← runner.ts (phase loop), dispatcher.ts, types.ts, creation.ts
+    ├── plugins/                ← Plugin registry, loaders, builtin executor wiring
+    │   ├── registry.ts         ← PluginRegistry: resolveScm/Tracker/Executor + resolvePhaseAssignment
+    │   ├── loaders.ts          ← Disk + workspace plugin loading
+    │   └── builtin/index.ts    ← buildBuiltinPluginRegistry (registers @coro/llm-anthropic)
     ├── prompt/builder.ts       ← Phase-scoped system prompt assembly
     ├── intelligence/           ← Layered intelligence
     │   ├── tenant-context.ts   ← solo-<host> | team-<teamId>
@@ -238,9 +242,12 @@ queued
 
 ### 7.3 Phase loop
 
-Each phase is a single `query()` call to the Claude Agent SDK. The SDK
-manages the full tool-use loop internally. The runner's outer loop
-advances phases based on `PhaseSignals` set by MCP tool handlers.
+Each phase resolves a `PhaseExecutor` plugin (default:
+`@coro/llm-anthropic`) and calls `executor.executePhase()`. The
+executor owns the underlying LLM SDK call (Claude Agent SDK,
+OpenAI Responses, etc.) and the full tool-use loop. The runner's
+outer loop advances phases based on `PhaseSignals` set by MCP tool
+handlers.
 
 ```ts
 while (!isTerminalStatus(job.status)) {
@@ -250,18 +257,18 @@ while (!isTerminalStatus(job.status)) {
   await resolveJobIntelligence({ … })      // re-resolve at every phase boundary
   const systemPrompt = await buildSystemPrompt(job, jobIntelligenceDir, logger)
 
-  for await (const _ of query({
-    prompt: oneShotPromptStream(buildPhaseKickoffMessage(job)),
-    options: {
-      systemPrompt,
-      mcpServers: { coro: mcp },
-      cwd: clonedRepoDir,
-      settingSources: ['project'],
-      // …
-    },
-  })) {
-    // SDK drives tool calls; handlers mutate signals + state via stateBackend
-  }
+  const assignment = pluginRegistry.resolvePhaseAssignment(job, phaseConfig, settings)
+  const executor = pluginRegistry.resolveExecutor(assignment.providerId)
+
+  await executor.executePhase({
+    jobContext: { job, cwd: clonedRepoDir, intelligenceDir: jobIntelligenceDir },
+    model: assignment.model,
+    systemPrompt,
+    mcpServer: mcp,
+    signals,
+    // …
+  })
+  // executor invokes MCP handlers, which mutate signals + state via stateBackend
 
   job = applyPhaseSignals(job, signals)     // goto_phase, await_event, escalate, complete
   await stateBackend.saveJob(job)

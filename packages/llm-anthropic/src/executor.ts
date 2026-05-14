@@ -3,31 +3,22 @@
 // The default LLM provider that ships with every Coro install. Wraps the
 // Claude Agent SDK's `query()` function and exposes it through the
 // {@link PhaseExecutorRuntime} contract so the runner can call providers
-// uniformly.
+// uniformly. The runner core never imports `@anthropic-ai/claude-agent-sdk`
+// directly; it always goes through this executor (resolved via
+// `PluginRegistry.resolveExecutor`).
 //
-// Phase 2 scope (this file):
+// Responsibilities:
 //   - Capability declaration, model catalogue, supports() predicate.
-//   - Lifecycle (init/healthcheck/dispose) — no-ops aside from auth shape
-//     validation, since the SDK lazy-validates the API key on first call.
-//   - `executePhase()` is intentionally NOT YET WIRED in the runner. The
-//     runner still calls `query()` directly via the existing path in
-//     `runner.ts`. The executor is registered with the registry so that
-//     `resolveExecutor()` succeeds and tests can introspect capabilities.
-//
-// Phase 2c scope (next sub-phase):
-//   - Move the 175-line raw-SDK-message → PhaseExecutorEvent translation
-//     loop from `runner.ts` into this file's `executePhase()`.
-//   - Move `buildPhaseHooks` invocation here (the executor owns hook
-//     enforcement; the runner only supplies HookPolicy).
-//   - Switch `runJob` to consume `executor.executePhase()` and rewrite
-//     the test harness against PhaseExecutorEvent fixtures.
-//
-// Phase 3 scope (later):
-//   - Relocate this entire file to `@coro/llm-anthropic`. The runner
-//     constructor-side coupling to `Settings.claude.auth` is replaced by
-//     the plugin's Zod-validated `config` blob. Until then this file
-//     lives inside the runner package and is allowed to import runner
-//     internals.
+//   - Lifecycle (init/healthcheck/dispose) — auth-shape validation; the
+//     SDK lazy-validates the API key on first call.
+//   - `executePhase()` runs a single phase: builds the SDK options
+//     (auth, MCP servers, hooks, settingSources), drives the streaming
+//     `query()` loop, translates raw SDK messages into provider-neutral
+//     {@link PhaseExecutorEvent}s, and exposes a session controller for
+//     mid-flight steering messages.
+//   - Plugin config (auth, default model, …) is the Zod-validated
+//     `plugins.installed.anthropic.config` blob; legacy `settings.claude.*`
+//     is migrated by the runner bootstrap and is no longer read here.
 
 import { z } from 'zod'
 import { mkdirSync } from 'fs'

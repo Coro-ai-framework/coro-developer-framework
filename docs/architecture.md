@@ -39,20 +39,28 @@ The core design rule is unchanged:
 Workflow logic, agent procedures, language conventions, and accumulated
 memory all live in markdown. The runner does not hardcode product features
 or workflow-specific logic. A job carries a `workflowPath`; the runner
-materialises the right intelligence overlay, hands it to the Claude Agent
-SDK, and exposes a domain-specific MCP toolset. The LLM does the rest.
+materialises the right intelligence overlay, resolves a `PhaseExecutor`
+plugin (default: `@coro/llm-anthropic`) for each phase, and exposes a
+domain-specific MCP toolset. The executor owns the LLM SDK call; the
+runner core has no direct LLM-SDK imports.
 
 ---
 
 ## 2. Packages
 
-Coro ships as a pnpm workspace with three packages:
+Coro ships as a pnpm workspace. The core packages are:
 
 | Package                       | Role                                                         |
 | ----------------------------- | ------------------------------------------------------------ |
-| `@coro/runner`                | The runtime: `coro` CLI, REST + dashboard server, job runner, MCP server, intelligence resolver, state backends, cloud control plane. |
+| `@coro/runner`                | The runtime: `coro` CLI, REST + dashboard server, job runner, MCP server, intelligence resolver, plugin registry, state backends, cloud control plane. |
 | `@coro/dashboard`             | React + Vite + Tailwind UI. Built statically and served by the runner at `/dashboard/`. |
 | `@coro/intelligence-base`     | The base intelligence layer: generic agents, workflows, skills, and empty memory templates. The runner imports `getBaseLayerRoot()` from this package. |
+| `@coro/plugin-sdk`            | Public SDK for authoring Coro plugins. Defines the three plugin kinds — `ScmPluginBase`, `TrackerPluginBase`, `ExecutorPluginBase` — plus the `PhaseExecutor` runtime contract. |
+| `@coro/llm-anthropic`         | Built-in Anthropic phase executor plugin. Wraps `@anthropic-ai/claude-agent-sdk`; registered automatically via `buildBuiltinPluginRegistry`. |
+
+Additional shipped packages: `@coro/desktop-electron` (Electron shell
+that bundles runner + dashboard), `@coro/landing` (marketing site),
+`@coro/plugin-gitlab` (example external SCM plugin).
 
 There is no monolithic "Agent Host" service; the runner *is* the host
 and the cloud control plane is a separate `@coro/runner` entrypoint
@@ -69,7 +77,7 @@ and the cloud control plane is a separate `@coro/runner` entrypoint
                     ┌──────────────────────────┐
                     │   @coro/runner (local)   │   one process per developer
                     │   + bundled @coro/       │   • REST server (CLI + dashboard)
-                    │     dashboard at         │   • Job runner (Claude Agent SDK)
+                    │     dashboard at         │   • Job runner (PhaseExecutor plugin)
                     │     /dashboard/          │   • In-process MCP server
                     └──────────┬───────────────┘
                                │
@@ -492,11 +500,17 @@ This keeps concurrent jobs isolated.
 
 ## 11. Tool system
 
-### 11.1 Built-in SDK tools
+### 11.1 Executor-provided tools
 
-The Claude Agent SDK provides standard code-navigation and editing tools:
-file read/write/edit, shell execution, glob, grep, and subagents where
-configured by the workflow.
+The active `PhaseExecutor` may provide standard code-navigation and
+editing tools (file read/write/edit, shell execution, glob, grep,
+subagents). Native tooling is opt-in via
+`executor.capabilities.supportsNativeFileTools` \u2014 the Anthropic
+executor declares it true and exposes the Claude Agent SDK's native
+tools. For executors that don't, the runner exposes equivalent MCP
+tools (`file_read`, `file_write`, `file_edit`, `file_glob`,
+`file_grep`, `read_skill`) so any provider can drive the same
+workflows.
 
 ### 11.2 MCP domain tools
 

@@ -26,14 +26,15 @@ The CLI scaffolds a directory with:
 
 ## What you implement
 
-Plugins ship under one of two contracts:
+Plugins ship under one of three contracts:
 
 | Contract | Use when | Required hooks |
 |---|---|---|
 | `ScmPluginBase` | Source-control providers (PRs, branches, repo creation) | `init`, `cloneInfo`, `matchesRemote`, `pollPr` |
 | `TrackerPluginBase` | Issue trackers (tickets, transitions, links) | `init` (+ either `mcpServer` OR all of `getIssue`/`commentIssue`/`transitionIssue`) |
+| `ExecutorPluginBase` | LLM phase execution engines (e.g. Anthropic, OpenAI) | `init`, `createRuntime` returning a `PhaseExecutor` (`executePhase`, `capabilities`, optional `normalizeInbound`) |
 
-Both bases inherit:
+All three bases inherit:
 
 - `manifest: PluginManifest` — id, version, configSchema, webhook descriptor, intelligence contributions.
 - Optional `mcpServer()` — when present, the runner attaches the upstream MCP server to every job session, exposing `mcp__<pluginId>__*` tools to the agent. This is the MCP-first pivot's primary outbound channel; most modern providers ship an MCP server you can point at.

@@ -118,7 +118,7 @@ Agents in this repository do not run directly inside Claude Code sessions. They 
 1. Receives job requests from the `coro` CLI or external event sources (BitBucket webhooks, Jira webhooks)
 2. Creates a typed `Job` object with a `workflowPath` pointing to the correct workflow MD file
 3. Assembles a system prompt from the workflow file, agent instructions, and memory — static content (behavior rules, tenant context, git conventions) is loaded natively by the SDK from `.claude/CLAUDE.md`
-4. Runs the Claude Agent SDK's `query()` function for each workflow phase — the SDK manages the full tool-use loop, subagent spawning, and conversation history internally
+4. Resolves a `PhaseExecutor` plugin (default: `@coro/llm-anthropic`) and calls `executor.executePhase()` for each workflow phase. The executor encapsulates the LLM SDK call, manages the tool-use loop, subagent spawning, and conversation history. Per-phase provider/model is resolved by the runner via `settings.llm.aliases` and optional `provider:` overrides in the workflow YAML. The runner core has zero direct Anthropic-SDK imports.
 5. Parks the job in Redis when waiting for an external event (PR merge, review comment, human approval)
 6. Resumes the job when the expected event webhook arrives
 
@@ -298,6 +298,10 @@ a5-ai/                                   ← workspace root (will be renamed to 
     │       ├── jobs/                    ← runner.ts, dispatcher.ts, types.ts
     │       ├── clients/                 ← bitbucket, github, git, jira, loki, tempo
     │       ├── prompt/builder.ts
+    │       ├── plugins/                 ← Plugin registry, loaders, builtin executor wiring
+    │       │   ├── registry.ts          ← PluginRegistry: resolveScm/Tracker/Executor + resolvePhaseAssignment
+    │       │   ├── loaders.ts           ← Disk + workspace plugin loading
+    │       │   └── builtin/             ← buildBuiltinPluginRegistry (registers @coro/llm-anthropic)
     │       ├── intelligence/            ← Layered intelligence
     │       │   ├── tenant-context.ts    ← TenantContext (solo / team)
     │       │   ├── resolver.ts          ← Per-job overlay materialisation
@@ -311,8 +315,15 @@ a5-ai/                                   ← workspace root (will be renamed to 
     │       ├── cloud/                   ← Cloud control plane service
     │       ├── state/                   ← SQLite (local) and cloud-backed (hybrid) state backends
     │       └── tools/                   ← MCP tool implementations
-    └── dashboard/                       ← Coro Dashboard (React + Vite)
-        ├── package.json                 ← @coro/dashboard
-        ├── vite.config.ts
-        └── src/                         ← React UI (jobs, intelligence, settings)
+    ├── dashboard/                       ← Coro Dashboard (React + Vite)
+    │   ├── package.json                 ← @coro/dashboard
+    │   ├── vite.config.ts
+    │   └── src/                         ← React UI (jobs, intelligence, settings)
+    ├── plugin-sdk/                      ← @coro/plugin-sdk — public SDK for plugin authors
+    │   └── src/                         ← types.ts, base.ts, helpers.ts (ScmPluginBase, TrackerPluginBase, ExecutorPluginBase, PhaseExecutor)
+    ├── llm-anthropic/                   ← @coro/llm-anthropic — built-in Anthropic phase executor plugin
+    │   └── src/                         ← executor.ts (wraps @anthropic-ai/claude-agent-sdk), auth.ts, index.ts
+    ├── plugin-gitlab/                   ← @coro/plugin-gitlab — example external SCM plugin
+    ├── desktop-electron/                ← @coro/desktop-electron — Electron shell that bundles runner + dashboard
+    └── landing/                         ← @coro/landing — public marketing site
 ```

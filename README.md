@@ -157,6 +157,8 @@ root/
 │   │   └── tests/               ← vitest suites (unit, integration, mcp, runner)
 │   ├── dashboard/               ← @coro/dashboard — React + Vite + Tailwind UI
 │   │   └── src/
+│   ├── plugin-sdk/              ← @coro/plugin-sdk — public SDK for SCM/tracker/executor plugins
+│   ├── llm-anthropic/           ← @coro/llm-anthropic — built-in Anthropic phase executor plugin
 │   └── intelligence-base/       ← @coro/intelligence-base — base layer markdown + thin TS API
 │       ├── layer/               ← THE base intelligence
 │       │   ├── .claude/{CLAUDE.md, skills/}
