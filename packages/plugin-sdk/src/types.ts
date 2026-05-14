@@ -113,6 +113,36 @@ export interface PluginHealth {
   reason?: string
 }
 
+/**
+ * Minimal route-registration surface a plugin can hang HTTP endpoints
+ * off of. Structurally compatible with `express.Express` (and
+ * `Router`) so plugins can cast to the full express type if they need
+ * middleware, but plugin-sdk itself takes no dependency on express.
+ */
+export interface PluginHttpApp {
+  get(path: string, ...handlers: Array<(...args: unknown[]) => unknown>): unknown
+  post(path: string, ...handlers: Array<(...args: unknown[]) => unknown>): unknown
+  put(path: string, ...handlers: Array<(...args: unknown[]) => unknown>): unknown
+  delete(path: string, ...handlers: Array<(...args: unknown[]) => unknown>): unknown
+}
+
+/**
+ * Context passed to {@link PluginRuntime.registerHttpRoutes}. The
+ * runner injects an Express app, a logger, and a couple of helpers
+ * for plugins that need to persist their own credentials or redact
+ * secrets when echoing them back to the dashboard.
+ *
+ * `saveLocalConfig` is intentionally typed as a record patch — the
+ * runner owns the on-disk config schema; plugins just hand it
+ * deeply-nested values keyed by their own namespace.
+ */
+export interface PluginHttpRoutesContext {
+  app: PluginHttpApp
+  logger: Logger
+  saveLocalConfig: (patch: Record<string, unknown>) => void
+  redactSecret: (value: string | undefined | null) => string
+}
+
 export interface PluginRuntime<Config = unknown> {
   manifest: PluginManifest
   init(config: Config, deps: PluginDeps): Promise<void>
@@ -120,6 +150,14 @@ export interface PluginRuntime<Config = unknown> {
   dispose(): Promise<void>
   intelligenceRoot?(): string | undefined
   mcpServer?(): PluginMcpServerConfig | undefined
+  /**
+   * Optional Express route registration. Called once at runner
+   * startup after the plugin registry is built. Plugins use this for
+   * provider-specific OAuth callbacks, dashboard previews, etc.
+   * Routes registered here become first-class endpoints on the
+   * runner's HTTP server alongside the built-in routes.
+   */
+  registerHttpRoutes?(ctx: PluginHttpRoutesContext): void
 }
 
 // ── SCM plugin ───────────────────────────────────────────────────────────────

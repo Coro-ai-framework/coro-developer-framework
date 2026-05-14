@@ -107,6 +107,8 @@ export type {
   ExecutorSubagentSpec,
   McpServerDescriptor,
   ConversationMessage,
+  PluginHttpApp,
+  PluginHttpRoutesContext,
 } from '@coro/plugin-sdk'
 
 /**
@@ -304,6 +306,14 @@ export interface PluginRuntime<Config = unknown> {
    * per-server tool policy at attach time.
    */
   mcpServer?(): PluginMcpServerConfig | undefined
+  /**
+   * Optional HTTP route registration. Plugins that own provider-specific
+   * dashboard endpoints (e.g. Anthropic OAuth login flow) implement this
+   * to mount their routes onto the runner's Express app. The runner core
+   * stays provider-agnostic — adding a new LLM plugin requires zero edits
+   * to {@link createRunnerServer}.
+   */
+  registerHttpRoutes?(ctx: import('@coro/plugin-sdk').PluginHttpRoutesContext): void
 }
 
 // ── SCM plugin runtime ───────────────────────────────────────────────────────

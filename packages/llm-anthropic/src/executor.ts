@@ -49,10 +49,12 @@ import type {
   PhaseExecutorRuntime,
   PluginDeps,
   PluginHealth,
+  PluginHttpRoutesContext,
   PluginManifest,
   PluginMcpServerConfig,
 } from '@coro/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
+import { registerAnthropicHttpRoutes } from './http-routes'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
@@ -206,6 +208,16 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   async dispose(): Promise<void> {
     // The Claude Agent SDK owns its own subprocess lifecycle and tears
     // down on stream close. Nothing executor-owned to release here.
+  }
+
+  /**
+   * Register the Anthropic-specific HTTP endpoints (Claude OAuth login
+   * flow + `claude setup-token` shell-out) against the runner's
+   * Express app. The runner invokes this via the generic
+   * {@link PluginRuntime.registerHttpRoutes} hook at startup.
+   */
+  registerHttpRoutes(ctx: PluginHttpRoutesContext): void {
+    registerAnthropicHttpRoutes(ctx)
   }
 
   // ── Executor surface ───────────────────────────────────────────────────────
