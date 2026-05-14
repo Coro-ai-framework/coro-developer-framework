@@ -81,16 +81,16 @@ runnerCommand
       console.log(`  Cloud URL: ${config.cloud.url}`)
     }
 
-    // Read the LLM provider key from the modern plugin slot, with a
-    // legacy fallback so old configs still surface a status line.
+    // Read the LLM provider key from the modern plugin slot. The
+    // legacy top-level `anthropic` block was removed in Phase F of the
+    // Anthropic-as-plugin migration.
     const installedAnthropic = config?.plugins?.installed?.['anthropic']?.config as
       | { method?: string; apiKey?: string }
       | undefined
     const apiKey =
-      (installedAnthropic?.method === 'apiKey' && typeof installedAnthropic.apiKey === 'string'
+      installedAnthropic?.method === 'apiKey' && typeof installedAnthropic.apiKey === 'string'
         ? installedAnthropic.apiKey
-        : undefined)
-      ?? (config?.anthropic?.method === 'apiKey' ? config.anthropic.apiKey : undefined)
+        : undefined
     if (apiKey) {
       console.log(`  API Key:   ${apiKey.slice(0, 10)}...${apiKey.slice(-4)}`)
     }

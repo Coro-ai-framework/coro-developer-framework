@@ -60,18 +60,16 @@ export const initCommand = new Command('init')
 
     // Anthropic API key — `coro init` only supports the API-key method today;
     // users can switch to OAuth from the dashboard Settings page after init.
-    // Read the current key from the modern plugin slot, falling back
-    // to the legacy top-level block for one release so existing
-    // configs still round-trip cleanly.
+    // The legacy top-level `anthropic` block was removed in Phase F of
+    // the Anthropic-as-plugin migration; we now read exclusively from
+    // `plugins.installed.anthropic.config`.
     const installedAnthropic = existing.plugins?.installed?.['anthropic']?.config as
       | { method?: string; apiKey?: string }
       | undefined
     const existingApiKey =
       installedAnthropic?.method === 'apiKey' && typeof installedAnthropic.apiKey === 'string'
         ? installedAnthropic.apiKey
-        : existing.anthropic?.method === 'apiKey'
-          ? existing.anthropic.apiKey
-          : ''
+        : ''
     const apiKey = opts.apiKey
       ?? await ask('Anthropic API key', existingApiKey || process.env.ANTHROPIC_API_KEY || '')
     if (!apiKey) die('Anthropic API key is required')

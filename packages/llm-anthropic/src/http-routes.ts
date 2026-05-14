@@ -21,7 +21,7 @@ import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-p
  * would yield duplicate handlers — call exactly once at startup.
  */
 export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void {
-  const { app, logger, saveLocalConfig } = ctx
+  const { app, logger, savePluginConfig } = ctx
   const claudeLoginManager = new ClaudeLoginManager({ logger })
 
   function saveClaudeLoginConfig(account?: {
@@ -32,11 +32,13 @@ export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void 
     apiKeySource?: string
     apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'mantle'
   }) {
-    saveLocalConfig({
-      anthropic: {
-        method: 'claudeLogin',
-        account,
-      },
+    // Persist into the modern plugin slot so the runner's resolver
+    // picks up the credentials at job start. The legacy top-level
+    // `anthropic` block was removed in Phase F of the
+    // Anthropic-as-plugin migration.
+    savePluginConfig('anthropic', {
+      method: 'claudeLogin',
+      account,
     })
   }
 

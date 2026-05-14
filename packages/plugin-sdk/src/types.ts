@@ -145,11 +145,18 @@ export interface PluginHttpApp {
  * `saveLocalConfig` is intentionally typed as a record patch — the
  * runner owns the on-disk config schema; plugins just hand it
  * deeply-nested values keyed by their own namespace.
+ *
+ * `savePluginConfig` is a namespaced helper for the common case of a
+ * plugin persisting its own config slot under
+ * `plugins.installed[pluginId].config`. The runner deep-merges the
+ * patch into the existing slot so concurrent updates from different
+ * plugins don't clobber each other.
  */
 export interface PluginHttpRoutesContext {
   app: PluginHttpApp
   logger: Logger
   saveLocalConfig: (patch: Record<string, unknown>) => void
+  savePluginConfig: (pluginId: string, configPatch: Record<string, unknown>) => void
   redactSecret: (value: string | undefined | null) => string
 }
 

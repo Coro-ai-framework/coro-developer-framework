@@ -20,40 +20,15 @@ const cloudConfigSchema = z.object({
   token: z.string().min(1),
 }).optional()
 
-const claudeAccountSchema = z.object({
-  email: z.string().optional(),
-  organization: z.string().optional(),
-  subscriptionType: z.string().optional(),
-  tokenSource: z.string().optional(),
-  apiKeySource: z.string().optional(),
-  apiProvider: z.enum(['firstParty', 'bedrock', 'vertex', 'foundry', 'anthropicAws', 'mantle']).optional(),
-}).optional()
-
 // Anthropic auth supports three modes:
 //   - apiKey: direct Anthropic API key (production, billed per token)
 //   - oauth: legacy long-lived Claude Code OAuth token from `claude setup-token`
 //   - claudeLogin: Claude Code manages its own persisted login session locally;
 //                  we only store the selected mode plus optional account metadata
-// The method field is optional/defaulted so that legacy configs containing only
-// `{ apiKey: "..." }` continue to load. The refine() guarantees that the chosen
-// method has a matching non-empty credential.
-const anthropicConfigSchema = z
-  .object({
-    method: z.enum(['apiKey', 'oauth', 'claudeLogin']).default('apiKey'),
-    apiKey: z.string().optional(),
-    oauthToken: z.string().optional(),
-    account: claudeAccountSchema,
-  })
-  .refine(
-    v =>
-      (v.method === 'apiKey' && typeof v.apiKey === 'string' && v.apiKey.length > 0) ||
-      (v.method === 'oauth' && typeof v.oauthToken === 'string' && v.oauthToken.length > 0) ||
-      v.method === 'claudeLogin',
-    {
-      message:
-        'Anthropic config requires apiKey when method="apiKey", oauthToken when method="oauth", or method="claudeLogin"',
-    },
-  )
+// The legacy top-level `anthropic` block was removed in Phase F of the
+// Anthropic-as-plugin migration. Anthropic credentials now live exclusively
+// under `plugins.installed.anthropic.config`, validated by the plugin's
+// own `configSchema`.
 
 // Both fields are optional individually — `resolveIntelligenceDir`
 // already falls back to `defaultIntelligenceDir()` when `dir` is unset.
@@ -234,14 +209,6 @@ export type LlmAliasConfig = z.infer<typeof llmAliasSchema>
 
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
-  /**
-   * @deprecated Use `plugins.installed.anthropic.config` instead. The
-   * top-level `anthropic` block is read for one release as a legacy
-   * shape: `loadLocalConfig` mirrors it into
-   * `plugins.installed.anthropic` via {@link legacyConfigToPlugins}.
-   * New saves should write to the plugin location only.
-   */
-  anthropic: anthropicConfigSchema.optional(),
   intelligence: intelligenceConfigSchema,
   paths: pathsConfigSchema,
   git: gitConfigSchema,
@@ -436,7 +403,6 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     ...patch,
     // Deep merge sub-objects
     cloud: patch.cloud !== undefined ? patch.cloud : existing.cloud,
-    anthropic: patch.anthropic !== undefined ? patch.anthropic : existing.anthropic,
     intelligence: patch.intelligence !== undefined ? patch.intelligence : existing.intelligence,
     paths: patch.paths !== undefined ? patch.paths : existing.paths,
     git: patch.git !== undefined ? patch.git : existing.git,
@@ -476,22 +442,6 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
   if (!config) return { installed: {} }
 
   const installed: PluginsConfig['installed'] = {}
-
-  // ── LLM (Anthropic) ──
-  // Translate the legacy top-level `anthropic` block into a uniform
-  // plugin-installed entry so the executor receives its config via
-  // the same path as every future LLM plugin (OpenAI, Foundry, …).
-  if (config.anthropic) {
-    installed['anthropic'] = {
-      enabled: true,
-      config: {
-        method: config.anthropic.method,
-        ...(config.anthropic.apiKey ? { apiKey: config.anthropic.apiKey } : {}),
-        ...(config.anthropic.oauthToken ? { oauthToken: config.anthropic.oauthToken } : {}),
-        ...(config.anthropic.account ? { account: config.anthropic.account } : {}),
-      },
-    }
-  }
 
   // ── SCM ──
   if (config.git?.provider === 'bitbucket' && config.git?.workspace && config.git?.username && config.git?.token) {

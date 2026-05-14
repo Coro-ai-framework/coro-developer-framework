@@ -1356,18 +1356,15 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const config = result.kind === 'ok' ? result.config : null
       const detected = detectMode(config)
 
-      // Redact sensitive fields for display. Both apiKey and oauthToken need
-      // masking; claudeLogin stores only metadata, so that can be returned as-is.
-      // We always send back the full `method` tag so the UI renders the correct
-      // auth state regardless of which credential is currently active.
+      // Redact sensitive fields for display. Git tokens and tracker creds
+      // round-trip with a `...`-redaction convention so the dashboard can
+      // show that a secret is set without ever shipping it to the browser.
+      // PUT /config restores the on-disk value when it sees a redacted
+      // string come back. LLM-provider credentials live under
+      // `plugins.installed.<id>.config` and are redacted by the registry's
+      // own response builder — the runner core no longer touches them here.
       const safeConfig = config ? {
         ...config,
-        anthropic: {
-          method: config.anthropic?.method ?? 'apiKey',
-          apiKey: redactSecret(config.anthropic?.apiKey),
-          oauthToken: redactSecret(config.anthropic?.oauthToken),
-          account: config.anthropic?.account,
-        },
         git: config.git ? {
           ...config.git,
           token: config.git.token
@@ -1495,53 +1492,20 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
 
-      // Load existing, merge, save. The placeholder apiKey keeps zod's refine
-      // happy when no real credential has been written yet; real writes below
-      // overwrite it before save.
-      //
-      // We use loadLocalConfigRaw() so a previously corrupt file doesn't block
-      // the save: if the on-disk JSON fails schema validation, we treat the
-      // existing state as empty and let the user overwrite it cleanly.
+      // Load existing, merge, save. We use loadLocalConfigRaw() so a
+      // previously corrupt file doesn't block the save: if the on-disk JSON
+      // fails schema validation, we treat the existing state as empty and
+      // let the user overwrite it cleanly.
       const existingResult = loadLocalConfigRaw()
       const existing: LocalConfig =
-        existingResult.kind === 'ok'
-          ? existingResult.config
-          : { anthropic: { method: 'apiKey' as const, apiKey: '' } }
+        existingResult.kind === 'ok' ? existingResult.config : ({} as LocalConfig)
       const merged: LocalConfig = { ...existing }
 
-      // Update anthropic auth. The UI sends a discriminated object with
-      // `method` plus whichever field belongs to that method. We never trust
-      // a redacted value ("...") — if the user hasn't changed the secret,
-      // keep whatever is already on disk. When the method flips we wipe the
-      // other credential so the config doesn't accumulate stale secrets.
-      if (updates.anthropic) {
-        const incomingMethod: 'apiKey' | 'oauth' | 'claudeLogin' =
-          updates.anthropic.method === 'oauth'
-            ? 'oauth'
-            : updates.anthropic.method === 'claudeLogin'
-              ? 'claudeLogin'
-              : 'apiKey'
-
-        if (incomingMethod === 'apiKey') {
-          const nextKey = isRedacted(updates.anthropic.apiKey)
-            ? existing.anthropic?.apiKey ?? ''
-            : updates.anthropic.apiKey ?? existing.anthropic?.apiKey ?? ''
-          merged.anthropic = { method: 'apiKey', apiKey: nextKey }
-        } else if (incomingMethod === 'oauth') {
-          const nextToken = isRedacted(updates.anthropic.oauthToken)
-            ? existing.anthropic?.oauthToken ?? ''
-            : updates.anthropic.oauthToken ?? existing.anthropic?.oauthToken ?? ''
-          merged.anthropic = { method: 'oauth', oauthToken: nextToken }
-        } else {
-          merged.anthropic = {
-            method: 'claudeLogin',
-            account:
-              updates.anthropic.account && typeof updates.anthropic.account === 'object'
-                ? updates.anthropic.account
-                : existing.anthropic?.account,
-          }
-        }
-      }
+      // Anthropic credentials are no longer accepted on this endpoint;
+      // they live under `plugins.installed.anthropic.config` and are
+      // managed via the plugins registry endpoints. The legacy top-level
+      // `anthropic` block was removed in Phase F of the
+      // Anthropic-as-plugin migration.
 
       // Update intelligence — preserve existing fields when the dashboard
       // sends `undefined` for them (e.g. user filled in `gitRemote` only
@@ -2007,8 +1971,31 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     // own slice of the local config without having to re-load the full
     // file or know the runner's `LocalConfig` type.
     const pluginSaveLocalConfig = (patch: Record<string, unknown>): void => {
-      const existing = loadLocalConfig() ?? ({ anthropic: { method: 'apiKey' as const, apiKey: '' } } as LocalConfig)
+      const existing = loadLocalConfig() ?? ({} as LocalConfig)
       saveLocalConfig({ ...existing, ...patch } as LocalConfig)
+    }
+    // Namespaced helper for the common case of a plugin persisting its
+    // own slot under `plugins.installed[pluginId].config`. Deep-merges
+    // so concurrent writes from different plugins don't clobber each
+    // other's `installed` entries.
+    const pluginSavePluginConfig = (pluginId: string, configPatch: Record<string, unknown>): void => {
+      const existing = loadLocalConfig() ?? ({} as LocalConfig)
+      const existingPlugins = existing.plugins ?? { installed: {} }
+      const existingInstalled = existingPlugins.installed ?? {}
+      const existingEntry = existingInstalled[pluginId] ?? { enabled: true, config: {} }
+      const existingConfig = (existingEntry.config ?? {}) as Record<string, unknown>
+      const nextEntry = {
+        ...existingEntry,
+        enabled: existingEntry.enabled ?? true,
+        config: { ...existingConfig, ...configPatch },
+      }
+      saveLocalConfig({
+        ...existing,
+        plugins: {
+          ...existingPlugins,
+          installed: { ...existingInstalled, [pluginId]: nextEntry },
+        },
+      } as LocalConfig)
     }
     for (const runtime of plugins.all()) {
       if (typeof runtime.registerHttpRoutes !== 'function') continue
@@ -2017,6 +2004,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           app,
           logger,
           saveLocalConfig: pluginSaveLocalConfig,
+          savePluginConfig: pluginSavePluginConfig,
           redactSecret,
         })
       } catch (err) {
