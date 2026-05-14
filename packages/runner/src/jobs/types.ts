@@ -258,6 +258,18 @@ export interface Job {
    */
   sessionId?: string
 
+  /**
+   * Conversation replay history for executors that don't support
+   * server-side session resume (e.g. OpenAI / Gemini stateless APIs).
+   * Set/cleared by the executor's `done` event via its
+   * `ExecutorSessionState.conversationHistory`. Anthropic-backed jobs
+   * leave this `undefined` — they resume by `sessionId` alone.
+   *
+   * Persisted opaquely; only the executor that wrote it interprets
+   * the contents on resume.
+   */
+  conversationHistory?: import('@coro/plugin-sdk').ConversationMessage[]
+
   createdAt: string
   updatedAt: string
 

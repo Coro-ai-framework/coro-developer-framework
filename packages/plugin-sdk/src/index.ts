@@ -7,6 +7,8 @@
 export * from './types'
 export * from './helpers'
 export * from './base'
+export * from './executor-helpers'
+export * from './mcp'
 
 /**
  * The plugin-API host version this SDK release was built against.

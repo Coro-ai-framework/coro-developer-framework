@@ -28,7 +28,6 @@ describe('local-config', () => {
   })
 
   const validConfig: LocalConfig = {
-    anthropic: { method: 'apiKey', apiKey: 'sk-test-123' },
     cloud: { url: 'https://cloud.a5labs.com', token: 'tok-abc' },
     intelligence: { dir: '/tmp/intel', gitRemote: 'https://example.com/repo.git' },
     paths: { workingDir: '/tmp/work' },
@@ -62,21 +61,20 @@ describe('local-config', () => {
 
   describe('mergeLocalConfig', () => {
     it('merges cloud into existing config', () => {
-      saveLocalConfig({ anthropic: { method: 'apiKey', apiKey: 'sk-old' } }, configPath)
+      saveLocalConfig({ git: { provider: 'github', username: 'u', token: 't' } }, configPath)
       const merged = mergeLocalConfig(
         { cloud: { url: 'https://cloud.example.com', token: 'new-tok' } },
         configPath,
       )
-      expect(merged.anthropic.apiKey).toBe('sk-old')
+      expect(merged.git?.username).toBe('u')
       expect(merged.cloud?.url).toBe('https://cloud.example.com')
     })
 
     it('creates config if none exists', () => {
       const merged = mergeLocalConfig(
-        { anthropic: { method: 'apiKey', apiKey: 'sk-new' }, cloud: { url: 'https://c.com', token: 't' } },
+        { cloud: { url: 'https://c.com', token: 't' } },
         configPath,
       )
-      expect(merged.anthropic.apiKey).toBe('sk-new')
       expect(merged.cloud?.token).toBe('t')
     })
   })
@@ -87,7 +85,7 @@ describe('local-config', () => {
     })
 
     it('returns local when no cloud config', () => {
-      expect(detectMode({ anthropic: { method: 'apiKey', apiKey: 'sk-test' } })).toBe('local')
+      expect(detectMode({})).toBe('local')
     })
 
     it('returns local when config is null', () => {
@@ -104,7 +102,6 @@ describe('local-config', () => {
 
     it('expands tilde', () => {
       const config: LocalConfig = {
-        anthropic: { method: 'apiKey', apiKey: 'k' },
         intelligence: { dir: '~/.coro/intel' },
       }
       expect(resolveIntelligenceDir(config)).toBe(path.join(os.homedir(), '.coro/intel'))
@@ -136,7 +133,6 @@ describe('local-config', () => {
   describe('intelligence schema (round-trip without dir)', () => {
     it('accepts an intelligence block with only gitRemote', () => {
       const config: LocalConfig = {
-        anthropic: { method: 'apiKey', apiKey: 'sk-x' },
         intelligence: { gitRemote: 'https://github.com/me/intel.git' },
       }
       saveLocalConfig(config, configPath)
@@ -147,7 +143,6 @@ describe('local-config', () => {
 
     it('accepts an intelligence block with only dir', () => {
       const config: LocalConfig = {
-        anthropic: { method: 'apiKey', apiKey: 'sk-x' },
         intelligence: { dir: '/custom/intel' },
       }
       saveLocalConfig(config, configPath)
@@ -158,90 +153,25 @@ describe('local-config', () => {
 
     it('still uses the default dir when only gitRemote is set', () => {
       const config: LocalConfig = {
-        anthropic: { method: 'apiKey', apiKey: 'sk-x' },
         intelligence: { gitRemote: 'https://github.com/me/intel.git' },
       }
       expect(resolveIntelligenceDir(config)).toContain('.coro')
     })
   })
 
-  // ── Anthropic auth schema ──────────────────────────────────────────────
+  // ── Anthropic auth schema (REMOVED) ────────────────────────────────────
   //
-  // The schema must accept (a) legacy `{ apiKey }` configs written by older
-  // versions and (b) the new discriminated shape, but reject any variant
-  // missing the credential for the chosen method.
-  describe('anthropic auth schema', () => {
-    it('accepts legacy { apiKey } config (method defaults to apiKey)', () => {
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({ anthropic: { apiKey: 'sk-legacy-123' } }),
-      )
-      const loaded = loadLocalConfig(configPath)
-      expect(loaded?.anthropic.method).toBe('apiKey')
-      expect(loaded?.anthropic.apiKey).toBe('sk-legacy-123')
-    })
-
-    it('accepts { method: "oauth", oauthToken }', () => {
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({ anthropic: { method: 'oauth', oauthToken: 'sk-ant-oat01-abc' } }),
-      )
-      const loaded = loadLocalConfig(configPath)
-      expect(loaded?.anthropic.method).toBe('oauth')
-      expect(loaded?.anthropic.oauthToken).toBe('sk-ant-oat01-abc')
-    })
-
-    it('accepts { method: "claudeLogin" } with optional account metadata', () => {
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({
-          anthropic: {
-            method: 'claudeLogin',
-            account: {
-              email: 'dev@a5labs.com',
-              organization: 'A5 Labs',
-              subscriptionType: 'max',
-              tokenSource: 'oauth',
-              apiProvider: 'firstParty',
-            },
-          },
-        }),
-      )
-      const loaded = loadLocalConfig(configPath)
-      expect(loaded?.anthropic.method).toBe('claudeLogin')
-      expect(loaded?.anthropic.account?.email).toBe('dev@a5labs.com')
-      expect(loaded?.anthropic.account?.apiProvider).toBe('firstParty')
-    })
-
-    it('rejects { method: "oauth" } without a token', () => {
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({ anthropic: { method: 'oauth' } }),
-      )
-      expect(() => loadLocalConfig(configPath)).toThrow()
-    })
-
-    it('rejects { method: "apiKey" } without a key', () => {
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({ anthropic: { method: 'apiKey' } }),
-      )
-      expect(() => loadLocalConfig(configPath)).toThrow()
-    })
-
-    it('rejects legacy { apiKey: "" } (empty string is not a credential)', () => {
-      fs.writeFileSync(
-        configPath,
-        JSON.stringify({ anthropic: { apiKey: '' } }),
-      )
-      expect(() => loadLocalConfig(configPath)).toThrow()
-    })
-  })
+  // The legacy top-level `anthropic` block was removed in Phase F of the
+  // Anthropic-as-plugin migration. Anthropic credentials now live under
+  // `plugins.installed.anthropic.config` and are validated by the plugin's
+  // own `configSchema` (see `packages/llm-anthropic/src/executor.ts`).
+  // The original schema-validation tests for `{ apiKey, oauthToken,
+  // claudeLogin }` shapes have moved to the llm-anthropic test suite.
 
   // ── Proposals schema ─────────────────────────────────────────────────────
   describe('proposals config', () => {
     it('defaults to path-based routing when the block is missing', () => {
-      saveLocalConfig({ anthropic: { method: 'apiKey', apiKey: 'sk-1' } }, configPath)
+      saveLocalConfig({}, configPath)
       const loaded = loadLocalConfig(configPath)
       expect(resolveProposalsConfig(loaded).routing.strategy).toBe('path')
     })
@@ -253,7 +183,6 @@ describe('local-config', () => {
     it('round-trips an explicit agent-routing config', () => {
       saveLocalConfig(
         {
-          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
           proposals: { routing: { strategy: 'agent' } },
         },
         configPath,
@@ -266,7 +195,6 @@ describe('local-config', () => {
       fs.writeFileSync(
         configPath,
         JSON.stringify({
-          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
           proposals: { routing: { strategy: 'magic' } },
         }),
       )
@@ -276,16 +204,13 @@ describe('local-config', () => {
 
   describe('resolveTenantOverlaySource', () => {
     it('defaults to none when overlay and gitRemote are absent', () => {
-      expect(resolveTenantOverlaySource({ anthropic: { method: 'apiKey', apiKey: 'sk-1' } })).toEqual({
-        kind: 'none',
-      })
+      expect(resolveTenantOverlaySource({})).toEqual({ kind: 'none' })
       expect(resolveTenantOverlaySource(null)).toEqual({ kind: 'none' })
     })
 
     it('uses intelligence.gitRemote when tenant.overlay is omitted', () => {
       expect(
         resolveTenantOverlaySource({
-          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
           intelligence: { gitRemote: 'https://github.com/org/intel.git' },
         }),
       ).toEqual({ kind: 'gitRemote', url: 'https://github.com/org/intel.git' })
@@ -294,7 +219,6 @@ describe('local-config', () => {
     it('trims intelligence.gitRemote', () => {
       expect(
         resolveTenantOverlaySource({
-          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
           intelligence: { gitRemote: '  https://github.com/org/x.git  ' },
         }),
       ).toEqual({ kind: 'gitRemote', url: 'https://github.com/org/x.git' })
@@ -303,7 +227,6 @@ describe('local-config', () => {
     it('honours explicit tenant.overlay over intelligence.gitRemote', () => {
       expect(
         resolveTenantOverlaySource({
-          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
           intelligence: { gitRemote: 'https://github.com/other.git' },
           tenant: {
             overlay: { kind: 'gitRemote', url: 'https://github.com/canonical/other.git', ref: 'main' },
@@ -315,7 +238,6 @@ describe('local-config', () => {
     it('honours explicit tenant.overlay.none and does not fall back to gitRemote', () => {
       expect(
         resolveTenantOverlaySource({
-          anthropic: { method: 'apiKey', apiKey: 'sk-1' },
           intelligence: { gitRemote: 'https://github.com/org/intel.git' },
           tenant: { overlay: { kind: 'none' } },
         }),

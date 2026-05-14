@@ -59,13 +59,11 @@ function buildTrackerTestPayload(
 export default function IssueTrackerSection() {
   const {
     draft,
-    claudeLogin,
-    claudeLoginAccount,
     pluginsCatalogue,
     pluginsCatalogueError,
     setPluginDefault,
   } = useSettings()
-  const readiness = evaluateReadiness({ draft, claudeLogin, claudeLoginAccount, pluginsCatalogue }).byId['issue-tracker']
+  const readiness = evaluateReadiness({ draft, pluginsCatalogue }).byId['issue-tracker']
 
   const trackerPlugins: PluginEntry[] = useMemo(() => {
     if (!pluginsCatalogue) return []

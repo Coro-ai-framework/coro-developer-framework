@@ -20,40 +20,15 @@ const cloudConfigSchema = z.object({
   token: z.string().min(1),
 }).optional()
 
-const claudeAccountSchema = z.object({
-  email: z.string().optional(),
-  organization: z.string().optional(),
-  subscriptionType: z.string().optional(),
-  tokenSource: z.string().optional(),
-  apiKeySource: z.string().optional(),
-  apiProvider: z.enum(['firstParty', 'bedrock', 'vertex', 'foundry', 'anthropicAws', 'mantle']).optional(),
-}).optional()
-
 // Anthropic auth supports three modes:
 //   - apiKey: direct Anthropic API key (production, billed per token)
 //   - oauth: legacy long-lived Claude Code OAuth token from `claude setup-token`
 //   - claudeLogin: Claude Code manages its own persisted login session locally;
 //                  we only store the selected mode plus optional account metadata
-// The method field is optional/defaulted so that legacy configs containing only
-// `{ apiKey: "..." }` continue to load. The refine() guarantees that the chosen
-// method has a matching non-empty credential.
-const anthropicConfigSchema = z
-  .object({
-    method: z.enum(['apiKey', 'oauth', 'claudeLogin']).default('apiKey'),
-    apiKey: z.string().optional(),
-    oauthToken: z.string().optional(),
-    account: claudeAccountSchema,
-  })
-  .refine(
-    v =>
-      (v.method === 'apiKey' && typeof v.apiKey === 'string' && v.apiKey.length > 0) ||
-      (v.method === 'oauth' && typeof v.oauthToken === 'string' && v.oauthToken.length > 0) ||
-      v.method === 'claudeLogin',
-    {
-      message:
-        'Anthropic config requires apiKey when method="apiKey", oauthToken when method="oauth", or method="claudeLogin"',
-    },
-  )
+// The legacy top-level `anthropic` block was removed in Phase F of the
+// Anthropic-as-plugin migration. Anthropic credentials now live exclusively
+// under `plugins.installed.anthropic.config`, validated by the plugin's
+// own `configSchema`.
 
 // Both fields are optional individually — `resolveIntelligenceDir`
 // already falls back to `defaultIntelligenceDir()` when `dir` is unset.
@@ -211,9 +186,29 @@ const mcpServersConfigSchema = z.record(z.string().min(1), userMcpServerSchema).
 export type UserMcpServerConfig = z.infer<typeof userMcpServerSchema>
 export type UserMcpServersConfig = NonNullable<z.infer<typeof mcpServersConfigSchema>>
 
+// ── LLM (multi-provider) ─────────────────────────────────────────────────────
+//
+// Persisted counterpart of `Settings.llm`. Lets operators pick a default
+// executor plugin and pin alias → {provider, model} mappings without
+// editing workflow YAML. Provider configs themselves live under
+// `plugins.installed.<id>.config` — no duplication here.
+
+const llmAliasSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
+})
+
+const llmConfigSchema = z.object({
+  defaultProvider: z.string().min(1).optional(),
+  aliases: z.record(z.string().min(1), llmAliasSchema).optional(),
+}).optional()
+
+export type LlmConfig = NonNullable<z.infer<typeof llmConfigSchema>>
+export type LlmAliasConfig = z.infer<typeof llmAliasSchema>
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
-  anthropic: anthropicConfigSchema,
   intelligence: intelligenceConfigSchema,
   paths: pathsConfigSchema,
   git: gitConfigSchema,
@@ -227,6 +222,17 @@ const localConfigSchema = z.object({
    * configs round-trip without manual edits.
    */
   plugins: pluginsConfigSchema.optional(),
+  /**
+   * Multi-provider LLM configuration. `defaultProvider` selects the
+   * executor plugin used when an alias / phase doesn't pin one
+   * explicitly. `aliases` maps workflow-author shorthands like
+   * `planning` / `coding` to a concrete `{provider, model}` pair.
+   *
+   * Provider configs themselves live under `plugins.installed.<id>.config`
+   * (validated by the plugin's own zod schema) — this block holds only
+   * routing.
+   */
+  llm: llmConfigSchema,
   /**
    * Bring-your-own MCP servers attached to every job session. Lets
    * operators wire arbitrary MCP servers (Slack, Sentry, internal
@@ -388,16 +394,15 @@ export function saveLocalConfig(config: LocalConfig, configPath?: string): void 
  * Merge partial config into existing. Useful for `coro login` which only sets cloud fields.
  */
 export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: string): LocalConfig {
-  // Fallback seeds `method: 'apiKey'` so the zod refine doesn't reject the
-  // intermediate value; callers are expected to patch in the real credentials.
-  const existing: LocalConfig =
-    loadLocalConfig(configPath) ?? { anthropic: { method: 'apiKey', apiKey: '__placeholder__' } }
+  // `anthropic` is now optional on disk — first-time bootstraps that
+  // haven't run any login flow yet land here with an empty object so
+  // downstream merges don't have to special-case the missing-config path.
+  const existing: LocalConfig = loadLocalConfig(configPath) ?? {}
   const merged: LocalConfig = {
     ...existing,
     ...patch,
     // Deep merge sub-objects
     cloud: patch.cloud !== undefined ? patch.cloud : existing.cloud,
-    anthropic: patch.anthropic ?? existing.anthropic,
     intelligence: patch.intelligence !== undefined ? patch.intelligence : existing.intelligence,
     paths: patch.paths !== undefined ? patch.paths : existing.paths,
     git: patch.git !== undefined ? patch.git : existing.git,
@@ -405,6 +410,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
     tracker: patch.tracker !== undefined ? patch.tracker : existing.tracker,
     plugins: patch.plugins !== undefined ? patch.plugins : existing.plugins,
+    llm: patch.llm !== undefined ? patch.llm : existing.llm,
     mcpServers: patch.mcpServers !== undefined ? patch.mcpServers : existing.mcpServers,
     inheritClaudeCodeMcps:
       patch.inheritClaudeCodeMcps !== undefined ? patch.inheritClaudeCodeMcps : existing.inheritClaudeCodeMcps,
@@ -517,7 +523,28 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
  *            an explicit `plugins` block — operators must migrate.
  */
 export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
-  if (config?.plugins) return config.plugins
+  // Always synthesise from legacy keys so the result reflects every
+  // legacy block (anthropic / git / tracker). When the user has
+  // hand-authored a `plugins` block, it wins per-id — explicit
+  // entries override the synthesised ones, but absent ids still
+  // fall back to the legacy translation. Without this merge a
+  // partial `plugins` block (e.g. only `bitbucket`) would silently
+  // drop the legacy `anthropic` entry.
+  const synthesised = legacyConfigToPlugins(config)
+  if (config?.plugins) {
+    const stage = legacyConfigKeysBehaviour()
+    if (stage === 'error' && (config.git || config.tracker)) {
+      throw new Error(
+        `Legacy 'git'/'tracker' top-level config keys are no longer supported. ` +
+        `Move them into a 'plugins.installed' block. ` +
+        `Run 'coro init' to regenerate the config in the new shape.`,
+      )
+    }
+    return {
+      defaults: config.plugins.defaults ?? synthesised.defaults,
+      installed: { ...synthesised.installed, ...config.plugins.installed },
+    }
+  }
   const stage = legacyConfigKeysBehaviour()
   if (stage === 'error' && config && (config.git || config.tracker)) {
     throw new Error(
@@ -526,7 +553,7 @@ export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig 
       `Run 'coro init' to regenerate the config in the new shape.`,
     )
   }
-  return legacyConfigToPlugins(config)
+  return synthesised
 }
 
 /**

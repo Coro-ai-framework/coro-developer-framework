@@ -418,5 +418,46 @@ describe('PollingTransport', () => {
       await transport.poll()
       expect(pollSpy).not.toHaveBeenCalled()
     })
+
+    it('routes polls to the SCM plugin whose matchesRemote claims the repoKey, even when another SCM is the registry default', async () => {
+      // Regression: when both bitbucket and github plugins are
+      // installed, polling-transport used to fall back to the registry
+      // default for `pluginId`, which silently sent github URLs to the
+      // bitbucket poller (404s every cycle).
+      const job = makeJob({
+        params: { serviceName: 'svc', repoSlug: 'https://github.com/acme/repo' },
+        prMappings: [{ prId: 7, workItem: 'feat/x', repoSlug: 'https://github.com/acme/repo', openedAt: '2026-01-01T00:00:00Z' }],
+        awaitingPrId: 7,
+      })
+      const backend = makeMockBackend([job])
+
+      const bitbucket = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      bitbucket.plugin = {
+        ...bitbucket.plugin,
+        manifest: { ...mockManifest, id: 'bitbucket' },
+        matchesRemote: (url: string) => /bitbucket\.org/.test(url),
+      } as ScmPluginRuntime
+
+      const github = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      github.plugin = {
+        ...github.plugin,
+        manifest: { ...mockManifest, id: 'github' },
+        matchesRemote: (url: string) => /github\.com/.test(url),
+      } as ScmPluginRuntime
+
+      const bbSpy = vi.spyOn(bitbucket.plugin, 'pollPr')
+      const ghSpy = vi.spyOn(github.plugin, 'pollPr')
+
+      // bitbucket is the registry default — exercise the bug condition.
+      const registry = new PluginRegistry({ scm: 'bitbucket' })
+      registry.register(bitbucket.plugin)
+      registry.register(github.plugin)
+
+      transport = new PollingTransport({ stateBackend: backend, plugins: registry, logger })
+      await transport.poll()
+
+      expect(bbSpy).not.toHaveBeenCalled()
+      expect(ghSpy).toHaveBeenCalledTimes(1)
+    })
   })
 })

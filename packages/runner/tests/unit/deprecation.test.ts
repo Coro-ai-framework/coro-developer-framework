@@ -141,7 +141,6 @@ describe('resolvePluginsConfig + legacyConfigKeysBehaviour', () => {
     const { resolvePluginsConfig } = await import('../../src/config/local-config')
     expect(() =>
       resolvePluginsConfig({
-        anthropic: { method: 'apiKey', apiKey: 'k' },
         git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
       }),
     ).toThrow(/no longer supported/i)
@@ -151,7 +150,6 @@ describe('resolvePluginsConfig + legacyConfigKeysBehaviour', () => {
     setStage('N+1')
     const { resolvePluginsConfig } = await import('../../src/config/local-config')
     const got = resolvePluginsConfig({
-      anthropic: { method: 'apiKey', apiKey: 'k' },
       git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
     })
     expect(got.installed['github']).toBeDefined()
@@ -161,7 +159,6 @@ describe('resolvePluginsConfig + legacyConfigKeysBehaviour', () => {
     setStage('N')
     const { resolvePluginsConfig } = await import('../../src/config/local-config')
     const got = resolvePluginsConfig({
-      anthropic: { method: 'apiKey', apiKey: 'k' },
       git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
     })
     expect(got.installed['github']).toBeDefined()
@@ -171,7 +168,6 @@ describe('resolvePluginsConfig + legacyConfigKeysBehaviour', () => {
     setStage('N+2')
     const { resolvePluginsConfig } = await import('../../src/config/local-config')
     const got = resolvePluginsConfig({
-      anthropic: { method: 'apiKey', apiKey: 'k' },
       plugins: { installed: { 'github': { enabled: true, config: { owner: 'me', token: 't' } } } },
     })
     expect(got.installed['github']).toBeDefined()

@@ -1,14 +1,4 @@
-import {
-  query,
-  type HookCallback,
-  type HookJSONOutput,
-  type McpServerConfig,
-  type McpSdkServerConfig,
-  type McpSetServersResult,
-  type Query,
-  type SDKUserMessage,
-} from '@anthropic-ai/claude-agent-sdk'
-import { lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'fs'
+import { mkdirSync, readFileSync } from 'fs'
 import { Logger } from 'pino'
 import { ChildProcess } from 'child_process'
 import path from 'path'
@@ -32,6 +22,15 @@ import {
 } from '../intelligence/resolver'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
+import type {
+  DeveloperInputChannel,
+  ExecutorSessionController,
+  ExecutorSubagentSpec,
+  PhaseExecutionRequest,
+  PhaseExecutorEvent,
+  PhaseExecutorRuntime,
+  PluginMcpServerConfig,
+} from '../plugins/types'
 import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
@@ -60,7 +59,6 @@ import {
   emptyTokenUsage,
 } from './types'
 import { assertJobPluginRequirements } from './plugin-preflight'
-import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from '../claude-code-path'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -102,34 +100,20 @@ export interface RunnerContext {
   logger: Logger
 }
 
-/** Arguments passed to a test/injected `query` implementation. */
-export interface QueryInvocation {
-  prompt: string
-  options: Record<string, unknown>
-  signals: PhaseSignals
-  /** Shared with MCP tools — same reference as the runner's live job state. */
-  toolCtx: ToolContext
-}
-
 /**
- * Live developer-input pushable. The runner creates one of these per
- * phase and passes its `iterable` as the SDK `query()` prompt. While
- * the iterable is open, the SDK keeps stdin open and the in-process
- * SDK MCP servers (`mcp__coro__*`) keep working — the closed-stdin
- * bug from the prior one-yield generator approach goes away entirely.
+ * ─── Test injection seam: phase executor ───────────────────────────────────
  *
- * The dispatcher gets a reference to this object and calls `push()`
- * to inject a developer message mid-phase (paired with `q.interrupt()`
- * so the agent yields its current turn and reads the new message
- * immediately). The runner calls `close()` once the phase's for-await
- * loop has exited, which lets the SDK's `streamInput` consumer
- * complete and finally call `transport.endInput()` cleanly.
+ * The runner accepts `RunJobOptions.executorImpl` so tests can replace the
+ * resolved {@link PhaseExecutorRuntime} with a deterministic stub that
+ * yields normalized {@link PhaseExecutorEvent}s and sets {@link PhaseSignals}.
+ * This is the ONLY supported way to exercise runner.ts without an Anthropic
+ * key. Production callers omit this — the runner resolves the executor
+ * from `ctx.plugins` per phase based on the chosen model.
+ *
+ * Lockdown coverage: see `tests/runner/runner.test.ts` (uses the seam end-to-end)
+ * and `tests/unit/runner-internals.test.ts` (locks pure helpers).
  */
-export interface PushableInput {
-  iterable: AsyncIterable<SDKUserMessage>
-  push(msg: SDKUserMessage): void
-  close(): void
-}
+
 
 /**
  * Optional hooks for tests and future instrumentation.
@@ -137,92 +121,47 @@ export interface PushableInput {
  */
 export interface RunJobOptions {
   /**
-   * Replace the Claude Agent SDK `query()` stream. Tests use this to simulate
-   * model turns and set {@link PhaseSignals} without calling Anthropic.
+   * Replace the resolved {@link PhaseExecutorRuntime}. Tests use this to
+   * simulate phase execution and set {@link PhaseSignals} without calling
+   * a real model. Production code omits this; the runner resolves the
+   * executor from `ctx.plugins` per phase.
    */
-  queryImpl?: (inv: QueryInvocation) => AsyncIterable<unknown>
+  executorImpl?: PhaseExecutorRuntime
   /**
    * When set, skips `loadWorkflowConfig` from disk. Pass `null` for jobs with no workflow file.
    */
   workflowConfigOverride?: WorkflowConfig | null
   /**
-   * Called BEFORE `query()` is invoked, with the freshly created
-   * pushable input handle. The dispatcher registers it under the job
-   * id so a developer message arriving in the (small) gap between
-   * this call and `onQueryStart` can already be queued — the SDK
-   * will read it on its very first iteration of the prompt iterable.
+   * Called BEFORE the phase executor is invoked, with the
+   * {@link DeveloperInputChannel} the executor will consume. The
+   * dispatcher registers it under the job id so a developer message
+   * arriving in the (small) gap between this call and
+   * `onSessionStart` is queued and read by the executor on its very
+   * first iteration.
    */
-  onPhasePrepare?: (jobId: string, input: PushableInput) => void
+  onPhasePrepare?: (jobId: string, input: DeveloperInputChannel) => void
   /**
-   * Called when a real SDK Query is created. The dispatcher uses this
-   * to store a reference for `q.interrupt()` so a developer message
-   * can preempt an in-flight model turn / tool call.
+   * Called when the executor has set up its native session and exposes
+   * an {@link ExecutorSessionController}. The dispatcher uses this to
+   * store a reference so a developer message can preempt an in-flight
+   * model turn / tool call via `controller.interrupt()`.
    */
-  onQueryStart?: (jobId: string, query: Query) => void
+  onSessionStart?: (jobId: string, controller: ExecutorSessionController) => void
   /**
-   * Called when the SDK Query's for-await loop exits (phase done, signal, or error).
-   * The dispatcher uses this to remove the Query and pushable references.
+   * Called when the executor's per-phase invocation has fully terminated
+   * (success, error, or abort). The dispatcher uses this to drop the
+   * controller and developer-input references.
    */
-  onQueryEnd?: (jobId: string) => void
-}
-
-/**
- * Build a {@link PushableInput} backed by an internal queue. Multiple
- * pushes before a single read are buffered FIFO. Pushing after `close()`
- * is a no-op. The iterable returns once the queue has drained AND
- * `close()` has been called — this matches the AsyncIterator contract
- * the SDK's `streamInput` for-await consumer expects.
- */
-function createPushableInput(): PushableInput {
-  const buffer: SDKUserMessage[] = []
-  // When a consumer is awaiting `next()` and the buffer is empty, we
-  // park a resolver here. The next push() (or close()) calls it.
-  let waiting: (() => void) | null = null
-  let closed = false
-
-  const wakeup = () => {
-    const w = waiting
-    waiting = null
-    if (w) w()
-  }
-
-  const iterable: AsyncIterable<SDKUserMessage> = {
-    [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
-      return {
-        async next(): Promise<IteratorResult<SDKUserMessage>> {
-          // Drain whatever's buffered first.
-          while (true) {
-            if (buffer.length > 0) {
-              return { value: buffer.shift()!, done: false }
-            }
-            if (closed) {
-              return { value: undefined, done: true }
-            }
-            await new Promise<void>((resolve) => { waiting = resolve })
-          }
-        },
-        async return(): Promise<IteratorResult<SDKUserMessage>> {
-          closed = true
-          wakeup()
-          return { value: undefined, done: true }
-        },
-      }
-    },
-  }
-
-  return {
-    iterable,
-    push(msg: SDKUserMessage): void {
-      if (closed) return
-      buffer.push(msg)
-      wakeup()
-    },
-    close(): void {
-      if (closed) return
-      closed = true
-      wakeup()
-    },
-  }
+  onSessionEnd?: (jobId: string) => void
+  /**
+   * **Test-only.** Invoked synchronously immediately before each phase
+   * executor is called, with the live {@link PhaseSignals} and
+   * {@link ToolContext}. Test stub executors capture these via this
+   * hook so their event generator can mutate signals (`nextPhase`,
+   * `awaitingEvent`, `escalated`) the way a real MCP tool call would.
+   * Production code never sets this.
+   */
+  onPhaseExecutorBoot?: (jobId: string, ctx: { signals: PhaseSignals; toolCtx: ToolContext }) => void
 }
 
 // ── Runner ────────────────────────────────────────────────────────────────────
@@ -375,10 +314,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     return
   }
 
-  /** Bundled Claude Code entrypoint; npm ships it as non-executable — we chmod if needed. */
-  const claudeCodeCliPath = resolveClaudeCodeCliPath()
-  ensureClaudeCodeCliExecutable(claudeCodeCliPath, logger)
-
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
@@ -393,11 +328,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       toolCtx.job = liveJob
       if (shouldStopLoop) break
 
-      // Reset signals and create a fresh MCP server for each phase.
+      // Reset signals at the start of each phase. The MCP server is
+      // (re-)created below, after the executor is resolved, so we can
+      // gate file-tool registration on `executor.capabilities`.
       // Reusing the MCP server across phases can leave the transport in a
       // broken state if the previous Claude Code subprocess exited uncleanly.
       resetSignals(signals)
-      const mcpServer = createCoroMcpServer(toolCtx, signals)
 
       // Re-resolve intelligence at every phase boundary. This is
       // idempotent (same materialised path) and cheap (file copies +
@@ -430,13 +366,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // between phases.
       const trackerInfo = computeTrackerPromptContext(settings, ctx.trackerClient)
       const scmInfo = computeScmPromptContext(liveJob, ctx.plugins)
-      const systemPrompt = await buildSystemPrompt(liveJob, jobIntelligenceDir, logger, trackerInfo, scmInfo)
-      const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
-      logger.info(
-        { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
-        `System prompt assembled: ${promptSizeKb} KB`,
-      )
-      await stateBackend.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
+      // System prompt build is deferred until after the executor is
+      // resolved — we need its `capabilities.supportsClaudeMdNativeWalkUp`
+      // to decide whether to inject `.claude/CLAUDE.md` ourselves
+      // (Anthropic SDK walks it natively; everyone else needs us to
+      // prepend it).
 
       // Mid-job workflow switches (`switch_workflow`, `convert_to_campaign`)
       // mutate `liveJob.workflowPath` while the cached `workflowConfig`
@@ -513,36 +447,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // needs to react to.
       const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(liveJob)
 
-      // Wrap the prompt as a one-message async iterable (NOT a plain string).
-      //
-      // Why: the Agent SDK's `query()` inspects `typeof prompt === "string"`
-      // and, if true, flags the Query as `isSingleUserTurn`. In single-turn
-      // mode the SDK:
-      //   - closes stdin after the first result message,
-      //   - skips the bidirectional IPC channel, and crucially
-      //   - never delivers the `initialize` control request that registers
-      //     in-process SDK MCP servers (`createSdkMcpServer`).
-      //
-      // Passing an `AsyncIterable<SDKUserMessage>` flips the SDK to
-      // bidirectional mode, so `mcp__coro__*` tools actually register.
-      // Build a long-lived input pushable for this phase. The kickoff
-      // message goes in immediately. While this iterable stays open the
-      // SDK keeps stdin to the Claude Code subprocess open, which is
-      // what allows in-process MCP servers (`mcp__coro__*`) to keep
-      // exchanging control_request traffic across multiple model turns
-      // and what allows the dispatcher to inject developer steering
-      // messages via `pushable.push()` mid-phase. The previous one-yield
-      // generator caused the SDK to call `transport.endInput()` (i.e.
-      // `processStdin.end()`) right at boot, which silently broke MCP
-      // and made any subsequent steering message fail to deliver.
-      const pushable = createPushableInput()
-      pushable.push({
-        type: 'user',
-        message: { role: 'user', content: [{ type: 'text', text: promptText }] },
-        parent_tool_use_id: null,
-      })
-      const prompt = pushable.iterable
-
       // Clear pendingPrompt immediately so it isn't replayed on the next turn.
       if (liveJob.pendingPrompt) {
         liveJob = await syncJob(stateBackend, liveJob, { pendingPrompt: undefined })
@@ -553,29 +457,67 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
       /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as "cli.js not found". */
       mkdirSync(workingDir, { recursive: true })
-      ensureClaudeConfigSymlink(workingDir, jobIntelligenceDir, logger)
 
-      // Build subagent definitions from workflow config. Plugin-provided
-      // MCP servers (S1) and BYO MCP servers (S8) propagate to
-      // subagents too — otherwise a code reviewer subagent would be
-      // blind to `mcp__github__*` / `mcp__slack__*` etc. tools the
-      // parent agent can see.
-      const subagentPluginMcpServers = collectPluginMcpServers({
-        plugins: ctx.plugins,
-        logger,
-      })
-      const subagentUserMcpServers = collectUserMcpServers({ logger })
-      const subagentMcpServers = {
-        ...subagentPluginMcpServers,
-        ...subagentUserMcpServers,
+      // Resolve the executor early so its `capabilities` can drive
+      // prompt/subagent assembly (CLAUDE.md injection, etc.). Test
+      // injection still wins via `options.executorImpl`.
+      const executor: PhaseExecutorRuntime =
+        options?.executorImpl ?? ctx.plugins.resolveExecutor({ model })
+
+      // Surface the resolved provider/model in the activity log so
+      // developers can see, per phase, which executor + model is
+      // actually running. With per-phase model overrides this is no
+      // longer obvious from the workflow file alone (alias indirection,
+      // tenant defaults, sole-installed fallback).
+      {
+        const aliasKey =
+          phaseConf?.model && settings.llm?.aliases?.[phaseConf.model]
+            ? phaseConf.model
+            : undefined
+        const aliasEntry = aliasKey ? settings.llm?.aliases?.[aliasKey] : undefined
+        const parts = [`provider=${executor.manifest.id}`, `model=${model || '<default>'}`]
+        if (aliasKey) parts.push(`alias=${aliasKey}`)
+        if (aliasEntry?.reasoningEffort) parts.push(`effort=${aliasEntry.reasoningEffort}`)
+        await stateBackend.appendLog(liveJob.id, `Model: ${parts.join(' ')}`)
       }
-      const agents = phaseConf?.subagents
-        ? buildSubagentDefinitions(
+
+      // Fresh MCP server per phase. File/skill tools are registered only
+      // for executors that don't bring native equivalents — Claude SDK
+      // ships its own Read/Write/Edit/Glob/Grep + Skill, so we skip them
+      // there to avoid a doubled tool surface.
+      const mcpServer = createCoroMcpServer(toolCtx, signals, {
+        registerFileTools: !executor.capabilities.supportsNativeFileTools,
+      })
+
+      const systemPrompt = await buildSystemPrompt(
+        liveJob,
+        jobIntelligenceDir,
+        logger,
+        trackerInfo,
+        scmInfo,
+        executor.capabilities,
+      )
+      const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
+      logger.info(
+        { jobId: liveJob.id, phase: liveJob.phase, promptSizeKb: Number(promptSizeKb) },
+        `System prompt assembled: ${promptSizeKb} KB`,
+      )
+      await stateBackend.appendLog(liveJob.id, `System prompt: ${promptSizeKb} KB`)
+
+      // Build subagent specs from workflow config. Agent prompts are
+      // loaded here and handed to the executor via
+      // {@link PhaseExecutionRequest.subagents}; the executor decides
+      // how to dispatch them (Anthropic's native SDK `agents:` map vs.
+      // the runner's `run_subagent` MCP tool fallback for non-native
+      // executors). `.claude/CLAUDE.md` is prepended only when the
+      // executor lacks native walk-up — mirrors the system-prompt
+      // injection above.
+      const subagentSpecs: ReadonlyArray<ExecutorSubagentSpec> | undefined = phaseConf?.subagents
+        ? buildExecutorSubagentSpecs(
             phaseConf.subagents,
             jobIntelligenceDir,
             settings,
-            mcpServer as McpSdkServerConfig,
-            subagentMcpServers,
+            { prependClaudeMd: !executor.capabilities.supportsClaudeMdNativeWalkUp },
           )
         : undefined
 
@@ -633,60 +575,54 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       logger.info(
         { jobId: liveJob.id, phase: liveJob.phase, model },
-        'Starting Agent SDK query for phase',
+        'Starting phase executor',
       )
 
-      // SDK hooks enforce filesystem safety guard rails that were previously
-      // described only in prose inside agent markdown.
-      // The hook
-      // returns `permissionDecision: 'deny'` — the SDK then rejects the tool
-      // use with the reason visible to the model, which course-corrects.
-      const hooks = buildPhaseHooks({
-        liveJobRef: () => liveJob,
-        workingDir,
-        coroIntelligenceDir: jobIntelligenceDir,
-        allowedTools: phaseConf?.tools,
-        logger,
-      })
+      // ── Phase executor invocation ────────────────────────────────────────
+      //
+      // The runner resolves a {@link PhaseExecutorRuntime} per phase and
+      // delegates the entire model + tool loop to it. The executor owns
+      // SDK setup (hooks, MCP wiring, queryOptions, session resume,
+      // agents map), yields normalized {@link PhaseExecutorEvent}s, and
+      // emits exactly one `done` event with the next session state.
+      //
+      // The runner's job here is:
+      //   1. Build the {@link PhaseExecutionRequest} from the resolved
+      //      phase config + intelligence layer + plugin registry.
+      //   2. Hand the dispatcher the executor's neutral
+      //      {@link DeveloperInputChannel} (so steering messages reach
+      //      the live tool loop) and {@link ExecutorSessionController}
+      //      (so cancel/preempt is provider-agnostic).
+      //   3. Translate normalized events into the same log/state side
+      //      effects the runner has always produced (appendLog, syncJob,
+      //      phaseUsage snapshots, MCP-usage counters).
+      //
+      // (`executor` is resolved earlier in the loop so its capabilities
+      // can drive system-prompt + subagent assembly.)
 
-      // `resume: sessionId` carries the previous transcript forward. This is
-      // cheap (no rebuilt context) and usually desirable. It is opt-out via
-      // `CORO_DISABLE_SESSION_RESUME=1` for cases where a completely fresh
-      // session is still preferable.
-      //
-      // The SDK has historically been flaky about in-process MCP servers on
-      // resumed sessions. We still resume, but immediately re-register the
-      // dynamic Coro MCP server on the live Query before consuming model output.
-      // Note: even with resume, the system prompt is re-sent every call — so
-      // phase transitions still update the agent's role correctly.
-      const resumeDisabled = process.env.CORO_DISABLE_SESSION_RESUME === '1'
-        || process.env.CORO_DISABLE_SESSION_RESUME === 'true'
-      const resumeSessionId = !resumeDisabled && liveJob.sessionId ? liveJob.sessionId : undefined
-      // Registration key MUST equal the desired tool prefix. The SDK exposes
-      // tools as `mcp__<key>__<tool>`, derived from this object key (not from
-      // the server.name passed to createSdkMcpServer). Keeping them aligned
-      // (both `coro`) avoids the historical confusion where the key drifted
-      // and tools silently disappeared.
-      //
-      // Plugin-provided MCP servers (S1 of the MCP-first pivot) are merged
-      // alongside `coro` so the model sees `mcp__github__*`, `mcp__jira__*`
-      // etc. directly. The reserved id `coro` cannot be shadowed — see
-      // `collectPluginMcpServers`.
-      const pluginMcpServers = collectPluginMcpServers({
-        plugins: ctx.plugins,
-        logger,
-      })
-      // Bring-your-own MCP servers (S8 of the MCP-first pivot) are
-      // attached after plugin servers; collisions with plugin ids
-      // are resolved by giving the BYO config the win — operators
-      // explicitly opted into the user-level entry. `coro` is still
-      // reserved.
+      // Developer-input channel handed to the executor. It starts as a
+      // no-op pair; the executor reassigns `push`/`close` early in
+      // `executePhase` (synchronously, before any await) so that
+      // dispatcher messages routed via this channel end up in the
+      // executor's live SDK input pushable. The mutation is observed
+      // by every subsequent `.push` because the dispatcher captured the
+      // same object reference via `onPhasePrepare` below.
+      const developerInput: DeveloperInputChannel = {
+        push: () => { /* replaced by executor on session start */ },
+        close: () => { /* replaced by executor on session start */ },
+      }
+
+      // Register BEFORE the executor runs so any developer message that
+      // races with phase startup lands in the executor's input on its
+      // first iteration. Mirrors the legacy `onPhasePrepare` contract.
+      options?.onPhasePrepare?.(liveJob.id, developerInput)
+
+      const pluginMcpServers = collectPluginMcpServers({ plugins: ctx.plugins, logger })
       const userMcpServers = collectUserMcpServers({ logger })
-      const dynamicMcpServers = {
-        coro: mcpServer,
+      const mergedPluginMcpServers = {
         ...pluginMcpServers,
         ...userMcpServers,
-      } satisfies Record<string, McpServerConfig>
+      } as unknown as Record<string, PluginMcpServerConfig>
 
       if (Object.keys(pluginMcpServers).length > 0) {
         logger.info(
@@ -695,336 +631,212 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             phase: liveJob.phase,
             pluginMcpServers: Object.keys(pluginMcpServers),
           },
-          'Attached plugin-provided MCP servers to query session',
+          'Attached plugin-provided MCP servers to phase executor',
         )
       }
 
-      const queryOptions: Record<string, unknown> = {
-        pathToClaudeCodeExecutable: claudeCodeCliPath,
+      // `resume: sessionId` carries the previous transcript forward.
+      // Cheap and usually desirable; opt-out via `CORO_DISABLE_SESSION_RESUME`.
+      const resumeDisabled = process.env.CORO_DISABLE_SESSION_RESUME === '1'
+        || process.env.CORO_DISABLE_SESSION_RESUME === 'true'
+      const resumeSessionId = !resumeDisabled && liveJob.sessionId ? liveJob.sessionId : undefined
+
+      const abortController = new AbortController()
+
+      const req: PhaseExecutionRequest = {
         systemPrompt,
+        userPrompt: promptText,
         model,
         cwd: workingDir,
-        settingSources: ['project'],
-        mcpServers: dynamicMcpServers,
-        hooks,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
+        intelligenceDir: jobIntelligenceDir,
+        mcpServer: { kind: 'sdk-instance', id: 'coro', instance: mcpServer },
+        pluginMcpServers: mergedPluginMcpServers,
+        subagents: subagentSpecs,
+        hookPolicy: {
+          allowedTools: phaseConf?.tools ?? null,
+          writeRoots: [workingDir, jobIntelligenceDir],
+        },
+        sessionState: { sessionId: resumeSessionId },
         maxTurns: 200,
-        thinking: { type: 'adaptive' },
-        systemPromptCacheControl: 'ephemeral',
-        persistSession: true,
-        ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-        // Must inherit process.env (PATH, HOME, …). A bare object replaces the SDK default and breaks spawn('node', …).
-        env: {
-          ...process.env,
-          // Anthropic auth: pick exactly one of ANTHROPIC_API_KEY or
-          // CLAUDE_CODE_OAUTH_TOKEN. If both are present the Claude Code CLI
-          // silently prefers ANTHROPIC_API_KEY, which would override the
-          // user's chosen OAuth flow — so we explicitly wipe the one we
-          // aren't using (including any stale value inherited from process.env).
-          ...buildAnthropicAuthEnv(settings.claude.auth),
-          BB_WORKSPACE: settings.bitbucket.workspace,
-          BB_CODER_APP_PASSWORD: settings.bitbucket.coderAccount.appPassword,
-          BB_BASE_URL: 'https://bitbucket.org',
-          BB_GIT_USERNAME: settings.bitbucket.coderAccount.appPassword.startsWith('ATATT')
-            ? 'x-bitbucket-api-token-auth'
-            : encodeURIComponent(settings.bitbucket.coderAccount.username),
-          GH_OWNER: settings.github?.owner ?? '',
-          GH_TOKEN: settings.github?.token ?? '',
-          CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000',
-          // Explicitly enable ToolSearch / deferred tool loading.
-          ENABLE_TOOL_SEARCH: 'true',
-          DEBUG_CLAUDE_AGENT_SDK: '1',
+        signal: abortController.signal,
+        phase: liveJob.phase,
+        lifecycle: {
+          onSessionStart: (controller: ExecutorSessionController) => {
+            options?.onSessionStart?.(liveJob.id, controller)
+          },
+          onSessionEnd: () => options?.onSessionEnd?.(liveJob.id),
         },
-        // Capture the SDK and CLI subprocess stderr.
-        stderr: (chunk: string) => {
-          const text = String(chunk).trim()
-          if (!text) return
-          for (const line of text.split('\n')) {
-            const trimmed = line.trim()
-            if (!trimmed) continue
-            logger.debug({ jobId: liveJob.id, phase: liveJob.phase }, `[sdk-stderr] ${trimmed}`)
-            if (/mcp|Transport|sdkMcp|control_request/i.test(trimmed)) {
-              appendChunkedLog(stateBackend, liveJob.id, '[sdk-stderr] ', trimmed)
-                .catch(() => { /* logging is best-effort */ })
-            }
-          }
-        },
+        developerInput,
       }
 
-      if (agents) {
-        queryOptions.agents = agents
-      }
-
-      // Run the Agent SDK query — this handles the entire tool-use loop
-      let sessionId: string | undefined
+      // Phase-local accumulators. The executor reports tokens via
+      // cumulative `usage` events (the final one carries authoritative
+      // totals plus provider-reported cost). The runner derives the
+      // per-phase cost via `derivePhaseCostUsd` so resumed-session
+      // double-counting stays handled identically to the legacy path.
+      let sessionId: string | undefined = resumeSessionId
       const phaseTokens: TokenUsage = emptyTokenUsage()
       const prePhaseUsage: TokenUsage = { ...(liveJob.tokenUsage ?? emptyTokenUsage()) }
       let phaseTurns = 0
       let lastUsageSyncTurn = 0
       const phaseStartMs = Date.now()
       let phaseSnapshotRecorded = false
-      // Track MCP usage for observability. A phase with built-in tool calls
-      // and zero mcp__coro__* calls can indicate MCP registration trouble,
-      // but it is no longer treated as a hard failure.
       let builtinToolUseCount = 0
       let mcpToolUseCount = 0
+      let lastReportedCostUsd: number | undefined
+      let lastReportedModelUsage: Record<string, {
+        inputTokens: number
+        outputTokens: number
+        cacheReadInputTokens: number
+        cacheCreationInputTokens: number
+        totalCostUsd?: number
+      }> | undefined
+      let doneMetrics: { durationMs?: number; durationApiMs?: number; numTurns?: number } | undefined
 
-      // Tests inject `queryImpl` and still receive the plain string prompt
-      // (backwards-compatible with the QueryInvocation contract). The real
-      // SDK query is given the async-iterable form so bidirectional mode
-      // (and thus SDK MCP registration) is preserved.
-      //
-      // Register the pushable BEFORE we hand it to query() so that any
-      // developer message racing with phase startup lands in the queue
-      // and is read by the SDK on its very first iteration. The query
-      // handle is registered separately on the next line — between
-      // `query()` returning and the activeQueries set, sendMessage can
-      // still push() (for the next read) but cannot interrupt(). That's
-      // fine: nothing is in flight yet.
-      if (!options?.queryImpl) {
-        options?.onPhasePrepare?.(liveJob.id, pushable)
-      }
-      const queryStream = options?.queryImpl
-        ? options.queryImpl({ prompt: promptText, options: queryOptions, signals, toolCtx })
-        : query({
-            prompt,
-            options: queryOptions as Parameters<typeof query>[0]['options'],
-          })
-
-      const isRealQuery = !options?.queryImpl && typeof (queryStream as Query).streamInput === 'function'
-      if (isRealQuery) {
-        const liveQuery = queryStream as Query
-        options?.onQueryStart?.(liveJob.id, liveQuery)
-
-        if (resumeSessionId) {
-          try {
-            const mcpRefresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'a5')
-            logger.debug(
-              {
-                jobId: liveJob.id,
-                phase: liveJob.phase,
-                resumedFrom: resumeSessionId,
-                added: mcpRefresh.setResult.added,
-                removed: mcpRefresh.setResult.removed,
-                errors: mcpRefresh.setResult.errors,
-                initialStatus: mcpRefresh.initialStatus,
-                finalStatus: mcpRefresh.finalStatus,
-                reconnected: mcpRefresh.reconnected,
-              },
-              'Refreshed dynamic A5 MCP server on resumed query',
-            )
-
-            if (mcpRefresh.setResult.errors['a5'] || mcpRefresh.finalStatus === 'failed') {
-              await stateBackend.appendLog(
-                liveJob.id,
-                `[warning] A5 MCP refresh reported issues on resumed session. ` +
-                `errors=${JSON.stringify(mcpRefresh.setResult.errors)} status=${mcpRefresh.finalStatus ?? 'unknown'}`,
-              )
-            }
-          } catch (err) {
-            logger.warn(
-              { err, jobId: liveJob.id, phase: liveJob.phase, resumedFrom: resumeSessionId },
-              'Failed to refresh dynamic A5 MCP server on resumed query',
-            )
-            await stateBackend.appendLog(
-              liveJob.id,
-              '[warning] Failed to refresh A5 MCP server on resumed session; MCP tools may be unavailable.',
-            )
-          }
-        }
-      }
+      // Test-only: hand the live signals + toolCtx to a stub executor.
+      options?.onPhaseExecutorBoot?.(liveJob.id, { signals, toolCtx })
 
       try {
-      for await (const raw of queryStream) {
-        const message = raw as Record<string, unknown>
-        const eventType = String(message['type'] ?? '')
-
-        if (eventType === 'system') {
-          const sid = message['session_id']
-          if (typeof sid === 'string') sessionId = sid
-
-          if (message['subtype'] === 'init') {
-            const mcpServers = Array.isArray(message['mcp_servers'])
-              ? (message['mcp_servers'] as Array<{ name?: unknown; status?: unknown }>)
-              : []
-            const tools = Array.isArray(message['tools']) ? (message['tools'] as string[]) : []
-            const mcpToolCount = tools.filter(t => typeof t === 'string' && t.startsWith('mcp__coro__')).length
-            const a5Tools = tools.filter(t => typeof t === 'string' && t.startsWith('mcp__coro__'))
-
-            logger.info(
-              {
-                jobId: liveJob.id,
-                phase: liveJob.phase,
-                mcpServersAtInit: mcpServers.map(s => ({ name: s.name, status: s.status })),
-                mcpToolCountAtInit: mcpToolCount,
-                totalToolsAtInit: tools.length,
-                allToolsAtInit: tools,
-                a5ToolsAtInit: a5Tools,
-                resumedFrom: resumeSessionId ?? null,
-              },
-              'Claude Code session init',
-            )
-
-            await stateBackend.appendLog(
-              liveJob.id,
-              `[init] session started — ${tools.length} tools at boot, ${mcpToolCount} mcp__coro__* tools` +
-              (resumeSessionId ? ` (resumed from ${resumeSessionId})` : ''),
-            )
-          }
-        }
-
-        if (eventType === 'assistant') {
-          const betaMsg = message['message'] as Record<string, unknown> | undefined
-          const content = betaMsg?.['content']
-          if (Array.isArray(content)) {
-            for (const block of content as Array<Record<string, unknown>>) {
-              const bt = String(block['type'] ?? '')
-              if (bt === 'text' && typeof block['text'] === 'string' && (block['text'] as string).trim()) {
-                await stateBackend.appendLog(liveJob.id, block['text'] as string)
-              } else if (bt === 'thinking' && typeof block['thinking'] === 'string') {
-                await appendChunkedLog(stateBackend, liveJob.id, '[thinking] ', block['thinking'] as string)
-              } else if (bt === 'tool_use' || bt === 'mcp_tool_use') {
-                const toolName = String(block['name'] ?? 'unknown')
-                const input = block['input']
-                if (input) {
-                  await appendChunkedLog(stateBackend, liveJob.id, `→ ${toolName} `, JSON.stringify(input))
-                } else {
-                  await stateBackend.appendLog(liveJob.id, `→ ${toolName}`)
-                }
-                if (toolName.startsWith('mcp__coro__')) mcpToolUseCount++
-                else builtinToolUseCount++
+        for await (const ev of executor.executePhase(req) as AsyncIterable<PhaseExecutorEvent>) {
+          switch (ev.type) {
+            case 'session_start': {
+              if (ev.sessionId) sessionId = ev.sessionId
+              break
+            }
+            case 'text': {
+              if (ev.content.trim()) {
+                await stateBackend.appendLog(liveJob.id, ev.content)
               }
+              break
             }
-          }
-
-          const turnUsage = betaMsg?.['usage'] as Record<string, unknown> | undefined
-          if (turnUsage) {
-            phaseTokens.inputTokens += Number(turnUsage['input_tokens'] ?? 0)
-            phaseTokens.outputTokens += Number(turnUsage['output_tokens'] ?? 0)
-            phaseTokens.cacheReadInputTokens += Number(turnUsage['cache_read_input_tokens'] ?? 0)
-            phaseTokens.cacheCreationInputTokens += Number(turnUsage['cache_creation_input_tokens'] ?? 0)
-            phaseTurns++
-
-            if (phaseTurns - lastUsageSyncTurn >= 5) {
-              lastUsageSyncTurn = phaseTurns
-              const merged = mergeTokenUsage(prePhaseUsage, phaseTokens)
-              liveJob = await syncJob(stateBackend, liveJob, { tokenUsage: merged })
-              toolCtx.job = liveJob
+            case 'thinking': {
+              await appendChunkedLog(stateBackend, liveJob.id, '[thinking] ', ev.content)
+              break
             }
-          }
-        }
-
-        if (eventType === 'tool_use_summary') {
-          const summary = message['summary']
-          if (typeof summary === 'string' && summary.trim()) {
-            await appendChunkedLog(stateBackend, liveJob.id, '[tool_summary] ', summary)
-          }
-        }
-
-        if (eventType === 'tool_progress') {
-          const toolName = message['tool_name']
-          const elapsed = message['elapsed_time_seconds']
-          if (typeof toolName === 'string' && typeof elapsed === 'number' && elapsed >= 10) {
-            await stateBackend.appendLog(liveJob.id, `⏳ ${toolName} running (${Math.round(elapsed)}s)`)
-          }
-        }
-
-        if (eventType === 'result') {
-          const isError = message['is_error']
-          if (isError) {
-            const errors = message['errors']
-            const errStr = Array.isArray(errors) ? (errors as string[]).join('; ') : 'unknown error'
-            await appendChunkedLog(stateBackend, liveJob.id, '[error] ', errStr)
-          } else {
-            const result = message['result']
-            if (typeof result === 'string' && result.trim()) {
-              await stateBackend.appendLog(liveJob.id, `[result] ${result}`)
-            }
-          }
-
-          phaseSnapshotRecorded = true
-
-          const resultUsage = message['usage'] as Record<string, number> | undefined
-          const resultModelUsage = message['modelUsage'] as Record<string, Record<string, unknown>> | undefined
-
-          if (resultUsage) {
-            phaseTokens.inputTokens = Number(resultUsage['input_tokens'] ?? phaseTokens.inputTokens)
-            phaseTokens.outputTokens = Number(resultUsage['output_tokens'] ?? phaseTokens.outputTokens)
-            phaseTokens.cacheReadInputTokens = Number(resultUsage['cache_read_input_tokens'] ?? phaseTokens.cacheReadInputTokens)
-            phaseTokens.cacheCreationInputTokens = Number(resultUsage['cache_creation_input_tokens'] ?? phaseTokens.cacheCreationInputTokens)
-          }
-
-          const phaseCostUsd = derivePhaseCostUsd({
-            reportedTotalCostUsd: message['total_cost_usd'],
-            phaseTokens,
-            prePhaseCostUsd: prePhaseUsage.totalCostUsd,
-            resumedSessionId: resumeSessionId,
-          })
-          phaseTokens.totalCostUsd = phaseCostUsd
-
-          const phaseSnapshot: PhaseUsage = {
-            phase: liveJob.phase,
-            inputTokens: phaseTokens.inputTokens,
-            outputTokens: phaseTokens.outputTokens,
-            cacheReadInputTokens: phaseTokens.cacheReadInputTokens,
-            cacheCreationInputTokens: phaseTokens.cacheCreationInputTokens,
-            costUsd: phaseCostUsd,
-            durationMs: typeof message['duration_ms'] === 'number' ? message['duration_ms'] as number : (Date.now() - phaseStartMs),
-            durationApiMs: typeof message['duration_api_ms'] === 'number' ? message['duration_api_ms'] as number : 0,
-            numTurns: typeof message['num_turns'] === 'number' ? message['num_turns'] as number : phaseTurns,
-            model,
-            modelUsage: resultModelUsage
-              ? Object.fromEntries(
-                  Object.entries(resultModelUsage).map(([m, u]) => [m, {
-                    inputTokens: Number(u['inputTokens'] ?? 0),
-                    outputTokens: Number(u['outputTokens'] ?? 0),
-                    costUSD: Number(u['costUSD'] ?? 0),
-                  }])
+            case 'tool_call': {
+              if (ev.input !== undefined && ev.input !== null) {
+                await appendChunkedLog(
+                  stateBackend,
+                  liveJob.id,
+                  `→ ${ev.toolName} `,
+                  JSON.stringify(ev.input),
                 )
-              : undefined,
+              } else {
+                await stateBackend.appendLog(liveJob.id, `→ ${ev.toolName}`)
+              }
+              if (ev.toolName.startsWith('mcp__coro__')) mcpToolUseCount++
+              else builtinToolUseCount++
+              break
+            }
+            case 'tool_result': {
+              // Tool-result surfacing happens via the executor's own log
+              // events (mirrors legacy `tool_use_summary`/`tool_progress`).
+              break
+            }
+            case 'usage': {
+              // Cumulative snapshot — replace running counts. The
+              // executor emits a final `usage` right before `done` with
+              // authoritative totals (and `totalCostUsd` when the
+              // provider reports it).
+              phaseTokens.inputTokens = ev.tokens.inputTokens
+              phaseTokens.outputTokens = ev.tokens.outputTokens
+              phaseTokens.cacheReadInputTokens = ev.tokens.cacheReadInputTokens
+              phaseTokens.cacheCreationInputTokens = ev.tokens.cacheCreationInputTokens
+              if (ev.tokens.totalCostUsd !== undefined) {
+                lastReportedCostUsd = ev.tokens.totalCostUsd
+              }
+              if (ev.modelUsage) {
+                lastReportedModelUsage = ev.modelUsage as typeof lastReportedModelUsage
+              }
+              phaseTurns++
+              if (phaseTurns - lastUsageSyncTurn >= 5) {
+                lastUsageSyncTurn = phaseTurns
+                const merged = mergeTokenUsage(prePhaseUsage, phaseTokens)
+                liveJob = await syncJob(stateBackend, liveJob, { tokenUsage: merged })
+                toolCtx.job = liveJob
+              }
+              break
+            }
+            case 'log': {
+              const meta = { jobId: liveJob.id, phase: liveJob.phase, ...(ev.meta ?? {}) }
+              if (ev.level === 'error') logger.error(meta, ev.message)
+              else if (ev.level === 'warn') logger.warn(meta, ev.message)
+              else logger.info(meta, ev.message)
+              // Mirror executor `log` events into the per-job log so
+              // dashboards keep showing them. The executor owns the
+              // human-readable prefix (`[tool_summary]`, `[result]`,
+              // `[error]`, `⏳`, `[sdk-stderr]`, `[event:X]`, …); the
+              // runner just chunks long lines.
+              if (typeof ev.message === 'string' && ev.message.trim()) {
+                await appendChunkedLog(stateBackend, liveJob.id, '', ev.message)
+              }
+              break
+            }
+            case 'done': {
+              if (ev.sessionState?.sessionId) sessionId = ev.sessionState.sessionId
+              doneMetrics = ev.metrics
+              phaseSnapshotRecorded = true
+
+              const phaseCostUsd = derivePhaseCostUsd({
+                reportedTotalCostUsd: lastReportedCostUsd,
+                phaseTokens,
+                prePhaseCostUsd: prePhaseUsage.totalCostUsd,
+                resumedSessionId: resumeSessionId,
+              })
+              phaseTokens.totalCostUsd = phaseCostUsd
+
+              const phaseSnapshot: PhaseUsage = {
+                phase: liveJob.phase,
+                inputTokens: phaseTokens.inputTokens,
+                outputTokens: phaseTokens.outputTokens,
+                cacheReadInputTokens: phaseTokens.cacheReadInputTokens,
+                cacheCreationInputTokens: phaseTokens.cacheCreationInputTokens,
+                costUsd: phaseCostUsd,
+                durationMs: doneMetrics?.durationMs ?? (Date.now() - phaseStartMs),
+                durationApiMs: doneMetrics?.durationApiMs ?? 0,
+                numTurns: doneMetrics?.numTurns ?? phaseTurns,
+                model,
+                modelUsage: lastReportedModelUsage
+                  ? Object.fromEntries(
+                      Object.entries(lastReportedModelUsage).map(([m, u]) => [m, {
+                        inputTokens: u.inputTokens,
+                        outputTokens: u.outputTokens,
+                        costUSD: u.totalCostUsd ?? 0,
+                      }]),
+                    )
+                  : undefined,
+              }
+
+              const existingPhaseUsage = liveJob.phaseUsage ?? []
+              const jobTotals = mergeTokenUsage(prePhaseUsage, phaseTokens)
+              liveJob = await syncJob(stateBackend, liveJob, {
+                tokenUsage: jobTotals,
+                phaseUsage: [...existingPhaseUsage, phaseSnapshot],
+              })
+              toolCtx.job = liveJob
+
+              await stateBackend.appendLog(
+                liveJob.id,
+                `[usage] Phase ${liveJob.phase}: ${phaseTokens.inputTokens.toLocaleString()} in / ${phaseTokens.outputTokens.toLocaleString()} out`,
+              )
+              break
+            }
           }
 
-          const existingPhaseUsage = liveJob.phaseUsage ?? []
-          const jobTotals = mergeTokenUsage(prePhaseUsage, phaseTokens)
-
-          liveJob = await syncJob(stateBackend, liveJob, {
-            tokenUsage: jobTotals,
-            phaseUsage: [...existingPhaseUsage, phaseSnapshot],
-          })
-          toolCtx.job = liveJob
-
-          await stateBackend.appendLog(
-            liveJob.id,
-            `[usage] Phase ${liveJob.phase}: ${phaseTokens.inputTokens.toLocaleString()} in / ${phaseTokens.outputTokens.toLocaleString()} out`,
-          )
+          // Early break on exception signals so we don't keep pulling
+          // events after the agent has asked us to park, escalate, or
+          // re-route. The absence of any signal simply lets the stream
+          // drain naturally and then auto-advances.
+          if (signals.nextPhase || signals.awaitingEvent || signals.escalated) {
+            break
+          }
         }
-
-        const handledTypes = new Set([
-          'system', 'assistant', 'tool_use_summary', 'tool_progress', 'result',
-          'user', 'stream_event', 'auth_status',
-        ])
-        if (!handledTypes.has(eventType)) {
-          await appendChunkedLog(stateBackend, liveJob.id, `[event:${eventType}] `, JSON.stringify(message))
-        }
-
-        // Early break on exception signals so we don't keep pulling events
-        // after the agent has asked us to park, escalate, or re-route. The
-        // absence of any signal simply lets the stream drain naturally and
-        // then auto-advances.
-        if (signals.nextPhase || signals.awaitingEvent || signals.escalated) {
-          break
-        }
-      }
       } finally {
-        // Close the pushable so the SDK's `streamInput` for-await loop
-        // can finish and call `transport.endInput()` cleanly. Safe to
-        // call even when queryImpl is injected (the iterable just isn't
-        // being read by anyone in that case).
-        pushable.close()
-        if (isRealQuery) {
-          options?.onQueryEnd?.(liveJob.id)
-        }
+        // Close the developer-input channel so the executor's internal
+        // SDK iterable can finish cleanly. The executor's
+        // `lifecycle.onSessionEnd` is responsible for calling
+        // `options?.onSessionEnd` itself.
+        try { developerInput.close() } catch { /* best-effort */ }
       }
 
       // MCP usage diagnostics. Zero mcp calls while built-ins fired can
@@ -1368,7 +1180,7 @@ function splitLogTextIntoChunks(text: string, maxChars: number): string[] {
   return chunks
 }
 
-async function appendChunkedLog(
+export async function appendChunkedLog(
   stateBackend: StateBackend,
   jobId: string,
   prefix: string,
@@ -1470,7 +1282,7 @@ function mergeTokenUsage(base: TokenUsage, phase: TokenUsage): TokenUsage {
  * pre-phase cost baseline. We also never book non-zero cost for phases with no
  * billable token usage.
  */
-function derivePhaseCostUsd(args: {
+export function derivePhaseCostUsd(args: {
   reportedTotalCostUsd: unknown
   phaseTokens: Pick<TokenUsage, 'inputTokens' | 'outputTokens' | 'cacheReadInputTokens' | 'cacheCreationInputTokens'>
   prePhaseCostUsd: number
@@ -1494,43 +1306,37 @@ function derivePhaseCostUsd(args: {
   return rawCostUsd
 }
 
-function selectModel(
+/**
+ * Resolve the concrete model id a phase (or subagent) should run on.
+ *
+ * Resolution order (executor-agnostic):
+ *   1. `phaseConf.model` is treated as an alias key — if present in
+ *      `settings.llm.aliases`, return the alias's `model` field.
+ *   2. Otherwise treat `phaseConf.model` as a literal model id and
+ *      return it verbatim. This is how workflows pin a specific model
+ *      (e.g. `gpt-5-codex`, `claude-sonnet-4-7`).
+ *   3. When no model is specified, default to the `planning` alias.
+ *
+ * `settings.llm.aliases` is seeded from each executor plugin's
+ * {@link PhaseExecutorRuntime.defaultAliases} at bootstrap, so the
+ * built-in Anthropic plugin keeps the historical `planning` / `coding`
+ * shorthands working without any tenant-side config.
+ */
+export function selectModel(
   phaseConf: { model?: string } | null | undefined,
   settings: Settings,
 ): string {
-  const model = phaseConf?.model ?? 'planning'
-  return model === 'coding' ? settings.claude.codingModel : settings.claude.planningModel
-}
-
-/**
- * Build the subset of env vars Claude Code uses for authentication. Returns
- * both keys, with the unused one set to `undefined` so it is stripped from the
- * final env map (Node spawn treats `undefined` as "don't pass this key").
- * The `claudeLogin` mode deliberately passes neither variable so the CLI can
- * use its own persisted session and refresh flow.
- */
-export function buildAnthropicAuthEnv(auth: Settings['claude']['auth']): Record<string, string | undefined> {
-  if (auth.method === 'claudeLogin') {
-    return {
-      ANTHROPIC_API_KEY: undefined,
-      CLAUDE_CODE_OAUTH_TOKEN: undefined,
-    }
-  }
-  if (auth.method === 'oauth') {
-    return {
-      ANTHROPIC_API_KEY: undefined,
-      CLAUDE_CODE_OAUTH_TOKEN: auth.oauthToken ?? '',
-    }
-  }
-  return {
-    ANTHROPIC_API_KEY: auth.apiKey ?? '',
-    CLAUDE_CODE_OAUTH_TOKEN: undefined,
-  }
+  const requested = phaseConf?.model || 'planning'
+  const alias = settings.llm?.aliases?.[requested]
+  if (alias) return alias.model
+  // Pass-through: workflow pinned a literal model id.
+  return requested
 }
 
 /**
  * Collects every active plugin's `mcpServer()` descriptor and returns a
- * `Record<pluginId, McpServerConfig>` ready to merge into the SDK's
+ * `Record<pluginId, PluginMcpServerConfig>` ready to merge into the
+ * executor's `pluginMcpServers` request field.
  * `mcpServers` option. Plugins without an `mcpServer()` (e.g. BitBucket
  * pre-MCP) are silently skipped — the hybrid `scm_*`/`tracker_*` proxy
  * is responsible for falling back to the plugin's native methods.
@@ -1544,8 +1350,8 @@ export function buildAnthropicAuthEnv(auth: Settings['claude']['auth']): Record<
 export function collectPluginMcpServers(args: {
   plugins: PluginRegistry
   logger: Logger
-}): Record<string, McpServerConfig> {
-  const result: Record<string, McpServerConfig> = {}
+}): Record<string, PluginMcpServerConfig> {
+  const result: Record<string, PluginMcpServerConfig> = {}
   const reservedIds = new Set<string>(['coro', 'a5'])
 
   for (const runtime of args.plugins.all()) {
@@ -1588,9 +1394,9 @@ export function collectPluginMcpServers(args: {
     const toolsPolicy = buildPluginMcpToolPolicy(allowed, disallowed)
 
     if (descriptor.type === 'http' || descriptor.type === 'sse') {
-      result[id] = toolsPolicy
+      result[id] = (toolsPolicy
         ? { ...descriptor, tools: toolsPolicy }
-        : descriptor
+        : descriptor) as unknown as PluginMcpServerConfig
     } else {
       // stdio descriptors don't accept `tools` directly in the SDK
       // typing; the SDK's `setMcpServers` ignores the field for stdio,
@@ -1598,7 +1404,7 @@ export function collectPluginMcpServers(args: {
       // `allowedTools` in the SDK's permission system. We pass it
       // through unchanged here and rely on the per-plugin manifest's
       // capability flags to drive the prompt-side curation in S2.
-      result[id] = descriptor
+      result[id] = descriptor as unknown as PluginMcpServerConfig
     }
   }
 
@@ -1608,8 +1414,9 @@ export function collectPluginMcpServers(args: {
 /**
  * Collects bring-your-own MCP servers from the local config
  * (`~/.coro/config.json` → `mcpServers`). Returns a `Record<id,
- * McpServerConfig>` ready to merge into the SDK's `mcpServers`
- * option, exactly mirroring the shape `collectPluginMcpServers` emits.
+ * PluginMcpServerConfig>` ready to merge into the executor's
+ * `pluginMcpServers` request field, exactly mirroring the shape
+ * `collectPluginMcpServers` emits.
  *
  * Servers with `enabled: false` are skipped. The reserved id `coro`
  * is rejected with a warning. `allowedTools` / `disallowedTools` are
@@ -1621,8 +1428,8 @@ export function collectPluginMcpServers(args: {
  * developer mis-edited the config. The SDK reports unreachable MCP
  * servers in its `init` message anyway.
  */
-export function collectUserMcpServers(args: { logger: Logger }): Record<string, McpServerConfig> {
-  const result: Record<string, McpServerConfig> = {}
+export function collectUserMcpServers(args: { logger: Logger }): Record<string, PluginMcpServerConfig> {
+  const result: Record<string, PluginMcpServerConfig> = {}
   let config: ReturnType<typeof loadLocalConfig>
   try {
     config = loadLocalConfig()
@@ -1683,7 +1490,7 @@ export function collectUserMcpServers(args: { logger: Logger }): Record<string, 
         url: raw.url,
         ...(raw.headers ? { headers: raw.headers } : {}),
       }
-      result[id] = (toolsPolicy ? { ...desc, tools: toolsPolicy } : desc) as McpServerConfig
+      result[id] = (toolsPolicy ? { ...desc, tools: toolsPolicy } : desc) as unknown as PluginMcpServerConfig
     } else if (raw.type === 'stdio') {
       const desc = {
         type: 'stdio' as const,
@@ -1691,7 +1498,7 @@ export function collectUserMcpServers(args: { logger: Logger }): Record<string, 
         ...(raw.args ? { args: raw.args } : {}),
         ...(raw.env ? { env: raw.env } : {}),
       }
-      result[id] = desc as McpServerConfig
+      result[id] = desc as unknown as PluginMcpServerConfig
     }
   }
 
@@ -1713,126 +1520,76 @@ function buildPluginMcpToolPolicy(
   return policy.length > 0 ? policy : undefined
 }
 
-type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconnectMcpServer'>
-
-export async function reattachDynamicMcpServers(
-  liveQuery: DynamicMcpQuery,
-  dynamicMcpServers: Record<string, McpServerConfig>,
-  serverName: string,
-): Promise<{
-  setResult: McpSetServersResult
-  initialStatus: string | null
-  finalStatus: string | null
-  reconnected: boolean
-}> {
-  const setResult = await liveQuery.setMcpServers(dynamicMcpServers)
-  const readStatus = async () => {
-    const statuses = await liveQuery.mcpServerStatus()
-    return statuses.find(status => status.name === serverName)?.status ?? null
-  }
-
-  const initialStatus = await readStatus()
-  let finalStatus = initialStatus
-  let reconnected = false
-
-  if (finalStatus && finalStatus !== 'connected' && !setResult.errors[serverName]) {
-    await liveQuery.reconnectMcpServer(serverName)
-    reconnected = true
-    finalStatus = await readStatus()
-  }
-
-  return {
-    setResult,
-    initialStatus,
-    finalStatus,
-    reconnected,
-  }
-}
-
-function buildSubagentDefinitions(
+/**
+ * Build {@link ExecutorSubagentSpec}s from workflow subagent config.
+ *
+ * Emits the executor-facing shape: just `name`, prepared `systemPrompt`,
+ * optional `model`, and optional `allowedTools`. MCP server propagation
+ * is the executor's responsibility (the runner hands it the full
+ * `pluginMcpServers` map and a single `mcpServer`; how those reach
+ * subagents is the executor's call — Anthropic-flavoured executors
+ * merge both onto every subagent in the SDK `agents:` map).
+ *
+ * Provider neutrality: subagent `model` is resolved through
+ * {@link selectModel} (alias-first, literal-passthrough). Any
+ * provider-specific model coercion (e.g. Anthropic's `'opus' | 'sonnet'`
+ * tier shorthand) is the executor's responsibility, not the runner's.
+ *
+ * `.claude/CLAUDE.md` is prepended only when the resolved executor
+ * lacks native walk-up (`!capabilities.supportsClaudeMdNativeWalkUp`).
+ * Anthropic's SDK loads CLAUDE.md natively via `settingSources:
+ * ['project']`, so prepending would duplicate it; non-Claude executors
+ * need the file injected manually for parity.
+ */
+export function buildExecutorSubagentSpecs(
   subagents: SubagentConfig[],
   intelligenceDir: string,
   settings: Settings,
-  mcpServer: McpSdkServerConfig,
-  pluginMcpServers: Record<string, McpServerConfig> = {},
-) {
-  // Load .claude/CLAUDE.md once — subagents need behavior rules, company context,
-  // git conventions, and infrastructure context that the main agent receives
-  // natively via settingSources. Subagents get their own prompt (not the parent's
-  // system prompt), so we prepend this to ensure they have the foundational context.
+  options: { prependClaudeMd: boolean } = { prependClaudeMd: true },
+): ExecutorSubagentSpec[] {
   let claudeMdContent = ''
-  try {
-    claudeMdContent = readFileSync(
-      path.join(intelligenceDir, '.claude', 'CLAUDE.md'),
-      'utf-8',
-    )
-  } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
+  if (options.prependClaudeMd) {
+    try {
+      claudeMdContent = readFileSync(
+        path.join(intelligenceDir, '.claude', 'CLAUDE.md'),
+        'utf-8',
+      )
+    } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
+  }
 
-  const defs: Record<string, unknown> = {}
+  const out: ExecutorSubagentSpec[] = []
   for (const sa of subagents) {
     let agentPrompt = `You are a helper subagent named ${sa.name}.`
     if (sa.agent) {
       try {
-        const agentMd = readFileSync(
+        agentPrompt = readFileSync(
           path.join(intelligenceDir, sa.agent),
           'utf-8',
         )
-        agentPrompt = agentMd
       } catch {
         agentPrompt = `You are the ${sa.name} subagent. Follow your instructions carefully.`
       }
     }
-
     if (claudeMdContent) {
       agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
     }
 
-    // The SDK accepts subagent `mcpServers` as an array of either named
-    // strings or full records. We pass one record carrying both the
-    // Coro in-process server and every plugin-provided MCP server so
-    // subagents see `mcp__coro__*` AND `mcp__<pluginId>__*` tools.
-    //
-    // The cast is needed because `mcpServer` is a `McpSdkServerConfig`
-    // (without `instance`) which the SDK's runtime accepts but its
-    // typing only matches `McpSdkServerConfigWithInstance`. Mirrors the
-    // existing `[mcpServer]` form this function already used.
-    const subagentMcpRecord = {
-      coro: mcpServer,
-      ...pluginMcpServers,
-    } as unknown as Record<string, McpServerConfig>
-    defs[sa.name] = {
-      description: `Subagent: ${sa.name}`,
-      prompt: agentPrompt,
-      ...(sa.tools && sa.tools.length > 0 ? { tools: sa.tools } : {}),
-      model: sa.model === 'coding'
-        ? (settings.claude.codingModel.includes('opus') ? 'opus' : 'sonnet')
-        : (sa.model ?? 'inherit'),
-      mcpServers: [subagentMcpRecord],
-    }
-  }
-  return defs
-}
+    // Resolve the model alias-first, literal-passthrough. The executor
+    // applies any provider-specific coercion (Anthropic's SDK accepts a
+    // tier shorthand like `'opus'/'sonnet'`; OpenAI / others want a
+    // literal model id).
+    const resolvedModel = sa.model
+      ? selectModel({ model: sa.model }, settings)
+      : undefined
 
-/**
- * Symlink {coroIntelligenceDir}/.claude into the job working directory so the Agent SDK's
- * native settingSources: ['project'] discovers .claude/CLAUDE.md and skills.
- * Uses a symlink (not copy) so the per-job overlay always reflects the
- * latest layered intelligence (base + tenant + repo) without copies
- * needing to be re-synced.
- */
-function ensureClaudeConfigSymlink(workingDir: string, coroIntelligenceDir: string, logger: Logger): void {
-  const target = path.join(coroIntelligenceDir, '.claude')
-  const link = path.join(workingDir, '.claude')
-  try {
-    const stat = lstatSync(link)
-    if (stat.isSymbolicLink()) return
-    rmSync(link, { recursive: true })
-  } catch { /* doesn't exist yet — expected */ }
-  try {
-    symlinkSync(target, link, 'dir')
-  } catch (err) {
-    logger.warn({ err, target, link }, 'Could not create .claude symlink')
+    out.push({
+      name: sa.name,
+      systemPrompt: agentPrompt,
+      ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(sa.tools && sa.tools.length > 0 ? { allowedTools: [...sa.tools] } : {}),
+    })
   }
+  return out
 }
 
 /**
@@ -1855,222 +1612,3 @@ function buildPhaseKickoffMessage(job: Job): string {
   )
 }
 
-// ── SDK hooks ─────────────────────────────────────────────────────────────────
-//
-// PreToolUse hooks fire before every tool call the model makes (builtins AND
-// mcp__coro__*). Returning a `permissionDecision: 'deny'` rejects the call and
-// surfaces `permissionDecisionReason` back to the model so it can course-
-// correct. We use this to encode a filesystem safety guard rail that used to
-// live as prose in agent MDs:
-//
-//   `Write` / `Edit` operations must stay inside the job's working directory
-//   or `coroIntelligenceDir/memory/` — this prevents a runaway agent from clobbering
-//   files elsewhere on the dev machine.
-//
-// Both checks are cheap and deterministic, so moving them from prose to
-// code trades a few kB of tokens for actual enforcement.
-
-interface BuildHookOpts {
-  /** Closure that returns the current live job — phase can change between calls. */
-  liveJobRef: () => Job
-  /** Absolute path to the job's working directory. */
-  workingDir: string
-  /** Absolute path to the Coro intelligence dir. */
-  coroIntelligenceDir: string
-  /** Optional exact tool whitelist for this phase. */
-  allowedTools?: ReadonlyArray<string>
-  logger: Logger
-}
-
-function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
-  const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
-  const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
-    ? new Set(opts.allowedTools)
-    : null
-
-  const deny = (reason: string): HookJSONOutput => ({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  })
-
-  const preToolUse: HookCallback = async (input) => {
-    if (input.hook_event_name !== 'PreToolUse') return {}
-    const toolName = input.tool_name
-    const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
-
-    if (allowedTools && !allowedTools.has(toolName)) {
-      const reason =
-        `Blocked ${toolName}: phase ${opts.liveJobRef().phase} only allows ` +
-        `${Array.from(allowedTools).join(', ')}. Update the workflow if this phase ` +
-        `needs broader tool access.`
-      opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
-      return deny(reason)
-    }
-
-    // Guard rail: Write/Edit must stay inside working dir or memory/.
-    // Bash commands with obvious write intent (e.g. `rm -rf /`) are harder
-    // to validate generically, so we do the simple path check and rely on
-    // the model's prose instructions for shell safety.
-    if (toolName === 'Write' || toolName === 'Edit') {
-      const rawPath = (toolInput['file_path'] ?? toolInput['path']) as unknown
-      if (typeof rawPath === 'string' && rawPath.length > 0) {
-        const abs = path.resolve(opts.workingDir, rawPath)
-        const insideWorking = isInside(abs, opts.workingDir)
-        const insideMemory = isInside(abs, memoryRoot)
-        if (!insideWorking && !insideMemory) {
-          const reason =
-            `Blocked ${toolName}: "${rawPath}" resolves to ${abs}, which is outside the ` +
-            `allowed write roots. Permitted: ${opts.workingDir}/** and ${memoryRoot}/**. ` +
-            `Use \`propose_change\` for changes to the intelligence repo.`
-          opts.logger.warn({ phase: opts.liveJobRef().phase, path: abs }, reason)
-          return deny(reason)
-        }
-      }
-    }
-
-    if (toolName === 'Bash') {
-      const command = toolInput['command']
-      if (typeof command === 'string' && command.trim().length > 0) {
-        const denialReason = getBashPathDenialReason(command, opts.workingDir, memoryRoot)
-        if (denialReason) {
-          opts.logger.warn({ phase: opts.liveJobRef().phase, command }, denialReason)
-          return deny(denialReason)
-        }
-      }
-    }
-
-    return {}
-  }
-
-  return {
-    PreToolUse: [{ hooks: [preToolUse] }],
-  }
-}
-
-/** Path containment check, defends against '..' escapes. */
-function isInside(candidate: string, root: string): boolean {
-  const rel = path.relative(root, candidate)
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
-}
-
-function getBashPathDenialReason(command: string, workingDir: string, memoryRoot: string): string | null {
-  for (const rawToken of tokenizeShellCommand(command)) {
-    const candidate = extractPathCandidate(rawToken)
-    if (!candidate) continue
-
-    if (isClaudeTaskOutputPath(candidate)) {
-      return (
-        `Blocked Bash: command "${command}" references Claude runtime task output ` +
-        `via "${candidate}". Do not poll or read /private/tmp/claude-*/tasks/*.output ` +
-        `directly. Rerun the underlying command with output redirected to a file inside ` +
-        `${workingDir}/** and read that workspace file instead.`
-      )
-    }
-
-    if (candidate === '~' || candidate.startsWith('~/')) {
-      return bashPathReason(command, candidate, 'home-relative path', workingDir, memoryRoot)
-    }
-
-    if (
-      candidate.includes('$HOME') || candidate.includes('${HOME}') ||
-      candidate.includes('$OLDPWD') || candidate.includes('${OLDPWD}')
-    ) {
-      return bashPathReason(command, candidate, 'home-directory environment reference', workingDir, memoryRoot)
-    }
-
-    const pwdExpanded = expandPwdPath(candidate, workingDir)
-    if (pwdExpanded) {
-      if (!isInside(pwdExpanded, workingDir) && !isInside(pwdExpanded, memoryRoot)) {
-        return bashPathReason(command, candidate, `path ${pwdExpanded}`, workingDir, memoryRoot)
-      }
-      continue
-    }
-
-    if (hasParentTraversal(candidate)) {
-      return bashPathReason(command, candidate, 'parent-directory traversal', workingDir, memoryRoot)
-    }
-
-    if (candidate.startsWith('/')) {
-      const abs = path.resolve(candidate)
-      if (!isInside(abs, workingDir) && !isInside(abs, memoryRoot)) {
-        return bashPathReason(command, candidate, `path ${abs}`, workingDir, memoryRoot)
-      }
-    }
-  }
-
-  return null
-}
-
-function isClaudeTaskOutputPath(token: string): boolean {
-  return token.startsWith('/private/tmp/claude-')
-    && token.includes('/tasks/')
-    && token.endsWith('.output')
-}
-
-function tokenizeShellCommand(command: string): string[] {
-  return command.match(/'[^']*'|"[^"]*"|`[^`]*`|\S+/g) ?? []
-}
-
-function extractPathCandidate(token: string): string | null {
-  const unquoted = stripShellQuotes(token)
-  const value = extractAssignmentValue(unquoted)
-  if (!looksLikePathReference(value)) return null
-  return value
-}
-
-function stripShellQuotes(token: string): string {
-  if (token.length >= 2) {
-    const first = token[0]
-    const last = token[token.length - 1]
-    if ((first === '"' || first === '\'' || first === '`') && first === last) {
-      return token.slice(1, -1)
-    }
-  }
-  return token
-}
-
-function extractAssignmentValue(token: string): string {
-  const envMatch = token.match(/^[A-Za-z_][A-Za-z0-9_]*=(.+)$/)
-  if (envMatch) return envMatch[1]
-
-  const flagMatch = token.match(/^--[^=]+=(.+)$/)
-  if (flagMatch) return flagMatch[1]
-
-  return token
-}
-
-function looksLikePathReference(token: string): boolean {
-  return token === '~' || token === '..' || token === '-' ||
-    token.startsWith('~/') || token.startsWith('../') || token.startsWith('./') ||
-    token.startsWith('/') || token.startsWith('$HOME') || token.startsWith('${HOME}') ||
-    token.startsWith('$OLDPWD') || token.startsWith('${OLDPWD}') ||
-    token.startsWith('$PWD/') || token.startsWith('${PWD}/') ||
-    token.includes('/..') || token.includes('../')
-}
-
-function hasParentTraversal(token: string): boolean {
-  return /(^|\/)(\.\.)(\/|$)/.test(token)
-}
-
-function expandPwdPath(token: string, workingDir: string): string | null {
-  if (token === '$PWD' || token === '${PWD}') return workingDir
-  if (token.startsWith('$PWD/')) return path.resolve(workingDir, token.slice('$PWD/'.length))
-  if (token.startsWith('${PWD}/')) return path.resolve(workingDir, token.slice('${PWD}/'.length))
-  return null
-}
-
-function bashPathReason(
-  command: string,
-  matched: string,
-  kind: string,
-  workingDir: string,
-  memoryRoot: string,
-): string {
-  return (
-    `Blocked Bash: command "${command}" references ${kind} via "${matched}". ` +
-    `Shell access must stay inside ${workingDir}/** or ${memoryRoot}/**.`
-  )
-}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { ClaudeLoginManager } from '../../src/runner/claude-login'
+import { ClaudeLoginManager } from '../src/login'
 
 function makeLogger() {
   return {

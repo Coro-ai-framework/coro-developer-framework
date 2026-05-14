@@ -14,7 +14,11 @@ const workspaceRoot = path.resolve(packageRoot, '../..')
 const distRoot = path.join(packageRoot, 'dist')
 const tempRoot = path.join(distRoot, '.icon-work')
 const iconsetRoot = path.join(tempRoot, 'coro.iconset')
-const sourceSvg = path.join(workspaceRoot, 'packages', 'dashboard', 'public', 'favicon.svg')
+// App icon source: a dedicated SVG that mirrors the dashboard's in-app
+// `BrandMark` glyph (accent "C" arc + dot on the translucent accent-tinted
+// chip), rather than the slimmer browser-tab favicon. Keeps the desktop app
+// visually consistent with what users see inside the running dashboard.
+const sourceSvg = path.join(packageRoot, 'assets', 'app-icon.svg')
 const sourcePng = path.join(tempRoot, 'source-1024.png')
 const outputIcns = path.join(distRoot, 'icon.icns')
 const outputIco = path.join(distRoot, 'icon.ico')

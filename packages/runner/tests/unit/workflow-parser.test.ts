@@ -187,11 +187,25 @@ phases:
       expect(config.phases[0].status).toBe('my-phase')
     })
 
-    it('defaults model to "planning" for unrecognized model values', () => {
+    it('passes through arbitrary model strings (alias keys or concrete model ids)', () => {
+      // Phase 2 of the multi-provider migration: `model` is an open
+      // string. Resolution to a concrete provider+model happens later
+      // via `settings.llm.aliases` / executor `supports()`. The parser
+      // is intentionally permissive — unknown alias keys are not a
+      // YAML-level error.
       const yaml = `
 phases:
   - name: work
     model: turbo
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].model).toBe('turbo')
+    })
+
+    it('defaults model to "planning" when omitted entirely', () => {
+      const yaml = `
+phases:
+  - name: work
 `
       const config = parseWorkflowConfig(md(yaml))!
       expect(config.phases[0].model).toBe('planning')

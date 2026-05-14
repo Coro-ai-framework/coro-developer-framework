@@ -13,7 +13,7 @@ import { cn } from '../../lib/utils'
 import { useSettings } from '../../pages/Settings/SettingsContext'
 import { evaluateReadiness } from '../../pages/Settings/readiness'
 import { getSectionDescriptor } from '../../pages/Settings/sections'
-import LlmProviderSection from '../../pages/Settings/sections/LlmProviderSection'
+import LlmProvidersSection from '../../pages/Settings/sections/LlmProvidersSection'
 import SourceControlSection from '../../pages/Settings/sections/SourceControlSection'
 import IssueTrackerSection from '../../pages/Settings/sections/IssueTrackerSection'
 import SettingsStatusBadge from '../settings/StatusBadge'
@@ -42,8 +42,7 @@ interface StepDef {
 export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
   const {
     draft,
-    claudeLogin,
-    claudeLoginAccount,
+    pluginsCatalogue,
     isDirty,
     save,
     saving,
@@ -54,8 +53,8 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
   const [completing, setCompleting] = useState(false)
 
   const readiness = useMemo(
-    () => evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }),
-    [draft, claudeLogin, claudeLoginAccount],
+    () => evaluateReadiness({ draft, pluginsCatalogue }),
+    [draft, pluginsCatalogue],
   )
 
   const steps: StepDef[] = [
@@ -72,7 +71,7 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
       title: 'Pick your LLM provider',
       description:
         'The runner needs access to a model. Claude login is the recommended path — no manual token to manage.',
-      body: <LlmProviderSection embedded onConnected={() => setStepIndex(stepIdx => Math.min(stepIdx + 1, 4))} />,
+      body: <LlmProvidersSection embedded onConnected={() => setStepIndex(stepIdx => Math.min(stepIdx + 1, 4))} />,
       requiredReadyKey: 'llm-provider',
     },
     {
@@ -235,10 +234,10 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
 }
 
 function ReviewStep() {
-  const { draft, claudeLogin, claudeLoginAccount, isDirty, dirtySections } = useSettings()
+  const { draft, pluginsCatalogue, isDirty, dirtySections } = useSettings()
   const readiness = useMemo(
-    () => evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }),
-    [draft, claudeLogin, claudeLoginAccount],
+    () => evaluateReadiness({ draft, pluginsCatalogue }),
+    [draft, pluginsCatalogue],
   )
 
   const items: { id: 'llm-provider' | 'source-control' | 'issue-tracker'; required: boolean }[] = [

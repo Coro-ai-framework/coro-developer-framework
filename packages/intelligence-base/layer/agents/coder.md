@@ -21,7 +21,7 @@ You are language-agnostic and provider-agnostic. The active SCM plugin (BitBucke
 - Code changes committed to a work-item branch
 - A pull request on whichever SCM the active plugin manages
 
-When you need to inspect output from a long-running Bash command, redirect it to a file inside the current job working directory and read that file afterward. Do not poll or read Claude runtime temp files such as `/private/tmp/claude-*/tasks/*.output`.
+When you need to inspect output from a long-running Bash command, redirect it to a file inside the current job working directory and read that file afterward. Do not poll or read your executor runtime's internal temp task files (for example, the Claude Code executor stages output under `/private/tmp/claude-*/tasks/*.output` — those are private to the runtime).
 
 ## MCP tools for this agent
 

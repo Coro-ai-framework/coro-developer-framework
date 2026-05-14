@@ -25,7 +25,7 @@ import {
 } from './sections'
 import { evaluateReadiness } from './readiness'
 
-import LlmProviderSection from './sections/LlmProviderSection'
+import LlmProvidersSection from './sections/LlmProvidersSection'
 import SourceControlSection from './sections/SourceControlSection'
 import IssueTrackerSection from './sections/IssueTrackerSection'
 import PluginsSection from './sections/PluginsSection'
@@ -33,7 +33,7 @@ import McpServersSection from './sections/McpServersSection'
 import PathsSection from './sections/PathsSection'
 
 const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
-  'llm-provider': LlmProviderSection,
+  'llm-provider': LlmProvidersSection,
   'source-control': SourceControlSection,
   'issue-tracker': IssueTrackerSection,
   plugins: PluginsSection,
@@ -61,8 +61,7 @@ export default function SettingsLayout({ onLaunchWizard }: SettingsLayoutProps) 
     saveNotice,
     clearSaveFeedback,
     meta,
-    claudeLogin,
-    claudeLoginAccount,
+    pluginsCatalogue,
   } = useSettings()
 
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => {
@@ -80,8 +79,8 @@ export default function SettingsLayout({ onLaunchWizard }: SettingsLayoutProps) 
   }, [activeSection])
 
   const readiness = useMemo(
-    () => evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }),
-    [draft, claudeLogin, claudeLoginAccount],
+    () => evaluateReadiness({ draft, pluginsCatalogue }),
+    [draft, pluginsCatalogue],
   )
 
   const groups: Record<'setup' | 'extensions' | 'advanced', typeof SETTINGS_SECTIONS> = {

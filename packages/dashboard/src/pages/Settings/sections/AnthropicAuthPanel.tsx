@@ -1,23 +1,55 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { KeyRound } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Input } from '../../../components/ui/input'
 import Field from '../../../components/forms/field'
-import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
 import ChoiceGroup from '../../../components/settings/ChoiceGroup'
 import SecretInput from '../../../components/settings/SecretInput'
 import SettingsStatusBadge, {
   type SettingStatus,
 } from '../../../components/settings/StatusBadge'
-import {
-  useSettings,
-  type AnthropicMethod,
-  type ClaudeAccountInfo,
-  type ClaudeLoginState,
-} from '../SettingsContext'
+import { useSettings } from '../SettingsContext'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
-import { evaluateReadiness } from '../readiness'
+
+// ── Anthropic-specific types ──────────────────────────────────────────────
+//
+// These used to live on SettingsContext while Anthropic was hard-wired
+// into the runner. They are now scoped to this custom panel; other
+// executor plugins won't import them.
+
+export type AnthropicMethod = 'apiKey' | 'claudeLogin' | 'oauth'
+
+export interface ClaudeAccountInfo {
+  email?: string
+  organization?: string
+  subscriptionType?: string
+  tokenSource?: string
+  apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws'
+}
+
+export interface ClaudeLoginState {
+  status: 'idle' | 'authorizing' | 'connected' | 'error'
+  manualUrl?: string
+  automaticUrl?: string
+  account?: ClaudeAccountInfo
+  error?: string
+  startedAt?: string
+  completedAt?: string
+}
+
+interface LegacyOauthResponse {
+  token?: string
+  error?: string
+  message?: string
+  stderr?: string
+  authUrl?: string | null
+  requestedScopes?: string[] | null
+  scopeRequestSupported?: boolean
+  forcedReauth?: boolean
+  limitation?: string
+  recommendation?: string
+}
 
 const ANTHROPIC_OPTIONS = [
   {
@@ -37,86 +69,34 @@ const ANTHROPIC_OPTIONS = [
   },
 ]
 
-interface LegacyOauthResponse {
-  token?: string
-  error?: string
-  message?: string
-  stderr?: string
-  authUrl?: string | null
-  requestedScopes?: string[] | null
-  scopeRequestSupported?: boolean
-  forcedReauth?: boolean
-  limitation?: string
-  recommendation?: string
-}
-
-function formatProvider(provider: ClaudeAccountInfo['apiProvider']) {
-  switch (provider) {
-    case 'firstParty':
-      return 'Claude'
-    case 'anthropicAws':
-      return 'Anthropic AWS'
-    case 'bedrock':
-      return 'Amazon Bedrock'
-    case 'vertex':
-      return 'Vertex AI'
-    case 'foundry':
-      return 'Azure AI Foundry'
-    default:
-      return provider ?? 'Unknown'
-  }
-}
-
-function parseClaudeCallbackInput(rawInput: string, fallbackState: string) {
-  const trimmed = rawInput.trim()
-  if (!trimmed) {
-    throw new Error('Paste the callback URL or authorization code to complete login manually.')
-  }
-  if (/^https?:\/\//i.test(trimmed)) {
-    const url = new URL(trimmed)
-    const authorizationCode = url.searchParams.get('code')
-    if (!authorizationCode) {
-      throw new Error('The callback URL is missing the code query parameter.')
-    }
-    return {
-      authorizationCode,
-      state: url.searchParams.get('state') ?? (fallbackState.trim() || undefined),
-    }
-  }
-  return {
-    authorizationCode: trimmed,
-    state: fallbackState.trim() || undefined,
-  }
-}
-
-function AccountFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-line bg-overlay/40 px-3 py-2.5">
-      <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">{label}</div>
-      <div className="mt-1 text-sm text-fg">{value}</div>
-    </div>
-  )
-}
-
-interface LlmProviderSectionProps {
-  /** When true, renders without the SettingsSection card (used inside the wizard). */
-  embedded?: boolean
-  /** Called once Claude is connected (wizard advances to next step). */
+interface AnthropicAuthPanelProps {
+  pluginId: string
+  /** Optional callback fired once Claude is connected (used by the wizard). */
   onConnected?: () => void
 }
 
-export default function LlmProviderSection({ embedded = false, onConnected }: LlmProviderSectionProps) {
-  const {
-    draft,
-    setDraft,
-    claudeLogin,
-    claudeLoginAccount,
-    claudeLoginReady,
-    setClaudeLogin,
-    setClaudeLoginAccount,
-  } = useSettings()
-  const readiness = evaluateReadiness({ draft, claudeLogin, claudeLoginAccount }).byId['llm-provider']
+/**
+ * Custom configuration panel for the `@coro/llm-anthropic` executor
+ * plugin. Selected by `manifest.ui.customPanel === 'anthropic-auth'`
+ * via the {@link customPanels} registry. Treated as a standalone
+ * provider plugin so the rest of the dashboard contains no
+ * Anthropic-specific branches.
+ */
+export default function AnthropicAuthPanel({ pluginId, onConnected }: AnthropicAuthPanelProps) {
+  const { draft, setPluginField } = useSettings()
+  const entry = draft.pluginInstalled[pluginId]
+  const cfg = (entry?.config ?? {}) as {
+    method?: AnthropicMethod
+    apiKey?: string
+    oauthToken?: string
+    account?: ClaudeAccountInfo
+  }
+  const method: AnthropicMethod = cfg.method ?? 'claudeLogin'
+  const apiKey = cfg.apiKey ?? ''
+  const oauthToken = cfg.oauthToken ?? ''
+  const persistedAccount = cfg.account ?? null
 
+  const [claudeLogin, setClaudeLogin] = useState<ClaudeLoginState>({ status: 'idle' })
   const [connecting, setConnecting] = useState(false)
   const [submittingCallback, setSubmittingCallback] = useState(false)
   const [callbackInput, setCallbackInput] = useState('')
@@ -127,11 +107,40 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
   const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null)
   const [oauthCliMissing, setOauthCliMissing] = useState(false)
 
-  const effectiveAccount = claudeLogin.account ?? claudeLoginAccount
-  const claudeLoginUrl = claudeLogin.automaticUrl ?? claudeLogin.manualUrl ?? null
+  // Bootstrap: if the persisted config already says claudeLogin, present
+  // the panel as 'connected' so the user sees their existing account.
+  useEffect(() => {
+    if (method === 'claudeLogin' && claudeLogin.status === 'idle' && persistedAccount) {
+      setClaudeLogin({ status: 'connected', account: persistedAccount })
+    }
+  }, [method, persistedAccount, claudeLogin.status])
 
-  function setMethod(method: AnthropicMethod) {
-    setDraft('anthropicMethod', method)
+  // Background polling while a Claude login is mid-flight.
+  useEffect(() => {
+    if (claudeLogin.status !== 'authorizing') return
+    const timer = window.setInterval(async () => {
+      try {
+        const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/status')
+        if (data.status === 'idle') return
+        setClaudeLogin(data)
+        if (data.status === 'connected') {
+          setPluginField(pluginId, 'method', 'claudeLogin')
+          if (data.account) setPluginField(pluginId, 'account', data.account)
+          onConnected?.()
+        }
+      } catch {
+        // Soft fail — surfaced by explicit user actions instead.
+      }
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [claudeLogin.status, pluginId, setPluginField, onConnected])
+
+  const effectiveAccount = claudeLogin.account ?? persistedAccount
+  const claudeLoginUrl = claudeLogin.automaticUrl ?? claudeLogin.manualUrl ?? null
+  const claudeLoginReady = claudeLogin.status === 'connected' || !!effectiveAccount
+
+  function setMethod(next: AnthropicMethod) {
+    setPluginField(pluginId, 'method', next)
     setError(null)
     setOauthStatus(null)
     setOauthAuthUrl(null)
@@ -141,10 +150,12 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
     setConnecting(true)
     setError(null)
     try {
-      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/start', { method: 'POST' })
+      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/start', {
+        method: 'POST',
+      })
       setClaudeLogin(data)
-      if (data.account) setClaudeLoginAccount(data.account)
-      setDraft('anthropicMethod', 'claudeLogin')
+      setPluginField(pluginId, 'method', 'claudeLogin')
+      if (data.account) setPluginField(pluginId, 'account', data.account)
       if (data.status === 'connected') {
         onConnected?.()
         return
@@ -170,9 +181,9 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
         jsonRequest(callback, { method: 'POST' }),
       )
       setClaudeLogin(data)
-      if (data.account) setClaudeLoginAccount(data.account)
       if (data.status !== 'connected') throw new Error(data.error ?? 'Claude login did not complete.')
-      setDraft('anthropicMethod', 'claudeLogin')
+      setPluginField(pluginId, 'method', 'claudeLogin')
+      if (data.account) setPluginField(pluginId, 'account', data.account)
       setCallbackInput('')
       setCallbackState('')
       onConnected?.()
@@ -189,11 +200,13 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
     setOauthAuthUrl(null)
     setError(null)
     try {
-      const data = await requestJson<LegacyOauthResponse>('/config/anthropic/generate-oauth-token', { method: 'POST' })
+      const data = await requestJson<LegacyOauthResponse>('/config/anthropic/generate-oauth-token', {
+        method: 'POST',
+      })
       if (data.authUrl) setOauthAuthUrl(data.authUrl)
       if (data.token) {
-        setDraft('oauthToken', data.token)
-        setDraft('anthropicMethod', 'oauth')
+        setPluginField(pluginId, 'oauthToken', data.token)
+        setPluginField(pluginId, 'method', 'oauth')
         setOauthStatus(`Token captured (${data.token.slice(0, 16)}…). Click Save to persist it.`)
       } else {
         setError('Token generation returned no token.')
@@ -216,12 +229,12 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
     }
   }
 
-  const body = (
-    <>
+  return (
+    <div className="space-y-5">
       <Field label="Authentication method">
         <ChoiceGroup<AnthropicMethod>
-          name="anthropic-method"
-          value={draft.anthropicMethod}
+          name={`${pluginId}-anthropic-method`}
+          value={method}
           onChange={setMethod}
           options={ANTHROPIC_OPTIONS}
           cols={3}
@@ -230,7 +243,7 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
 
       {error ? <SettingsNotice tone="danger">{error}</SettingsNotice> : null}
 
-      {draft.anthropicMethod === 'claudeLogin' ? (
+      {method === 'claudeLogin' ? (
         <div className="space-y-4 rounded-2xl border border-line bg-overlay/40 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -315,22 +328,22 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
         </div>
       ) : null}
 
-      {draft.anthropicMethod === 'apiKey' ? (
+      {method === 'apiKey' ? (
         <Field label="API key" required hint="Anthropic API key from console.anthropic.com.">
           <SecretInput
-            value={draft.apiKey}
-            onChange={event => setDraft('apiKey', event.target.value)}
+            value={apiKey}
+            onChange={event => setPluginField(pluginId, 'apiKey', event.target.value)}
             placeholder="sk-ant-…"
           />
         </Field>
       ) : null}
 
-      {draft.anthropicMethod === 'oauth' ? (
+      {method === 'oauth' ? (
         <div className="space-y-4">
           <Field label="OAuth token" required hint="Legacy fallback only. Prefer Claude login whenever possible.">
             <SecretInput
-              value={draft.oauthToken}
-              onChange={event => setDraft('oauthToken', event.target.value)}
+              value={oauthToken}
+              onChange={event => setPluginField(pluginId, 'oauthToken', event.target.value)}
               placeholder="sk-ant-oat01-…"
             />
           </Field>
@@ -364,23 +377,57 @@ export default function LlmProviderSection({ embedded = false, onConnected }: Ll
           ) : null}
         </div>
       ) : null}
-    </>
+    </div>
   )
+}
 
-  if (embedded) {
-    return <div className="space-y-5">{body}</div>
+// ── helpers ───────────────────────────────────────────────────────────────
+
+function formatProvider(provider: ClaudeAccountInfo['apiProvider']): string {
+  switch (provider) {
+    case 'firstParty':
+      return 'Claude'
+    case 'anthropicAws':
+      return 'Anthropic AWS'
+    case 'bedrock':
+      return 'Amazon Bedrock'
+    case 'vertex':
+      return 'Vertex AI'
+    case 'foundry':
+      return 'Azure AI Foundry'
+    default:
+      return provider ?? 'Unknown'
   }
+}
 
+function parseClaudeCallbackInput(rawInput: string, fallbackState: string) {
+  const trimmed = rawInput.trim()
+  if (!trimmed) {
+    throw new Error('Paste the callback URL or authorization code to complete login manually.')
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    const url = new URL(trimmed)
+    const authorizationCode = url.searchParams.get('code')
+    if (!authorizationCode) {
+      throw new Error('The callback URL is missing the code query parameter.')
+    }
+    return {
+      authorizationCode,
+      state: url.searchParams.get('state') ?? (fallbackState.trim() || undefined),
+    }
+  }
+  return {
+    authorizationCode: trimmed,
+    state: fallbackState.trim() || undefined,
+  }
+}
+
+function AccountFact({ label, value }: { label: string; value: string }) {
   return (
-    <SettingsSection
-      title="LLM provider"
-      description="Authenticate the runner against the model that drives every job."
-      required
-      status={readiness.status}
-      statusLabel={readiness.label}
-    >
-      {body as ReactNode}
-    </SettingsSection>
+    <div className="rounded-xl border border-line bg-overlay/40 px-3 py-2.5">
+      <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">{label}</div>
+      <div className="mt-1 text-sm text-fg">{value}</div>
+    </div>
   )
 }
 

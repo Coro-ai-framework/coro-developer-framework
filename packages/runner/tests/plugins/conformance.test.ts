@@ -98,7 +98,25 @@ interface ConformanceCase {
   invalidConfig: Record<string, unknown>
 }
 
-const CASES: ConformanceCase[] = Object.entries(BUILTIN_PLUGIN_FACTORIES).map(([id, factory]) => {
+/**
+ * The conformance pack only covers SCM + tracker plugins, whose
+ * factories are synchronous. We narrow the union return type once
+ * here so every call site below stays clean.
+ */
+function syncCall(
+  factory: BuiltinPluginFactory,
+  config: Record<string, unknown>,
+): PluginRuntime {
+  return factory({ config, logger }) as PluginRuntime
+}
+
+const CASES: ConformanceCase[] = Object.entries(BUILTIN_PLUGIN_FACTORIES)
+  // Executor plugins have async factories that require runner Settings
+  // to instantiate (e.g. Anthropic injects bitbucket/github env into
+  // the agent process). They get their own conformance suite; this
+  // pack is scoped to SCM + tracker built-ins.
+  .filter(([id]) => !BUILTIN_PLUGIN_IDS_BY_KIND.executor.includes(id))
+  .map(([id, factory]) => {
   const validConfig = VALID_CONFIGS[id]
   const invalidConfig = INVALID_CONFIGS[id]
   if (!validConfig || !invalidConfig) {
@@ -113,7 +131,7 @@ const CASES: ConformanceCase[] = Object.entries(BUILTIN_PLUGIN_FACTORIES).map(([
 // ── Manifest invariants ──────────────────────────────────────────────────────
 
 describe.each(CASES)('plugin manifest — $id', ({ factory, validConfig }) => {
-  const runtime: PluginRuntime = factory({ config: validConfig, logger })
+  const runtime: PluginRuntime = syncCall(factory, validConfig)
   const m = runtime.manifest
 
   it('exposes a non-empty id, version, and displayName', () => {
@@ -174,14 +192,14 @@ describe.each(CASES)('plugin manifest — $id', ({ factory, validConfig }) => {
 
 describe.each(CASES)('plugin lifecycle — $id', (kase) => {
   it('init() rejects malformed config', async () => {
-    const runtime = kase.factory({ config: kase.invalidConfig, logger })
+    const runtime = syncCall(kase.factory, kase.invalidConfig)
     await expect(
       runtime.init(kase.invalidConfig as never, { logger, fetch: globalThis.fetch }),
     ).rejects.toThrow()
   })
 
   it('init() accepts valid config and healthcheck() resolves', async () => {
-    const runtime = kase.factory({ config: kase.validConfig, logger })
+    const runtime = syncCall(kase.factory, kase.validConfig)
     await runtime.init(kase.validConfig as never, { logger, fetch: globalThis.fetch })
     const health = await runtime.healthcheck()
     // Some plugins return `{ ok: false, reason: '...' }` when their
@@ -192,13 +210,13 @@ describe.each(CASES)('plugin lifecycle — $id', (kase) => {
   })
 
   it('dispose() resolves cleanly even after init', async () => {
-    const runtime = kase.factory({ config: kase.validConfig, logger })
+    const runtime = syncCall(kase.factory, kase.validConfig)
     await runtime.init(kase.validConfig as never, { logger, fetch: globalThis.fetch })
     await expect(runtime.dispose()).resolves.toBeUndefined()
   })
 
   it('intelligenceRoot() (when implemented) points at an existing directory', () => {
-    const runtime = kase.factory({ config: kase.validConfig, logger })
+    const runtime = syncCall(kase.factory, kase.validConfig)
     if (typeof runtime.intelligenceRoot !== 'function') return
     const root = runtime.intelligenceRoot()
     if (!root) return
@@ -222,13 +240,13 @@ describe.each(CASES)('plugin lifecycle — $id', (kase) => {
 // ── SCM-specific contract ────────────────────────────────────────────────────
 
 const SCM_CASES = CASES.filter(c => {
-  const r = c.factory({ config: c.validConfig, logger })
+  const r = syncCall(c.factory, c.validConfig)
   return isScmPlugin(r)
 })
 
 describe.each(SCM_CASES)('SCM plugin contract — $id', (kase) => {
   async function init(): Promise<ScmPluginRuntime> {
-    const runtime = kase.factory({ config: kase.validConfig, logger }) as ScmPluginRuntime
+    const runtime = syncCall(kase.factory, kase.validConfig) as ScmPluginRuntime
     await runtime.init(kase.validConfig as never, { logger, fetch: globalThis.fetch })
     return runtime
   }
@@ -349,13 +367,13 @@ describe.each(SCM_CASES)('SCM plugin contract — $id', (kase) => {
 // ── Tracker-specific contract ────────────────────────────────────────────────
 
 const TRACKER_CASES = CASES.filter(c => {
-  const r = c.factory({ config: c.validConfig, logger })
+  const r = syncCall(c.factory, c.validConfig)
   return isTrackerPlugin(r)
 })
 
 describe.each(TRACKER_CASES)('Tracker plugin contract — $id', (kase) => {
   async function init(): Promise<TrackerPluginRuntime> {
-    const runtime = kase.factory({ config: kase.validConfig, logger }) as TrackerPluginRuntime
+    const runtime = syncCall(kase.factory, kase.validConfig) as TrackerPluginRuntime
     await runtime.init(kase.validConfig as never, { logger, fetch: globalThis.fetch })
     return runtime
   }
@@ -427,7 +445,7 @@ describe('cross-plugin invariants', () => {
   // and network); we just check the structural contract.
   it('every plugin declaring mcpServer() returns a structurally valid descriptor', async () => {
     for (const c of CASES) {
-      const r = c.factory({ config: c.validConfig, logger })
+      const r = syncCall(c.factory, c.validConfig)
       await r.init(c.validConfig as never, { logger, fetch: globalThis.fetch })
       if (typeof r.mcpServer !== 'function') continue
       const descriptor = r.mcpServer()
@@ -455,7 +473,7 @@ describe('cross-plugin invariants', () => {
     // self-improvement PR routing becomes order-dependent.
     const scmPluginsWithUrls: Array<{ id: string; url: string; runtime: ScmPluginRuntime }> = []
     for (const c of SCM_CASES) {
-      const r = c.factory({ config: c.validConfig, logger }) as ScmPluginRuntime
+      const r = syncCall(c.factory, c.validConfig) as ScmPluginRuntime
       await r.init(c.validConfig as never, { logger, fetch: globalThis.fetch })
       scmPluginsWithUrls.push({ id: c.id, url: r.cloneInfo({ repo: 'svc' }).url, runtime: r })
     }
@@ -503,7 +521,7 @@ export function runConformance(args: {
   // who need them can import `isScmPlugin` / `isTrackerPlugin` and
   // assemble their own filtered describe.each.
   describe(`external plugin conformance — ${args.id}`, () => {
-    const runtime = synthCase.factory({ config: synthCase.validConfig, logger })
+    const runtime = syncCall(synthCase.factory, synthCase.validConfig)
     const m: PluginManifest = runtime.manifest
 
     it('manifest invariants pass', () => {
@@ -516,14 +534,14 @@ export function runConformance(args: {
     })
 
     it('init() rejects malformed config', async () => {
-      const r = synthCase.factory({ config: synthCase.invalidConfig, logger })
+      const r = syncCall(synthCase.factory, synthCase.invalidConfig)
       await expect(
         r.init(synthCase.invalidConfig as never, { logger, fetch: globalThis.fetch }),
       ).rejects.toThrow()
     })
 
     it('healthcheck() returns a PluginHealth shape', async () => {
-      const r = synthCase.factory({ config: synthCase.validConfig, logger })
+      const r = syncCall(synthCase.factory, synthCase.validConfig)
       await r.init(synthCase.validConfig as never, { logger, fetch: globalThis.fetch })
       const h = await r.healthcheck()
       expect(typeof h.ok).toBe('boolean')

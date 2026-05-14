@@ -81,10 +81,10 @@ export const loginCommand = new Command('login')
     if (!tokenRes.ok) die('Failed to generate runner token')
     const { token: runnerToken } = await tokenRes.json() as { token: string }
 
-    // Save to local config. If no config exists yet, seed a placeholder
-    // anthropic entry so zod's refine accepts the intermediate value; the
-    // user will fill it in via `coro init` or the dashboard.
-    const existing = loadLocalConfig() ?? { anthropic: { method: 'apiKey' as const, apiKey: '' } }
+    // Save to local config. Loading with no existing config returns
+    // an empty object — the schema accepts that and the user fills
+    // credentials in via `coro init` or the dashboard.
+    const existing = loadLocalConfig() ?? {}
     const config: LocalConfig = {
       ...existing,
       cloud: {

@@ -11,26 +11,12 @@ import {
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 
 // ── Persisted config shapes ─────────────────────────────────────────────────
-
-export type AnthropicMethod = 'apiKey' | 'claudeLogin' | 'oauth'
-
-export interface ClaudeAccountInfo {
-  email?: string
-  organization?: string
-  subscriptionType?: string
-  tokenSource?: string
-  apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws'
-}
-
-export interface ClaudeLoginState {
-  status: 'idle' | 'authorizing' | 'connected' | 'error'
-  manualUrl?: string
-  automaticUrl?: string
-  account?: ClaudeAccountInfo
-  error?: string
-  startedAt?: string
-  completedAt?: string
-}
+//
+// LLM-provider-specific shapes (Anthropic Claude login state, OAuth
+// accounts, etc.) used to live here back when Anthropic was the only
+// provider hard-coded into the runner. They have moved to the
+// AnthropicAuthPanel custom panel under `sections/AnthropicAuthPanel.tsx`
+// so adding a new provider plugin no longer means editing this context.
 
 export interface McpServerEntry {
   type: 'stdio' | 'http' | 'sse'
@@ -63,12 +49,21 @@ export interface PluginsConfigShape {
 
 export interface PluginManifestSummary {
   id: string
-  kind: 'scm' | 'tracker' | string
+  kind: 'scm' | 'tracker' | 'executor' | string
   version: string
   displayName: string
   hostCompatibility: string
   capabilities?: Record<string, boolean>
   configSchema: unknown
+  /**
+   * Optional UI override surfaced by the plugin. When `customPanel`
+   * is set, the dashboard renders the matching component from
+   * {@link customPanels} instead of the schema-driven
+   * {@link PluginConfigCard}. Used by providers (e.g. Anthropic)
+   * whose configuration is an OAuth flow rather than a flat
+   * key/value list.
+   */
+  ui?: { customPanel?: string }
 }
 
 export interface PluginEntry {
@@ -88,14 +83,32 @@ export interface PluginsCatalogue {
   webhookBaseUrl: string | null
 }
 
+/**
+ * One alias → {provider, model} entry. Mirrors the runner-side
+ * `LlmAliasConfig`. The optional `reasoningEffort` is forwarded to
+ * executors that honour it (Anthropic ignores it today).
+ */
+export interface LlmAliasConfig {
+  provider: string
+  model: string
+  reasoningEffort?: 'low' | 'medium' | 'high'
+}
+
+export interface LlmConfigShape {
+  defaultProvider?: string
+  aliases?: Record<string, LlmAliasConfig>
+}
+
 export interface ConfigResponse {
   config: {
-    anthropic?: {
-      method?: AnthropicMethod
-      apiKey?: string
-      oauthToken?: string
-      account?: ClaudeAccountInfo
-    }
+    /**
+     * Multi-provider routing. `defaultProvider` is the executor plugin
+     * id used when an alias / phase doesn't pin one explicitly;
+     * `aliases` maps workflow shorthands like `planning` / `coding`
+     * to a concrete `{provider, model}` pair. Provider configs
+     * themselves live under `plugins.installed.<id>.config`.
+     */
+    llm?: LlmConfigShape
     intelligence?: { dir: string; gitRemote?: string }
     paths?: { workingDir: string }
     /** Legacy single-slot git block; translated to plugin entries on load. */
@@ -129,11 +142,13 @@ export interface ConfigResponse {
 // ── Draft (the unified, dirty-tracked form state) ───────────────────────────
 
 export interface SettingsDraft {
-  // LLM provider (Anthropic in v1)
-  anthropicMethod: AnthropicMethod
-  apiKey: string
-  oauthToken: string
-  // Plugins (replaces legacy single-slot git + tracker draft fields)
+  // LLM routing (multi-provider). Provider auth lives in the matching
+  // plugin entry under `pluginInstalled` — this draft only holds the
+  // routing surface (default provider + alias map).
+  llmDefaultProvider: string
+  llmAliases: Record<string, LlmAliasConfig>
+  // Plugins (auth + per-provider config; replaces legacy single-slot
+  // git + tracker + anthropic draft fields)
   pluginInstalled: Record<string, PluginInstalledEntry>
   pluginDefaultScm: string
   pluginDefaultTracker: string
@@ -147,9 +162,8 @@ export interface SettingsDraft {
 }
 
 const EMPTY_DRAFT: SettingsDraft = {
-  anthropicMethod: 'claudeLogin',
-  apiKey: '',
-  oauthToken: '',
+  llmDefaultProvider: '',
+  llmAliases: {},
   pluginInstalled: {},
   pluginDefaultScm: '',
   pluginDefaultTracker: '',
@@ -173,9 +187,8 @@ export type SettingsSectionId =
 /** Static (non-plugin) field → section. Plugin entries are mapped
  * dynamically via the plugin manifest kind. */
 const STATIC_FIELD_TO_SECTION: Partial<Record<keyof SettingsDraft, SettingsSectionId>> = {
-  anthropicMethod: 'llm-provider',
-  apiKey: 'llm-provider',
-  oauthToken: 'llm-provider',
+  llmDefaultProvider: 'llm-provider',
+  llmAliases: 'llm-provider',
   pluginDefaultScm: 'source-control',
   pluginDefaultTracker: 'issue-tracker',
   mcpServersText: 'mcp',
@@ -225,13 +238,6 @@ interface SettingsContextValue {
   pluginsCatalogue: PluginsCatalogue | null
   pluginsCatalogueError: string | null
   reloadPlugins: () => Promise<void>
-  // Claude login (auto-saved on the runner side, separate from draft save)
-  claudeLogin: ClaudeLoginState
-  claudeLoginAccount: ClaudeAccountInfo | null
-  claudeLoginReady: boolean
-  setClaudeLogin: (state: ClaudeLoginState) => void
-  setClaudeLoginAccount: (account: ClaudeAccountInfo | null) => void
-  refreshClaudeLoginStatus: () => Promise<void>
   // First run (persisted in localStorage so we don't need a backend schema change)
   firstRunCompleted: boolean
   markFirstRunComplete: () => void
@@ -368,9 +374,8 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
   }
 
   return {
-    anthropicMethod: cfg.anthropic?.method ?? 'claudeLogin',
-    apiKey: cfg.anthropic?.apiKey ?? '',
-    oauthToken: cfg.anthropic?.oauthToken ?? '',
+    llmDefaultProvider: cfg.llm?.defaultProvider ?? '',
+    llmAliases: { ...(cfg.llm?.aliases ?? {}) },
     pluginInstalled: installed,
     pluginDefaultScm: defaultScm,
     pluginDefaultTracker: defaultTracker,
@@ -413,8 +418,6 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
   const [pluginsCatalogue, setPluginsCatalogue] = useState<PluginsCatalogue | null>(null)
   const [pluginsCatalogueError, setPluginsCatalogueError] = useState<string | null>(null)
 
-  const [claudeLogin, setClaudeLoginState] = useState<ClaudeLoginState>({ status: 'idle' })
-  const [claudeLoginAccount, setClaudeLoginAccountState] = useState<ClaudeAccountInfo | null>(null)
   const [firstRunCompleted, setFirstRunCompleted] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem('coro.firstRun.completed') === 'true'
@@ -452,18 +455,6 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
       const nextDraft = configToDraft(data)
       setDraftState(nextDraft)
       setBaseline(nextDraft)
-
-      const anthropic = data.config?.anthropic
-      const account = anthropic?.account ?? null
-      setClaudeLoginAccountState(account)
-      setClaudeLoginState(previous => {
-        if (previous.status === 'authorizing') return previous
-        if (anthropic?.method === 'claudeLogin') {
-          return account ? { status: 'connected', account } : { status: 'connected' }
-        }
-        return { status: 'idle' }
-      })
-
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -585,19 +576,15 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
   const buildPayload = useCallback((): Record<string, unknown> => {
     const body: Record<string, unknown> = {}
 
-    // Anthropic — sent only when LLM section is dirty
-    if (
-      dirtyFields.has('anthropicMethod') ||
-      dirtyFields.has('apiKey') ||
-      dirtyFields.has('oauthToken')
-    ) {
-      const account = claudeLogin.account ?? claudeLoginAccount
-      body['anthropic'] =
-        draft.anthropicMethod === 'claudeLogin'
-          ? { method: 'claudeLogin' as const, account: account ?? undefined }
-          : draft.anthropicMethod === 'oauth'
-            ? { method: 'oauth' as const, oauthToken: draft.oauthToken }
-            : { method: 'apiKey' as const, apiKey: draft.apiKey }
+    // LLM routing — sent only when the LLM section is dirty. The
+    // server merges this against `config.llm` while leaving each
+    // provider plugin's auth config (under `plugins.installed.<id>`)
+    // alone unless the plugin block is also dirty below.
+    if (dirtyFields.has('llmDefaultProvider') || dirtyFields.has('llmAliases')) {
+      body['llm'] = {
+        ...(draft.llmDefaultProvider ? { defaultProvider: draft.llmDefaultProvider } : {}),
+        aliases: { ...draft.llmAliases },
+      }
     }
 
     // Plugins — replaces the legacy single-slot `git` + `tracker` blocks.
@@ -656,24 +643,13 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     }
 
     return body
-  }, [draft, dirtyFields, claudeLogin, claudeLoginAccount])
-
-  const claudeLoginReady = claudeLogin.status === 'connected' || !!(claudeLogin.account ?? claudeLoginAccount)
+  }, [draft, dirtyFields])
 
   const save = useCallback(async () => {
     setSaveError(null)
     setSaveNotice(null)
     setSaving(true)
     try {
-      // Validate Claude login completion before sending.
-      if (
-        dirtyFields.has('anthropicMethod') &&
-        draft.anthropicMethod === 'claudeLogin' &&
-        !claudeLoginReady
-      ) {
-        throw new Error('Connect Claude before saving the Claude login auth mode.')
-      }
-
       const payload = buildPayload()
       if (Object.keys(payload).length === 0) {
         setSaving(false)
@@ -691,7 +667,7 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     } finally {
       setSaving(false)
     }
-  }, [dirtyFields, draft.anthropicMethod, claudeLoginReady, buildPayload, reload])
+  }, [buildPayload, reload])
 
   const clearSaveFeedback = useCallback(() => {
     setSaveError(null)
@@ -708,37 +684,6 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [isDirty])
-
-  // Claude login background polling (only while authorizing).
-  const refreshClaudeLoginStatus = useCallback(async () => {
-    try {
-      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/status')
-      if (data.status === 'idle') return
-      setClaudeLoginState(data)
-      if (data.account) setClaudeLoginAccountState(data.account)
-      if (data.status === 'connected') {
-        setDraftState(previous => ({ ...previous, anthropicMethod: 'claudeLogin' }))
-      }
-    } catch {
-      // Soft fail — the section will surface its own error if the user
-      // explicitly tries to act.
-    }
-  }, [])
-
-  useEffect(() => {
-    if (claudeLogin.status !== 'authorizing') return
-    const timer = window.setInterval(() => void refreshClaudeLoginStatus(), 2000)
-    return () => window.clearInterval(timer)
-  }, [claudeLogin.status, refreshClaudeLoginStatus])
-
-  const setClaudeLogin = useCallback((next: ClaudeLoginState) => {
-    setClaudeLoginState(next)
-    if (next.account) setClaudeLoginAccountState(next.account)
-  }, [])
-
-  const setClaudeLoginAccount = useCallback((next: ClaudeAccountInfo | null) => {
-    setClaudeLoginAccountState(next)
-  }, [])
 
   const markFirstRunComplete = useCallback(() => {
     setFirstRunCompleted(true)
@@ -778,12 +723,6 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     pluginsCatalogue,
     pluginsCatalogueError,
     reloadPlugins,
-    claudeLogin,
-    claudeLoginAccount,
-    claudeLoginReady,
-    setClaudeLogin,
-    setClaudeLoginAccount,
-    refreshClaudeLoginStatus,
     firstRunCompleted,
     markFirstRunComplete,
     resetFirstRun,

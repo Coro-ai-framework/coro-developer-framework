@@ -83,6 +83,34 @@ export type PluginMcpServerConfig =
 
 // ── Plugin kinds ─────────────────────────────────────────────────────────────
 
+// ── Executor contract re-exports (multi-provider LLM) ───────────────────────
+//
+// The phase-executor surface is authored in `@coro/plugin-sdk` so external
+// LLM provider plugins can implement `PhaseExecutorRuntime` without
+// pulling in the runner's transitive deps. The runner re-exports the
+// shapes here so internal call sites import from a single place
+// (`./plugins/types`) regardless of whether a type is "internal SDK
+// shape" or "shared executor shape".
+export type {
+  PhaseExecutorRuntime,
+  PhaseExecutionRequest,
+  PhaseExecutorEvent,
+  PhaseExecutorMetrics,
+  ExecutorCapabilities,
+  ExecutorLifecycleHooks,
+  ExecutorSessionController,
+  DeveloperInputChannel,
+  HookPolicy,
+  NormalizedTokenUsage,
+  ExecutorSessionState,
+  ExecutorModelDescriptor,
+  ExecutorSubagentSpec,
+  McpServerDescriptor,
+  ConversationMessage,
+  PluginHttpApp,
+  PluginHttpRoutesContext,
+} from '@coro/plugin-sdk'
+
 /**
  * Open-ended plugin kind. v1 ships `scm` and `tracker`; later cuts may
  * add `notifier`, `observability`, `secrets`, etc. The registry treats
@@ -195,6 +223,16 @@ export interface PluginManifest {
    * {@link allowedMcpTools} when both are present.
    */
   disallowedMcpTools?: ReadonlyArray<string>
+  /**
+   * Optional UI override for the dashboard. When `customPanel` is set,
+   * the dashboard's plugin card delegates to a registered React
+   * component instead of rendering the schema-driven form. Used by
+   * providers (e.g. Anthropic) whose configuration is an OAuth flow
+   * rather than a flat key/value list.
+   */
+  ui?: {
+    customPanel?: string
+  }
 }
 
 // ── Plugin runtime — common ──────────────────────────────────────────────────
@@ -278,6 +316,14 @@ export interface PluginRuntime<Config = unknown> {
    * per-server tool policy at attach time.
    */
   mcpServer?(): PluginMcpServerConfig | undefined
+  /**
+   * Optional HTTP route registration. Plugins that own provider-specific
+   * dashboard endpoints (e.g. Anthropic OAuth login flow) implement this
+   * to mount their routes onto the runner's Express app. The runner core
+   * stays provider-agnostic — adding a new LLM plugin requires zero edits
+   * to {@link createRunnerServer}.
+   */
+  registerHttpRoutes?(ctx: import('@coro/plugin-sdk').PluginHttpRoutesContext): void
 }
 
 // ── SCM plugin runtime ───────────────────────────────────────────────────────

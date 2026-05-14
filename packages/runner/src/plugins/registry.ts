@@ -16,6 +16,7 @@
 // the mistake on the next call.
 
 import type {
+  PhaseExecutorRuntime,
   PluginExtensionToolProvider,
   PluginKind,
   PluginMcpToolDefinition,
@@ -43,6 +44,29 @@ export interface PluginResolutionParams {
 export interface PluginResolutionDefaults {
   scm?: string
   tracker?: string
+  /**
+   * Default executor plugin id. When set, picked whenever a phase
+   * neither names a `provider` explicitly nor uses an alias that
+   * binds one. Synthesised from `Settings.llm.defaultProvider` at
+   * registry construction; mirrored here so executor resolution
+   * follows the same defaults pattern as scm/tracker.
+   */
+  executor?: string
+}
+
+/**
+ * Per-phase request the runner passes to {@link PluginRegistry.resolveExecutor}.
+ * The runner builds this from workflow YAML (`provider:`, `model:`) merged
+ * with tenant defaults — the registry only sees the resolved triple.
+ */
+export interface ExecutorResolutionRequest {
+  /** Explicit plugin id (`'anthropic'`, `'openai'`). Wins when present. */
+  provider?: string
+  /**
+   * Concrete model identifier the phase will run against. Used for
+   * model→executor inference when no explicit `provider` is given.
+   */
+  model?: string
 }
 
 // ── Errors ───────────────────────────────────────────────────────────────────
@@ -105,6 +129,7 @@ export class PluginRegistry {
   setDefaults(defaults: PluginResolutionDefaults): void {
     this.defaults.scm = defaults.scm
     this.defaults.tracker = defaults.tracker
+    this.defaults.executor = defaults.executor
   }
 
   // ── Lookup ─────────────────────────────────────────────────────────────────
@@ -147,6 +172,7 @@ export class PluginRegistry {
     const explicit =
       kind === 'scm' ? this.defaults.scm
       : kind === 'tracker' ? this.defaults.tracker
+      : kind === 'executor' ? this.defaults.executor
       : undefined
     if (explicit) return this.byIdMap.get(explicit)?.runtime
     const installed = this.byKindMap.get(kind) ?? []
@@ -171,6 +197,64 @@ export class PluginRegistry {
     const r = this.resolveOne('tracker', params.tracker) as TrackerPluginRuntime | undefined
     if (!r) throw this.ambiguousResolutionError('tracker', params.tracker)
     return r
+  }
+
+  /**
+   * Pick the executor (LLM provider) plugin for a phase. Resolution
+   * order:
+   *
+   *   1. Explicit `req.provider` — must be installed and `kind:'executor'`.
+   *   2. `req.model` — when exactly one installed executor `supports(model)`,
+   *      that plugin wins. Two-or-more matches are ambiguous.
+   *   3. Tenant default (`Settings.llm.defaultProvider` → `defaults.executor`).
+   *   4. Sole installed executor (the common single-provider case).
+   *
+   * Throws {@link PluginResolutionError} with the list of installed
+   * executor ids when nothing satisfies the request — never silently
+   * picks. The runner surfaces the error as a phase failure so the
+   * agent / operator can correct the workflow YAML or settings.
+   */
+  resolveExecutor(req: ExecutorResolutionRequest = {}): PhaseExecutorRuntime {
+    // (1) Explicit provider
+    if (req.provider) {
+      const r = this.resolveOne('executor', req.provider) as
+        | PhaseExecutorRuntime
+        | undefined
+      if (!r) {
+        // resolveOne already threw if the id was unknown / wrong kind.
+        // Falling here means ambiguousResolutionError isn't right —
+        // but also can't happen because resolveOne returns undefined
+        // only when `requested` is undefined. Defensive throw.
+        throw this.ambiguousResolutionError('executor', req.provider)
+      }
+      return r
+    }
+
+    // (2) Model-based inference
+    if (req.model) {
+      const installed = (this.byKindMap.get('executor') ?? [])
+        .map(e => e.runtime as PhaseExecutorRuntime)
+      const matches = installed.filter(rt => {
+        try { return rt.supports(req.model!) }
+        catch { return false }
+      })
+      if (matches.length === 1) return matches[0]
+      if (matches.length > 1) {
+        throw new PluginResolutionError(
+          `Multiple executor plugins support model "${req.model}" ` +
+          `(${matches.map(m => m.manifest.id).join(', ')}). ` +
+          `Disambiguate by setting \`provider:\` on the workflow phase ` +
+          `or \`llm.defaultProvider\` in settings.`,
+        )
+      }
+      // No match — fall through to tenant default / sole installed.
+    }
+
+    // (3+4) Tenant default or sole installed
+    const fallback = this.default('executor') as PhaseExecutorRuntime | undefined
+    if (fallback) return fallback
+
+    throw this.ambiguousResolutionError('executor', req.provider)
   }
 
   /**
@@ -269,10 +353,15 @@ export class PluginRegistry {
         `No ${kind} plugin installed. Add one in ~/.coro/config.json under "plugins.installed".`,
       )
     }
+    const defaultLabel =
+      kind === 'scm' ? this.defaults.scm
+      : kind === 'tracker' ? this.defaults.tracker
+      : kind === 'executor' ? this.defaults.executor
+      : undefined
     return new PluginResolutionError(
       `Could not resolve a ${kind} plugin (${requested ? `requested="${requested}", ` : ''}` +
       `installed=[${installed.join(', ')}], ` +
-      `default=${kind === 'scm' ? this.defaults.scm ?? '(none)' : this.defaults.tracker ?? '(none)'}). ` +
+      `default=${defaultLabel ?? '(none)'}). ` +
       `Set defaults.${kind} in config or pass params.${kind} on the job.`,
     )
   }
@@ -290,6 +379,10 @@ export function isScmPlugin(runtime: PluginRuntime): runtime is ScmPluginRuntime
 
 export function isTrackerPlugin(runtime: PluginRuntime): runtime is TrackerPluginRuntime {
   return runtime.manifest.kind === 'tracker'
+}
+
+export function isExecutorPlugin(runtime: PluginRuntime): runtime is PhaseExecutorRuntime {
+  return runtime.manifest.kind === 'executor'
 }
 
 // Re-exported so call sites only need one import.

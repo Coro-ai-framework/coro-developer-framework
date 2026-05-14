@@ -41,8 +41,16 @@ export interface WorkflowPhaseSummary {
   status: string
   /** Agent file the phase runs (e.g. `agents/coder.md`), if any. */
   agent: string | null
-  /** Coarse model bucket: `planning` or `coding`. */
-  model: 'planning' | 'coding'
+  /**
+   * Model selector — either a tenant alias (`planning`, `coding`,
+   * tenant-defined) or a provider-qualified concrete model id. Open
+   * `string` since Phase 2 of the multi-provider migration; the legacy
+   * literal union is preserved as the default in workflow YAML for
+   * back-compat.
+   */
+  model: string
+  /** Optional executor plugin id pin advertised in the workflow YAML. */
+  provider?: string
   /** Whether the runner pauses for user approval before advancing. */
   interactiveCheckpoint: boolean
   /** Names of subagents this phase may spawn. */
@@ -165,14 +173,18 @@ async function readWorkflowsFromRoot(layer: IntelligenceLayer, root: string): Pr
     // and "what we run".
     const config = parseWorkflowConfig(content)
     const phases: WorkflowPhaseSummary[] = config
-      ? config.phases.map(p => ({
-          name: p.name,
-          status: p.status,
-          agent: p.agent,
-          model: p.model,
-          interactiveCheckpoint: p.interactiveCheckpoint === true,
-          subagents: (p.subagents ?? []).map(sa => sa.name),
-        }))
+      ? config.phases.map(p => {
+          const summary: WorkflowPhaseSummary = {
+            name: p.name,
+            status: p.status,
+            agent: p.agent,
+            model: p.model,
+            interactiveCheckpoint: p.interactiveCheckpoint === true,
+            subagents: (p.subagents ?? []).map(sa => sa.name),
+          }
+          if (p.provider !== undefined) summary.provider = p.provider
+          return summary
+        })
       : []
     const initialPhase = config?.initialPhase ?? phases[0]?.name ?? ''
 

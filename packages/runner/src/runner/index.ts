@@ -72,6 +72,7 @@ import {
 } from '../config/local-config'
 import { buildBuiltinPluginRegistry } from '../plugins/builtin'
 import { makePluginWebhookNormalizer } from '../plugins/webhook-bridge'
+import type { PluginRegistry } from '../plugins/registry'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 
 import { Settings } from '../config/settings'
@@ -100,6 +101,33 @@ export interface RunnerOptions {
 // ── Build Settings from LocalConfig ──────────────────────────────────────────
 
 /**
+ * Seed `settings.llm.aliases` from each executor plugin's
+ * {@link PhaseExecutorRuntime.defaultAliases}. Operator-supplied
+ * aliases (loaded from `LocalConfig` in a future phase) win over
+ * plugin defaults. Env var overrides (`CLAUDE_PLANNING_MODEL` /
+ * `CLAUDE_CODING_MODEL`) trump everything for back-compat with the
+ * pre-Phase-C bootstrap behaviour.
+ */
+function seedExecutorDefaultAliases(args: { plugins: PluginRegistry; settings: Settings }): void {
+  const llm = args.settings.llm ?? (args.settings.llm = {})
+  const aliases = llm.aliases ?? (llm.aliases = {})
+  for (const runtime of args.plugins.all()) {
+    if (runtime.manifest.kind !== 'executor') continue
+    const exec = runtime as unknown as { defaultAliases?: () => Record<string, { provider: string; model: string }> }
+    if (typeof exec.defaultAliases !== 'function') continue
+    for (const [k, v] of Object.entries(exec.defaultAliases())) {
+      if (!aliases[k]) aliases[k] = v
+    }
+  }
+  // Legacy env overrides — Anthropic-pinned for back-compat. Future
+  // env knobs will land under provider-neutral names (LLM_*).
+  const planEnv = process.env['CLAUDE_PLANNING_MODEL']
+  if (planEnv) aliases['planning'] = { provider: 'anthropic', model: planEnv }
+  const codeEnv = process.env['CLAUDE_CODING_MODEL']
+  if (codeEnv) aliases['coding'] = { provider: 'anthropic', model: codeEnv }
+}
+
+/**
  * Build the in-memory `Settings` object that the runner hands to its API
  * clients (BitBucket, GitHub, Loki, …) and the job runner. We synthesise it
  * from `LocalConfig`; legacy disk-based settings.json loading was removed
@@ -114,16 +142,6 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       port: 0,
       webhookSecret: '',
       logLevel: process.env.LOG_LEVEL ?? 'info',
-    },
-    claude: {
-      auth: {
-        method: config.anthropic.method,
-        apiKey: config.anthropic.apiKey,
-        oauthToken: config.anthropic.oauthToken,
-        account: config.anthropic.account,
-      },
-      planningModel: process.env.CLAUDE_PLANNING_MODEL ?? 'claude-opus-4-6',
-      codingModel: process.env.CLAUDE_CODING_MODEL ?? 'claude-sonnet-4-6',
     },
     bitbucket: {
       workspace: config.git?.workspace ?? process.env.BITBUCKET_WORKSPACE ?? '',
@@ -191,6 +209,18 @@ function buildSettingsFromLocal(config: LocalConfig): Settings {
       staticDomain: '',
     },
     proposals: resolveProposalsConfig(config),
+    // Multi-provider LLM configuration. Defaults + aliases come from
+    // the user's persisted `config.llm` block; aliases are then
+    // augmented post-bootstrap by {@link seedExecutorDefaultAliases}
+    // so each executor plugin's `defaultAliases()` fills in any
+    // entries the user hasn't customised. Provider configs themselves
+    // live under `plugins.installed.<id>.config` (forwarded to the
+    // plugin's `init()`).
+    llm: {
+      defaultProvider: config.llm?.defaultProvider ?? 'anthropic',
+      providers: {},
+      aliases: { ...(config.llm?.aliases ?? {}) },
+    },
   }
 }
 
@@ -203,12 +233,21 @@ export async function startLocalRunner(
 ): Promise<{ dispatcher: Dispatcher; shutdown: () => Promise<void> }> {
   // Fallback when no config.json exists: honour either Anthropic env var so
   // developers can bootstrap local mode with just `ANTHROPIC_API_KEY=... coro runner start`.
+  // We seed the modern plugin slot directly so the rest of the boot
+  // path is identical regardless of where the credential came from.
   const envOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN
   const envApiKey = process.env.ANTHROPIC_API_KEY
   const effectiveConfig: LocalConfig = config ?? {
-    anthropic: envOauth
-      ? { method: 'oauth', oauthToken: envOauth }
-      : { method: 'apiKey', apiKey: envApiKey ?? '' },
+    plugins: {
+      installed: {
+        anthropic: {
+          enabled: true,
+          config: envOauth
+            ? { method: 'oauth', oauthToken: envOauth }
+            : { method: 'apiKey', apiKey: envApiKey ?? '' },
+        },
+      },
+    },
   }
   const settings = buildSettingsFromLocal(effectiveConfig)
 
@@ -247,7 +286,8 @@ export async function startLocalRunner(
   // registry is the new home for SCM/Tracker resolution; the legacy
   // client fields above stay populated for back-compat MCP wrappers.
   const pluginsConfig = resolvePluginsConfig(effectiveConfig)
-  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
+  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
+  seedExecutorDefaultAliases({ plugins, settings })
 
   // Create polling transport for PR event detection. Plugin-aware
   // polling lives in the SCM plugins themselves (`pollPr`); the
@@ -341,7 +381,8 @@ export async function startHybridRunner(
   // Build the plugin registry up front so we can supply the WS
   // transport with a closure that normalises plugin webhooks.
   const pluginsConfig = resolvePluginsConfig(config)
-  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, logger })
+  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
+  seedExecutorDefaultAliases({ plugins, settings })
 
   // Create WebSocket transport to cloud
   const transport = new WebSocketTransport({

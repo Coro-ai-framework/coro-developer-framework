@@ -43,17 +43,6 @@ export interface Settings {
     webhookSecret: string
     logLevel: string
   }
-  claude: {
-    /**
-     * Runtime-selected Anthropic auth. The runner maps this to exactly one of
-     * `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` when needed. The
-     * `claudeLogin` mode intentionally passes neither env var so Claude Code
-     * can use its own persisted login session and refresh handling.
-     */
-    auth: ClaudeAuthConfig
-    planningModel: string
-    codingModel: string
-  }
   bitbucket: {
     workspace: string
     baseUrl: string
@@ -136,5 +125,39 @@ export interface Settings {
        */
       strategy: 'path' | 'agent'
     }
+  }
+  /**
+   * Multi-provider LLM configuration. The runtime treats this as the
+   * single source of truth for executor selection and alias resolution.
+   *
+   * Provider configs are intentionally typed as `unknown` here — each
+   * provider plugin owns its own zod schema and validates at registry
+   * registration time.
+   */
+  llm?: {
+    /**
+     * Default executor plugin id when an alias or phase doesn't pin
+     * one explicitly. When unset and only one executor plugin is
+     * installed, the registry picks it; with multiple, the registry
+     * throws unless every consumer is explicit.
+     */
+    defaultProvider?: string
+    /**
+     * Per-plugin-id config blob. Forwarded verbatim to the plugin's
+     * `init()` at bootstrap.
+     */
+    providers?: Record<string, unknown>
+    /**
+     * Workflow-author-friendly aliases. Workflows reference
+     * `model: 'planning'` or `model: 'coding'` (or any other key); the
+     * runner resolves each alias to a concrete `{provider, model}`
+     * pair via this map.
+     */
+    aliases?: Record<string, {
+      provider: string
+      model: string
+      /** OpenAI o-series / Anthropic extended-thinking effort hint. */
+      reasoningEffort?: 'low' | 'medium' | 'high'
+    }>
   }
 }
