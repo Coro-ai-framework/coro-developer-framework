@@ -676,6 +676,20 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             tokens: { ...cumulative, ...(totalCostUsd !== undefined ? { totalCostUsd } : {}) },
             ...(resultModelUsage ? { modelUsage: resultModelUsage } : {}),
           }
+
+          // Close the streaming-input pushable so the SDK's outer iterator
+          // ends — but ONLY when the input buffer is empty. In streaming-
+          // input mode the SDK awaits more user messages after every
+          // `result`; if we close unconditionally we drop steering messages
+          // that were pushed while the agent was mid-turn (the dispatcher
+          // queues them and calls `q.interrupt()`, which itself produces a
+          // `result` event). When the buffer holds a queued message we
+          // leave the pushable open so the SDK reads it on its next
+          // iteration; the agent will emit another `result` when that
+          // follow-up turn ends, and we'll re-evaluate then.
+          if (pushable.isEmpty()) {
+            pushable.close()
+          }
           continue
         }
 

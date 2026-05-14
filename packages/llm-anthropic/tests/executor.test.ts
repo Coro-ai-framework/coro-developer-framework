@@ -84,7 +84,7 @@ describe('AnthropicExecutor — listModels', () => {
     const ids = models.map(m => m.id).sort()
     expect(ids).toEqual([
       'claude-haiku-4-5',
-      'claude-opus-4-1',
+      'claude-opus-4-6',
       'claude-opus-4-7',
       'claude-sonnet-4-5',
       'claude-sonnet-4-6',

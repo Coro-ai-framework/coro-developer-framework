@@ -33,7 +33,7 @@ import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
 import { isStoppedStatus, type Job, type CampaignChild } from '../jobs/types'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { formatSseFrame } from './sse'
-import { listBuiltinPluginMetadata } from '../plugins/builtin'
+import { listBuiltinPluginMetadata, BUILTIN_PLUGIN_IDS_BY_KIND } from '../plugins/builtin'
 import { discoverWorkflows } from '../workflow-discovery'
 import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
 import { inferKind, validateArtefact } from '../intelligence-validator'
@@ -1356,6 +1356,29 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const config = result.kind === 'ok' ? result.config : null
       const detected = detectMode(config)
 
+      // Auto-derive `llm.defaultProvider` when the user has exactly one
+      // executor plugin enabled in `plugins.installed` and has not yet
+      // explicitly chosen a default. Without this, fresh installs that
+      // completed claude-login still see "Missing: LLM provider" on the
+      // Home banner because the readiness check only looks at the
+      // explicit `defaultProvider` field, while the runner's resolver
+      // would happily fall back to the sole installed executor at job
+      // start. We synthesise here so the wire response matches runtime
+      // behaviour. Persisted writes go through `pluginSavePluginConfig`
+      // (further down), which sets the same field on disk so the value
+      // survives once the user touches Settings.
+      const installedExecutorIds = config
+        ? Object.entries(config.plugins?.installed ?? {})
+            .filter(([id, slot]) =>
+              slot.enabled && BUILTIN_PLUGIN_IDS_BY_KIND.executor.includes(id),
+            )
+            .map(([id]) => id)
+        : []
+      const synthesisedDefaultProvider =
+        config && !config.llm?.defaultProvider && installedExecutorIds.length === 1
+          ? installedExecutorIds[0]
+          : undefined
+
       // Redact sensitive fields for display. Git tokens and tracker creds
       // round-trip with a `...`-redaction convention so the dashboard can
       // show that a secret is set without ever shipping it to the browser.
@@ -1365,6 +1388,9 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       // own response builder — the runner core no longer touches them here.
       const safeConfig = config ? {
         ...config,
+        llm: synthesisedDefaultProvider
+          ? { ...(config.llm ?? {}), defaultProvider: synthesisedDefaultProvider }
+          : config.llm,
         git: config.git ? {
           ...config.git,
           token: config.git.token
@@ -1989,8 +2015,23 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         enabled: existingEntry.enabled ?? true,
         config: { ...existingConfig, ...configPatch },
       }
+      // Auto-elect this plugin as the default LLM provider when it is
+      // an executor and the user has not yet picked one. Without this,
+      // a fresh install completes claude-login but the dashboard still
+      // reports "Missing: LLM provider" because `llm.defaultProvider`
+      // is empty — the runner's resolveExecutor sole-installed-fallback
+      // would happily pick it for jobs, but the readiness UI doesn't
+      // know about that fallback. Setting it explicitly keeps both
+      // surfaces consistent and is a no-op once the user has chosen.
+      const runtime = plugins.byId(pluginId)
+      const isExecutor = runtime?.manifest.kind === 'executor'
+      const existingLlm = (existing.llm ?? {}) as { defaultProvider?: string; aliases?: unknown }
+      const nextLlm = isExecutor && !existingLlm.defaultProvider
+        ? { ...existingLlm, defaultProvider: pluginId }
+        : existingLlm
       saveLocalConfig({
         ...existing,
+        llm: nextLlm,
         plugins: {
           ...existingPlugins,
           installed: { ...existingInstalled, [pluginId]: nextEntry },

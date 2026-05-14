@@ -16,6 +16,15 @@ export interface PushableInput {
   iterable: AsyncIterable<SDKUserMessage>
   push(msg: SDKUserMessage): void
   close(): void
+  /**
+   * `true` when no buffered messages are waiting to be read by the SDK.
+   * The executor uses this at `result`-event time to decide whether the
+   * current turn is a natural completion (buffer empty → safe to close
+   * the pushable so the SDK iterator ends) or an interrupt-driven
+   * steering yield (buffer holds a queued developer message → leave the
+   * pushable open so the SDK reads it on the next iteration).
+   */
+  isEmpty(): boolean
 }
 
 /**
@@ -73,6 +82,9 @@ export function createPushableInput(): PushableInput {
       if (closed) return
       closed = true
       wakeup()
+    },
+    isEmpty(): boolean {
+      return buffer.length === 0
     },
   }
 }
