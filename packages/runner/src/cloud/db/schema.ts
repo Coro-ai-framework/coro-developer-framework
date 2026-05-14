@@ -92,6 +92,12 @@ export const jobs = pgTable('jobs', {
   phaseUsage: jsonb('phase_usage').notNull().$type<unknown[]>().default([]),
 
   sessionId: text('session_id'),
+  // Conversation replay history for stateless executors (e.g. OpenAI / Gemini)
+  // that don't support server-side session resume. Persisted as JSON; only the
+  // executor that wrote it interprets the contents on resume. Anthropic-backed
+  // jobs leave this null and resume by sessionId alone. See Phase 8.1 of the
+  // multi-provider plan and `Job.conversationHistory` in jobs/types.ts.
+  conversationHistory: jsonb('conversation_history').$type<unknown[] | null>(),
   awaitingEvent: text('awaiting_event'),
   awaitingPrId: integer('awaiting_pr_id'),
   escalationMessage: text('escalation_message'),

@@ -39,6 +39,10 @@ export interface WsJobGet {
   jobId: string
 }
 
+// `patch: Partial<Job>` carries every Job field additively, including the
+// stateless-executor `conversationHistory` blob (Phase 8.1). Older runners
+// that don't recognise a field strip it on the receiving zod parse — adding
+// new optional Job fields is wire-compatible.
 export interface WsJobUpdate {
   type: 'job:update'
   messageId: string

@@ -6,6 +6,7 @@ import {
   RPC_MAX_RETRIES,
   LOG_BATCH_INTERVAL_MS,
 } from '../../src/state/ws-protocol'
+import type { WsJobUpdate } from '../../src/state/ws-protocol'
 
 describe('ws-protocol constants', () => {
   it('heartbeat timeout > heartbeat interval', () => {
@@ -24,5 +25,39 @@ describe('ws-protocol constants', () => {
 
   it('log batch interval is small', () => {
     expect(LOG_BATCH_INTERVAL_MS).toBeLessThanOrEqual(1000)
+  })
+})
+
+describe('WsJobUpdate (Phase 8.1)', () => {
+  it('carries conversationHistory in the patch additively', () => {
+    // Compile-time + runtime check: the patch must accept the
+    // stateless-executor history blob without a cast. JSON round-trip
+    // verifies the shape stays plain-data so the gateway can ship it
+    // straight to PostgresStateBackend.updateJob.
+    const msg: WsJobUpdate = {
+      type: 'job:update',
+      messageId: 'm1',
+      jobId: 'job-1',
+      patch: {
+        sessionId: 'sess-1',
+        conversationHistory: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: 'hello' },
+        ],
+      },
+    }
+    const round = JSON.parse(JSON.stringify(msg)) as WsJobUpdate
+    expect(round.patch.conversationHistory).toHaveLength(2)
+    expect(round.patch.conversationHistory?.[0]?.role).toBe('user')
+  })
+
+  it('older runners that omit conversationHistory still parse', () => {
+    const msg: WsJobUpdate = {
+      type: 'job:update',
+      messageId: 'm2',
+      jobId: 'job-2',
+      patch: { sessionId: 'sess-only' },
+    }
+    expect(msg.patch.conversationHistory).toBeUndefined()
   })
 })

@@ -49,6 +49,11 @@ function rowToJob(row: JobRow): Job {
     },
     phaseUsage: (row.phaseUsage ?? []) as PhaseUsage[],
     sessionId: row.sessionId ?? undefined,
+    // `conversationHistory` is opaque JSON written by stateless executors.
+    // We cast through unknown — only the executor that wrote it interprets it.
+    conversationHistory: row.conversationHistory == null
+      ? undefined
+      : (row.conversationHistory as Job['conversationHistory']),
     awaitingEvent: row.awaitingEvent ?? undefined,
     awaitingPrId: row.awaitingPrId ?? undefined,
     escalationMessage: row.escalationMessage ?? undefined,
@@ -91,6 +96,9 @@ function jobToInsert(job: Job, teamId: string): typeof schema.jobs.$inferInsert 
     tokenUsageCostUsd: job.tokenUsage.totalCostUsd,
     phaseUsage: job.phaseUsage as unknown[],
     sessionId: job.sessionId ?? null,
+    conversationHistory: job.conversationHistory == null
+      ? null
+      : (job.conversationHistory as unknown[]),
     awaitingEvent: job.awaitingEvent ?? null,
     awaitingPrId: job.awaitingPrId ?? null,
     escalationMessage: job.escalationMessage ?? null,
