@@ -114,9 +114,25 @@ function mcpRedirect(
 function resolveScm(
   ctx: ToolContext,
   pluginId?: string,
+  repoUrl?: string,
 ): { ok: true; scm: ScmPluginRuntime } | { ok: false; error: ReturnType<typeof mcpError> } {
   try {
-    const requested = pluginId ?? (typeof ctx.job.params['scm'] === 'string' ? (ctx.job.params['scm'] as string) : undefined)
+    // (1) Explicit pluginId from the agent always wins.
+    if (pluginId) {
+      const scm = ctx.plugins.resolveScm({ scm: pluginId })
+      return { ok: true, scm }
+    }
+    // (2) Disambiguate by the repo URL the agent is acting on. This
+    // prevents a github URL from being routed to the bitbucket plugin
+    // (or vice versa) when both are installed and the registry default
+    // points the wrong way — the same class of bug that broke PR
+    // polling.
+    if (repoUrl && typeof repoUrl === 'string' && repoUrl.includes('://')) {
+      const matched = ctx.plugins.resolveByRemote(repoUrl)
+      if (matched) return { ok: true, scm: matched }
+    }
+    // (3) Fall back to the job's `params.scm`, then the registry default.
+    const requested = typeof ctx.job.params['scm'] === 'string' ? (ctx.job.params['scm'] as string) : undefined
     const scm = ctx.plugins.resolveScm(requested ? { scm: requested } : {})
     return { ok: true, scm }
   } catch (err) {
@@ -237,7 +253,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     targetBranch?: string
     reviewers?: string[]
   }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     const { jobReviewers } = await import('./jobs/types')
     const targetBranch = args.targetBranch ?? 'main'
@@ -293,7 +309,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   const scm_get_pr_status = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     if (!r.scm.getPrStatus) {
       return mcpRedirect(r.scm.manifest.id, 'scm_get_pr_status',
@@ -306,7 +322,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   const scm_list_pr_comments = async (args: { pluginId?: string; repo: string; prId: number | string }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     if (!r.scm.listPrComments) {
       return mcpRedirect(r.scm.manifest.id, 'scm_list_pr_comments',
@@ -321,7 +337,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const scm_post_pr_comment = async (args: {
     pluginId?: string; repo: string; prId: number | string; body: string
   }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     if (!r.scm.postPrComment) {
       return mcpRedirect(r.scm.manifest.id, 'scm_post_pr_comment',
@@ -336,7 +352,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const scm_add_pr_reviewers = async (args: {
     pluginId?: string; repo: string; prId: number | string; reviewers: string[]
   }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     if (!args.reviewers || args.reviewers.length === 0) {
       return error('reviewers must be a non-empty array of usernames or uuids')
@@ -369,7 +385,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const scm_merge_pr = async (args: {
     pluginId?: string; repo: string; prId: number | string; message?: string; strategy?: 'merge' | 'squash' | 'rebase'
   }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     if (!r.scm.mergePr) {
       return mcpRedirect(r.scm.manifest.id, 'scm_merge_pr',
@@ -393,14 +409,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   const scm_get_clone_info = async (args: { pluginId?: string; repo: string }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     const info = r.scm.cloneInfo({ repo: args.repo })
     return text({ pluginId: r.scm.manifest.id, ...info })
   }
 
   const scm_clone_repo = async (args: { pluginId?: string; repo: string }) => {
-    const r = resolveScm(ctx, args.pluginId)
+    const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
 
     const repo = args.repo.trim()

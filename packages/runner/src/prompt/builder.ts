@@ -89,11 +89,21 @@ export function computeScmPromptContext(
   const requested = typeof job.params['scm'] === 'string' && job.params['scm'].length > 0
     ? job.params['scm'] as string
     : undefined
+  const repoSlug = typeof job.params['repoSlug'] === 'string' ? (job.params['repoSlug'] as string) : undefined
   const defaults = plugins.getDefaults()
   const installed = plugins.byKind('scm').map(plugin => plugin.manifest.id).sort()
 
   try {
-    const resolved = plugins.resolveScm(requested ? { scm: requested } : {})
+    // Prefer URL-based disambiguation when the job carries a repo URL
+    // and no explicit `scm` override — otherwise the rendered context
+    // can advertise the wrong plugin to the agent (e.g. github URL +
+    // bitbucket default → prompt says "scm: bitbucket").
+    let resolved
+    if (!requested && repoSlug && repoSlug.includes('://')) {
+      resolved = plugins.resolveByRemote(repoSlug) ?? plugins.resolveScm({})
+    } else {
+      resolved = plugins.resolveScm(requested ? { scm: requested } : {})
+    }
     return {
       available: true,
       resolved: resolved.manifest.id,

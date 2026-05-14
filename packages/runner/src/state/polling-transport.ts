@@ -358,10 +358,14 @@ export class PollingTransport implements EventTransport {
     const repoKey = pickRepoKey(job)
     if (!repoKey) return null
 
-    // PR mappings will carry `pluginId` once P5 lands; for now, infer
-    // from the registry's default SCM plugin.
+    // Prefer the SCM plugin whose `matchesRemote(repoKey)` claims the
+    // URL — that's the only safe way to disambiguate when more than
+    // one SCM plugin is installed (e.g. github + bitbucket). Falling
+    // back to `default('scm')` would silently route a github PR to
+    // the bitbucket poller, which 404s on every cycle.
+    const matched = this.plugins.resolveByRemote(repoKey)
     const defaultScm = this.plugins.default('scm')
-    const pluginId = defaultScm?.manifest.id ?? 'unknown'
+    const pluginId = matched?.manifest.id ?? defaultScm?.manifest.id ?? 'unknown'
     return {
       kind: 'pull_request',
       pluginId,
