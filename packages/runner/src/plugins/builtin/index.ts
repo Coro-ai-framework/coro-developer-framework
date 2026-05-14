@@ -192,6 +192,37 @@ export async function buildBuiltinPluginRegistry(
     }
   }
 
+  // Bootstrap fallback for built-in executor plugins: if a tenant has
+  // never configured an LLM provider (no `plugins.installed.<id>` slot
+  // for any built-in executor), instantiate the built-ins with empty
+  // config so their HTTP routes mount and the dashboard's Settings
+  // panel can drive the first-run login flow. Without this, the
+  // dashboard hits 404s on /config/anthropic/claude-login/* because
+  // the plugin that owns those routes isn't loaded yet — a chicken-
+  // and-egg trap on every fresh install or post-Phase-F upgrade where
+  // the legacy top-level `anthropic` block was silently dropped.
+  for (const id of BUILTIN_PLUGIN_IDS_BY_KIND.executor) {
+    if (registry.byId(id)) continue
+    try {
+      const runtime = await instantiatePlugin({
+        id,
+        config: {},
+        logger,
+        dropinFactories,
+        ...(args.settings ? { settings: args.settings } : {}),
+      })
+      if (!runtime) continue
+      await runtime.init({}, { logger, fetch: globalThis.fetch })
+      registry.register(runtime)
+      logger.info(
+        { pluginId: id },
+        'Auto-loaded built-in executor plugin with empty config so dashboard setup routes are reachable',
+      )
+    } catch (err) {
+      logger.warn({ err, pluginId: id }, 'Failed to auto-load built-in executor plugin')
+    }
+  }
+
   // Honour the tenant's chosen default LLM provider when one is
   // configured. The registry's resolveExecutor falls back to "sole
   // installed executor" when this isn't set, which covers the

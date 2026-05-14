@@ -97,6 +97,31 @@ const ANTHROPIC_PLUGIN_ID = 'anthropic' as const
  * accounting and do not maintain a parallel pricing table.
  */
 const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
+  // Current generation (4.6/4.7) — dateless IDs are pinned snapshots,
+  // not evergreen pointers. Source: platform.claude.com/docs models overview.
+  {
+    id: 'claude-opus-4-7',
+    displayName: 'Claude Opus 4.7',
+    contextTokens: 1_000_000,
+    tier: 'planning',
+    supportsThinking: true,
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    displayName: 'Claude Sonnet 4.6',
+    contextTokens: 1_000_000,
+    tier: 'coding',
+    supportsThinking: true,
+  },
+  {
+    id: 'claude-haiku-4-5',
+    displayName: 'Claude Haiku 4.5',
+    contextTokens: 200_000,
+    tier: 'mini',
+    supportsThinking: true,
+  },
+  // Previous generation — kept available for cost/latency tuning and
+  // for tenants that have pinned older IDs in their workflow front matter.
   {
     id: 'claude-sonnet-4-5',
     displayName: 'Claude Sonnet 4.5',
@@ -105,18 +130,11 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     supportsThinking: true,
   },
   {
-    id: 'claude-opus-4-1',
-    displayName: 'Claude Opus 4.1',
+    id: 'claude-opus-4-6',
+    displayName: 'Claude Opus 4.6',
     contextTokens: 200_000,
     tier: 'planning',
     supportsThinking: true,
-  },
-  {
-    id: 'claude-haiku-4-5',
-    displayName: 'Claude Haiku 4.5',
-    contextTokens: 200_000,
-    tier: 'mini',
-    supportsThinking: false,
   },
 ]
 
@@ -128,7 +146,7 @@ const ANTHROPIC_CAPABILITIES: ExecutorCapabilities = {
   supportsConversationReplay: false,
   supportsThinking: true,
   supportsImageInput: true,
-  maxContextTokens: 200_000,
+  maxContextTokens: 1_000_000,
 }
 
 // Plugin config schema. The runner persists this verbatim under

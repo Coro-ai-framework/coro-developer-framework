@@ -69,7 +69,8 @@ describe('createRunnerServer plugin HTTP route registration', () => {
 
   it('mounts routes registered by a plugin via registerHttpRoutes', async () => {
     const plugin = makePlugin('test-plugin', ctx => {
-      ctx.app.get('/config/test/ping', (_req: unknown, res: { json: (b: unknown) => void }) => {
+      ctx.app.get('/config/test/ping', (..._args: unknown[]) => {
+        const res = _args[1] as { json: (b: unknown) => void }
         res.json({ ok: true, source: 'test-plugin' })
       })
     })
@@ -85,7 +86,8 @@ describe('createRunnerServer plugin HTTP route registration', () => {
       throw new Error('boom')
     })
     const good = makePlugin('good-plugin', ctx => {
-      ctx.app.get('/config/good/ping', (_req: unknown, res: { json: (b: unknown) => void }) => {
+      ctx.app.get('/config/good/ping', (..._args: unknown[]) => {
+        const res = _args[1] as { json: (b: unknown) => void }
         res.json({ ok: true })
       })
     })

@@ -67,7 +67,7 @@ describe('AnthropicExecutor — capabilities', () => {
       supportsConversationReplay: false,
       supportsThinking: true,
       supportsImageInput: true,
-      maxContextTokens: 200_000,
+      maxContextTokens: 1_000_000,
     })
   })
 })
@@ -80,15 +80,21 @@ describe('AnthropicExecutor — listModels', () => {
     })
     const models = ex.listModels()
 
-    expect(models).toHaveLength(3)
+    expect(models).toHaveLength(5)
     const ids = models.map(m => m.id).sort()
-    expect(ids).toEqual(['claude-haiku-4-5', 'claude-opus-4-1', 'claude-sonnet-4-5'])
+    expect(ids).toEqual([
+      'claude-haiku-4-5',
+      'claude-opus-4-1',
+      'claude-opus-4-7',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-6',
+    ])
 
     // Tier mapping is part of the public contract — the dashboard's
     // model picker groups by tier.
     const byId = new Map(models.map(m => [m.id, m]))
-    expect(byId.get('claude-sonnet-4-5')?.tier).toBe('coding')
-    expect(byId.get('claude-opus-4-1')?.tier).toBe('planning')
+    expect(byId.get('claude-sonnet-4-6')?.tier).toBe('coding')
+    expect(byId.get('claude-opus-4-7')?.tier).toBe('planning')
     expect(byId.get('claude-haiku-4-5')?.tier).toBe('mini')
   })
 
