@@ -67,7 +67,33 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
     if (!pluginsCatalogue) return KNOWN_EXECUTOR_FALLBACK.includes(id)
     return executorPlugins.some(p => p.manifest.id === id)
   }
-  const defaultExecutorId = draft.llmDefaultProvider || executorPlugins[0]?.manifest.id || ''
+  // When the user hasn't explicitly picked a default provider, mirror
+  // the runner-side synthesis logic (see runner/src/runner/server.ts):
+  // prefer an executor that is both *enabled* and *configured* over
+  // one that simply happens to be first alphabetically. Without this,
+  // having two executors registered (e.g. built-in anthropic + openai)
+  // with only one of them keyed makes the banner permanently warn,
+  // because the alphabetically-first plugin reports "needs setup"
+  // even though the runner will happily route to the configured one
+  // at job-dispatch time.
+  const pickAutoExecutor = (): string => {
+    const enabledConfigured = executorPlugins.filter(p => {
+      const entry = draft.pluginInstalled[p.manifest.id]
+      if (entry?.enabled === false) return false
+      return pluginIsConfigured(draft, p, p.manifest.id)
+    })
+    if (enabledConfigured.length === 1) return enabledConfigured[0].manifest.id
+    if (enabledConfigured.length > 1) return enabledConfigured[0].manifest.id
+    // No configured candidate — fall back to first enabled, then to
+    // the alphabetical first so the rest of the readiness pipeline
+    // still produces a meaningful "needs configuration" message.
+    const firstEnabled = executorPlugins.find(p => {
+      const entry = draft.pluginInstalled[p.manifest.id]
+      return entry?.enabled !== false
+    })
+    return firstEnabled?.manifest.id ?? executorPlugins[0]?.manifest.id ?? ''
+  }
+  const defaultExecutorId = draft.llmDefaultProvider || pickAutoExecutor()
   const defaultExecutor = executorPlugins.find(p => p.manifest.id === defaultExecutorId)
   const llmReady =
     !!defaultExecutorId
