@@ -81,9 +81,18 @@ runnerCommand
       console.log(`  Cloud URL: ${config.cloud.url}`)
     }
 
-    if (config?.anthropic?.apiKey) {
-      const key = config.anthropic.apiKey
-      console.log(`  API Key:   ${key.slice(0, 10)}...${key.slice(-4)}`)
+    // Read the LLM provider key from the modern plugin slot, with a
+    // legacy fallback so old configs still surface a status line.
+    const installedAnthropic = config?.plugins?.installed?.['anthropic']?.config as
+      | { method?: string; apiKey?: string }
+      | undefined
+    const apiKey =
+      (installedAnthropic?.method === 'apiKey' && typeof installedAnthropic.apiKey === 'string'
+        ? installedAnthropic.apiKey
+        : undefined)
+      ?? (config?.anthropic?.method === 'apiKey' ? config.anthropic.apiKey : undefined)
+    if (apiKey) {
+      console.log(`  API Key:   ${apiKey.slice(0, 10)}...${apiKey.slice(-4)}`)
     }
 
     if (config?.intelligence) {

@@ -56,11 +56,22 @@ export const initCommand = new Command('init')
 
     console.log('\x1b[36m▸\x1b[0m Coro Runner Configuration\n')
 
-    const existing = loadLocalConfig() ?? { anthropic: { method: 'apiKey' as const, apiKey: '' } }
+    const existing = loadLocalConfig() ?? {}
 
     // Anthropic API key — `coro init` only supports the API-key method today;
     // users can switch to OAuth from the dashboard Settings page after init.
-    const existingApiKey = existing.anthropic?.method === 'apiKey' ? existing.anthropic.apiKey : ''
+    // Read the current key from the modern plugin slot, falling back
+    // to the legacy top-level block for one release so existing
+    // configs still round-trip cleanly.
+    const installedAnthropic = existing.plugins?.installed?.['anthropic']?.config as
+      | { method?: string; apiKey?: string }
+      | undefined
+    const existingApiKey =
+      installedAnthropic?.method === 'apiKey' && typeof installedAnthropic.apiKey === 'string'
+        ? installedAnthropic.apiKey
+        : existing.anthropic?.method === 'apiKey'
+          ? existing.anthropic.apiKey
+          : ''
     const apiKey = opts.apiKey
       ?? await ask('Anthropic API key', existingApiKey || process.env.ANTHROPIC_API_KEY || '')
     if (!apiKey) die('Anthropic API key is required')
@@ -111,7 +122,21 @@ export const initCommand = new Command('init')
 
     const config: LocalConfig = {
       ...existing,
-      anthropic: { method: 'apiKey', apiKey },
+      // Write Anthropic credentials into the modern plugin slot. The
+      // legacy top-level `anthropic` field is intentionally not set
+      // here — `legacyConfigToPlugins` continues to read it for one
+      // release so older configs keep working, but new writes go
+      // exclusively through `plugins.installed.<id>`.
+      plugins: {
+        ...(existing.plugins ?? {}),
+        installed: {
+          ...(existing.plugins?.installed ?? {}),
+          anthropic: {
+            enabled: true,
+            config: { method: 'apiKey', apiKey },
+          },
+        },
+      },
       intelligence: {
         dir: intelligenceDir,
         ...(intelligenceRemote ? { gitRemote: intelligenceRemote } : {}),

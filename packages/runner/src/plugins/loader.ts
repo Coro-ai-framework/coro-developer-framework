@@ -66,7 +66,16 @@ export const HOST_PLUGIN_API_VERSION = '1.0.0'
  */
 const dropinManifestSchema = z.object({
   id: z.string().min(1),
-  kind: z.union([z.literal('scm'), z.literal('tracker'), z.string().min(1)]),
+  // Explicit literals match the three host-recognised plugin kinds;
+  // the trailing `z.string()` keeps the door open for forward-compat
+  // experiments (e.g. `kind: 'observability'` from a third party)
+  // without breaking the loader.
+  kind: z.union([
+    z.literal('scm'),
+    z.literal('tracker'),
+    z.literal('executor'),
+    z.string().min(1),
+  ]),
   version: z.string().min(1),
   displayName: z.string().min(1),
   hostCompatibility: z.string().min(1),
