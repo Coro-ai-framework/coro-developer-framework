@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <!-- Chip background: bg-accent-500/12 over canvas (#07101a) ≈ #121c36 -->
+  <rect width="1024" height="1024" rx="224" fill="#121c36"/>
+  <!-- Inset ring: ring-1 ring-accent-500/25 -->
+  <rect x="6" y="6" width="1012" height="1012" rx="218" stroke="#6172ff" stroke-opacity="0.25" stroke-width="10" fill="none"/>
+  <!-- Glyph: BrandMark "C" arc + dot, scaled & centered (BrandMark viewBox 0 0 24 24 mapped into a 512x512 region offset by 256,256). -->
+  <g transform="translate(256 256) scale(21.3333)">
+    <path d="M19 7.5A8 8 0 1 0 19 16.5" stroke="#a8b0ff" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="18.25" cy="12" r="1.6" fill="#a8b0ff"/>
+  </g>
+</svg>

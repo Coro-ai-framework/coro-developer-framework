@@ -6,6 +6,10 @@
         "/^node -e \"console\\.log\\(typeof require\\('fs/promises'\\)\\.glob, process\\.versions\\.node\\)\"$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^node \\./scripts/prepare-icon\\.mjs 2>&1 \\| tail -5 && ls -la dist/icon\\.png$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
