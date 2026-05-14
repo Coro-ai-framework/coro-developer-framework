@@ -31,6 +31,7 @@
   "dependencies": {
     "@coro/intelligence-base": "workspace:*",
     "@coro/llm-anthropic": "workspace:*",
+    "@coro/llm-openai": "workspace:*",
     "@coro/plugin-sdk": "workspace:*",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",

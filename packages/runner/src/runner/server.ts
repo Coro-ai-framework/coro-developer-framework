@@ -1367,16 +1367,32 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       // behaviour. Persisted writes go through `pluginSavePluginConfig`
       // (further down), which sets the same field on disk so the value
       // survives once the user touches Settings.
-      const installedExecutorIds = config
+      //
+      // We treat an executor slot as "actually configured" when it is
+      // enabled AND its `config` object has at least one key. This lets
+      // us pick the right default when more than one executor plugin
+      // ships built-in (e.g. anthropic + openai both auto-register as
+      // `enabled: true`, but only the one the user filled in has any
+      // config keys). Without this, the synthesis only fires when
+      // exactly one executor is enabled, and the Home banner reports
+      // "Missing: LLM provider" even though the user has a working
+      // provider — because the other built-in still occupies an
+      // enabled-but-empty slot.
+      const enabledExecutorEntries = config
         ? Object.entries(config.plugins?.installed ?? {})
             .filter(([id, slot]) =>
               slot.enabled && BUILTIN_PLUGIN_IDS_BY_KIND.executor.includes(id),
             )
-            .map(([id]) => id)
         : []
+      const configuredExecutorIds = enabledExecutorEntries
+        .filter(([, slot]) => Object.keys((slot.config ?? {}) as Record<string, unknown>).length > 0)
+        .map(([id]) => id)
+      const candidateExecutorIds = configuredExecutorIds.length > 0
+        ? configuredExecutorIds
+        : enabledExecutorEntries.map(([id]) => id)
       const synthesisedDefaultProvider =
-        config && !config.llm?.defaultProvider && installedExecutorIds.length === 1
-          ? installedExecutorIds[0]
+        config && !config.llm?.defaultProvider && candidateExecutorIds.length === 1
+          ? candidateExecutorIds[0]
           : undefined
 
       // Redact sensitive fields for display. Git tokens and tracker creds

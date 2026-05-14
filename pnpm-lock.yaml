@@ -205,6 +205,31 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.17)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
 
+  packages/llm-openai:
+    dependencies:
+      openai:
+        specifier: ^6.37.0
+        version: 6.37.0(ws@8.20.0)(zod@4.3.6)
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@coro/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.17
+      pino:
+        specifier: ^9.6.0
+        version: 9.14.0
+      typescript:
+        specifier: ^5.8.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.2
+        version: 4.1.5(@types/node@22.19.17)(@vitest/coverage-v8@4.1.5)(vite@8.0.10(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
+
   packages/plugin-gitlab:
     dependencies:
       '@coro/plugin-sdk':
@@ -257,6 +282,9 @@ importers:
       '@coro/llm-anthropic':
         specifier: workspace:*
         version: link:../llm-anthropic
+      '@coro/llm-openai':
+        specifier: workspace:*
+        version: link:../llm-openai
       '@coro/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
@@ -3474,6 +3502,18 @@ packages:
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
+
+  openai@6.37.0:
+    resolution: {integrity: sha512-0H5dEGFmmLv6KSd0W1w2nyL8WsLkX6yoLeQpU+dZAOuGcany5qkYQMmj35ZrKgb6yiyYqpUzFOpR8mZQkgqeEQ==}
+    hasBin: true
+    peerDependencies:
+      ws: ^8.18.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      ws:
+        optional: true
+      zod:
+        optional: true
 
   p-cancelable@2.1.1:
     resolution: {integrity: sha512-BZOr3nRQHOntUjTrH8+Lh54smKHoHyur8We1V8DSMVrl5A2malOOwuJRnKRDjSnkoeBh4at6BwEnb5I7Jl31wg==}
@@ -7460,6 +7500,11 @@ snapshots:
   once@1.4.0:
     dependencies:
       wrappy: 1.0.2
+
+  openai@6.37.0(ws@8.20.0)(zod@4.3.6):
+    optionalDependencies:
+      ws: 8.20.0
+      zod: 4.3.6
 
   p-cancelable@2.1.1: {}
 

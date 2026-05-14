@@ -44,11 +44,10 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
   // id so the SCM and Tracker halves can be enabled independently —
   // a tenant might want GH Issues for tracking but BitBucket for SCM.
   'github-issues': createGitHubTrackerPlugin,
-  // Anthropic ships in-box as the canonical built-in executor. The
-  // factory dynamic-imports `@coro/llm-anthropic` so the runner core
-  // never carries a top-level `import` from the plugin (lint-enforced
-  // by `runner-no-claude-imports.test.ts`). Additional executor
-  // plugins (OpenAI, Foundry, Ollama, …) ship as drop-ins under
+  // Executor plugins ship in-box but are dynamic-imported so the
+  // runner core never carries a top-level provider import (lint-
+  // enforced by `runner-no-claude-imports.test.ts`). Additional
+  // executors (Foundry, Ollama, …) can still ship as drop-ins under
   // `~/.coro/plugins/<id>/` and are loaded by the same code path.
   anthropic: async ({ logger, settings }) => {
     if (!settings) {
@@ -56,6 +55,10 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
     }
     const mod = await import('@coro/llm-anthropic')
     return mod.createAnthropicExecutor({ settings, logger })
+  },
+  openai: async ({ logger }) => {
+    const mod = await import('@coro/llm-openai')
+    return mod.createOpenAiExecutor({ logger })
   },
 }
 
@@ -68,7 +71,7 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
 export const BUILTIN_PLUGIN_IDS_BY_KIND: Readonly<Record<'scm' | 'tracker' | 'executor', readonly string[]>> = {
   scm: ['bitbucket', 'github'],
   tracker: ['jira', 'linear', 'github-issues'],
-  executor: ['anthropic'],
+  executor: ['anthropic', 'openai'],
 }
 
 export interface BuiltinPluginMetadata {
@@ -89,6 +92,8 @@ const BUILTIN_PLUGIN_ACTIVATION_HINTS: Readonly<Record<string, string>> = {
     'Built in. Configure Settings > Tracker with provider GitHub and complete the GitHub settings to enable GitHub Issues.',
   anthropic:
     'Built in. Configure Settings > LLM provider with an Anthropic API key, an OAuth token, or the Claude Code login flow to enable it.',
+  openai:
+    'Built in. Configure Settings > LLM provider with an OpenAI API key to enable Responses API execution.',
 }
 
 /**
@@ -113,6 +118,11 @@ export async function listBuiltinPluginMetadata(logger: Logger): Promise<Builtin
       // constructor needs `Settings`.
       const mod = await import('@coro/llm-anthropic')
       out.push({ manifest: mod.ANTHROPIC_MANIFEST, activationHint })
+      continue
+    }
+    if (id === 'openai') {
+      const mod = await import('@coro/llm-openai')
+      out.push({ manifest: mod.OPENAI_MANIFEST, activationHint })
       continue
     }
     const runtime = await factory({ config: {}, logger })

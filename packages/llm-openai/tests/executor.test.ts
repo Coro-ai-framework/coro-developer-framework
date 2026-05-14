@@ -1,0 +1,224 @@
+import { describe, it, expect } from 'vitest'
+import pino from 'pino'
+import { tool, createSdkMcpServer } from '@coro/plugin-sdk'
+import { z } from 'zod'
+import {
+  OpenAiExecutor,
+  createOpenAiExecutor,
+} from '../src/executor'
+import { calculateOpenAiCostUsd } from '../src/models'
+
+const silentLogger = pino({ level: 'silent' })
+
+function makeExecutor() {
+  return createOpenAiExecutor({
+    auth: { apiKey: 'sk-test' },
+    logger: silentLogger,
+  })
+}
+
+describe('OpenAiExecutor — manifest', () => {
+  it('declares id="openai" / kind="executor" / version=1.x', () => {
+    const ex = makeExecutor()
+    expect(ex.manifest.id).toBe('openai')
+    expect(ex.manifest.kind).toBe('executor')
+    expect(ex.kind).toBe('executor')
+    expect(ex.manifest.version).toMatch(/^1\./)
+    expect(ex.manifest.displayName).toContain('OpenAI')
+    expect(ex.manifest.capabilities?.supportsResponsesApi).toBe(true)
+  })
+})
+
+describe('OpenAiExecutor — capabilities', () => {
+  it('reports stateless replay and MCP-backed tool capabilities', () => {
+    const ex = makeExecutor()
+    expect(ex.capabilities).toMatchObject({
+      supportsNativeSubagents: false,
+      supportsClaudeMdNativeWalkUp: false,
+      supportsNativeFileTools: false,
+      supportsSessionResume: false,
+      supportsConversationReplay: true,
+      supportsThinking: true,
+      supportsImageInput: true,
+      maxContextTokens: 400_000,
+    })
+  })
+})
+
+describe('OpenAiExecutor — models', () => {
+  it('returns a curated Responses API model catalogue', () => {
+    const ids = makeExecutor().listModels().map(m => m.id)
+    expect(ids).toContain('gpt-5.5')
+    expect(ids).toContain('gpt-5.3-codex')
+    expect(ids).toContain('gpt-5.4-mini')
+  })
+
+  it('supports OpenAI-family model ids defensively', () => {
+    const ex = makeExecutor()
+    expect(ex.supports('gpt-5.5')).toBe(true)
+    expect(ex.supports('gpt-4.1-mini-2025-04-14')).toBe(true)
+    expect(ex.supports('o4-mini')).toBe(true)
+    expect(ex.supports('claude-sonnet-4-6')).toBe(false)
+    expect(ex.supports('')).toBe(false)
+  })
+
+  it('calculates cost from per-million token pricing', () => {
+    const cost = calculateOpenAiCostUsd('gpt-5.5', {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+      cacheCreationInputTokens: 0,
+    })
+    expect(cost).toBeCloseTo(35.5, 5)
+  })
+})
+
+describe('OpenAiExecutor — healthcheck', () => {
+  it('reports ok=true when apiKey is present', async () => {
+    await expect(makeExecutor().healthcheck()).resolves.toEqual({ ok: true })
+  })
+
+  it('reports ok=false when apiKey is missing', async () => {
+    const ex = createOpenAiExecutor({ auth: {}, logger: silentLogger })
+    const h = await ex.healthcheck()
+    expect(h.ok).toBe(false)
+    expect(h.reason).toMatch(/API key/)
+  })
+})
+
+describe('OpenAiExecutor — executePhase', () => {
+  it('runs a function-tool loop and persists conversationHistory', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const client = {
+      responses: {
+        create: async (params: Record<string, unknown>) => {
+          calls.push(params)
+          if (calls.length === 1) {
+            return {
+              id: 'resp-1',
+              output_text: '',
+              usage: { input_tokens: 10, output_tokens: 2, input_tokens_details: { cached_tokens: 1 } },
+              output: [
+                {
+                  type: 'function_call',
+                  call_id: 'call-1',
+                  name: 'mcp__coro__echo',
+                  arguments: '{"message":"hi"}',
+                },
+              ],
+            }
+          }
+          return {
+            id: 'resp-2',
+            output_text: 'done',
+            status: 'completed',
+            usage: { input_tokens: 5, output_tokens: 3 },
+            output: [
+              { type: 'message', content: [{ type: 'output_text', text: 'done' }] },
+            ],
+          }
+        },
+      },
+    }
+    const coroServer = createSdkMcpServer({
+      name: 'coro',
+      tools: [
+        tool('echo', 'Echo a message.', { message: z.string() }, async ({ message }) => ({
+          content: [{ type: 'text', text: `echo:${message}` }],
+        })),
+      ],
+    })
+    const ex = createOpenAiExecutor({
+      auth: { apiKey: 'sk-test' },
+      logger: silentLogger,
+      client,
+    })
+    const events: unknown[] = []
+    for await (const event of ex.executePhase({
+      systemPrompt: 'system',
+      userPrompt: 'use echo',
+      model: 'gpt-5.4',
+      cwd: process.cwd(),
+      intelligenceDir: process.cwd(),
+      mcpServer: { kind: 'sdk-instance', id: 'coro', instance: coroServer },
+      pluginMcpServers: {},
+      hookPolicy: { allowedTools: null, writeRoots: [process.cwd()] },
+      sessionState: {},
+      maxTurns: 5,
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+
+    expect(calls).toHaveLength(2)
+    expect(calls[0].tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'mcp__coro__echo' }),
+    ]))
+    expect(calls[1].input).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function_call_output', call_id: 'call-1', output: 'echo:hi' }),
+    ]))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'tool_call', toolName: 'mcp__coro__echo' }))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'text', content: 'done' }))
+    const done = events.find(e => typeof e === 'object' && e !== null && (e as { type?: string }).type === 'done')
+    expect(done).toMatchObject({
+      type: 'done',
+      stopReason: 'completed',
+      sessionState: { conversationHistory: expect.any(Array) },
+    })
+  })
+
+  it('blocks disallowed tools before calling the MCP handler', async () => {
+    let handlerCalls = 0
+    const client = {
+      responses: {
+        create: async (params: Record<string, unknown>) => {
+          if (!Array.isArray(params.input) || params.input.some(item => (item as { type?: string }).type === 'function_call_output')) {
+            return { id: 'resp-2', output_text: 'blocked handled', usage: {}, output: [] }
+          }
+          return {
+            id: 'resp-1',
+            output_text: '',
+            usage: {},
+            output: [{ type: 'function_call', call_id: 'call-1', name: 'mcp__coro__danger', arguments: '{}' }],
+          }
+        },
+      },
+    }
+    const coroServer = createSdkMcpServer({
+      name: 'coro',
+      tools: [tool('danger', 'Danger.', {}, async () => {
+        handlerCalls++
+        return { content: [{ type: 'text', text: 'bad' }] }
+      })],
+    })
+    const ex = createOpenAiExecutor({ auth: { apiKey: 'sk-test' }, logger: silentLogger, client })
+    const events: unknown[] = []
+    for await (const event of ex.executePhase({
+      systemPrompt: 'system',
+      userPrompt: 'try danger',
+      model: 'gpt-5.4',
+      cwd: process.cwd(),
+      intelligenceDir: process.cwd(),
+      mcpServer: { kind: 'sdk-instance', id: 'coro', instance: coroServer },
+      pluginMcpServers: {},
+      hookPolicy: { allowedTools: ['mcp__coro__safe'], writeRoots: [process.cwd()] },
+      sessionState: {},
+      maxTurns: 3,
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+    expect(handlerCalls).toBe(0)
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool_result',
+      toolName: 'mcp__coro__danger',
+      isError: true,
+    }))
+  })
+})
+
+describe('OpenAiExecutor — class identity', () => {
+  it('factory returns an instance of OpenAiExecutor', () => {
+    expect(makeExecutor()).toBeInstanceOf(OpenAiExecutor)
+  })
+})
