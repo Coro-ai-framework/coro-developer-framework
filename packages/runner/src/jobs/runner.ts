@@ -267,6 +267,25 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     return
   }
 
+  // Backfill `workflowPhases` for jobs created before the field existed,
+  // or whose persisted snapshot fell out of sync with the workflow file.
+  // This keeps the dashboard's full-pipeline strip (with not-yet-started
+  // "ghost" phases) accurate without requiring developers to recreate jobs.
+  if (workflowConfig) {
+    const expected = workflowConfig.phases.map(p => ({
+      name: p.name,
+      status: p.status,
+      ...(p.interactiveCheckpoint ? { interactiveCheckpoint: true } : {}),
+    }))
+    const current = job.workflowPhases ?? []
+    const sameLength = current.length === expected.length
+    const sameOrder = sameLength && current.every((p, i) => p.name === expected[i]?.name)
+    if (!sameOrder) {
+      await stateBackend.updateJob(job.id, { workflowPhases: expected })
+      job = { ...job, workflowPhases: expected }
+    }
+  }
+
   let liveJob: Job = { ...job }
 
   // Shared mutable context — the MCP server's tool handlers close over these

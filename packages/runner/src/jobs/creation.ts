@@ -190,6 +190,11 @@ export async function buildJobRecord(
     insights: Array.isArray(input.initialInsights) ? [...input.initialInsights] : [],
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],
+    workflowPhases: config.phases.map(p => ({
+      name: p.name,
+      status: p.status,
+      ...(p.interactiveCheckpoint ? { interactiveCheckpoint: true } : {}),
+    })),
     createdAt: now,
     updatedAt: now,
   }

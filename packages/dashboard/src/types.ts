@@ -145,6 +145,13 @@ export interface Job {
   escalationMessage?: string
   /** Attached by the server when fetched via GET /jobs/:jobId. */
   workflowPhases?: WorkflowPhase[] | null
+  /**
+   * Per-phase model override set by the developer from Job Detail.
+   * Populated by `PATCH /jobs/:id/phase-overrides`. The runner consults
+   * this map (keyed by phase name) before falling back to the workflow's
+   * declared `model:` / `tier:` resolution.
+   */
+  phaseModelOverrides?: Record<string, { model: string; provider?: string }>
   /** Present only on campaign jobs. */
   campaignChildren?: CampaignChild[]
   /** Present only on child jobs spawned by a campaign. */

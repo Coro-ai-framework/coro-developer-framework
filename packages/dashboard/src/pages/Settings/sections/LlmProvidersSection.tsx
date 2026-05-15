@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
 import Field from '../../../components/forms/field'
 import { Input } from '../../../components/ui/input'
 import { Button } from '../../../components/ui/button'
-import { ApiError, requestJson } from '../../../lib/http'
+import { requestJson } from '../../../lib/http'
+import ModelPicker from '../../../components/llm/ModelPicker'
+import {
+  useProviderModels,
+  type ProviderModelDescriptor,
+} from '../../../components/llm/useProviderModels'
 import {
   useSettings,
   type LlmAliasConfig,
@@ -13,15 +18,6 @@ import {
 } from '../SettingsContext'
 import { evaluateReadiness } from '../readiness'
 import PluginConfigCard from './PluginConfigCard'
-
-interface ModelDescriptor {
-  id: string
-  displayName: string
-}
-
-interface ModelsResponse {
-  models?: ModelDescriptor[]
-}
 
 /** A single workflow-phase reference for a given alias name. */
 interface AliasUsage {
@@ -34,8 +30,34 @@ interface DiscoveredWorkflowsResponse {
   workflows: Array<{
     id: string
     name: string
-    phases?: Array<{ name: string; model?: string }>
+    phases?: Array<{ name: string; model?: string; tier?: string }>
   }>
+}
+
+/**
+ * Canonical capability-tier aliases every LLM plugin publishes
+ * (`tier:planning` / `tier:coding` / `tier:mini`). These are the
+ * baseline aliases the resolver falls through to when a workflow
+ * phase doesn't pin a `model:`. Surfaced as the always-present top
+ * group in the aliases editor so a fresh install can answer the
+ * question "what do I need to set?" in one glance.
+ */
+const TIER_ALIAS_KEYS = ['tier:planning', 'tier:coding', 'tier:mini'] as const
+
+type AliasKind = 'tier' | 'declared' | 'custom'
+
+/**
+ * Bucket an alias name into one of the three editor groups.
+ *  - `tier`     — starts with `tier:` (canonical capability slot).
+ *  - `declared` — referenced by a workflow phase (either via `model:`
+ *                 or via `tier:` indirection picked up by
+ *                 {@link useAliasUsages}).
+ *  - `custom`   — user-invented; not referenced anywhere yet.
+ */
+function kindOf(name: string, referenced: Set<string>): AliasKind {
+  if (name.startsWith('tier:')) return 'tier'
+  if (referenced.has(name)) return 'declared'
+  return 'custom'
 }
 
 /**
@@ -64,13 +86,22 @@ function useAliasUsages(): {
         const data = await requestJson<DiscoveredWorkflowsResponse>('/workflows')
         if (cancelled) return
         const map = new Map<string, AliasUsage[]>()
+        const push = (key: string, usage: AliasUsage) => {
+          const list = map.get(key) ?? []
+          list.push(usage)
+          map.set(key, list)
+        }
         for (const wf of data.workflows ?? []) {
           for (const phase of wf.phases ?? []) {
+            const usage = { workflowId: wf.id, workflowName: wf.name, phaseName: phase.name }
             const m = (phase.model ?? '').trim()
-            if (!m) continue
-            const list = map.get(m) ?? []
-            list.push({ workflowId: wf.id, workflowName: wf.name, phaseName: phase.name })
-            map.set(m, list)
+            if (m) push(m, usage)
+            // A phase always has a tier (defaults to 'coding' on the
+            // server side), so every phase contributes to a `tier:*`
+            // usage entry. This is what makes the tier rows in the
+            // editor self-explanatory: "Used in: job · planning, …".
+            const t = (phase.tier ?? '').trim()
+            if (t) push(`tier:${t}`, usage)
           }
         }
         setUsages(map)
@@ -208,26 +239,10 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
     })
   }
 
-  // Cached model lists per provider. `null` while loading; `[]` on
-  // error or empty so the select still renders (free-form fallback).
-  const [modelsByProvider, setModelsByProvider] = useState<
-    Record<string, ModelDescriptor[] | null | undefined>
-  >({})
-
-  const loadModels = useCallback(async (providerId: string) => {
-    if (!providerId) return
-    if (modelsByProvider[providerId] !== undefined) return
-    setModelsByProvider(prev => ({ ...prev, [providerId]: null }))
-    try {
-      const data = await requestJson<ModelsResponse>(`/plugins/${encodeURIComponent(providerId)}/models`)
-      setModelsByProvider(prev => ({ ...prev, [providerId]: data.models ?? [] }))
-    } catch (err) {
-      // 404/400 from the runner means the provider doesn't expose a
-      // model list yet — surface a free-form Input rather than blocking.
-      if (!(err instanceof ApiError)) throw err
-      setModelsByProvider(prev => ({ ...prev, [providerId]: [] }))
-    }
-  }, [modelsByProvider])
+  // Per-provider model cache, shared with every other LLM picker
+  // surface (e.g. PhaseModelPopover on Job Detail). The hook owns
+  // network + state machine; we just pass it through to ModelPicker.
+  const { modelsByProvider, loadModels } = useProviderModels()
 
   // Eagerly hydrate model lists for every provider already used in the
   // alias table so the selects render with options on first paint.
@@ -246,13 +261,57 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
   // "Used in" footer.
   const { usagesByAlias, referencedNames } = useAliasUsages()
 
+  // Set used by `kindOf` to bucket each alias.
+  const referencedSet = useMemo(() => new Set(referencedNames), [referencedNames])
+
   // Names that workflows reference but the user hasn't yet defined as
   // an alias — these are the highest-value suggestions when adding a
   // new alias because they're literally what the workflows expect.
   const undefinedReferenced = useMemo(
-    () => referencedNames.filter(n => !(n in draft.llmAliases)),
+    () => referencedNames.filter(n => !(n in draft.llmAliases) && !n.startsWith('tier:')),
     [referencedNames, draft.llmAliases],
   )
+
+  // Tier rows that the user hasn't defined yet — render them as
+  // "ghost" rows so the editor can prompt the user to define them
+  // without forcing them to read documentation first.
+  const missingTierKeys = useMemo(
+    () => TIER_ALIAS_KEYS.filter(k => !(k in draft.llmAliases)),
+    [draft.llmAliases],
+  )
+
+  // Partition the existing aliases into the three rendering groups.
+  // Insertion order is preserved within each bucket so renames don't
+  // visually scramble the list.
+  const grouped = useMemo(() => {
+    const tiers: Array<[string, LlmAliasConfig]> = []
+    const declared: Array<[string, LlmAliasConfig]> = []
+    const custom: Array<[string, LlmAliasConfig]> = []
+    for (const entry of aliasEntries) {
+      const k = kindOf(entry[0], referencedSet)
+      if (k === 'tier') tiers.push(entry)
+      else if (k === 'declared') declared.push(entry)
+      else custom.push(entry)
+    }
+    return { tiers, declared, custom }
+  }, [aliasEntries, referencedSet])
+
+  // Custom group is collapsed by default — power-user surface, no
+  // need to dominate first-paint for the common case where the user
+  // only fills in tiers.
+  const [showCustom, setShowCustom] = useState(false)
+
+  // Define a missing tier on click — pre-fills provider with the
+  // current default so the user only has to pick a model.
+  const defineTier = (tierKey: string) => {
+    updateAliases({
+      ...draft.llmAliases,
+      [tierKey]: {
+        provider: defaultProviderValue || enabledIds[0] || '',
+        model: '',
+      },
+    })
+  }
 
   // Shared datalist id so every alias-name input pulls from the same
   // suggestion pool.
@@ -302,34 +361,96 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
         </Field>
       </div>
 
-      <div className="rounded-2xl border border-line bg-overlay/30 px-4 py-3.5 space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium text-fg">Aliases</div>
-            <div className="text-[12px] text-fg-muted">
-              Workflow shorthands like <span className="font-mono">planning</span>, <span className="font-mono">coding</span>, or <span className="font-mono">evaluation</span> map to a concrete <span className="font-mono">provider/model</span> pair.
-            </div>
+      <div className="rounded-2xl border border-line bg-overlay/30 px-4 py-3.5 space-y-4">
+        <div>
+          <div className="text-sm font-medium text-fg">Aliases</div>
+          <div className="text-[12px] text-fg-muted">
+            Workflow shorthands that map to a concrete <span className="font-mono">provider/model</span> pair.
+            Three groups, in increasing specificity:
           </div>
-          <Button type="button" size="sm" variant="secondary" onClick={addAlias} disabled={enabledIds.length === 0}>
-            <Plus />
-            Add alias
-          </Button>
+          <ul className="mt-1.5 space-y-0.5 text-[12px] text-fg-subtle">
+            <li>
+              <span className="font-medium text-fg-muted">Tiers</span> — capability slots every workflow defaults to (planning / coding / mini).
+            </li>
+            <li>
+              <span className="font-medium text-fg-muted">Workflow-declared</span> — alias names a specific workflow phase pins via <span className="font-mono">model:</span>.
+            </li>
+            <li>
+              <span className="font-medium text-fg-muted">Custom</span> — anything you've added that no workflow references yet.
+            </li>
+          </ul>
         </div>
 
-        {aliasEntries.length === 0 ? (
-          <SettingsNotice tone="neutral">
-            No aliases configured. The runner seeds defaults (planning/coding/evaluation) on first save if you leave this empty.
-          </SettingsNotice>
-        ) : (
-          <div className="space-y-2">
-            {aliasEntries.map(([name, row]) => (
+        {/* ── Tiers (always rendered) ─────────────────────────────────── */}
+        <AliasGroup
+          title="Tiers"
+          subtitle="Workflow defaults. Every install needs these — workflows fall back to the matching tier when a phase doesn't pin a model."
+        >
+          {grouped.tiers.map(([name, row]) => (
+            <AliasRow
+              key={name}
+              name={name}
+              row={row}
+              kind="tier"
+              nameLocked
+              enabledIds={enabledIds}
+              executorPlugins={executorPlugins}
+              modelsByProvider={modelsByProvider}
+              loadModels={loadModels}
+              usages={usagesByAlias.get(name) ?? []}
+              aliasNameDatalistId={aliasNameDatalistId}
+              existingAliasNames={Object.keys(draft.llmAliases)}
+              onRename={renameAlias}
+              onUpdate={updateAliasField}
+              onRemove={removeAlias}
+            />
+          ))}
+          {missingTierKeys.length > 0 ? (
+            <div className="space-y-1.5">
+              {missingTierKeys.map(tierKey => (
+                <div
+                  key={tierKey}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-warning-400/50 bg-warning-50/5 px-3 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="font-mono text-sm text-fg">{tierKey}</div>
+                    <div className="text-[11px] text-fg-subtle">
+                      Not defined in this draft. Active LLM plugins re-seed tier defaults
+                      on every runner start — click Define to pin one explicitly.
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => defineTier(tierKey)}
+                    disabled={enabledIds.length === 0}
+                  >
+                    Define
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </AliasGroup>
+
+        {/* ── Workflow-declared (only when present) ───────────────────── */}
+        {grouped.declared.length > 0 || undefinedReferenced.length > 0 ? (
+          <AliasGroup
+            title="Workflow-declared"
+            subtitle="Alias names referenced explicitly by a workflow phase via its model: field."
+          >
+            {grouped.declared.map(([name, row]) => (
               <AliasRow
                 key={name}
                 name={name}
                 row={row}
+                kind="declared"
+                nameLocked
                 enabledIds={enabledIds}
                 executorPlugins={executorPlugins}
-                models={modelsByProvider[row.provider]}
+                modelsByProvider={modelsByProvider}
+              loadModels={loadModels}
                 usages={usagesByAlias.get(name) ?? []}
                 aliasNameDatalistId={aliasNameDatalistId}
                 existingAliasNames={Object.keys(draft.llmAliases)}
@@ -338,8 +459,105 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
                 onRemove={removeAlias}
               />
             ))}
-          </div>
-        )}
+            {undefinedReferenced.length > 0 ? (
+              <div className="space-y-1.5">
+                {undefinedReferenced.map(name => {
+                  const usages = usagesByAlias.get(name) ?? []
+                  return (
+                    <div
+                      key={name}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-warning-400/50 bg-warning-50/5 px-3 py-2.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-mono text-sm text-fg">{name}</div>
+                        <div className="text-[11px] text-fg-subtle">
+                          Needs definition · used by{' '}
+                          {usages.map((u, i) => (
+                            <span key={`${u.workflowId}-${u.phaseName}-${i}`}>
+                              {i > 0 ? ', ' : null}
+                              <span className="font-mono">{u.workflowId}</span>
+                              <span className="opacity-70"> · {u.phaseName}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() =>
+                          updateAliases({
+                            ...draft.llmAliases,
+                            [name]: {
+                              provider: defaultProviderValue || enabledIds[0] || '',
+                              model: '',
+                            },
+                          })
+                        }
+                        disabled={enabledIds.length === 0}
+                      >
+                        Define
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+          </AliasGroup>
+        ) : null}
+
+        {/* ── Custom (collapsed by default) ───────────────────────────── */}
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setShowCustom(s => !s)}
+            className="flex w-full items-center justify-between gap-2 text-left text-sm font-medium text-fg-muted hover:text-fg"
+          >
+            <span>
+              Custom <span className="text-fg-subtle">({grouped.custom.length})</span>
+            </span>
+            <span className="text-[11px] text-fg-subtle">{showCustom ? 'Hide' : 'Show'}</span>
+          </button>
+          {showCustom ? (
+            <>
+              <div className="text-[12px] text-fg-subtle">
+                Free-form aliases not referenced by any workflow. Useful for ad-hoc experiments.
+              </div>
+              <div className="space-y-2">
+                {grouped.custom.map(([name, row]) => (
+                  <AliasRow
+                    key={name}
+                    name={name}
+                    row={row}
+                    kind="custom"
+                    enabledIds={enabledIds}
+                    executorPlugins={executorPlugins}
+                    modelsByProvider={modelsByProvider}
+              loadModels={loadModels}
+                    usages={usagesByAlias.get(name) ?? []}
+                    aliasNameDatalistId={aliasNameDatalistId}
+                    existingAliasNames={Object.keys(draft.llmAliases)}
+                    onRename={renameAlias}
+                    onUpdate={updateAliasField}
+                    onRemove={removeAlias}
+                  />
+                ))}
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={addAlias}
+                  disabled={enabledIds.length === 0}
+                >
+                  <Plus />
+                  Add alias
+                </Button>
+              </div>
+            </>
+          ) : null}
+        </div>
 
         {/*
           Shared <datalist> for every alias-name input. Suggests names
@@ -377,6 +595,33 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
   )
 }
 
+// ── AliasGroup ────────────────────────────────────────────────────
+//
+// Tiny presentational wrapper for one of the three alias buckets.
+// Pulled out so the section markup stays declarative ("Tiers, then
+// Workflow-declared, then Custom") instead of duplicating heading +
+// subtitle + list-container styles per group.
+
+function AliasGroup({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string
+  subtitle: string
+  children: ReactNode
+}) {
+  return (
+    <div className="space-y-2">
+      <div>
+        <div className="text-sm font-medium text-fg">{title}</div>
+        <div className="text-[12px] text-fg-subtle">{subtitle}</div>
+      </div>
+      <div className="space-y-2">{children}</div>
+    </div>
+  )
+}
+
 // ── AliasRow ──────────────────────────────────────────────────────
 //
 // Single row in the alias table. Lives in its own component so the
@@ -394,9 +639,29 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
 interface AliasRowProps {
   name: string
   row: LlmAliasConfig
+  /**
+   * Which group is this row rendered in? Drives subtle copy
+   * differences (the empty "Used in" footer reads differently for
+   * tier rows vs custom rows) and gating (delete is hidden for
+   * tier rows because removing a tier breaks every workflow that
+   * doesn't pin a model).
+   */
+  kind: AliasKind
+  /**
+   * When true, the alias-name input is read-only. Used for tier and
+   * declared rows whose names are dictated by the workflow contract
+   * — renaming them would silently de-reference the workflow.
+   */
+  nameLocked?: boolean
   enabledIds: string[]
   executorPlugins: PluginEntry[]
-  models: ModelDescriptor[] | null | undefined
+  /**
+   * Per-provider model cache and loader, threaded through to the
+   * embedded {@link ModelPicker}. Lifted to the parent so a single
+   * fetch is shared across every alias row.
+   */
+  modelsByProvider: Record<string, ProviderModelDescriptor[] | null | undefined>
+  loadModels: (providerId: string) => Promise<void>
   usages: AliasUsage[]
   aliasNameDatalistId: string
   existingAliasNames: string[]
@@ -408,9 +673,12 @@ interface AliasRowProps {
 function AliasRow({
   name,
   row,
+  kind,
+  nameLocked = false,
   enabledIds,
   executorPlugins,
-  models,
+  modelsByProvider,
+  loadModels,
   usages,
   aliasNameDatalistId,
   existingAliasNames,
@@ -448,8 +716,6 @@ function AliasRow({
   }
 
   const helpId = `alias-help-${name}`
-  const modelLoading = models === null
-  const modelEmpty = Array.isArray(models) && models.length === 0
 
   return (
     <div className="space-y-1.5">
@@ -457,7 +723,9 @@ function AliasRow({
         <Field label="Alias">
           <Input
             value={draftName}
-            list={aliasNameDatalistId}
+            list={nameLocked ? undefined : aliasNameDatalistId}
+            readOnly={nameLocked}
+            tabIndex={nameLocked ? -1 : undefined}
             onChange={e => setDraftName(e.target.value)}
             onBlur={commitRename}
             onKeyDown={e => {
@@ -472,61 +740,45 @@ function AliasRow({
             placeholder="coding"
             aria-invalid={collides || isEmpty || undefined}
             aria-describedby={helpId}
-            className={collides || isEmpty ? 'border-danger-400/60' : undefined}
+            className={
+              [
+                collides || isEmpty ? 'border-danger-400/60' : '',
+                nameLocked ? 'cursor-default bg-overlay/40 font-mono' : '',
+              ].filter(Boolean).join(' ') || undefined
+            }
           />
         </Field>
-        <Field label="Provider">
-          <select
-            value={row.provider}
-            onChange={e => onUpdate(name, { provider: e.target.value, model: '' })}
-            className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg"
-          >
-            <option value="">(select)</option>
-            {enabledIds.map(id => (
-              <option key={id} value={id}>
-                {executorPlugins.find(p => p.manifest.id === id)?.manifest.displayName ?? id}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Model">
-          <select
-            value={row.model}
-            onChange={e => onUpdate(name, { model: e.target.value })}
-            disabled={!row.provider || modelLoading || modelEmpty}
-            className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg disabled:opacity-60"
-          >
-            <option value="">
-              {!row.provider
-                ? '(pick a provider first)'
-                : modelLoading
-                  ? 'Loading…'
-                  : modelEmpty
-                    ? '(no models published by this provider)'
-                    : '(select)'}
-            </option>
-            {/*
-              Include the currently-saved model even if it isn't in
-              the freshly-fetched catalogue, so an out-of-date config
-              still renders its own value instead of silently
-              clearing.
-            */}
-            {row.model && !(models ?? []).some(m => m.id === row.model) ? (
-              <option value={row.model}>{row.model} (unknown)</option>
-            ) : null}
-            {(models ?? []).map(m => (
-              <option key={m.id} value={m.id}>
-                {m.displayName}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <div className="sm:col-span-2">
+          <ModelPicker
+            value={{ provider: row.provider, model: row.model }}
+            onChange={next => {
+              // ModelPicker emits both fields together. We forward the
+              // patch wholesale so a provider switch correctly clears
+              // the model in the saved config (matches the previous
+              // inline-select behaviour).
+              onUpdate(name, { provider: next.provider, model: next.model })
+            }}
+            providers={enabledIds.map(id => ({
+              id,
+              displayName:
+                executorPlugins.find(p => p.manifest.id === id)?.manifest.displayName ?? id,
+            }))}
+            modelsByProvider={modelsByProvider}
+            loadModels={loadModels}
+          />
+        </div>
         <Button
           type="button"
           variant="ghost"
           size="sm"
           onClick={() => onRemove(name)}
           aria-label={`Remove ${name}`}
+          // Tier aliases are part of the workflow contract — removing
+          // one would break every workflow that doesn't pin a model.
+          // Render the slot as disabled instead of yanking it so the
+          // grid columns stay aligned across rows.
+          disabled={kind === 'tier'}
+          title={kind === 'tier' ? 'Tier aliases are required by every workflow.' : undefined}
         >
           <Trash2 />
         </Button>

@@ -18,6 +18,7 @@ import JobControlBar from '../components/JobControlBar'
 import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
 import WorkflowFlow from '../components/WorkflowFlow'
+import PhaseModelPanel from '../components/jobs/PhaseModelPanel'
 import ErrorState from '../components/common/error-state'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
@@ -448,11 +449,13 @@ function WorkflowSnapshotCard({
   selectedPhase,
   phases,
   onSelectPhase,
+  onMutated,
 }: {
   job: Job
   selectedPhase: string | null
   phases: WorkflowPhase[]
   onSelectPhase: (phase: string) => void
+  onMutated: () => void
 }) {
   const selectedPhaseName = selectedPhase ?? job.phase
   const selectedPhaseArtifacts = (job.artifacts ?? []).filter(artifact => artifact.phase === selectedPhaseName)
@@ -515,6 +518,10 @@ function WorkflowSnapshotCard({
                 ))}
               </div>
             )}
+          </div>
+
+          <div className="mt-4">
+            <PhaseModelPanel job={job} phase={selectedPhaseName} onMutated={onMutated} />
           </div>
         </div>
       </CardContent>
@@ -1050,6 +1057,7 @@ export default function JobDetail() {
         selectedPhase={selectedPhase}
         phases={workflowPhases}
         onSelectPhase={setSelectedPhase}
+        onMutated={() => void refetch()}
       />
 
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>

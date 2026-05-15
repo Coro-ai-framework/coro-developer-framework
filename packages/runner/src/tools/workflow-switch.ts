@@ -159,6 +159,14 @@ export async function switchWorkflow(
     status: nextPhase,
     params,
     workflowPathHistory: history,
+    // Refresh the cached phase list so the dashboard's workflow strip
+    // reflects the new pipeline (including not-yet-started ghost
+    // phases) immediately after the switch.
+    workflowPhases: resolved.config.phases.map(p => ({
+      name: p.name,
+      status: p.status,
+      ...(p.interactiveCheckpoint ? { interactiveCheckpoint: true } : {}),
+    })),
     // Force a fresh Claude session — the new workflow has a different
     // system prompt / agent role, so resuming the prior transcript would
     // confuse the model.

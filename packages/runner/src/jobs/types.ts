@@ -253,6 +253,18 @@ export interface Job {
   phaseUsage: PhaseUsage[]
 
   /**
+   * Full ordered phase list parsed from the workflow front-matter at job
+   * creation. Lets the dashboard render the entire pipeline (including
+   * not-yet-started phases as ghosts) without re-parsing the workflow.
+   * Optional for back-compat with older persisted jobs.
+   */
+  workflowPhases?: Array<{
+    name: string
+    status: string
+    interactiveCheckpoint?: boolean
+  }>
+
+  /**
    * Agent SDK session ID for this job. Used to resume conversations
    * when the job is un-parked by a webhook event.
    */
