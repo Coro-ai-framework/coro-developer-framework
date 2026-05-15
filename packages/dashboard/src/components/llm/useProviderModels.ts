@@ -3,17 +3,21 @@ import { ApiError, requestJson } from '../../lib/http'
 
 /**
  * Minimal model descriptor as exposed by `GET /plugins/:id/models`.
- * Pricing fields are optional and reserved for the cost-preview work
- * (Phase 5 of the alias-UX plan); consumers should treat them as
- * potentially-undefined for the foreseeable future.
+ * Mirrors the SDK's `ExecutorModelDescriptor` (USD per million tokens).
+ * Pricing is best-effort — providers that report cost authoritatively
+ * (Anthropic via the Agent SDK) may still publish a static snapshot
+ * here purely for pre-run preview; runtime accounting always wins.
  */
 export interface ProviderModelDescriptor {
   id: string
   displayName: string
+  contextTokens?: number
+  tier?: 'planning' | 'coding' | 'mini'
   pricing?: {
-    inputPer1kUsd?: number
-    outputPer1kUsd?: number
-    cacheReadPer1kUsd?: number
+    inputPerMTokens?: number
+    outputPerMTokens?: number
+    cacheReadPerMTokens?: number
+    cacheCreationPerMTokens?: number
   }
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import Field from '../forms/field'
+import { findModel, formatOptionPriceTag, formatPricingHint } from './pricing'
 import type { ProviderModelDescriptor } from './useProviderModels'
 
 /**
@@ -93,6 +94,11 @@ export default function ModelPicker({
   )
 
   const currentEncoded = encode(value.provider, value.model)
+  // Lookup pricing for the currently selected model so we can render
+  // a small "≈ $/M tok" hint under the dropdown. Best-effort — many
+  // providers omit pricing.
+  const selectedModel = findModel(modelsByProvider, value.provider, value.model)
+  const pricingHint = formatPricingHint(selectedModel)
   // The saved value may not match any hydrated catalogue (e.g. older
   // config or provider currently disabled). Render it as a sticky
   // option so the select shows the user what they have configured.
@@ -130,15 +136,23 @@ export default function ModelPicker({
           if (!models || models.length === 0) return null
           return (
             <optgroup key={p.id} label={p.displayName}>
-              {models.map(m => (
-                <option key={`${p.id}::${m.id}`} value={encode(p.id, m.id)}>
-                  {m.displayName}
-                </option>
-              ))}
+              {models.map(m => {
+                const tag = formatOptionPriceTag(m)
+                return (
+                  <option key={`${p.id}::${m.id}`} value={encode(p.id, m.id)}>
+                    {tag ? `${m.displayName} — ${tag}` : m.displayName}
+                  </option>
+                )
+              })}
             </optgroup>
           )
         })}
       </select>
+      {pricingHint ? (
+        <div className="mt-1 text-[11px] text-fg-subtle" title="Static pricing hint published by the provider plugin. Runtime accounting always uses actual reported cost.">
+          {pricingHint}
+        </div>
+      ) : null}
     </Field>
   )
 }

@@ -3,6 +3,7 @@ import { Loader2, Pencil, RotateCw, X } from 'lucide-react'
 import { Button } from '../ui/button'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 import ModelPicker from '../llm/ModelPicker'
+import { findModel, formatUsd, projectPhaseCostUsd } from '../llm/pricing'
 import { useExecutorPlugins } from '../llm/useExecutorPlugins'
 import { useProviderModels } from '../llm/useProviderModels'
 import type { Job } from '../../types'
@@ -61,6 +62,24 @@ export default function PhaseModelPanel({ job, phase, onMutated }: PhaseModelPan
     const matches = (job.phaseUsage ?? []).filter(p => p.phase === phase)
     return matches.length > 0 ? matches[matches.length - 1].model : null
   }, [job.phaseUsage, phase])
+
+  // Most-recent recorded usage for this phase — feeds the cost-delta
+  // preview that appears under the picker when the developer is
+  // considering a different model for an already-run phase.
+  const lastUsage = useMemo(() => {
+    const matches = (job.phaseUsage ?? []).filter(p => p.phase === phase)
+    return matches.length > 0 ? matches[matches.length - 1] : null
+  }, [job.phaseUsage, phase])
+
+  // Cost delta: project the recorded workload against the candidate
+  // pricing and compare to the actually-billed cost. Only meaningful
+  // when (a) the phase has run at least once and (b) the candidate
+  // model has pricing published.
+  const draftDescriptor = findModel(modelsByProvider, draft.provider, draft.model)
+  const projectedCost = projectPhaseCostUsd(draftDescriptor, lastUsage ?? undefined)
+  const originalCost = lastUsage?.costUsd ?? null
+  const deltaCost
+    = projectedCost != null && originalCost != null ? projectedCost - originalCost : null
 
   const dirty = useMemo(() => {
     return (draft.provider || '') !== (override?.provider ?? '')
@@ -215,6 +234,31 @@ export default function PhaseModelPanel({ job, phase, onMutated }: PhaseModelPan
               </button>
             </div>
           )}
+
+          {/* Cost delta preview — only when the phase has already run
+              once and the candidate model carries pricing. Comparing
+              against the recorded workload (input/output/cache tokens). */}
+          {projectedCost != null && originalCost != null && lastUsage ? (
+            <div className="text-[11px] text-fg-subtle">
+              For this phase's last run ({lastUsage.inputTokens.toLocaleString()} in /{' '}
+              {lastUsage.outputTokens.toLocaleString()} out tokens):{' '}
+              <span className="text-fg">${formatUsd(originalCost)}</span> →{' '}
+              <span className="text-fg">${formatUsd(projectedCost)}</span>
+              {deltaCost != null ? (
+                <span
+                  className={
+                    deltaCost > 0
+                      ? 'ml-1 text-warning-400'
+                      : deltaCost < 0
+                        ? 'ml-1 text-success-400'
+                        : 'ml-1 text-fg-subtle'
+                  }
+                >
+                  ({deltaCost >= 0 ? '+' : '−'}${formatUsd(Math.abs(deltaCost))})
+                </span>
+              ) : null}
+            </div>
+          ) : null}
 
           {isLivePhase && isJobRunning ? (
             <div className="rounded-lg border border-warning-400/30 bg-warning-500/5 px-2.5 py-1.5 text-[11px] leading-4 text-warning-100">

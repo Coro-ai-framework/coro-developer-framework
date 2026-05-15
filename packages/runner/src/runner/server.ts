@@ -35,6 +35,7 @@ import { resolveDashboardDist } from '../dashboard-dist'
 import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata, BUILTIN_PLUGIN_IDS_BY_KIND } from '../plugins/builtin'
 import { discoverWorkflows } from '../workflow-discovery'
+import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
 import { inferKind, validateArtefact } from '../intelligence-validator'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
@@ -994,6 +995,44 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   // ── Job CRUD ────────────────────────────────────────────────────────────
 
+  /**
+   * Read-time backfill for `Job.workflowPhases`. The dashboard's full-
+   * pipeline strip (with not-yet-started "ghost" phases) renders from
+   * this snapshot; jobs created before the field existed have it
+   * missing, and jobs whose workflow file gained / lost a phase
+   * mid-life have it out of date. We resynthesise from the resolved
+   * workflow config and persist on first read so the next refetch is
+   * cheap. The dispatch-time backfill in `runJob` covers running jobs;
+   * this covers parked / mid-LLM-call jobs that haven't ticked since
+   * the field was introduced.
+   */
+  async function enrichWorkflowPhasesIfMissing(job: Job): Promise<Job> {
+    if (!job.workflowPath) return job
+    try {
+      const resolved = await loadWorkflowConfigFromRoots(
+        job.workflowPath,
+        [getBaseLayerRoot()],
+        logger,
+      )
+      if (!resolved) return job
+      const expected = resolved.config.phases.map(p => ({
+        name: p.name,
+        status: p.status,
+        ...(p.interactiveCheckpoint ? { interactiveCheckpoint: true } : {}),
+      }))
+      const current = job.workflowPhases ?? []
+      const sameOrder
+        = current.length === expected.length
+        && current.every((p, i) => p.name === expected[i]?.name)
+      if (sameOrder) return job
+      await stateBackend.updateJob(job.id, { workflowPhases: expected })
+      return { ...job, workflowPhases: expected }
+    } catch (err) {
+      logger.warn({ err, jobId: job.id }, 'Workflow-phase backfill skipped')
+      return job
+    }
+  }
+
   app.get('/jobs', async (req: Request, res: Response) => {
     try {
       const parentId = typeof req.query.campaignParentId === 'string' && req.query.campaignParentId.length > 0
@@ -1018,8 +1057,15 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   app.get('/jobs/:jobId', async (req: Request, res: Response) => {
     try {
       const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
-      const job = await stateBackend.getJob(jobId)
+      let job = await stateBackend.getJob(jobId)
       if (!job) { res.status(404).json({ error: 'Job not found' }); return }
+      // Opportunistic backfill of `workflowPhases` for legacy jobs (or
+      // jobs whose snapshot fell out of sync with the workflow file).
+      // Mirrors the dispatch-time backfill in `runJob`, but fires from
+      // a plain HTTP read so the dashboard ghost-phase strip lights up
+      // for jobs currently parked / mid-LLM-call without waiting for a
+      // phase boundary.
+      job = await enrichWorkflowPhasesIfMissing(job)
       // For campaign parent jobs, enrich each registered child's entry
       // with a cheap summary of the dispatched child Job (phase, status,
       // tokens, PRs). Saves the dashboard a fan-out when rendering the

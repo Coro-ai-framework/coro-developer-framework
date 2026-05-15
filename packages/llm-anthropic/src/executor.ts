@@ -83,9 +83,13 @@ const ANTHROPIC_PLUGIN_ID = 'anthropic' as const
  *   - `resolveExecutor({ model })` model-→-provider inference.
  *   - The conformance harness to validate `supports()` consistency.
  *
- * Pricing fields are intentionally omitted — Anthropic reports
- * `total_cost_usd` directly on every result event, so we trust upstream
- * accounting and do not maintain a parallel pricing table.
+ * Pricing is published purely as a **pre-run preview hint** for the
+ * dashboard cost preview. Runtime accounting still trusts the
+ * `total_cost_usd` field the Anthropic Agent SDK reports on every
+ * result event — we do not derive cost from these tables. Numbers are
+ * USD per million tokens, indexed to Anthropic's published price list
+ * for the closest current-generation tier; out-of-date by a few
+ * percent is fine for preview, never for invoicing.
  */
 const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
   // Current generation (4.6/4.7) — dateless IDs are pinned snapshots,
@@ -96,6 +100,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     contextTokens: 1_000_000,
     tier: 'planning',
     supportsThinking: true,
+    pricing: { inputPerMTokens: 15, outputPerMTokens: 75, cacheReadPerMTokens: 1.5 },
   },
   {
     id: 'claude-sonnet-4-6',
@@ -103,6 +108,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     contextTokens: 1_000_000,
     tier: 'coding',
     supportsThinking: true,
+    pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
   },
   {
     id: 'claude-haiku-4-5',
@@ -110,6 +116,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     contextTokens: 200_000,
     tier: 'mini',
     supportsThinking: true,
+    pricing: { inputPerMTokens: 0.8, outputPerMTokens: 4, cacheReadPerMTokens: 0.08 },
   },
   // Previous generation — kept available for cost/latency tuning and
   // for tenants that have pinned older IDs in their workflow front matter.
@@ -119,6 +126,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     contextTokens: 200_000,
     tier: 'coding',
     supportsThinking: true,
+    pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
   },
   {
     id: 'claude-opus-4-6',
@@ -126,6 +134,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     contextTokens: 200_000,
     tier: 'planning',
     supportsThinking: true,
+    pricing: { inputPerMTokens: 15, outputPerMTokens: 75, cacheReadPerMTokens: 1.5 },
   },
 ]
 
