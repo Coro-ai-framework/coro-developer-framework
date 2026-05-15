@@ -13,10 +13,16 @@ There is **no** `mcp__bitbucket__*` tool surface. Always go through the
 generic `scm_*` tools when the active SCM is BitBucket.
 
 ## Tokens
-- **Atlassian API tokens** (start with `ATATT…`): the git username **must** be
-  `x-token-auth` and the token goes in the password slot.
-- **Legacy app passwords**: use the workspace member's own username + the
-  app password.
+- **Atlassian API tokens** (start with `ATATT…`): for git over HTTPS the
+  username **must** be `x-bitbucket-api-token-auth` (the REST API also
+  accepts the user's email, but git does not — this asymmetry is an
+  Atlassian quirk, not a coro choice). The runner auto-rewrites the
+  username to `x-bitbucket-api-token-auth` for clone URLs when the
+  configured username is an email and the token is `ATATT…`.
+- **Legacy repository access tokens**: username `x-token-auth`, token in the
+  password slot.
+- **Legacy app passwords**: workspace member's own username + the app
+  password.
 
 The `scm_get_clone_info` MCP tool returns a fully-credentialed HTTPS URL —
 prefer that over hand-rolling URLs in agent prompts.

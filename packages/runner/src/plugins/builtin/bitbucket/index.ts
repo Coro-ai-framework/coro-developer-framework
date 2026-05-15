@@ -63,10 +63,13 @@ import type {
 // single string means the user sees the *exact* same instructions
 // regardless of where the misconfiguration is caught.
 const USERNAME_HELP =
-  'Use the Atlassian account email for App Passwords / Atlassian API tokens, ' +
+  'Use your Atlassian account email for App Passwords or Atlassian API tokens (`ATATT…`), ' +
   '`x-token-auth` for legacy repository access tokens, or ' +
   '`x-bitbucket-api-token-auth` for Bitbucket-scoped API tokens. ' +
-  'A display name (e.g. "Jane Doe") will 401 every request.'
+  'A display name (e.g. "Jane Doe") will 401 every request. ' +
+  'When the token starts with `ATATT…` and the username is an email, coro automatically uses ' +
+  '`x-bitbucket-api-token-auth` for git over HTTPS — Atlassian requires that synthetic username ' +
+  'for git even though the REST API accepts the email.'
 
 const bbConfigSchema = z.object({
   workspace: z
@@ -102,6 +105,22 @@ export type BitBucketPluginConfig = z.infer<typeof bbConfigSchema>
 // `x-*-auth` usernames used by repository / API tokens.
 function looksLikeBitbucketUsername(value: string): boolean {
   return value.includes('@') || /^x-[\w-]+-auth$/.test(value)
+}
+
+// Atlassian API tokens (ATATT-prefixed) have a notorious asymmetry:
+// the REST API accepts them paired with the user's email, but git
+// over HTTPS requires the synthetic username `x-bitbucket-api-token-auth`
+// instead. Users only discover this when `git clone` 401s after a
+// successful curl against api.bitbucket.org. We auto-derive the
+// correct git username so configuring the plugin stays a two-field job
+// (workspace + token); REST continues to use the configured email so
+// older Atlassian API tokens that need the email for REST keep working.
+const BB_GIT_API_TOKEN_USERNAME = 'x-bitbucket-api-token-auth'
+function deriveGitUsername(configuredUsername: string, token: string): string {
+  const isAtlassianApiToken = token.startsWith('ATATT')
+  const isEmail = configuredUsername.includes('@')
+  if (isAtlassianApiToken && isEmail) return BB_GIT_API_TOKEN_USERNAME
+  return configuredUsername
 }
 
 // ── Manifest ─────────────────────────────────────────────────────────────────
@@ -141,6 +160,12 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   private workspace!: string
   private coderUsername!: string
   private coderToken!: string
+  // Username used specifically when building credentialed git clone
+  // URLs. Equal to `coderUsername` in the common case; rewritten to
+  // `x-bitbucket-api-token-auth` when the token is an Atlassian API
+  // token (`ATATT…`) and the configured username is an email — see
+  // deriveGitUsername() above for why.
+  private coderGitUsername!: string
 
   async init(rawConfig: BitBucketPluginConfig | Record<string, unknown>, deps: PluginDeps): Promise<void> {
     const cfg = bbConfigSchema.parse(rawConfig)
@@ -160,6 +185,13 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     this.workspace = cfg.workspace
     this.coderUsername = cfg.coderUsername
     this.coderToken = cfg.coderToken
+    this.coderGitUsername = deriveGitUsername(cfg.coderUsername, cfg.coderToken)
+    if (this.coderGitUsername !== cfg.coderUsername) {
+      deps.logger.info(
+        { configured: cfg.coderUsername, gitUsername: this.coderGitUsername },
+        `bitbucket: detected ATATT token paired with an email username — using "${this.coderGitUsername}" for git over HTTPS (Atlassian requires this for API-token git auth even though REST accepts the email).`,
+      )
+    }
     this.coder = new BitBucketClient(
       cfg.workspace,
       cfg.coderUsername,
@@ -239,17 +271,13 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   // ── Clone info ──────────────────────────────────────────────────────────
 
   cloneInfo(args: { repo: string }): ScmCloneInfo {
-    // Trust the configured `coderUsername`. Bitbucket has three token
-    // types and each requires its own username (Atlassian email,
-    // `x-token-auth`, or `x-bitbucket-api-token-auth`); the token
-    // prefix cannot disambiguate them. An earlier auto-map of every
-    // `ATATT…` token to `x-bitbucket-api-token-auth` broke plain
-    // Atlassian API tokens (which need the email) — git push appeared
-    // to work but every REST call 401'd, and the agent then
-    // misclassified the failure as a missing scope. The init()
-    // validator above guarantees the username is in a shape Bitbucket
-    // Basic auth can accept.
-    const username = encodeURIComponent(this.coderUsername)
+    // `coderGitUsername` is the configured username in the common
+    // case, but for ATATT-prefixed Atlassian API tokens paired with
+    // an email it is rewritten to `x-bitbucket-api-token-auth` — see
+    // deriveGitUsername(). REST continues to use the email via the
+    // BitBucketClient instance because Atlassian asymmetrically
+    // accepts the email for REST but not for git over HTTPS.
+    const username = encodeURIComponent(this.coderGitUsername)
     const token = encodeURIComponent(this.coderToken)
     return {
       url: `https://${username}:${token}@bitbucket.org/${this.workspace}/${args.repo}.git`,
