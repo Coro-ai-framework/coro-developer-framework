@@ -338,6 +338,93 @@ export class Dispatcher {
     return updated
   }
 
+  // ── Per-phase model overrides ──────────────────────────────────────────────
+  //
+  // The dashboard exposes a "use a different model just for this phase"
+  // affordance. The override is purely runtime — persisted on the Job so
+  // it survives runner restarts and re-runs, but never written back to the
+  // workflow file (that's the separate "save as default" flow). The
+  // override is consulted in `runJob` just before `selectModel`.
+
+  /**
+   * Set or clear the per-phase model override for a job. Pass
+   * `override: null` to remove the entry entirely. Idempotent: passing
+   * the same override is a no-op patch.
+   *
+   * Validation of the phase name against the workflow happens at the
+   * HTTP boundary (where the workflow loader is already wired); this
+   * method trusts its caller so unit tests don't need a full workflow
+   * fixture.
+   */
+  async setPhaseOverride(
+    jobId: string,
+    phase: string,
+    override: { model: string; provider?: string } | null,
+  ): Promise<Job> {
+    const job = await this.ctx.stateBackend.getJob(jobId)
+    if (!job) throw new Error(`Unknown job: ${jobId}`)
+
+    const next = { ...(job.phaseModelOverrides ?? {}) }
+    if (override === null) {
+      delete next[phase]
+    } else {
+      next[phase] = override.provider
+        ? { model: override.model, provider: override.provider }
+        : { model: override.model }
+    }
+
+    const updated = await this.ctx.stateBackend.updateJob(jobId, {
+      phaseModelOverrides: Object.keys(next).length === 0 ? undefined : next,
+    })
+
+    const summary = override
+      ? `${phase}=${override.provider ? `${override.provider}/` : ''}${override.model}`
+      : `cleared ${phase}`
+    await this.ctx.stateBackend.appendLog(
+      jobId,
+      `[control] Phase model override updated: ${summary}`,
+    )
+    return updated
+  }
+
+  /**
+   * Soft re-run of a phase: resets the job to the requested phase with a
+   * fresh executor session, optionally pinning a different model first.
+   * Reuses the existing `resumeJob(jobId, phase, true)` path so behaviour
+   * is identical to "resume from earlier phase + clear session".
+   *
+   * Refuses to act on a currently-running job — the dashboard pauses
+   * first (or the developer cancels) so the in-flight phase doesn't race
+   * with the new one. Parked, escalated, failed, and completed jobs are
+   * all valid starting points.
+   */
+  async rerunPhase(
+    jobId: string,
+    phase: string,
+    override?: { model: string; provider?: string },
+  ): Promise<void> {
+    const job = await this.ctx.stateBackend.getJob(jobId)
+    if (!job) throw new Error(`Unknown job: ${jobId}`)
+
+    if (!isParkingStatus(job.status)) {
+      throw new Error(
+        `Cannot re-run phase on a ${job.status} job — pause it (or wait for it to park) first.`,
+      )
+    }
+
+    if (override) {
+      await this.setPhaseOverride(jobId, phase, override)
+    }
+
+    await this.ctx.stateBackend.appendLog(
+      jobId,
+      `[control] Re-running phase "${phase}"${
+        override ? ` with override ${override.provider ? `${override.provider}/` : ''}${override.model}` : ''
+      }`,
+    )
+    await this.resumeJob(jobId, phase, true)
+  }
+
   // ── Webhook events ──────────────────────────────────────────────────────────
   //
   // After P4 the source axis collapsed to two values:

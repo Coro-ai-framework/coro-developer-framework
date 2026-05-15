@@ -453,7 +453,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         toolCtx.job = liveJob
       }
 
-      const model = selectModel(phaseConf, settings)
+      // Per-phase developer override (set via dashboard) wins over the
+      // workflow's declared model/tier — the developer made an explicit,
+      // immediate choice. We synthesise a phaseConf-shaped object so the
+      // existing `selectModel` alias/tier resolution still applies (e.g.
+      // override `model: "tier:coding"` resolves through aliases like any
+      // other reference). The optional `provider` is forwarded to
+      // `resolveExecutor` so the override can target any installed plugin.
+      const override = liveJob.phaseModelOverrides?.[liveJob.phase]
+      const effectivePhaseConf = override
+        ? { ...phaseConf, model: override.model, provider: override.provider ?? phaseConf?.provider }
+        : phaseConf
+
+      const model = selectModel(effectivePhaseConf, settings)
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
       /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as "cli.js not found". */
       mkdirSync(workingDir, { recursive: true })
@@ -462,7 +474,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // prompt/subagent assembly (CLAUDE.md injection, etc.). Test
       // injection still wins via `options.executorImpl`.
       const executor: PhaseExecutorRuntime =
-        options?.executorImpl ?? ctx.plugins.resolveExecutor({ model })
+        options?.executorImpl ?? ctx.plugins.resolveExecutor({
+          model,
+          provider: effectivePhaseConf?.provider,
+        })
 
       // Surface the resolved provider/model in the activity log so
       // developers can see, per phase, which executor + model is
@@ -471,13 +486,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // tenant defaults, sole-installed fallback).
       {
         const aliasKey =
-          phaseConf?.model && settings.llm?.aliases?.[phaseConf.model]
-            ? phaseConf.model
+          effectivePhaseConf?.model && settings.llm?.aliases?.[effectivePhaseConf.model]
+            ? effectivePhaseConf.model
             : undefined
         const aliasEntry = aliasKey ? settings.llm?.aliases?.[aliasKey] : undefined
         const parts = [`provider=${executor.manifest.id}`, `model=${model || '<default>'}`]
         if (aliasKey) parts.push(`alias=${aliasKey}`)
         if (aliasEntry?.reasoningEffort) parts.push(`effort=${aliasEntry.reasoningEffort}`)
+        if (override) parts.push('override=developer')
         await stateBackend.appendLog(liveJob.id, `Model: ${parts.join(' ')}`)
       }
 

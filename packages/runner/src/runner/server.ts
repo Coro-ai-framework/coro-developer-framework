@@ -1271,6 +1271,71 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  // ── Per-phase model overrides ───────────────────────────────────────────
+  //
+  // Dashboards (Job Detail "Phase strip") use these to pin a different
+  // model for a single phase of a single job — without touching the
+  // workflow file. The override lives on the Job and is consulted by
+  // `runJob` next time the phase enters. Two endpoints:
+  //
+  //   PATCH /jobs/:id/phase-overrides — set/clear an override (no exec)
+  //   POST  /jobs/:id/phases/:phase/rerun — set override + restart phase
+  //
+  // Phase names are validated against the job's resolved workflow so a
+  // typo from a stale dashboard tab fails loud instead of silently
+  // creating a no-op entry.
+
+  app.patch('/jobs/:jobId/phase-overrides', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const { phase, model, provider, clear } = req.body ?? {}
+      if (typeof phase !== 'string' || !phase) {
+        res.status(400).json({ error: 'phase is required' })
+        return
+      }
+      if (!clear && (typeof model !== 'string' || !model)) {
+        res.status(400).json({ error: 'model is required unless clear=true' })
+        return
+      }
+      if (provider !== undefined && typeof provider !== 'string') {
+        res.status(400).json({ error: 'provider must be a string when present' })
+        return
+      }
+      const updated = await dispatcher.setPhaseOverride(
+        jobId,
+        phase,
+        clear ? null : { model, provider },
+      )
+      res.json({ phaseModelOverrides: updated.phaseModelOverrides ?? {} })
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
+  app.post('/jobs/:jobId/phases/:phase/rerun', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const phase = Array.isArray(req.params.phase) ? req.params.phase[0] : req.params.phase
+      if (!phase) { res.status(400).json({ error: 'phase is required' }); return }
+      const { model, provider } = req.body ?? {}
+      if (model !== undefined && typeof model !== 'string') {
+        res.status(400).json({ error: 'model must be a string when present' })
+        return
+      }
+      if (provider !== undefined && typeof provider !== 'string') {
+        res.status(400).json({ error: 'provider must be a string when present' })
+        return
+      }
+      const override = typeof model === 'string' && model
+        ? { model, provider: typeof provider === 'string' ? provider : undefined }
+        : undefined
+      await dispatcher.rerunPhase(jobId, phase, override)
+      res.json({ rerunning: true, phase })
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
   // ── Proposals (read-only) ───────────────────────────────────────────────
   //
   // The dashboard renders a read-only mirror of in-flight self-improvement

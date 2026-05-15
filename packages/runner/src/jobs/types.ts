@@ -320,6 +320,33 @@ export interface Job {
    * arrived in its present lane.
    */
   workflowPathHistory?: WorkflowSwitchEntry[]
+
+  /**
+   * Per-phase model overrides applied at runtime by a developer from the
+   * dashboard. Keyed by phase name. When set, the runner consults this map
+   * before falling through to workflow `model`/`tier` defaults — the
+   * override wins because the developer is making an explicit, immediate
+   * choice. Cleared by passing `clear: true` to the override endpoint.
+   *
+   * Each entry may optionally pin the executor `provider` so the override
+   * can target a model the workflow's resolver wouldn't otherwise pick.
+   * The override is purely runtime — no propose_change PR is opened
+   * automatically; that flow is exposed separately via the dashboard's
+   * "Save as workflow default" action.
+   */
+  phaseModelOverrides?: Record<string, PhaseModelOverride>
+}
+
+/**
+ * One entry in {@link Job.phaseModelOverrides}. `model` carries either an
+ * alias key (resolved via `settings.llm.aliases`) or a literal model id
+ * (passed straight through to the executor). `provider` is optional; when
+ * unset the runner picks the executor by which plugin claims to `supports`
+ * the model.
+ */
+export interface PhaseModelOverride {
+  model: string
+  provider?: string
 }
 
 /**
