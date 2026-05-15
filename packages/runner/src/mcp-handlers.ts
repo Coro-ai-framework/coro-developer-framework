@@ -457,7 +457,21 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
 
     const git = buildCloneGit(jobWorkingDir, info.envForGit)
-    await git.clone(info.url, repoDir)
+    // Belt-and-suspenders: even with GIT_CONFIG_GLOBAL/SYSTEM neutered
+    // (see buildCloneGit), an `insteadOf` rule can also live in the
+    // repo-local config of a parent worktree we happen to be invoked
+    // from. Pass explicit `--config url.https://<host>/.insteadOf=...`
+    // for every host we know we issue HTTPS clone URLs against, so any
+    // ssh-rewrite rule the operator has is overridden inline by `git`.
+    const insteadOfOverrides = [
+      'url.https://bitbucket.org/.insteadOf=ssh://git@bitbucket.org/',
+      'url.https://bitbucket.org/.insteadOf=git@bitbucket.org:',
+      'url.https://github.com/.insteadOf=ssh://git@github.com/',
+      'url.https://github.com/.insteadOf=git@github.com:',
+      'url.https://gitlab.com/.insteadOf=ssh://git@gitlab.com/',
+      'url.https://gitlab.com/.insteadOf=git@gitlab.com:',
+    ].flatMap(rule => ['--config', rule])
+    await git.clone(info.url, repoDir, insteadOfOverrides)
     await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
     await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)
 
@@ -1101,9 +1115,17 @@ function buildCloneGit(cwd: string, extraEnv: Record<string, string>): SimpleGit
     baseDir: cwd,
     unsafe: { allowUnsafeProtocolOverride: false, allowUnsafeAskPass: true } as unknown as SimpleGitOptions['unsafe'],
   }
+  // Neutralize the user's ~/.gitconfig and /etc/gitconfig so personal
+  // setup (most painfully, an `url.ssh://git@<host>/.insteadOf=https://<host>/`
+  // rewrite) doesn't redirect a credentialed HTTPS clone URL through
+  // SSH — which then fails because the runner has no SSH key. The null
+  // device differs across platforms; on Windows it is `NUL`.
+  const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null'
   return simpleGit(opts).env({
     GIT_TERMINAL_PROMPT: '0',
     GIT_ASKPASS: '',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: nullDevice,
     ...extraEnv,
   })
 }

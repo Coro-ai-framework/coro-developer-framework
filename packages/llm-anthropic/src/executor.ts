@@ -497,15 +497,28 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
 
     // Capture the live Query handle and surface it through the
     // lifecycle controller so the runner / dispatcher can interrupt.
+    //
+    // Calling `q.interrupt()` while an MCP tool call is in flight
+    // leaves the SDK<->subprocess MCP transport in a degraded state:
+    // pending control_request entries get aborted, and subsequent
+    // `mcp__coro__*` calls fail with `Request aborted` / `Stream closed`
+    // until the dynamic MCP server is re-attached. We set a flag here
+    // and trigger a re-attach on the next for-await iteration so the
+    // dispatcher's pause + steering interrupts don't break MCP for the
+    // remainder of the phase.
     const liveQuery = queryStream as Query
+    let mcpReconnectPending = false
     const controller: ExecutorSessionController = {
-      interrupt: () => liveQuery.interrupt(),
+      interrupt: () => {
+        mcpReconnectPending = true
+        return liveQuery.interrupt()
+      },
     }
     req.lifecycle?.onSessionStart?.(controller)
 
     if (resumeSessionId) {
       try {
-        const mcpRefresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'a5')
+        const mcpRefresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'coro')
         this.logger.debug(
           {
             phase: req.phase,
@@ -545,6 +558,31 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         // Drain any buffered stderr lines as log events.
         while (this._stderrBuffer.length > 0) {
           yield { type: 'log', level: 'info', message: `[sdk-stderr] ${this._stderrBuffer.shift()!}` }
+        }
+
+        // Re-attach dynamic MCP servers after a controller-initiated
+        // interrupt so the agent's next `mcp__coro__*` call lands on a
+        // healthy transport. See the comment above `liveQuery` for why.
+        if (mcpReconnectPending) {
+          mcpReconnectPending = false
+          try {
+            const refresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'coro')
+            yield {
+              type: 'log',
+              level: 'info',
+              message:
+                `[control] MCP re-attached after interrupt — ` +
+                `status=${refresh.finalStatus ?? 'unknown'} ` +
+                `reconnected=${refresh.reconnected} ` +
+                `errors=${JSON.stringify(refresh.setResult.errors)}`,
+            }
+          } catch (err) {
+            yield {
+              type: 'log',
+              level: 'warn',
+              message: `[control] MCP re-attach after interrupt failed: ${String(err)}`,
+            }
+          }
         }
 
         if (req.signal?.aborted) {

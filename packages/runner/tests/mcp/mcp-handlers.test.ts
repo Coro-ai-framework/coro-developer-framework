@@ -231,8 +231,20 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
 
     expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({ baseDir: '/tmp/work-mcp/job-mcp-test' }))
-    expect(env).toHaveBeenCalledWith(expect.objectContaining({ GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' }))
-    expect(clone).toHaveBeenCalledWith('https://example.test/svc.git', '/tmp/work-mcp/job-mcp-test/svc')
+    expect(env).toHaveBeenCalledWith(expect.objectContaining({
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_ASKPASS: '',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+    }))
+    expect(clone).toHaveBeenCalledWith(
+      'https://example.test/svc.git',
+      '/tmp/work-mcp/job-mcp-test/svc',
+      expect.arrayContaining([
+        '--config', 'url.https://bitbucket.org/.insteadOf=ssh://git@bitbucket.org/',
+        '--config', 'url.https://github.com/.insteadOf=ssh://git@github.com/',
+      ]),
+    )
     expect(built.ctx.stateBackend.mapRepoToJob).toHaveBeenCalledWith('svc', 'job-mcp-test')
     expect(data['repoDir']).toBe('/tmp/work-mcp/job-mcp-test/svc')
     expect(data['reused']).toBe(false)
