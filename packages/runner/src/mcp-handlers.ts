@@ -1113,7 +1113,20 @@ async function isGitRepo(dir: string): Promise<boolean> {
 function buildCloneGit(cwd: string, extraEnv: Record<string, string>): SimpleGit {
   const opts: Partial<SimpleGitOptions> = {
     baseDir: cwd,
-    unsafe: { allowUnsafeProtocolOverride: false, allowUnsafeAskPass: true } as unknown as SimpleGitOptions['unsafe'],
+    // simple-git ≥3.36 ships an env-vulnerability scanner that throws
+    // `Use of "GIT_CONFIG_GLOBAL" is not permitted without enabling
+    // allowUnsafeConfigPaths` whenever it sees `GIT_CONFIG_GLOBAL`,
+    // `GIT_CONFIG_SYSTEM`, or `GIT_CONFIG` in the spawned process env.
+    // We deliberately set `GIT_CONFIG_GLOBAL=/dev/null` below to
+    // neutralise the user's ~/.gitconfig (see comment further down), so
+    // we have to opt in here. The flag only relaxes simple-git's own
+    // pre-spawn check; git itself still treats the value as a normal
+    // (empty) config file.
+    unsafe: {
+      allowUnsafeProtocolOverride: false,
+      allowUnsafeAskPass: true,
+      allowUnsafeConfigPaths: true,
+    } as unknown as SimpleGitOptions['unsafe'],
   }
   // Neutralize the user's ~/.gitconfig and /etc/gitconfig so personal
   // setup (most painfully, an `url.ssh://git@<host>/.insteadOf=https://<host>/`

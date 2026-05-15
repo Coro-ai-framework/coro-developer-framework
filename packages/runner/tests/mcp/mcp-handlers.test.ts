@@ -231,6 +231,15 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
 
     expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({ baseDir: '/tmp/work-mcp/job-mcp-test' }))
+    // Regression: simple-git ≥3.36 ships an env-vulnerability scanner
+    // that throws on `GIT_CONFIG_GLOBAL` unless `allowUnsafeConfigPaths`
+    // is set. We deliberately set `GIT_CONFIG_GLOBAL=/dev/null` to
+    // neutralise the user's ~/.gitconfig, so the unsafe opt-in must
+    // stay flipped on. Drop this and clones break with
+    //   `Use of "GIT_CONFIG_GLOBAL" is not permitted without enabling allowUnsafeConfigPaths`
+    expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({
+      unsafe: expect.objectContaining({ allowUnsafeConfigPaths: true }),
+    }))
     expect(env).toHaveBeenCalledWith(expect.objectContaining({
       GIT_TERMINAL_PROMPT: '0',
       GIT_ASKPASS: '',
