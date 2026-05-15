@@ -648,6 +648,108 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
   }
 
+  /**
+   * Run a shell command, scoped to the per-job working dir.
+   *
+   * Gating:
+   *   - Only registered when the executor lacks a native shell tool
+   *     (Claude Code SDK ships `Bash`; OpenAI executor does not).
+   *   - `cwd` is resolved relative to the job's working dir and must
+   *     not escape it. We do NOT try to parse the command itself —
+   *     working-dir scoping is the boundary, mirroring how plugin
+   *     MCP servers are trusted within their own sandbox.
+   *   - Wall-clock timeout (default 120s, hard ceiling 600s) enforced
+   *     via `child_process.spawn` + AbortController.
+   *   - Output is capped at 64 KiB per stream; truncation is reported
+   *     in the response so the model can re-run with narrower scope.
+   */
+  const shell = async (
+    { command, cwd: requestedCwd, timeoutMs }:
+    { command: string; cwd?: string; timeoutMs?: number },
+  ) => {
+    if (typeof command !== 'string' || command.trim().length === 0) {
+      return error('command must be a non-empty string')
+    }
+    const root = jobWorkingDir()
+    const cwdAbs = requestedCwd ? resolveUnderRoot(root, requestedCwd) : root
+    if (!cwdAbs) return error(`cwd escapes working dir: ${requestedCwd}`)
+    try {
+      const stat = await fs.stat(cwdAbs)
+      if (!stat.isDirectory()) return error(`cwd is not a directory: ${requestedCwd ?? '.'}`)
+    } catch {
+      return error(`cwd does not exist: ${requestedCwd ?? '.'}`)
+    }
+
+    const HARD_TIMEOUT_MS = 600_000
+    const DEFAULT_TIMEOUT_MS = 120_000
+    const MAX_OUTPUT_BYTES = 64 * 1024
+    const effectiveTimeout = Math.min(
+      Math.max(1_000, typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_TIMEOUT_MS),
+      HARD_TIMEOUT_MS,
+    )
+
+    const { spawn } = await import('child_process')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), effectiveTimeout)
+
+    try {
+      const child = spawn('sh', ['-c', command], {
+        cwd: cwdAbs,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        signal: controller.signal,
+      })
+
+      const collect = (stream: NodeJS.ReadableStream): Promise<{ data: string; truncated: boolean }> => {
+        return new Promise(resolve => {
+          const chunks: Buffer[] = []
+          let total = 0
+          let truncated = false
+          stream.on('data', (chunk: Buffer) => {
+            if (truncated) return
+            const remaining = MAX_OUTPUT_BYTES - total
+            if (chunk.length <= remaining) {
+              chunks.push(chunk)
+              total += chunk.length
+            } else {
+              chunks.push(chunk.subarray(0, remaining))
+              total = MAX_OUTPUT_BYTES
+              truncated = true
+            }
+          })
+          stream.on('end', () => resolve({ data: Buffer.concat(chunks).toString('utf8'), truncated }))
+          stream.on('error', () => resolve({ data: Buffer.concat(chunks).toString('utf8'), truncated }))
+        })
+      }
+
+      const [stdoutResult, stderrResult, exit] = await Promise.all([
+        collect(child.stdout!),
+        collect(child.stderr!),
+        new Promise<{ code: number | null; signal: NodeJS.Signals | null; aborted: boolean }>(resolve => {
+          child.on('close', (code, signal) => resolve({ code, signal, aborted: controller.signal.aborted }))
+          child.on('error', () => resolve({ code: null, signal: null, aborted: controller.signal.aborted }))
+        }),
+      ])
+
+      const result: Record<string, unknown> = {
+        command,
+        cwd: requestedCwd ?? '.',
+        exitCode: exit.code,
+        stdout: stdoutResult.data,
+        stderr: stderrResult.data,
+      }
+      if (stdoutResult.truncated) result.stdoutTruncated = true
+      if (stderrResult.truncated) result.stderrTruncated = true
+      if (exit.signal) result.signal = exit.signal
+      if (exit.aborted) {
+        result.timedOut = true
+        result.timeoutMs = effectiveTimeout
+      }
+      return text(result)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   return {
     // ── Generic surface (preferred, post-pivot — 9 tools total) ────────
     //
@@ -671,6 +773,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     file_glob,
     file_grep,
     read_skill,
+    shell,
 
     // ── Legacy bb_*/gh_*/jira_* shims removed in S6 ──────────────────────
     //

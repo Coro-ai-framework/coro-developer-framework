@@ -207,6 +207,9 @@ importers:
 
   packages/llm-openai:
     dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.3.6)
       openai:
         specifier: ^6.37.0
         version: 6.37.0(ws@8.20.0)(zod@4.3.6)

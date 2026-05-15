@@ -606,6 +606,16 @@ export function createCoroMcpServer(
           h.read_skill,
           { annotations: { readOnlyHint: true } },
         ),
+        tool(
+          'shell',
+          'Run a shell command (`sh -c`) inside the per-job working directory. `cwd` is optional and resolved relative to the working dir; absolute paths or `..`-escapes are rejected. Returns `{ exitCode, stdout, stderr, stdoutTruncated?, stderrTruncated?, signal?, timedOut?, timeoutMs? }`. Default timeout is 120s, max 600s. Stdout/stderr are each capped at 64 KiB; on truncation re-run with a narrower scope (pipe through `head`, `grep`, etc.). Use this for build/test/format/git inspection commands; prefer the dedicated `file_*` tools for plain reads and edits.',
+          {
+            command: z.string().describe('Shell command to execute via `sh -c`.'),
+            cwd: z.string().optional().describe('Working directory relative to the per-job working dir (default: working dir root).'),
+            timeoutMs: z.number().int().positive().optional().describe('Wall-clock timeout in milliseconds (default 120000, max 600000).'),
+          },
+          h.shell,
+        ),
       ] : []),
 
       // ── Subagent dispatch (Phase 9 fallback) ──────────────────────────────

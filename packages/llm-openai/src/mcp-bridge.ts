@@ -10,6 +10,10 @@ import type {
   PhaseExecutorEvent,
   PluginMcpServerConfig,
 } from '@coro/plugin-sdk'
+import {
+  connectExternalMcpServer,
+  type ExternalMcpClientConnection,
+} from './mcp-external-client'
 
 export interface OpenAiFunctionTool {
   type: 'function'
@@ -42,12 +46,25 @@ interface SdkServerInstance {
   _registeredTools?: Record<string, RegisteredTool>
 }
 
-interface ToolBinding {
-  openAiName: string
-  serverId: string
-  toolName: string
-  definition: RegisteredTool
-}
+type ToolBinding =
+  | {
+      kind: 'sdk'
+      openAiName: string
+      serverId: string
+      toolName: string
+      description?: string
+      inputSchema?: Record<string, unknown>
+      handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown>
+    }
+  | {
+      kind: 'external'
+      openAiName: string
+      serverId: string
+      toolName: string
+      description?: string
+      inputSchema?: Record<string, unknown>
+      connection: ExternalMcpClientConnection
+    }
 
 export interface McpBridgeOptions {
   coroServer: McpServerDescriptor
@@ -58,12 +75,68 @@ export interface McpBridgeOptions {
   signal?: AbortSignal
 }
 
+export interface ExternalMcpFailure {
+  serverId: string
+  reason: string
+}
+
 export class McpFunctionBridge {
   private readonly bindings = new Map<string, ToolBinding>()
-  readonly unsupportedServers: string[]
+  private readonly externalConnections: ExternalMcpClientConnection[] = []
+  readonly externalFailures: ExternalMcpFailure[] = []
 
   constructor(private readonly opts: McpBridgeOptions) {
-    this.unsupportedServers = this.collectServers()
+    this.addSdkServer('coro', this.opts.coroServer.instance)
+  }
+
+  /**
+   * Connect to every plugin-declared external MCP server (stdio /
+   * sse / http) and register their tools. Failures are collected in
+   * {@link externalFailures} so the executor can warn the agent
+   * without aborting the phase.
+   */
+  async init(): Promise<void> {
+    const entries = Object.entries(this.opts.pluginServers)
+    if (entries.length === 0) return
+    await Promise.all(
+      entries.map(async ([serverId, config]) => {
+        try {
+          const connection = await connectExternalMcpServer(serverId, config)
+          this.externalConnections.push(connection)
+          for (const tool of connection.tools) {
+            const openAiName = `mcp__${serverId}__${tool.name}`
+            this.bindings.set(openAiName, {
+              kind: 'external',
+              openAiName,
+              serverId,
+              toolName: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+              connection,
+            })
+          }
+        } catch (err) {
+          this.externalFailures.push({
+            serverId,
+            reason: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }),
+    )
+  }
+
+  /** Terminate all spawned MCP child processes / network clients. */
+  async dispose(): Promise<void> {
+    await Promise.all(
+      this.externalConnections.map(async c => {
+        try {
+          await c.close()
+        } catch {
+          // best-effort
+        }
+      }),
+    )
+    this.externalConnections.length = 0
   }
 
   listTools(): OpenAiFunctionTool[] {
@@ -71,7 +144,7 @@ export class McpFunctionBridge {
       type: 'function' as const,
       name: binding.openAiName,
       description: this.describeTool(binding),
-      parameters: toJsonSchema(binding.definition.inputSchema ?? {}),
+      parameters: toJsonSchema(binding.inputSchema ?? {}),
       strict: false as const,
     }))
   }
@@ -119,7 +192,12 @@ export class McpFunctionBridge {
     ]
 
     try {
-      const result = await binding.definition.handler(input, { signal: this.opts.signal })
+      const result = binding.kind === 'sdk'
+        ? await binding.handler(input, { signal: this.opts.signal })
+        : await binding.connection.client.callTool({
+            name: binding.toolName,
+            arguments: input,
+          })
       const output = stringifyMcpResult(result)
       events.push({ type: 'tool_result', toolName: binding.openAiName, output })
       return {
@@ -136,29 +214,28 @@ export class McpFunctionBridge {
     }
   }
 
-  private collectServers(): string[] {
-    const unsupported: string[] = []
-    this.addSdkServer('coro', this.opts.coroServer.instance)
-    for (const serverId of Object.keys(this.opts.pluginServers)) {
-      unsupported.push(serverId)
-    }
-    return unsupported
-  }
-
   private addSdkServer(serverId: string, raw: unknown): void {
     const instance = unwrapSdkInstance(raw)
     if (!instance?._registeredTools) return
     for (const [toolName, definition] of Object.entries(instance._registeredTools)) {
       if (definition.enabled === false) continue
       const openAiName = `mcp__${serverId}__${toolName}`
-      this.bindings.set(openAiName, { openAiName, serverId, toolName, definition })
+      this.bindings.set(openAiName, {
+        kind: 'sdk',
+        openAiName,
+        serverId,
+        toolName,
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+        handler: definition.handler,
+      })
     }
   }
 
   private describeTool(binding: ToolBinding): string {
     const prefix = `MCP tool ${binding.serverId}.${binding.toolName}.`
-    return binding.definition.description
-      ? `${prefix} ${binding.definition.description}`
+    return binding.description
+      ? `${prefix} ${binding.description}`
       : prefix
   }
 

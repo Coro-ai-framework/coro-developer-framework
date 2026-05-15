@@ -207,11 +207,12 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       phase: req.phase,
       signal: abortController.signal,
     })
-    for (const serverId of bridge.unsupportedServers) {
+    await bridge.init()
+    for (const failure of bridge.externalFailures) {
       yield {
         type: 'log',
         level: 'warn',
-        message: `[openai] MCP server "${serverId}" uses an external transport; only in-process SDK MCP servers are available to this executor today.`,
+        message: `[openai] failed to attach external MCP server "${failure.serverId}": ${failure.reason}`,
       }
     }
 
@@ -320,6 +321,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
         },
       }
     } finally {
+      await bridge.dispose()
       req.lifecycle?.onSessionEnd?.()
     }
   }
