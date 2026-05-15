@@ -248,10 +248,24 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           break
         }
         turns++
-        const response = await client.responses.create(
-          this.buildCreateParams(req, inputItems, tools),
-          { signal: anySignal([req.signal, abortController.signal]) },
-        )
+        let response: OpenAiResponseLike
+        try {
+          response = await client.responses.create(
+            this.buildCreateParams(req, inputItems, tools),
+            { signal: anySignal([req.signal, abortController.signal]) },
+          )
+        } catch (err) {
+          // Interrupting the executor (e.g. when a developer-input
+          // message is injected mid-flight, or the runner cancels)
+          // aborts the in-flight Responses request, which throws an
+          // AbortError. Treat that as a clean stop instead of crashing
+          // the job — the runner will resume on the new context.
+          if (isAbortError(err) || req.signal.aborted || abortController.signal.aborted) {
+            stopReason = 'aborted'
+            break
+          }
+          throw err
+        }
         const outputItems = Array.isArray(response.output) ? response.output : []
         // With `store: false` the Responses API does NOT persist returned
         // items, so their server-generated IDs (e.g. `rs_*` reasoning
@@ -533,4 +547,18 @@ function anySignal(signals: AbortSignal[]): AbortSignal {
     signal.addEventListener('abort', abort, { once: true })
   }
   return controller.signal
+}
+
+/**
+ * `client.responses.create` rejects with an AbortError / DOMException
+ * when its signal is aborted. Recognise the common shapes so the
+ * executor can treat interruption as a clean stop instead of crashing
+ * the job. The OpenAI SDK forwards the underlying fetch's
+ * DOMException (`name === 'AbortError'`, `code === 20`); native
+ * `AbortController` produces the same shape.
+ */
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { name?: unknown; code?: unknown }
+  return e.name === 'AbortError' || e.code === 20 || e.code === 'ABORT_ERR'
 }
