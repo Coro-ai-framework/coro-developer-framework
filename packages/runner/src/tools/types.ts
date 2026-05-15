@@ -1,5 +1,6 @@
 import { ChildProcess } from 'child_process'
 import { Logger } from 'pino'
+import type { HookPolicy, McpServerDescriptor, PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro/plugin-sdk'
 import { BitBucketClient } from '../clients/bitbucket'
 import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
@@ -12,6 +13,7 @@ import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
 import type { StateBackend } from '../state/backend'
 import { Job } from '../jobs/types'
+import type { PhaseConfig } from '../workflow-parser'
 
 // ── Tool execution context ────────────────────────────────────────────────────
 //
@@ -60,6 +62,37 @@ export interface ToolContext {
   plugins: PluginRegistry
   logger: Logger
   runningServices: Map<string, ChildProcess>
+  /**
+   * Live phase context — set by the runner at every phase boundary,
+   * before the in-process MCP server is created. Used by the
+   * `run_subagent` MCP tool to dispatch a side-conversation through
+   * the parent phase's executor (or a different one when the workflow
+   * declares `subagents: [{ provider: ... }]`). Undefined outside a
+   * phase invocation (test fixtures, bootstrap).
+   */
+  currentPhase?: CurrentPhaseContext
+}
+
+/**
+ * Per-phase snapshot captured by the runner once it has resolved the
+ * executor + intelligence layer + plugin MCP servers for the active
+ * phase. Mutable: re-assigned wholesale at every phase boundary.
+ */
+export interface CurrentPhaseContext {
+  /** Resolved phase config from the active workflow YAML. */
+  phaseConf: PhaseConfig
+  /** Executor selected for this phase (for capability gating + fallback). */
+  executor: PhaseExecutorRuntime
+  /** Per-phase working directory (absolute). */
+  workingDir: string
+  /** Materialised intelligence overlay for this job (absolute). */
+  jobIntelligenceDir: string
+  /** Hook policy in effect for this phase (subagents inherit + narrow). */
+  hookPolicy: HookPolicy
+  /** Coro MCP server descriptor handed to the executor. */
+  mcpServer: McpServerDescriptor
+  /** Plugin MCP servers attached to this phase. */
+  pluginMcpServers: Record<string, PluginMcpServerConfig>
 }
 
 // ── Job-control signal types ──────────────────────────────────────────────────

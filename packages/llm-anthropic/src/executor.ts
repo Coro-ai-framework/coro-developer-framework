@@ -784,6 +784,10 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    * Translate the runner's pre-loaded {@link ExecutorSubagentSpec}s into
    * the Claude Agent SDK's `agents` map shape. Returns `undefined` when
    * no subagents are declared so the option key is omitted entirely.
+   *
+   * Subagents pinned to a non-Anthropic provider are skipped here — the
+   * runner exposes them via the `mcp__coro__run_subagent` MCP tool
+   * instead so they reach the right executor.
    */
   private buildSdkAgentsFromRequest(
     req: PhaseExecutionRequest,
@@ -792,6 +796,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     const subagentMcpServers = req.pluginMcpServers as unknown as Record<string, McpServerConfig>
     const out: Record<string, { description: string; prompt: string; tools?: string[]; model?: string; mcpServers?: Record<string, McpServerConfig> }> = {}
     for (const sa of req.subagents) {
+      if (sa.provider && sa.provider !== ANTHROPIC_PLUGIN_ID) continue
       out[sa.name] = {
         description: `Subagent: ${sa.name}`,
         prompt: sa.systemPrompt,
@@ -800,7 +805,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         ...(Object.keys(subagentMcpServers).length > 0 ? { mcpServers: subagentMcpServers } : {}),
       }
     }
-    return out
+    return Object.keys(out).length > 0 ? out : undefined
   }
 
   /**

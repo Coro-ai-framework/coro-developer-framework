@@ -5,6 +5,7 @@ import type {
   ExecutorCapabilities,
   ExecutorModelDescriptor,
   ExecutorSessionController,
+  HookPolicy,
   NormalizedTokenUsage,
   PhaseExecutionRequest,
   PhaseExecutorEvent,
@@ -12,6 +13,8 @@ import type {
   PluginDeps,
   PluginHealth,
   PluginManifest,
+  SubagentExecutionRequest,
+  SubagentResult,
 } from '@coro/plugin-sdk'
 import {
   emptyNormalizedUsage,
@@ -314,6 +317,56 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
 
   mcpServer(): undefined {
     return undefined
+  }
+
+  /**
+   * Side-conversation runner used by the runner's `mcp__coro__run_subagent`
+   * MCP tool. We deliberately reuse {@link executePhase} so the tool
+   * loop, MCP bridge, hook enforcement, and usage accounting stay in
+   * lock-step with regular phases — the subagent path is just a
+   * stateless invocation with no session resume, no developer-input
+   * channel, and a tightened tool allowlist.
+   */
+  async runSubagent(req: SubagentExecutionRequest): Promise<SubagentResult> {
+    // The subagent's hook policy reuses the parent's write-roots and
+    // pre-tool gate but narrows `allowedTools` to whatever the workflow
+    // declared (or the runner's safe default — see tools/run-subagent.ts).
+    const hookPolicy: HookPolicy = {
+      ...req.hookPolicy,
+      allowedTools: req.allowedTools,
+    }
+
+    const phaseReq: PhaseExecutionRequest = {
+      systemPrompt: req.systemPrompt,
+      userPrompt: req.task,
+      model: req.model,
+      ...(req.modelHints ? { modelHints: req.modelHints } : {}),
+      cwd: req.cwd,
+      intelligenceDir: req.intelligenceDir,
+      mcpServer: req.mcpServer,
+      pluginMcpServers: req.pluginMcpServers,
+      hookPolicy,
+      sessionState: { conversationHistory: [] },
+      maxTurns: req.maxTurns,
+      phase: `subagent:${req.name}`,
+      signal: req.signal,
+    }
+
+    const collected: string[] = []
+    let usage: NormalizedTokenUsage = emptyNormalizedUsage()
+    let stopReason = 'end_turn'
+
+    for await (const event of this.executePhase(phaseReq)) {
+      if (event.type === 'text' && event.content) collected.push(event.content)
+      else if (event.type === 'usage') usage = event.tokens
+      else if (event.type === 'done') stopReason = event.stopReason
+    }
+
+    return {
+      output: collected.join('\n').trim(),
+      usage,
+      stopReason,
+    }
   }
 
   private getClient(): OpenAiClientLike {

@@ -732,4 +732,71 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    * influence in-memory `Settings.llm.aliases` resolution.
    */
   defaultAliases?(): Record<string, { provider: string; model: string }>
+
+  /**
+   * Run a single side-conversation to completion and return the final
+   * assistant text. The runner exposes this through the
+   * `mcp__coro__run_subagent` MCP tool — but ONLY for parent phases
+   * whose executor reports `supportsNativeSubagents: false`.
+   * Anthropic's SDK already exposes a native Task tool, so the
+   * Anthropic executor leaves this undefined and the runner suppresses
+   * the MCP tool to avoid two parallel dispatch paths.
+   *
+   * Implementations should treat the subagent as a fresh,
+   * stateless conversation — no session persistence, no resume,
+   * no nested subagents. Tool calls are still allowed (the agent
+   * may use Read / Grep / propose_change / etc.) but the loop is
+   * bounded by `maxTurns` and terminates as soon as the model
+   * emits an assistant message with no tool calls.
+   */
+  runSubagent?(req: SubagentExecutionRequest): Promise<SubagentResult>
+}
+
+/**
+ * Per-call request for {@link PhaseExecutorRuntime.runSubagent}. A
+ * narrow subset of {@link PhaseExecutionRequest} — no session, no
+ * developer-input channel, no recursion. The runner builds this from
+ * the workflow's `subagents:` declaration plus the parent phase's
+ * resolved tool / MCP-server context.
+ */
+export interface SubagentExecutionRequest {
+  /** Subagent identifier from the workflow YAML (for logs only). */
+  name: string
+  /** Already-built system prompt — runner has loaded the agent file. */
+  systemPrompt: string
+  /** The task the parent agent wants this subagent to perform. */
+  task: string
+  /** Literal model id (alias resolution happens upstream). */
+  model: string
+  /** Optional per-invocation knobs. */
+  modelHints?: { reasoningEffort?: 'low' | 'medium' | 'high' }
+  /** Working dir for any tool calls (typically same as parent). */
+  cwd: string
+  /** Materialized intelligence layer for this job. */
+  intelligenceDir: string
+  /** In-process Coro MCP server descriptor; always provided. */
+  mcpServer: McpServerDescriptor
+  /** External plugin MCP servers (SCM, tracker, …) keyed by plugin id. */
+  pluginMcpServers: Record<string, PluginMcpServerConfig>
+  /** Tool whitelist for this subagent (typically read-only + Coro tools). */
+  allowedTools: ReadonlyArray<string>
+  /** Hook policy — write-root guard etc.; executor enforces. */
+  hookPolicy: HookPolicy
+  /** Hard ceiling on tool-loop turns. Recommend 16. */
+  maxTurns: number
+  /** Cancellation signal — runner aborts on parent cancel/shutdown. */
+  signal: AbortSignal
+}
+
+/**
+ * Terminal result from a subagent invocation. The MCP tool returns this
+ * verbatim (minus internal fields) to the parent agent.
+ */
+export interface SubagentResult {
+  /** Final assistant text content. */
+  output: string
+  /** Token usage + cost across the entire subagent loop. */
+  usage: NormalizedTokenUsage
+  /** Stop reason mirrored from the executor (`end_turn`, `max_turns`, …). */
+  stopReason: string
 }

@@ -2,6 +2,7 @@ import { tool, createSdkMcpServer } from '@coro/plugin-sdk'
 import { z } from 'zod'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { createMcpToolHandlers, mcpError, mcpText, wrapHandlersSafely } from './mcp-handlers'
+import { runSubagent } from './tools/run-subagent'
 
 // Legacy `bb_*` / `gh_*` / `jira_*` tools were removed entirely in
 // S6 of the MCP-first plugins pivot. Workflow markdown that still
@@ -31,7 +32,7 @@ import { createMcpToolHandlers, mcpError, mcpText, wrapHandlersSafely } from './
 export function createCoroMcpServer(
   ctx: ToolContext,
   signals: PhaseSignals,
-  options: { registerFileTools?: boolean } = {},
+  options: { registerFileTools?: boolean; registerRunSubagent?: boolean } = {},
 ) {
   // Wrap every native handler in a try/catch so an unhandled throw
   // can't tear down the in-process MCP transport (the cause of the
@@ -604,6 +605,32 @@ export function createCoroMcpServer(
           { name: z.string().describe('Skill directory name, e.g. `feature-planning`.') },
           h.read_skill,
           { annotations: { readOnlyHint: true } },
+        ),
+      ] : []),
+
+      // ── Subagent dispatch (Phase 9 fallback) ──────────────────────────────
+      //
+      // Only registered when the active phase's executor reports
+      // `supportsNativeSubagents: false`. Anthropic SDK ships a
+      // native Task tool, so we suppress this MCP tool there to
+      // avoid two parallel dispatch paths for the same `subagents:`
+      // declaration.
+      ...(options.registerRunSubagent ? [
+        tool(
+          'run_subagent',
+          'Dispatch a single side-conversation to a named subagent declared in the current workflow phase. Returns the subagent\'s final assistant text plus token usage. The subagent runs as a fresh, stateless conversation with a tightened tool whitelist; it cannot itself call run_subagent. Use this for focused subtasks (code review, retrieval, summarisation) that benefit from an isolated context.',
+          {
+            name: z.string().describe('Subagent name from the workflow YAML\'s `subagents:` block (e.g. `code-reviewer`).'),
+            task: z.string().describe('Plain-text task description handed to the subagent as its user message. Be specific — the subagent has no view of your conversation.'),
+          },
+          async (args: { name: string; task: string }) => {
+            try {
+              const result = await runSubagent(ctx, args)
+              return mcpText(result)
+            } catch (err) {
+              return mcpError((err as Error).message)
+            }
+          },
         ),
       ] : []),
 

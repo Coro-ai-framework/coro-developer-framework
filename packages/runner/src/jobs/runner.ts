@@ -519,9 +519,21 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Fresh MCP server per phase. File/skill tools are registered only
       // for executors that don't bring native equivalents — Claude SDK
       // ships its own Read/Write/Edit/Glob/Grep + Skill, so we skip them
-      // there to avoid a doubled tool surface.
+      // there to avoid a doubled tool surface. The `run_subagent` tool
+      // is the inverse: only registered when the executor lacks a
+      // native subagent dispatcher (Anthropic's SDK has one; OpenAI
+      // and friends fall back to this MCP tool). Cross-provider
+      // subagents pinned via `subagents: [{ provider: ... }]` also
+      // need the MCP fallback — Anthropic's native `agents:` map
+      // can only host Claude models — so we enable the tool when any
+      // declared subagent targets a different provider.
+      const hasCrossProviderSubagent = (phaseConf?.subagents ?? []).some(
+        sa => sa.provider && sa.provider !== executor.manifest.id,
+      )
       const mcpServer = createCoroMcpServer(toolCtx, signals, {
         registerFileTools: !executor.capabilities.supportsNativeFileTools,
+        registerRunSubagent:
+          !executor.capabilities.supportsNativeSubagents || hasCrossProviderSubagent,
       })
 
       const systemPrompt = await buildSystemPrompt(
@@ -731,6 +743,23 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Test-only: hand the live signals + toolCtx to a stub executor.
       options?.onPhaseExecutorBoot?.(liveJob.id, { signals, toolCtx })
 
+      // Snapshot the per-phase context onto toolCtx so MCP tool
+      // handlers (notably `run_subagent`) can look up the active
+      // executor, hook policy, and MCP-server descriptors when an
+      // agent invokes them mid-phase. Re-assigned wholesale every
+      // iteration; cleared in the `finally` below.
+      toolCtx.currentPhase = phaseConf
+        ? {
+            phaseConf,
+            executor,
+            workingDir,
+            jobIntelligenceDir,
+            hookPolicy: req.hookPolicy,
+            mcpServer: req.mcpServer,
+            pluginMcpServers: req.pluginMcpServers,
+          }
+        : undefined
+
       try {
         for await (const ev of executor.executePhase(req) as AsyncIterable<PhaseExecutorEvent>) {
           switch (ev.type) {
@@ -872,6 +901,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         // `lifecycle.onSessionEnd` is responsible for calling
         // `options?.onSessionEnd` itself.
         try { developerInput.close() } catch { /* best-effort */ }
+        // Drop the per-phase context — any in-flight `run_subagent`
+        // calls have either resolved or aborted with the parent.
+        toolCtx.currentPhase = undefined
       }
 
       // MCP usage diagnostics. Zero mcp calls while built-ins fired can
@@ -1636,6 +1668,7 @@ export function buildExecutorSubagentSpecs(
       name: sa.name,
       systemPrompt: agentPrompt,
       ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(sa.provider ? { provider: sa.provider } : {}),
       ...(sa.tools && sa.tools.length > 0 ? { allowedTools: [...sa.tools] } : {}),
     })
   }
