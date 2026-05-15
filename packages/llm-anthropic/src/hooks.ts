@@ -101,8 +101,46 @@ function isInside(candidate: string, root: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }
 
+// Absolute-path prefixes that we always treat as safe references in Bash
+// commands. The agent legitimately needs to read system binaries, redirect
+// to /dev/null, write scratch files in $TMPDIR, etc. The original guard
+// rail's intent is to keep the agent out of the **user's** filesystem
+// ($HOME, sibling repos, dotfiles) — not to forbid ever mentioning a
+// system path. Anything under one of these prefixes is allowed without
+// further checks.
+const ALLOWED_ABSOLUTE_PREFIXES: readonly string[] = [
+  '/dev/',
+  '/tmp/',
+  '/private/tmp/',
+  '/private/var/folders/',
+  '/var/folders/',
+  '/var/tmp/',
+  '/usr/',
+  '/bin/',
+  '/sbin/',
+  '/opt/',
+  '/etc/',
+  '/Library/',
+  '/System/',
+  '/Applications/',
+  '/proc/',
+  '/sys/',
+  '/run/',
+]
+
+const ALLOWED_ABSOLUTE_EXACT: ReadonlySet<string> = new Set([
+  '/dev', '/tmp', '/usr', '/bin', '/sbin', '/opt', '/etc',
+  '/Library', '/System', '/Applications', '/proc', '/sys', '/run',
+])
+
 function getBashPathDenialReason(command: string, workingDir: string, memoryRoot: string): string | null {
-  for (const rawToken of tokenizeShellCommand(command)) {
+  // Sanitise the command before tokenising: heredoc bodies are *data*,
+  // not commands, and shell comments are noise. Both used to produce
+  // false positives (e.g. Go source written via `cat << 'EOF'` had its
+  // `// comment` lines tokenised and rejected as "absolute paths").
+  const sanitised = stripHeredocBodies(stripShellComments(command))
+
+  for (const rawToken of tokenizeShellCommand(sanitised)) {
     const candidate = extractPathCandidate(rawToken)
     if (!candidate) continue
 
@@ -139,6 +177,7 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
     }
 
     if (candidate.startsWith('/')) {
+      if (isAllowedAbsolutePath(candidate)) continue
       const abs = path.resolve(candidate)
       if (!isInside(abs, workingDir) && !isInside(abs, memoryRoot)) {
         return bashPathReason(command, candidate, `path ${abs}`, workingDir, memoryRoot)
@@ -149,6 +188,14 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
   return null
 }
 
+function isAllowedAbsolutePath(candidate: string): boolean {
+  if (ALLOWED_ABSOLUTE_EXACT.has(candidate)) return true
+  for (const prefix of ALLOWED_ABSOLUTE_PREFIXES) {
+    if (candidate.startsWith(prefix)) return true
+  }
+  return false
+}
+
 function isClaudeTaskOutputPath(token: string): boolean {
   return token.startsWith('/private/tmp/claude-')
     && token.includes('/tasks/')
@@ -157,6 +204,71 @@ function isClaudeTaskOutputPath(token: string): boolean {
 
 function tokenizeShellCommand(command: string): string[] {
   return command.match(/'[^']*'|"[^"]*"|`[^`]*`|\S+/g) ?? []
+}
+
+/**
+ * Remove heredoc bodies. The body of a `<<TAG`/`<<'TAG'`/`<<-TAG`
+ * heredoc is data piped into the command's stdin — it must not be
+ * scanned for paths or it will reject any file containing `//` (Go
+ * comments), `/usr/...` mentions, etc.
+ */
+function stripHeredocBodies(command: string): string {
+  // Match `<<` or `<<-`, optional quotes, capture the delimiter tag.
+  const heredocStart = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/g
+  let result = ''
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = heredocStart.exec(command)) !== null) {
+    const tag = match[2]
+    // Append everything up to and including the heredoc start marker.
+    const startEnd = match.index + match[0].length
+    result += command.slice(cursor, startEnd)
+    // Find the closing delimiter on its own line (allow leading
+    // whitespace for `<<-`).
+    const closer = new RegExp(`\\n[\\t ]*${tag}(?=\\s|$)`)
+    const tail = command.slice(startEnd)
+    const closeMatch = closer.exec(tail)
+    if (!closeMatch) {
+      // Unterminated — just drop the rest to be safe.
+      cursor = command.length
+      break
+    }
+    // Skip the body, keep the closing delimiter.
+    const closeAbs = startEnd + closeMatch.index + closeMatch[0].length
+    cursor = closeAbs
+    heredocStart.lastIndex = closeAbs
+  }
+  result += command.slice(cursor)
+  return result
+}
+
+/**
+ * Drop shell-style `# comments` outside of single/double/back quotes.
+ * Conservative: only treats `#` as a comment when preceded by start-of-
+ * string or whitespace.
+ */
+function stripShellComments(command: string): string {
+  let out = ''
+  let inSingle = false
+  let inDouble = false
+  let inBack = false
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    const prev = i === 0 ? ' ' : command[i - 1]
+    if (!inDouble && !inBack && ch === '\'' && prev !== '\\') { inSingle = !inSingle; out += ch; continue }
+    if (!inSingle && !inBack && ch === '"' && prev !== '\\') { inDouble = !inDouble; out += ch; continue }
+    if (!inSingle && !inDouble && ch === '`' && prev !== '\\') { inBack = !inBack; out += ch; continue }
+    if (!inSingle && !inDouble && !inBack && ch === '#' && /\s/.test(prev)) {
+      // Skip to end of line.
+      const nl = command.indexOf('\n', i)
+      if (nl === -1) return out
+      out += '\n'
+      i = nl
+      continue
+    }
+    out += ch
+  }
+  return out
 }
 
 function extractPathCandidate(token: string): string | null {
@@ -188,6 +300,10 @@ function extractAssignmentValue(token: string): string {
 }
 
 function looksLikePathReference(token: string): boolean {
+  // `//` is almost never a filesystem path in practice (Go comments,
+  // URLs, doubled-separator typos). Treat any token starting with `//`
+  // as a non-path so we don't reject `// TODO` lines or `https://...`.
+  if (token.startsWith('//')) return false
   return token === '~' || token === '..' || token === '-' ||
     token.startsWith('~/') || token.startsWith('../') || token.startsWith('./') ||
     token.startsWith('/') || token.startsWith('$HOME') || token.startsWith('${HOME}') ||
