@@ -70,6 +70,37 @@ export async function runSubagent(
   ctx: ToolContext,
   input: RunSubagentInput,
 ): Promise<RunSubagentResult> {
+  // ── Boundary validation ──────────────────────────────────────────
+  // Belt-and-suspenders alongside OpenAI strict-mode schema checks:
+  // some providers / older models still slip past the schema, and a
+  // missing `task` here would otherwise propagate as `userPrompt:
+  // undefined` into the subagent's first turn and surface as an
+  // opaque "Missing required parameter: input[0].content" from the
+  // OpenAI API — unrecoverable signal for the calling agent.
+  if (!input || typeof input !== 'object') {
+    throw new Error(
+      'run_subagent: invalid arguments. Expected { name: string, task: string }. ' +
+      'Example: { "name": "code-reviewer", "task": "Review the diff at <path>" }',
+    )
+  }
+  if (typeof input.name !== 'string' || input.name.trim() === '') {
+    throw new Error(
+      'run_subagent: missing required string field "name". ' +
+      'Schema: { name: string, task: string }. ' +
+      'Example: { "name": "code-reviewer", "task": "Review the diff at <path>" }. ' +
+      'Note: the field is named "name" — not "agent", "subagent", or "subagentName".',
+    )
+  }
+  if (typeof input.task !== 'string' || input.task.trim() === '') {
+    throw new Error(
+      'run_subagent: missing required string field "task". ' +
+      'Schema: { name: string, task: string }. ' +
+      'Example: { "name": "code-reviewer", "task": "Review the diff at <path>" }. ' +
+      'Note: the field is named "task" — not "prompt", "input", "message", or "description". ' +
+      'Pass a single plain-text string describing the entire job; the subagent has no view of your conversation.',
+    )
+  }
+
   const phase = ctx.currentPhase
   if (!phase) {
     throw new Error('run_subagent: no active phase context — tool invoked outside a phase invocation.')

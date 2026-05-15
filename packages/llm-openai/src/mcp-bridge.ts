@@ -14,13 +14,14 @@ import {
   connectExternalMcpServer,
   type ExternalMcpClientConnection,
 } from './mcp-external-client'
+import type { ExternalMcpConnectionPool } from './mcp-pool'
 
 export interface OpenAiFunctionTool {
   type: 'function'
   name: string
   description: string
   parameters: Record<string, unknown>
-  strict: false
+  strict: boolean
 }
 
 export interface OpenAiToolCall {
@@ -73,6 +74,17 @@ export interface McpBridgeOptions {
   cwd: string
   phase?: string
   signal?: AbortSignal
+  /**
+   * Optional shared pool of external MCP connections. When provided,
+   * external stdio/sse/http servers are acquired from the pool
+   * (keyed by {@link externalScopeKey} + serverId) instead of
+   * being spawned fresh for every bridge. The pool keeps connections
+   * alive across phases and subagent invocations within the same job
+   * to avoid the FastMCP / GitHub-MCP respawn storm.
+   */
+  externalPool?: ExternalMcpConnectionPool
+  /** Required when {@link externalPool} is set. Typically the job working dir. */
+  externalScopeKey?: string
 }
 
 export interface ExternalMcpFailure {
@@ -83,6 +95,8 @@ export interface ExternalMcpFailure {
 export class McpFunctionBridge {
   private readonly bindings = new Map<string, ToolBinding>()
   private readonly externalConnections: ExternalMcpClientConnection[] = []
+  /** Server IDs we acquired from the pool (vs. spawned standalone). */
+  private readonly pooledServerIds: string[] = []
   readonly externalFailures: ExternalMcpFailure[] = []
 
   constructor(private readonly opts: McpBridgeOptions) {
@@ -98,11 +112,19 @@ export class McpFunctionBridge {
   async init(): Promise<void> {
     const entries = Object.entries(this.opts.pluginServers)
     if (entries.length === 0) return
+    const pool = this.opts.externalPool
+    const scopeKey = this.opts.externalScopeKey
     await Promise.all(
       entries.map(async ([serverId, config]) => {
         try {
-          const connection = await connectExternalMcpServer(serverId, config)
-          this.externalConnections.push(connection)
+          const connection = pool && scopeKey
+            ? await pool.acquire(scopeKey, serverId, config)
+            : await connectExternalMcpServer(serverId, config)
+          if (pool && scopeKey) {
+            this.pooledServerIds.push(serverId)
+          } else {
+            this.externalConnections.push(connection)
+          }
           for (const tool of connection.tools) {
             const openAiName = `mcp__${serverId}__${tool.name}`
             this.bindings.set(openAiName, {
@@ -127,6 +149,7 @@ export class McpFunctionBridge {
 
   /** Terminate all spawned MCP child processes / network clients. */
   async dispose(): Promise<void> {
+    // Standalone (non-pooled) connections: close immediately.
     await Promise.all(
       this.externalConnections.map(async c => {
         try {
@@ -137,6 +160,13 @@ export class McpFunctionBridge {
       }),
     )
     this.externalConnections.length = 0
+    // Pooled connections: just release; the pool decides when to close.
+    const pool = this.opts.externalPool
+    const scopeKey = this.opts.externalScopeKey
+    if (pool && scopeKey) {
+      for (const serverId of this.pooledServerIds) pool.release(scopeKey, serverId)
+    }
+    this.pooledServerIds.length = 0
   }
 
   listTools(): OpenAiFunctionTool[] {
@@ -145,7 +175,16 @@ export class McpFunctionBridge {
       name: binding.openAiName,
       description: this.describeTool(binding),
       parameters: toJsonSchema(binding.inputSchema ?? {}),
-      strict: false as const,
+      // Strict mode (constrained decoding) was tried but caused the
+      // model to emit `{}` arguments for tools whose Zod schemas use
+      // `z.record(..., z.unknown())`, `.optional()`, or `z.union(...)`
+      // — these don't satisfy OpenAI's strict requirements (every
+      // property required, additionalProperties:false on every nested
+      // object, no permissive "any" types) and constrained decoding
+      // collapses to the empty object. Defensive validation in the
+      // tool handler (see tools/run-subagent.ts) is the primary
+      // safety net instead.
+      strict: false,
     }))
   }
 

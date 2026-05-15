@@ -628,10 +628,10 @@ export function createCoroMcpServer(
       ...(options.registerRunSubagent ? [
         tool(
           'run_subagent',
-          'Dispatch a single side-conversation to a named subagent declared in the current workflow phase. Returns the subagent\'s final assistant text plus token usage. The subagent runs as a fresh, stateless conversation with a tightened tool whitelist; it cannot itself call run_subagent. Use this for focused subtasks (code review, retrieval, summarisation) that benefit from an isolated context.',
+          'Dispatch a single side-conversation to a named subagent declared in the current workflow phase. Returns the subagent\'s final assistant text plus token usage. The subagent runs as a fresh, stateless conversation with a tightened tool whitelist; it cannot itself call run_subagent. Use this for focused subtasks (code review, retrieval, summarisation) that benefit from an isolated context.\n\nArguments schema (both fields REQUIRED, both strings, no other fields accepted):\n  name: subagent name from the phase YAML (e.g. "code-reviewer")\n  task: plain-text instruction for the subagent\n\nExample call: {"name": "code-reviewer", "task": "Review the diff at /tmp/job-123/repo and flag style issues per .claude/skills/golang-conventions."}\n\nDo NOT use any other field names. The argument is "task", not "prompt"/"input"/"message". The argument is "name", not "agent"/"subagent"/"subagentName".',
           {
-            name: z.string().describe('Subagent name from the workflow YAML\'s `subagents:` block (e.g. `code-reviewer`).'),
-            task: z.string().describe('Plain-text task description handed to the subagent as its user message. Be specific — the subagent has no view of your conversation.'),
+            name: z.string().describe('REQUIRED. Subagent name exactly as declared in the workflow YAML\'s `subagents:` block (e.g. "code-reviewer"). Must NOT be empty. Field is literally named "name" — not agent/subagent/subagentName.'),
+            task: z.string().describe('REQUIRED. Plain-text task description handed to the subagent as its user message. Must NOT be empty. Field is literally named "task" — not prompt/input/message/description. The subagent has no view of your conversation; include all needed context inline.'),
           },
           async (args: { name: string; task: string }) => {
             try {

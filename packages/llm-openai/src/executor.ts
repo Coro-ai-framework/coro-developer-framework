@@ -22,6 +22,7 @@ import {
 } from '@coro/plugin-sdk'
 import { hasOpenAiApiKey, resolveOpenAiClientOptions } from './auth'
 import { McpFunctionBridge, type OpenAiFunctionOutputItem, type OpenAiToolCall } from './mcp-bridge'
+import { ExternalMcpConnectionPool } from './mcp-pool'
 import {
   OPENAI_MODELS,
   OPENAI_PLUGIN_ID,
@@ -110,6 +111,13 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
   private readonly logger: Logger
   private readonly clientFactory: (opts: OpenAiClientOptions) => OpenAiClientLike
   private client?: OpenAiClientLike
+  /**
+   * Shared pool of external MCP connections, keyed by job working
+   * directory + serverId. Reused across phases AND `run_subagent`
+   * dispatches so we don't respawn stdio MCP children (e.g. Atlassian
+   * FastMCP, GitHub MCP) for every side conversation.
+   */
+  private readonly externalMcpPool = new ExternalMcpConnectionPool()
 
   constructor(opts: OpenAiExecutorOptions) {
     this.auth = opts.auth ?? {}
@@ -137,6 +145,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
 
   async dispose(): Promise<void> {
     this.client = undefined
+    await this.externalMcpPool.drain()
   }
 
   listModels(): ReadonlyArray<ExecutorModelDescriptor> {
@@ -206,6 +215,8 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       cwd: req.cwd,
       phase: req.phase,
       signal: abortController.signal,
+      externalPool: this.externalMcpPool,
+      externalScopeKey: req.cwd,
     })
     await bridge.init()
     for (const failure of bridge.externalFailures) {
