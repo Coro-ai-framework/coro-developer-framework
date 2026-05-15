@@ -43,19 +43,44 @@ export interface ResolvedPhaseAssignment {
 /**
  * Resolve a workflow phase / subagent's model assignment to a concrete
  * executor runtime + model id. Pure function — no side effects, no I/O.
+ *
+ * Resolution priority (mirrors `selectModel` in `jobs/runner.ts`):
+ *   1. `phaseConf.model` set → alias lookup → literal pass-through.
+ *   2. `phaseConf.tier` set (or default `'planning'` for phases) →
+ *      `tier:<tier>` alias from the plugin-seeded defaults.
+ *   3. Legacy fallback: bare `<tier>` alias (e.g. the historical
+ *      `planning`/`coding` shorthands).
  */
 export function resolvePhaseAssignment(
-  phaseConf: Pick<PhaseConfig, 'model' | 'provider'> | Pick<SubagentConfig, 'model' | 'provider'>,
+  phaseConf:
+    | Pick<PhaseConfig, 'model' | 'tier' | 'provider'>
+    | Pick<SubagentConfig, 'model' | 'tier' | 'provider'>,
   settings: Settings,
   registry: PluginRegistry,
 ): ResolvedPhaseAssignment {
-  const requestedModel = phaseConf.model
   const explicitProvider = phaseConf.provider
+  const aliases = settings.llm?.aliases ?? {}
 
-  const aliasEntry =
-    requestedModel !== undefined
-      ? settings.llm?.aliases?.[requestedModel]
-      : undefined
+  // Walk the resolution priority list. Each candidate is an alias key
+  // we should try in `settings.llm.aliases`; the first hit wins.
+  const candidates: string[] = []
+  if (phaseConf.model) candidates.push(phaseConf.model)
+  if (phaseConf.tier) {
+    candidates.push(`tier:${phaseConf.tier}`)
+    candidates.push(phaseConf.tier) // legacy shorthand fallback
+  }
+
+  let aliasEntry: { provider: string; model: string; reasoningEffort?: 'low' | 'medium' | 'high' } | undefined
+  let aliasHitKey: string | undefined
+  for (const key of candidates) {
+    const hit = aliases[key]
+    if (hit) {
+      aliasEntry = hit
+      aliasHitKey = key
+      break
+    }
+  }
+
   let provider: string | undefined
   let model: string
   let modelHints: ResolvedPhaseAssignment['modelHints'] | undefined
@@ -72,10 +97,12 @@ export function resolvePhaseAssignment(
     }
   } else {
     provider = explicitProvider
-    // No alias hit and no explicit model — leave `model` empty so the
-    // registry routes purely on `provider` (or the tenant default).
-    model = requestedModel ?? ''
+    // No alias hit. If the workflow pinned a literal `model:`, pass it
+    // through to the registry; otherwise leave empty so the registry
+    // routes purely on `provider` (or the tenant default).
+    model = phaseConf.model ?? ''
   }
+  void aliasHitKey // reserved for future telemetry / debug logging
 
   const runtime = registry.resolveExecutor({
     provider,

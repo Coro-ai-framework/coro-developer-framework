@@ -294,9 +294,28 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    * is a no-op for tenants on the built-in Anthropic plugin.
    */
   defaultAliases(): Record<string, { provider: string; model: string }> {
+    // The plugin only owns its own catalogue. We publish a default
+    // model for each capability tier we expose via
+    // {@link ANTHROPIC_MODELS}; workflow phases declare which tier
+    // they want via `tier: planning|coding|mini` and the runner
+    // resolves through these aliases. Tenants can rebind any tier
+    // (`tier:planning`, etc.) from the dashboard without touching
+    // workflow files.
+    //
+    // The legacy `planning` / `coding` keys are kept so existing
+    // tenant configs and any custom workflow files still using
+    // `model: planning` keep working unchanged.
+    const opus    = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-opus-4-6'   }
+    const sonnet  = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-sonnet-4-6' }
+    const haiku   = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-haiku-4-5'  }
     return {
-      planning: { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-opus-4-6' },
-      coding:   { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-sonnet-4-6' },
+      // Tier defaults — the only vocabulary the plugin owns.
+      'tier:planning': opus,
+      'tier:coding':   sonnet,
+      'tier:mini':     haiku,
+      // Legacy two-tier shorthands (back-compat).
+      planning: opus,
+      coding:   sonnet,
     }
   }
 

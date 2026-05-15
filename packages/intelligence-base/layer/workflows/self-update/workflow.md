@@ -9,7 +9,7 @@ initial_status: awaiting-pr-merge
 phases:
   - name: tracking
     agent: null
-    model: planning
+    tier: mini
     status: awaiting-pr-merge
 ---
 

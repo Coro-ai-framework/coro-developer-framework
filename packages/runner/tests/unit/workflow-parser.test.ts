@@ -93,6 +93,7 @@ describe('parseWorkflowConfig', () => {
         name: 'planning',
         agent: 'agents/planner.md',
         model: 'planning',
+        tier: 'planning',
         status: 'planning',
       })
     })
@@ -202,13 +203,25 @@ phases:
       expect(config.phases[0].model).toBe('turbo')
     })
 
-    it('defaults model to "planning" when omitted entirely', () => {
+    it('defaults model to undefined and tier to "planning" when omitted', () => {
       const yaml = `
 phases:
   - name: work
 `
       const config = parseWorkflowConfig(md(yaml))!
-      expect(config.phases[0].model).toBe('planning')
+      expect(config.phases[0].model).toBeUndefined()
+      expect(config.phases[0].tier).toBe('planning')
+    })
+
+    it('parses an explicit tier and leaves model unset', () => {
+      const yaml = `
+phases:
+  - name: work
+    tier: mini
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].tier).toBe('mini')
+      expect(config.phases[0].model).toBeUndefined()
     })
 
     it('defaults overrides to empty object when omitted', () => {

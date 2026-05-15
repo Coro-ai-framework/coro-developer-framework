@@ -42,13 +42,18 @@ export interface WorkflowPhaseSummary {
   /** Agent file the phase runs (e.g. `agents/coder.md`), if any. */
   agent: string | null
   /**
-   * Model selector — either a tenant alias (`planning`, `coding`,
-   * tenant-defined) or a provider-qualified concrete model id. Open
-   * `string` since Phase 2 of the multi-provider migration; the legacy
-   * literal union is preserved as the default in workflow YAML for
-   * back-compat.
+   * Optional explicit model selector — alias key in `settings.llm.aliases`
+   * (e.g. `planning`, `coding`, tenant-defined) or a provider-qualified
+   * concrete model id. When unset, resolution falls through to {@link tier}.
    */
-  model: string
+  model?: string
+  /**
+   * Capability tier the phase declares (`planning` | `coding` | `mini`).
+   * Resolves through the `tier:<tier>` alias each LLM plugin publishes.
+   * Always present — the parser defaults to `'planning'` when neither
+   * `model` nor `tier` is set in the YAML.
+   */
+  tier: string
   /** Optional executor plugin id pin advertised in the workflow YAML. */
   provider?: string
   /** Whether the runner pauses for user approval before advancing. */
@@ -178,10 +183,11 @@ async function readWorkflowsFromRoot(layer: IntelligenceLayer, root: string): Pr
             name: p.name,
             status: p.status,
             agent: p.agent,
-            model: p.model,
+            tier: p.tier ?? 'planning',
             interactiveCheckpoint: p.interactiveCheckpoint === true,
             subagents: (p.subagents ?? []).map(sa => sa.name),
           }
+          if (p.model !== undefined) summary.model = p.model
           if (p.provider !== undefined) summary.provider = p.provider
           return summary
         })

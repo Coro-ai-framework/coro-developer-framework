@@ -149,10 +149,30 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
   }
 
   defaultAliases(): Record<string, { provider: string; model: string }> {
+    // The plugin owns only its own catalogue. We publish a default
+    // model for each capability tier we expose; workflow phases declare
+    // which tier they want via `tier: planning|coding|mini` and the
+    // runner resolves through these aliases.
+    //
+    // Loader semantics (`seedExecutorDefaultAliases` in the runner) are
+    // first-write-wins, so when both Anthropic and OpenAI are loaded,
+    // Anthropic's `tier:*` defaults take precedence — OpenAI's tier
+    // entries here only become active when Anthropic is absent or the
+    // user has explicitly rebound the tier alias to OpenAI.
+    //
+    // The provider-prefixed `openai*` keys are kept for back-compat
+    // and for users who want to pin a phase to OpenAI without changing
+    // the global tier binding.
+    const planning = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.5'        }
+    const coding   = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.3-codex'  }
+    const mini     = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.4-mini'   }
     return {
-      openaiPlanning: { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.5' },
-      openaiCoding: { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.3-codex' },
-      openaiMini: { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.4-mini' },
+      'tier:planning': planning,
+      'tier:coding':   coding,
+      'tier:mini':     mini,
+      openaiPlanning:  planning,
+      openaiCoding:    coding,
+      openaiMini:      mini,
     }
   }
 

@@ -1315,22 +1315,37 @@ export function derivePhaseCostUsd(args: {
  *   2. Otherwise treat `phaseConf.model` as a literal model id and
  *      return it verbatim. This is how workflows pin a specific model
  *      (e.g. `gpt-5-codex`, `claude-sonnet-4-7`).
- *   3. When no model is specified, default to the `planning` alias.
+ *   3. When no `model` is set, fall back to `tier:<phaseConf.tier>`
+ *      (the tier alias each LLM plugin publishes via
+ *      {@link PhaseExecutorRuntime.defaultAliases}).
+ *   4. Final fallback: `tier:planning` → `planning` legacy alias.
  *
  * `settings.llm.aliases` is seeded from each executor plugin's
  * {@link PhaseExecutorRuntime.defaultAliases} at bootstrap, so the
- * built-in Anthropic plugin keeps the historical `planning` / `coding`
- * shorthands working without any tenant-side config.
+ * built-in plugins keep `tier:*` (and the legacy `planning`/`coding`
+ * shorthands) working without any tenant-side config.
  */
 export function selectModel(
-  phaseConf: { model?: string } | null | undefined,
+  phaseConf: { model?: string; tier?: string } | null | undefined,
   settings: Settings,
 ): string {
-  const requested = phaseConf?.model || 'planning'
-  const alias = settings.llm?.aliases?.[requested]
-  if (alias) return alias.model
-  // Pass-through: workflow pinned a literal model id.
-  return requested
+  const aliases = settings.llm?.aliases ?? {}
+  // 1. Explicit model wins (alias key OR literal model id pass-through).
+  if (phaseConf?.model) {
+    const alias = aliases[phaseConf.model]
+    return alias ? alias.model : phaseConf.model
+  }
+  // 2. Tier fallback — declarative "this phase needs <tier>".
+  const tier = phaseConf?.tier || 'planning'
+  const tierAlias = aliases[`tier:${tier}`]
+  if (tierAlias) return tierAlias.model
+  // 3. Last-resort: legacy `planning`/`coding` shorthand for tenants
+  //    that pre-date `tier:*` defaults. When even that misses, return
+  //    the bare tier name as a literal model id — the registry's
+  //    executor lookup will surface a clear "unknown model" error.
+  const legacy = aliases[tier]
+  if (legacy) return legacy.model
+  return tier
 }
 
 /**
@@ -1578,8 +1593,8 @@ export function buildExecutorSubagentSpecs(
     // applies any provider-specific coercion (Anthropic's SDK accepts a
     // tier shorthand like `'opus'/'sonnet'`; OpenAI / others want a
     // literal model id).
-    const resolvedModel = sa.model
-      ? selectModel({ model: sa.model }, settings)
+    const resolvedModel = sa.model || sa.tier
+      ? selectModel({ model: sa.model, tier: sa.tier }, settings)
       : undefined
 
     out.push({

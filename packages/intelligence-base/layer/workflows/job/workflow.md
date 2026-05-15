@@ -9,36 +9,36 @@ initial_status: queued
 phases:
   - name: spec-writing
     agent: agents/spec-writer.md
-    model: planning
+    tier: mini
     status: spec-writing
     interactive_checkpoint: true
 
   - name: planning
     agent: agents/planner.md
-    model: planning
+    tier: planning
     status: planning
     interactive_checkpoint: true
 
   - name: coding
     agent: agents/coder.md
-    model: coding
+    tier: coding
     status: coding
     interactive_checkpoint: true
     subagents:
       - name: code-reviewer
         agent: agents/code-reviewer.md
-        model: coding
+        tier: mini
         tools: [Read, Glob, Grep, Bash, mcp__coro__scm_get_pr_comments, mcp__coro__scm_post_pr_comment, mcp__coro__log]
 
   - name: review
     agent: agents/pr-reviewer.md
-    model: coding
+    tier: mini
     status: reviewing
     interactive_checkpoint: true
 
   - name: evaluation
     agent: agents/evaluator.md
-    model: planning
+    tier: planning
     status: evaluating
     interactive_checkpoint: true
 

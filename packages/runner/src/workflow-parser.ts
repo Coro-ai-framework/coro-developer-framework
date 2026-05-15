@@ -9,12 +9,21 @@ export interface SubagentConfig {
   name: string
   agent?: string
   /**
-   * Model alias (e.g. `planning`, `coding`) or a provider-qualified
-   * concrete model id (e.g. `claude-sonnet-4-6`, `gpt-5-codex`). The
-   * runner resolves alias keys via `settings.llm.aliases` and concrete
-   * ids via `provider`-aware lookup at phase boot.
+   * Optional explicit model selector. May be an alias key in
+   * `settings.llm.aliases` (e.g. `planning`, `coding`, or a tenant-
+   * defined name) or a provider-qualified concrete model id (e.g.
+   * `claude-sonnet-4-6`, `gpt-5-codex`). Pins this subagent to a
+   * specific model regardless of `tier`. When unset, resolution falls
+   * through to `tier`.
    */
   model?: string
+  /**
+   * Capability tier this subagent needs (`planning` | `coding` |
+   * `mini`). Resolves through the `tier:<tier>` alias each LLM plugin
+   * publishes, so the workflow author declares intent and the runner
+   * picks the concrete model based on which provider is configured.
+   */
+  tier?: string
   /** Optional executor plugin id pin (e.g. `anthropic`, `openai`). */
   provider?: string
   tools?: string[]
@@ -24,13 +33,21 @@ export interface PhaseConfig {
   name: string
   agent: string | null
   /**
-   * Model selector for the phase. Historically restricted to the
-   * `'planning'` / `'coding'` literal aliases; relaxed to `string` in
-   * Phase 2 of the multi-provider migration so workflows can name any
-   * tenant-defined alias or pin a concrete provider model directly.
-   * Resolution rules live in `resolvePhaseAssignment`.
+   * Optional explicit model selector. Same semantics as
+   * {@link SubagentConfig.model} — alias key OR concrete model id.
+   * Pins this phase regardless of `tier`. When unset, resolution falls
+   * through to `tier`.
    */
-  model: string
+  model?: string
+  /**
+   * Capability tier this phase needs (`planning` | `coding` | `mini`).
+   * The parser defaults this to `planning` when YAML omits both
+   * `model` and `tier`. Optional in the type so test fixtures and
+   * programmatic callers can omit it; runtime code treats undefined
+   * as `planning`. Resolves through the `tier:<tier>` alias each LLM
+   * plugin publishes.
+   */
+  tier?: string
   /** Optional executor plugin id pin (e.g. `anthropic`, `openai`). */
   provider?: string
   status: string
@@ -82,6 +99,7 @@ interface RawSubagent {
   name?: string
   agent?: string
   model?: string
+  tier?: string
   provider?: string
   tools?: string[]
 }
@@ -90,6 +108,7 @@ interface RawPhase {
   name?: string
   agent?: string | null
   model?: string
+  tier?: string
   provider?: string
   status?: string
   subagents?: RawSubagent[]
@@ -124,19 +143,20 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
   const phases: PhaseConfig[] = parsed.phases
     .filter((p): p is RawPhase & { name: string } => typeof p.name === 'string')
     .map(p => {
-      // Phase 2 multi-provider: `model` is now an open string (alias key
-      // or provider-qualified concrete id). The historic `'planning'` /
-      // `'coding'` literal coercion is preserved as the default when the
-      // YAML omits or sets a value other than `'coding'`, so existing
-      // workflows continue to map onto the legacy aliases unchanged.
-      const rawModel = typeof p.model === 'string' && p.model.length > 0
-        ? p.model
-        : 'planning'
+      // Multi-provider model resolution — see `selectModel` /
+      // `resolvePhaseAssignment`. Resolution priority is:
+      //   1. explicit `model:` (alias key OR concrete model id)
+      //   2. `tier:` → `tier:<tier>` alias published by each LLM plugin
+      //   3. fallback `tier: planning` when neither is set
       const phase: PhaseConfig = {
         name: p.name,
         agent: p.agent ?? null,
-        model: rawModel,
+        tier: typeof p.tier === 'string' && p.tier.length > 0 ? p.tier : 'planning',
         status: p.status ?? p.name,
+      }
+
+      if (typeof p.model === 'string' && p.model.length > 0) {
+        phase.model = p.model
       }
 
       if (typeof p.provider === 'string' && p.provider.length > 0) {
@@ -158,6 +178,7 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
             const out: SubagentConfig = { name: sa.name }
             if (sa.agent !== undefined) out.agent = sa.agent
             if (sa.model !== undefined) out.model = sa.model
+            if (sa.tier !== undefined) out.tier = sa.tier
             if (sa.provider !== undefined) out.provider = sa.provider
             if (sa.tools !== undefined) out.tools = sa.tools
             return out

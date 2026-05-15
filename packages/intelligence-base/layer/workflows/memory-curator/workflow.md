@@ -9,7 +9,7 @@ initial_status: queued
 phases:
   - name: curating
     agent: agents/memory-curator.md
-    model: planning
+    tier: coding
     status: curating
     interactive_checkpoint: true
 ---

@@ -9,30 +9,30 @@ initial_status: campaign-architecture
 phases:
   - name: campaign-architecture
     agent: agents/campaign-architect.md
-    model: planning
+    tier: planning
     status: campaign-architecture
     interactive_checkpoint: true
 
   - name: campaign-planning
     agent: agents/campaign-planner.md
-    model: planning
+    tier: planning
     status: campaign-planning
     interactive_checkpoint: true
 
   - name: coordinating
     agent: null
-    model: planning
+    tier: mini
     status: awaiting-children
 
   - name: campaign-integration
     agent: agents/campaign-integrator.md
-    model: planning
+    tier: planning
     status: integrating
     interactive_checkpoint: true
 
   - name: aggregation
     agent: agents/campaign-evaluator.md
-    model: planning
+    tier: mini
     status: aggregating
     interactive_checkpoint: true
 ---
