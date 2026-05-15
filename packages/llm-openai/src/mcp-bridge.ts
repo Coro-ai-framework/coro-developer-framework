@@ -205,6 +205,37 @@ export class McpFunctionBridge {
     }
 
     const input = parseArguments(call.argumentsJson)
+
+    // ── Schema validation (SDK tools only) ────────────────────────────────
+    //
+    // The MCP SDK's CallTool dispatcher Zod-validates inputs before
+    // calling a tool's handler. Our bridge calls handlers directly
+    // (via `_registeredTools[name].handler`) and therefore bypasses
+    // that validation entirely. Without this guard, the model can
+    // call e.g. `escalate({message: "..."})` instead of
+    // `escalate({reason: "..."})` and the handler runs with
+    // `reason: undefined`, silently writing an empty escalation
+    // message to the job. We mirror the SDK's pre-handler validation
+    // here so wrong shapes turn into informative tool errors the
+    // model can recover from.
+    //
+    // External MCP servers do their own server-side validation, so we
+    // skip them.
+    if (binding.kind === 'sdk' && binding.inputSchema) {
+      const validation = validateInputAgainstZodShape(binding.inputSchema, input)
+      if (!validation.ok) {
+        const output =
+          `Invalid arguments for ${binding.openAiName}. ${validation.message} ` +
+          `Accepted fields: ${describeShape(binding.inputSchema)}.`
+        return {
+          item: { type: 'function_call_output', call_id: call.callId, output },
+          events: [
+            { type: 'tool_result', toolName: binding.openAiName, output, isError: true },
+          ],
+        }
+      }
+    }
+
     const policy = this.enforcePolicy(binding.openAiName, binding.toolName, input)
     if (!policy.allow) {
       const output = policy.reason ?? `Tool ${binding.openAiName} was blocked by policy.`
@@ -324,7 +355,10 @@ function parseArguments(json: string): Record<string, unknown> {
 
 function toJsonSchema(rawShape: Record<string, unknown>): Record<string, unknown> {
   try {
-    return z.toJSONSchema(z.object(rawShape as z.core.$ZodLooseShape)) as Record<string, unknown>
+    const schema = isZodSchema(rawShape)
+      ? (rawShape as unknown as z.ZodTypeAny)
+      : z.object(rawShape as z.core.$ZodLooseShape)
+    return z.toJSONSchema(schema) as Record<string, unknown>
   } catch {
     return {
       type: 'object',
@@ -332,6 +366,66 @@ function toJsonSchema(rawShape: Record<string, unknown>): Record<string, unknown
       properties: {},
     }
   }
+}
+
+/**
+ * Validate a tool-call input against the registered Zod shape. Used
+ * by {@link McpFunctionBridge.call} to catch wrong argument shapes
+ * (`{message:...}` instead of `{reason:...}`, missing required
+ * fields, …) before the handler ever runs. Mirrors what the MCP
+ * SDK's CallTool dispatcher does on the Anthropic path.
+ *
+ * Accepts either a raw Zod shape (`{message: z.string()}`) or an
+ * already-built Zod object schema (`z.object({...})`) — both forms
+ * are valid registrations on the MCP SDK.
+ */
+function validateInputAgainstZodShape(
+  shape: Record<string, unknown>,
+  input: Record<string, unknown>,
+): { ok: true } | { ok: false; message: string } {
+  try {
+    const schema = isZodSchema(shape)
+      ? (shape as unknown as z.ZodTypeAny)
+      : z.object(shape as z.core.$ZodLooseShape)
+    const result = schema.safeParse(input)
+    if (result.success) return { ok: true }
+    const issues = result.error.issues.slice(0, 4).map(i => {
+      const path = i.path.length > 0 ? i.path.join('.') : '(root)'
+      return `${path}: ${i.message}`
+    })
+    return { ok: false, message: `Validation failed — ${issues.join('; ')}.` }
+  } catch (err) {
+    return { ok: false, message: `Schema check threw: ${(err as Error).message}` }
+  }
+}
+
+function isZodSchema(value: unknown): boolean {
+  return Boolean(
+    value
+      && typeof value === 'object'
+      && typeof (value as { safeParse?: unknown }).safeParse === 'function',
+  )
+}
+
+/**
+ * Render the accepted top-level field names + a hint at their type
+ * for the error message we send back to the model. Cheap and fully
+ * derived from the registered Zod shape so it stays in sync.
+ */
+function describeShape(shape: Record<string, unknown>): string {
+  // For an already-built z.object, the shape lives under `.shape` (Zod 4)
+  // or `._def.shape()` (Zod 3). Fall back to the raw object otherwise.
+  const inner: Record<string, unknown> = isZodSchema(shape)
+    ? ((shape as unknown as { shape?: Record<string, unknown> }).shape ?? {})
+    : shape
+  const entries = Object.entries(inner)
+  if (entries.length === 0) return '(no fields)'
+  return entries
+    .map(([k, v]) => {
+      const def = (v as { def?: { type?: string } } | undefined)?.def?.type
+      return def ? `${k}: ${def}` : k
+    })
+    .join(', ')
 }
 
 function stringifyMcpResult(result: unknown): string {
