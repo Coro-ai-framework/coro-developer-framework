@@ -241,7 +241,14 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           { signal: anySignal([req.signal, abortController.signal]) },
         )
         const outputItems = Array.isArray(response.output) ? response.output : []
-        inputItems.push(...outputItems)
+        // With `store: false` the Responses API does NOT persist returned
+        // items, so their server-generated IDs (e.g. `rs_*` reasoning
+        // items, `msg_*` messages) cannot be referenced on subsequent
+        // turns — replaying them as-is triggers `404 Item ... not
+        // found`. Strip ephemeral IDs and drop `reasoning` items, which
+        // OpenAI explicitly recommends removing in stateless mode.
+        const replayItems = sanitizeOutputItemsForReplay(outputItems)
+        inputItems.push(...replayItems)
 
         const text = extractOutputText(response)
         const toolCalls = extractFunctionCalls(outputItems)
@@ -257,7 +264,9 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           } : {}),
           meta: {
             openaiResponseId: response.id,
-            openaiItems: outputItems,
+            // Persist the sanitized items so session resume replay
+            // never carries ephemeral server IDs back to the API.
+            openaiItems: replayItems,
           },
         }
         history.push(assistantMessage)
@@ -439,6 +448,28 @@ function extractFunctionCalls(outputItems: unknown[]): OpenAiToolCall[] {
     })
   }
   return calls
+}
+
+/**
+ * The Responses API with `store: false` returns items whose IDs are
+ * not persisted server-side. Replaying them on the next turn triggers
+ * `404 Item ... not found`. We strip ephemeral IDs and drop reasoning
+ * items entirely (OpenAI documents removal as the official remedy for
+ * stateless mode). Function-call items keep their `call_id` because
+ * that is the bridge between the model's request and our submitted
+ * `function_call_output`; only the server-assigned `id` is dropped.
+ */
+function sanitizeOutputItemsForReplay(items: readonly unknown[]): unknown[] {
+  const out: unknown[] = []
+  for (const raw of items) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const type = typeof item.type === 'string' ? item.type : undefined
+    if (type === 'reasoning') continue
+    const { id: _droppedId, ...rest } = item
+    out.push(rest)
+  }
+  return out
 }
 
 function extractOutputText(response: OpenAiResponseLike): string {
