@@ -215,6 +215,45 @@ describe('OpenAiExecutor — executePhase', () => {
       isError: true,
     }))
   })
+
+  it('emits cumulative totalCostUsd on each usage event so the runner can book per-phase cost', async () => {
+    const client = {
+      responses: {
+        create: async () => ({
+          id: 'resp-cost-1',
+          output_text: 'ok',
+          status: 'completed',
+          usage: { input_tokens: 1_000_000, output_tokens: 100_000 },
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+        }),
+      },
+    }
+    const ex = createOpenAiExecutor({
+      auth: { apiKey: 'sk-test' },
+      logger: silentLogger,
+      client,
+    })
+    const usageEvents: Array<{ tokens: { totalCostUsd?: number } }> = []
+    for await (const event of ex.executePhase({
+      systemPrompt: 'system',
+      userPrompt: 'go',
+      model: 'gpt-5.4',
+      cwd: process.cwd(),
+      intelligenceDir: process.cwd(),
+      mcpServer: { kind: 'sdk-instance', id: 'coro', instance: createSdkMcpServer({ name: 'coro', tools: [] }) },
+      pluginMcpServers: {},
+      hookPolicy: { allowedTools: null, writeRoots: [process.cwd()] },
+      sessionState: {},
+      maxTurns: 5,
+      signal: new AbortController().signal,
+    })) {
+      if (event.type === 'usage') usageEvents.push(event as { tokens: { totalCostUsd?: number } })
+    }
+    const final = usageEvents.at(-1)
+    expect(final).toBeDefined()
+    // gpt-5.4 pricing: input $2.5/M, output $15/M → 1M*2.5 + 0.1M*15 = $2.5 + $1.5 = $4
+    expect(final!.tokens.totalCostUsd).toBeCloseTo(4, 5)
+  })
 })
 
 describe('OpenAiExecutor — class identity', () => {

@@ -305,7 +305,14 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           cacheReadInputTokens: usage.cacheReadInputTokens + turnUsage.cacheReadInputTokens,
           cacheCreationInputTokens: usage.cacheCreationInputTokens + turnUsage.cacheCreationInputTokens,
         }
-        yield { type: 'usage', tokens: usage }
+        // Compute cumulative cost from our local pricing table. OpenAI's
+        // Responses API does not return a dollar figure on the usage
+        // payload (unlike Anthropic's `total_cost_usd` on the result
+        // frame), so without this the runner sees `totalCostUsd=undefined`
+        // on every usage event, `derivePhaseCostUsd` falls back to 0,
+        // and every gpt-* phase shows $0.0000 in the dashboard.
+        const totalCostUsd = calculateOpenAiCostUsd(req.model, usage)
+        yield { type: 'usage', tokens: { ...usage, totalCostUsd } }
 
         if (toolCalls.length === 0) {
           stopReason = response.incomplete_details?.reason ?? response.status ?? 'end_turn'
