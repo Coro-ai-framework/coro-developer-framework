@@ -518,7 +518,12 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
 
     if (resumeSessionId) {
       try {
-        const mcpRefresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'coro')
+        const mcpRefresh = await reattachDynamicMcpServers(
+          liveQuery,
+          dynamicMcpServers,
+          'coro',
+          { forceReconnect: true },
+        )
         this.logger.debug(
           {
             phase: req.phase,
@@ -566,7 +571,17 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         if (mcpReconnectPending) {
           mcpReconnectPending = false
           try {
-            const refresh = await reattachDynamicMcpServers(liveQuery, dynamicMcpServers, 'coro')
+            // `forceReconnect: true` — the SDK reports status='connected'
+            // after an interrupt even when the request/response
+            // correlation table is corrupted. Always rebuild the
+            // transport so the next `mcp__coro__*` call lands on a
+            // freshly-handshaked channel.
+            const refresh = await reattachDynamicMcpServers(
+              liveQuery,
+              dynamicMcpServers,
+              'coro',
+              { forceReconnect: true },
+            )
             yield {
               type: 'log',
               level: 'info',
@@ -656,6 +671,46 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             yield { type: 'usage', tokens: { ...cumulative } }
           }
           continue
+        }
+
+        // Self-heal: if a `user` event delivers a tool_result whose
+        // content matches the well-known MCP-transport-corruption
+        // patterns, schedule an unconditional reconnect for the next
+        // iteration. This catches scenarios where the SDK's internal
+        // request/response correlation gets desynced from sources
+        // other than our own `interrupt()` (e.g. the SDK's own
+        // background heartbeat, an unhandled control_request reject,
+        // etc.). Without this the agent loses MCP tools for the rest
+        // of the phase. With this it transparently retries.
+        if (eventType === 'user') {
+          const betaMsg = message['message'] as Record<string, unknown> | undefined
+          const content = betaMsg?.['content']
+          if (Array.isArray(content)) {
+            for (const block of content as Array<Record<string, unknown>>) {
+              if (block['type'] !== 'tool_result') continue
+              if (block['is_error'] !== true) continue
+              const rc = block['content']
+              const text = typeof rc === 'string'
+                ? rc
+                : Array.isArray(rc)
+                  ? (rc as Array<Record<string, unknown>>)
+                      .map(c => typeof c['text'] === 'string' ? (c['text'] as string) : '')
+                      .join(' ')
+                  : ''
+              if (/stream closed|request aborted|mcp(?:\s+|.*)(?:error|closed|disconnected)|connection closed/i.test(text)) {
+                if (!mcpReconnectPending) {
+                  mcpReconnectPending = true
+                  yield {
+                    type: 'log',
+                    level: 'warn',
+                    message: `[control] MCP tool_result error detected — scheduling reconnect. detail=${text.slice(0, 200)}`,
+                  }
+                }
+                break
+              }
+            }
+          }
+          // fall through to default handler swallow
         }
 
         if (eventType === 'tool_use_summary') {

@@ -359,11 +359,12 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     }
     // Bitbucket's PUT replaces the reviewer list \u2014 read the current
     // PR first and merge so we don't drop the original author's
-    // reviewers. Dedupe by username.
+    // reviewers. Prefer UUID for existing entries because nickname is
+    // no longer accepted by the reviewers API on most workspaces.
     const pr = await this.coder.getPr(args.repoSlug, prId)
     const existing = new Set<string>(
-      ((pr as unknown as { reviewers?: { username?: string; uuid?: string }[] }).reviewers ?? [])
-        .map(r => r.username ?? r.uuid ?? '')
+      ((pr as unknown as { reviewers?: { uuid?: string; account_id?: string; username?: string }[] }).reviewers ?? [])
+        .map(r => r.uuid ?? r.account_id ?? r.username ?? '')
         .filter(Boolean),
     )
     for (const u of args.reviewers) existing.add(u)

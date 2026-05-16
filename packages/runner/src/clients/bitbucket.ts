@@ -92,6 +92,9 @@ export function bbReviewerEntry(value: string): { uuid: string } | { account_id:
 export class BitBucketClient {
   private readonly authHeader: string
   private readonly baseUrl: string
+  /** Lowercased nickname / display_name / account_id / uuid → uuid. */
+  private readonly memberIndex = new Map<string, string>()
+  private memberIndexLoaded = false
 
   constructor(
     private readonly workspace: string,
@@ -153,11 +156,19 @@ export class BitBucketClient {
     // not username — if reviewers cause a 400, fall back to creating without them.
     if (opts.reviewerUsernames && opts.reviewerUsernames.length > 0) {
       try {
-        const reviewers = opts.reviewerUsernames.map(u => bbReviewerEntry(u))
-        return await this.request('POST', `/repositories/${this.workspace}/${opts.repoSlug}/pullrequests`, {
-          ...body,
-          reviewers,
-        })
+        // Resolve nicknames/display-names to UUIDs first; Bitbucket
+        // Cloud rejects `{ username: ... }` for most workspaces.
+        const resolvedIds: string[] = []
+        for (const u of opts.reviewerUsernames) {
+          try { resolvedIds.push(await this.resolveReviewerIdentifier(u)) } catch { /* skip unresolved */ }
+        }
+        if (resolvedIds.length > 0) {
+          const reviewers = resolvedIds.map(u => bbReviewerEntry(u))
+          return await this.request('POST', `/repositories/${this.workspace}/${opts.repoSlug}/pullrequests`, {
+            ...body,
+            reviewers,
+          })
+        }
       } catch (err) {
         if (err instanceof BitBucketError && err.statusCode === 400) {
           // Reviewer format rejected — create PR without reviewers
@@ -186,17 +197,32 @@ export class BitBucketClient {
    * Set the reviewer list on an open PR. Bitbucket Cloud's PUT
    * /pullrequests/{id} replaces the reviewers array — pass the merged
    * list (existing + additions) to avoid dropping reviewers added by
-   * the original author.
-   *
-   * Each entry can be a uuid (`{...}` or bare hex), an account_id
-   * (legacy 24-hex or modern `557058:...`), or a nickname. We map to
-   * the right field per Bitbucket's reviewer schema; nickname is the
-   * legacy `username` field and may be rejected by workspaces that
-   * disabled it.
+   * the original author. Inputs may be UUIDs, account_ids, nicknames
+   * or display names — `resolveReviewerIdentifier` normalises each to
+   * a UUID before we build the payload (Bitbucket removed the legacy
+   * `username` reviewer field for most workspaces, so passing a
+   * nickname directly yields `400 Malformed reviewers list`).
    */
   async updatePrReviewers(repoSlug: string, prId: number, reviewers: ReadonlyArray<string>): Promise<void> {
+    const resolved: string[] = []
+    const errors: string[] = []
+    for (const raw of reviewers) {
+      try {
+        resolved.push(await this.resolveReviewerIdentifier(raw))
+      } catch (err) {
+        errors.push(`"${raw}": ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    if (errors.length > 0) {
+      throw new Error(
+        `addReviewers: could not resolve ${errors.length} of ${reviewers.length} reviewer(s) to Bitbucket accounts. ` +
+        `Details: ${errors.join('; ')}. ` +
+        `Tip: pass the Bitbucket UUID (e.g. {12345678-...}) or account_id (e.g. 557058:...) ` +
+        `directly, or use a nickname / display_name that matches a workspace member.`,
+      )
+    }
     await this.request('PUT', `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}`, {
-      reviewers: reviewers.map(r => bbReviewerEntry(r)),
+      reviewers: resolved.map(r => bbReviewerEntry(r)),
     })
   }
 
@@ -320,6 +346,81 @@ export class BitBucketClient {
     }
 
     return results
+  }
+
+  // ── Reviewer resolution ─────────────────────────────────────────────────────
+
+  /**
+   * Normalise a reviewer identifier to something Bitbucket Cloud's
+   * reviewers API actually accepts (uuid or account_id). Bitbucket
+   * removed the legacy `username` field for most workspaces, so a
+   * nickname like `samir.benali` would otherwise produce
+   * `400 Malformed reviewers list`.
+   *
+   * Pass-through cases (no API call):
+   *   - braced uuid `{...}`
+   *   - bare hyphenated uuid (gets braced by `bbReviewerEntry`)
+   *   - modern account_id (`557058:...`)
+   *   - legacy 24-hex account_id
+   *
+   * Otherwise we treat the input as a nickname / display_name and
+   * resolve it against the workspace members directory. Results are
+   * cached per client instance.
+   */
+  async resolveReviewerIdentifier(input: string): Promise<string> {
+    const v = input.trim()
+    if (!v) throw new Error('reviewer identifier is empty')
+    // Already a uuid or account_id → no lookup needed.
+    if (/^\{[0-9a-f-]{32,}\}$/i.test(v)) return v
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) return v
+    if (/^[0-9]+:[0-9a-f-]+$/i.test(v)) return v
+    if (/^[0-9a-f]{24}$/i.test(v)) return v
+
+    const key = v.toLowerCase()
+    const cached = this.memberIndex.get(key)
+    if (cached) return cached
+
+    if (!this.memberIndexLoaded) {
+      await this.loadWorkspaceMembers()
+    }
+    const resolved = this.memberIndex.get(key)
+    if (!resolved) {
+      throw new Error(
+        `no Bitbucket workspace member matches "${input}" by nickname or display_name. ` +
+        `Pass the user's UUID ({...}) or account_id instead.`,
+      )
+    }
+    return resolved
+  }
+
+  /**
+   * Page through `/workspaces/{workspace}/members` (and members'
+   * embedded user objects), building a case-insensitive lookup by
+   * nickname, display_name, and account_id → uuid. Called lazily the
+   * first time a non-UUID/account_id reviewer identifier needs to be
+   * resolved.
+   */
+  private async loadWorkspaceMembers(): Promise<void> {
+    type Member = {
+      user?: {
+        uuid?: string
+        nickname?: string
+        display_name?: string
+        account_id?: string
+      }
+    }
+    const members = await this.listAll<Member>(`/workspaces/${this.workspace}/members?pagelen=100`)
+    for (const m of members) {
+      const u = m.user
+      if (!u?.uuid) continue
+      const uuid = u.uuid
+      const keys = [u.nickname, u.display_name, u.account_id, u.uuid]
+      for (const k of keys) {
+        if (typeof k !== 'string' || !k.trim()) continue
+        this.memberIndex.set(k.toLowerCase(), uuid)
+      }
+    }
+    this.memberIndexLoaded = true
   }
 }
 
