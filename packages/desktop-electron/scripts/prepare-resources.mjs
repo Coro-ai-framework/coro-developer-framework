@@ -48,11 +48,18 @@ const VENDORED_WORKSPACE_PACKAGES = [
     sourceDir: path.join(workspaceRoot, 'packages', 'llm-anthropic'),
     extraFiles: [],
   },
+  {
+    name: '@coro/llm-openai',
+    folder: 'llm-openai',
+    sourceDir: path.join(workspaceRoot, 'packages', 'llm-openai'),
+    extraFiles: [],
+  },
 ]
 
 runPnpm(['--filter', '@coro/intelligence-base', 'build'])
 runPnpm(['--filter', '@coro/plugin-sdk', 'build'])
 runPnpm(['--filter', '@coro/llm-anthropic', 'build'])
+runPnpm(['--filter', '@coro/llm-openai', 'build'])
 runPnpm(['--filter', '@coro/runner', 'build'])
 runPnpm(['--filter', '@coro/dashboard', 'build'])
 
