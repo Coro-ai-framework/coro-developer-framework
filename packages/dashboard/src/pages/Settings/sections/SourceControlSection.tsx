@@ -6,11 +6,12 @@ import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
 import { useSettings, type PluginEntry } from '../SettingsContext'
 import { evaluateReadiness } from '../readiness'
 import PluginConfigCard from './PluginConfigCard'
-import type { TestConnectionResult } from '../../../components/settings/TestConnectionButton'
+import type { TestConnectionCheck, TestConnectionResult } from '../../../components/settings/TestConnectionButton'
 
 interface GitTestResponse {
   ok: boolean
   message?: string
+  checks?: TestConnectionCheck[]
 }
 
 /**
@@ -34,6 +35,11 @@ function buildGitTestPayload(pluginId: string, config: Record<string, unknown>):
       username: String(config['coderUsername'] ?? ''),
       token: String(config['coderToken'] ?? ''),
       workspace: String(config['workspace'] ?? ''),
+      // Reviewer creds (optional). The strengthened runner test will
+      // verify the reviewer account works AND that it's not the same
+      // as the coder (Bitbucket forbids self-approval).
+      reviewerUsername: String(config['reviewerUsername'] ?? ''),
+      reviewerToken: String(config['reviewerToken'] ?? ''),
     }
   }
   if (pluginId === 'gitlab') {
@@ -93,6 +99,7 @@ export default function SourceControlSection() {
       return {
         ok: response.ok,
         message: response.message ?? (response.ok ? 'Authenticated.' : 'Connection failed.'),
+        checks: response.checks,
       }
     } catch (err) {
       const message = err instanceof ApiError ? err.message : (err as Error).message

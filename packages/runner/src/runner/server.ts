@@ -1912,6 +1912,464 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     return url.replace(/\/+$/, '')
   }
 
+  // ── Git connection-test sub-checks ──────────────────────────────────────
+  //
+  // The legacy implementation just hit `/user` on the provider and
+  // called it a day. That misses the failure modes that actually
+  // break agents at runtime — wrong workspace, missing scopes, and
+  // (for Bitbucket) the asymmetric git-over-HTTPS authentication
+  // requirement where REST accepts the user's email but git requires
+  // `x-bitbucket-api-token-auth` for the same ATATT token. See
+  // `packages/runner/src/plugins/builtin/bitbucket/index.ts`
+  // (`deriveGitUsername`) for the asymmetry rationale.
+  //
+  // The strengthened tests return a structured list of checks so the
+  // dashboard can show the user exactly which step failed and how to
+  // fix it before any job runs and 401s mid-clone or mid-PR-open.
+
+  interface GitTestCheck {
+    name: string
+    ok: boolean
+    message: string
+    hint?: string
+  }
+  interface GitTestResponse {
+    ok: boolean
+    message: string
+    checks: GitTestCheck[]
+  }
+
+  // Express's `Response` is in scope as the route handler's res
+  // parameter; use the global fetch `Response` via this alias so the
+  // helper signatures don't collide.
+  type FetchResponse = globalThis.Response
+
+  /** Short-form HTTP detail for a non-200 response. */
+  async function describeHttpFailure(r: FetchResponse): Promise<string> {
+    const text = await r.text().catch(() => '')
+    const trimmed = text.trim().slice(0, 200)
+    if (trimmed.length > 0) return `${r.status}: ${trimmed}`
+    return `${r.status} ${r.statusText || ''}`.trim()
+  }
+
+  /**
+   * Hit Bitbucket's smart-HTTP info/refs endpoint with Basic auth.
+   * This is the one check that catches the email-vs-x-bitbucket-api-token-auth
+   * asymmetry — REST may return 200 while git-over-HTTPS returns 401
+   * (or vice versa) for the same token. Without this probe the user
+   * discovers the mismatch only when an agent's `git push` fails.
+   */
+  async function probeGitHttps(
+    repoCloneBase: string,
+    gitUsername: string,
+    token: string,
+  ): Promise<{ ok: boolean; detail: string }> {
+    const url = `${trimSlash(repoCloneBase)}/info/refs?service=git-upload-pack`
+    const auth = Buffer.from(`${gitUsername}:${token}`).toString('base64')
+    try {
+      const r = await fetch(url, {
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'User-Agent': 'git/2.40.0',
+          // Required by the smart-HTTP protocol; servers reject the
+          // request otherwise even with valid creds.
+          Accept: 'application/x-git-upload-pack-advertisement',
+        },
+      })
+      if (r.ok) {
+        const ct = r.headers.get('content-type') ?? ''
+        if (!ct.includes('git-upload-pack-advertisement')) {
+          return { ok: false, detail: `${r.status} but unexpected content-type "${ct}"` }
+        }
+        return { ok: true, detail: `${r.status} (git smart-HTTP handshake accepted)` }
+      }
+      return { ok: false, detail: await describeHttpFailure(r) }
+    } catch (err) {
+      return { ok: false, detail: (err as Error).message }
+    }
+  }
+
+  /**
+   * Atlassian API tokens (`ATATT…`) come in two flavours that the
+   * prefix alone cannot distinguish: id.atlassian.com account API
+   * tokens (REST + git want `email`) and Bitbucket-scoped API tokens
+   * (REST + git want `x-bitbucket-api-token-auth`). When the user's
+   * configured username fails the REST probe, try the alternate and
+   * recommend the swap if it works.
+   */
+  async function tryAlternateBitbucketUsername(
+    typedUsername: string,
+    token: string,
+  ): Promise<{ alternate: string; works: boolean } | null> {
+    const isEmail = typedUsername.includes('@')
+    const isSynthetic = /^x-[\w-]+-auth$/.test(typedUsername)
+    // Only swap when the typed value is recognisably one of the two
+    // shapes — random strings get no second chance.
+    let alternate: string | null = null
+    if (isEmail) alternate = 'x-bitbucket-api-token-auth'
+    else if (isSynthetic) {
+      const fromCfg = existingGitUsername()
+      if (fromCfg && fromCfg.includes('@')) alternate = fromCfg
+    }
+    if (!alternate) return null
+    const auth = Buffer.from(`${alternate}:${token}`).toString('base64')
+    try {
+      const r = await fetch('https://api.bitbucket.org/2.0/user', {
+        headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
+      })
+      return { alternate, works: r.ok }
+    } catch {
+      return { alternate, works: false }
+    }
+  }
+
+  /**
+   * Read the saved git.username from local config. We use it as the
+   * alternate-username candidate when the typed username is the
+   * synthetic `x-*-auth` form (we have no other way to guess the
+   * user's email).
+   */
+  function existingGitUsername(): string | undefined {
+    const cfg = loadLocalConfig()
+    return cfg?.git?.username ?? undefined
+  }
+
+  /** Apply `deriveGitUsername` semantics here without importing from the plugin. */
+  function deriveBitbucketGitUsername(typedUsername: string, token: string): string {
+    const isAtlassianApiToken = token.startsWith('ATATT')
+    const isEmail = typedUsername.includes('@')
+    if (isAtlassianApiToken && isEmail) return 'x-bitbucket-api-token-auth'
+    return typedUsername
+  }
+
+  async function runBitbucketTest(args: {
+    username: string
+    token: string
+    workspace: string
+    reviewerUsername?: string
+    reviewerToken?: string
+  }): Promise<GitTestResponse> {
+    const checks: GitTestCheck[] = []
+    const { username, token, workspace } = args
+    if (!username) {
+      return {
+        ok: false,
+        message: 'Bitbucket requires a username for Basic auth.',
+        checks: [{ name: 'inputs', ok: false, message: 'Username is empty.' }],
+      }
+    }
+    if (!workspace) {
+      checks.push({
+        name: 'inputs',
+        ok: false,
+        message: 'Workspace slug is empty — agents will not be able to clone or push.',
+      })
+    }
+
+    // 1. REST auth with the user's typed username.
+    const auth = Buffer.from(`${username}:${token}`).toString('base64')
+    const restR = await fetch('https://api.bitbucket.org/2.0/user', {
+      headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
+    })
+    if (restR.ok) {
+      const data = (await restR.json()) as { username?: string; display_name?: string }
+      checks.push({
+        name: 'REST auth (coder)',
+        ok: true,
+        message: `Authenticated as ${data.display_name ?? data.username ?? username}.`,
+      })
+    } else {
+      const detail = await describeHttpFailure(restR)
+      const alt = await tryAlternateBitbucketUsername(username, token)
+      const hint = alt?.works
+        ? `Your token authenticates as "${alt.alternate}", not "${username}". ` +
+          `Change "coderUsername" to "${alt.alternate}" — Atlassian's two ATATT token types share the prefix but accept different usernames.`
+        : 'Verify the token is correct and that it matches the username (email for id.atlassian.com API tokens; `x-bitbucket-api-token-auth` for Bitbucket-scoped tokens).'
+      return {
+        ok: false,
+        message: `Bitbucket REST auth failed (${detail}).`,
+        checks: [
+          ...checks,
+          { name: 'REST auth (coder)', ok: false, message: detail, hint },
+        ],
+      }
+    }
+
+    // 2. Workspace access — agents always scope to this workspace,
+    //    so a 403/404 here breaks every subsequent tool call.
+    if (workspace) {
+      const wsR = await fetch(
+        `https://api.bitbucket.org/2.0/workspaces/${encodeURIComponent(workspace)}`,
+        { headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' } },
+      )
+      checks.push({
+        name: 'Workspace access',
+        ok: wsR.ok,
+        message: wsR.ok
+          ? `Workspace "${workspace}" is reachable.`
+          : `Cannot read workspace "${workspace}" (${await describeHttpFailure(wsR)}).`,
+        hint: wsR.ok
+          ? undefined
+          : 'Check the slug (case-sensitive) and that the token has access to this workspace.',
+      })
+    }
+
+    // 3. Repo listing — confirms the token has at least the repo:read
+    //    scope and gives us a real repo slug to use for the git-HTTPS
+    //    probe below.
+    let sampleRepoSlug: string | undefined
+    if (workspace) {
+      const repoR = await fetch(
+        `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(workspace)}?pagelen=1&fields=values.slug,values.full_name`,
+        { headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' } },
+      )
+      if (repoR.ok) {
+        const data = (await repoR.json()) as { values?: Array<{ slug?: string; full_name?: string }> }
+        sampleRepoSlug = data.values?.[0]?.slug
+        checks.push({
+          name: 'Repository scope',
+          ok: true,
+          message: sampleRepoSlug
+            ? `Token can list repositories (sampled "${data.values?.[0]?.full_name}").`
+            : 'Token can list repositories, but the workspace currently has none.',
+        })
+      } else {
+        checks.push({
+          name: 'Repository scope',
+          ok: false,
+          message: `Cannot list repos in "${workspace}" (${await describeHttpFailure(repoR)}).`,
+          hint: 'The token likely lacks the `repository:read` scope.',
+        })
+      }
+    }
+
+    // 4. Git-over-HTTPS smart-protocol probe — THIS is the check
+    //    that catches the email-vs-x-bitbucket-api-token-auth mismatch
+    //    even when the REST probe passes. Without it, the user
+    //    discovers the mismatch only when an agent's `git push` 401s.
+    if (sampleRepoSlug && workspace) {
+      const gitUsername = deriveBitbucketGitUsername(username, token)
+      const probe = await probeGitHttps(
+        `https://bitbucket.org/${workspace}/${sampleRepoSlug}.git`,
+        gitUsername,
+        token,
+      )
+      checks.push({
+        name: 'Git over HTTPS',
+        ok: probe.ok,
+        message: probe.ok
+          ? `git clone/push will authenticate as "${gitUsername}" (${probe.detail}).`
+          : `git smart-HTTP handshake failed for "${gitUsername}" (${probe.detail}).`,
+        hint: probe.ok
+          ? undefined
+          : gitUsername === username
+            ? 'For Atlassian API tokens, git over HTTPS often needs `x-bitbucket-api-token-auth` as the username even though REST accepted your email.'
+            : 'Coro automatically rewrites the git username for ATATT tokens. If this still fails, the token may be a Bitbucket-scoped token that needs the literal configured username.',
+      })
+    }
+
+    // 5. Reviewer creds (only if separately configured) — agents
+    //    that run the review phase will use these to approve PRs.
+    if (args.reviewerToken && args.reviewerToken !== token) {
+      const revUsername = (args.reviewerUsername ?? '').trim() || username
+      const revAuth = Buffer.from(`${revUsername}:${args.reviewerToken}`).toString('base64')
+      const revR = await fetch('https://api.bitbucket.org/2.0/user', {
+        headers: { Authorization: `Basic ${revAuth}`, 'User-Agent': 'coro-runner' },
+      })
+      if (revR.ok) {
+        const revData = (await revR.json()) as { username?: string; display_name?: string; uuid?: string }
+        // Compare reviewer identity against coder — Bitbucket refuses
+        // self-approval, so configuring the same account for both
+        // silently breaks the review phase.
+        const coderData = restR.ok ? ((await restR.clone().json().catch(() => ({}))) as { uuid?: string }) : {}
+        const sameAccount = revData.uuid && coderData.uuid && revData.uuid === coderData.uuid
+        checks.push({
+          name: 'REST auth (reviewer)',
+          ok: !sameAccount,
+          message: sameAccount
+            ? `Reviewer is the same Bitbucket account as the coder — Bitbucket forbids self-approval, the review phase will hang.`
+            : `Authenticated as ${revData.display_name ?? revData.username ?? revUsername}.`,
+          hint: sameAccount ? 'Use a separate Bitbucket account (or no reviewer at all) for the reviewer credentials.' : undefined,
+        })
+      } else {
+        checks.push({
+          name: 'REST auth (reviewer)',
+          ok: false,
+          message: `Reviewer auth failed (${await describeHttpFailure(revR)}).`,
+          hint: 'Same rules as coder username — see the REST auth hint above.',
+        })
+      }
+    }
+
+    const ok = checks.every(c => c.ok)
+    return {
+      ok,
+      message: ok
+        ? 'Bitbucket credentials are ready for agent use.'
+        : 'Bitbucket credentials have problems — see check details.',
+      checks,
+    }
+  }
+
+  async function runGithubTest(args: { owner: string; token: string; workspace: string }): Promise<GitTestResponse> {
+    const checks: GitTestCheck[] = []
+    const { token } = args
+    const owner = args.owner || args.workspace
+
+    // 1. Auth + scope discovery in one call.
+    const userR = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'coro-runner',
+      },
+    })
+    if (!userR.ok) {
+      const detail = await describeHttpFailure(userR)
+      return {
+        ok: false,
+        message: `GitHub auth failed (${detail}).`,
+        checks: [{ name: 'REST auth', ok: false, message: detail }],
+      }
+    }
+    const userData = (await userR.json()) as { login?: string }
+    checks.push({
+      name: 'REST auth',
+      ok: true,
+      message: `Authenticated as ${userData.login ?? '(unknown)'}.`,
+    })
+
+    // 2. Token scopes — `repo` is required for the agent to push,
+    //    open PRs, and post review comments on private repos.
+    const scopesHeader = userR.headers.get('x-oauth-scopes')
+    if (scopesHeader === null) {
+      // Fine-grained PAT or GitHub App token — scopes aren't reported
+      // via this header. We can't verify; pass through with a note.
+      checks.push({
+        name: 'Token scopes',
+        ok: true,
+        message: 'Fine-grained or app token (scopes not introspectable via REST).',
+      })
+    } else {
+      const scopes = scopesHeader.split(',').map(s => s.trim()).filter(Boolean)
+      const hasRepo = scopes.includes('repo') || scopes.includes('public_repo')
+      checks.push({
+        name: 'Token scopes',
+        ok: hasRepo,
+        message: hasRepo
+          ? `Has scope${scopes.length === 1 ? '' : 's'}: ${scopes.join(', ')}.`
+          : `Missing "repo" scope (got: ${scopes.join(', ') || 'none'}).`,
+        hint: hasRepo
+          ? undefined
+          : 'Agents need the `repo` scope to push branches, open PRs, and post review comments.',
+      })
+    }
+
+    // 3. Owner access — `owner` may be the same as login (user) or an
+    //    org. Probe whichever endpoint matches.
+    if (owner && owner.toLowerCase() !== (userData.login ?? '').toLowerCase()) {
+      const orgR = await fetch(`https://api.github.com/orgs/${encodeURIComponent(owner)}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'coro-runner',
+        },
+      })
+      if (orgR.ok) {
+        checks.push({ name: 'Owner access', ok: true, message: `Org "${owner}" is reachable.` })
+      } else {
+        const detail = await describeHttpFailure(orgR)
+        checks.push({
+          name: 'Owner access',
+          ok: false,
+          message: `Cannot read org/owner "${owner}" (${detail}).`,
+          hint: 'Verify the owner slug and that the token is authorised for the org (SSO may require explicit token approval).',
+        })
+      }
+    }
+
+    // 4. Git-over-HTTPS probe against the user's own profile repos
+    //    endpoint to confirm credential format works for git, not just
+    //    for the REST API. GitHub uses `x-access-token:TOKEN` for
+    //    bearer-style PATs — we mirror what `cloneInfo()` builds.
+    const repoListR = await fetch(
+      `https://api.github.com/users/${encodeURIComponent(owner || userData.login || '')}/repos?per_page=1&type=owner`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'coro-runner',
+        },
+      },
+    )
+    if (repoListR.ok) {
+      const repos = (await repoListR.json()) as Array<{ name?: string; full_name?: string }>
+      const sample = repos[0]?.full_name
+      if (sample) {
+        const probe = await probeGitHttps(`https://github.com/${sample}.git`, 'x-access-token', token)
+        checks.push({
+          name: 'Git over HTTPS',
+          ok: probe.ok,
+          message: probe.ok
+            ? `git clone/push will work for ${sample} (${probe.detail}).`
+            : `git smart-HTTP handshake failed (${probe.detail}).`,
+          hint: probe.ok ? undefined : 'Token likely lacks `repo` scope for git operations.',
+        })
+      }
+    }
+
+    const ok = checks.every(c => c.ok)
+    return {
+      ok,
+      message: ok
+        ? 'GitHub credentials are ready for agent use.'
+        : 'GitHub credentials have problems — see check details.',
+      checks,
+    }
+  }
+
+  async function runGitlabTest(args: { token: string; workspace: string }): Promise<GitTestResponse> {
+    const checks: GitTestCheck[] = []
+    const r = await fetch('https://gitlab.com/api/v4/user', {
+      headers: { 'PRIVATE-TOKEN': args.token, 'User-Agent': 'coro-runner' },
+    })
+    if (!r.ok) {
+      const detail = await describeHttpFailure(r)
+      return {
+        ok: false,
+        message: `GitLab auth failed (${detail}).`,
+        checks: [{ name: 'REST auth', ok: false, message: detail }],
+      }
+    }
+    const data = (await r.json()) as { username?: string; name?: string }
+    checks.push({
+      name: 'REST auth',
+      ok: true,
+      message: `Authenticated as ${data.name ?? data.username ?? '(unknown)'}.`,
+    })
+
+    if (args.workspace) {
+      const gR = await fetch(
+        `https://gitlab.com/api/v4/groups/${encodeURIComponent(args.workspace)}`,
+        { headers: { 'PRIVATE-TOKEN': args.token, 'User-Agent': 'coro-runner' } },
+      )
+      checks.push({
+        name: 'Group access',
+        ok: gR.ok,
+        message: gR.ok
+          ? `Group "${args.workspace}" is reachable.`
+          : `Cannot read group "${args.workspace}" (${await describeHttpFailure(gR)}).`,
+      })
+    }
+
+    const ok = checks.every(c => c.ok)
+    return {
+      ok,
+      message: ok ? 'GitLab credentials are ready for agent use.' : 'GitLab credentials have problems.',
+      checks,
+    }
+  }
+
   app.post('/test/git', async (req: Request, res: Response) => {
     try {
       const body = (req.body ?? {}) as {
@@ -1919,6 +2377,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         username?: string
         token?: string
         workspace?: string
+        reviewerUsername?: string
+        reviewerToken?: string
       }
       const provider = body.provider
       if (provider !== 'github' && provider !== 'bitbucket' && provider !== 'gitlab') {
@@ -1929,79 +2389,29 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const existing = loadLocalConfig()
       const username = (body.username ?? existing?.git?.username ?? '').trim()
       const token = resolveSecret(body.token, existing?.git?.token)
+      const workspace = (body.workspace ?? '').trim()
       if (!token) {
-        res.json({ ok: false, message: 'Token is required.' })
+        res.json({ ok: false, message: 'Token is required.', checks: [] })
         return
       }
 
-      if (provider === 'github') {
-        const r = await fetch('https://api.github.com/user', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'User-Agent': 'coro-runner',
-          },
-        })
-        if (!r.ok) {
-          const text = await r.text().catch(() => '')
-          res.json({ ok: false, message: `GitHub ${r.status}: ${text.slice(0, 200) || r.statusText}` })
-          return
-        }
-        const data = (await r.json()) as { login?: string }
-        if (username && data.login && data.login.toLowerCase() !== username.toLowerCase()) {
-          res.json({
-            ok: false,
-            message: `Token authenticated as ${data.login}, but username is set to ${username}.`,
-          })
-          return
-        }
-        res.json({ ok: true, message: `Authenticated as ${data.login ?? '(unknown)'}` })
-        return
-      }
+      const result =
+        provider === 'github'
+          ? await runGithubTest({ owner: username, token, workspace })
+          : provider === 'bitbucket'
+            ? await runBitbucketTest({
+                username,
+                token,
+                workspace,
+                reviewerUsername: (body.reviewerUsername ?? '').trim() || undefined,
+                reviewerToken: resolveSecret(body.reviewerToken, undefined) || undefined,
+              })
+            : await runGitlabTest({ token, workspace })
 
-      if (provider === 'bitbucket') {
-        if (!username) {
-          res.json({ ok: false, message: 'Bitbucket requires a username for app-password auth.' })
-          return
-        }
-        // Trust the configured username — see clients/bitbucket.ts for
-        // the rationale (the `ATATT…` prefix is shared by Atlassian API
-        // tokens that need the email and Bitbucket-scoped tokens that
-        // need `x-bitbucket-api-token-auth`).
-        const auth = Buffer.from(`${username}:${token}`).toString('base64')
-        const r = await fetch('https://api.bitbucket.org/2.0/user', {
-          headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
-        })
-        if (!r.ok) {
-          const text = await r.text().catch(() => '')
-          const detail = text && text.trim().length > 0
-            ? text.slice(0, 200)
-            : `${r.statusText || 'Unauthorized'} (www-authenticate: ${r.headers.get('www-authenticate') ?? 'n/a'})`
-          res.json({ ok: false, message: `Bitbucket ${r.status}: ${detail}` })
-          return
-        }
-        const data = (await r.json()) as { username?: string; display_name?: string }
-        res.json({
-          ok: true,
-          message: `Authenticated as ${data.display_name ?? data.username ?? username}`,
-        })
-        return
-      }
-
-      // gitlab
-      const r = await fetch('https://gitlab.com/api/v4/user', {
-        headers: { 'PRIVATE-TOKEN': token, 'User-Agent': 'coro-runner' },
-      })
-      if (!r.ok) {
-        const text = await r.text().catch(() => '')
-        res.json({ ok: false, message: `GitLab ${r.status}: ${text.slice(0, 200) || r.statusText}` })
-        return
-      }
-      const data = (await r.json()) as { username?: string; name?: string }
-      res.json({ ok: true, message: `Authenticated as ${data.name ?? data.username ?? '(unknown)'}` })
+      res.json(result)
     } catch (err) {
       logger.warn({ err }, 'POST /test/git failed')
-      res.json({ ok: false, message: (err as Error).message })
+      res.json({ ok: false, message: (err as Error).message, checks: [] })
     }
   })
 
