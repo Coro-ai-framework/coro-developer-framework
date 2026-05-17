@@ -1356,7 +1356,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     try {
       const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
       const job = await ensureInsightIds(jobId)
-      res.json({ jobId, insights: job.insights ?? [] })
+      // By default, return ONLY this job's own insights. Campaign children
+      // get sibling-inherited insights seeded into `job.insights` (tagged
+      // with `sourceChildName`) so the prompt builder can surface them as
+      // context — but those belong to the originating sibling's job page
+      // for curation. Pass ?includeInherited=1 to opt back in (debugging).
+      const includeInherited =
+        req.query.includeInherited === '1' || req.query.includeInherited === 'true'
+      const all = job.insights ?? []
+      const insights = includeInherited ? all : all.filter((i) => !i.sourceChildName)
+      res.json({ jobId, insights, inheritedCount: all.length - insights.length })
     } catch (err) {
       const e = err as Error & { httpCode?: number }
       res.status(e.httpCode ?? 400).json({ error: e.message })

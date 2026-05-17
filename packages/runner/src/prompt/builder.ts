@@ -262,28 +262,57 @@ function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext, scmInfo?:
     // entries because they were discovered against the same target
     // repo, sandbox, and tenant minutes earlier — agents are
     // instructed to read them before consulting memory/known-pitfalls.
+    //
+    // We also surface the user's curation state (status, edits, layer
+    // override) so the evaluator honours the dashboard's Insights tab
+    // decisions instead of treating every entry as untriaged.
+    const counts = { pending: 0, approved: 0, rejected: 0 }
+    for (const ins of job.insights) counts[(ins.status ?? 'pending')]++
+
     const insightLines = job.insights.map((ins, i) => {
       const provenance = ins.sourceChildName
         ? `[campaign sibling: ${ins.sourceChildName} · ${ins.phase}]`
         : `[${ins.phase}]`
+      const status = ins.status ?? 'pending'
+      const userOverrode = Boolean(ins.editedSummary || ins.editedDetail || ins.editedSuggestion)
+      const summary = ins.editedSummary ?? ins.summary
+      const detail = ins.editedDetail ?? ins.detail
+      const suggestion = ins.editedSuggestion ?? ins.suggestion
+      const layerLine = ins.userLayer
+        ? `\n**Layer (user-assigned):** ${ins.userLayer}`
+        : ins.suggestedLayer
+          ? `\n**Layer (agent-suggested):** ${ins.suggestedLayer}`
+          : ''
+      const editLine = userOverrode ? `\n**Edited by user:** yes — prefer the fields above` : ''
       return (
-        `### ${i + 1}. ${provenance} ${ins.category}\n` +
-        `**Summary:** ${ins.summary}\n` +
-        `**Detail:** ${ins.detail}` +
-        (ins.suggestion ? `\n**Suggestion:** ${ins.suggestion}` : '')
+        `### ${i + 1}. [status: ${status}] ${provenance} ${ins.category}\n` +
+        `**Summary:** ${summary}\n` +
+        `**Detail:** ${detail}` +
+        (suggestion ? `\n**Suggestion:** ${suggestion}` : '') +
+        layerLine +
+        editLine
       )
     })
     const hasSiblingInsights = job.insights.some(i => i.sourceChildName)
-    const lead = hasSiblingInsights
+    const siblingLead = hasSiblingInsights
       ? 'The following learnings were recorded by earlier campaign siblings AND by upstream phases on this job. ' +
         'Sibling-inherited entries (marked `[campaign sibling: …]`) are fresher than memory and apply directly to ' +
         'this exact campaign — read them before doing anything else, and follow the recipes literally. '
       : 'The following learnings were recorded by agents during earlier phases. '
+    const curationLead =
+      `\n\n**User curation summary:** ${counts.approved} approved · ${counts.pending} pending · ${counts.rejected} rejected. ` +
+      `If you are the evaluator, treat \`status\` as the user's explicit decision: ship only \`approved\` entries ` +
+      `(preferring any edited Summary/Detail/Suggestion), skip \`rejected\` entirely, and skip \`pending\` while ` +
+      `reporting the count in your evaluation. If no entries are \`approved\`, do not open a self-improvement PR. ` +
+      `Route each approved entry by \`Layer (user-assigned)\` when present, else \`Layer (agent-suggested)\`, ` +
+      `else your own path-prefix judgement.`
     parts.push(
       '\n\n## Insights from Upstream Agents\n\n' +
-      lead +
+      siblingLead +
       'Each represents a discovery, workaround, or pattern that may warrant a self-improvement ' +
-      'proposal via `propose_change`.\n\n' +
+      'proposal via `propose_change`.' +
+      curationLead +
+      '\n\n' +
       insightLines.join('\n\n'),
     )
   }

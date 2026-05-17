@@ -966,7 +966,11 @@ export default function JobDetail() {
             <Lightbulb className="size-3.5 shrink-0" aria-hidden="true" />
             Insights
             {(() => {
-              const pending = (job.insights ?? []).filter((i) => (i.status ?? 'pending') === 'pending').length
+              // Exclude sibling-inherited insights (they belong to the
+              // originating job's page); only count this job's own pending.
+              const pending = (job.insights ?? []).filter(
+                (i) => !i.sourceChildName && (i.status ?? 'pending') === 'pending',
+              ).length
               return pending > 0 ? (
                 <Badge variant="warning" className="ml-1 px-1.5 text-[10px]">{pending}</Badge>
               ) : null
