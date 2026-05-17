@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Lightbulb, Pencil, RotateCcw, X } from 'lucide-react'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -51,7 +51,8 @@ function statusBadgeVariant(status: InsightStatus): 'neutral' | 'success' | 'dan
   return 'warning'
 }
 
-export default function InsightsPanel({ jobId, insights, onChanged }: InsightsPanelProps) {
+export default function InsightsPanel({ jobId, insights: seedInsights, onChanged }: InsightsPanelProps) {
+  const [insights, setInsights] = useState<Insight[]>(seedInsights)
   const [filter, setFilter] = useState<'all' | InsightStatus>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -60,6 +61,30 @@ export default function InsightsPanel({ jobId, insights, onChanged }: InsightsPa
   })
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+
+  // Always pull from the dedicated endpoint — it backfills ids/status onto
+  // legacy insights that were recorded before this feature shipped.
+  async function reload() {
+    try {
+      const data = await requestJson<{ insights: Insight[] }>(
+        `/jobs/${encodeURIComponent(jobId)}/insights`,
+      )
+      setInsights(data.insights ?? [])
+      setError(null)
+    } catch (err) {
+      const msg = err instanceof ApiError ? `${err.status}: ${err.message}` : (err as Error).message
+      setError(msg)
+    }
+  }
+
+  useEffect(() => { void reload() /* eslint-disable-line react-hooks/exhaustive-deps */ }, [jobId])
+
+  // If the parent's job poll surfaces more insights than we have cached
+  // (a new add_insight came in), refresh from the endpoint so we get ids.
+  useEffect(() => {
+    if (seedInsights.length > insights.length) void reload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedInsights.length])
 
   const counts = useMemo(() => {
     const c = { pending: 0, approved: 0, rejected: 0 }
@@ -76,11 +101,18 @@ export default function InsightsPanel({ jobId, insights, onChanged }: InsightsPa
     setBusyId(insightId)
     setError(null)
     try {
-      await requestJson(
+      const updated = await requestJson<{ insight: Insight }>(
         `/jobs/${encodeURIComponent(jobId)}/insights/${encodeURIComponent(insightId)}`,
         jsonRequest(body, { method: 'PATCH' }),
       )
-      await onChanged()
+      // Optimistic local update so users see the change immediately even
+      // before the parent's job poll catches up.
+      if (updated?.insight) {
+        setInsights((prev) => prev.map((i) => (i.id === insightId ? updated.insight : i)))
+      } else {
+        await reload()
+      }
+      void onChanged()
     } catch (err) {
       const msg = err instanceof ApiError ? `${err.status}: ${err.message}` : (err as Error).message
       setError(msg)
