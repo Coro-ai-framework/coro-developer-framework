@@ -191,27 +191,45 @@ If a finding wants to exceed these budgets it is **either two findings or alread
 
 ### 9. Review upstream insights and propose improvements
 
-The job context includes an **Insights from Upstream Agents** section — learnings recorded by the planner, coder, merge gatekeeper, and (for campaign children) earlier siblings. Each insight may carry a `sourceChildName` indicating it was inherited from an earlier sibling in the same campaign. Before proposing, invoke the `self-improvement-guide` skill for file structure, proposal types, and target-layer routing rules.
+The job context includes an **Insights from Upstream Agents** section — learnings recorded by the planner, coder, merge gatekeeper, and (for campaign children) earlier siblings. Each insight carries:
 
-You are the **grooming agent** for self-improvement: review every insight, decide which ones deserve durable changes, and consolidate them into a coherent diff.
+- `phase`, `category`, `summary`, `detail`, optional `suggestion` — the raw finding.
+- `id`, `status` (`pending` | `approved` | `rejected`) — curation state set by the user via the dashboard's Insights tab.
+- `suggestedLayer` (optional, set by the agent that recorded it) and `userLayer` (optional, set by the user) — target intelligence layer hints.
+- `editedSummary` / `editedDetail` / `editedSuggestion` — user overrides; prefer these over the originals when shipping.
+- `sourceChildName` — set for insights inherited from earlier siblings in the same campaign.
 
-**Heuristic for what deserves a memory entry:**
+Before proposing, invoke the `self-improvement-guide` skill for file structure, proposal types, and target-layer routing rules.
+
+You are the **grooming agent** for self-improvement: review every insight, decide which ones deserve durable changes, and consolidate them into a coherent diff. **Respect the user's curation decisions.**
+
+**Filter by `status` first:**
+
+- `status === 'rejected'` → **skip entirely**. The user explicitly said no.
+- `status === 'pending'` → **skip from this PR**. The user has not yet acted. Surface the count in your evaluation report so they know what was dropped (e.g. "skipped 3 pending insights — review them in the Insights tab and re-run evaluation if you want them shipped").
+- `status === 'approved'` → ship. When composing the memory entry, prefer `editedSummary` / `editedDetail` / `editedSuggestion` over the originals when present — the user has refined the wording for you.
+- If `status` is absent on a record (legacy job, pre-curation), treat it as `pending` (skip).
+
+**Heuristic for what category deserves a memory entry:** (applies only to approved insights)
 
 - Any insight in category `sandbox-quirk`, `toolchain-pitfall`, or `intelligence-gap` should almost always become a `memory/known-pitfalls.md` entry — these are the patterns that re-bite future runs against this tenant.
 - Any insight in category `workaround` should become an entry under `memory/successful-patterns.md` with the exact recipe.
 - An insight in category `auth-friction` or `provider-bug` should become a known-pitfall when the root cause is environmental, or a skill update when the root cause is procedural.
 - An insight that appears under multiple `sourceChildName` values within the same campaign is gold — that's a generalisable pattern, not a one-off. Promote it with high priority.
 
-If you also see triggers that should have fired but didn't (e.g. coder retried 5+ times but recorded no insight), call `mcp__coro__add_insight` yourself in category `intelligence-gap` so the next campaign's siblings still get the recipe even before the memory PR merges.
+If you see triggers that should have fired but didn't (e.g. coder retried 5+ times but recorded no insight), call `mcp__coro__add_insight` yourself in category `intelligence-gap` — the user will see it in the Insights tab on the next refresh and can approve/reject it before you reach this step on a re-run.
 
 **Consolidation rule (runtime-enforced):** ONE `propose_change` call per target layer per job. The runner rejects a second call for the same `(jobId, layer)` with a structured error — bundle every file change for a layer into a single multi-file (or single `entries[]`) payload. Two proposals to the same layer means two PRs and twice the human review time.
 
 Steps:
 
 1. **Pre-flight dedupe.** Before composing anything, call `mcp__coro__list_proposals({ status: "pending" })` and scan `memory/MEMORY.md` for the same symptom keyword. Near-duplicates ⇒ **skip** or **append a one-line cross-reference** to the existing entry; do not author a new section.
-2. **Group durable changes by target layer** (path-prefix routing):
-   - `.coro/...` → repo layer
-   - everything else (`memory/`, `agents/`, `workflows/`, `.claude/CLAUDE.md`, `.claude/skills/`) → tenant layer
+2. **Group approved insights by resolved target layer.** Resolution order per insight:
+   1. `userLayer` (user's explicit decision via the dashboard) — **wins**.
+   2. `suggestedLayer` (the agent's hint when the insight was recorded) — fallback.
+   3. Path-prefix routing of the resulting file(s) — your own judgement when neither hint is set:
+      - Repo-specific facts (this project's `.coro/...`) → repo layer.
+      - Reusable patterns (`memory/`, `agents/`, `workflows/`, `.claude/CLAUDE.md`, `.claude/skills/`) → tenant layer.
 3. **Prefer the structured `entries[]` schema for memory updates.** It saves prompt tokens (you don't compose markdown by hand) and the runner mechanically enforces the per-kind line budget:
    ```jsonc
    {
@@ -232,8 +250,9 @@ Steps:
    }
    ```
 4. For non-memory changes, use `files: [{ path, content }]`. Skill amendments must respect the 15-lines-per-section budget — the runner rejects oversize sections.
-5. For each layer that has changes, make **exactly one** `mcp__coro__propose_change` call. The tool returns the PR URL synchronously; record it in your evaluation report.
+5. For each resolved layer that has at least one approved insight, make **exactly one** `mcp__coro__propose_change` call. The tool returns the PR URL synchronously; record it in your evaluation report.
 6. If validation fails, the tool throws a structured error — fix the input (path, frontmatter, layer mismatch, length budget) and retry. Do **not** open a second PR.
+7. If every insight is either rejected or pending, **do not call `propose_change` at all** — there is nothing approved to ship. Note the skipped counts in your evaluation report.
 
 ### 10. Write the evaluation report
 
@@ -263,6 +282,7 @@ Write the evaluation report to `working/{job-id}/evaluations/{work-item-name}.md
 
 ## Self-improvement proposals
 - {layer}: {PR URL or "none"}
+- Insights curated by user: {N approved shipped, N rejected skipped, N pending skipped — pending counted but not shipped}
 ```
 
 Then call `post_artifact({ kind: "evaluation-md", ... })`.

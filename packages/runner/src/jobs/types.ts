@@ -112,8 +112,31 @@ export interface Artifact {
 
 // ── Insight tracking ─────────────────────────────────────────────────────────
 
+/**
+ * Target intelligence layer where an insight should ship if it becomes
+ * memory. Set by the agent at `add_insight` time (`suggestedLayer`) or by
+ * the user via the dashboard (`userLayer`); the evaluator falls back to
+ * its own judgement when both are absent.
+ */
+export type InsightLayer = 'tenant' | 'repo'
+
+/**
+ * Curation state for an insight. The evaluator only ships `approved`
+ * insights; `pending` (default) and `rejected` are skipped at proposal
+ * time. Rejected entries are kept in the array for audit.
+ */
+export type InsightStatus = 'pending' | 'approved' | 'rejected'
+
 /** A learning or workaround discovered by any agent during execution. */
 export interface Insight {
+  /**
+   * Stable identifier assigned at `add_insight` time. Used by the
+   * dashboard to address individual entries for edit / approve / reject.
+   * Optional on the type only for backwards compatibility with insights
+   * persisted before this field existed — readers should backfill via
+   * `ensureInsightId()` on load.
+   */
+  id?: string
   phase: string
   category: string
   summary: string
@@ -127,6 +150,26 @@ export interface Insight {
    * Empty / undefined for insights produced by the current job.
    */
   sourceChildName?: string
+  /**
+   * Curation status. Absent on legacy records — treat as `'pending'`.
+   */
+  status?: InsightStatus
+  /** Agent's suggested target layer at record-time. User can override. */
+  suggestedLayer?: InsightLayer
+  /** User-assigned target layer via dashboard. Takes precedence over suggestedLayer. */
+  userLayer?: InsightLayer
+  /** User-provided override for `summary`. Evaluator should prefer this if set. */
+  editedSummary?: string
+  /** User-provided override for `detail`. Evaluator should prefer this if set. */
+  editedDetail?: string
+  /** User-provided override for `suggestion`. Evaluator should prefer this if set. */
+  editedSuggestion?: string
+  /** Audit: who last edited the summary/detail/suggestion. */
+  editedBy?: string
+  editedAt?: string
+  /** Audit: who last approved/rejected the insight. */
+  decidedBy?: string
+  decidedAt?: string
 }
 
 // ── Campaign coordination ────────────────────────────────────────────────────

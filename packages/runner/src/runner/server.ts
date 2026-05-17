@@ -30,7 +30,7 @@ import {
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
-import { isStoppedStatus, type Job, type CampaignChild } from '../jobs/types'
+import { isStoppedStatus, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '../jobs/types'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata, BUILTIN_PLUGIN_IDS_BY_KIND } from '../plugins/builtin'
@@ -1314,6 +1314,164 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ sent: true })
     } catch (err) {
       res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
+  // ── Insight curation ────────────────────────────────────────────────────
+  //
+  // Insights are recorded by agents via `add_insight` and surfaced in the
+  // dashboard's Insights tab. Users can edit, approve, reject, or tag them
+  // with a target layer (tenant/repo) before the evaluator phase ships
+  // approved entries via `propose_change`.
+  //
+  // Backfill: legacy insights persisted before this feature lacked `id` /
+  // `status`. We assign synthetic ids on first read and persist back so
+  // subsequent PATCH/DELETE can address them.
+
+  async function ensureInsightIds(jobId: string): Promise<Job> {
+    const job = await stateBackend.getJob(jobId) as Job | null
+    if (!job) throw Object.assign(new Error('Job not found'), { httpCode: 404 })
+    const insights = job.insights ?? []
+    let mutated = false
+    const seen = new Set<string>()
+    const backfilled: Insight[] = insights.map((ins, idx) => {
+      let id = ins.id
+      if (!id || seen.has(id)) {
+        id = `ins-legacy-${idx}-${Math.random().toString(36).slice(2, 8)}`
+        mutated = true
+      }
+      seen.add(id)
+      const status: InsightStatus = ins.status ?? 'pending'
+      if (status !== ins.status) mutated = true
+      return { ...ins, id, status }
+    })
+    if (mutated) {
+      await stateBackend.updateJob(jobId, { insights: backfilled })
+      return (await stateBackend.getJob(jobId)) as Job
+    }
+    return job
+  }
+
+  app.get('/jobs/:jobId/insights', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const job = await ensureInsightIds(jobId)
+      res.json({ jobId, insights: job.insights ?? [] })
+    } catch (err) {
+      const e = err as Error & { httpCode?: number }
+      res.status(e.httpCode ?? 400).json({ error: e.message })
+    }
+  })
+
+  const ALLOWED_LAYERS: InsightLayer[] = ['tenant', 'repo']
+  const ALLOWED_STATUSES: InsightStatus[] = ['pending', 'approved', 'rejected']
+
+  app.patch('/jobs/:jobId/insights/:insightId', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const insightId = Array.isArray(req.params.insightId) ? req.params.insightId[0] : req.params.insightId
+      const body = (req.body ?? {}) as {
+        status?: unknown
+        userLayer?: unknown
+        editedSummary?: unknown
+        editedDetail?: unknown
+        editedSuggestion?: unknown
+        editedBy?: unknown
+      }
+
+      if (body.status !== undefined && !ALLOWED_STATUSES.includes(body.status as InsightStatus)) {
+        res.status(400).json({ error: `status must be one of ${ALLOWED_STATUSES.join(', ')}` })
+        return
+      }
+      if (
+        body.userLayer !== undefined &&
+        body.userLayer !== null &&
+        !ALLOWED_LAYERS.includes(body.userLayer as InsightLayer)
+      ) {
+        res.status(400).json({ error: `userLayer must be one of ${ALLOWED_LAYERS.join(', ')} or null` })
+        return
+      }
+      for (const k of ['editedSummary', 'editedDetail', 'editedSuggestion', 'editedBy'] as const) {
+        if (body[k] !== undefined && body[k] !== null && typeof body[k] !== 'string') {
+          res.status(400).json({ error: `${k} must be a string when present` })
+          return
+        }
+      }
+
+      const job = await ensureInsightIds(jobId)
+      const insights = [...(job.insights ?? [])]
+      const idx = insights.findIndex((i) => i.id === insightId)
+      if (idx < 0) { res.status(404).json({ error: 'Insight not found' }); return }
+
+      const now = new Date().toISOString()
+      const editor = typeof body.editedBy === 'string' && body.editedBy ? body.editedBy : 'dashboard-user'
+      const prev = insights[idx]
+      const next: Insight = { ...prev }
+
+      let editTouched = false
+      let decisionTouched = false
+
+      if (body.status !== undefined && body.status !== prev.status) {
+        next.status = body.status as InsightStatus
+        decisionTouched = true
+      }
+      if (body.userLayer !== undefined) {
+        if (body.userLayer === null) delete next.userLayer
+        else next.userLayer = body.userLayer as InsightLayer
+        decisionTouched = true
+      }
+      for (const k of ['editedSummary', 'editedDetail', 'editedSuggestion'] as const) {
+        if (body[k] === undefined) continue
+        const v = body[k]
+        if (v === null || v === '') {
+          if (next[k] !== undefined) { delete next[k]; editTouched = true }
+        } else if (typeof v === 'string' && next[k] !== v) {
+          next[k] = v
+          editTouched = true
+        }
+      }
+
+      if (editTouched) { next.editedBy = editor; next.editedAt = now }
+      if (decisionTouched) { next.decidedBy = editor; next.decidedAt = now }
+
+      insights[idx] = next
+      const updated = await stateBackend.updateJob(jobId, { insights })
+      res.json({ insight: next, totalInsights: updated.insights?.length ?? 0 })
+    } catch (err) {
+      const e = err as Error & { httpCode?: number }
+      res.status(e.httpCode ?? 400).json({ error: e.message })
+    }
+  })
+
+  // Soft-delete: maps to status='rejected' so we preserve the audit trail.
+  // Pass ?hard=1 to actually remove the row.
+  app.delete('/jobs/:jobId/insights/:insightId', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const insightId = Array.isArray(req.params.insightId) ? req.params.insightId[0] : req.params.insightId
+      const hard = req.query.hard === '1' || req.query.hard === 'true'
+
+      const job = await ensureInsightIds(jobId)
+      const insights = [...(job.insights ?? [])]
+      const idx = insights.findIndex((i) => i.id === insightId)
+      if (idx < 0) { res.status(404).json({ error: 'Insight not found' }); return }
+
+      const now = new Date().toISOString()
+      if (hard) {
+        insights.splice(idx, 1)
+      } else {
+        insights[idx] = {
+          ...insights[idx],
+          status: 'rejected',
+          decidedBy: 'dashboard-user',
+          decidedAt: now,
+        }
+      }
+      const updated = await stateBackend.updateJob(jobId, { insights })
+      res.json({ removed: hard, insightId, totalInsights: updated.insights?.length ?? 0 })
+    } catch (err) {
+      const e = err as Error & { httpCode?: number }
+      res.status(e.httpCode ?? 400).json({ error: e.message })
     }
   })
 

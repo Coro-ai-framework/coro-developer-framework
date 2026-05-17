@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Clock3,
   GitPullRequest,
+  Lightbulb,
   Send,
 } from 'lucide-react'
 import { Link, useLocation, useParams } from 'react-router-dom'
@@ -13,6 +14,7 @@ import ApprovalBox from '../components/ApprovalBox'
 import ArtifactLink from '../components/ArtifactLink'
 import CampaignView from '../components/CampaignView'
 import ConnectionIndicator from '../components/ConnectionIndicator'
+import InsightsPanel from '../components/InsightsPanel'
 import JobControlBar from '../components/JobControlBar'
 import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
@@ -56,7 +58,7 @@ import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
 import { isRunningStatus, isTerminalStatus, isWaitingStatus } from '../lib/status'
 
-type DetailTab = 'activity' | 'diagnostics'
+type DetailTab = 'activity' | 'insights' | 'diagnostics'
 
 interface PendingOutgoingMessage {
   id: string
@@ -960,6 +962,16 @@ export default function JobDetail() {
             <Activity className="size-3.5 shrink-0" aria-hidden="true" />
             Activity
           </TabsTrigger>
+          <TabsTrigger value="insights" className="gap-1.5">
+            <Lightbulb className="size-3.5 shrink-0" aria-hidden="true" />
+            Insights
+            {(() => {
+              const pending = (job.insights ?? []).filter((i) => (i.status ?? 'pending') === 'pending').length
+              return pending > 0 ? (
+                <Badge variant="warning" className="ml-1 px-1.5 text-[10px]">{pending}</Badge>
+              ) : null
+            })()}
+          </TabsTrigger>
           <TabsTrigger value="diagnostics" className="gap-1.5">
             <Bug className="size-3.5 shrink-0" aria-hidden="true" />
             Diagnostics
@@ -1017,6 +1029,14 @@ export default function JobDetail() {
           </div>
         </TabsContent>
 
+        <TabsContent value="insights" className="space-y-5">
+          <InsightsPanel
+            jobId={job.id}
+            insights={job.insights ?? []}
+            onChanged={() => void refetch()}
+          />
+        </TabsContent>
+
         <TabsContent value="diagnostics" className="space-y-5">
           <TokenUsagePanel usage={job.tokenUsage} />
           <PhaseUsageTable phases={job.phaseUsage ?? []} />
@@ -1025,15 +1045,13 @@ export default function JobDetail() {
             <CardHeader className="border-b border-line pb-4">
               <CardTitle>Raw state</CardTitle>
               <CardDescription>
-                Inspect the underlying job object, parameters, insights, and PR mappings.
+                Inspect the underlying job object, parameters, and PR mappings. Insights have moved
+                to their own tab.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3 pt-5">
               <JsonPanel label="Job parameters" data={job.params} defaultOpen />
               <JsonPanel label="Full job object" data={job} />
-              {job.insights?.length > 0 ? (
-                <JsonPanel label={`Insights (${job.insights.length})`} data={job.insights} />
-              ) : null}
               {job.prMappings?.length > 0 ? (
                 <JsonPanel label={`PR mappings (${job.prMappings.length})`} data={job.prMappings} />
               ) : null}

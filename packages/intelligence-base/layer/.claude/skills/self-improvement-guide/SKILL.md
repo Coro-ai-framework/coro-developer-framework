@@ -148,6 +148,42 @@ Each skill lives in `.claude/skills/{name}/SKILL.md` with YAML frontmatter:
 
 The tool validates frontmatter inline before touching git. Missing or malformed frontmatter results in an immediate error so you can fix it and retry.
 
+## Recording an insight for the evaluator (any upstream agent)
+
+When the planner, coder, or pr-reviewer notices a pattern, pitfall, or workaround worth shipping, call `add_insight` — do not call `propose_change` yourself. The evaluator is the single grooming agent that consolidates everyone's insights into at most one PR per layer per job.
+
+```
+add_insight({
+  category: "sandbox-quirk",
+  summary: "git clone over ssh inside sandbox needs explicit HOME",
+  detail: "Without HOME=$PWD git looks at /root/.ssh and silently 401s.",
+  suggestion: "Set HOME=$PWD before cloning; add to .claude/CLAUDE.md.",
+  suggestedLayer: "tenant"  // optional — see below
+})
+```
+
+### `suggestedLayer` (optional hint)
+
+When you have a clear intuition about which intelligence layer the finding belongs to, pass `suggestedLayer`:
+
+| Value | Use when | Example |
+|-------|----------|---------|
+| `"tenant"` | Reusable pattern across repos, generic toolchain pitfall, language convention | Sandbox quirk that affects every job; HTTP retry pattern |
+| `"repo"` | Project-specific fact about this codebase, this repo's build system, this repo's deployment | "this repo's tests need `POSTGRES_URL` set"; "this service uses a custom Makefile target" |
+
+Omit `suggestedLayer` if you are unsure — the user or the evaluator will decide.
+
+### Curation lifecycle
+
+Every recorded insight starts with `status: "pending"`. Between the time it is recorded and the time the evaluator runs, a human can curate it from the dashboard's **Insights tab**:
+
+- **Approve** → the evaluator ships it in the next self-improvement PR.
+- **Reject** → the evaluator skips it permanently.
+- **Edit** → the user may rewrite `summary` / `detail` / `suggestion` and override the target layer (`userLayer`). The evaluator prefers edited content when shipping.
+- **Leave pending** → the evaluator skips it from this PR but reports the count so the user knows what was dropped.
+
+You don't need to do anything special after calling `add_insight` — the curation UI and the evaluator handle the rest. Just record the finding clearly and move on.
+
 ## Things that no longer exist
 
 - `knowledge/` directory — migrated to `.claude/skills/`.

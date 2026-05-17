@@ -52,12 +52,27 @@ export interface PrMapping {
   mergedAt?: string
 }
 
+export type InsightLayer = 'tenant' | 'repo'
+export type InsightStatus = 'pending' | 'approved' | 'rejected'
+
 export interface Insight {
+  id?: string
   phase: string
   category: string
   summary: string
   detail: string
   suggestion?: string
+  sourceChildName?: string
+  status?: InsightStatus
+  suggestedLayer?: InsightLayer
+  userLayer?: InsightLayer
+  editedSummary?: string
+  editedDetail?: string
+  editedSuggestion?: string
+  editedBy?: string
+  editedAt?: string
+  decidedBy?: string
+  decidedAt?: string
 }
 
 export interface Artifact {

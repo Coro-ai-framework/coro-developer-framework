@@ -407,6 +407,7 @@ export function createCoroMcpServer(
           summary: z.string().describe('One-line summary of the insight'),
           detail: z.string().describe('Full context: what was tried, what worked, why'),
           suggestion: z.string().optional().describe('Optional: what should be updated (memory, convention, agent instructions)'),
+          suggestedLayer: z.enum(['tenant', 'repo']).optional().describe('Optional: where this should ship if approved. "repo" for facts specific to this project (.coro/), "tenant" for reusable patterns. User can override.'),
         },
         h.add_insight,
       ),

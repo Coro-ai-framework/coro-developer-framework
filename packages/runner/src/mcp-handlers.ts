@@ -930,22 +930,28 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text({ escalated: true, reason })
     },
 
-    add_insight: async ({ category, summary, detail, suggestion }: {
+    add_insight: async ({ category, summary, detail, suggestion, suggestedLayer }: {
       category: string; summary: string; detail: string; suggestion?: string
+      suggestedLayer?: 'tenant' | 'repo'
     }) => {
       const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      const now = new Date()
+      const rand = Math.random().toString(36).slice(2, 8)
       const insight: Insight = {
+        id: `ins-${now.getTime()}-${rand}`,
         phase: job.phase,
         category,
         summary,
         detail,
+        status: 'pending',
         ...(suggestion ? { suggestion } : {}),
+        ...(suggestedLayer ? { suggestedLayer } : {}),
       }
       const insights = [...(job.insights ?? []), insight]
       await ctx.stateBackend.updateJob(ctx.job.id, { insights })
       ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       await ctx.stateBackend.appendLog(ctx.job.id, `[insight] ${category}: ${summary}`)
-      return text({ recorded: true, totalInsights: insights.length })
+      return text({ recorded: true, insightId: insight.id, totalInsights: insights.length })
     },
 
     log: async ({ message }: { message: string }) => {
