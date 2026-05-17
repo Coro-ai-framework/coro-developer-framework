@@ -8,6 +8,8 @@ export interface TokenUsage {
 
 export interface PhaseUsage {
   phase: string
+  /** Work item this phase execution was attributed to, when one was active. */
+  workItem?: string
   inputTokens: number
   outputTokens: number
   cacheReadInputTokens: number

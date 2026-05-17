@@ -851,6 +851,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
               const phaseSnapshot: PhaseUsage = {
                 phase: liveJob.phase,
+                // Stamp the active work item (if any) so the dashboard can
+                // group repeats per item without needing workflow-level
+                // loop metadata. Phases that ran before the planner posted
+                // any items (spec-writing, planning) leave this undefined.
+                ...(liveJob.currentWorkItem ? { workItem: liveJob.currentWorkItem } : {}),
                 inputTokens: phaseTokens.inputTokens,
                 outputTokens: phaseTokens.outputTokens,
                 cacheReadInputTokens: phaseTokens.cacheReadInputTokens,

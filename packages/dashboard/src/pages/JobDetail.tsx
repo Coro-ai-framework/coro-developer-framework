@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   ArrowLeft,
-  Briefcase,
   Bug,
   ChevronDown,
   Clock3,
@@ -17,7 +16,7 @@ import ConnectionIndicator from '../components/ConnectionIndicator'
 import JobControlBar from '../components/JobControlBar'
 import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
-import WorkflowFlow from '../components/WorkflowFlow'
+import WorkflowFlow, { WorkItemsBreakdown } from '../components/WorkflowFlow'
 import PhaseModelPanel from '../components/jobs/PhaseModelPanel'
 import ErrorState from '../components/common/error-state'
 import { Button } from '../components/ui/button'
@@ -57,7 +56,7 @@ import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
 import { isRunningStatus, isTerminalStatus, isWaitingStatus } from '../lib/status'
 
-type DetailTab = 'activity' | 'work' | 'diagnostics'
+type DetailTab = 'activity' | 'diagnostics'
 
 interface PendingOutgoingMessage {
   id: string
@@ -250,60 +249,6 @@ function AlertCard({
   )
 }
 
-function WorkItemsCard({ job }: { job: Job }) {
-  if (!job.workItems || job.workItems.length === 0) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Work items</CardTitle>
-          <CardDescription>No explicit work item breakdown was posted for this run.</CardDescription>
-        </CardHeader>
-      </Card>
-    )
-  }
-
-  const toneFor = (status: string): Tone => {
-    if (status === 'complete') return 'success'
-    if (status === 'in-progress') return 'accent'
-    if (status === 'escalated') return 'danger'
-    return 'neutral'
-  }
-  const dotFor = (tone: Tone): string => ({
-    neutral: 'bg-fg-subtle',
-    accent: 'bg-accent-400',
-    success: 'bg-success-400',
-    warning: 'bg-warning-400',
-    danger: 'bg-danger-400',
-  }[tone])
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Work items</CardTitle>
-        <CardDescription>Planner-defined units of work and their loop counts.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {job.workItems.map(item => {
-          const tone = toneFor(item.status)
-          return (
-            <div
-              key={item.name}
-              className="flex items-center gap-3 rounded-xl border border-line bg-overlay/40 px-4 py-2.5"
-            >
-              <span className={cn('size-2 rounded-full', dotFor(tone), item.status === 'in-progress' && 'animate-pulse-dot')} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-fg">{item.name}</div>
-                <div className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{item.status}</div>
-              </div>
-              <div className="text-[12px] text-fg-muted">loop {item.loopCount}</div>
-            </div>
-          )
-        })}
-      </CardContent>
-    </Card>
-  )
-}
-
 function TokenUsagePanel({ usage }: { usage?: TokenUsage }) {
   if (!usage) {
     return (
@@ -485,6 +430,12 @@ function WorkflowSnapshotCard({
           onSelectPhase={onSelectPhase}
         />
 
+        <WorkItemsBreakdown
+          job={job}
+          phases={phases}
+          onSelectPhase={onSelectPhase}
+        />
+
         <div className="rounded-2xl border border-line bg-overlay/30 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="space-y-0.5">
@@ -600,65 +551,6 @@ function PendingOutgoingMessages({ messages }: { messages: PendingOutgoingMessag
         ))}
       </div>
     </div>
-  )
-}
-
-function ArtifactsBoard({ job, phases }: { job: Job; phases: WorkflowPhase[] }) {
-  const order = phases.map(phase => phase.name)
-  const grouped = new Map<string, typeof job.artifacts>()
-
-  for (const artifact of job.artifacts ?? []) {
-    const bucket = grouped.get(artifact.phase) ?? []
-    bucket.push(artifact)
-    grouped.set(artifact.phase, bucket)
-  }
-
-  const orderedPhases = Array.from(new Set([...order, ...Array.from(grouped.keys())]))
-
-  if (orderedPhases.length === 0) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Artifacts</CardTitle>
-          <CardDescription>No artifacts have been posted to this job yet.</CardDescription>
-        </CardHeader>
-      </Card>
-    )
-  }
-
-  return (
-    <Card>
-      <CardHeader className="border-b border-line pb-4">
-        <CardTitle>Artifacts</CardTitle>
-        <CardDescription>All artifacts grouped by their workflow phase.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-5 pt-5">
-        {orderedPhases.map(phase => {
-          const artifacts = grouped.get(phase) ?? []
-          return (
-            <div key={phase} className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{phase}</div>
-                <div className="text-[11px] text-fg-subtle">
-                  {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
-                </div>
-              </div>
-              {artifacts.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-line px-4 py-3 text-[13px] text-fg-subtle">
-                  No artifacts in this phase.
-                </div>
-              ) : (
-                <div className="grid gap-2 xl:grid-cols-2">
-                  {artifacts.map(artifact => (
-                    <ArtifactLink key={artifact.id} jobId={job.id} artifact={artifact} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </CardContent>
-    </Card>
   )
 }
 
@@ -1060,15 +952,13 @@ export default function JobDetail() {
         onMutated={() => void refetch()}
       />
 
+      {carriesSubRuns ? <CampaignView job={job} onMutated={() => void refetch()} /> : null}
+
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>
         <TabsList>
           <TabsTrigger value="activity" className="gap-1.5">
             <Activity className="size-3.5 shrink-0" aria-hidden="true" />
             Activity
-          </TabsTrigger>
-          <TabsTrigger value="work" className="gap-1.5">
-            <Briefcase className="size-3.5 shrink-0" aria-hidden="true" />
-            Work
           </TabsTrigger>
           <TabsTrigger value="diagnostics" className="gap-1.5">
             <Bug className="size-3.5 shrink-0" aria-hidden="true" />
@@ -1125,12 +1015,6 @@ export default function JobDetail() {
               <ContextPanel job={job} />
             </div>
           </div>
-        </TabsContent>
-
-        <TabsContent value="work" className="space-y-5">
-          <WorkItemsCard job={job} />
-          {carriesSubRuns ? <CampaignView job={job} onMutated={() => void refetch()} /> : null}
-          <ArtifactsBoard job={job} phases={workflowPhases} />
         </TabsContent>
 
         <TabsContent value="diagnostics" className="space-y-5">

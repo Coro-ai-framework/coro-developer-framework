@@ -71,6 +71,14 @@ export interface TokenUsage {
 /** Snapshot of usage for a single completed phase. */
 export interface PhaseUsage {
   phase: string
+  /**
+   * Name of the work item this phase execution was attributed to, captured
+   * from `Job.currentWorkItem` at append time. Lets the dashboard reconstruct
+   * per-work-item loop history without any workflow-level metadata. Undefined
+   * for phases that ran before the planner registered any work items
+   * (e.g. spec-writing, planning itself).
+   */
+  workItem?: string
   inputTokens: number
   outputTokens: number
   cacheReadInputTokens: number
