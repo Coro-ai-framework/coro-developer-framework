@@ -1,9 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Layers3, RotateCcw, SkipForward, SquareSlash } from 'lucide-react'
+import { AlertTriangle, Layers3, MoreHorizontal, Play, RotateCcw, SquareSlash } from 'lucide-react'
 import type { CampaignChild, CampaignChildStatus, Job, TokenUsage } from '../types'
 import { Button } from './ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu'
 import Progress from './ui/progress'
 import { Badge } from './ui/badge'
 import { Switch } from './ui/switch'
@@ -23,8 +29,6 @@ const CHILD_TONE: Record<CampaignChildStatus, Tone> = {
   skipped: 'neutral',
   cancelled: 'neutral',
 }
-
-const TERMINAL_CHILD: CampaignChildStatus[] = ['complete', 'failed', 'escalated', 'skipped', 'cancelled']
 
 function ChildStatusPill({ status }: { status: CampaignChildStatus }) {
   const tone = CHILD_TONE[status]
@@ -145,15 +149,44 @@ interface ChildActionsProps {
   onMutated: () => void
 }
 
+// Per-row action set, redesigned around a "pit of success":
+//
+//   non-terminal (pending / ready / dispatched) →  Abandon
+//     - one button; Skip and Cancel had identical downstream semantics
+//       (both unblock dependents), so a single label avoids the choice tax.
+//
+//   failed / escalated                          →  Resume (primary) + Abandon + ⋯
+//     - Resume re-enters the EXISTING child Job at its last phase and is
+//       what you almost always want. Optional inline note becomes a framed
+//       developer-input message for the agent's next turn.
+//     - ⋯ menu hides the destructive "Start fresh job" (the old `rerun`)
+//       behind a confirm so it can't be hit by accident.
+//
+//   complete / skipped / cancelled              →  no actions
+//     - Terminal-accepted states are immutable from the dashboard. Status
+//       pill alone communicates everything; extra buttons just create
+//       footguns.
 function ChildActions({ jobId, child, onMutated }: ChildActionsProps) {
-  const [busy, setBusy] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'resume' | 'abandon' | 'rerun' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [noteOpen, setNoteOpen] = useState(false)
+  const [note, setNote] = useState('')
+  const noteRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const post = async (action: 'skip' | 'rerun' | 'cancel', reason?: string) => {
-    setBusy(action)
+  const post = async (
+    action: 'abandon' | 'resume' | 'rerun',
+    body: Record<string, string> | undefined,
+    busyKey: 'resume' | 'abandon' | 'rerun',
+  ) => {
+    setBusy(busyKey)
     setError(null)
     try {
-      await requestJson(`/jobs/${jobId}/children/${encodeURIComponent(child.name)}/${action}`, jsonRequest(reason ? { reason } : {}, { method: 'POST' }))
+      await requestJson(
+        `/jobs/${jobId}/children/${encodeURIComponent(child.name)}/${action}`,
+        jsonRequest(body ?? {}, { method: 'POST' }),
+      )
+      setNoteOpen(false)
+      setNote('')
       onMutated()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed')
@@ -162,57 +195,124 @@ function ChildActions({ jobId, child, onMutated }: ChildActionsProps) {
     }
   }
 
-  const isTerminal = TERMINAL_CHILD.includes(child.status)
-  const canSkip = !isTerminal
-  const canRerun = isTerminal && child.status !== 'complete' && child.status !== 'cancelled'
-  // Cancellation = descope. Allowed from any non-accepted status, including
-  // failed/escalated children whose work was abandoned. Disallowed only when
-  // already cancelled, complete, or skipped (those are accepted outcomes).
-  const canCancel =
-    child.status !== 'cancelled' &&
-    child.status !== 'complete' &&
-    child.status !== 'skipped'
+  const isHalted = child.status === 'failed' || child.status === 'escalated'
+  const isAcceptedTerminal =
+    child.status === 'complete' || child.status === 'skipped' || child.status === 'cancelled'
+
+  if (isAcceptedTerminal) {
+    return null
+  }
+
+  const onResumeClick = () => {
+    if (!noteOpen) {
+      setNoteOpen(true)
+      // Microtask: let the textarea mount, then focus.
+      queueMicrotask(() => noteRef.current?.focus())
+      return
+    }
+    void post('resume', note.trim() ? { note: note.trim() } : undefined, 'resume')
+  }
+
+  const onStartFreshClick = () => {
+    const ok = window.confirm(
+      `Start a fresh job for "${child.name}"?\n\n` +
+        `This DROPS the existing child Job (transcript, partial work, any open PR ` +
+        `will be orphaned) and dispatches a brand-new Job from the original spec. ` +
+        `Use "Resume" instead unless the current Job is genuinely unrecoverable.`,
+    )
+    if (!ok) return
+    void post('rerun', undefined, 'rerun')
+  }
 
   return (
-    <div className="flex items-center gap-1.5">
-      {canSkip ? (
+    <div className="flex flex-col items-end gap-1.5">
+      <div className="flex items-center gap-1.5">
+        {isHalted ? (
+          <Button
+            onClick={onResumeClick}
+            disabled={busy !== null}
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            title={
+              noteOpen
+                ? 'Resume the existing child Job — optionally with the note as developer guidance'
+                : 'Resume the existing child Job at its last phase'
+            }
+          >
+            <Play className="size-3.5" />
+            {busy === 'resume' ? '…' : noteOpen ? 'Resume' : 'Resume'}
+          </Button>
+        ) : null}
         <Button
-          onClick={() => void post('skip')}
-          disabled={busy !== null}
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-[11px]"
-          title="Mark as skipped — unblocks dependents"
-        >
-          <SkipForward className="size-3.5" />
-          {busy === 'skip' ? '…' : 'Skip'}
-        </Button>
-      ) : null}
-      {canRerun ? (
-        <Button
-          onClick={() => void post('rerun')}
-          disabled={busy !== null}
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-[11px]"
-          title="Re-dispatch this child"
-        >
-          <RotateCcw className="size-3.5" />
-          {busy === 'rerun' ? '…' : 'Rerun'}
-        </Button>
-      ) : null}
-      {canCancel ? (
-        <Button
-          onClick={() => void post('cancel')}
+          onClick={() => void post('abandon', undefined, 'abandon')}
           disabled={busy !== null}
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-[11px] text-danger-400 hover:bg-danger-500/10 hover:text-danger-400"
-          title="Cancel this child"
+          title={
+            isHalted
+              ? 'Abandon — mark as not-needed, unblocks dependents'
+              : 'Abandon this child — unblocks dependents, descopes the work'
+          }
         >
           <SquareSlash className="size-3.5" />
-          {busy === 'cancel' ? '…' : 'Cancel'}
+          {busy === 'abandon' ? '…' : 'Abandon'}
         </Button>
+        {isHalted ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-1.5 text-[11px]"
+                disabled={busy !== null}
+                aria-label="More actions"
+                title="More actions"
+              >
+                <MoreHorizontal className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-56">
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault()
+                  onStartFreshClick()
+                }}
+                className="text-danger-400 focus:text-danger-400"
+              >
+                <RotateCcw className="size-3.5" />
+                Start fresh job…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </div>
+      {noteOpen && isHalted ? (
+        <div className="flex w-full max-w-md flex-col items-end gap-1.5">
+          <textarea
+            ref={noteRef}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Optional: tell the agent what changed (becomes developer-input for the next turn)"
+            rows={3}
+            className="w-full resize-y rounded-md border border-line bg-overlay/60 px-2 py-1.5 text-[11px] text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
+            disabled={busy !== null}
+          />
+          <div className="flex items-center gap-1.5">
+            <Button
+              onClick={() => {
+                setNoteOpen(false)
+                setNote('')
+              }}
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              disabled={busy !== null}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
       ) : null}
       {error ? (
         <span className="text-[11px] text-danger-400" title={error}>
@@ -241,10 +341,22 @@ function MetricCell({ label, value, detail }: { label: string; value: string; de
 // ── Halted banner ──────────────────────────────────────────────────────────
 //
 // Surfaced when a campaign is parked at `awaiting-developer-input` because
-// one or more children failed/escalated. Provides bulk shortcuts so the
-// developer doesn't have to click Skip / Cancel / Rerun on each row.
-// We restrict bulk actions to the failed/escalated subset so a stray click
-// can't disturb children that were progressing fine.
+// one or more children failed/escalated. Two bulk actions:
+//
+//   Resume all  — re-enter every halted child Job at its last phase. The
+//                 most common case (transient infra hiccup, flaky test,
+//                 quota refill). No note prompt at the bulk level: per-row
+//                 Resume can take a note when the user wants to nudge a
+//                 specific child.
+//
+//   Abandon all — mark every halted child as cancelled, unblocking
+//                 dependents. Use when the failures reflect work that is
+//                 no longer needed.
+//
+// Both actions are restricted to the failed/escalated subset so a stray
+// click can't disturb children that were progressing fine. "Start fresh"
+// is intentionally not offered at the bulk level — it's destructive enough
+// that we want per-row confirms.
 
 function HaltedBanner({
   job,
@@ -255,7 +367,7 @@ function HaltedBanner({
   children: CampaignChild[]
   onMutated: () => void
 }) {
-  const [busy, setBusy] = useState<'skip' | 'cancel' | 'rerun' | null>(null)
+  const [busy, setBusy] = useState<'resume' | 'abandon' | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const halted = useMemo(
@@ -263,25 +375,17 @@ function HaltedBanner({
     [children],
   )
 
-  // Show only when the campaign is actually halted on a failure. We key off
-  // halted.length rather than the awaitingEvent string so a stale park
-  // marker doesn't render an empty banner.
   if (job.status !== 'awaiting-developer-input' || halted.length === 0) return null
 
-  const reason = `bulk action from dashboard halt banner`
-
-  const bulk = async (action: 'skip' | 'cancel' | 'rerun') => {
+  const bulk = async (action: 'resume' | 'abandon') => {
     setBusy(action)
     setError(null)
-    // Sequential POSTs: each call re-runs the coordinator sweep, so order
-    // doesn't matter for correctness, but sequential keeps log lines and
-    // status badges updating in a predictable order.
     const failures: string[] = []
     for (const c of halted) {
       try {
         await requestJson(
           `/jobs/${job.id}/children/${encodeURIComponent(c.name)}/${action}`,
-          jsonRequest({ reason }, { method: 'POST' }),
+          jsonRequest({}, { method: 'POST' }),
         )
       } catch (err) {
         failures.push(`${c.name}: ${err instanceof Error ? err.message : 'failed'}`)
@@ -289,7 +393,9 @@ function HaltedBanner({
     }
     setBusy(null)
     if (failures.length > 0) {
-      setError(`${failures.length} action(s) failed — ${failures.slice(0, 2).join('; ')}${failures.length > 2 ? '…' : ''}`)
+      setError(
+        `${failures.length} action(s) failed — ${failures.slice(0, 2).join('; ')}${failures.length > 2 ? '…' : ''}`,
+      )
     }
     onMutated()
   }
@@ -305,9 +411,9 @@ function HaltedBanner({
           <div className="space-y-1">
             <div className="text-sm font-medium text-fg">Campaign halted on failure</div>
             <p className="text-[12px] leading-snug text-fg-muted">
-              {haltedLabel} — pick a resolution to apply to all of them, or use the
-              per-row buttons below for finer control. Children that succeeded are
-              never touched.
+              {haltedLabel} — Resume retries each at its last phase, Abandon descopes
+              them. Use per-row buttons below if you want to add a note or mix
+              actions.
             </p>
             <p className="text-[11px] font-mono text-fg-subtle">
               {halted.map(c => c.name).join(', ')}
@@ -316,37 +422,25 @@ function HaltedBanner({
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <Button
-            onClick={() => void bulk('rerun')}
+            onClick={() => void bulk('resume')}
             disabled={busy !== null}
-            variant="outline"
             size="sm"
             className="h-7 px-2 text-[11px]"
-            title={`Re-dispatch all ${haltedLabel}`}
+            title={`Resume all ${haltedLabel} at their last phase`}
           >
-            <RotateCcw className="size-3.5" />
-            {busy === 'rerun' ? '…' : `Rerun all (${halted.length})`}
+            <Play className="size-3.5" />
+            {busy === 'resume' ? '…' : `Resume all (${halted.length})`}
           </Button>
           <Button
-            onClick={() => void bulk('skip')}
-            disabled={busy !== null}
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-[11px]"
-            title={`Skip all ${haltedLabel} — unblocks dependents, treats work as not-needed`}
-          >
-            <SkipForward className="size-3.5" />
-            {busy === 'skip' ? '…' : `Skip all (${halted.length})`}
-          </Button>
-          <Button
-            onClick={() => void bulk('cancel')}
+            onClick={() => void bulk('abandon')}
             disabled={busy !== null}
             variant="outline"
             size="sm"
             className="h-7 px-2 text-[11px] text-danger-400 hover:bg-danger-500/10 hover:text-danger-400"
-            title={`Cancel all ${haltedLabel} — descope and let the campaign continue`}
+            title={`Abandon all ${haltedLabel} — descope and let the campaign continue`}
           >
             <SquareSlash className="size-3.5" />
-            {busy === 'cancel' ? '…' : `Cancel all (${halted.length})`}
+            {busy === 'abandon' ? '…' : `Abandon all (${halted.length})`}
           </Button>
         </div>
       </div>

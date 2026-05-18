@@ -17,6 +17,8 @@ import {
   campaignSkipChild,
   campaignRerunChild,
   campaignCancelChild,
+  campaignAbandonChild,
+  campaignResumeChild,
   reconcileReady,
   detectCycle,
   jobStatusToChildStatus,
@@ -434,5 +436,174 @@ describe('campaignCancelChild', () => {
     const stored = backend.jobs.get(parent.id)!
     expect(stored.campaignChildren![0].status).toBe('cancelled')
     expect(stored.campaignChildren![1].status).toBe('ready')
+  })
+})
+
+// ── softened campaignSkipChild on failed/escalated ───────────────────────────
+//
+// Previously skip on a failed/escalated child threw `already failed`. The
+// dashboard's bulk "skip all halted" path turned that into a 500 storm.
+// The new behaviour: skip on failed/escalated routes internally to cancel
+// (identical downstream semantics — both unblock dependents).
+
+describe('campaignSkipChild — softened on terminal-failed', () => {
+  it('converts skip-on-failed into cancel (idempotent UX, same dep semantics)', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'failed' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignSkipChild({ name: 'a' }, ctx)
+    expect(result.status).toBe('cancelled')
+    expect(backend.jobs.get(parent.id)!.campaignChildren![0].status).toBe('cancelled')
+  })
+
+  it('converts skip-on-escalated into cancel', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'escalated' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignSkipChild({ name: 'a' }, ctx)
+    expect(result.status).toBe('cancelled')
+  })
+
+  it('skip-on-already-cancelled is idempotent (no throw)', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'cancelled' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignSkipChild({ name: 'a' }, ctx)
+    expect(result.status).toBe('cancelled')
+  })
+
+  it('skip-on-complete still throws (accepted work is immutable)', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'complete' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    await expect(campaignSkipChild({ name: 'a' }, ctx)).rejects.toThrow(/already complete/i)
+  })
+})
+
+// ── campaignAbandonChild ─────────────────────────────────────────────────────
+
+describe('campaignAbandonChild', () => {
+  it('abandons a failed child (routes to cancel under the hood)', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'failed' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignAbandonChild({ name: 'a' }, ctx)
+    expect(result).toEqual({ ok: true, name: 'a', status: 'cancelled' })
+    expect(backend.jobs.get(parent.id)!.campaignChildren![0].status).toBe('cancelled')
+  })
+
+  it('is idempotent on already-cancelled (returns 200-no-op, does NOT throw)', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'cancelled' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignAbandonChild({ name: 'a' }, ctx)
+    expect(result).toEqual({ ok: true, name: 'a', status: 'cancelled' })
+    // No mutation written for the no-op.
+    expect(backend.updateJob).not.toHaveBeenCalled()
+  })
+
+  it('is idempotent on already-skipped', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'skipped' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignAbandonChild({ name: 'a' }, ctx)
+    expect(result.status).toBe('skipped')
+    expect(backend.updateJob).not.toHaveBeenCalled()
+  })
+
+  it('refuses on complete (work was accepted)', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'complete' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    await expect(campaignAbandonChild({ name: 'a' }, ctx)).rejects.toThrow(/already complete/i)
+  })
+
+  it('promotes downstream dependents (cancelled is a satisfied dep)', async () => {
+    const parent = makeCampaignJob([
+      makeChild({ name: 'a', status: 'failed' }),
+      makeChild({ name: 'b', status: 'pending', dependsOn: ['a'] }),
+    ])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    await campaignAbandonChild({ name: 'a' }, ctx)
+    expect(backend.jobs.get(parent.id)!.campaignChildren![1].status).toBe('ready')
+  })
+})
+
+// ── campaignResumeChild ──────────────────────────────────────────────────────
+
+describe('campaignResumeChild', () => {
+  it('marks a failed child as dispatched and returns the underlying child Job id', async () => {
+    const parent = makeCampaignJob([
+      makeChild({
+        name: 'a',
+        status: 'failed',
+        jobId: 'child-job-1',
+        startedAt: '2026-01-01T00:00:00Z',
+        completedAt: '2026-01-01T00:01:00Z',
+      }),
+    ])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignResumeChild({ name: 'a' }, ctx)
+    expect(result).toEqual({
+      ok: true,
+      name: 'a',
+      status: 'dispatched',
+      childJobId: 'child-job-1',
+    })
+    const stored = backend.jobs.get(parent.id)!
+    expect(stored.campaignChildren![0].status).toBe('dispatched')
+    expect(stored.campaignChildren![0].completedAt).toBeUndefined()
+    // Preserves jobId and startedAt (in-place resume, not fresh job).
+    expect(stored.campaignChildren![0].jobId).toBe('child-job-1')
+    expect(stored.campaignChildren![0].startedAt).toBe('2026-01-01T00:00:00Z')
+  })
+
+  it('works on escalated', async () => {
+    const parent = makeCampaignJob([
+      makeChild({ name: 'a', status: 'escalated', jobId: 'child-job-2' }),
+    ])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    const result = await campaignResumeChild({ name: 'a' }, ctx)
+    expect(result.childJobId).toBe('child-job-2')
+    expect(backend.jobs.get(parent.id)!.campaignChildren![0].status).toBe('dispatched')
+  })
+
+  it('refuses on non-failed / non-escalated statuses', async () => {
+    for (const status of ['pending', 'ready', 'dispatched', 'complete', 'skipped', 'cancelled'] as const) {
+      const parent = makeCampaignJob([makeChild({ name: 'a', status, jobId: 'x' })])
+      const backend = makeBackend([parent])
+      const ctx = makeCtx(parent, backend)
+      await expect(campaignResumeChild({ name: 'a' }, ctx)).rejects.toThrow(/Resume only applies/i)
+    }
+  })
+
+  it('refuses when no child Job id is recorded (use rerun for a fresh dispatch)', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'failed' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    await expect(campaignResumeChild({ name: 'a' }, ctx)).rejects.toThrow(/no underlying child Job id/i)
+  })
+
+  it('rejects when the named child does not exist', async () => {
+    const parent = makeCampaignJob([makeChild({ name: 'a', status: 'failed', jobId: 'x' })])
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+
+    await expect(campaignResumeChild({ name: 'ghost' }, ctx)).rejects.toThrow(/No child named "ghost"/)
   })
 })

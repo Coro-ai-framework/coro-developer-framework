@@ -350,14 +350,98 @@ export async function campaignSkipChild(
   ctx: ToolContext,
 ): Promise<{ ok: true; name: string; status: CampaignChildStatus }> {
   return mutateChild(ctx, args.name, current => {
-    if (isTerminalChildStatus(current.status) && current.status !== 'skipped') {
+    // Idempotent on already-skipped.
+    if (current.status === 'skipped') return current
+    // For terminal-but-not-skipped (failed / escalated / complete / cancelled),
+    // we used to throw. That created a sharp edge: the dashboard's halt-
+    // banner "Skip all" button is wired to this same code path and would
+    // 500 on every halted child. Skip and Cancel/Abandon have identical
+    // downstream semantics (both are `isSatisfiedChildStatus` ⇒ dependents
+    // unblock), so treat skip-on-failed-or-escalated as an Abandon: convert
+    // to `cancelled`. Complete is left alone — accepted work is immutable.
+    if (current.status === 'complete') {
       throw new Error(
-        `Cannot skip "${args.name}": already ${current.status}. ` +
-          `Use campaign_rerun_child if you want to re-execute.`,
+        `Cannot skip "${args.name}": already complete (work was accepted as done).`,
       )
+    }
+    if (current.status === 'cancelled') return current
+    if (current.status === 'failed' || current.status === 'escalated') {
+      return { ...current, status: 'cancelled' as const, completedAt: new Date().toISOString() }
     }
     return { ...current, status: 'skipped' as const, completedAt: new Date().toISOString() }
   }, `[campaign] Skipped child "${args.name}"${args.reason ? ` — ${args.reason}` : ''}`)
+}
+
+// ── campaignAbandonChild ─────────────────────────────────────────────────────
+//
+// "Abandon" is the user-facing verb merging Skip and Cancel for the dashboard.
+// Both states (`skipped` and `cancelled`) satisfy dependents identically, so
+// having two buttons added cognitive overhead without any behavioural payoff.
+// Internally we route to the existing campaignCancelChild path so cascade
+// semantics (cancelling the live child Job, if any) stay intact.
+export async function campaignAbandonChild(
+  args: CampaignChildOpArgs,
+  ctx: ToolContext,
+): Promise<{ ok: true; name: string; status: CampaignChildStatus }> {
+  // Idempotent on already-cancelled — return current snapshot rather than
+  // throwing so a double-click in the dashboard doesn't surface as an error.
+  const job = (await ctx.stateBackend.getJob(ctx.job.id)) as Job | null
+  const current = (job?.campaignChildren ?? []).find(c => c.name === args.name)
+  if (current?.status === 'cancelled' || current?.status === 'skipped') {
+    return { ok: true, name: args.name, status: current.status }
+  }
+  return campaignCancelChild(args, ctx)
+}
+
+// ── campaignResumeChild ──────────────────────────────────────────────────────
+//
+// Resume re-enters the EXISTING failed/escalated child Job at its last phase,
+// preserving transcript and any PRs. This is the recovery action you almost
+// always want — destructive "start fresh" (drop the Job, dispatch a new one)
+// is reserved for `campaignRerunChild`.
+//
+// This tool only mutates the parent's campaignChildren record. The dispatcher
+// wrapper (`Dispatcher.campaignResumeChild`) is responsible for actually
+// flipping the child Job's status and firing the runner — that side requires
+// dispatcher-level concurrency primitives the tool layer doesn't have.
+export async function campaignResumeChild(
+  args: CampaignChildOpArgs,
+  ctx: ToolContext,
+): Promise<{ ok: true; name: string; status: CampaignChildStatus; childJobId: string }> {
+  const job = (await ctx.stateBackend.getJob(ctx.job.id)) as Job | null
+  if (!job) {
+    throw new Error(`Resume refused: campaign job ${ctx.job.id} not found.`)
+  }
+  if (!isCampaignJob(job)) {
+    throw new Error('Resume refused: this job is not a campaign.')
+  }
+  const children = job.campaignChildren ?? []
+  const current = children.find(c => c.name === args.name)
+  if (!current) {
+    throw new Error(`No child named "${args.name}" on this campaign.`)
+  }
+  if (current.status !== 'failed' && current.status !== 'escalated') {
+    throw new Error(
+      `Cannot resume "${args.name}": status is ${current.status}. ` +
+        `Resume only applies to failed or escalated children. ` +
+        `Use campaign_rerun_child for a fresh-job retry from a different terminal state.`,
+    )
+  }
+  if (!current.jobId) {
+    throw new Error(
+      `Cannot resume "${args.name}": no underlying child Job id recorded. ` +
+        `Use campaign_rerun_child to dispatch a new Job from the spec.`,
+    )
+  }
+
+  const childJobId = current.jobId
+  await mutateChild(ctx, args.name, c => {
+    const next = { ...c, status: 'dispatched' as const }
+    delete next.completedAt
+    return next
+  }, `[campaign] Resumed child "${args.name}"${args.reason ? ` — ${args.reason}` : ''}`)
+
+  return { ok: true, name: args.name, status: 'dispatched', childJobId }
 }
 
 export async function campaignRerunChild(

@@ -180,6 +180,50 @@ describe('Dispatcher.coordinateCampaign — halt on failure', () => {
   })
 })
 
+// ── Coordinator: un-park after halt resolution ────────────────────────────
+//
+// When a halted child is resumed or abandoned and no halted children remain,
+// the parent should transition out of awaiting-developer-input back to
+// awaiting-children so the dashboard stops showing the halt banner while
+// in-flight work continues.
+
+describe('Dispatcher.coordinateCampaign — un-park after halt resolution', () => {
+  it('un-parks parent to awaiting-children when no halted children remain', async () => {
+    const { STATUS_AWAITING_CHILDREN } = await import('../../src/jobs/types')
+    const parent = makeCampaignJob(
+      [
+        // Recently-resumed child re-dispatched, sibling still in flight.
+        makeChild({ name: 'a', status: 'dispatched', jobId: 'job-a' }),
+        makeChild({ name: 'b', status: 'pending' }),
+      ],
+      { status: STATUS_AWAITING_DEVELOPER_INPUT, escalationMessage: 'previously halted' },
+    )
+    const backend = makeBackend([parent])
+    const dispatcher = makeDispatcher(backend)
+
+    await dispatcher.coordinateCampaign(parent.id)
+
+    const stored = backend.jobs.get(parent.id)!
+    expect(stored.status).toBe(STATUS_AWAITING_CHILDREN)
+    expect(stored.escalationMessage).toBeUndefined()
+    expect(stored.awaitingEvent).toBeUndefined()
+  })
+
+  it('does NOT un-park if the parent was never halted (status untouched)', async () => {
+    const parent = makeCampaignJob([
+      makeChild({ name: 'a', status: 'dispatched', jobId: 'job-a' }),
+      makeChild({ name: 'b', status: 'pending' }),
+    ])
+    const backend = makeBackend([parent])
+    const dispatcher = makeDispatcher(backend)
+
+    await dispatcher.coordinateCampaign(parent.id)
+
+    const stored = backend.jobs.get(parent.id)!
+    expect(stored.status).toBe(STATUS_QUEUED) // unchanged from fixture
+  })
+})
+
 // ── Coordinator: all-terminal → aggregation ──────────────────────────────────
 
 describe('Dispatcher.coordinateCampaign — advance to aggregation', () => {

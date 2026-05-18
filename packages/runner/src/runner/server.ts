@@ -1132,6 +1132,41 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  // Abandon = unified Skip-or-Cancel (the dashboard's single button). Idempotent
+  // on already-terminated children: a double-click returns 200 with a no-op
+  // payload instead of a 4xx. Legacy `/skip` and `/cancel` routes remain for
+  // MCP back-compat; the dashboard only calls /abandon.
+  app.post('/jobs/:jobId/children/:name/abandon', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const name = Array.isArray(req.params.name) ? req.params.name[0] : req.params.name
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
+      await dispatcher.campaignAbandonChild(jobId, name, reason)
+      res.json({ ok: true, action: 'abandon', child: name })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
+    }
+  })
+
+  // Resume = re-enter the existing failed/escalated child Job at its last
+  // phase. Optional `note` becomes a framed developer-input message via
+  // the dispatcher's sendMessage path.
+  app.post('/jobs/:jobId/children/:name/resume', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const name = Array.isArray(req.params.name) ? req.params.name[0] : req.params.name
+      const note = typeof req.body?.note === 'string' ? req.body.note : undefined
+      await dispatcher.campaignResumeChild(jobId, name, note)
+      res.json({ ok: true, action: 'resume', child: name })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
+    }
+  })
+
   // ── Artefact content ────────────────────────────────────────────────────
   // Read-only endpoint that returns the text content of an artefact whose
   // `data.path` points at a file inside the job's working directory. Used by

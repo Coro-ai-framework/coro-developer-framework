@@ -887,6 +887,24 @@ export class Dispatcher {
       return
     }
 
+    // No halted children remain. If the parent was previously parked at
+    // awaiting-developer-input (because a child failed), un-park it back to
+    // awaiting-children so the dashboard shows "running" while we wait for
+    // children to finish. The parent's runner is not currently up; the
+    // status field is purely a UI / state marker until either aggregation
+    // fires or another halt happens.
+    if (parent.status === STATUS_AWAITING_DEVELOPER_INPUT) {
+      await this.ctx.stateBackend.updateJob(parent.id, {
+        status: STATUS_AWAITING_CHILDREN,
+        escalationMessage: undefined,
+        awaitingEvent: undefined,
+      })
+      await this.ctx.stateBackend.appendLog(
+        parent.id,
+        `[campaign] Un-parked: no halted children remain — waiting on in-flight work`,
+      )
+    }
+
     const allTerminal = children.every(c => isTerminalChildStatus(c.status))
     if (allTerminal) {
       if (parent.phase !== CAMPAIGN_AGGREGATION_PHASE) {
@@ -1125,6 +1143,52 @@ export class Dispatcher {
     const ctx = this.makeToolContextForCampaign(parentJobId)
     if (!ctx) throw new Error(`Campaign job not found: ${parentJobId}`)
     await campaignCancelChild({ name: childName, ...(reason ? { reason } : {}) }, ctx)
+    await this.coordinateCampaign(parentJobId)
+  }
+
+  /**
+   * "Abandon" — user-facing single-button replacement for skip + cancel.
+   * Idempotent on already-terminated children (returns silently) so a
+   * double-click in the dashboard doesn't surface as a 500.
+   */
+  async campaignAbandonChild(parentJobId: string, childName: string, reason?: string): Promise<void> {
+    const { campaignAbandonChild } = await import('../tools/campaign')
+    const ctx = this.makeToolContextForCampaign(parentJobId)
+    if (!ctx) throw new Error(`Campaign job not found: ${parentJobId}`)
+    await campaignAbandonChild({ name: childName, ...(reason ? { reason } : {}) }, ctx)
+    await this.coordinateCampaign(parentJobId)
+  }
+
+  /**
+   * Resume a failed/escalated child IN-PLACE: re-enters the existing child
+   * Job at its last phase, preserving transcript and any open PR.
+   *
+   * `note` is optional. With a note, we route through {@link sendMessage}
+   * so the agent receives a framed developer-input message on its next
+   * turn. Without a note we use the bare {@link resumeJob} path, which
+   * just flips status back to coding and fires the runner.
+   *
+   * The parent's `campaignChildren[]` entry is mutated back to `dispatched`
+   * BEFORE the child Job is fired — otherwise a fast-finishing child could
+   * race `onChildJobStopped` against our coordinator sweep.
+   */
+  async campaignResumeChild(parentJobId: string, childName: string, note?: string): Promise<void> {
+    const { campaignResumeChild } = await import('../tools/campaign')
+    const ctx = this.makeToolContextForCampaign(parentJobId)
+    if (!ctx) throw new Error(`Campaign job not found: ${parentJobId}`)
+    const { childJobId } = await campaignResumeChild(
+      { name: childName, ...(note ? { reason: note } : {}) },
+      ctx,
+    )
+
+    // Fire the underlying child Job. sendMessage handles parked/failed
+    // statuses with a framed prompt; resumeJob handles them without one.
+    if (note && note.trim().length > 0) {
+      await this.sendMessage(childJobId, note)
+    } else {
+      await this.resumeJob(childJobId)
+    }
+
     await this.coordinateCampaign(parentJobId)
   }
 
