@@ -2,7 +2,7 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
 import { ToolContext, PhaseSignals } from './tools/types'
-import { Artifact, WorkItem, Insight, Job } from './jobs/types'
+import { Artifact, WorkItem, Insight, Job } from '@coro/cloud-protocol'
 import type { ExternalRef } from '@coro/cloud-protocol'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
@@ -255,7 +255,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }) => {
     const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
-    const { jobReviewers } = await import('./jobs/types')
+    const { jobReviewers } = await import('./jobs/helpers')
     const targetBranch = args.targetBranch ?? 'main'
     const reviewers = args.reviewers ?? jobReviewers(ctx.job)
     if (!r.scm.createPr) {
@@ -919,7 +919,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     },
 
     escalate: async ({ reason }: { reason: string }) => {
-      const { STATUS_ESCALATED } = await import('./jobs/types')
+      const { STATUS_ESCALATED } = await import('@coro/cloud-protocol')
       await ctx.stateBackend.updateJob(ctx.job.id, {
         status: STATUS_ESCALATED,
         escalationMessage: reason,

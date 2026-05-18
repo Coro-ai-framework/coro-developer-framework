@@ -34,14 +34,14 @@ import {
   prepareRepoWriter,
   prepareTenantWriter,
 } from '../intelligence/writer'
-import { jobReviewers } from '../jobs/types'
+import { jobReviewers } from '../jobs/helpers'
 import type {
   Proposal,
   ProposalFile,
   ProposalStatus,
   ProposalTargetLayer,
   ProposalType,
-} from '../jobs/types'
+} from '@coro/cloud-protocol'
 
 // ── Public types ─────────────────────────────────────────────────────────────
 

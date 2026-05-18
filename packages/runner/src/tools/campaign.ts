@@ -40,17 +40,19 @@ import {
   STATUS_COMPLETE,
   STATUS_ESCALATED,
   STATUS_FAILED,
+  type CampaignChild,
+  type CampaignChildStatus,
+  type Job,
+  type TrackerRef,
+} from '@coro/cloud-protocol'
+import {
   cancelledJobPatch,
   isCampaignJob,
   isEpicAllowed,
   isSatisfiedChildStatus,
   isStoppedStatus,
   isTerminalChildStatus,
-  type CampaignChild,
-  type CampaignChildStatus,
-  type Job,
-  type TrackerRef,
-} from '../jobs/types'
+} from '../jobs/helpers'
 import { switchWorkflow } from './workflow-switch'
 
 // ── convert_to_campaign ──────────────────────────────────────────────────────

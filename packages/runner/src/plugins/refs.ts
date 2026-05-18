@@ -55,7 +55,7 @@ export function externalIdString(value: unknown): string {
 // adapter here means the migration in P5 only has to swap the body —
 // every caller already speaks {@link ExternalRef}.
 
-import type { Job } from '../jobs/types'
+import type { Job } from '@coro/cloud-protocol'
 import type { StateBackend } from '../state/backend'
 
 /**

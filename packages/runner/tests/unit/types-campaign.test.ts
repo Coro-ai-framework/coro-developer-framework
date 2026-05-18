@@ -9,14 +9,16 @@ import { describe, it, expect } from 'vitest'
 import {
   JobType,
   STATUS_QUEUED,
+  type Job,
+  type CampaignChildStatus,
+} from '@coro/cloud-protocol'
+import {
   isCampaignJob,
   isEpicAllowed,
   isTerminalChildStatus,
   isSatisfiedChildStatus,
   emptyTokenUsage,
-  type Job,
-  type CampaignChildStatus,
-} from '../../src/jobs/types'
+} from '../../src/jobs/helpers'
 
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {

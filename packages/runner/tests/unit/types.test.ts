@@ -11,6 +11,9 @@ import {
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_AWAITING_RATE_LIMIT,
   STATUS_CODING,
+  type Job,
+} from '@coro/cloud-protocol'
+import {
   isTerminalStatus,
   isStoppedStatus,
   isParkingStatus,
@@ -23,8 +26,7 @@ import {
   jobServiceName,
   jobJiraTicketId,
   emptyTokenUsage,
-  type Job,
-} from '../../src/jobs/types'
+} from '../../src/jobs/helpers'
 
 // ── Fixture ───────────────────────────────────────────────────────────────────
 

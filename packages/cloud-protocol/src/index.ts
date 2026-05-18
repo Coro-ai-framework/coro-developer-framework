@@ -11,10 +11,11 @@
 //
 // Population order across Phase A:
 //   A.2  ExternalRef + NormalizedEvent types         ← done
-//   A.3  Job-shape types + status vocabulary
+//   A.3  Job-shape types + status vocabulary         ← done
 //   A.4  InboundEvent / OutboundEvent
 //   A.5  WebSocket message envelopes
 //   A.6  PROTOCOL_VERSION constant
 //   A.7  REST endpoint Zod schemas
 
 export * from './refs'
+export * from './job-types'

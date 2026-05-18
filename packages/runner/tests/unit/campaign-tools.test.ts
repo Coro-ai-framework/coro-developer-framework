@@ -30,10 +30,10 @@ import {
   STATUS_FAILED,
   STATUS_ESCALATED,
   STATUS_CANCELLED,
-  emptyTokenUsage,
   type Job,
   type CampaignChild,
-} from '../../src/jobs/types'
+} from '@coro/cloud-protocol'
+import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
 
 const RUNNING = 'running-coding'

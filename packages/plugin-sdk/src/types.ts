@@ -28,7 +28,14 @@
 
 import type { Logger } from 'pino'
 import type { ZodTypeAny } from 'zod'
-import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
+import type { ConversationMessage, ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
+
+// Re-export `ConversationMessage` so plugin authors authoring an
+// executor can import it from `@coro/plugin-sdk` alongside the rest of
+// the executor contract (`ExecutorSessionState`, `PhaseExecutorRuntime`,
+// etc.). The canonical definition lives in `@coro/cloud-protocol`
+// because it's part of the persisted `Job.conversationHistory` wire shape.
+export type { ConversationMessage } from '@coro/cloud-protocol'
 
 // ── External MCP server descriptor ──────────────────────────────────────────
 
@@ -352,35 +359,6 @@ export interface NormalizedTokenUsage {
   cacheCreationInputTokens: number
   /** Optional — provider may report it directly (Anthropic does). */
   totalCostUsd?: number
-}
-
-/**
- * One conversation turn for stateless providers that resume by replaying
- * history rather than by sessionId. Anthropic-flavoured executors leave
- * `conversationHistory` empty and round-trip via {@link ExecutorSessionState.sessionId}.
- *
- * The shape is intentionally minimal — providers translate their native
- * tool-call wire formats into this normalized envelope at the executor
- * boundary so the persisted state is portable across executor plugins.
- */
-export interface ConversationMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  /** Plain text content. Tool calls live in `toolCalls`/`toolResults`. */
-  content: string
-  /** Tool calls the assistant requested in this turn. */
-  toolCalls?: ReadonlyArray<{
-    id: string
-    name: string
-    input: unknown
-  }>
-  /** Tool results the runner is feeding back to the assistant. */
-  toolResults?: ReadonlyArray<{
-    toolCallId: string
-    output: unknown
-    isError?: boolean
-  }>
-  /** Provider-specific metadata round-tripped between turns. */
-  meta?: Record<string, unknown>
 }
 
 /**

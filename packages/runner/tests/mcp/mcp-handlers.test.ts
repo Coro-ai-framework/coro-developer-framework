@@ -3,7 +3,7 @@ import * as cp from 'child_process'
 import * as fs from 'fs/promises'
 import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
-import { STATUS_ESCALATED } from '../../src/jobs/types'
+import { STATUS_ESCALATED } from '@coro/cloud-protocol'
 import type { ToolContext } from '../../src/tools/types'
 import {
   makeMockToolContext,
@@ -620,7 +620,7 @@ vi.mock('../../src/intelligence/writer', () => ({
 
 describe('createMcpToolHandlers — propose_change / list_proposals', () => {
   let ctx: ReturnType<typeof makeMockToolContext>
-  const proposalsStore = new Map<string, import('../../src/jobs/types').Proposal>()
+  const proposalsStore = new Map<string, import('@coro/cloud-protocol').Proposal>()
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -641,9 +641,9 @@ describe('createMcpToolHandlers — propose_change / list_proposals', () => {
     })
     // Override stateBackend.createProposal / listProposals to use a local store.
     ;(ctx.stateBackend.createProposal as unknown as ReturnType<typeof vi.fn>) = vi.fn(
-      async (p: Omit<import('../../src/jobs/types').Proposal, 'id'>) => {
+      async (p: Omit<import('@coro/cloud-protocol').Proposal, 'id'>) => {
         const id = `proposal-${proposalsStore.size + 1}`
-        const stored: import('../../src/jobs/types').Proposal = { ...p, id }
+        const stored: import('@coro/cloud-protocol').Proposal = { ...p, id }
         proposalsStore.set(id, stored)
         return stored
       },

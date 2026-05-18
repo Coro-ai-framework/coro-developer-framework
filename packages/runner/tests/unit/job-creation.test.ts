@@ -4,7 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { buildJobRecord, WorkflowResolutionError } from '../../src/jobs/creation'
-import { JobType } from '../../src/jobs/types'
+import { JobType } from '@coro/cloud-protocol'
 
 // ── Setup helpers ────────────────────────────────────────────────────────────
 

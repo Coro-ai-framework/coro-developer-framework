@@ -15,8 +15,8 @@ import {
   PrMapping,
   Proposal,
   ProposalStatus,
-  defaultWorkflowPath,
-} from '../jobs/types'
+} from '@coro/cloud-protocol'
+import { defaultWorkflowPath } from '../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
 import type { ExternalRef } from '@coro/cloud-protocol'

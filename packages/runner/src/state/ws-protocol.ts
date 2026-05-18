@@ -6,7 +6,7 @@
 // Request/response correlation uses `messageId` for RPC-style calls.
 // Fire-and-forget messages omit `messageId`.
 
-import type { JobInput, Job, Proposal, ProposalStatus, PrMapping } from '../jobs/types'
+import type { JobInput, Job, Proposal, ProposalStatus, PrMapping } from '@coro/cloud-protocol'
 import type { InboundEvent } from './events'
 
 // ── Runner → Cloud messages ──────────────────────────────────────────────────

@@ -4,9 +4,9 @@ import {
   JobType,
   STATUS_CODING,
   STATUS_ESCALATED,
-  emptyTokenUsage,
   type Job,
-} from '../../src/jobs/types'
+} from '@coro/cloud-protocol'
+import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 vi.mock('../../src/jobs/runner', () => ({
   runJob: vi.fn().mockResolvedValue(undefined),

@@ -7,7 +7,7 @@
 import type { WebSocketTransport } from '../state/ws-transport'
 import { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
-import type { JobInput } from '../jobs/types'
+import type { JobInput } from '@coro/cloud-protocol'
 
 /**
  * Wire the dispatcher to listen for cloud-initiated events delivered

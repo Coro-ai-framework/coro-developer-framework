@@ -10,7 +10,8 @@ import {
   routeFile,
   validateProposalFiles,
 } from '../../src/tools/self-improvement'
-import { JobType, emptyTokenUsage, type Job, type Proposal } from '../../src/jobs/types'
+import { JobType, type Job, type Proposal } from '@coro/cloud-protocol'
+import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
 import * as writerMock from '../../src/intelligence/writer'
 import { PluginRegistry } from '../../src/plugins/registry'

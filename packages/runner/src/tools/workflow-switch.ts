@@ -32,10 +32,10 @@
 import type { ToolContext, PhaseSignals } from './types'
 import {
   CAMPAIGN_WORKFLOW_PATH,
-  isEpicAllowed,
   type Job,
   type WorkflowSwitchEntry,
-} from '../jobs/types'
+} from '@coro/cloud-protocol'
+import { isEpicAllowed } from '../jobs/helpers'
 import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 
 export interface SwitchWorkflowArgs {

@@ -8,7 +8,7 @@ import {
   STATUS_AWAITING_RATE_LIMIT,
   STATUS_CODING,
   STATUS_CANCELLED,
-} from '../../src/jobs/types'
+} from '@coro/cloud-protocol'
 
 const silentLogger = pino({ level: 'silent' }) as any
 

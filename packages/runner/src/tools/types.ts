@@ -12,7 +12,7 @@ import { Settings } from '../config/settings'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
 import type { StateBackend } from '../state/backend'
-import { Job } from '../jobs/types'
+import { Job } from '@coro/cloud-protocol'
 import type { PhaseConfig } from '../workflow-parser'
 
 // ── Tool execution context ────────────────────────────────────────────────────

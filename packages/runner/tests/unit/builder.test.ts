@@ -5,7 +5,8 @@ import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext
 import type { Settings } from '../../src/config/settings'
 import type { TrackerClient, TrackerProvider } from '../../src/clients/tracker'
 import { PluginRegistry, type ScmPluginRuntime } from '../../src/plugins'
-import { JobType, emptyTokenUsage, type Job } from '../../src/jobs/types'
+import { JobType, type Job } from '@coro/cloud-protocol'
+import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 

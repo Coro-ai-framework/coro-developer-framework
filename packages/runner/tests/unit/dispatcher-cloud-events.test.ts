@@ -15,9 +15,9 @@ import {
   STATUS_AWAITING_PR_MERGE,
   STATUS_CANCELLED,
   STATUS_CODING,
-  emptyTokenUsage,
   type Job,
-} from '../../src/jobs/types'
+} from '@coro/cloud-protocol'
+import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 vi.mock('../../src/jobs/runner', () => ({
   runJob: vi.fn().mockResolvedValue(undefined),

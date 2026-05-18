@@ -52,13 +52,15 @@ import {
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_AWAITING_RATE_LIMIT,
+  TokenUsage,
+  PhaseUsage,
+} from '@coro/cloud-protocol'
+import {
   isCampaignJob,
   isParkingStatus,
   isTerminalStatus,
-  TokenUsage,
-  PhaseUsage,
   emptyTokenUsage,
-} from './types'
+} from './helpers'
 import { assertJobPluginRequirements } from './plugin-preflight'
 import {
   RateLimitExceededError,

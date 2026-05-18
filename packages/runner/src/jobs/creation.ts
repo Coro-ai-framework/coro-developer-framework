@@ -1,12 +1,12 @@
 import { getBaseLayerRoot } from '@coro/intelligence-base'
 import { getPhaseConfig, loadWorkflowConfigFromRoots, resolveInitialPhase } from '../workflow-parser'
 import {
-  emptyTokenUsage,
   type Job,
   type JobInput,
   type JobType,
   type PrMapping,
-} from './types'
+} from '@coro/cloud-protocol'
+import { emptyTokenUsage } from './helpers'
 
 type WorkflowLogger = {
   warn?: (obj: object, msg: string) => void

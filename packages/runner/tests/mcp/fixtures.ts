@@ -1,6 +1,7 @@
 import { vi } from 'vitest'
 import type { ChildProcess } from 'child_process'
-import { JobType, STATUS_QUEUED, emptyTokenUsage } from '../../src/jobs/types'
+import { JobType, STATUS_QUEUED } from '@coro/cloud-protocol'
+import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
 import type { BitBucketClient } from '../../src/clients/bitbucket'
 import type { LokiClient } from '../../src/clients/loki'

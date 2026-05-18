@@ -193,7 +193,7 @@ export class WsGateway {
       }
 
       case 'job:listByType': {
-        const jobs = await backend.listJobsByType(msg.jobType as import('../../jobs/types').JobType)
+        const jobs = await backend.listJobsByType(msg.jobType as import('@coro/cloud-protocol').JobType)
         this.reply(ws, msg.messageId, jobs)
         return
       }

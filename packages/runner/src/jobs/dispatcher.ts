@@ -15,6 +15,9 @@ import {
   STATUS_CODING,
   STATUS_ESCALATED,
   STATUS_FAILED,
+  PAUSED_AWAITING_EVENT,
+} from '@coro/cloud-protocol'
+import {
   cancelledJobPatch,
   isCancellableStatus,
   isCampaignJob,
@@ -24,8 +27,7 @@ import {
   isTerminalChildStatus,
   isTerminalStatus,
   pausedJobPatch,
-  PAUSED_AWAITING_EVENT,
-} from './types'
+} from './helpers'
 import {
   jobStatusToChildStatus,
   reconcileReady,

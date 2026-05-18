@@ -31,7 +31,8 @@ import type { Logger } from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
 import type { ExternalRef } from '@coro/cloud-protocol'
 import type { ScmPluginRuntime, ScmPollSnapshot } from '../plugins/types'
-import { isParkingStatus, type Job, type PrMapping } from '../jobs/types'
+import { type Job, type PrMapping } from '@coro/cloud-protocol'
+import { isParkingStatus } from '../jobs/helpers'
 
 export interface PollingTransportOptions {
   stateBackend: StateBackend

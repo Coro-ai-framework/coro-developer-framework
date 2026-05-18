@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import Redis from 'ioredis'
 import { RedisStateBackend } from '../../src/state/redis-backend'
-import { JobType, STATUS_AWAITING_PR_MERGE } from '../../src/jobs/types'
+import { JobType, STATUS_AWAITING_PR_MERGE } from '@coro/cloud-protocol'
 import { createTestRedis, flushTestRedis } from './redis-client'
 import { resolveIntelligenceRoot } from './repo-root'
 

@@ -8,10 +8,12 @@ import {
   JobInput,
   ProposalStatus,
   STATUS_CANCELLED,
+} from '@coro/cloud-protocol'
+import {
   cancelledJobPatch,
   isCancellableStatus,
   isStoppedStatus,
-} from '../../jobs/types'
+} from '../../jobs/helpers'
 import { createJobInput, type CreateJobRequest } from '../../jobs/creation'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

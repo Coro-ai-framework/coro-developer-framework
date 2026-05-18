@@ -13,7 +13,7 @@ import type {
   PrMapping,
   Proposal,
   ProposalStatus,
-} from '../jobs/types'
+} from '@coro/cloud-protocol'
 import type { ExternalRef } from '@coro/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
 

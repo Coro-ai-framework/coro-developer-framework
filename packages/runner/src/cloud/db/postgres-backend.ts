@@ -7,7 +7,6 @@ import {
   Job,
   JobInput,
   JobType,
-  defaultWorkflowPath,
   PrMapping,
   Proposal,
   ProposalStatus,
@@ -16,7 +15,8 @@ import {
   PhaseUsage,
   Artifact,
   CampaignChild,
-} from '../../jobs/types'
+} from '@coro/cloud-protocol'
+import { defaultWorkflowPath } from '../../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../../jobs/creation'
 import type { ExternalRef } from '@coro/cloud-protocol'
 import { repoKeyForStorage } from '../../plugins/refs'

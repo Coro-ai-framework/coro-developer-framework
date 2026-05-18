@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildDeveloperInputMessage, buildEscalationResponseMessage } from '../../src/jobs/dispatcher'
-import type { Artifact } from '../../src/jobs/types'
+import type { Artifact } from '@coro/cloud-protocol'
 
 function art(partial: Partial<Artifact> = {}): Artifact {
   return {

@@ -4,7 +4,7 @@ import { Logger } from 'pino'
 import type { Settings } from '../config/settings'
 import type { TrackerClient, TrackerProvider } from '../clients/tracker'
 import type { PluginRegistry } from '../plugins/registry'
-import { Job } from '../jobs/types'
+import { Job } from '@coro/cloud-protocol'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 
 // ── Tracker prompt context ────────────────────────────────────────────────────

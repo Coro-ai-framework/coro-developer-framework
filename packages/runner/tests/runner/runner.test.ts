@@ -16,9 +16,9 @@ import {
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_PLAN_APPROVAL,
   STATUS_AWAITING_DEVELOPER_INPUT,
-  emptyTokenUsage,
-} from '../../src/jobs/types'
-import type { Job } from '../../src/jobs/types'
+} from '@coro/cloud-protocol'
+import { emptyTokenUsage } from '../../src/jobs/helpers'
+import type { Job } from '@coro/cloud-protocol'
 import type { WorkflowConfig } from '../../src/workflow-parser'
 import type { Settings } from '../../src/config/settings'
 import { PluginRegistry } from '../../src/plugins/registry'
@@ -813,7 +813,11 @@ describe('runJob (mocked Agent SDK query)', () => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: expect.stringContaining('parent-directory traversal'),
+        // Since commit 3b70f71 the hook resolves `..` to an absolute path
+        // up front and emits `references path <resolved> via ".."` rather
+        // than a dedicated `parent-directory traversal` kind. The `via ".."`
+        // fragment is the stable signal that this branch fired.
+        permissionDecisionReason: expect.stringContaining('via ".."'),
       },
     })
   })
