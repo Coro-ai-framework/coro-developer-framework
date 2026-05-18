@@ -1,5 +1,5 @@
 import type { EventTransport } from './transport'
-import type { InboundEvent, OutboundEvent } from './events'
+import type { InboundEvent, OutboundEvent } from '@coro/cloud-protocol'
 
 // ── In-process transport ──────────────────────────────────────────────────────
 //

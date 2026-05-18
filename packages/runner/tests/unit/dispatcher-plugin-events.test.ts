@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { Dispatcher } from '../../src/jobs/dispatcher'
-import type { InboundEvent } from '../../src/state/events'
+import type { InboundEvent } from '@coro/cloud-protocol'
 import type { EventTransport } from '../../src/state/transport'
 import type { ExternalRef } from '@coro/cloud-protocol'
 import {

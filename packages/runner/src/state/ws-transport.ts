@@ -8,7 +8,7 @@ import crypto from 'crypto'
 import os from 'os'
 import { Logger } from 'pino'
 import type { EventTransport } from './transport'
-import type { InboundEvent, OutboundEvent } from './events'
+import type { InboundEvent, OutboundEvent } from '@coro/cloud-protocol'
 import type {
   RunnerMessage,
   CloudMessage,

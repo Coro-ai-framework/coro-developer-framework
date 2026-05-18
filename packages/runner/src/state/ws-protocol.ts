@@ -7,7 +7,7 @@
 // Fire-and-forget messages omit `messageId`.
 
 import type { JobInput, Job, Proposal, ProposalStatus, PrMapping } from '@coro/cloud-protocol'
-import type { InboundEvent } from './events'
+import type { InboundEvent } from '@coro/cloud-protocol'
 
 // ── Runner → Cloud messages ──────────────────────────────────────────────────
 

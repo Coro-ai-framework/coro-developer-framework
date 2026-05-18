@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { PollingTransport } from '../../src/state/polling-transport'
 import type { StateBackend } from '../../src/state/backend'
-import type { InboundEvent } from '../../src/state/events'
+import type { InboundEvent } from '@coro/cloud-protocol'
 import { Job, JobType } from '@coro/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 import { PluginRegistry } from '../../src/plugins/registry'

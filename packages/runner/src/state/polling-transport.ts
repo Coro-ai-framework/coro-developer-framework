@@ -25,7 +25,7 @@
 // the wrong provider for cross-platform tenants.
 
 import type { EventTransport } from './transport'
-import type { InboundEvent, OutboundEvent } from './events'
+import type { InboundEvent, OutboundEvent } from '@coro/cloud-protocol'
 import type { StateBackend } from './backend'
 import type { Logger } from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
