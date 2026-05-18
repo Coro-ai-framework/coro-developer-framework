@@ -54,9 +54,22 @@ export async function reattachDynamicMcpServers(
   let reconnected = false
   let reconnectError: string | undefined
 
+  // SDK-type ("in-process") MCP servers do not have a transport to
+  // reset — they are called directly via an in-process function table.
+  // The Anthropic SDK explicitly rejects `reconnectMcpServer` for them
+  // with `"SDK servers should be handled in print.ts"`, which produced
+  // a constant false-positive `reconnectError` in our logs and made
+  // the auto-recovery steering nudge unreachable (see executor.ts
+  // detector gate). For SDK servers, a successful `setMcpServers` IS
+  // the entire reattach surface — there is nothing else to do.
+  const serverConfig = dynamicMcpServers[serverName]
+  const isSdkServer = serverConfig !== undefined && (serverConfig as { type?: string }).type === 'sdk'
+
   const needsReconnect =
-    options.forceReconnect === true ||
-    (finalStatus !== null && finalStatus !== 'connected' && !setResult.errors[serverName])
+    !isSdkServer && (
+      options.forceReconnect === true ||
+      (finalStatus !== null && finalStatus !== 'connected' && !setResult.errors[serverName])
+    )
 
   if (needsReconnect) {
     // One bounded retry with a small backoff — the SDK's

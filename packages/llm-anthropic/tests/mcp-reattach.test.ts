@@ -99,4 +99,30 @@ describe('reattachDynamicMcpServers', () => {
     expect(r.reconnected).toBe(true)
     expect(r.reconnectError).toBeUndefined()
   })
+
+  it('skips reconnectMcpServer for SDK-type (in-process) servers even with forceReconnect=true', async () => {
+    // Regression: the Anthropic SDK rejects `reconnectMcpServer` for
+    // in-process SDK servers with the literal error
+    // "SDK servers should be handled in print.ts". Calling it produced
+    // a constant false-positive `reconnectError` that broke the
+    // auto-recovery steering nudge gate in executor.ts. SDK servers
+    // have no transport; `setMcpServers` is the entire reattach
+    // surface.
+    const q = makeQuery({ status: 'connected' })
+    const r = await reattachDynamicMcpServers(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      q as any,
+      // SDK-type server config carries `type: 'sdk'`.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { coro: { type: 'sdk', name: 'coro', instance: {} } as any },
+      'coro',
+      { forceReconnect: true },
+    )
+    expect(q.reconnectMcpServer).not.toHaveBeenCalled()
+    expect(r.reconnected).toBe(false)
+    expect(r.reconnectError).toBeUndefined()
+    expect(r.finalStatus).toBe('connected')
+    // setMcpServers must still run — it is the reattach for SDK servers.
+    expect(q.setMcpServers).toHaveBeenCalled()
+  })
 })

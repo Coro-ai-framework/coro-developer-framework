@@ -737,7 +737,22 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
                   // (which is what it would otherwise do — we have
                   // logs of agents inventing GOPROXY=direct
                   // workarounds after a single MCP transport blip).
-                  if (refresh.reconnected && !refresh.reconnectError) {
+                  //
+                  // Gate on the correct success signal: `setMcpServers`
+                  // returning no error for our server AND the SDK
+                  // reporting transport=connected (or null, meaning
+                  // status-unknown — common right after re-registration
+                  // for SDK-type servers). DO NOT gate on
+                  // `refresh.reconnected`: for in-process SDK servers
+                  // like our `coro` MCP server, `reconnectMcpServer`
+                  // is a no-op rejected by the SDK with
+                  // "SDK servers should be handled in print.ts", so
+                  // `reconnected` is structurally always false for
+                  // our setup and gating on it leaves the agent
+                  // hanging on a closed stream forever.
+                  const coroErrored = Boolean(refresh.setResult.errors['coro'])
+                  const transportOk = refresh.finalStatus === 'connected' || refresh.finalStatus === null
+                  if (!coroErrored && transportOk) {
                     pushable.push({
                       type: 'user',
                       message: {
