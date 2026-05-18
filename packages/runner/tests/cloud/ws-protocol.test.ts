@@ -5,8 +5,8 @@ import {
   RPC_TIMEOUT_MS,
   RPC_MAX_RETRIES,
   LOG_BATCH_INTERVAL_MS,
-} from '../../src/state/ws-protocol'
-import type { WsJobUpdate } from '../../src/state/ws-protocol'
+} from '@coro/cloud-protocol'
+import type { WsJobUpdate } from '@coro/cloud-protocol'
 
 describe('ws-protocol constants', () => {
   it('heartbeat timeout > heartbeat interval', () => {

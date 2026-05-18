@@ -19,7 +19,7 @@ import type {
   CloudMessage,
   WsRunnerRegister,
   WsRunnerHeartbeat,
-} from '../../state/ws-protocol'
+} from '@coro/cloud-protocol'
 
 export interface GatewayContext {
   config: CloudConfig

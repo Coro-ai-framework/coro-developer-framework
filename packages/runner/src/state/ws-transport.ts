@@ -13,13 +13,13 @@ import type {
   RunnerMessage,
   CloudMessage,
   WsRpcResponse,
-} from './ws-protocol'
+} from '@coro/cloud-protocol'
 import {
   HEARTBEAT_INTERVAL_MS,
   RPC_TIMEOUT_MS,
   RPC_MAX_RETRIES,
   LOG_BATCH_INTERVAL_MS,
-} from './ws-protocol'
+} from '@coro/cloud-protocol'
 
 export interface WsTransportConfig {
   /** Cloud WebSocket URL, e.g. wss://api.a5labs.com/ws/runner */

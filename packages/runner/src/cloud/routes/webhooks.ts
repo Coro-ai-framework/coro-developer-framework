@@ -28,7 +28,7 @@ import type { CloudDb } from '../db/connection'
 import * as schema from '../db/schema'
 import { WsGateway } from '../ws/gateway'
 import { PostgresStateBackend } from '../db/postgres-backend'
-import type { WsEventPluginWebhook } from '../../state/ws-protocol'
+import type { WsEventPluginWebhook } from '@coro/cloud-protocol'
 
 export interface WebhookContext {
   db: CloudDb

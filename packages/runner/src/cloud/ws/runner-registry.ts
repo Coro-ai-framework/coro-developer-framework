@@ -5,7 +5,7 @@
 
 import WebSocket from 'ws'
 import { Logger } from 'pino'
-import { HEARTBEAT_TIMEOUT_MS } from '../../state/ws-protocol'
+import { HEARTBEAT_TIMEOUT_MS } from '@coro/cloud-protocol'
 
 export interface RunnerInfo {
   runnerId: string
