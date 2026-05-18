@@ -151,7 +151,12 @@ interface ChildActionsProps {
 
 // Per-row action set, redesigned around a "pit of success":
 //
-//   non-terminal (pending / ready / dispatched) →  Abandon
+//   ready                                       →  Start + Abandon
+//     - Start manually dispatches a child whose deps are satisfied but
+//       which the auto-coordinator hasn't picked up yet (parallelism cap
+//       full, or campaign halted by a sibling failure). Always safe.
+//
+//   non-terminal (pending / dispatched)         →  Abandon
 //     - one button; Skip and Cancel had identical downstream semantics
 //       (both unblock dependents), so a single label avoids the choice tax.
 //
@@ -167,16 +172,16 @@ interface ChildActionsProps {
 //       pill alone communicates everything; extra buttons just create
 //       footguns.
 function ChildActions({ jobId, child, onMutated }: ChildActionsProps) {
-  const [busy, setBusy] = useState<'resume' | 'abandon' | 'rerun' | null>(null)
+  const [busy, setBusy] = useState<'resume' | 'abandon' | 'rerun' | 'start' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [noteOpen, setNoteOpen] = useState(false)
   const [note, setNote] = useState('')
   const noteRef = useRef<HTMLTextAreaElement | null>(null)
 
   const post = async (
-    action: 'abandon' | 'resume' | 'rerun',
+    action: 'abandon' | 'resume' | 'rerun' | 'start',
     body: Record<string, string> | undefined,
-    busyKey: 'resume' | 'abandon' | 'rerun',
+    busyKey: 'resume' | 'abandon' | 'rerun' | 'start',
   ) => {
     setBusy(busyKey)
     setError(null)
@@ -224,9 +229,26 @@ function ChildActions({ jobId, child, onMutated }: ChildActionsProps) {
     void post('rerun', undefined, 'rerun')
   }
 
+  const isReady = child.status === 'ready'
+
   return (
     <div className="flex flex-col items-end gap-1.5">
       <div className="flex items-center gap-1.5">
+        {isReady ? (
+          <Button
+            onClick={() => void post('start', undefined, 'start')}
+            disabled={busy !== null}
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            title={
+              'Start this child now. Dependencies are satisfied; this bypasses the ' +
+              'parallelism cap and any halt-on-failure pause.'
+            }
+          >
+            <Play className="size-3.5" />
+            {busy === 'start' ? '…' : 'Start'}
+          </Button>
+        ) : null}
         {isHalted ? (
           <Button
             onClick={onResumeClick}
@@ -285,7 +307,12 @@ function ChildActions({ jobId, child, onMutated }: ChildActionsProps) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        ) : null}
+        ) : (
+          // Reserve the same horizontal slot the ⋯ menu occupies on
+          // halted rows so Resume/Start and Abandon stay vertically
+          // aligned across all rows (size-3.5 icon + h-7 px-1.5 button).
+          <span aria-hidden className="inline-block h-7 w-7" />
+        )}
       </div>
       {noteOpen && isHalted ? (
         <div className="flex w-full max-w-md flex-col items-end gap-1.5">
@@ -482,8 +509,13 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
   }
 
   const totalPrs = children.reduce((s, c) => s + (c.summary?.prMappings.length ?? 0), 0)
+  // Cancelled/abandoned children are descoped — exclude them from BOTH
+  // numerator and denominator so progress reflects only the work that's
+  // still in scope. Skipped is treated as completed (work consciously
+  // marked not-needed counts as a resolved outcome).
+  const inScopeChildren = children.length - counts.cancelled
   const completedChildren = counts.complete + counts.skipped
-  const progress = children.length === 0 ? 0 : (completedChildren / children.length) * 100
+  const progress = inScopeChildren === 0 ? 0 : (completedChildren / inScopeChildren) * 100
 
   return (
     <Card>
@@ -508,7 +540,7 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
         <div className="grid gap-3 md:grid-cols-4">
           <MetricCell
             label="Progress"
-            value={`${completedChildren}/${children.length}`}
+            value={`${completedChildren}/${inScopeChildren}`}
             detail={`${Math.round(progress)}% complete`}
           />
           <MetricCell

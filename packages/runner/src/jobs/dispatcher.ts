@@ -1193,6 +1193,34 @@ export class Dispatcher {
   }
 
   /**
+   * Manually dispatch a single `ready` child, bypassing the parallelism
+   * cap and any halt-on-failure pause. Used by the dashboard's per-row
+   * "Start" button: `ready` already means dependencies are satisfied, so
+   * this is always safe with respect to the dependency graph. The cap is
+   * an auto-coordinator policy, not a correctness invariant, so honouring
+   * an explicit human click over it is the right trade-off.
+   *
+   * Throws if the child is missing or not in `ready` status — terminal
+   * children are immutable, and dispatched/pending children would either
+   * race the coordinator or be missing deps.
+   */
+  async campaignStartChild(parentJobId: string, childName: string): Promise<void> {
+    const parent = await this.ctx.stateBackend.getJob(parentJobId)
+    if (!parent) throw new Error(`Campaign job not found: ${parentJobId}`)
+    if (!isCampaignJob(parent)) throw new Error(`Job ${parentJobId} is not a campaign`)
+    const children = parent.campaignChildren ?? []
+    const spec = children.find(c => c.name === childName)
+    if (!spec) throw new Error(`Child not found: ${childName}`)
+    if (spec.status !== 'ready') {
+      throw new Error(
+        `Cannot start child "${childName}": status is "${spec.status}" (expected "ready"). ` +
+          `Only ready children can be manually started.`,
+      )
+    }
+    await this.dispatchCampaignChild(parent, spec)
+  }
+
+  /**
    * Build a minimal {@link import('../tools/types').ToolContext} for invoking
    * campaign tools outside an active runJob (HTTP/CLI). The MCP tools only
    * read `job`, `stateBackend`, and `logger`; we leave the heavier client

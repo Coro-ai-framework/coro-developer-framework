@@ -1167,6 +1167,22 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  // Start = manually dispatch a ready child, bypassing the parallelism
+  // cap / halt-on-failure pause. Safe because `ready` already means
+  // dependencies are satisfied. Rejects non-ready children with a 400.
+  app.post('/jobs/:jobId/children/:name/start', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const name = Array.isArray(req.params.name) ? req.params.name[0] : req.params.name
+      await dispatcher.campaignStartChild(jobId, name)
+      res.json({ ok: true, action: 'start', child: name })
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /not found/i.test(msg) ? 404 : 400
+      res.status(code).json({ error: msg })
+    }
+  })
+
   // ── Artefact content ────────────────────────────────────────────────────
   // Read-only endpoint that returns the text content of an artefact whose
   // `data.path` points at a file inside the job's working directory. Used by
