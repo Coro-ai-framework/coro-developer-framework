@@ -16,6 +16,13 @@ function fallbackRoute() {
   return '/jobs'
 }
 
+/**
+ * Workspace tab bar. Visually mirrors the underline tab pattern used inside
+ * pages (see `components/ui/tabs.tsx`) so the chrome feels consistent. The
+ * active tab is marked by an accent underline rather than a raised
+ * "browser-like" folder shape; this keeps the header flat and prevents the
+ * old layout shift on activation.
+ */
 export default function WorkspaceTabsBar() {
   const navigate = useNavigate()
   const { tabs, activePath, closeTab, clearTabs } = useWorkspaceTabs()
@@ -26,34 +33,28 @@ export default function WorkspaceTabsBar() {
 
   return (
     <div className="border-b border-line bg-panel/55 backdrop-blur-xl">
-      <div className="flex items-end gap-1.5 px-3 pt-2 lg:px-6">
+      <div className="flex items-stretch gap-1 px-3 lg:px-6">
         <ScrollArea className="min-w-0 flex-1 whitespace-nowrap">
-          <div className="flex items-end gap-0.5 pr-3">
+          <div className="flex items-stretch">
             {tabs.map(tab => {
               const active = activePath === tab.path
-
               return (
                 <div
                   key={tab.path}
                   className={cn(
-                    'group -mb-px flex min-w-[180px] max-w-[260px] items-center gap-2 rounded-t-lg border border-b-0 px-3 py-2 transition-colors',
+                    'group relative -mb-px flex h-10 max-w-[220px] items-center gap-1.5 border-b-2 px-3 text-sm transition-[color,border-color]',
                     active
-                      ? 'border-line-strong bg-canvas text-fg'
-                      : 'border-transparent text-fg-muted hover:bg-overlay/50 hover:text-fg',
+                      ? 'border-accent-400 text-fg'
+                      : 'border-transparent text-fg-muted hover:text-fg',
                   )}
                 >
-                  <Link to={tab.path} className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium">{tab.title}</div>
-                    <div
-                      className={cn(
-                        'truncate text-[10px] uppercase tracking-[0.16em]',
-                        active ? 'text-fg-subtle' : 'text-fg-subtle/80',
-                      )}
-                    >
-                      {tab.kind}
-                    </div>
+                  <Link
+                    to={tab.path}
+                    className="min-w-0 truncate font-medium focus-visible:outline-none"
+                    title={tab.title}
+                  >
+                    {tab.title}
                   </Link>
-
                   <button
                     type="button"
                     onClick={() => {
@@ -61,7 +62,12 @@ export default function WorkspaceTabsBar() {
                       closeTab(tab.path)
                       if (wasActive) navigate(fallbackRoute())
                     }}
-                    className="rounded-full p-0.5 text-fg-subtle transition-colors hover:bg-overlay hover:text-fg"
+                    className={cn(
+                      'rounded-full p-0.5 text-fg-subtle transition-colors hover:bg-overlay hover:text-fg',
+                      active
+                        ? 'opacity-100'
+                        : 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100',
+                    )}
                     aria-label={`Close ${tab.title}`}
                   >
                     <X className="size-3" />
@@ -72,30 +78,32 @@ export default function WorkspaceTabsBar() {
           </div>
         </ScrollArea>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="mb-1 h-7 w-7 text-fg-subtle">
-              <MoreHorizontal />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              onClick={() => {
-                clearTabs()
-                navigate('/jobs')
-              }}
-            >
-              <PanelTopClose className="size-4" />
-              Close all tabs
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            {tabs.map(tab => (
-              <DropdownMenuItem key={tab.path} onClick={() => navigate(tab.path)}>
-                {tab.title}
+        <div className="flex items-center">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-fg-subtle">
+                <MoreHorizontal />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => {
+                  clearTabs()
+                  navigate('/jobs')
+                }}
+              >
+                <PanelTopClose className="size-4" />
+                Close all tabs
               </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <DropdownMenuSeparator />
+              {tabs.map(tab => (
+                <DropdownMenuItem key={tab.path} onClick={() => navigate(tab.path)}>
+                  {tab.title}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </div>
   )

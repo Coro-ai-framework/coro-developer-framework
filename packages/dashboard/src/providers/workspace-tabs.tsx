@@ -35,8 +35,17 @@ export function WorkspaceTabsProvider({ children }: { children: React.ReactNode 
   const upsertTab = useCallback((tab: Omit<WorkspaceTab, 'updatedAt'>) => {
     setTabs(previous => {
       const nextTab: WorkspaceTab = { ...tab, updatedAt: new Date().toISOString() }
-      const withoutDuplicate = previous.filter(entry => entry.path !== tab.path)
-      return [nextTab, ...withoutDuplicate].slice(0, 10)
+      const existingIndex = previous.findIndex(entry => entry.path === tab.path)
+      if (existingIndex >= 0) {
+        // Preserve position so activating a tab doesn't visually shuffle the
+        // bar. We only refresh metadata (title, subtitle, updatedAt) in place.
+        const next = previous.slice()
+        next[existingIndex] = { ...previous[existingIndex], ...nextTab }
+        return next
+      }
+      // New tab → append to the end (most recent on the right), capped at 10.
+      const appended = [...previous, nextTab]
+      return appended.length > 10 ? appended.slice(appended.length - 10) : appended
     })
   }, [setTabs])
 

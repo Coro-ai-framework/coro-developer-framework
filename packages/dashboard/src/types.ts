@@ -89,6 +89,13 @@ export interface WorkflowPhase {
   name: string
   status: string
   interactiveCheckpoint?: boolean
+  /**
+   * Owning agent for the phase, or `null` for runner-managed
+   * (“agent-less”) phases such as `coordinating`. The dashboard uses
+   * this to suppress agent-centric UI (e.g. approval prompts) on
+   * phases the user can't actually talk to.
+   */
+  agent?: string | null
 }
 
 export type CampaignChildStatus =

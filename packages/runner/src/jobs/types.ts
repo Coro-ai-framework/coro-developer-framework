@@ -323,6 +323,13 @@ export interface Job {
     name: string
     status: string
     interactiveCheckpoint?: boolean
+    /**
+     * Owning agent for the phase, or `null` for runner-managed
+     * (“agent-less”) phases such as `coordinating`. Persisted so the
+     * dashboard can distinguish agent-driven phases from infrastructure
+     * phases without re-parsing the workflow YAML.
+     */
+    agent?: string | null
   }>
 
   /**

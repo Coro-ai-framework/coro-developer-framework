@@ -288,12 +288,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     const expected = workflowConfig.phases.map(p => ({
       name: p.name,
       status: p.status,
+      agent: p.agent ?? null,
       ...(p.interactiveCheckpoint ? { interactiveCheckpoint: true } : {}),
     }))
     const current = job.workflowPhases ?? []
     const sameLength = current.length === expected.length
     const sameOrder = sameLength && current.every((p, i) => p.name === expected[i]?.name)
-    if (!sameOrder) {
+    // Also re-emit when any new per-phase field (e.g. `agent`) is
+    // missing on the persisted entries — older jobs predate those
+    // fields and would otherwise never be backfilled.
+    const missingAgent = current.some(p => !('agent' in p))
+    if (!sameOrder || missingAgent) {
       await stateBackend.updateJob(job.id, { workflowPhases: expected })
       job = { ...job, workflowPhases: expected }
     }

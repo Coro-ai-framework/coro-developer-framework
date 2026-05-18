@@ -6,11 +6,18 @@ function Tabs({ className, ...props }: React.ComponentProps<typeof TabsPrimitive
   return <TabsPrimitive.Root className={cn('flex flex-col gap-4', className)} {...props} />
 }
 
+/**
+ * Underline-style tab list, visually consistent with the rest of the
+ * Coro dashboard surfaces (cards, control bar). Inactive tabs are
+ * muted; the active tab is identified by an accent underline that
+ * sits flush with the list's bottom border, so triggers never shift
+ * position when selection changes.
+ */
 function TabsList({ className, ...props }: React.ComponentProps<typeof TabsPrimitive.List>) {
   return (
     <TabsPrimitive.List
       className={cn(
-        'inline-flex h-10 items-center gap-1 rounded-xl border border-line bg-overlay/60 p-1 text-fg-muted',
+        'inline-flex h-10 items-center gap-1 border-b border-line text-fg-muted',
         className,
       )}
       {...props}
@@ -22,7 +29,11 @@ function TabsTrigger({ className, ...props }: React.ComponentProps<typeof TabsPr
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        'inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-sm font-medium transition-[color,box-shadow,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 data-[state=active]:bg-panel-raised data-[state=active]:text-fg data-[state=active]:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]',
+        // Sized to overlap the list's bottom border by 1px so the active
+        // underline replaces (not adds to) the muted base line — that's
+        // what eliminates the layout shift the old pill style had.
+        'relative -mb-px inline-flex h-10 items-center justify-center gap-1.5 border-b-2 border-transparent px-3 text-sm font-medium text-fg-muted transition-[color,border-color] hover:text-fg focus-visible:outline-none focus-visible:text-fg',
+        'data-[state=active]:border-accent-400 data-[state=active]:text-fg',
         className,
       )}
       {...props}

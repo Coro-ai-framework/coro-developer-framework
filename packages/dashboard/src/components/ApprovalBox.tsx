@@ -28,6 +28,13 @@ export default function ApprovalBox({ job, onSend }: ApprovalBoxProps) {
   const isAwaiting = job.status === 'awaiting-developer-input'
   if (!isAwaiting) return null
 
+  // Suppress on agent-less phases (e.g. campaign `coordinating`): the
+  // user has nothing to chat with, so the "Agent paused for your input"
+  // panel is misleading. The campaign-level escalation banner +
+  // per-child action buttons are the correct surface in that case.
+  const currentPhase = job.workflowPhases?.find(p => p.name === job.phase)
+  if (currentPhase && currentPhase.agent === null) return null
+
   const reason = parseAwaitingReason(job.awaitingEvent)
   const isMidPhase = !job.awaitingNextPhase
 

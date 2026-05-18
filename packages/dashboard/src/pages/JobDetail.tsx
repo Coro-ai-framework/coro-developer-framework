@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Activity,
   ArrowLeft,
@@ -59,6 +59,33 @@ import type { Tone } from '../lib/status'
 import { isRunningStatus, isTerminalStatus, isWaitingStatus } from '../lib/status'
 
 type DetailTab = 'activity' | 'insights' | 'diagnostics'
+
+/**
+ * Compact, tonally-aware count chip used inside tab triggers to
+ * surface "what's happening on this tab" without competing with the
+ * tab label. Sized to sit visually inside the tab row alongside the
+ * icon + label.
+ */
+function TabCountChip({
+  tone,
+  children,
+}: {
+  tone: 'neutral' | 'warning'
+  children: ReactNode
+}) {
+  return (
+    <span
+      className={cn(
+        'ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-medium tabular-nums ring-1',
+        tone === 'warning'
+          ? 'bg-warning-500/15 text-warning-300 ring-warning-500/30'
+          : 'bg-overlay text-fg-muted ring-line',
+      )}
+    >
+      {children}
+    </span>
+  )
+}
 
 interface PendingOutgoingMessage {
   id: string
@@ -1000,11 +1027,17 @@ export default function JobDetail() {
 
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>
         <TabsList>
-          <TabsTrigger value="activity" className="gap-1.5">
+          <TabsTrigger value="activity">
             <Activity className="size-3.5 shrink-0" aria-hidden="true" />
             Activity
+            {isRunningStatus(job.status) ? (
+              <span
+                title="Run is active"
+                className="ml-1 inline-flex size-1.5 rounded-full bg-accent-400 animate-pulse-dot"
+              />
+            ) : null}
           </TabsTrigger>
-          <TabsTrigger value="insights" className="gap-1.5">
+          <TabsTrigger value="insights">
             <Lightbulb className="size-3.5 shrink-0" aria-hidden="true" />
             Insights
             {(() => {
@@ -1014,13 +1047,21 @@ export default function JobDetail() {
                 (i) => !i.sourceChildName && (i.status ?? 'pending') === 'pending',
               ).length
               return pending > 0 ? (
-                <Badge variant="warning" className="ml-1 px-1.5 text-[10px]">{pending}</Badge>
+                <TabCountChip tone="warning">{pending}</TabCountChip>
               ) : null
             })()}
           </TabsTrigger>
-          <TabsTrigger value="diagnostics" className="gap-1.5">
+          <TabsTrigger value="diagnostics">
             <Bug className="size-3.5 shrink-0" aria-hidden="true" />
             Diagnostics
+            {(() => {
+              const totalTokens
+                = (job.tokenUsage?.inputTokens ?? 0)
+                + (job.tokenUsage?.outputTokens ?? 0)
+              return totalTokens > 0 ? (
+                <TabCountChip tone="neutral">{formatTokens(totalTokens)}</TabCountChip>
+              ) : null
+            })()}
           </TabsTrigger>
         </TabsList>
 

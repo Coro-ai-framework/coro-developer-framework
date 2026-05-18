@@ -193,6 +193,7 @@ export async function buildJobRecord(
     workflowPhases: config.phases.map(p => ({
       name: p.name,
       status: p.status,
+      agent: p.agent ?? null,
       ...(p.interactiveCheckpoint ? { interactiveCheckpoint: true } : {}),
     })),
     createdAt: now,
