@@ -44,6 +44,8 @@ import type {
   PluginManifest,
   PluginMcpServerConfig,
 } from '@coro/plugin-sdk'
+import { RateLimitExceededError, classifyProviderError } from '@coro/plugin-sdk'
+import type { ClassifyOptions } from '@coro/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
 import { buildPhaseHooks } from './hooks'
@@ -76,6 +78,77 @@ function toSdkUserMessage(msg: ConversationMessage): SDKUserMessage {
 // ── Static manifest data ─────────────────────────────────────────────────────
 
 const ANTHROPIC_PLUGIN_ID = 'anthropic' as const
+
+/**
+ * Fallback wait when we recognise a Claude Code subprocess rate-limit
+ * by its message text but didn't capture the companion
+ * `rate_limit_event` (different SDK build, stream cut early, etc.).
+ * The runner's RateLimitScheduler layers exponential backoff on top
+ * via `nextBackoffMs(attempt, hintMs)`, so repeated misses ramp up
+ * gracefully — we don't pretend to know the real deadline here.
+ */
+const FALLBACK_CLAUDE_CODE_RATE_LIMIT_MS = 5 * 60 * 1000
+
+/**
+ * Match the plain-text error message that the Claude Code subprocess
+ * surfaces when its session-level rate limit (5-hour / weekly budget)
+ * is exhausted. Example:
+ *
+ *   "Claude Code returned an error result: You've hit your limit · resets 6:50pm (Asia/Famagusta)"
+ *
+ * This is Anthropic-SDK-specific shape detection — kept local to this
+ * package rather than leaking into the provider-neutral classifier in
+ * `@coro/plugin-sdk`.
+ */
+function isClaudeCodeRateLimitMessage(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const message = (err as { message?: unknown }).message
+  if (typeof message !== 'string') return false
+  return /hit your limit|claude code returned an error result.*limit/i.test(message)
+}
+
+/**
+ * Anthropic-specific extensions for the shared
+ * {@link classifyProviderError} helper. Keeping vendor-specific
+ * detection here (rather than in `@coro/plugin-sdk`) is what lets
+ * the shared classifier stay provider-neutral.
+ */
+const ANTHROPIC_CLASSIFY_OPTIONS: ClassifyOptions = {
+  // The Anthropic Node SDK throws subclasses named `RateLimitError`
+  // when the API returns 429 — but not all transports surface the
+  // status code (notably the Claude Code subprocess re-wraps errors),
+  // so we match the class name too.
+  detectRateLimit: (err: unknown): boolean => {
+    if (!err || typeof err !== 'object') return false
+    const e = err as Record<string, unknown>
+    if (typeof e.name === 'string' && e.name === 'RateLimitError') return true
+    const ctor = (e as { constructor?: { name?: string } }).constructor
+    return ctor?.name === 'RateLimitError'
+  },
+  // Anthropic surfaces transient capacity errors as HTTP 5xx with an
+  // embedded `{ error: { type: 'overloaded_error' } }` body rather
+  // than HTTP 529. We probe both `err.error` and `err.body.error`
+  // because different SDK versions nest the body differently.
+  detectOverloaded: (err: unknown): boolean => {
+    if (!err || typeof err !== 'object') return false
+    const e = err as Record<string, unknown>
+    const error = e.error as Record<string, unknown> | undefined
+    if (error && error.type === 'overloaded_error') return true
+    const body = e.body as Record<string, unknown> | undefined
+    const bodyError = body?.error as Record<string, unknown> | undefined
+    if (bodyError && bodyError.type === 'overloaded_error') return true
+    return false
+  },
+  // Anthropic's REST API emits `anthropic-ratelimit-reset-{tokens,requests}`
+  // (ISO 8601 timestamp). We list tokens first because token quota is
+  // what an agent typically exhausts mid-phase. `extractRetryHint`
+  // takes the largest wait when multiple match, so order is only a
+  // documentation hint.
+  extraResetHeaders: [
+    'anthropic-ratelimit-reset-tokens',
+    'anthropic-ratelimit-reset-requests',
+  ],
+}
 
 /**
  * Static catalogue of Anthropic models the executor recommends. Used by:
@@ -560,6 +633,14 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       }
     }
 
+    // Latest `rate_limit_event` message observed from the Claude Code
+    // subprocess. When the run subsequently throws (the SDK turns the
+    // upstream rate-limit into a generic `Error("...You've hit your
+    // limit · resets ...")`), we use this to compute a precise
+    // `retryAfterMs` instead of falling back to the classifier's
+    // 30-second default. `resetsAt` is epoch seconds, per the SDK.
+    let latestRateLimitEvent: { resetsAt?: number; status?: string; rateLimitType?: string } | undefined
+
     try {
       for await (const raw of queryStream) {
         // Drain any buffered stderr lines as log events.
@@ -877,6 +958,28 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
 
         const handledTypes = new Set(['system', 'assistant', 'tool_use_summary', 'tool_progress', 'result',
           'user', 'stream_event', 'auth_status'])
+        if (eventType === 'rate_limit_event') {
+          // Claude Code subprocess heads-up: the upstream rate-limit
+          // budget for this account is rejecting (or about to reject)
+          // requests. The SDK will subsequently throw a generic Error
+          // when the next assistant turn fails; the catch below uses
+          // `latestRateLimitEvent.resetsAt` to compute the exact wait.
+          const info = (message['rate_limit_info'] ?? {}) as Record<string, unknown>
+          latestRateLimitEvent = {
+            resetsAt: typeof info['resetsAt'] === 'number' ? (info['resetsAt'] as number) : undefined,
+            status: typeof info['status'] === 'string' ? (info['status'] as string) : undefined,
+            rateLimitType: typeof info['rateLimitType'] === 'string' ? (info['rateLimitType'] as string) : undefined,
+          }
+          yield {
+            type: 'log',
+            level: latestRateLimitEvent.status === 'rejected' ? 'warn' : 'info',
+            message:
+              `[rate_limit] status=${latestRateLimitEvent.status ?? 'unknown'} ` +
+              `type=${latestRateLimitEvent.rateLimitType ?? 'unknown'} ` +
+              `resetsAt=${latestRateLimitEvent.resetsAt ?? 'unknown'}`,
+          }
+          continue
+        }
         if (!handledTypes.has(eventType)) {
           yield {
             type: 'log',
@@ -899,6 +1002,70 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
           numTurns: numTurns || phaseTurns,
         },
       }
+    } catch (err) {
+      // Classify provider rate-limit / overloaded errors so the runner
+      // can park the job into STATUS_AWAITING_RATE_LIMIT and schedule
+      // an auto-resume instead of treating it as a generic crash. All
+      // other exceptions bubble untouched.
+      //
+      // Precedence:
+      //   1. If we captured a `rate_limit_event` with `status: 'rejected'`
+      //      from the Claude Code subprocess, the upstream session-level
+      //      budget is exhausted. Build a RateLimitInfo from the
+      //      authoritative `resetsAt` so the scheduler waits exactly
+      //      until the budget resets (not the classifier's 30s default).
+      //   2. If the SDK throws a plain `Error` whose message embeds the
+      //      Claude Code subprocess rate-limit text (no status, no class,
+      //      no headers), recognise it here — the generic provider-neutral
+      //      classifier in `@coro/plugin-sdk` deliberately doesn't know
+      //      about subprocess-specific message shapes.
+      //   3. Otherwise fall through to the generic classifier (HTTP
+      //      status, header parse, SDK class detection).
+      if (latestRateLimitEvent?.status === 'rejected' && typeof latestRateLimitEvent.resetsAt === 'number') {
+        const retryAfterMs = Math.max(0, latestRateLimitEvent.resetsAt * 1000 - Date.now())
+        const info = {
+          kind: 'rate-limit' as const,
+          retryAfterMs,
+          source: 'reset-header' as const,
+          message: typeof (err as { message?: unknown })?.message === 'string'
+            ? ((err as { message: string }).message).slice(0, 500)
+            : undefined,
+        }
+        this.logger.warn(
+          { err, phase: req.phase, info, rateLimitEvent: latestRateLimitEvent },
+          'Claude Code subprocess rate-limit (session budget) — escalating to runner park',
+        )
+        throw new RateLimitExceededError(ANTHROPIC_PLUGIN_ID, info, { cause: err })
+      }
+      if (isClaudeCodeRateLimitMessage(err)) {
+        // Safety net: the stream-side `rate_limit_event` was missed
+        // (different SDK build, stream cut early, etc.). Fall back to
+        // the rate-limit default wait — the runner's RateLimitScheduler
+        // applies exponential backoff per-attempt so repeated misses
+        // ramp up the wait without us pretending to know the deadline.
+        const info = {
+          kind: 'rate-limit' as const,
+          retryAfterMs: FALLBACK_CLAUDE_CODE_RATE_LIMIT_MS,
+          source: 'fallback' as const,
+          message: typeof (err as { message?: unknown })?.message === 'string'
+            ? ((err as { message: string }).message).slice(0, 500)
+            : undefined,
+        }
+        this.logger.warn(
+          { err, phase: req.phase, info },
+          'Claude Code subprocess rate-limit (message-pattern fallback) — escalating to runner park',
+        )
+        throw new RateLimitExceededError(ANTHROPIC_PLUGIN_ID, info, { cause: err })
+      }
+      const info = classifyProviderError(err, ANTHROPIC_CLASSIFY_OPTIONS)
+      if (info) {
+        this.logger.warn(
+          { err, phase: req.phase, info },
+          'Anthropic rate-limit / overloaded — escalating to runner park',
+        )
+        throw new RateLimitExceededError(ANTHROPIC_PLUGIN_ID, info, { cause: err })
+      }
+      throw err
     } finally {
       pushable.close()
       req.lifecycle?.onSessionEnd?.()

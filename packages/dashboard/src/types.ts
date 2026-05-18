@@ -160,6 +160,19 @@ export interface Job {
   awaitingEvent?: string
   awaitingPrId?: number
   escalationMessage?: string
+  /**
+   * Populated by the runner when the job is parked in
+   * `awaiting-rate-limit`. Drives the countdown banner and the
+   * dashboard's "Resume now" override action.
+   */
+  rateLimitInfo?: {
+    provider: string
+    kind: 'rate-limit' | 'overloaded'
+    resumeAt: number
+    retryAttempt: number
+    source: string
+    lastErrorMessage?: string
+  }
   /** Attached by the server when fetched via GET /jobs/:jobId. */
   workflowPhases?: WorkflowPhase[] | null
   /**

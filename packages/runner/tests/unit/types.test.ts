@@ -9,6 +9,7 @@ import {
   STATUS_AWAITING_PLAN_APPROVAL,
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_DEVELOPER_INPUT,
+  STATUS_AWAITING_RATE_LIMIT,
   STATUS_CODING,
   isTerminalStatus,
   isStoppedStatus,
@@ -118,6 +119,7 @@ describe('isParkingStatus', () => {
     [STATUS_AWAITING_PLAN_APPROVAL, true],
     [STATUS_AWAITING_PR_MERGE, true],
     [STATUS_AWAITING_DEVELOPER_INPUT, true],
+    [STATUS_AWAITING_RATE_LIMIT, true],
     [STATUS_ESCALATED, true],
     [STATUS_FAILED, true],
   ])('returns true for parking status "%s"', (status, expected) => {
@@ -160,6 +162,7 @@ describe('isResumableStatus', () => {
     STATUS_AWAITING_PLAN_APPROVAL,
     STATUS_AWAITING_PR_MERGE,
     STATUS_AWAITING_DEVELOPER_INPUT,
+    STATUS_AWAITING_RATE_LIMIT,
     STATUS_FAILED,
     STATUS_ESCALATED,
   ])('returns true for resumable status "%s"', (status) => {
@@ -192,6 +195,7 @@ describe('isCancellableStatus', () => {
     STATUS_AWAITING_PLAN_APPROVAL,
     STATUS_AWAITING_PR_MERGE,
     STATUS_AWAITING_DEVELOPER_INPUT,
+    STATUS_AWAITING_RATE_LIMIT,
     STATUS_FAILED,
     STATUS_ESCALATED,
   ])('returns true for cancellable status "%s"', (status) => {

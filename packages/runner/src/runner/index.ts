@@ -340,6 +340,12 @@ export async function startLocalRunner(
   // Create dispatcher with polling transport for event delivery
   const dispatcher = new Dispatcher(runnerCtx, transport)
 
+  // Re-arm any rate-limit wake-ups that were pending when the runner
+  // last shut down. Best-effort — logged but never fatal.
+  await dispatcher.rateLimitScheduler.bootstrap().catch((err) => {
+    logger.warn({ err }, 'RateLimitScheduler bootstrap failed')
+  })
+
   // Start local HTTP server (same as hybrid but serves dashboard too)
   const server = createRunnerServer({
     port: localPort,
@@ -457,6 +463,12 @@ export async function startHybridRunner(
 
   // Create dispatcher with WebSocket transport for event delivery
   const dispatcher = new Dispatcher(runnerCtx, transport)
+
+  // Re-arm any rate-limit wake-ups that were pending when the runner
+  // last shut down. Best-effort — logged but never fatal.
+  await dispatcher.rateLimitScheduler.bootstrap().catch((err) => {
+    logger.warn({ err }, 'RateLimitScheduler bootstrap failed')
+  })
 
   // Wire cloud-initiated job dispatch and proposal apply
   wireCloudJobDispatch(dispatcher, transport, runnerCtx)

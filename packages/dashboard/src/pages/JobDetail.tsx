@@ -354,7 +354,7 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
 function JobAlerts({ job }: { job: Job }) {
   const parentRunId = getParentRunId(job)
 
-  if (!parentRunId && !job.awaitingEvent && !job.escalationMessage) {
+  if (!parentRunId && !job.awaitingEvent && !job.escalationMessage && !job.rateLimitInfo) {
     return null
   }
 
@@ -375,7 +375,11 @@ function JobAlerts({ job }: { job: Job }) {
         </AlertCard>
       ) : null}
 
-      {job.awaitingEvent && job.status !== 'awaiting-developer-input' ? (
+      {job.status === 'awaiting-rate-limit' && job.rateLimitInfo ? (
+        <RateLimitBanner info={job.rateLimitInfo} />
+      ) : null}
+
+      {job.awaitingEvent && job.status !== 'awaiting-developer-input' && job.status !== 'awaiting-rate-limit' ? (
         <AlertCard title="Awaiting external event" tone="warning">
           {job.awaitingEvent}
           {job.awaitingPrId ? ` (PR #${job.awaitingPrId})` : ''}
@@ -388,6 +392,44 @@ function JobAlerts({ job }: { job: Job }) {
         </AlertCard>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * Live countdown shown while a job is parked in `awaiting-rate-limit`.
+ * Ticks once per second on a `useState` timer so the displayed
+ * remaining time is always fresh — `rateLimitInfo.resumeAt` is the
+ * authoritative wall-clock value stored on the Job.
+ */
+function RateLimitBanner({ info }: { info: NonNullable<Job['rateLimitInfo']> }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const remainingMs = Math.max(0, info.resumeAt - now)
+  const remainingSec = Math.ceil(remainingMs / 1000)
+  const hh = Math.floor(remainingSec / 3600)
+  const mm = Math.floor((remainingSec % 3600) / 60)
+  const ss = remainingSec % 60
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  const countdown = `${pad(hh)}:${pad(mm)}:${pad(ss)}`
+  const kindLabel = info.kind === 'overloaded' ? 'overloaded' : 'rate-limit'
+  const title =
+    remainingMs === 0
+      ? `Provider ${kindLabel} — resuming…`
+      : `Provider ${kindLabel} — auto-resume in ${countdown}`
+  return (
+    <AlertCard title={title} tone="warning">
+      <div className="space-y-1">
+        <div>
+          {info.provider} (attempt {info.retryAttempt}, source: {info.source})
+        </div>
+        {info.lastErrorMessage ? (
+          <div className="text-xs text-neutral-400 break-words">{info.lastErrorMessage}</div>
+        ) : null}
+      </div>
+    </AlertCard>
   )
 }
 

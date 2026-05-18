@@ -9,6 +9,7 @@ export * from './helpers'
 export * from './base'
 export * from './executor-helpers'
 export * from './mcp'
+export * from './rate-limit'
 
 /**
  * The plugin-API host version this SDK release was built against.

@@ -51,6 +51,7 @@ import {
   STATUS_AWAITING_PLAN_APPROVAL,
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_DEVELOPER_INPUT,
+  STATUS_AWAITING_RATE_LIMIT,
   isCampaignJob,
   isParkingStatus,
   isTerminalStatus,
@@ -59,6 +60,10 @@ import {
   emptyTokenUsage,
 } from './types'
 import { assertJobPluginRequirements } from './plugin-preflight'
+import {
+  RateLimitExceededError,
+  nextBackoffMs,
+} from '@coro/plugin-sdk'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -153,6 +158,14 @@ export interface RunJobOptions {
    * controller and developer-input references.
    */
   onSessionEnd?: (jobId: string) => void
+  /**
+   * Called when the runner parks a job into
+   * {@link STATUS_AWAITING_RATE_LIMIT}. The dispatcher uses this to
+   * arm an in-process timer that re-resumes the job at `resumeAt`
+   * (epoch ms). Production code wires this to
+   * `Dispatcher.rateLimitScheduler.schedule`; tests can stub it.
+   */
+  onRateLimitPark?: (jobId: string, resumeAt: number) => void
   /**
    * **Test-only.** Invoked synchronously immediately before each phase
    * executor is called, with the live {@link PhaseSignals} and
@@ -1152,6 +1165,74 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       continue
     }
   } catch (err) {
+    // ── Rate-limit / overload park ─────────────────────────────────────────
+    // Provider executors (Anthropic, OpenAI, …) wrap 429/529-class errors
+    // in `RateLimitExceededError`. We park the job into
+    // `STATUS_AWAITING_RATE_LIMIT`, persist provider/kind/resumeAt so the
+    // dashboard can render a countdown, and ask the dispatcher to schedule
+    // an auto-resume. Crucially we DO NOT clear `sessionId` — Anthropic
+    // sessions resume cleanly; OpenAI's executor returns
+    // `supportsSessionResume: false` so the next run starts fresh by
+    // design.
+    if (err instanceof RateLimitExceededError) {
+      try {
+        const fresh = await stateBackend.getJob(liveJob.id)
+        // If something else already moved the job to a terminal/parked
+        // state (cancel raced the throw), don't clobber it.
+        if (fresh && !isTerminalStatus(fresh.status) && fresh.status !== STATUS_AWAITING_RATE_LIMIT) {
+          const previousAttempt = fresh.rateLimitInfo?.retryAttempt ?? 0
+          const attempt = previousAttempt + 1
+          // When the hint came from an authoritative server-provided
+          // deadline (Retry-After / RateLimit-Reset header, or the
+          // Claude Code subprocess `rate_limit_event.resetsAt`), honor
+          // it verbatim — these can legitimately be hours out (5-hour
+          // session budgets, weekly caps) and the default 30-minute
+          // cap would cause repeated wake-and-fail cycles.
+          const honorHintExactly = err.info.source === 'reset-header' || err.info.source === 'retry-after'
+          const resumeAt = Date.now() + nextBackoffMs(attempt, err.info.retryAfterMs, { honorHintExactly })
+          await stateBackend.updateJob(liveJob.id, {
+            status: STATUS_AWAITING_RATE_LIMIT,
+            rateLimitInfo: {
+              provider: err.provider,
+              kind: err.info.kind,
+              resumeAt,
+              retryAttempt: attempt,
+              source: err.info.source,
+              lastErrorMessage: err.message,
+            },
+          })
+          const waitSec = Math.round((resumeAt - Date.now()) / 1000)
+          await stateBackend.appendLog(
+            liveJob.id,
+            `[rate-limit] ${err.provider} ${err.info.kind} — parking job (attempt ${attempt}); auto-resume in ~${waitSec}s`,
+          )
+          logger.warn(
+            { jobId: liveJob.id, provider: err.provider, kind: err.info.kind, attempt, resumeAt },
+            'Job parked on provider rate-limit',
+          )
+          options?.onRateLimitPark?.(liveJob.id, resumeAt)
+        } else {
+          logger.info(
+            { jobId: liveJob.id, status: fresh?.status },
+            'Rate-limit thrown but job already parked/terminal — skipping re-park',
+          )
+        }
+      } catch (parkErr) {
+        // If we cannot persist the park (state backend down) we have no
+        // safe option but to mark failed so the developer notices.
+        logger.error({ err: parkErr, jobId: liveJob.id }, 'Failed to persist rate-limit park')
+        try {
+          await stateBackend.updateJob(liveJob.id, {
+            status: STATUS_FAILED,
+            escalationMessage: `Rate-limit park failed: ${String(parkErr)}`,
+          })
+        } catch {
+          // best-effort
+        }
+      }
+      return
+    }
+
     // If the job was just transitioned into a parking status by an
     // out-of-band controller (most commonly the dispatcher's `pauseJob`
     // calling `q.interrupt()`), the SDK reports the interrupted tool

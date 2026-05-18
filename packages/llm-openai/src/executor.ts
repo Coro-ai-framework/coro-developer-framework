@@ -19,7 +19,10 @@ import type {
 import {
   emptyNormalizedUsage,
   mergeConversationHistory,
+  RateLimitExceededError,
+  classifyProviderError,
 } from '@coro/plugin-sdk'
+import type { ClassifyOptions } from '@coro/plugin-sdk'
 import { hasOpenAiApiKey, resolveOpenAiClientOptions } from './auth'
 import { McpFunctionBridge, type OpenAiFunctionOutputItem, type OpenAiToolCall } from './mcp-bridge'
 import { ExternalMcpConnectionPool } from './mcp-pool'
@@ -263,6 +266,17 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           if (isAbortError(err) || req.signal.aborted || abortController.signal.aborted) {
             stopReason = 'aborted'
             break
+          }
+          // Classify provider rate-limit / overloaded errors so the
+          // runner can park into STATUS_AWAITING_RATE_LIMIT and
+          // auto-resume rather than treating it as a crash.
+          const info = classifyProviderError(err, OPENAI_CLASSIFY_OPTIONS)
+          if (info) {
+            this.logger.warn(
+              { err, phase: req.phase, info },
+              'OpenAI rate-limit / overloaded — escalating to runner park',
+            )
+            throw new RateLimitExceededError(OPENAI_PLUGIN_ID, info, { cause: err })
           }
           throw err
         }
@@ -568,4 +582,31 @@ function isAbortError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   const e = err as { name?: unknown; code?: unknown }
   return e.name === 'AbortError' || e.code === 20 || e.code === 'ABORT_ERR'
+}
+
+/**
+ * OpenAI-specific extensions for the shared
+ * {@link classifyProviderError} helper. Keeps vendor-specific
+ * detection isolated to this package so `@coro/plugin-sdk` can stay
+ * provider-neutral.
+ */
+const OPENAI_CLASSIFY_OPTIONS: ClassifyOptions = {
+  // The official OpenAI SDK throws `RateLimitError` subclasses when
+  // the API returns 429. We match by class/name because some
+  // transports drop the HTTP status by the time the error reaches us.
+  detectRateLimit: (err: unknown): boolean => {
+    if (!err || typeof err !== 'object') return false
+    const e = err as Record<string, unknown>
+    if (typeof e.name === 'string' && e.name === 'RateLimitError') return true
+    const ctor = (e as { constructor?: { name?: string } }).constructor
+    return ctor?.name === 'RateLimitError'
+  },
+  // OpenAI uses `x-ratelimit-reset-{tokens,requests}` (duration string
+  // like `6m12s`). Tokens are listed first because token quota is what
+  // an agent typically exhausts mid-phase; `extractRetryHint` picks
+  // the largest matching wait anyway, so order is documentation only.
+  extraResetHeaders: [
+    'x-ratelimit-reset-tokens',
+    'x-ratelimit-reset-requests',
+  ],
 }

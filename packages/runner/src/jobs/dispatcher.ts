@@ -31,6 +31,7 @@ import {
   reconcileReady,
 } from '../tools/campaign'
 import { runJob, RunnerContext } from './runner'
+import { RateLimitScheduler } from './rate-limit-scheduler'
 import type { EventTransport } from '../state/transport'
 import type { InboundEvent, InboundEventSource } from '../state/events'
 import type { ExternalRef } from '../plugins/refs'
@@ -78,10 +79,27 @@ export class Dispatcher {
   // settled yet.
   private readonly deferredDispatch = new Set<string>()
 
+  /**
+   * In-process timer registry that auto-resumes jobs parked in
+   * {@link STATUS_AWAITING_RATE_LIMIT}. Exposed as a getter so the
+   * runner factory can call {@link RateLimitScheduler.bootstrap} after
+   * dispatcher construction; everything else uses it through the
+   * dispatcher's own pause/resume/cancel hooks.
+   */
+  readonly rateLimitScheduler: RateLimitScheduler
+
   constructor(
     private readonly ctx: RunnerContext,
     transport?: EventTransport,
   ) {
+    this.rateLimitScheduler = new RateLimitScheduler(
+      {
+        isActiveJob: (jobId) => this.activeJobs.has(jobId),
+        resumeJob: (jobId) => this.resumeJob(jobId),
+      },
+      ctx.stateBackend,
+      ctx.logger,
+    )
     // Register for transport events (used in Phase 3 when events arrive via WebSocket)
     if (transport) {
       transport.onEvent(async (event) => {
@@ -119,6 +137,9 @@ export class Dispatcher {
     const updated = await this.ctx.stateBackend.updateJob(jobId, cancelledJobPatch())
 
     this.eventQueue.delete(jobId)
+    // A cancelled job must never auto-resume from a pending rate-limit
+    // wake-up — drop the timer before the runner sees the cancel.
+    this.rateLimitScheduler.cancel(jobId)
 
     const reasonSuffix = reason ? `: ${reason}` : ''
     await this.ctx.stateBackend.appendLog(jobId, `[control] Job cancelled${reasonSuffix}`)
@@ -183,6 +204,10 @@ export class Dispatcher {
     //       treats it as a clean park rather than a crash.
     const updated = await this.ctx.stateBackend.updateJob(jobId, pausedJobPatch())
 
+    // A developer-initiated pause supersedes a pending rate-limit
+    // wake-up; otherwise the timer would race the developer's resume.
+    this.rateLimitScheduler.cancel(jobId)
+
     // Drop any pending webhook events; the developer is in control now
     // and the events can be re-delivered (or made obsolete) on resume.
     this.eventQueue.delete(jobId)
@@ -246,6 +271,10 @@ export class Dispatcher {
     if (!isResumableStatus(job.status)) {
       throw new Error(`Job ${jobId} is already ${job.status}`)
     }
+
+    // Any manual resume drops a pending rate-limit timer — the
+    // developer is taking over the wake-up decision.
+    this.rateLimitScheduler.cancel(jobId)
 
     const phaseChanged = fromPhase && fromPhase !== job.phase
     const resetSession = clearSession || phaseChanged
@@ -1278,6 +1307,7 @@ export class Dispatcher {
             this.activeSessions.delete(id)
             this.activeInputQueues.delete(id)
           },
+          onRateLimitPark: (id, resumeAt) => this.rateLimitScheduler.schedule(id, resumeAt),
         })
       })
       .catch(err => {

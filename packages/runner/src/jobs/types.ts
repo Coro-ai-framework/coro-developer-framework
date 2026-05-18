@@ -28,6 +28,16 @@ export const STATUS_AWAITING_CHILDREN           = 'awaiting-children'
 export const STATUS_CODING                      = 'coding'
 
 /**
+ * Parked because the LLM provider returned a 429 / overloaded response.
+ * The runner records a deadline + retry counter in `Job.rateLimitInfo`
+ * and the in-process RateLimitScheduler resumes the job automatically
+ * when the deadline expires. Distinct from `awaiting-developer-input`
+ * so the dashboard can show a countdown and so dispatcher gates don't
+ * confuse rate-limit parking with human-coordinated parking.
+ */
+export const STATUS_AWAITING_RATE_LIMIT         = 'awaiting-rate-limit'
+
+/**
  * Marker `awaitingEvent` used when a developer pauses the job from the
  * dashboard (Pause button). Differentiates a developer-initiated park
  * from an agent-initiated one (which uses `developer-input: <reason>`
@@ -341,6 +351,24 @@ export interface Job {
   escalationMessage?: string
 
   /**
+   * Set when the runner parks the job into {@link STATUS_AWAITING_RATE_LIMIT}
+   * after the executor throws a `RateLimitExceededError`. The in-process
+   * `RateLimitScheduler` re-resumes the job at `resumeAt` (epoch ms);
+   * the dashboard reads the same fields to show a countdown.
+   *
+   * Cleared by the runner on the first successful turn after resume so a
+   * subsequent rate-limit hit starts a fresh backoff sequence.
+   */
+  rateLimitInfo?: {
+    provider: string
+    kind: 'rate-limit' | 'overloaded'
+    resumeAt: number
+    retryAttempt: number
+    source: string
+    lastErrorMessage?: string
+  }
+
+  /**
    * Injected by the dispatcher when a webhook event resumes the job.
    * The runner uses this as the prompt for the resumed turn, then clears it.
    */
@@ -580,6 +608,7 @@ export function isParkingStatus(status: string): boolean {
     status === STATUS_AWAITING_PR_MERGE ||
     status === STATUS_AWAITING_DEVELOPER_INPUT ||
     status === STATUS_AWAITING_CHILDREN ||
+    status === STATUS_AWAITING_RATE_LIMIT ||
     status === STATUS_ESCALATED ||
     status === STATUS_FAILED
   )
