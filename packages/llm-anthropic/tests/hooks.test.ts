@@ -113,6 +113,25 @@ describe('Bash PreToolUse hook', () => {
     expect(isAllowed(out)).toBe(false)
   })
 
+  it('allows `cd subdir && cmd ../sibling/...` when the resolved path stays inside workingDir', async () => {
+    const out = await runBash(
+      hook,
+      'cd a5labs.kyc.go && cat "../know_your_customer/src/A5Labs.KYC.DbMigration/Scripts/001 - Initial schema creation.sql"',
+    )
+    expect(isAllowed(out)).toBe(true)
+  })
+
+  it('blocks bare `cat ../sibling/...` because Bash cwd does not persist across calls', async () => {
+    const out = await runBash(hook, 'cat ../know_your_customer/src/foo.sql')
+    expect(isAllowed(out)).toBe(false)
+    expect(out.hookSpecificOutput?.permissionDecisionReason).toMatch(/each Bash invocation starts fresh/)
+  })
+
+  it('blocks `cd subdir && cat ../../../etc/passwd` because the resolved path still escapes', async () => {
+    const out = await runBash(hook, 'cd a5labs.kyc.go && cat ../../../etc/passwd')
+    expect(isAllowed(out)).toBe(false)
+  })
+
   it('blocks polling claude task output', async () => {
     const out = await runBash(hook, 'cat /private/tmp/claude-1234/tasks/abc.output')
     expect(isAllowed(out)).toBe(false)

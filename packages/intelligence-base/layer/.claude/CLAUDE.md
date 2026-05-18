@@ -298,7 +298,7 @@ This is enforced at runtime: a `PreToolUse` hook denies any `Write` or `Edit` th
 The same `PreToolUse` hook scans every `Bash` command **string** (not syscalls) and denies anything that references:
 
 - `~/...`, `$HOME/...`, `${HOME}/...`, `$OLDPWD/...`
-- parent traversal (`../`)
+- parent traversal (`../`) **that escapes the working dir after resolution**. A `../` is fine when the resolved target still lands inside `$PWD/**` — see below.
 - absolute paths outside the allow-list (`/tmp`, `/usr`, `/bin`, `/opt`, `/etc`, `/Library`, `/System`, `/Applications`, `/var/folders`, `/private/tmp`, …)
 
 **Explicitly allowed under `$HOME`** (language package caches — these MUST work):
@@ -307,6 +307,7 @@ The same `PreToolUse` hook scans every `Bash` command **string** (not syscalls) 
 So `go get ...`, `dotnet restore`, `npm install`, `cargo build`, etc. work normally — they write to these cache directories at the OS layer with no further restriction.
 
 **Outbound network is unrestricted.** There is no host allowlist. If a fetch fails, the cause is auth, DNS, the remote being down, or the Bash path guard denying a path you referenced in the command — never an allowlist.
+
 
 Rules:
 - **Never `cd` above your working directory.** Do not navigate to parent directories, the user's home directory, or any path outside `$PWD`.

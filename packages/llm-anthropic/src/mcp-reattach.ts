@@ -33,6 +33,15 @@ export async function reattachDynamicMcpServers(
   initialStatus: string | null
   finalStatus: string | null
   reconnected: boolean
+  /**
+   * Populated when `reconnectMcpServer` threw on the final attempt. The
+   * previous implementation swallowed this silently, which made callers
+   * believe MCP was healthy after a `forceReconnect: true` even when
+   * the transport rebuild had failed. Callers MUST surface this in
+   * their log line; the next `mcp__coro__*` call will otherwise fail
+   * with `Stream closed` and look like a fresh bug.
+   */
+  reconnectError?: string
 }> {
   const setResult = await liveQuery.setMcpServers(dynamicMcpServers)
   const readStatus = async () => {
@@ -43,20 +52,31 @@ export async function reattachDynamicMcpServers(
   const initialStatus = await readStatus()
   let finalStatus = initialStatus
   let reconnected = false
+  let reconnectError: string | undefined
 
   const needsReconnect =
     options.forceReconnect === true ||
     (finalStatus !== null && finalStatus !== 'connected' && !setResult.errors[serverName])
 
   if (needsReconnect) {
-    try {
-      await liveQuery.reconnectMcpServer(serverName)
-      reconnected = true
-    } catch {
-      // The SDK occasionally throws here when the underlying child
-      // process already cleaned up the transport. The next call to
-      // `setMcpServers` (on the following iteration) will recreate
-      // it. Don't propagate — the caller will log the final status.
+    // One bounded retry with a small backoff — the SDK's
+    // `reconnectMcpServer` regularly races the child-process MCP
+    // transport during shutdown/restart and throws on the first call
+    // even though the second call seconds later succeeds. Retrying
+    // once eliminates the most common transient failure without
+    // masking real breakage.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await liveQuery.reconnectMcpServer(serverName)
+        reconnected = true
+        reconnectError = undefined
+        break
+      } catch (err) {
+        reconnectError = err instanceof Error ? err.message : String(err)
+        if (attempt === 0) {
+          await new Promise(resolve => setTimeout(resolve, 250))
+        }
+      }
     }
     finalStatus = await readStatus()
   }
@@ -66,5 +86,6 @@ export async function reattachDynamicMcpServers(
     initialStatus,
     finalStatus,
     reconnected,
+    ...(reconnectError ? { reconnectError } : {}),
   }
 }

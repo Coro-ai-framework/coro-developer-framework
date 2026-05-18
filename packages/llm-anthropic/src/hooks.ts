@@ -99,7 +99,12 @@ export function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hoo
 /** Path containment check, defends against '..' escapes. */
 function isInside(candidate: string, root: string): boolean {
   const rel = path.relative(root, candidate)
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+  if (rel === '' || rel === '.') return true
+  if (path.isAbsolute(rel)) return false
+  // Must be exactly `..` or start with `../` (or `..\` on Windows) — not
+  // just any string beginning with two dots (Go's `./...` build target
+  // produces a relative of `...`, which is NOT a parent escape).
+  return rel !== '..' && !rel.startsWith('..' + path.sep)
 }
 
 // Absolute-path prefixes that we always treat as safe references in Bash
@@ -188,6 +193,17 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
   // `// comment` lines tokenised and rejected as "absolute paths").
   const sanitised = stripHeredocBodies(stripShellComments(command))
 
+  // Detect a leading `cd <subdir> && …` (or `;`, `||`) so that
+  // `../sibling` references after the cd resolve against the cd target
+  // instead of workingDir. Without this, the agent is forced to write
+  // absolute paths for any sibling-repo access — the most common false
+  // positive in monorepo / multi-clone jobs. Only honoured if the cd
+  // target stays inside workingDir (a `cd /etc &&` cannot widen the
+  // allow zone).
+  const cdTarget = extractLeadingCdTarget(sanitised)
+  const cdAbs = cdTarget ? path.resolve(workingDir, cdTarget) : null
+  const effectiveCwd = cdAbs && isInside(cdAbs, workingDir) ? cdAbs : workingDir
+
   for (const rawToken of tokenizeShellCommand(sanitised)) {
     const candidate = extractPathCandidate(rawToken)
     if (!candidate) continue
@@ -218,16 +234,14 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
       return bashPathReason(command, candidate, 'home-directory environment reference', workingDir, memoryRoot)
     }
 
-    const pwdExpanded = expandPwdPath(candidate, workingDir)
-    if (pwdExpanded) {
-      if (!isInside(pwdExpanded, workingDir) && !isInside(pwdExpanded, memoryRoot)) {
-        return bashPathReason(command, candidate, `path ${pwdExpanded}`, workingDir, memoryRoot)
-      }
-      continue
-    }
-
-    if (hasParentTraversal(candidate)) {
-      return bashPathReason(command, candidate, 'parent-directory traversal', workingDir, memoryRoot)
+    // Resolve `$PWD/…`, `./…`, `../…`, and the bare tokens `.`/`..`
+    // against the effective cwd (workingDir, adjusted for leading `cd`).
+    // Allow if the resolved path lands inside workingDir or memoryRoot;
+    // block otherwise.
+    const relResolved = resolveRelativeToCwd(candidate, effectiveCwd, workingDir)
+    if (relResolved) {
+      if (isInside(relResolved, workingDir) || isInside(relResolved, memoryRoot)) continue
+      return bashPathReason(command, candidate, `path ${relResolved}`, workingDir, memoryRoot)
     }
 
     if (candidate.startsWith('/')) {
@@ -383,10 +397,52 @@ function hasParentTraversal(token: string): boolean {
   return /(^|\/)(\.\.)(\/|$)/.test(token)
 }
 
-function expandPwdPath(token: string, workingDir: string): string | null {
+/**
+ * Parse a leading `cd <target> &&|;|||` from a sanitised command and
+ * return the cd target (raw, possibly relative). Returns null if the
+ * command does not start with a `cd` of the recognised shape. Quoted
+ * targets are unquoted.
+ */
+function extractLeadingCdTarget(command: string): string | null {
+  const m = command.match(/^\s*cd\s+(?:--\s+)?("([^"]*)"|'([^']*)'|([^\s;&|]+))\s*(?:&&|;|\|\|)/)
+  if (!m) return null
+  const target = m[2] ?? m[3] ?? m[4] ?? null
+  if (!target) return null
+  // Skip cd targets that would themselves require resolution against an
+  // unknown cwd (e.g. `cd $HOME`); the conservative thing is to ignore
+  // the cd and let the rest of the scanner block as usual.
+  if (target.startsWith('~') || target.includes('$') || target === '-') return null
+  return target
+}
+
+/**
+ * Resolve a relative path reference (`./x`, `../x`, `.`, `..`,
+ * `$PWD/x`, `${PWD}/x`, or a bare token treated as relative because of
+ * a `..` component) against the supplied effective cwd. Returns the
+ * absolute resolved path, or null if the token is not a relative
+ * reference.
+ */
+function resolveRelativeToCwd(token: string, effectiveCwd: string, workingDir: string): string | null {
+  // `$PWD` is the per-call shell cwd which, absent a leading `cd`, is
+  // always workingDir. Honour it explicitly so the resolution lines up
+  // with whatever the shell would actually do.
   if (token === '$PWD' || token === '${PWD}') return workingDir
   if (token.startsWith('$PWD/')) return path.resolve(workingDir, token.slice('$PWD/'.length))
   if (token.startsWith('${PWD}/')) return path.resolve(workingDir, token.slice('${PWD}/'.length))
+
+  if (
+    token === '.' || token === '..' ||
+    token.startsWith('./') || token.startsWith('../')
+  ) {
+    return path.resolve(effectiveCwd, token)
+  }
+
+  // A bare relative path with an embedded `..` (e.g. `foo/../bar`) is
+  // also a traversal we want to resolve and check.
+  if (!token.startsWith('/') && hasParentTraversal(token)) {
+    return path.resolve(effectiveCwd, token)
+  }
+
   return null
 }
 
@@ -399,6 +455,10 @@ function bashPathReason(
 ): string {
   return (
     `Blocked Bash: command "${command}" references ${kind} via "${matched}". ` +
-    `Shell access must stay inside ${workingDir}/** or ${memoryRoot}/**.`
+    `Shell access must stay inside ${workingDir}/** or ${memoryRoot}/**. ` +
+    `Note: each Bash invocation starts fresh at ${workingDir}, so a prior \`cd\` ` +
+    `does NOT persist across calls. To reach a sibling path inside the working dir, ` +
+    `either chain the cd in the same command (\`cd subdir && cat ../sibling/file\`) ` +
+    `or use an absolute path (\`cat ${workingDir}/sibling/file\` or \`cat $PWD/sibling/file\`).`
   )
 }

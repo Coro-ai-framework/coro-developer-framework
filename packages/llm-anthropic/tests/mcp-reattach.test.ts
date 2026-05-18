@@ -72,5 +72,31 @@ describe('reattachDynamicMcpServers', () => {
     // mark it true.
     expect(r.reconnected).toBe(false)
     expect(r.finalStatus).toBe('connected')
+    // …but the error message is now surfaced in `reconnectError` so
+    // callers no longer think MCP is healthy after a silent failure.
+    expect(r.reconnectError).toBe('reconnect failed')
+  })
+
+  it('retries reconnect once when the first attempt throws', async () => {
+    let calls = 0
+    const q = {
+      setMcpServers: vi.fn(async () => ({ added: ['coro'], removed: [], errors: {} })),
+      mcpServerStatus: vi.fn(async () => [{ name: 'coro', status: 'connected' }]),
+      reconnectMcpServer: vi.fn(async () => {
+        calls += 1
+        if (calls === 1) throw new Error('transient race')
+      }),
+    }
+    const r = await reattachDynamicMcpServers(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      q as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { coro: {} as any },
+      'coro',
+      { forceReconnect: true },
+    )
+    expect(calls).toBe(2)
+    expect(r.reconnected).toBe(true)
+    expect(r.reconnectError).toBeUndefined()
   })
 })

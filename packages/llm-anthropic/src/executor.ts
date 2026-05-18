@@ -531,17 +531,19 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             added: mcpRefresh.setResult.added,
             removed: mcpRefresh.setResult.removed,
             errors: mcpRefresh.setResult.errors,
+            reconnectError: mcpRefresh.reconnectError,
           },
           'Refreshed dynamic A5 MCP server on resumed query',
         )
-        if (mcpRefresh.setResult.errors['a5'] || mcpRefresh.finalStatus === 'failed') {
+        if (mcpRefresh.setResult.errors['a5'] || mcpRefresh.finalStatus === 'failed' || mcpRefresh.reconnectError) {
           yield {
             type: 'log',
             level: 'warn',
             message:
               `[warning] A5 MCP refresh reported issues on resumed session. ` +
               `errors=${JSON.stringify(mcpRefresh.setResult.errors)} ` +
-              `status=${mcpRefresh.finalStatus ?? 'unknown'}`,
+              `status=${mcpRefresh.finalStatus ?? 'unknown'}` +
+              (mcpRefresh.reconnectError ? ` reconnectError=${mcpRefresh.reconnectError}` : ''),
           }
         }
       } catch (err) {
@@ -584,12 +586,13 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             )
             yield {
               type: 'log',
-              level: 'info',
+              level: refresh.reconnectError ? 'warn' : 'info',
               message:
                 `[control] MCP re-attached after interrupt — ` +
                 `status=${refresh.finalStatus ?? 'unknown'} ` +
                 `reconnected=${refresh.reconnected} ` +
-                `errors=${JSON.stringify(refresh.setResult.errors)}`,
+                `errors=${JSON.stringify(refresh.setResult.errors)}` +
+                (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : ''),
             }
           } catch (err) {
             yield {
@@ -698,12 +701,64 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
                       .join(' ')
                   : ''
               if (/stream closed|request aborted|mcp(?:\s+|.*)(?:error|closed|disconnected)|connection closed/i.test(text)) {
-                if (!mcpReconnectPending) {
-                  mcpReconnectPending = true
+                // Eager reattach. The previous lazy implementation
+                // flipped `mcpReconnectPending` and waited for the
+                // next loop iteration to rebuild the transport, but
+                // if the failing tool_result was the last item in
+                // the agent's turn (stop_reason=tool_use, no
+                // follow-up message) the loop would block on
+                // `for await` forever and the reattach would never
+                // run. Do it inline so the transport is healed
+                // before we even yield the warning.
+                yield {
+                  type: 'log',
+                  level: 'warn',
+                  message: `[control] MCP tool_result error detected — reconnecting now. detail=${text.slice(0, 200)}`,
+                }
+                try {
+                  const refresh = await reattachDynamicMcpServers(
+                    liveQuery,
+                    dynamicMcpServers,
+                    'coro',
+                    { forceReconnect: true },
+                  )
+                  yield {
+                    type: 'log',
+                    level: refresh.reconnectError ? 'warn' : 'info',
+                    message:
+                      `[control] MCP re-attached after tool_result error — ` +
+                      `status=${refresh.finalStatus ?? 'unknown'} ` +
+                      `reconnected=${refresh.reconnected} ` +
+                      `errors=${JSON.stringify(refresh.setResult.errors)}` +
+                      (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : ''),
+                  }
+                  // Tell the agent the failure was transient so it
+                  // retries instead of replanning around the error
+                  // (which is what it would otherwise do — we have
+                  // logs of agents inventing GOPROXY=direct
+                  // workarounds after a single MCP transport blip).
+                  if (refresh.reconnected && !refresh.reconnectError) {
+                    pushable.push({
+                      type: 'user',
+                      message: {
+                        role: 'user',
+                        content: [{
+                          type: 'text',
+                          text:
+                            '[system notice] Your previous tool call failed because the MCP transport ' +
+                            'was reset (typically by a developer steering interrupt or a transient SDK ' +
+                            'race). The connection has been rebuilt and is healthy. Retry the exact same ' +
+                            'tool call — do NOT change your plan or invent workarounds based on this failure.',
+                        }],
+                      },
+                      parent_tool_use_id: null,
+                    })
+                  }
+                } catch (err) {
                   yield {
                     type: 'log',
                     level: 'warn',
-                    message: `[control] MCP tool_result error detected — scheduling reconnect. detail=${text.slice(0, 200)}`,
+                    message: `[control] MCP re-attach after tool_result error failed: ${String(err)}`,
                   }
                 }
                 break
