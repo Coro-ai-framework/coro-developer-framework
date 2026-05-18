@@ -29,6 +29,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@coro/cloud-protocol": "workspace:*",
     "@coro/intelligence-base": "workspace:*",
     "@coro/llm-anthropic": "workspace:*",
     "@coro/llm-openai": "workspace:*",

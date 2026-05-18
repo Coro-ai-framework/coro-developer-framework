@@ -9,13 +9,12 @@
 // here — that keeps the contract trivially auditable and prevents
 // downstream drift.
 //
-// Scaffold-only at this stage (Phase A.1). Subsequent phases populate
-// this package with the actual contract:
-//   A.2  ExternalRef + NormalizedEvent types
+// Population order across Phase A:
+//   A.2  ExternalRef + NormalizedEvent types         ← done
 //   A.3  Job-shape types + status vocabulary
 //   A.4  InboundEvent / OutboundEvent
 //   A.5  WebSocket message envelopes
 //   A.6  PROTOCOL_VERSION constant
 //   A.7  REST endpoint Zod schemas
 
-export {}
+export * from './refs'

@@ -12,7 +12,7 @@ import type {
   ScmPrComment,
   ScmPrStatus,
 } from '../../src/plugins/types'
-import type { ExternalRef, NormalizedEvent } from '../../src/plugins/refs'
+import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
 import pino from 'pino'
 import { z } from 'zod'
 

@@ -37,11 +37,8 @@ import {
   type CreatePrOptions,
   type CreateRepoOptions,
 } from '../../../clients/bitbucket'
-import {
-  externalIdString,
-  type ExternalRef,
-  type NormalizedEvent,
-} from '../../refs'
+import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
+import { externalIdString } from '../../refs'
 import type {
   PluginDeps,
   PluginHealth,

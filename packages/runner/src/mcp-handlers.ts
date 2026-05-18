@@ -3,7 +3,7 @@ import * as path from 'path'
 import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { Artifact, WorkItem, Insight, Job } from './jobs/types'
-import type { ExternalRef } from './plugins/refs'
+import type { ExternalRef } from '@coro/cloud-protocol'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
 

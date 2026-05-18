@@ -34,7 +34,7 @@ import { runJob, RunnerContext } from './runner'
 import { RateLimitScheduler } from './rate-limit-scheduler'
 import type { EventTransport } from '../state/transport'
 import type { InboundEvent, InboundEventSource } from '../state/events'
-import type { ExternalRef } from '../plugins/refs'
+import type { ExternalRef } from '@coro/cloud-protocol'
 import { resolveJobByExternalRef } from '../plugins/refs'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'

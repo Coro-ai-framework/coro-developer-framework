@@ -19,6 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@coro/cloud-protocol": "workspace:*",
     "@coro/plugin-sdk": "workspace:*",
     "zod": "^4.0.0"
   },

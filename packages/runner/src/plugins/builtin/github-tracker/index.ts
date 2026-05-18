@@ -16,10 +16,8 @@
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
-import {
-  externalIdString,
-  type NormalizedEvent,
-} from '../../refs'
+import type { NormalizedEvent } from '@coro/cloud-protocol'
+import { externalIdString } from '../../refs'
 import type {
   PluginDeps,
   PluginHealth,

@@ -10,7 +10,8 @@ import {
 } from '../jobs/types'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
-import { repoKeyForStorage, type ExternalRef } from '../plugins/refs'
+import type { ExternalRef } from '@coro/cloud-protocol'
+import { repoKeyForStorage } from '../plugins/refs'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
 

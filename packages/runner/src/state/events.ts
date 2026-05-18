@@ -4,7 +4,7 @@
 // cloud control plane, polling). They are transport-agnostic — the same types
 // work whether events arrive via in-process call, WebSocket, or polling.
 
-import type { ExternalRef } from '../plugins/refs'
+import type { ExternalRef } from '@coro/cloud-protocol'
 
 /**
  * Source of an inbound event.

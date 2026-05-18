@@ -22,13 +22,12 @@
 
 import { z } from 'zod'
 import path from 'node:path'
+import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
 import {
   ScmPluginBase,
   buildExternalRef,
   mcpStdioDescriptor,
   readHeader,
-  type ExternalRef,
-  type NormalizedEvent,
   type PluginDeps,
   type PluginManifest,
   type PluginMcpServerConfig,

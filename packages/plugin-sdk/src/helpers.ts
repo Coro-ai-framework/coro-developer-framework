@@ -4,11 +4,8 @@
 // not depend on this file — it only ships in `@coro/plugin-sdk`.
 
 import * as crypto from 'node:crypto'
-import type {
-  ExternalRefKind,
-  ExternalRef,
-  PluginMcpServerConfig,
-} from './types'
+import type { ExternalRefKind, ExternalRef } from '@coro/cloud-protocol'
+import type { PluginMcpServerConfig } from './types'
 
 // ── ExternalRef helpers ─────────────────────────────────────────────────────
 

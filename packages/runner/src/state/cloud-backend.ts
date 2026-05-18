@@ -14,7 +14,7 @@ import type {
   Proposal,
   ProposalStatus,
 } from '../jobs/types'
-import type { ExternalRef } from '../plugins/refs'
+import type { ExternalRef } from '@coro/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
 
 export class CloudStateBackend implements StateBackend {

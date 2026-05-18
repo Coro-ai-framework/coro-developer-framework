@@ -250,6 +250,9 @@ importers:
 
   packages/plugin-gitlab:
     dependencies:
+      '@coro/cloud-protocol':
+        specifier: workspace:*
+        version: link:../cloud-protocol
       '@coro/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
@@ -275,6 +278,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.92
         version: 0.2.119(zod@4.3.6)
+      '@coro/cloud-protocol':
+        specifier: workspace:*
+        version: link:../cloud-protocol
     devDependencies:
       '@types/node':
         specifier: ^22.13.14
@@ -294,6 +300,9 @@ importers:
 
   packages/runner:
     dependencies:
+      '@coro/cloud-protocol':
+        specifier: workspace:*
+        version: link:../cloud-protocol
       '@coro/intelligence-base':
         specifier: workspace:*
         version: link:../intelligence-base

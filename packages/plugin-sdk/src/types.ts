@@ -1,8 +1,8 @@
 // ── Plugin SDK types ─────────────────────────────────────────────────────────
 //
-// Public, authoring-side mirror of the runner's `plugins/types.ts` and
-// `plugins/refs.ts`. We deliberately *duplicate* (rather than re-export
-// from `@coro/runner`) so:
+// Public, authoring-side mirror of the runner's `plugins/types.ts`. We
+// deliberately *duplicate* (rather than re-export from `@coro/runner`)
+// so:
 //
 //   1. Drop-in plugin authors can install `@coro/plugin-sdk` without
 //      pulling the entire runner (which carries `simple-git`,
@@ -18,30 +18,17 @@
 // `packages/runner/tests/plugins/conformance.test.ts` uses the runner
 // types; plugin authors importing from here must satisfy the same
 // surface.
+//
+// Note: `ExternalRef`, `ExternalRefKind`, and `NormalizedEvent` used
+// to be declared here as a deliberate duplicate of the runner's
+// `plugins/refs.ts`. They now live in `@coro/cloud-protocol` — the
+// shared wire-contract package depended on by runner, cloud, and SDK
+// alike — so there is exactly one canonical definition. Plugin
+// authors import them directly from `@coro/cloud-protocol`.
 
 import type { Logger } from 'pino'
 import type { ZodTypeAny } from 'zod'
-
-// ── External references ──────────────────────────────────────────────────────
-
-export type ExternalRefKind = 'pull_request' | 'ticket' | 'repo' | 'issue'
-
-export interface ExternalRef {
-  kind: ExternalRefKind
-  pluginId: string
-  /** REQUIRED for `kind: 'pull_request'`. */
-  repoKey?: string
-  externalId: string
-  url?: string
-}
-
-export interface NormalizedEvent {
-  ref: ExternalRef
-  /** Plugin-defined high-level event name (e.g. `'pr.merged'`). */
-  kind: string
-  raw: unknown
-  receivedAt: string
-}
+import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
 
 // ── External MCP server descriptor ──────────────────────────────────────────
 

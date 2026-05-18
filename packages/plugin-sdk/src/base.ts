@@ -11,11 +11,10 @@
 // upstream provider. The default `dispose` is a no-op which is
 // correct for stateless plugins.
 
+import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
 import type {
   ExecutorCapabilities,
   ExecutorModelDescriptor,
-  ExternalRef,
-  NormalizedEvent,
   NormalizedTokenUsage,
   PhaseExecutionRequest,
   PhaseExecutorEvent,

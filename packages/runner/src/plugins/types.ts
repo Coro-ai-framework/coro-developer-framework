@@ -25,10 +25,7 @@
 
 import type { Logger } from 'pino'
 import type { ZodTypeAny } from 'zod'
-import type {
-  ExternalRef,
-  NormalizedEvent,
-} from './refs'
+import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
 
 // ── External MCP server descriptor ──────────────────────────────────────────
 //

@@ -29,7 +29,7 @@ import type { InboundEvent, OutboundEvent } from './events'
 import type { StateBackend } from './backend'
 import type { Logger } from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
-import type { ExternalRef } from '../plugins/refs'
+import type { ExternalRef } from '@coro/cloud-protocol'
 import type { ScmPluginRuntime, ScmPollSnapshot } from '../plugins/types'
 import { isParkingStatus, type Job, type PrMapping } from '../jobs/types'
 

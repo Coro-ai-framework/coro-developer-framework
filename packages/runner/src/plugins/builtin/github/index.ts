@@ -28,11 +28,8 @@ import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
 import { GitHubClient } from '../../../clients/github'
-import {
-  externalIdString,
-  type ExternalRef,
-  type NormalizedEvent,
-} from '../../refs'
+import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
+import { externalIdString } from '../../refs'
 import type {
   PluginDeps,
   PluginHealth,
