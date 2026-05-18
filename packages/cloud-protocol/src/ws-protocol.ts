@@ -16,6 +16,13 @@ export interface WsRunnerRegister {
   runnerId: string
   hostname: string
   capabilities?: string[]
+  /**
+   * Wire-protocol version this runner speaks (see {@link PROTOCOL_VERSION}).
+   * The cloud gateway validates compatibility on receipt (Phase B); a
+   * mismatch is logged and the connection rejected so a too-new runner
+   * never silently drops fields a too-old cloud doesn't understand.
+   */
+  protocolVersion: string
 }
 
 export interface WsRunnerHeartbeat {
@@ -339,6 +346,17 @@ export type WsMessage = RunnerMessage | CloudMessage
 export type RpcRequest = Extract<RunnerMessage, { messageId: string }>
 
 // ── Constants ────────────────────────────────────────────────────────────────
+
+/**
+ * Wire-protocol version. Bump when message envelopes, RPC contracts, or
+ * REST schemas change in a way that is not strictly additive. Optional
+ * fields and new message types are additive (no bump required); removing
+ * fields, renaming types, or changing semantics is a major bump.
+ *
+ * The runner sends this in `WsRunnerRegister.protocolVersion`; the cloud
+ * gateway validates on connect.
+ */
+export const PROTOCOL_VERSION = '1.0.0'
 
 /** Heartbeat interval (runner sends every N ms) */
 export const HEARTBEAT_INTERVAL_MS = 30_000

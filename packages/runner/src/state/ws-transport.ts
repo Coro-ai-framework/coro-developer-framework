@@ -16,6 +16,7 @@ import type {
 } from '@coro/cloud-protocol'
 import {
   HEARTBEAT_INTERVAL_MS,
+  PROTOCOL_VERSION,
   RPC_TIMEOUT_MS,
   RPC_MAX_RETRIES,
   LOG_BATCH_INTERVAL_MS,
@@ -211,6 +212,7 @@ export class WebSocketTransport implements EventTransport {
           type: 'runner:register',
           runnerId: this.runnerId,
           hostname: os.hostname(),
+          protocolVersion: PROTOCOL_VERSION,
         })
 
         // Start heartbeat
