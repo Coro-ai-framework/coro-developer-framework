@@ -23,7 +23,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 6. **Record insights aggressively — every wasted turn is a future-run tax.** Call `add_insight` *in the same turn* the workaround clicks; do not batch. You MUST record when ANY of these triggers fire:
    - You retried the same operation **3+ times** before it worked.
    - You spent **>5 minutes wall-clock** on a single op.
-   - You discovered a **sandbox / toolchain quirk** the prompt didn't mention (network-allowlist, filesystem-write-block, package-cache, host-factory, git-config).
+   - You discovered a **sandbox / toolchain quirk** the prompt didn't mention (Bash path guard, package-cache write block, host-factory, git-config). Note: the runner does **not** restrict outbound network — if a fetch fails it is almost certainly auth, DNS, or a path-guard denial, not an allowlist.
    - You used a **workaround that bypasses the documented happy path** (inline-URL git push, raw curl/python after an MCP tool failed, custom NuGet/pip/npm config).
    - A failure left you **guessing for >2 turns** about whose fault it was.
 
@@ -292,6 +292,21 @@ For `memory-update`, append-only memory files are merged against the current fil
 The Coro Runner sets your current working directory (`cwd`) to `working/{job-id}/` before each phase starts. **This is your sandbox. All file operations must happen inside this directory.**
 
 This is enforced at runtime: a `PreToolUse` hook denies any `Write` or `Edit` that resolves outside your working directory. Any other path will be denied with a clear error message — use `propose_change` for changes to the intelligence layers (it ships them as a PR rather than a local write).
+
+### Bash path guard — what is and isn't blocked
+
+The same `PreToolUse` hook scans every `Bash` command **string** (not syscalls) and denies anything that references:
+
+- `~/...`, `$HOME/...`, `${HOME}/...`, `$OLDPWD/...`
+- parent traversal (`../`)
+- absolute paths outside the allow-list (`/tmp`, `/usr`, `/bin`, `/opt`, `/etc`, `/Library`, `/System`, `/Applications`, `/var/folders`, `/private/tmp`, …)
+
+**Explicitly allowed under `$HOME`** (language package caches — these MUST work):
+`~/go/**` (Go modules), `~/.nuget/**`, `~/.npm/**`, `~/.yarn/**`, `~/.pnpm-store/**`, `~/.cache/**` (pip, generic XDG), `~/.m2/**`, `~/.gradle/**`, `~/.cargo/**`, `~/.rustup/**`, `~/.pub-cache/**`, `~/.ivy2/**`, `~/.sbt/**`, `~/.gem/**`, `~/.bundle/**`, `~/.pyenv/**`, `~/.nvm/**`, `~/.rbenv/**`, `~/.sdkman/**`, `~/.dotnet/**`, `~/.local/share/**`, `~/.local/state/**`, `~/.terraform.d/**`.
+
+So `go get ...`, `dotnet restore`, `npm install`, `cargo build`, etc. work normally — they write to these cache directories at the OS layer with no further restriction.
+
+**Outbound network is unrestricted.** There is no host allowlist. If a fetch fails, the cause is auth, DNS, the remote being down, or the Bash path guard denying a path you referenced in the command — never an allowlist.
 
 Rules:
 - **Never `cd` above your working directory.** Do not navigate to parent directories, the user's home directory, or any path outside `$PWD`.

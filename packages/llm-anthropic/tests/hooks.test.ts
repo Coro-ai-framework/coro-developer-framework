@@ -96,6 +96,18 @@ describe('Bash PreToolUse hook', () => {
     expect(isAllowed(out)).toBe(false)
   })
 
+  it('allows language package caches under $HOME (Go modules)', async () => {
+    expect(isAllowed(await runBash(hook, 'ls ~/go/pkg/mod/github.com'))).toBe(true)
+    expect(isAllowed(await runBash(hook, 'GOMODCACHE=$HOME/go/pkg/mod go env GOMODCACHE'))).toBe(true)
+  })
+
+  it('allows language package caches under $HOME (NuGet, npm, cargo, maven)', async () => {
+    expect(isAllowed(await runBash(hook, 'ls ~/.nuget/packages'))).toBe(true)
+    expect(isAllowed(await runBash(hook, 'cat $HOME/.npm/_logs/foo.log'))).toBe(true)
+    expect(isAllowed(await runBash(hook, 'ls ${HOME}/.cargo/registry'))).toBe(true)
+    expect(isAllowed(await runBash(hook, 'rm -rf ~/.m2/repository/junk'))).toBe(true)
+  })
+
   it('blocks parent-directory traversal that escapes workingDir', async () => {
     const out = await runBash(hook, 'cat ../../../etc/passwd-like-thing')
     expect(isAllowed(out)).toBe(false)

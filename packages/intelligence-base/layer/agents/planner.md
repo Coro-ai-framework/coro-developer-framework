@@ -245,7 +245,7 @@ Call `mcp__coro__add_insight` in the same turn the discovery clicks (don't batch
 
 - You retried the same operation **3+ times** before it worked.
 - You spent **>5 minutes wall-clock** on a single read / search / API call.
-- You hit a **sandbox or toolchain quirk** that wasn't documented in the prompt or memory (network-allowlist, filesystem-write-block, package cache, repo-slug ambiguity, auth handshake).
+- You hit a **sandbox or toolchain quirk** that wasn't documented in the prompt or memory (Bash path guard, package-cache write block, repo-slug ambiguity, auth handshake). Note: the runner does **not** restrict outbound network.
 - You used a **workaround that bypasses the documented happy path** (inline-URL git ops, raw curl/python after an MCP tool failed, custom config files).
 - A failure left you **guessing for >2 turns** about whose fault it was.
 

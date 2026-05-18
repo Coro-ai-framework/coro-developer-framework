@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import type { HookCallback, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
 import type { Logger } from 'pino'
@@ -133,6 +134,53 @@ const ALLOWED_ABSOLUTE_EXACT: ReadonlySet<string> = new Set([
   '/Library', '/System', '/Applications', '/proc', '/sys', '/run',
 ])
 
+// Subpaths under $HOME that language toolchains use as their package /
+// module caches. These MUST be writable for `go get`, `dotnet restore`,
+// `npm install`, `cargo build`, etc. to function — without these the
+// agent ends up reinventing vendoring against a non-existent network
+// allowlist. The list is intentionally narrow: anything else under $HOME
+// (dotfiles, SSH keys, AWS creds, sibling source repos) stays blocked.
+const HOME_CACHE_SUBPATHS: readonly string[] = [
+  'go/',           // Go module cache (GOPATH/pkg/mod, GOMODCACHE)
+  '.cache/',       // pip wheel cache, yarn, generic XDG cache
+  '.nuget/',       // .NET package cache
+  '.npm/',         // npm global cache
+  '.yarn/',        // yarn berry cache
+  '.pnpm-store/',  // pnpm store
+  '.m2/',          // Maven
+  '.gradle/',      // Gradle
+  '.cargo/',       // Rust cargo registry + git cache
+  '.rustup/',      // Rust toolchain
+  '.pub-cache/',   // Dart / Flutter
+  '.ivy2/',        // Scala SBT
+  '.sbt/',
+  '.gem/',         // Ruby gems
+  '.bundle/',      // Ruby bundler
+  '.pyenv/',       // Python version mgr
+  '.nvm/',         // Node version mgr
+  '.rbenv/',       // Ruby version mgr
+  '.sdkman/',      // JVM tooling mgr
+  '.dotnet/',      // .NET SDKs / tools
+  '.local/share/',
+  '.local/state/',
+  '.terraform.d/',
+]
+
+const HOME_DIR_ABS: string = (() => {
+  const h = os.homedir()
+  return h.endsWith('/') ? h.slice(0, -1) : h
+})()
+
+const ALLOWED_HOME_RELATIVE_PREFIXES: readonly string[] = HOME_CACHE_SUBPATHS.flatMap((sub) => [
+  `~/${sub}`,
+  `$HOME/${sub}`,
+  `\${HOME}/${sub}`,
+])
+
+const ALLOWED_HOME_ABSOLUTE_PREFIXES: readonly string[] = HOME_CACHE_SUBPATHS.map(
+  (sub) => `${HOME_DIR_ABS}/${sub}`,
+)
+
 function getBashPathDenialReason(command: string, workingDir: string, memoryRoot: string): string | null {
   // Sanitise the command before tokenising: heredoc bodies are *data*,
   // not commands, and shell comments are noise. Both used to produce
@@ -152,6 +200,12 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
         `${workingDir}/** and read that workspace file instead.`
       )
     }
+
+    // Whitelist language package caches under $HOME (Go modules, NuGet,
+    // npm, cargo, Maven, …). Without this the agent cannot run
+    // `go get`, `dotnet restore`, etc. and burns turns inventing
+    // workarounds against a non-existent network allowlist.
+    if (isAllowedHomeCachePath(candidate)) continue
 
     if (candidate === '~' || candidate.startsWith('~/')) {
       return bashPathReason(command, candidate, 'home-relative path', workingDir, memoryRoot)
@@ -191,6 +245,19 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
 function isAllowedAbsolutePath(candidate: string): boolean {
   if (ALLOWED_ABSOLUTE_EXACT.has(candidate)) return true
   for (const prefix of ALLOWED_ABSOLUTE_PREFIXES) {
+    if (candidate.startsWith(prefix)) return true
+  }
+  for (const prefix of ALLOWED_HOME_ABSOLUTE_PREFIXES) {
+    if (candidate.startsWith(prefix)) return true
+  }
+  return false
+}
+
+function isAllowedHomeCachePath(candidate: string): boolean {
+  for (const prefix of ALLOWED_HOME_RELATIVE_PREFIXES) {
+    if (candidate.startsWith(prefix)) return true
+  }
+  for (const prefix of ALLOWED_HOME_ABSOLUTE_PREFIXES) {
     if (candidate.startsWith(prefix)) return true
   }
   return false
