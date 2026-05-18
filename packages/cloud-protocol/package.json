@@ -1,0 +1,34 @@
+{
+  "name": "@coro/cloud-protocol",
+  "version": "0.1.0",
+  "description": "Wire protocol shared between the Coro runner and the Coro cloud control plane. Pure TypeScript types, Zod schemas, and protocol constants — zero runtime side effects.",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "zod": "^3.0.0 || ^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.4",
+    "zod": "^4.3.6"
+  }
+}
