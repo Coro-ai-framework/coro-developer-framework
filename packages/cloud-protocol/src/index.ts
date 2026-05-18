@@ -14,10 +14,11 @@
 //   A.3  Job-shape types + status vocabulary         ← done
 //   A.4  InboundEvent / OutboundEvent                ← done
 //   A.5  WebSocket message envelopes                 ← done
-//   A.6  PROTOCOL_VERSION constant
-//   A.7  REST endpoint Zod schemas
+//   A.6  PROTOCOL_VERSION constant                    ← done
+//   A.7  REST endpoint Zod schemas                    ← done
 
 export * from './refs'
 export * from './job-types'
 export * from './events'
 export * from './ws-protocol'
+export * from './rest'
