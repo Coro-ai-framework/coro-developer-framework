@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, Layers3, MoreHorizontal, Play, RotateCcw, SquareSlash } from 'lucide-react'
 import type { CampaignChild, CampaignChildStatus, Job, TokenUsage } from '../types'
@@ -17,28 +17,75 @@ import { requestJson, jsonRequest } from '../lib/http'
 import { formatCompactNumber, formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { cn } from '../lib/utils'
 import { SUB_RUN_NOUN } from '../lib/run-labels'
-import { toneClasses, toneDotClasses, type Tone } from '../lib/status'
+import { getStatusMeta, toneClasses, toneDotClasses } from '../lib/status'
 
-const CHILD_TONE: Record<CampaignChildStatus, Tone> = {
-  pending: 'neutral',
-  ready: 'accent',
-  dispatched: 'accent',
-  complete: 'success',
-  failed: 'danger',
-  escalated: 'danger',
-  skipped: 'neutral',
-  cancelled: 'neutral',
+/**
+ * The status surfaced to the user for a campaign child should reflect
+ * what the child Job is actually doing right now — not the
+ * coordinator's dispatch-tracking enum, which only flips on terminal
+ * transitions and would otherwise leave a child stuck at e.g. `failed`
+ * after the user has already resumed it into a rate-limit park.
+ *
+ * Returns the live `summary.status` when present; otherwise falls back
+ * to the coordinator status so undispatched / pruned children still
+ * render something meaningful.
+ */
+function effectiveStatus(child: CampaignChild): string {
+  return child.summary?.status ?? child.status
 }
 
-function ChildStatusPill({ status }: { status: CampaignChildStatus }) {
-  const tone = CHILD_TONE[status]
-  const isLive = status === 'dispatched'
+function isHaltedStatus(status: string): boolean {
+  return status === 'failed' || status === 'escalated'
+}
+
+function ChildStatusPill({
+  status,
+  rateLimitInfo,
+}: {
+  status: string
+  rateLimitInfo?: NonNullable<CampaignChild['summary']>['rateLimitInfo']
+}) {
+  const meta = getStatusMeta(status)
+  const countdown = useRateLimitCountdown(
+    status === 'awaiting-rate-limit' ? rateLimitInfo?.resumeAt : undefined,
+  )
   return (
-    <Badge variant="neutral" className={toneClasses(tone)}>
-      <span className={cn('size-1.5 rounded-full', toneDotClasses(tone), isLive && 'animate-pulse-dot')} />
-      {status}
+    <Badge variant="neutral" className={toneClasses(meta.tone)}>
+      <span
+        className={cn(
+          'size-1.5 rounded-full',
+          toneDotClasses(meta.tone),
+          meta.pulse && 'animate-pulse-dot',
+        )}
+      />
+      {meta.label}
+      {countdown ? (
+        <span className="ml-1 font-mono tabular-nums text-[10px] opacity-80">{countdown}</span>
+      ) : null}
     </Badge>
   )
+}
+
+/**
+ * Ticks once per second until `resumeAt` passes, returning a
+ * `hh:mm:ss` string for the remaining wait. Returns `null` when the
+ * target is not set, which is the common case for non-rate-limited
+ * children and lets the pill render without a tail.
+ */
+function useRateLimitCountdown(resumeAt: number | undefined): string | null {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (resumeAt == null) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [resumeAt])
+  if (resumeAt == null) return null
+  const remainingSec = Math.max(0, Math.ceil((resumeAt - now) / 1000))
+  const hh = Math.floor(remainingSec / 3600)
+  const mm = Math.floor((remainingSec % 3600) / 60)
+  const ss = remainingSec % 60
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return `${pad(hh)}:${pad(mm)}:${pad(ss)}`
 }
 
 function formatTokens(n: number): string {
@@ -119,23 +166,27 @@ function DependencyGraph({ children }: DependencyGraphProps) {
             L{idx + 1}
           </div>
           <div className="flex flex-wrap gap-2">
-            {layer.map(c => (
-              <div
-                key={c.name}
-                className={cn(
-                  'flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs',
-                  toneClasses(CHILD_TONE[c.status]),
-                )}
-              >
-                <ChildStatusPill status={c.status} />
-                <span className="font-medium">{c.name}</span>
-                {c.dependsOn.length > 0 ? (
-                  <span className="text-[10px] text-fg-subtle">
-                    ← {c.dependsOn.join(', ')}
-                  </span>
-                ) : null}
-              </div>
-            ))}
+            {layer.map(c => {
+              const liveStatus = effectiveStatus(c)
+              const meta = getStatusMeta(liveStatus)
+              return (
+                <div
+                  key={c.name}
+                  className={cn(
+                    'flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs',
+                    toneClasses(meta.tone),
+                  )}
+                >
+                  <ChildStatusPill status={liveStatus} rateLimitInfo={c.summary?.rateLimitInfo} />
+                  <span className="font-medium">{c.name}</span>
+                  {c.dependsOn.length > 0 ? (
+                    <span className="text-[10px] text-fg-subtle">
+                      ← {c.dependsOn.join(', ')}
+                    </span>
+                  ) : null}
+                </div>
+              )
+            })}
           </div>
         </div>
       ))}
@@ -200,7 +251,13 @@ function ChildActions({ jobId, child, onMutated }: ChildActionsProps) {
     }
   }
 
-  const isHalted = child.status === 'failed' || child.status === 'escalated'
+  // Halt detection runs against the live child Job status, not the
+  // coordinator's dispatch-tracking enum. A child that was previously
+  // marked `failed` and has since been resumed into a rate-limit park
+  // is not halted from the user's perspective — the runner will
+  // auto-resume when the cooldown elapses.
+  const liveStatus = effectiveStatus(child)
+  const isHalted = isHaltedStatus(liveStatus)
   const isAcceptedTerminal =
     child.status === 'complete' || child.status === 'skipped' || child.status === 'cancelled'
 
@@ -398,7 +455,7 @@ function HaltedBanner({
   const [error, setError] = useState<string | null>(null)
 
   const halted = useMemo(
-    () => children.filter(c => c.status === 'failed' || c.status === 'escalated'),
+    () => children.filter(c => isHaltedStatus(effectiveStatus(c))),
     [children],
   )
 
@@ -487,6 +544,19 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
     return acc
   }, { pending: 0, ready: 0, dispatched: 0, complete: 0, failed: 0, escalated: 0, skipped: 0, cancelled: 0 })
 
+  // Header chip strip is grouped by *live* status so transient states
+  // like `awaiting-rate-limit` or `awaiting-event` surface in the
+  // overview instead of being collapsed under the coordinator's
+  // `dispatched` bucket.
+  const liveCounts = useMemo(() => {
+    const acc: Record<string, number> = {}
+    for (const c of children) {
+      const s = effectiveStatus(c)
+      acc[s] = (acc[s] ?? 0) + 1
+    }
+    return acc
+  }, [children])
+
   // Cancelled children are descoped work — they're noise once you're done
   // triaging. Hide them by default; counts/metrics still reflect reality.
   const [hideCancelled, setHideCancelled] = useState(true)
@@ -526,12 +596,12 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
             <CardDescription>{`Dependency-aware execution view with per-${SUB_RUN_NOUN.singularLower} controls.`}</CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {(Object.keys(counts) as CampaignChildStatus[])
-              .filter(status => counts[status] > 0)
+            {Object.keys(liveCounts)
+              .filter(status => liveCounts[status] > 0)
               .map(status => (
                 <span key={status} className="inline-flex items-center gap-1.5 text-[11px]">
                   <ChildStatusPill status={status} />
-                  <span className="tabular-nums text-fg-muted">{counts[status]}</span>
+                  <span className="tabular-nums text-fg-muted">{liveCounts[status]}</span>
                 </span>
               ))}
           </div>
@@ -613,7 +683,12 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
                         <div className="line-clamp-2 max-w-[280px] text-[11px] text-fg-subtle">{c.description}</div>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2.5"><ChildStatusPill status={c.status} /></td>
+                    <td className="px-3 py-2.5">
+                      <ChildStatusPill
+                        status={effectiveStatus(c)}
+                        rateLimitInfo={c.summary?.rateLimitInfo}
+                      />
+                    </td>
                     <td className="px-3 py-2.5 text-fg-muted">{phase}</td>
                     <td className="px-3 py-2.5">
                       {c.trackerRef ? (

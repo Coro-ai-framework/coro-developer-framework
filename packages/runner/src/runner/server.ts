@@ -299,6 +299,8 @@ async function enrichCampaignChildren(stateBackend: StateBackend, job: Job): Pro
       prMappings: Job['prMappings']
       createdAt: string
       updatedAt: string
+      awaitingEvent?: string
+      rateLimitInfo?: Job['rateLimitInfo']
     } | null
   })[]
 }> {
@@ -320,6 +322,8 @@ async function enrichCampaignChildren(stateBackend: StateBackend, job: Job): Pro
           prMappings: childJob.prMappings,
           createdAt: childJob.createdAt,
           updatedAt: childJob.updatedAt,
+          awaitingEvent: childJob.awaitingEvent,
+          rateLimitInfo: childJob.rateLimitInfo,
         },
       }
     } catch {
@@ -338,6 +342,8 @@ async function enrichCampaignChildren(stateBackend: StateBackend, job: Job): Pro
         prMappings: Job['prMappings']
         createdAt: string
         updatedAt: string
+        awaitingEvent?: string
+        rateLimitInfo?: Job['rateLimitInfo']
       } | null
     })[]
   }

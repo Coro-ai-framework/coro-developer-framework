@@ -133,6 +133,20 @@ export interface CampaignChild {
     prMappings: PrMapping[]
     createdAt: string
     updatedAt: string
+    awaitingEvent?: string
+    /**
+     * Mirrors {@link Job.rateLimitInfo} for the underlying child Job.
+     * Populated by the server's campaign-children projection so the
+     * campaign table can render the countdown without a follow-up fetch.
+     */
+    rateLimitInfo?: {
+      provider: string
+      kind: 'rate-limit' | 'overloaded'
+      resumeAt: number
+      retryAttempt: number
+      source: string
+      lastErrorMessage?: string
+    }
   } | null
 }
 

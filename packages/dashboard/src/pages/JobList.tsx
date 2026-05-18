@@ -57,9 +57,14 @@ function getSubRunProgress(job: Job): SubRunProgress {
   return subRuns.reduce<SubRunProgress>(
     (acc, child) => {
       acc.total += 1
-      if (child.status === 'complete' || child.status === 'skipped' || child.status === 'cancelled') acc.done += 1
-      if (child.status === 'ready' || child.status === 'dispatched') acc.active += 1
-      if (child.status === 'failed' || child.status === 'escalated') acc.blocked += 1
+      // Prefer the live child Job status so transient states like
+      // `awaiting-rate-limit` are bucketed as active (auto-resuming),
+      // not blocked. Fall back to the coordinator status when the
+      // child hasn't been dispatched / its job has been pruned.
+      const liveStatus = child.summary?.status ?? child.status
+      if (liveStatus === 'complete' || liveStatus === 'skipped' || liveStatus === 'cancelled') acc.done += 1
+      else if (liveStatus === 'failed' || liveStatus === 'escalated') acc.blocked += 1
+      else acc.active += 1
       return acc
     },
     { total: 0, done: 0, active: 0, blocked: 0 },
