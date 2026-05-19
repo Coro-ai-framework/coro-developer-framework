@@ -28,10 +28,10 @@ describe('local-config', () => {
   })
 
   const validConfig: LocalConfig = {
-    cloud: { url: 'https://cloud.a5labs.com', token: 'tok-abc' },
+    cloud: { url: 'https://cloud.corolabs.com', token: 'tok-abc' },
     intelligence: { dir: '/tmp/intel', gitRemote: 'https://example.com/repo.git' },
     paths: { workingDir: '/tmp/work' },
-    git: { provider: 'bitbucket', workspace: 'a5labs', username: 'user', token: 'git-tok' },
+    git: { provider: 'bitbucket', workspace: 'coro-labs', username: 'user', token: 'git-tok' },
   }
 
   describe('saveLocalConfig + loadLocalConfig', () => {

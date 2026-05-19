@@ -254,7 +254,7 @@ The self-improvement pipeline covers three writable surfaces (across the tenant 
 ## Repository structure
 
 ```
-a5-ai/                                   ← workspace root (will be renamed to coro/ in a future cut)
+coro/                                    ← workspace root
 ├── CLAUDE.md                            ← You are here. Developer-facing guide.
 ├── package.json                         ← pnpm workspace root
 ├── pnpm-workspace.yaml

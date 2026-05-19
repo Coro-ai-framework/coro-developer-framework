@@ -23,7 +23,7 @@ import {
 } from '@coro/cloud-protocol'
 
 export interface WsTransportConfig {
-  /** Cloud WebSocket URL, e.g. wss://api.a5labs.com/ws/runner */
+  /** Cloud WebSocket URL, e.g. wss://api.corolabs.com/ws/runner */
   url: string
   /** Runner JWT token for authentication */
   token: string

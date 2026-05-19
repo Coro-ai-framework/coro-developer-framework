@@ -241,7 +241,7 @@ New codebase (or major refactor of `tools/src/server.ts`) deployed to our infras
 - `PATCH /teams/:tenantId/proposals/:id` — edit `newContent` before approving
 
 **A.5 WebSocket Gateway**
-- Endpoint: `wss://api.a5labs.com/ws/runner`
+- Endpoint: `wss://api.corolabs.com/ws/runner`
 - Authentication: runner token JWT validated on upgrade
 - Runner registration: on connect, runner sends `{ runnerId, teamId, hostname, capabilities }`
 - Cloud tracks: `Map<teamId, Map<runnerId, WebSocket>>`
@@ -319,7 +319,7 @@ Redis (ephemeral only):
 Refactor of `tools/src/jobs/runner.ts` + `tools/cli/` into a standalone process.
 
 **B.1 Runner process lifecycle**
-- Standalone Node.js process (npm package: `@a5labs/runner`, installed globally or via npx)
+- Standalone Node.js process (npm package: `@coro-labs/runner`, installed globally or via npx)
 - Future: wrap in Tauri/Electron for desktop app with system tray
 - On startup:
   1. Read local config (`~/.a5/config.json`)
@@ -370,7 +370,7 @@ MCP server created fresh each phase (same as today). Tool handlers route to the 
 // ~/.a5/config.json
 {
   "cloud": {
-    "url": "wss://api.a5labs.com",
+    "url": "wss://api.corolabs.com",
     "token": "a5rt_..."
   },
   "anthropic": {
@@ -523,7 +523,7 @@ For solo developers, air-gapped environments, or quick evaluation.
 3. MCP handler wiring: split into local-handler vs cloud-handler routing based on tool type
 4. Intelligence git management: auto-pull on startup + before each phase, `proposal:apply` handler
 5. CLI commands: `a5 login`, `a5 init`, `a5 runner start/stop/status`
-6. npm package: `@a5labs/runner`
+6. npm package: `@coro-labs/runner`
 
 **Verification:** Full job E2E: `a5 init` → `a5 runner start` → `a5 job --repo test --description "Smoke test workflow"` → job runs locally, state in cloud, logs on dashboard, proposal visible.
 

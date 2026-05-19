@@ -12,7 +12,7 @@ const config: CloudConfig = {
   databaseUrl: 'postgresql://localhost/test',
   redisUrl: 'redis://localhost:6379',
   jwtSecret: 'test-secret-that-is-at-least-32-chars-long!',
-  jwtIssuer: 'a5labs-test',
+  jwtIssuer: 'corolabs-test',
   jwtAccessTtlSeconds: 900,
   jwtRefreshTtlSeconds: 604800,
   logLevel: 'info',

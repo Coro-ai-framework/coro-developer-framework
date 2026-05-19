@@ -30,8 +30,8 @@ describe('ClaudeLoginManager', () => {
       query: {
         initializationResult: vi.fn().mockResolvedValue({}),
         accountInfo: vi.fn().mockResolvedValue({
-          email: 'dev@a5labs.com',
-          organization: 'A5 Labs',
+          email: 'dev@corolabs.com',
+          organization: 'Coro Labs',
           apiProvider: 'firstParty',
         }),
         claudeAuthenticate: vi.fn(),
@@ -53,7 +53,7 @@ describe('ClaudeLoginManager', () => {
     }
 
     expect(state.status).toBe('connected')
-    expect(state.account?.email).toBe('dev@a5labs.com')
+    expect(state.account?.email).toBe('dev@corolabs.com')
     expect(session.query.claudeAuthenticate).not.toHaveBeenCalled()
     expect(dispose).toHaveBeenCalledTimes(1)
   })
@@ -88,7 +88,7 @@ describe('ClaudeLoginManager', () => {
     expect(started.status).toBe('authorizing')
     expect(started.manualUrl).toContain('claude.ai')
 
-    deferred.resolve({ account: { email: 'dev@a5labs.com', apiProvider: 'firstParty' } })
+    deferred.resolve({ account: { email: 'dev@corolabs.com', apiProvider: 'firstParty' } })
     await flushMicrotasks()
 
     const completed = manager.getState()
@@ -96,7 +96,7 @@ describe('ClaudeLoginManager', () => {
       throw new Error(`Expected connected state, got ${completed.status}`)
     }
     expect(completed.status).toBe('connected')
-    expect(completed.account?.email).toBe('dev@a5labs.com')
+    expect(completed.account?.email).toBe('dev@corolabs.com')
     expect(dispose).toHaveBeenCalledTimes(1)
   })
 
@@ -111,7 +111,7 @@ describe('ClaudeLoginManager', () => {
         }),
         claudeOAuthWaitForCompletion: vi.fn().mockReturnValue(new Promise(() => {})),
         claudeOAuthCallback: vi.fn().mockResolvedValue({
-          account: { email: 'callback@a5labs.com', apiProvider: 'firstParty' },
+          account: { email: 'callback@corolabs.com', apiProvider: 'firstParty' },
         }),
       },
       dispose,
@@ -134,7 +134,7 @@ describe('ClaudeLoginManager', () => {
 
     expect(session.query.claudeOAuthCallback).toHaveBeenCalledWith('auth-code', 'state-token')
     expect(completed.status).toBe('connected')
-    expect(completed.account?.email).toBe('callback@a5labs.com')
+    expect(completed.account?.email).toBe('callback@corolabs.com')
     expect(dispose).toHaveBeenCalledTimes(1)
   })
 })

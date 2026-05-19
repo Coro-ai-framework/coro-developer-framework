@@ -5,7 +5,7 @@ const cloudConfigSchema = z.object({
   databaseUrl: z.string().min(1),
   redisUrl: z.string().default('redis://localhost:6379'),
   jwtSecret: z.string().min(32),
-  jwtIssuer: z.string().default('a5labs-cloud'),
+  jwtIssuer: z.string().default('corolabs-cloud'),
   jwtAccessTtlSeconds: z.coerce.number().default(900),       // 15 min
   jwtRefreshTtlSeconds: z.coerce.number().default(604800),    // 7 days
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),

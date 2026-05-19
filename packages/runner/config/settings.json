@@ -26,7 +26,7 @@
   },
   "paths": {
     "workingDir": "./data/working",
-    "a5aiDir": "/Users/emreertugrul/source/a5labs/a5-ai"
+    "a5aiDir": "/Users/emreertugrul/source/corolabs/coro"
   },
   "loki": {
     "baseUrl": "",

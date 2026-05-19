@@ -13,7 +13,7 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 ```
 /data/
 ├── tenants/                          ← Per-tenant intelligence (each is a git repo)
-│   ├── a5labs/
+│   ├── coro-labs/
 │   │   ├── .claude/CLAUDE.md
 │   │   ├── .claude/skills/
 │   │   ├── agents/
@@ -26,7 +26,7 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 │       ├── workflows/                ← Different workflows
 │       └── memory/                   ← Isolated knowledge base
 ├── working/                          ← Per-tenant, per-job sandboxes
-│   ├── a5labs/
+│   ├── coro-labs/
 │   │   └── {job-id}/
 │   └── acme-corp/
 │       └── {job-id}/
@@ -35,7 +35,7 @@ The design follows a "tenant config + path resolution" approach: a tenant regist
 
 ### Key design decisions
 
-- **Tenant = intelligence folder.** A tenant is defined by their own git repo containing the `a5-ai`-shaped intelligence structure. This makes onboarding a new tenant = cloning their intelligence repo + adding a config entry.
+- **Tenant = intelligence folder.** A tenant is defined by their own git repo containing the `coro`-shaped intelligence structure. This makes onboarding a new tenant = cloning their intelligence repo + adding a config entry.
 - **Default tenant for backward compat.** If no `tenantId` in request, assume `"default"` which maps to the current `a5aiDir`. Zero breaking changes on day 1.
 - **Job IDs stay globally unique.** No tenant prefix in job IDs. The `tenantId` field on the Job object provides the association.
 - **Redis key namespacing for listing/queries.** Per-job keys stay global (job IDs are unique). Listing/filtering keys get tenant prefix.
@@ -259,7 +259,7 @@ Next job phase reads updated intelligence from disk — no restart
 **5.5 Simplify watcher**
 - File: `tools/src/watcher.ts`
   - Remove source code directory watching (`tools/src`) entirely — host code changes are managed by us directly
-  - Keep watching only the host tenant's (default/a5labs) intelligence dir for the team's own PR-based flow
+  - Keep watching only the host tenant's (default/coro-labs) intelligence dir for the team's own PR-based flow
   - No per-tenant watchers — tenant self-improvement goes through the proposals system
 
 *Depends on: Phase 1 (tenantId, TenantConfig), Phase 3 (tenant API routing)*
@@ -271,7 +271,7 @@ Next job phase reads updated intelligence from disk — no restart
 - Next job phase for acme reads the updated intelligence file
 - Rejecting a proposal does NOT write any file
 - Editing a proposal's content before approving writes the edited version
-- Host tenant (a5labs) still uses the existing watcher → PR flow
+- Host tenant (coro-labs) still uses the existing watcher → PR flow
 
 ---
 

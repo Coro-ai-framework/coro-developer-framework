@@ -116,7 +116,7 @@ describe('Bash PreToolUse hook', () => {
   it('allows `cd subdir && cmd ../sibling/...` when the resolved path stays inside workingDir', async () => {
     const out = await runBash(
       hook,
-      'cd a5labs.kyc.go && cat "../know_your_customer/src/A5Labs.KYC.DbMigration/Scripts/001 - Initial schema creation.sql"',
+      'cd corolabs.kyc.go && cat "../know_your_customer/src/CoroLabs.KYC.DbMigration/Scripts/001 - Initial schema creation.sql"',
     )
     expect(isAllowed(out)).toBe(true)
   })
@@ -128,7 +128,7 @@ describe('Bash PreToolUse hook', () => {
   })
 
   it('blocks `cd subdir && cat ../../../etc/passwd` because the resolved path still escapes', async () => {
-    const out = await runBash(hook, 'cd a5labs.kyc.go && cat ../../../etc/passwd')
+    const out = await runBash(hook, 'cd corolabs.kyc.go && cat ../../../etc/passwd')
     expect(isAllowed(out)).toBe(false)
   })
 

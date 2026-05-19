@@ -26,7 +26,7 @@ describe('loadCloudConfig', () => {
     expect(cfg.redisUrl).toBe(validEnv.REDIS_URL)
     expect(cfg.jwtSecret).toBe(validEnv.JWT_SECRET)
     expect(cfg.port).toBe(4000)
-    expect(cfg.jwtIssuer).toBe('a5labs-cloud')
+    expect(cfg.jwtIssuer).toBe('corolabs-cloud')
     expect(cfg.jwtAccessTtlSeconds).toBe(900)
     expect(cfg.jwtRefreshTtlSeconds).toBe(604800)
     expect(cfg.logLevel).toBe('info')
