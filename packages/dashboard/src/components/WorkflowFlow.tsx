@@ -5,6 +5,18 @@ import { cn } from '../lib/utils'
 
 export type PhaseState = 'complete' | 'in-progress' | 'awaiting-input' | 'pending'
 
+const TERMINAL_JOB_STATUSES = new Set([
+  'complete',
+  'failed',
+  'escalated',
+  'cancelled',
+  'canceled',
+])
+
+function isJobRunning(job: Job): boolean {
+  return !TERMINAL_JOB_STATUSES.has(job.status)
+}
+
 interface WorkflowFlowProps {
   job: Job
   phases: WorkflowPhase[]
@@ -110,6 +122,15 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
     artifactsByPhase.set(a.phase, bucket)
   }
 
+  // Iteration counts per phase: how many times the runner actually
+  // executed this phase across the whole job. Surfaces loop-backs
+  // (e.g. coding ↔ evaluation) right in the top strip so the user can
+  // see "this phase ran 3 times" without drilling in.
+  const iterationsByPhase = new Map<string, number>()
+  for (const usage of job.phaseUsage ?? []) {
+    iterationsByPhase.set(usage.phase, (iterationsByPhase.get(usage.phase) ?? 0) + 1)
+  }
+
   return (
     <div className="w-full overflow-x-auto">
       <div className="flex min-w-max items-stretch gap-2 pb-1">
@@ -117,6 +138,7 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
           const state = computePhaseState(phase.name, phases, job)
           const selected = selectedPhase === phase.name
           const artifacts = artifactsByPhase.get(phase.name) ?? []
+          const iterations = iterationsByPhase.get(phase.name) ?? 0
 
           return (
             <div key={phase.name} className="flex items-stretch">
@@ -143,11 +165,25 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
                   <span className="text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
                     {stateLabel(state)}
                   </span>
-                  {artifacts.length > 0 ? (
-                    <span className="rounded-full border border-line bg-overlay/60 px-1.5 py-0.5 text-[10px] text-fg-muted">
-                      {artifacts.length}
-                    </span>
-                  ) : null}
+                  <span className="flex items-center gap-1.5">
+                    {iterations > 1 ? (
+                      <span
+                        title={`Phase ran ${iterations} times (loop-back)`}
+                        className="inline-flex items-center gap-0.5 rounded-full border border-accent-500/25 bg-accent-500/10 px-1.5 py-0.5 text-[10px] text-accent-300"
+                      >
+                        <RotateCw className="size-2.5" />
+                        {iterations}×
+                      </span>
+                    ) : null}
+                    {artifacts.length > 0 ? (
+                      <span
+                        title={`${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`}
+                        className="rounded-full border border-line bg-overlay/60 px-1.5 py-0.5 text-[10px] text-fg-muted"
+                      >
+                        {artifacts.length}
+                      </span>
+                    ) : null}
+                  </span>
                 </div>
               </button>
 
@@ -282,6 +318,16 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
 
   const rows = buildWorkItemRows(job)
   const knownPhaseNames = new Set(phases.map(p => p.name))
+  const jobRunning = isJobRunning(job)
+
+  // Detect the "bundled delivery" pattern: at least one work item has
+  // executions stamped to it, and one or more sibling items are also
+  // `complete` but have zero executions of their own. In that case the
+  // agent legitimately delivered multiple work items inside a single
+  // coding/review/qa cycle attributed to one pivot item. Without this
+  // hint, sibling rows appear faint with "waiting" — misleading the
+  // user into thinking they were skipped.
+  const pivotItem = rows.find(r => r.hasStarted)?.item.name ?? null
 
   return (
     <div className="space-y-2">
@@ -299,6 +345,12 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
         {rows.map(row => {
           const { item, executions, distinctPhases, hasStarted } = row
           const isCurrent = job.currentWorkItem === item.name
+          const isCompleted = item.status === 'complete'
+          // A "bundled" item: completed without its own phaseUsage
+          // attribution, while a sibling drove the execution. Render
+          // these as first-class completed rows linking to the pivot
+          // item that carried the cycle.
+          const isBundled = !hasStarted && isCompleted && pivotItem !== null && pivotItem !== item.name
           const phaseExecCounts = distinctPhases.map(name => ({
             name,
             count: executions.filter(e => e.phase === name).length,
@@ -310,7 +362,7 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
                 'flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2',
                 isCurrent
                   ? 'border-accent-500/30 bg-accent-500/8'
-                  : hasStarted
+                  : hasStarted || isBundled
                     ? 'border-line bg-overlay/40'
                     : 'border-line bg-overlay/20 opacity-70',
               )}
@@ -333,7 +385,7 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
               {hasStarted ? (
                 <div className="flex flex-1 flex-wrap items-center gap-1.5">
                   {phaseExecCounts.map(({ name, count }) => {
-                    const isActivePhase = isCurrent && job.phase === name
+                    const isActivePhase = isCurrent && job.phase === name && jobRunning
                     const isKnown = knownPhaseNames.has(name)
                     const state: 'complete' | 'in-progress' | 'pending' = isActivePhase
                       ? 'in-progress'
@@ -348,7 +400,7 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
                       />
                     )
                   })}
-                  {isCurrent && job.phase && !distinctPhases.includes(job.phase) ? (
+                  {isCurrent && jobRunning && job.phase && !distinctPhases.includes(job.phase) ? (
                     <PhaseChip
                       phaseName={job.phase}
                       count={1}
@@ -356,6 +408,16 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
                       onClick={() => onSelectPhase(job.phase)}
                     />
                   ) : null}
+                </div>
+              ) : isBundled ? (
+                <div className="flex flex-1 flex-wrap items-center gap-1.5">
+                  <span
+                    title={`This work item was delivered together with "${pivotItem}" in a single execution cycle (one shared PR / verification run). The actual phase executions are attributed to that item above.`}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-success-500/20 bg-success-500/8 px-2.5 py-1 text-[11px] font-medium text-fg-muted"
+                  >
+                    <Check className="size-3 text-success-400/80" strokeWidth={2.5} />
+                    delivered with <span className="text-fg">{pivotItem}</span>
+                  </span>
                 </div>
               ) : (
                 <div className="text-[11px] italic text-fg-subtle">
