@@ -31,6 +31,12 @@ const intelligenceSourceDir = path.join(workspaceRoot, 'packages', 'intelligence
 // intelligence tree the runner reads at startup).
 const VENDORED_WORKSPACE_PACKAGES = [
   {
+    name: '@coro/cloud-protocol',
+    folder: 'cloud-protocol',
+    sourceDir: path.join(workspaceRoot, 'packages', 'cloud-protocol'),
+    extraFiles: [],
+  },
+  {
     name: '@coro/intelligence-base',
     folder: 'intelligence-base',
     sourceDir: path.join(workspaceRoot, 'packages', 'intelligence-base'),
@@ -56,6 +62,9 @@ const VENDORED_WORKSPACE_PACKAGES = [
   },
 ]
 
+const VENDORED_BY_NAME = new Map(VENDORED_WORKSPACE_PACKAGES.map(pkg => [pkg.name, pkg]))
+
+runPnpm(['--filter', '@coro/cloud-protocol', 'build'])
 runPnpm(['--filter', '@coro/intelligence-base', 'build'])
 runPnpm(['--filter', '@coro/plugin-sdk', 'build'])
 runPnpm(['--filter', '@coro/llm-anthropic', 'build'])
@@ -124,8 +133,8 @@ function prepareRunnerBundle(runnerRoot) {
           exports: pkgJson.exports,
           // Keep runtime deps so `npm install` of the runner bundle
           // pulls them transitively. Strip workspace-only fields.
-          ...(pkgJson.dependencies ? { dependencies: stripWorkspaceDeps(pkgJson.dependencies) } : {}),
-          ...(pkgJson.peerDependencies ? { peerDependencies: stripWorkspaceDeps(pkgJson.peerDependencies) } : {}),
+          ...(pkgJson.dependencies ? { dependencies: rewriteVendoredPackageDeps(pkgJson.dependencies) } : {}),
+          ...(pkgJson.peerDependencies ? { peerDependencies: rewriteVendoredPackageDeps(pkgJson.peerDependencies) } : {}),
         },
         null,
         2,
@@ -179,10 +188,19 @@ function prepareRunnerBundle(runnerRoot) {
   rmSync(path.join(runnerRoot, 'package-lock.json'), { recursive: true, force: true })
 }
 
-function stripWorkspaceDeps(deps) {
+/**
+ * When staging a vendored workspace package, rewrite `workspace:*` deps that
+ * point at other vendored packages to `file:../<folder>` so `npm install`
+ * in the runner bundle resolves them. Unknown workspace refs are dropped.
+ */
+function rewriteVendoredPackageDeps(deps) {
   const out = {}
   for (const [name, spec] of Object.entries(deps ?? {})) {
-    if (typeof spec === 'string' && spec.startsWith('workspace:')) continue
+    if (typeof spec === 'string' && spec.startsWith('workspace:')) {
+      const vendored = VENDORED_BY_NAME.get(name)
+      if (vendored) out[name] = `file:../${vendored.folder}`
+      continue
+    }
     out[name] = spec
   }
   return out
