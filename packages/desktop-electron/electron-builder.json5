@@ -22,7 +22,7 @@
   publish: [
     {
       provider: 'github',
-      owner: 'emreertugrul',
+      owner: 'Coro-ai-framework',
       repo: 'coro-release',
       releaseType: 'release',
       publishAutoUpdate: true,

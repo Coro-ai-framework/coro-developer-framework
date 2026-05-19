@@ -21,7 +21,7 @@ next platform extension work, with emphasis on Windows packaging.
 - Packaging config: `packages/desktop-electron/electron-builder.json5`
 - Validation workflow: `.github/workflows/desktop-validation.yml`
 - Release workflow: `.github/workflows/desktop-release.yml`
-- Public update repo: `emreertugrul/coro-release`
+- Public update repo: `Coro-ai-framework/coro-release`
 - Published artifacts today:
   - `Coro-<version>-arm64.dmg`
   - `Coro-<version>-arm64.zip`

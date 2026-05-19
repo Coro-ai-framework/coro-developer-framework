@@ -3,11 +3,10 @@
 This guide walks through running Coro locally for development of the
 runner, the dashboard, and (optionally) the cloud control plane.
 
-> If you only want to **use** Coro on your laptop, follow the
-> [README quick start](../README.md#quick-start) instead — it covers
-> the dashboard-driven onboarding (`coro start` → browser auto-opens →
-> finish setup in **Settings**). This document is for engineers
-> hacking on Coro itself.
+> If you only want to **use** Coro, install the desktop app from
+> [coro-release](https://github.com/Coro-ai-framework/coro-release/releases/latest)
+> (see the [README quick start](../README.md#quick-start-desktop)). This document
+> is for engineers hacking on Coro itself (browser + runner, cloud, packaging).
 
 ## Prerequisites
 

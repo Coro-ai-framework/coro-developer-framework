@@ -1,453 +1,196 @@
 # Coro
 
-> **Multi-tenant, plug-and-play AI agent platform** for software teams.
-> One product, two deployment shapes: **solo** (everything on your laptop) and
-> **team** (shared SaaS control plane + per-developer runner).
+## An open workflow harness for AI-assisted software delivery
 
-Coro turns plain markdown into specialised AI engineers — a planner, a
-coder with a built-in code-reviewer subagent, a merge gatekeeper, and an
-evaluator — that work together on real PRs against your real
-repositories. Customise their behaviour by dropping markdown into a folder;
-extend them with MCP tools when you need new capabilities.
+Open-source workflow runner for the full **spec-to-merge** path on your codebases, with **layered markdown intelligence** and **review-gated self-improvement** so conventions and lessons accumulate in git—not in one-off threads. **Desktop app** for macOS and Windows; CLI for automation.
 
-> **Status: pre-1.0.** The repository is mid-rebrand → `coro`
-> and mid-restructure into a pnpm workspace. Solo mode runs end-to-end;
-> team mode and the desktop shell are tracked under [Roadmap](#roadmap).
+[![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](NOTICE.md)
+[![Releases](https://img.shields.io/github/v/release/Coro-ai-framework/coro-release)](https://github.com/Coro-ai-framework/coro-release/releases/latest)
 
-> ⚠️ **Use `pnpm`, not `npm`.** This is a pnpm workspace and the
-> `workspace:`* protocol used to link packages will crash `npm install`
-> with `Cannot read properties of null (reading 'matches')`. See
-> [Quick start → Prerequisites](#prerequisites) for the one-line install.
+**[Download (macOS)](https://github.com/Coro-ai-framework/coro-release/releases/latest)** · **[Download (Windows)](https://github.com/Coro-ai-framework/coro-release/releases/latest)** · [Documentation](docs/README.md) · [Contributing](CONTRIBUTING.md) · [License](NOTICE.md)
+
+> **Pre-1.0.** APIs, workflows, and team/cloud features are still evolving. See [ROADMAP.md](ROADMAP.md).
+
+![Coro Runs dashboard — campaigns with sub-runs, workflow filters, live status, and per-run cost](docs/assets/readme-runs-dashboard.png)
 
 ---
 
-## Table of contents
+## Quick start (desktop)
 
-- [Coro](#coro)
-  - [Table of contents](#table-of-contents)
-  - [Quick start](#quick-start)
-    - [Prerequisites](#prerequisites)
-    - [1. Install once](#1-install-once)
-    - [2. Start Coro](#2-start-coro)
-    - [3. Finish setup in the dashboard](#3-finish-setup-in-the-dashboard)
-    - [4. Submit your first job](#4-submit-your-first-job)
-  - [What you get](#what-you-get)
-  - [Repository layout](#repository-layout)
-    - [Where does the base intelligence live?](#where-does-the-base-intelligence-live)
-  - [The intelligence layers](#the-intelligence-layers)
-  - [Working on the codebase](#working-on-the-codebase)
-    - [Bootstrap once](#bootstrap-once)
-    - [Runner (`@coro/runner`)](#runner-cororunner)
-    - [Dashboard (`@coro/dashboard`)](#dashboard-corodashboard)
-    - [Base intelligence (`@coro/intelligence-base`)](#base-intelligence-corointelligence-base)
-  - [CLI reference (advanced)](#cli-reference-advanced)
-  - [Configuration](#configuration)
-  - [Testing](#testing)
-  - [Roadmap](#roadmap)
+The **Coro desktop app** is the recommended way to run Coro. It bundles the runner and dashboard—no terminal required for day-to-day use.
 
----
+### 1. Install
 
-## Quick start
+Download the latest release from **[Coro-ai-framework/coro-release](https://github.com/Coro-ai-framework/coro-release/releases/latest)**:
 
-> **Coro is a desktop-style product:** the **dashboard** is the primary way
-> you configure and use it. The CLI exists for scripting, CI, and power
-> users — you should not need it for normal use.
+| Platform | File |
+| -------- | ---- |
+| **macOS** (Apple Silicon) | `Coro-*-arm64.dmg` (or `.zip`) |
+| **Windows** (x64) | `Coro-*-x64.exe` |
 
-You'll bring up the runner with one command, finish setup in the dashboard
-that opens automatically, and drive Coro from the UI from there on.
+Install and open **Coro**. The app starts a local runner in the background and opens the dashboard in a window.
 
-### Prerequisites
+### 2. Configure
 
-| Tool                   | Version                     | Why                                          |
-| ---------------------- | --------------------------- | -------------------------------------------- |
-| **Node.js**            | `>=20`                      | Runtime for runner + dashboard build         |
-| **pnpm**               | `>=9`                       | Workspace package manager (this repo)        |
-| **git**                | any recent                  | Cloning target repos + intelligence overlays |
-| **Anthropic credentials** | API key, OAuth token, or Claude Code login | Collected in the dashboard, not the CLI |
-| **Git provider token** | BitBucket / GitHub / GitLab | Collected in the dashboard, not the CLI |
-
-> **Why pnpm?** This repo is a pnpm workspace (`pnpm-workspace.yaml`) and
-> the runner depends on `@coro/intelligence-base` via `workspace:*`. npm
-> doesn't understand that protocol and crashes mid-install. Easiest install:
->
-> ```bash
-> # Recommended — uses corepack (ships with Node 20+) to install the exact
-> # pnpm version pinned in package.json (no global install pollution).
-> corepack enable                  # may need sudo on Homebrew Node
-> corepack prepare pnpm@9.15.0 --activate
->
-> # Or, if you prefer a global install:
-> npm install -g pnpm@9
-> ```
-
-### 1. Install once
-
-```bash
-pnpm install
-pnpm -r build      # builds @coro/intelligence-base, @coro/runner, @coro/dashboard
-```
-
-### 2. Start Coro
-
-```bash
-node packages/runner/dist/cli/index.js start
-```
-
-This boots the runner, serves the dashboard at
-**http://localhost:3000/dashboard/**, and **opens it in your browser
-automatically**. (Skipped in headless / CI / SSH environments — pass
-`--open` to force, or `--no-open` to suppress.)
-
-### 3. Finish setup in the dashboard
-
-On first run the dashboard greets you with a **Welcome to Coro** banner
-and a one-click path into **Settings**, where you'll provide:
+On first launch, go to **Settings** and add:
 
 - **Anthropic credentials** — API key, OAuth token, or Claude Code login
-- **Git provider + access token** — for cloning repos and opening PRs
-- **Working directory + intelligence directory** (sensible defaults pre-filled)
+- **Git provider + access token** — GitHub, GitLab, or Bitbucket (clone repos and open PRs)
+- **Working directory** and **intelligence directory** (defaults under `~/.coro/` are fine)
 
-Hit **Save** and you're configured. Settings are persisted to
-`~/.coro/config.json`; you can edit them later from the same page or by
-hand. The full schema lives in
-[`packages/runner/src/config/local-config.ts`](packages/runner/src/config/local-config.ts).
+Settings are saved to `~/.coro/config.json`.
 
-### 4. Submit your first job
+### 3. Run a job
 
-From the dashboard's **New Job** page, point Coro at a repository and
-describe the change you want. Watch progress live; when the agent is done,
-it opens a PR against your target repo.
-
-> **Tip — short `coro` command:** install the runner globally with
-> `pnpm --filter @coro/runner exec npm link` (or `npm i -g ./packages/runner`
-> after build) so you can drop the `node packages/runner/dist/cli/index.js`
-> prefix and just type `coro start`.
+Open **New Job**, choose a repository, and describe the change. Watch phases progress in the UI. When the workflow finishes, Coro opens a pull request on your target repo.
 
 ---
 
-## What you get
+## Other ways to run Coro
 
-- **Multi-agent orchestration** — a planner decomposes the spec, the
-coder implements (with a `code-reviewer` subagent that critiques the
-diff before the PR is opened), a merge gatekeeper coordinates with
-human reviewers, and an evaluator verifies the merged result. All
-agents are plain markdown in `agents/` (or your overlay).
-- **Workflow phases** — the runner advances through user-defined phases
-(`workflows/job/phase-*.md`); each phase can spawn subagents and re-resolve
-intelligence.
-- **Layered intelligence** — base (shipped), tenant (your team), repo
-(per-codebase). See [The intelligence layers](#the-intelligence-layers).
-- **Local HTTP API + dashboard** — the runner exposes a REST API and serves
-a built React dashboard at `/dashboard/`.
-- **Persistent state** — SQLite in solo mode, Postgres + Redis in team mode.
-- **Self-improvement loop** — agents can call `propose_change` to suggest
-improvements to their own intelligence; in solo mode these land as files
-in your intelligence dir for review.
+| Method | Best for |
+| ------ | -------- |
+| **Desktop app** | Daily use on macOS and Windows |
+| **Browser + local runner** | Linux, or hacking on Coro itself — see [docs/local-setup.md](docs/local-setup.md) |
+| **CLI** | Scripts, CI, automation — requires a running runner ([CLI reference](#cli-reference)) |
+
+### Browser + runner (developers)
+
+From a built clone of this repository:
+
+```bash
+pnpm install && pnpm -r build
+pnpm start    # or: node packages/runner/dist/cli/index.js start
+```
+
+Opens **http://localhost:3000/dashboard/** in your browser (suppressed in headless/SSH; use `--no-open` or `CORO_NO_OPEN=1`).
+
+> **Contributors:** use `pnpm`, not `npm` — this is a pnpm workspace. See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/local-setup.md](docs/local-setup.md).
+
+---
+
+## How Coro works
+
+Coro is **not an IDE and not a single chat agent**. Markdown files are the intelligence; TypeScript is the plumbing.
+
+**Workflow phases** — A typical implementation job runs spec → plan → code (with an in-phase code reviewer) → merge coordination → evaluation on the merged result. Jobs **park** on external events (PR review, webhooks) and resume when the runner is notified.
+
+**Layered intelligence** — Each job materialises overlays into `_intelligence/`:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Repo overlay        <repoCheckout>/.coro/                   │
+├─────────────────────────────────────────────────────────────┤
+│ Tenant overlay      localDir | gitRemote | cloud            │
+├─────────────────────────────────────────────────────────────┤
+│ Base intelligence   @coro/intelligence-base/layer/          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Layer | What it carries |
+| ----- | ---------------- |
+| **Base** | Generic agents, workflows, skills (shipped with Coro) |
+| **Tenant** | Team conventions, memory, service facts |
+| **Repo** | Per-codebase overrides in `.coro/` |
+
+**Review-gated self-improvement** — Agents record insights during runs; the evaluator can bundle vetted updates into `propose_change` PRs against your overlay (memory, skills, agent instructions). Nothing silently rewrites canonical behaviour.
+
+Deeper tour: [docs/architecture-overview.md](docs/architecture-overview.md) · Monorepo engineering: [CLAUDE.md](CLAUDE.md)
+
+---
+
+## Plugin architecture
+
+The runner is **provider-agnostic**. Anything that varies by Git host, issue tracker, or LLM is implemented as a **plugin** loaded at startup from `~/.coro/config.json` (and installable via `coro plugin install`).
+
+| Kind | Role | Examples in this repo |
+| ---- | ---- | --------------------- |
+| **SCM** | Clone repos, open/update PRs, webhooks, merge polling | Built-in GitHub (`packages/runner/src/plugins/builtin/github/`); reference [`@coro/plugin-gitlab`](packages/plugin-gitlab/) |
+| **Tracker** | Tickets, comments, transitions, job triggers | Built-in Jira (`packages/runner/src/plugins/builtin/jira/`) |
+| **Executor** | Run workflow phases against an LLM (tools, sessions, models) | [`@coro/llm-anthropic`](packages/llm-anthropic/), [`@coro/llm-openai`](packages/llm-openai/) |
+
+Workflow YAML can pin a provider per phase (`provider:` / model aliases). Jobs can override defaults with `set_job_params({ scm: 'gitlab', tracker: 'jira' })`.
+
+**Contributing a new integration** — Implement a separate package that depends on [`@coro/plugin-sdk`](packages/plugin-sdk/):
+
+- **SCM / tracker** — extend `ScmPluginBase` or `TrackerPluginBase`; ship `coro-plugin.json`, optional MCP server wiring, and optional `intelligence/` snippets for the overlay.
+- **LLM** — extend `ExecutorPluginBase` and return a `PhaseExecutor` (see the Anthropic/OpenAI packages for the pattern).
+
+Scaffold locally with `coro plugin init <id>`, or study [`packages/plugin-gitlab`](packages/plugin-gitlab/) as a full SCM example. SDK reference: [`packages/plugin-sdk/README.md`](packages/plugin-sdk/README.md). Extension contract notes: [`docs/workflow-extension-contract.md`](docs/workflow-extension-contract.md).
+
+---
+
+## Deployment shapes
+
+| Mode | What runs where |
+| ---- | ---------------- |
+| **Solo** | Runner + dashboard + SQLite on your machine (desktop or local runner) |
+| **Team (hybrid)** | Per-developer runner + shared cloud control plane (commercial; see [NOTICE.md](NOTICE.md)) |
+
+---
+
+## CLI reference
+
+The CLI talks to a **running** runner (started by the desktop app or `coro start`). Useful for automation—not required for normal use.
+
+| Command | Purpose |
+| ------- | ------- |
+| `coro start [--no-open] [--port N]` | Start runner + serve dashboard |
+| `coro job --repo … --description …` | Submit a job |
+| `coro jobs` / `coro status <id>` / `coro logs <id> --follow` | Inspect jobs |
+| `coro resume <id>` / `coro message <id> <text>` | Control running jobs |
+| `coro init` / `coro login` | Scripted setup / cloud pairing |
+
+After `pnpm -r build`, the entrypoint is `packages/runner/dist/cli/index.js`. Run any command with `--help` for flags.
+
+Config schema: [`packages/runner/src/config/local-config.ts`](packages/runner/src/config/local-config.ts) (`~/.coro/config.json`).
 
 ---
 
 ## Repository layout
 
 ```
-root/
-├── packages/
-│   ├── runner/                  ← @coro/runner — the runtime + CLI + REST server
-│   │   ├── src/                 ← runtime: jobs, intelligence resolver, MCP tools, state
-│   │   ├── cli/                 ← `coro …` CLI commands (init, runner, job, logs, …)
-│   │   └── tests/               ← vitest suites (unit, integration, mcp, runner)
-│   ├── dashboard/               ← @coro/dashboard — React + Vite + Tailwind UI
-│   │   └── src/
-│   ├── plugin-sdk/              ← @coro/plugin-sdk — public SDK for SCM/tracker/executor plugins
-│   ├── llm-anthropic/           ← @coro/llm-anthropic — built-in Anthropic phase executor plugin
-│   └── intelligence-base/       ← @coro/intelligence-base — base layer markdown + thin TS API
-│       ├── layer/               ← THE base intelligence
-│       │   ├── .claude/{CLAUDE.md, skills/}
-│       │   ├── agents/
-│       │   ├── workflows/
-│       │   └── memory/
-│       └── src/index.ts         ← getBaseLayerRoot(), pathInBaseLayer(), …
-│
-├── docs/                        ← Architecture deep dives
-├── pnpm-workspace.yaml          ← workspace globs
-├── pnpm-lock.yaml
-├── package.json                 ← root scripts (build, typecheck, test, dev:*)
-├── tsconfig.base.json           ← shared TS compiler options
-├── README.md                    ← you are here
-└── CLAUDE.md                    ← engineering reference for the monorepo
+packages/
+├── desktop-electron/     ← macOS + Windows desktop app
+├── runner/               ← CLI, job engine, MCP tools, REST server
+├── dashboard/            ← React UI (embedded in desktop + served by runner)
+├── intelligence-base/    ← Base agents, workflows, skills, memory templates
+├── plugin-sdk/           ← SDK for SCM, tracker, and executor plugins
+├── plugin-gitlab/        ← Reference SCM plugin (GitLab)
+├── llm-anthropic/        ← Executor plugin (Claude Agent SDK)
+├── llm-openai/           ← Executor plugin (OpenAI)
+├── cloud-protocol/       ← Shared runner ↔ cloud protocol types
+└── landing/              ← Marketing site
+
+runner/src/plugins/builtin/   ← Built-in github (SCM) and jira (tracker)
+
+packages/runner/src/cloud/   ← Commercial control plane (see NOTICE.md)
 ```
 
-### Where does the base intelligence live?
-
-**One place:** `packages/intelligence-base/layer/`. The runner resolves it
-at startup via `getBaseLayerRoot()` and stacks tenant + repo overlays on
-top per job. There is no shadow copy at the repo root.
-
-> *History:* before Phase 2 we kept a working copy of the base layer at
-> the repo root (`./agents/`, `./memory/`, `./workflows/`, `./.claude/`).
-> That mirror has been removed now that the runner reads exclusively from
-> `@coro/intelligence-base`.
-
-The repo's top-level `**CLAUDE.md`** is unrelated to the agent runtime —
-it's the engineering doc for humans working on this monorepo, and Claude
-Code picks it up automatically when you run `claude` inside the repo.
+Generic intelligence lives only in `packages/intelligence-base/layer/`.
 
 ---
 
-## The intelligence layers
-
-Coro composes agent behaviour from three layers, materialised per-job into
-`<workingDir>/<jobId>/_intelligence/`:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Repo overlay        <repoCheckout>/.coro/                   │
-├─────────────────────────────────────────────────────────────┤
-│ Tenant overlay      localDir | gitRemote | cloudBlob        │
-├─────────────────────────────────────────────────────────────┤
-│ Base intelligence   @coro/intelligence-base/layer/          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-
-| Layer      | Source                           | Who owns it        | When it loads                                                                       |
-| ---------- | -------------------------------- | ------------------ | ----------------------------------------------------------------------------------- |
-| **Base**   | `@coro/intelligence-base/layer/` | Coro maintainers   | At runner start                                                                     |
-| **Tenant** | `tenant.overlay` in your config  | Your team          | At job start                                                                        |
-| **Repo**   | `<targetRepo>/.coro/`            | The repo's authors | At each phase boundary (opportunistic — the agent clones the repo, then it appears) |
-
-
-Merge rules:
-
-
-| Path                                                            | Mode                               |
-| --------------------------------------------------------------- | ---------------------------------- |
-| `.claude/CLAUDE.md`                                             | **append** with provenance banners |
-| `memory/**/*.md`                                                | **append** with provenance banners |
-| Everything else (`agents/`, `workflows/`, `.claude/skills/`, …) | **last-wins** replace              |
-
-
-The target repo's own `.claude/` is **not** touched by Coro — Claude Code's
-native walk-up handles it directly when the SDK is rooted in the cloned
-repo. This is the "hybrid Claude-native" model.
-
-Full reference: see `[CLAUDE.md](CLAUDE.md)` under "Layered intelligence".
-
----
-
-## Working on the codebase
-
-### Bootstrap once
+## Developing Coro
 
 ```bash
-pnpm install        # links workspace packages
-pnpm -r build       # builds all packages
-pnpm -r typecheck   # verifies types across the workspace
+pnpm install && pnpm -r build
+pnpm test && pnpm typecheck
 ```
 
-Useful root scripts (defined in `[package.json](package.json)`):
+| Task | Command |
+| ---- | ------- |
+| Run runner from source | `pnpm dev` |
+| Run desktop from source | `pnpm --filter @coro/desktop-electron dev` |
+| Work on a plugin | `pnpm --filter @coro/plugin-gitlab test` (or your package) · [`plugin-sdk` README](packages/plugin-sdk/README.md) |
+| Package desktop | See [docs/desktop-packaging.md](docs/desktop-packaging.md) |
 
-
-| Command              | What it does                                                          |
-| -------------------- | --------------------------------------------------------------------- |
-| `pnpm build`         | Build every package                                                   |
-| `pnpm typecheck`     | Typecheck every package                                               |
-| `pnpm test`          | Run every package's `test` script                                     |
-| `pnpm start`         | Build-aware: launch the runner + dashboard (same as `coro start`)     |
-| `pnpm dev`           | Run the runner from source via `tsx` (no build step) — auto-reload    |
-| `pnpm dev:runner`    | Alias of `pnpm dev` (kept for back-compat)                            |
-| `pnpm dev:cloud`     | Start the cloud control plane (Postgres required)                     |
-| `pnpm dev:dashboard` | Start Vite dev server for the dashboard                               |
-| `pnpm clean`         | Remove `dist/` and `node_modules/` everywhere                         |
-
-
-### Runner (`@coro/runner`)
-
-The local agent runtime, REST server, and `coro` CLI.
-
-```bash
-# Build / typecheck
-pnpm --filter @coro/runner build
-pnpm --filter @coro/runner typecheck
-
-# Run from built JS (after `pnpm --filter @coro/runner build`)
-pnpm --filter @coro/runner start         # boots `coro start` (runner + dashboard)
-
-# Develop with auto-reload (no build, runs via tsx)
-pnpm --filter @coro/runner dev           # primary dashboard-first runner
-pnpm --filter @coro/runner dev:cloud     # cloud control plane
-
-# Tests
-pnpm --filter @coro/runner test
-pnpm --filter @coro/runner test -- tests/unit/intelligence-resolver.test.ts
-pnpm --filter @coro/runner test:watch
-pnpm --filter @coro/runner test:coverage
-```
-
-Key directories:
-
-- `src/runner/` — local & hybrid bootstraps, REST server, OAuth helpers
-- `src/jobs/` — job lifecycle, phase loop, intelligence resolution per phase
-- `src/intelligence/` — resolver, layer-merge primitives, tenant/repo loaders
-- `src/tools/` — MCP tool implementations (`coro__*`)
-- `src/state/` — SQLite (local) and cloud-backed (hybrid) state backends
-- `cli/` — `coro` commands
-
-### Dashboard (`@coro/dashboard`)
-
-React + Vite + Tailwind. The runner serves its built `dist/` at
-`/dashboard/` in production; in development you run Vite separately and
-point it at the runner's API.
-
-```bash
-# Build static assets (what the runner serves)
-pnpm --filter @coro/dashboard build
-
-# Vite dev server with HMR (default port 5173)
-pnpm --filter @coro/dashboard dev
-
-# Typecheck
-pnpm --filter @coro/dashboard typecheck
-```
-
-> **Heads-up:** `pnpm dev:dashboard` proxies API calls to
-> `http://localhost:3000` (the runner). Start the runner first.
-
-> **Override the production dashboard path** by setting
-> `CORO_DASHBOARD_DIST=/abs/path/to/dist` before launching the runner. Useful
-> when packaging the runner separately from the dashboard.
-
-### Base intelligence (`@coro/intelligence-base`)
-
-The shipped, company-agnostic agents/workflows/skills/memory templates,
-plus a thin TypeScript API for resolving paths into the layer.
-
-```bash
-pnpm --filter @coro/intelligence-base build
-pnpm --filter @coro/intelligence-base test
-```
-
-To add a new generic capability everyone benefits from, edit the markdown
-under `packages/intelligence-base/layer/`. Anything company-specific
-belongs in a *tenant overlay*, not here. See the package's own
-[README](packages/intelligence-base/README.md) for the layering contract.
+Full setup, hybrid/cloud, and troubleshooting: **[docs/local-setup.md](docs/local-setup.md)**.
 
 ---
 
-## CLI reference (advanced)
+## Community & license
 
-> Most users only need `coro start` and the dashboard. The commands below
-> exist for scripting, CI, headless setups, and power users — they are
-> **not** required for normal use.
-
-After `pnpm -r build`, the binary lives at
-`packages/runner/dist/cli/index.js`. Run any command with `--help` for
-flags.
-
-**Primary**
-
-| Command                              | Purpose                                                  |
-| ------------------------------------ | -------------------------------------------------------- |
-| `coro start [--no-open] [--port N]`  | Start the runner + dashboard and (by default) open the dashboard in a browser |
-
-**Setup (advanced — the dashboard does this graphically)**
-
-| Command                        | Purpose                                                  |
-| ------------------------------ | -------------------------------------------------------- |
-| `coro init [--local]`          | Non-interactive / scripted first-time configuration (writes `~/.coro/config.json`) |
-| `coro login`                   | Pair the runner with the cloud control plane (team mode) |
-
-**Day-to-day (the dashboard mirrors all of these)**
-
-| Command                        | Purpose                                                  |
-| ------------------------------ | -------------------------------------------------------- |
-| `coro job --repo … --spec …`   | Submit a new job                                         |
-| `coro jobs`                    | List recent jobs                                         |
-| `coro status <jobId>`          | Show a job's current state and phase                     |
-| `coro logs <jobId> [--follow]` | Stream a job's logs                                      |
-| `coro message <jobId> <text>`  | Send a mid-flight message to a running job               |
-| `coro resume <jobId>`          | Resume a paused/failed job                               |
-| `coro runner status`           | Show resolved config + mode (`local` / `hybrid`)         |
-| `coro runner start`            | Alias of `coro start` (kept for back-compat)             |
-
-> Tip: alias `coro=node $(pwd)/packages/runner/dist/cli/index.js` in your
-> shell while developing, or `npm link` the runner package once.
-
-**Auto-open behaviour:** `coro start` will not open a browser when it
-detects a headless environment (`CI=true`, `SSH_CONNECTION` set, or a
-Linux desktop with no `DISPLAY`). Override with `--open` (force) or
-`--no-open` (suppress), or set `CORO_NO_OPEN=1` permanently.
-
----
-
-## Configuration
-
-Solo-mode config lives at `~/.coro/config.json`. Schema and defaults are
-in `[packages/runner/src/config/local-config.ts](packages/runner/src/config/local-config.ts)`.
-
-Minimal example:
-
-```json
-{
-  "anthropic": { "method": "apiKey", "apiKey": "sk-ant-…" },
-  "intelligence": { "dir": "~/.coro/intelligence" },
-  "paths":        { "workingDir": "~/.coro/work" },
-  "git": {
-    "provider":  "bitbucket",
-    "username":  "you@example.com",
-    "token":     "ATBB…",
-    "workspace": "your-workspace"
-  }
-}
-```
-
-Optional `tenant.overlay` (Phase 4) lets you pull a tenant intelligence
-overlay from a local directory or a git remote:
-
-```jsonc
-{
-  "tenant": {
-    "displayName": "My Team",
-    "overlay": {
-      "kind": "gitRemote",
-      "url":  "git@github.com:my-team/coro-overlay.git",
-      "ref":  "main"
-    }
-  }
-}
-```
-
-Cached clones live under `~/.coro/cache/tenant-overlays/<tenantId>/`.
-
----
-
-## Testing
-
-```bash
-pnpm test                                    # everything
-pnpm --filter @coro/runner test              # runner unit + mcp + integration
-pnpm --filter @coro/runner test:integration  # job-level integration tests
-pnpm --filter @coro/runner test:mcp          # MCP tool surface tests
-pnpm --filter @coro/runner test -- <pattern> # single file or pattern
-```
-
-Three pre-existing tests are known to fail without local Redis (two in
-`tests/integration/job-registry.redis.test.ts`, one in
-`tests/integration/dispatcher-send-message.test.ts`). They are unrelated
-to solo mode and skipped in CI defaults.
-
----
-
-## Roadmap
-
-- **Phase 5 — Hybrid/team SaaS:** cloud control plane (`@coro/runner`'s
-`src/cloud/`) wires JWT-issued `tenant.overlay` configs and the
-`cloudBlob` overlay loader.
-- **Desktop shell:** ship a single-binary distribution
-(Electron or Tauri — TBD) that wraps the runner + dashboard so non-CLI
-users can install Coro by downloading one app.
-- **CLI install:** publish a single `npm i -g @coro/cli` once the workspace
-separation has settled.
-
-For a developer-oriented deep dive on the architecture (intelligence
-resolver, MCP tool wiring, tenant context, runner modes), read
-`[CLAUDE.md](CLAUDE.md)`.
+- [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
+- [ROADMAP.md](ROADMAP.md) · [NON-GOALS.md](NON-GOALS.md)
+- **License:** [BUSL-1.1](LICENSE) (converts to Apache-2.0 on 2029-05-19) — see [NOTICE.md](NOTICE.md) for the open-core split

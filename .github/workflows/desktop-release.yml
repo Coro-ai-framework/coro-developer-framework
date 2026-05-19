@@ -88,7 +88,7 @@ jobs:
       RELEASE_PLATFORM: ${{ matrix.platform }}
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_TYPE: ${{ inputs.release_type }}
-      PUBLIC_RELEASE_REPO: emreertugrul/coro-release
+      PUBLIC_RELEASE_REPO: Coro-ai-framework/coro-release
       PUBLIC_RELEASE_DEFAULT_BRANCH: main
       GITHUB_RELEASE_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.CORO_RELEASE_GITHUB_TOKEN }}

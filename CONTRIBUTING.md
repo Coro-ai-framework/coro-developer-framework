@@ -41,7 +41,10 @@ and hybrid/cloud configuration.
 | `packages/runner` | CLI, job engine, MCP tools, state backends |
 | `packages/dashboard` | Web UI |
 | `packages/intelligence-base` | Base agents, workflows, skills |
-| `packages/plugin-sdk` | Plugin author SDK |
+| `packages/plugin-sdk` | SDK for **SCM**, **tracker**, and **executor (LLM)** plugins |
+| `packages/plugin-gitlab` | Reference SCM plugin — start here when adding a Git host |
+| `packages/llm-anthropic`, `packages/llm-openai` | Reference executor plugins |
+| `packages/runner/src/plugins/builtin/` | Built-in GitHub (SCM) and Jira (tracker) |
 | `packages/runner/src/cloud` | **Commercial** — not accepting drive-by refactors without discussion |
 
 ## What belongs in a PR
@@ -50,7 +53,7 @@ and hybrid/cloud configuration.
 
 - Bug fixes and tests
 - Runner, dashboard, intelligence-base, plugin-sdk improvements
-- New or updated plugins (see `packages/plugin-gitlab` as a reference)
+- New or updated **plugins** (SCM, tracker, or LLM executor) — see [`packages/plugin-sdk/README.md`](packages/plugin-sdk/README.md) and [`packages/plugin-gitlab`](packages/plugin-gitlab/) as references
 - Documentation that helps contributors and operators
 
 **Discuss first (issue or Discussion)**
