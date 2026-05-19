@@ -89,11 +89,25 @@ export function bbReviewerEntry(value: string): { uuid: string } | { account_id:
   return { username: v }
 }
 
+/**
+ * Rich workspace-member identity record. `uuid` is the only field
+ * guaranteed to be present (it's what reviewers/PR APIs need);
+ * everything else is best-effort from the Bitbucket members endpoint.
+ */
+export interface BitBucketUserRef {
+  uuid: string
+  account_id?: string
+  nickname?: string
+  display_name?: string
+}
+
 export class BitBucketClient {
   private readonly authHeader: string
   private readonly baseUrl: string
   /** Lowercased nickname / display_name / account_id / uuid → uuid. */
   private readonly memberIndex = new Map<string, string>()
+  /** uuid → full member record (for richer lookups via resolveUser). */
+  private readonly memberRecords = new Map<string, BitBucketUserRef>()
   private memberIndexLoaded = false
 
   constructor(
@@ -394,6 +408,68 @@ export class BitBucketClient {
   }
 
   /**
+   * Look up a workspace member by free-form query and return a rich
+   * identity record. Accepts:
+   *   - braced uuid `{...}` or bare hyphenated uuid (pass-through; we
+   *     opportunistically enrich from the member directory).
+   *   - modern account_id (`557058:...`) or legacy 24-hex account_id
+   *     (pass-through; enriched if known).
+   *   - nickname or display_name (case-insensitive lookup against the
+   *     workspace member directory).
+   *
+   * Email is NOT searchable here — Bitbucket's members endpoint does
+   * not expose emails. To resolve by email, look up the user in your
+   * tracker (Jira, Linear, GitHub) first; the Atlassian `accountId`
+   * returned by Jira is identical to the Bitbucket `account_id` and
+   * can be passed straight through this method.
+   *
+   * Returns `null` when nothing matches (instead of throwing) so the
+   * MCP tool can surface a clean "no match" result.
+   */
+  async resolveUser(input: string): Promise<BitBucketUserRef | null> {
+    const v = input.trim()
+    if (!v) return null
+
+    // Pass-through cases — normalise to a canonical uuid (braced)
+    // when possible, then try to enrich from the loaded directory.
+    let uuid: string | undefined
+    let accountId: string | undefined
+    if (/^\{[0-9a-f-]{32,}\}$/i.test(v)) {
+      uuid = v
+    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) {
+      uuid = `{${v}}`
+    } else if (/^[0-9]+:[0-9a-f-]+$/i.test(v) || /^[0-9a-f]{24}$/i.test(v)) {
+      accountId = v
+    }
+
+    if (!this.memberIndexLoaded) {
+      await this.loadWorkspaceMembers().catch(() => { /* swallow; fall through */ })
+    }
+
+    if (uuid) {
+      const rec = this.memberRecords.get(uuid)
+      return rec ?? { uuid }
+    }
+    if (accountId) {
+      for (const rec of this.memberRecords.values()) {
+        if (rec.account_id?.toLowerCase() === accountId.toLowerCase()) return rec
+      }
+      // Pass-through: the caller can still feed this to scm_add_pr_reviewers
+      // — bbReviewerEntry maps it to the right field. We cannot synthesise
+      // a uuid, so leave uuid empty by reporting account_id only via a stub.
+      return { uuid: '', account_id: accountId }
+    }
+
+    // Name / nickname / display_name lookup.
+    const matchedUuid = this.memberIndex.get(v.toLowerCase())
+    if (matchedUuid) {
+      const rec = this.memberRecords.get(matchedUuid)
+      return rec ?? { uuid: matchedUuid }
+    }
+    return null
+  }
+
+  /**
    * Page through `/workspaces/{workspace}/members` (and members'
    * embedded user objects), building a case-insensitive lookup by
    * nickname, display_name, and account_id → uuid. Called lazily the
@@ -414,6 +490,13 @@ export class BitBucketClient {
       const u = m.user
       if (!u?.uuid) continue
       const uuid = u.uuid
+      const record: BitBucketUserRef = {
+        uuid,
+        ...(u.account_id ? { account_id: u.account_id } : {}),
+        ...(u.nickname ? { nickname: u.nickname } : {}),
+        ...(u.display_name ? { display_name: u.display_name } : {}),
+      }
+      this.memberRecords.set(uuid, record)
       const keys = [u.nickname, u.display_name, u.account_id, u.uuid]
       for (const k of keys) {
         if (typeof k !== 'string' || !k.trim()) continue

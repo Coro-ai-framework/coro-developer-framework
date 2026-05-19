@@ -382,6 +382,31 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     return text({ added: args.reviewers.length })
   }
 
+  const scm_resolve_user = async (args: { pluginId?: string; repo?: string; query: string }) => {
+    const r = resolveScm(ctx, args.pluginId, args.repo)
+    if (!r.ok) return r.error
+    if (!r.scm.resolveUser) {
+      return error(
+        `SCM plugin "${r.scm.manifest.id}" does not support resolving users. ` +
+        `Pass the user's UUID, account_id, or login directly to scm_add_pr_reviewers.`,
+      )
+    }
+    const q = (args.query ?? '').trim()
+    if (!q) return error('query is required')
+    const match = await r.scm.resolveUser(q)
+    if (!match) {
+      return text({
+        matched: false,
+        query: q,
+        hint:
+          'No workspace member matched. If you have an email address, look up the user in your tracker first ' +
+          '(e.g. mcp__jira__jira_get_user_profile) — the Atlassian accountId is identical to the Bitbucket ' +
+          'account_id and can be passed directly to scm_add_pr_reviewers.',
+      })
+    }
+    return text({ matched: true, query: q, user: match })
+  }
+
   const scm_merge_pr = async (args: {
     pluginId?: string; repo: string; prId: number | string; message?: string; strategy?: 'merge' | 'squash' | 'rebase'
   }) => {
@@ -759,6 +784,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     scm_list_pr_comments,
     scm_post_pr_comment,
     scm_add_pr_reviewers,
+    scm_resolve_user,
     scm_merge_pr,
     scm_get_clone_info,
     scm_clone_repo,

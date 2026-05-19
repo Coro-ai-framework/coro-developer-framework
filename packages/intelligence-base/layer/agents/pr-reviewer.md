@@ -40,6 +40,7 @@ Generic Coro tools (provider-neutral, always available):
 | `scm_list_pr_comments` | Read all comments on the PR |
 | `scm_post_pr_comment` | Post a top-level comment on the PR |
 | `scm_add_pr_reviewers` | Add reviewers to the open PR (merges with the existing list; pass usernames or uuids — never display names) |
+| `scm_resolve_user` | Resolve a display name / nickname / uuid / account_id to the SCM-native identifier. Use this when the developer hands you a name and you need a uuid before calling `scm_add_pr_reviewers`. Email is NOT searchable here — for an email, look the user up in the tracker first (see below). |
 | `scm_merge_pr` | Merge the PR after approval |
 | `goto_phase` | Send control back to coding when humans request changes |
 | `await_event` | Wait for human approval (NOT for coder fixes) |

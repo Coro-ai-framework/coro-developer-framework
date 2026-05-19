@@ -149,6 +149,18 @@ export function createCoroMcpServer(
       ),
 
       tool(
+        'scm_resolve_user',
+        'Resolve a free-form user query (display name, nickname, uuid, or account_id) to a provider-canonical identity via the configured SCM plugin. Returns { uuid, account_id?, nickname?, display_name? } when matched, or a no-match hint. Email is NOT searchable: look the user up in your tracker first (e.g. mcp__jira__jira_get_user_profile) and pass the resulting accountId here or directly to scm_add_pr_reviewers — Atlassian accountId === Bitbucket account_id.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string().optional(),
+          query: z.string(),
+        },
+        h.scm_resolve_user,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
         'scm_merge_pr',
         'Merge a pull request via the configured SCM plugin. Only call when approved and conversations are resolved.',
         {

@@ -359,6 +359,20 @@ export interface ScmAddReviewersArgs {
   reviewers: ReadonlyArray<string>
 }
 
+/**
+ * Result of {@link ScmPluginRuntime.resolveUser}. `uuid` is the
+ * provider-canonical handle (Bitbucket UUID, GitHub node id, GitLab
+ * id-as-string). When the input was an `account_id`-style identifier
+ * that we couldn't enrich from the workspace directory, `uuid` may be
+ * empty and the caller should rely on `account_id` instead.
+ */
+export interface ScmUserRef {
+  uuid: string
+  account_id?: string
+  nickname?: string
+  display_name?: string
+}
+
 export interface ScmPrComment {
   id: string
   body: string
@@ -430,6 +444,14 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
    * when a developer asks to loop in another reviewer mid-flight.
    */
   addReviewers?(args: ScmAddReviewersArgs): Promise<void>
+  /**
+   * Resolve a free-form user query (name, nickname, display name,
+   * uuid, account_id) to a rich identity record. Returns `null` when
+   * nothing matches. Used by the `scm_resolve_user` MCP tool so the
+   * agent can map a human-readable identity to the right provider
+   * identifier before calling `addReviewers`.
+   */
+  resolveUser?(query: string): Promise<ScmUserRef | null>
   getPrStatus?(ref: ExternalRef): Promise<ScmPrStatus>
   listPrComments?(ref: ExternalRef): Promise<ScmPrComment[]>
   postPrComment?(ref: ExternalRef, body: string): Promise<ScmPrComment>

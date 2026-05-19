@@ -54,6 +54,8 @@ const DEFAULT_ALLOWED_MCP_TOOLS: ReadonlyArray<string> = [
   'jira_get_issue',
   'jira_search_issues',
   'jira_list_children',
+  'jira_get_user_profile',
+  'jira_search_user',
   // Write
   'jira_create_issue',
   'jira_create_epic',

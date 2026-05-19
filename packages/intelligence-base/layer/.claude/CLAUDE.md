@@ -119,6 +119,7 @@ ops below work the same regardless of the active SCM plugin:
 - `scm_list_pr_comments` — List comments on a PR
 - `scm_post_pr_comment` — Post a top-level comment on a PR
 - `scm_add_pr_reviewers` — Add reviewers (usernames or uuids, never display names) to an open PR; merges with the existing list
+- `scm_resolve_user` — Resolve a display name / nickname / uuid / account_id to the SCM-native user identifier. Use before `scm_add_pr_reviewers` when you only have a human-readable name. For an email, look the user up in the tracker first — Atlassian `accountId` is identical to Bitbucket `account_id`.
 - `scm_merge_pr` — Merge a PR (squash, only after approval + all comments resolved)
 
 Each tool accepts an optional `pluginId` to override the resolved default — use it when the job needs to talk to a non-default plugin (rare).

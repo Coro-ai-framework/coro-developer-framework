@@ -368,6 +368,10 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     await this.coder.updatePrReviewers(args.repoSlug, prId, [...existing])
   }
 
+  async resolveUser(query: string): Promise<{ uuid: string; account_id?: string; nickname?: string; display_name?: string } | null> {
+    return this.coder.resolveUser(query)
+  }
+
   async listPrComments(ref: ExternalRef): Promise<ScmPrComment[]> {
     const { repoSlug, prId } = this.parseRef(ref)
     const comments = await this.coder.getComments(repoSlug, prId)
