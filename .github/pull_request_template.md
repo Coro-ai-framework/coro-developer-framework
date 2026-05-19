@@ -11,7 +11,7 @@
 
 ## Checklist
 
-- [ ] [Contributor License Agreement](https://cla-assistant.io/Coro-ai-framework/coro-developer-framework) signed
+- [ ] [CLA](CLA.md) signed via [CLA Assistant](https://cla-assistant.io/Coro-ai-framework/coro-developer-framework)
 - [ ] `pnpm test` passes locally
 - [ ] `pnpm typecheck` passes (if applicable)
 - [ ] Tests added or updated for behavior changes

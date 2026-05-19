@@ -6,7 +6,9 @@ review changes.
 ## Before you start
 
 - Read [NOTICE.md](NOTICE.md) for the open-core license split.
-- Sign the [Contributor License Agreement](https://cla-assistant.io/Coro-ai-framework/coro-developer-framework) (required before we can merge your PR).
+- Sign the [Contributor License Agreement](CLA.md) via
+  [CLA Assistant](https://cla-assistant.io/Coro-ai-framework/coro-developer-framework)
+  (required before we can merge your PR; one-time per GitHub account).
 - For security issues, do **not** open a public issue — see [SECURITY.md](SECURITY.md).
 
 ## Development environment
