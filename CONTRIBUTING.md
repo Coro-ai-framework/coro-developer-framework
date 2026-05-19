@@ -112,3 +112,5 @@ Wait for maintainer feedback before investing in a large implementation.
 ## Community
 
 Be respectful and constructive. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+**Priorities we are looking for:** new **SCM, tracker, and LLM executor** plugins, and real-world testing on your repos and stacks. Details: [ROADMAP.md → Help wanted](ROADMAP.md#help-wanted).

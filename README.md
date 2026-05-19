@@ -191,6 +191,8 @@ Full setup, hybrid/cloud, and troubleshooting: **[docs/local-setup.md](docs/loca
 
 ## Community & license
 
+**We need your help** — extend **SCM, tracker, and LLM plugins**, and run Coro on **real projects** (different languages, repos, and tooling). See [ROADMAP.md → Help wanted](ROADMAP.md#help-wanted).
+
 - [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
 - [ROADMAP.md](ROADMAP.md) · [NON-GOALS.md](NON-GOALS.md)
 - **License:** [BUSL-1.1](LICENSE) (converts to Apache-2.0 on 2029-05-19) — see [NOTICE.md](NOTICE.md) for the open-core split
