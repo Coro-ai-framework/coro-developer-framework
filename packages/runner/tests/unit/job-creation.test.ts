@@ -140,6 +140,43 @@ describe('buildJobRecord (workflow resolution)', () => {
     expect(job.insights[0]?.suggestion).toBe('dotnet restore --configfile NuGet.Config')
   })
 
+  it('drops rejected entries from input.initialInsights when seeding a child job', async () => {
+    await fs.writeFile(
+      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      `---\ninitial_phase: planning\nphases:\n  - name: planning\n    model: planning\n    status: planning\n---\n`,
+    )
+
+    const job = await buildJobRecord(
+      {
+        type: 'job',
+        triggerSource: 'internal',
+        params: { campaignChildName: 'api' },
+        initialInsights: [
+          {
+            phase: 'coding',
+            category: 'workaround',
+            summary: 'Ship me',
+            detail: 'Approved upstream.',
+            status: 'approved',
+          },
+          {
+            phase: 'coding',
+            category: 'spec-ambiguity',
+            summary: 'Skip me',
+            detail: 'Rejected upstream.',
+            status: 'rejected',
+          },
+        ],
+      },
+      JobType.Job,
+      'workflows/job/workflow.md',
+      { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
+    )
+
+    expect(job.insights).toHaveLength(1)
+    expect(job.insights[0]?.summary).toBe('Ship me')
+  })
+
   it('defaults insights to [] when initialInsights is omitted', async () => {
     await fs.writeFile(
       path.join(baseRoot, 'workflows', 'job', 'workflow.md'),

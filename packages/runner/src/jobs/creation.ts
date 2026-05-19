@@ -6,6 +6,7 @@ import {
   type JobType,
   type PrMapping,
 } from '@coro/cloud-protocol'
+import { propagableInsights } from '../insights'
 import { emptyTokenUsage } from './helpers'
 
 type WorkflowLogger = {
@@ -187,7 +188,7 @@ export async function buildJobRecord(
     // campaign dispatcher uses this, to carry sibling insights forward
     // across child boundaries without going through the slower
     // PR-merge-pull memory cycle. Default is an empty list as before.
-    insights: Array.isArray(input.initialInsights) ? [...input.initialInsights] : [],
+    insights: propagableInsights(input.initialInsights),
     tokenUsage: emptyTokenUsage(),
     phaseUsage: [],
     workflowPhases: config.phases.map(p => ({

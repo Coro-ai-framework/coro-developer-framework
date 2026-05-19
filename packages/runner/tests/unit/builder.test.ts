@@ -283,6 +283,37 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(prompt).toContain('dotnet restore --configfile NuGet.Config')
     })
 
+    it('omits rejected insights from the prompt (audit-only on the job record)', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [
+            {
+              phase: 'coding',
+              category: 'workaround',
+              summary: 'Keep this recipe',
+              detail: 'Still useful.',
+              status: 'approved',
+            },
+            {
+              phase: 'coding',
+              category: 'spec-ambiguity',
+              summary: 'Declined noise',
+              detail: 'User said no.',
+              status: 'rejected',
+            },
+          ],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      expect(prompt).toContain('Keep this recipe')
+      expect(prompt).not.toContain('Declined noise')
+      expect(prompt).not.toContain('User said no.')
+    })
+
     it('uses the standard lead when own-job and sibling insights are mixed (sibling provenance still wins line-by-line)', async () => {
       setupFs({ [WORKFLOW_PATH]: '' })
 

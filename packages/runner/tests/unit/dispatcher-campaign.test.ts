@@ -17,10 +17,12 @@ vi.mock('../../src/jobs/runner', () => ({
 import { Dispatcher } from '../../src/jobs/dispatcher'
 import {
   JobType,
+  STATUS_COMPLETE,
   STATUS_QUEUED,
   STATUS_AWAITING_DEVELOPER_INPUT,
   type Job,
   type CampaignChild,
+  type JobInput,
 } from '@coro/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
@@ -88,14 +90,14 @@ function makeBackend(jobs: Job[]): StubBackend {
     appendLog: vi.fn(async () => undefined),
     // dispatchCampaignChild calls createJob(JobInput) — we mint a fresh id
     // and return a minimal Job shape so the coordinator can mutate it.
-    createJob: vi.fn(async (input: { id?: string; type: JobType; workflowPath: string; params: Record<string, unknown> }) => {
+    createJob: vi.fn(async (input: JobInput) => {
       const id = `child-${map.size + 1}`
       const job: Job = {
         id,
-        type: input.type,
-        workflowPath: input.workflowPath,
+        type: input.type === 'self-update' ? JobType.SelfUpdate : JobType.Job,
+        workflowPath: input.workflowPath ?? 'workflows/job/workflow.md',
         params: input.params,
-        triggerSource: 'internal',
+        triggerSource: input.triggerSource ?? 'internal',
         status: STATUS_QUEUED,
         phase: 'planning',
         currentWorkItem: null,
@@ -104,7 +106,7 @@ function makeBackend(jobs: Job[]): StubBackend {
         prMappings: [],
         interactive: false,
         artifacts: [],
-        insights: [],
+        insights: Array.isArray(input.initialInsights) ? [...input.initialInsights] : [],
         tokenUsage: emptyTokenUsage(),
         phaseUsage: [],
         createdAt: '2026-01-01T00:00:00Z',
@@ -296,6 +298,87 @@ describe('Dispatcher.coordinateCampaign — dispatch sweep', () => {
 
     await dispatcher.coordinateCampaign(parent.id)
     expect(backend.updateJob).not.toHaveBeenCalled()
+  })
+})
+
+// ── Sibling insight propagation ────────────────────────────────────────────────
+
+describe('Campaign sibling insights — rejected filtering', () => {
+  it('does not seed rejected insights when dispatching a ready child', async () => {
+    const parent = makeCampaignJob([
+      makeChild({ name: 'a', status: 'ready' }),
+    ], {
+      campaignAggregatedInsights: [
+        {
+          phase: 'coding',
+          category: 'workaround',
+          summary: 'Good recipe',
+          detail: 'Keep',
+          status: 'approved',
+          sourceChildName: 'prior',
+        },
+        {
+          phase: 'coding',
+          category: 'spec-ambiguity',
+          summary: 'Bad recipe',
+          detail: 'Drop',
+          status: 'rejected',
+          sourceChildName: 'prior',
+        },
+      ],
+    })
+    const backend = makeBackend([parent])
+    const dispatcher = makeDispatcher(backend)
+
+    await dispatcher.coordinateCampaign(parent.id)
+
+    expect(backend.createJob).toHaveBeenCalledTimes(1)
+    const input = vi.mocked(backend.createJob).mock.calls[0]![0] as JobInput
+    expect(input.initialInsights).toHaveLength(1)
+    expect(input.initialInsights![0]?.summary).toBe('Good recipe')
+  })
+
+  it('does not aggregate rejected insights onto the parent when a child stops', async () => {
+    const parent = makeCampaignJob([
+      makeChild({
+        name: 'a',
+        status: 'dispatched',
+        jobId: 'child-a',
+      }),
+    ])
+    const childJob: Job = {
+      ...makeCampaignJob([]),
+      id: 'child-a',
+      campaignParentId: parent.id,
+      status: STATUS_COMPLETE,
+      params: { campaignChildName: 'a', campaignParentId: parent.id },
+      insights: [
+        {
+          phase: 'coding',
+          category: 'workaround',
+          summary: 'Keep',
+          detail: 'd',
+          status: 'approved',
+        },
+        {
+          phase: 'coding',
+          category: 'workaround',
+          summary: 'Drop',
+          detail: 'd',
+          status: 'rejected',
+        },
+      ],
+    }
+    const backend = makeBackend([parent, childJob])
+    const dispatcher = makeDispatcher(backend)
+
+    await (dispatcher as unknown as { onChildJobStopped: (j: Job) => Promise<void> })
+      .onChildJobStopped(childJob)
+
+    const stored = backend.jobs.get(parent.id)!
+    expect(stored.campaignAggregatedInsights).toHaveLength(1)
+    expect(stored.campaignAggregatedInsights![0]?.summary).toBe('Keep')
+    expect(stored.campaignAggregatedInsights![0]?.sourceChildName).toBe('a')
   })
 })
 

@@ -17,6 +17,7 @@ import {
   STATUS_FAILED,
   PAUSED_AWAITING_EVENT,
 } from '@coro/cloud-protocol'
+import { propagableInsights } from '../insights'
 import {
   cancelledJobPatch,
   isCancellableStatus,
@@ -1023,7 +1024,9 @@ export class Dispatcher {
     // dispatcher's seeding path, and re-aggregating them would duplicate
     // entries every hop.
     const aggregatedSoFar = parent.campaignAggregatedInsights ?? []
-    const ownInsights = (child.insights ?? []).filter(i => !i.sourceChildName)
+    const ownInsights = propagableInsights(
+      (child.insights ?? []).filter(i => !i.sourceChildName),
+    )
     const settledChildName = updated[idx].name
     const newAggregated: Insight[] = [
       ...aggregatedSoFar,
@@ -1067,7 +1070,7 @@ export class Dispatcher {
     // insight retains its `sourceChildName` so the agent (and the
     // campaign-evaluator at end of campaign) can tell sibling-inherited
     // insights apart from the child's own findings.
-    const siblingInsights = parent.campaignAggregatedInsights ?? []
+    const siblingInsights = propagableInsights(parent.campaignAggregatedInsights)
 
     const childInput: JobInput = {
       type: 'job',

@@ -5,6 +5,7 @@ import type { Settings } from '../config/settings'
 import type { TrackerClient, TrackerProvider } from '../clients/tracker'
 import type { PluginRegistry } from '../plugins/registry'
 import { Job } from '@coro/cloud-protocol'
+import { propagableInsights } from '../insights'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 
 // ── Tracker prompt context ────────────────────────────────────────────────────
@@ -255,7 +256,8 @@ function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext, scmInfo?:
     '\n```',
   ]
 
-  if (job.insights && job.insights.length > 0) {
+  const insightsForPrompt = propagableInsights(job.insights)
+  if (insightsForPrompt.length > 0) {
     // Surface sibling provenance prominently so the agent can tell
     // sibling-inherited insights apart from this job's own. Sibling
     // insights are *fresher and more directly applicable* than memory
@@ -263,13 +265,14 @@ function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext, scmInfo?:
     // repo, sandbox, and tenant minutes earlier — agents are
     // instructed to read them before consulting memory/known-pitfalls.
     //
-    // We also surface the user's curation state (status, edits, layer
-    // override) so the evaluator honours the dashboard's Insights tab
-    // decisions instead of treating every entry as untriaged.
+    // Rejected insights stay on the job for audit but are omitted here
+    // and at campaign sibling copy — they must not steer agents or
+    // downstream children. We surface curation state (status, edits,
+    // layer override) for the entries that remain.
     const counts = { pending: 0, approved: 0, rejected: 0 }
-    for (const ins of job.insights) counts[(ins.status ?? 'pending')]++
+    for (const ins of insightsForPrompt) counts[(ins.status ?? 'pending')]++
 
-    const insightLines = job.insights.map((ins, i) => {
+    const insightLines = insightsForPrompt.map((ins, i) => {
       const provenance = ins.sourceChildName
         ? `[campaign sibling: ${ins.sourceChildName} · ${ins.phase}]`
         : `[${ins.phase}]`
@@ -293,7 +296,7 @@ function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext, scmInfo?:
         editLine
       )
     })
-    const hasSiblingInsights = job.insights.some(i => i.sourceChildName)
+    const hasSiblingInsights = insightsForPrompt.some(i => i.sourceChildName)
     const siblingLead = hasSiblingInsights
       ? 'The following learnings were recorded by earlier campaign siblings AND by upstream phases on this job. ' +
         'Sibling-inherited entries (marked `[campaign sibling: …]`) are fresher than memory and apply directly to ' +

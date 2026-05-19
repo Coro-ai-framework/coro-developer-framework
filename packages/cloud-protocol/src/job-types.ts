@@ -443,8 +443,9 @@ export interface Job {
    * campaign job. The dispatcher appends to this list every time a child
    * reaches a terminal status, then seeds freshly-dispatched siblings with
    * its contents (via {@link JobInput.initialInsights}) so each new child
-   * inherits everything earlier siblings learned. Each entry has its
-   * `sourceChildName` set to the originating child. The full PR-merge-pull
+   * inherits everything earlier siblings learned (excluding insights the
+   * user marked `rejected`). Each entry has its `sourceChildName` set to
+   * the originating child. The full PR-merge-pull
    * memory cycle still runs at campaign end via the campaign-evaluator —
    * this aggregator is the *in-flight* mechanism that lets sibling N+1
    * benefit from sibling N's discoveries before any human review happens.
