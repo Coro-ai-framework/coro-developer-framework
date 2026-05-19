@@ -5,7 +5,7 @@
 #   pnpm dev:cloud                                  # starts the cloud service
 #
 # Environment:
-#   Copy .env.cloud.example to .env.cloud and fill in values.
+#   Create packages/runner/.env.cloud (see docs/local-setup.md).
 
 services:
 

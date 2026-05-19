@@ -1,141 +1,190 @@
-# Local Development Setup
+# Local development setup
 
-This guide walks through running Coro locally for development of the
-runner, the dashboard, and (optionally) the cloud control plane.
+This guide is for **engineers working on the Coro monorepo** — runner,
+dashboard, desktop shell, plugins, and (optionally) the commercial cloud
+control plane.
 
-> If you only want to **use** Coro, install the desktop app from
-> [coro-release](https://github.com/Coro-ai-framework/coro-release/releases/latest)
-> (see the [README quick start](../README.md#quick-start-desktop)). This document
-> is for engineers hacking on Coro itself (browser + runner, cloud, packaging).
+> **Using Coro (not hacking on it)?** Install the desktop app from
+> [Coro-ai-framework/coro-release](https://github.com/Coro-ai-framework/coro-release/releases/latest)
+> and follow the [README quick start](../README.md#quick-start-desktop).
+> No Node.js or `pnpm` required.
+
+---
 
 ## Prerequisites
 
-| Tool          | Why                                                             | Install                         |
-| ------------- | --------------------------------------------------------------- | ------------------------------- |
-| Node.js 20+   | Runtime for the runner, the dashboard build, and the CLI         | https://nodejs.org              |
-| pnpm 9+       | Workspace package manager                                       | `corepack enable`               |
-| Git           | Cloning target repos and (optionally) tenant overlays           | system                          |
-| Docker        | Optional — only needed for the cloud control plane (Postgres)   | https://docker.com              |
+| Tool | Why | Install |
+| ---- | --- | ------- |
+| **Node.js 20+** | Runner, dashboard, desktop packaging | https://nodejs.org |
+| **pnpm 9+** | Workspace package manager | `corepack enable && corepack prepare pnpm@9.15.0 --activate` |
+| **Git** | Target repos and `gitRemote` tenant overlays | system |
+| **Docker** | Optional — Postgres + Redis for **cloud** development | https://docker.com |
 
-Coro is a pnpm workspace. **Do not use `npm install`** — the runner
-depends on `@coro/intelligence-base` via the `workspace:*` protocol and
-npm crashes mid-install.
+Coro is a **pnpm workspace**. Do not run `npm install` at the root — the
+`workspace:*` protocol is required and npm fails mid-install.
+
+For end-to-end job runs you also need (configured in the dashboard or
+`~/.coro/config.json`):
+
+- **Anthropic** credentials (executor plugin `anthropic`)
+- **SCM** credentials — built-in **GitHub** or **Bitbucket**; **GitLab** via [`@coro/plugin-gitlab`](../packages/plugin-gitlab/)
+
+---
+
+## Workspace bootstrap
+
+From the repository root:
+
+```bash
+pnpm install
+pnpm -r build          # intelligence-base, runner, dashboard, plugins, …
+pnpm typecheck         # optional but recommended before a PR
+pnpm test              # all packages; see Testing below
+```
+
+| Command | Purpose |
+| ------- | ------- |
+| `pnpm start` | Built runner + dashboard (`coro start`) |
+| `pnpm dev` | Runner from source via `tsx` (fast iteration) |
+| `pnpm dev:dashboard` | Vite HMR for dashboard (proxies API to `:3000`) |
+| `pnpm dev:cloud` | Cloud control plane (needs Postgres + `.env.cloud`) |
+| `pnpm --filter @coro/desktop-electron dev` | Electron shell + bundled sidecar |
+| `pnpm clean` | Remove `dist/` and `node_modules/` everywhere |
 
 ---
 
 ## Solo (local) mode
 
-Solo mode runs the runner, the dashboard, and SQLite state on a single
-laptop. Zero external dependencies.
+Solo mode runs the runner, dashboard, and **SQLite** state on one machine.
+No Docker required.
 
-### 1. Install and build
+### Start the runner
+
+**From a build:**
 
 ```bash
-pnpm install
-pnpm -r build      # builds @coro/intelligence-base, @coro/runner, @coro/dashboard
+pnpm start
+# equivalent:
+node packages/runner/dist/cli/index.js start
 ```
 
-### 2. Boot the runner
+**From source (no prior build):**
 
 ```bash
-node packages/runner/dist/cli/index.js start
+pnpm dev
 ```
 
 This:
 
-- starts the runner on `http://localhost:3000`
-- serves the bundled dashboard at `http://localhost:3000/dashboard/`
-- opens the dashboard in your browser (suppressed in headless / CI /
-  SSH; pass `--open` to force, `--no-open` to suppress, or set
-  `CORO_NO_OPEN=1`)
+- listens on **http://localhost:3000** (override with `coro start --port N`)
+- serves the dashboard at **http://localhost:3000/dashboard/**
+- opens the browser by default (skipped in headless/SSH/CI; use `--open`,
+  `--no-open`, or `CORO_NO_OPEN=1`)
 
-> Tip: install the runner globally with
-> `pnpm --filter @coro/runner exec npm link` (or
-> `npm i -g ./packages/runner` after build) and just run `coro start`.
+Optional: `pnpm --filter @coro/runner exec npm link` then use `coro start`
+anywhere.
 
-### 3. Configure in the dashboard
+### Configure
 
-On first launch the dashboard greets you with a **Welcome to Coro**
-banner and points you to **Settings**. Provide:
+Use **Settings** in the dashboard (recommended) or edit `~/.coro/config.json`.
 
-- **Anthropic credentials** — API key, OAuth token, or sign in with
-  Claude Code.
-- **Git provider + access token** — for cloning repos and opening PRs
-  (BitBucket, GitHub, or GitLab).
-- **Working directory + intelligence directory** — sensible defaults
-  are pre-filled (`~/.coro/work` and `~/.coro/intelligence`).
+Typical fields:
 
-Hit **Save**. Settings are persisted to `~/.coro/config.json`. You can
-edit them later from the same page or by hand. The schema lives in
-[`packages/runner/src/config/local-config.ts`](../packages/runner/src/config/local-config.ts).
+- **`plugins.installed.anthropic`** — API key, OAuth, or Claude Code login
+- **`plugins.installed.<scm>`** — GitHub / Bitbucket (see built-ins below)
+- **`git`** — legacy-friendly block; merged into plugin config when needed
+- **`paths.workingDir`** — job working tree (default under `~/.coro/work`)
+- **`intelligence.dir`** — tenant overlay directory (optional)
 
-### 4. Submit a job
+Schema: [`packages/runner/src/config/local-config.ts`](../packages/runner/src/config/local-config.ts).
 
-From the dashboard's **New Job** page, point Coro at a repository and
-describe the change you want. Watch progress live; when the agent is
-done, it opens a PR against your target repo.
+### Submit a job
 
-You can also use the CLI:
+**Dashboard:** **New Job** → pick repo → describe the change.
+
+**CLI** (runner must already be running):
 
 ```bash
 coro job \
   --repo my-service \
   --description "Add rate limiting to /api/users" \
-  --reviewers alice,bob \
-  --workflow workflows/job/workflow.md
+  --reviewers alice,bob
 ```
 
-The CLI submits the job to the running runner at `localhost:3000` and
-streams progress. You can close the terminal — the job continues
-running. Check back with:
+Optional: `--git-provider github|bitbucket`, `--jira-ticket PROJ-123` (Jira-driven
+job). The default implementation workflow is
+`workflows/job/workflow.md` (resolved from intelligence layers).
 
 ```bash
+coro jobs
 coro status <jobId>
 coro logs <jobId> --follow
+coro resume <jobId>
+```
+
+---
+
+## Plugins (SCM, tracker, LLM)
+
+The runner loads **built-in** plugins from `packages/runner/src/plugins/builtin/`
+and **drop-in** plugins from `~/.coro/plugins/<id>/` (with `coro-plugin.json`).
+
+| Kind | Built-in IDs | Notes |
+| ---- | ------------ | ----- |
+| **SCM** | `github`, `bitbucket` | Configure via Settings → Git |
+| **Tracker** | `jira`, `linear`, `github-issues` | Enable in `plugins.installed` |
+| **Executor (LLM)** | `anthropic`, `openai` | Anthropic required for default workflows |
+
+**GitLab (SCM):** install the reference package:
+
+```bash
+coro plugin install @coro/plugin-gitlab
+# configure plugins.installed.gitlab in Settings or config.json
+```
+
+**Authoring:** `coro plugin init <id>` scaffolds `~/.coro/plugins/<id>/`.
+See [`packages/plugin-sdk/README.md`](../packages/plugin-sdk/README.md) and
+[`packages/plugin-gitlab`](../packages/plugin-gitlab/).
+
+```bash
+coro plugin list    # built-in + drop-ins (runner must be up for full list)
 ```
 
 ---
 
 ## Solo-mode storage
 
-Everything Coro produces in solo mode is rooted under `~/.coro/`:
-
 ```
 ~/.coro/
-├── config.json                     ← LocalConfig (your settings)
-├── state.db                        ← SQLite (jobs, logs, proposals, …)
-├── work/                           ← Per-job working dirs
-│   └── <jobId>/
-│       ├── _intelligence/          ← Materialised per-job intelligence overlay
-│       └── <repoSlug>/             ← Cloned target repo
-├── intelligence/                   ← Your tenant overlay (optional)
-└── cache/
-    └── tenant-overlays/            ← Cached `gitRemote` overlays
+├── config.json                 ← LocalConfig
+├── state.db                    ← SQLite (jobs, logs, proposals, …)
+├── work/<jobId>/               ← Per-job dirs
+│   ├── _intelligence/          ← Materialised overlay for the job
+│   └── <repoSlug>/             ← Cloned target repo
+├── intelligence/               ← Optional local tenant overlay
+├── plugins/<id>/               ← Drop-in plugins
+└── cache/tenant-overlays/      ← Cached gitRemote overlays
 ```
 
-To inspect job state while a job is running:
+Inspect a running job:
 
 ```bash
 ls ~/.coro/work/<jobId>/_intelligence/
-cat ~/.coro/work/<jobId>/<repoSlug>/implementation-plan.md
 ```
 
-To reset:
+Reset local state (stop the runner first):
 
 ```bash
-# Stop the runner, then:
-rm ~/.coro/state.db          # wipe job state
-rm -rf ~/.coro/work/         # wipe working dirs
-rm -rf ~/.coro/cache/        # wipe overlay caches
+rm ~/.coro/state.db
+rm -rf ~/.coro/work/
+rm -rf ~/.coro/cache/
 ```
 
 ---
 
 ## Tenant overlay (optional)
 
-Solo deployments can pull a tenant-level intelligence overlay (your
-team's customisations layered on top of the base). Add a
-`tenant.overlay` block to `~/.coro/config.json`:
+Add a `tenant.overlay` block to `~/.coro/config.json`:
 
 ```jsonc
 {
@@ -143,145 +192,221 @@ team's customisations layered on top of the base). Add a
     "displayName": "My Team",
     "overlay": {
       "kind": "gitRemote",
-      "url":  "git@github.com:my-team/coro-overlay.git",
-      "ref":  "main"
+      "url": "git@github.com:my-team/coro-overlay.git",
+      "ref": "main"
     }
   }
 }
 ```
 
-Supported `kind`s:
+| `kind` | Behaviour |
+| ------ | --------- |
+| `localDir` | `{ "kind": "localDir", "path": "/abs/path" }` |
+| `gitRemote` | Cloned under `~/.coro/cache/tenant-overlays/<tenantId>/` |
+| `cloudBlob` | Served by Coro Cloud in team mode (stub / limited in solo today) |
 
-- `localDir` — `{ "kind": "localDir", "path": "/abs/path" }`
-- `gitRemote` — cloned and cached under `~/.coro/cache/tenant-overlays/`
-- `cloudBlob` — `{ "kind": "cloudBlob", "key": "..." }`, served by the
-  cloud control plane in team mode (a no-op in solo mode today)
-
-The tenant overlay is merged on top of the base layer at job start;
-see [architecture.md §4](architecture.md#4-layered-intelligence) for
-the full merge semantics.
+Merge semantics: [architecture.md §4](architecture.md#4-layered-intelligence).
 
 ---
 
 ## Hybrid (team) mode
 
-Hybrid mode runs each developer's runner locally but delegates state
-to a shared cloud control plane. This is what teams use in production.
+> **Pre-1.0.** Hybrid mode (local runner + shared cloud control plane) is under
+> active development. Expect rough edges; production team deployments use the
+> commercial surface in `packages/runner/src/cloud/` ([NOTICE.md](../NOTICE.md)).
 
-### Pair the runner with the cloud
+Each developer runs a **local runner**; job state and team coordination go through
+**Coro Cloud**.
+
+### Pair with cloud
+
+With cloud running locally (see below) or against a deployed URL:
 
 ```bash
-coro login
+coro login --cloud-url http://localhost:4000
 ```
 
-This walks you through OAuth against the cloud control plane and
-writes a `cloud` block to `~/.coro/config.json`:
+This writes a `cloud` block to `~/.coro/config.json`:
 
 ```jsonc
 {
   "cloud": {
-    "url":   "https://cloud.example.com",
+    "url": "http://localhost:4000",
     "token": "<runner JWT>"
   }
 }
 ```
 
-On the next `coro start`, the runner detects the cloud config, opens
-an authenticated WebSocket to the cloud, and runs in hybrid mode. The
-dashboard at `localhost:3000/dashboard/` still works; it now reads
-team-scoped state from the cloud.
+Then `coro start` (or the desktop app) connects over WebSocket. The dashboard
+on **localhost:3000** still works; state may be team-scoped via the cloud backend.
 
-### Webhooks (cloud side)
+### Webhooks (cloud)
 
-Webhooks are **not** registered against your laptop in hybrid mode.
-Instead, the cloud's stable webhook URL receives BitBucket / GitHub
-events; the cloud verifies the per-team HMAC and forwards events to
-the right runner over WebSocket. Set webhook URLs per repo in your
-git provider:
+Webhooks hit the **cloud**, not your laptop. Preferred shape:
 
-```
-URL:    https://cloud.example.com/webhook/<provider>?team=<teamSlug>
-Secret: <per-team webhook secret>
-Events: PR Created, Updated, Approved, Merged, Comment created
+```text
+POST https://<cloud-host>/webhook/<teamId>/<pluginId>
 ```
 
-### Cloud control plane (developing it)
+Example: `https://cloud.example.com/webhook/team-uuid/github`
 
-If you're hacking on the cloud server itself
-(`packages/runner/src/cloud/`), bring up Postgres and run the cloud
-entrypoint:
+Configure HMAC secrets per team/plugin in the cloud DB. Legacy provider-named
+routes may still forward but are deprecated — see
+[`packages/runner/src/cloud/routes/webhooks.ts`](../packages/runner/src/cloud/routes/webhooks.ts).
+
+---
+
+## Cloud control plane (developing)
+
+Source: `packages/runner/src/cloud/` (**commercial license** — development and
+transparency only; see [`cloud/LICENSE`](../packages/runner/src/cloud/LICENSE)).
+
+### 1. Start Postgres and Redis
 
 ```bash
 docker compose -f packages/runner/docker-compose.cloud.yml up -d
-pnpm --filter @coro/runner dev:cloud
 ```
 
-Then point a runner at `http://localhost:8080` (the default cloud
-port) using a JWT minted by the cloud's `/auth` flow.
+Defaults: Postgres `localhost:5432` (db/user/password `corocloud`), Redis
+`localhost:6379`.
+
+### 2. Environment
+
+Create `packages/runner/.env.cloud` (gitignored):
+
+```bash
+DATABASE_URL=postgresql://corocloud:corocloud_dev@localhost:5432/corocloud
+REDIS_URL=redis://localhost:6379
+JWT_SECRET=change-me-to-at-least-32-random-characters
+# optional:
+# CLOUD_PORT=4000
+# JWT_ISSUER=corolabs-cloud
+# LOG_LEVEL=debug
+```
+
+Apply schema:
+
+```bash
+cd packages/runner
+pnpm db:push          # or: pnpm db:migrate
+```
+
+### 3. Run the cloud API
+
+From repo root:
+
+```bash
+pnpm dev:cloud
+```
+
+Default listen port: **4000** (`CLOUD_PORT`). Health check:
+`http://localhost:4000/health` (if exposed).
+
+### 4. Pair a runner
+
+```bash
+coro login --cloud-url http://localhost:4000
+coro start
+```
 
 ---
 
 ## Developing the dashboard
 
-The runner serves the **built** dashboard at `/dashboard/`. While
-iterating, run Vite separately for HMR:
+The runner serves the **built** dashboard at `/dashboard/`. For HMR:
 
 ```bash
 # Terminal 1
-pnpm --filter @coro/runner dev          # runner on :3000
+pnpm dev                 # runner on :3000
 
 # Terminal 2
-pnpm --filter @coro/dashboard dev       # Vite dev server, default :5173,
-                                        # proxies API calls to localhost:3000
+pnpm dev:dashboard       # Vite on :5173, proxies API to :3000
 ```
 
-To override the production dashboard path the runner serves, set
-`CORO_DASHBOARD_DIST=/abs/path/to/dist` before launching it.
+Override the bundle the runner serves:
+
+```bash
+export CORO_DASHBOARD_DIST=/abs/path/to/packages/dashboard/dist
+pnpm start
+```
 
 ---
 
-## Useful root scripts
+## Developing the desktop app
 
-Defined in `package.json` at the workspace root:
+The shipping app is `@coro/desktop-electron` — Electron wraps the runner sidecar
+and dashboard ([desktop-packaging.md](desktop-packaging.md)).
 
-| Command              | What it does                                                          |
-| -------------------- | --------------------------------------------------------------------- |
-| `pnpm build`         | Build every package                                                   |
-| `pnpm typecheck`     | Typecheck every package                                               |
-| `pnpm test`          | Run every package's `test` script                                     |
-| `pnpm start`         | Build-aware: launch the runner + dashboard (same as `coro start`)     |
-| `pnpm dev`           | Run the runner from source via `tsx` (no build step) — auto-reload    |
-| `pnpm dev:cloud`     | Start the cloud control plane (Postgres required)                     |
-| `pnpm dev:dashboard` | Start the Vite dev server for the dashboard                           |
-| `pnpm clean`         | Remove `dist/` and `node_modules/` everywhere                         |
+```bash
+pnpm install && pnpm -r build
+pnpm --filter @coro/desktop-electron dev
+```
+
+Packages a local run (macOS arm64 / Windows x64) via
+`pnpm --filter @coro/desktop-electron dist:mac` or `dist:win`. Releases publish to
+[Coro-ai-framework/coro-release](https://github.com/Coro-ai-framework/coro-release).
+
+---
+
+## Testing
+
+```bash
+pnpm test                              # all workspace packages
+pnpm --filter @coro/runner test        # runner unit + MCP + integration
+pnpm --filter @coro/runner test -- tests/unit/foo.test.ts
+```
+
+Some integration tests expect **Redis** on `localhost:6379` (e.g. job registry,
+dispatcher). Start Redis via the cloud compose file or skip those suites when
+iterating on solo-only work.
 
 ---
 
 ## Troubleshooting
 
-**Dashboard doesn't open automatically:**
-- Coro suppresses auto-open in headless / CI / SSH environments. Pass
-  `coro start --open` to force, or browse to
-  `http://localhost:3000/dashboard/` yourself.
+**Dashboard does not open**
 
-**`Cannot read properties of null (reading 'matches')` during install:**
-- You used `npm install`. Coro is a pnpm workspace. Use `pnpm install`.
+- Browse to http://localhost:3000/dashboard/ manually, or `coro start --open`.
+- Headless/SSH/CI suppresses auto-open; set `CORO_NO_OPEN=1` to keep it off.
 
-**Job stuck or lost:**
-- Check job state: `coro status <jobId>` or open the job in the
-  dashboard.
-- Inspect the working dir: `ls ~/.coro/work/<jobId>/`
-- Force-resume: `coro resume <jobId>`
+**`npm install` crashes**
 
-**Runner can't pair with the cloud:**
-- Verify the cloud URL is reachable from your machine.
-- Re-run `coro login` to mint a fresh JWT.
-- Check `~/.coro/config.json` contains the `cloud` block with both
-  `url` and `token`.
+- Use `pnpm install` at the repo root.
 
-**`tenant.overlay` not loading:**
-- For `localDir`, the `path` must be absolute and exist.
-- For `gitRemote`, the runner clones into
-  `~/.coro/cache/tenant-overlays/<tenantId>/`. Delete that directory
-  to force a fresh clone, or run with `LOG_LEVEL=debug` to see the
-  loader's decisions.
+**Job stuck or lost**
+
+- `coro status <jobId>` or open the job in the dashboard.
+- `ls ~/.coro/work/<jobId>/`
+- `coro resume <jobId>`
+
+**Runner cannot pair with cloud**
+
+- Cloud reachable at `cloud.url` in config (default dev: `http://localhost:4000`).
+- Re-run `coro login`.
+- Confirm `cloud.token` is present in `~/.coro/config.json`.
+
+**Plugin not loading**
+
+- Drop-ins: `~/.coro/plugins/<id>/coro-plugin.json` and restart the runner.
+- Built-ins: check `plugins.installed.<id>.enabled` and config in Settings.
+- `coro plugin list` with runner online.
+
+**`tenant.overlay` not applied**
+
+- `localDir` path must exist and be absolute.
+- For `gitRemote`, delete `~/.coro/cache/tenant-overlays/<tenantId>/` to force
+  re-clone; use `LOG_LEVEL=debug` on the runner for loader logs.
+
+---
+
+## Related docs
+
+| Document | Content |
+| -------- | ------- |
+| [architecture-overview.md](architecture-overview.md) | Plain-English system tour |
+| [architecture.md](architecture.md) | Full architecture + layered intelligence |
+| [agent-host-spec.md](agent-host-spec.md) | Runner HTTP API, MCP tools, job lifecycle |
+| [desktop-packaging.md](desktop-packaging.md) | Desktop release and updater |
+| [workflow-extension-contract.md](workflow-extension-contract.md) | Workflow/plugin extension points |
+| [../README.md](../README.md) | Product overview and downloads |
+| [../CONTRIBUTING.md](../CONTRIBUTING.md) | PR process, CLA, help wanted |
