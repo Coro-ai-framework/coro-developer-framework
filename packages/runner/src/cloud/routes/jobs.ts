@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 import { Router, Request, Response } from 'express'
 import type { CloudDb } from '../db/connection'
 import type { CloudConfig } from '../config'

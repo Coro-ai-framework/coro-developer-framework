@@ -1,0 +1,17 @@
+Coro Cloud Control Plane — Commercial License
+
+Copyright (c) 2026 Emre Ertugrul. All Rights Reserved.
+
+The source code in this directory (`packages/runner/src/cloud/`) and its
+subdirectories is part of Coro Cloud, the commercial hosted control plane.
+
+You may view and fork this code for evaluation and transparency. You may not
+use, copy, modify, merge, publish, distribute, sublicense, or sell copies of
+this software, or operate it in production (including self-hosting for your
+organization or for third parties), without a separate written commercial
+agreement with the Licensor.
+
+The remainder of the Coro repository is licensed under the Business Source
+License 1.1 (see the root LICENSE file and NOTICE.md).
+
+SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0

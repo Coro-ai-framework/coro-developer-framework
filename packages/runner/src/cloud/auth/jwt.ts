@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 import { SignJWT, jwtVerify } from 'jose'
 import type { CloudConfig } from '../config'
 

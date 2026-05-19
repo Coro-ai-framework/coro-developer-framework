@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 import { Router, Request, Response } from 'express'
 import crypto from 'crypto'
 import bcrypt from 'bcryptjs'

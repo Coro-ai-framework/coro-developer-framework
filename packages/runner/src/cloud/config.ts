@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 import { z } from 'zod'
 
 const cloudConfigSchema = z.object({

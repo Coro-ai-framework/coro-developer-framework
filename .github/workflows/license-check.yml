@@ -1,0 +1,33 @@
+name: License check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Reject GPL/AGPL dependencies
+        run: |
+          set -euo pipefail
+          if pnpm licenses list 2>/dev/null | grep -qiE '(^|[^a-z])(GPL|AGPL)'; then
+            echo "::error::Found GPL/AGPL (or similar copyleft) in the dependency tree:"
+            pnpm licenses list | grep -iE 'GPL|AGPL' || true
+            exit 1
+          fi
+          echo "No GPL/AGPL licenses detected."

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 // ── Webhook routes ────────────────────────────────────────────────────────────
 //
 // Per-team webhook endpoints. P4 collapsed every legacy provider-named

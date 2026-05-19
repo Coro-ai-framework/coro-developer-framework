@@ -2,7 +2,7 @@
   "name": "@coro/plugin-sdk",
   "version": "0.1.0",
   "description": "Public SDK for authoring Coro plugins (SCM, tracker, …). Re-exports the runner's plugin contracts plus a small set of authoring helpers (HMAC verification, base classes, MCP-server descriptors).",
-  "license": "UNLICENSED",
+  "license": "BUSL-1.1",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

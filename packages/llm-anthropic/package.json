@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Anthropic Claude phase executor for Coro — wraps the Claude Agent SDK and exposes it through the PhaseExecutorRuntime contract.",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "BUSL-1.1",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

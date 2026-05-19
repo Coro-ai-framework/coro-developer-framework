@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 import crypto from 'crypto'
 import { eq, and, sql, asc, desc } from 'drizzle-orm'
 import type { CloudDb } from '../db/connection'

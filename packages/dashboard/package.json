@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Coro Dashboard — multi-tenant agent platform UI",
+  "license": "BUSL-1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "[enhancement]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What pain does this solve? Who is it for?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Plugins, overlays, workarounds, or other tools
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Runner / CLI
+        - Dashboard
+        - Intelligence (agents, workflows, skills)
+        - Plugins / plugin-sdk
+        - Cloud control plane (commercial)
+        - Documentation
+        - Other
+    validations:
+      required: true

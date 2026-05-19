@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Coro Desktop Shell — Electron wrapper for the Coro runner and dashboard",
+  "license": "BUSL-1.1",
   "author": "Coro",
   "main": "dist/main.js",
   "engines": {

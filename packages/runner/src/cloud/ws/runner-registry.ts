@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 // ── Runner registry ───────────────────────────────────────────────────────────
 //
 // Tracks which runners are connected per team. Used by the WebSocket gateway

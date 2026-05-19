@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 import { Request, Response, NextFunction } from 'express'
 import { verifyToken, AccessTokenPayload, RunnerTokenPayload } from './jwt'
 import type { CloudConfig } from '../config'

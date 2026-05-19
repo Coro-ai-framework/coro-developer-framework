@@ -2,7 +2,7 @@
   "name": "@coro/plugin-gitlab",
   "version": "0.1.0",
   "description": "GitLab SCM plugin for Coro. MCP-mode plugin that delegates day-to-day SCM operations to the upstream `@modelcontextprotocol/server-gitlab` server while keeping the small set of native responsibilities Coro requires (clone URLs, webhook normalization, polling, self-improvement PR creation).",
-  "license": "UNLICENSED",
+  "license": "BUSL-1.1",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

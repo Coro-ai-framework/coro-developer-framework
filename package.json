@@ -2,6 +2,7 @@
   "name": "coro",
   "version": "0.1.0",
   "description": "Coro — multi-tenant, plug-and-play AI agent platform",
+  "license": "BUSL-1.1",
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "engines": {

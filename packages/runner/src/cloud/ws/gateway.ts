@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Coro-Commercial-1.0
+
 // ── WebSocket Gateway ─────────────────────────────────────────────────────────
 //
 // Handles the /ws/runner upgrade endpoint on the cloud control plane.

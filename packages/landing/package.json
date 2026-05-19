@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Coro Landing — brand landing page for the AI workflow harness",
+  "license": "BUSL-1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -64,5 +64,5 @@ operations that run outside any active `query()` session.
 
 ## License
 
-UNLICENSED — published as a reference implementation. Pin to a
+BUSL-1.1 — published as a reference implementation. Pin to a
 specific version when shipping in production.

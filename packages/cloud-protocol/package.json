@@ -2,7 +2,7 @@
   "name": "@coro/cloud-protocol",
   "version": "0.1.0",
   "description": "Wire protocol shared between the Coro runner and the Coro cloud control plane. Pure TypeScript types, Zod schemas, and protocol constants — zero runtime side effects.",
-  "license": "UNLICENSED",
+  "license": "BUSL-1.1",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
