@@ -51,8 +51,11 @@ import { registerAnthropicHttpRoutes } from './http-routes'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
+import { healMcpTransport, isCoroMcpHealthy, MCP_RETRY_NUDGE } from './mcp-heal'
 import { reattachDynamicMcpServers } from './mcp-reattach'
+import { isMcpTransportErrorText, isRecoverableSteeringAbort } from './steering-errors'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
+import type { SteeringInterruptMode } from '@coro/plugin-sdk'
 
 /** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
 interface NormalizedTokensMutable {
@@ -470,6 +473,14 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       ...(req.pluginMcpServers as unknown as Record<string, McpServerConfig>),
     }
 
+    const rebuildMcpMap = (): Record<string, McpServerConfig> => {
+      if (req.mcpRebuild) {
+        const fresh = req.mcpRebuild()
+        dynamicMcpServers.coro = fresh.instance as unknown as McpServerConfig
+      }
+      return dynamicMcpServers
+    }
+
     // Long-lived bidirectional input. The kickoff prompt is queued
     // immediately; the runner can push more SDKUserMessages via the
     // developerInput channel for the duration of the phase.
@@ -572,21 +583,43 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     // Capture the live Query handle and surface it through the
     // lifecycle controller so the runner / dispatcher can interrupt.
     //
-    // Calling `q.interrupt()` while an MCP tool call is in flight
-    // leaves the SDK<->subprocess MCP transport in a degraded state:
-    // pending control_request entries get aborted, and subsequent
-    // `mcp__coro__*` calls fail with `Request aborted` / `Stream closed`
-    // until the dynamic MCP server is re-attached. We set a flag here
-    // and trigger a re-attach on the next for-await iteration so the
-    // dispatcher's pause + steering interrupts don't break MCP for the
-    // remainder of the phase.
+    // `safe` steering skips interrupt while an MCP tool is in flight;
+    // `urgent` always interrupts and synchronously heals MCP (fresh
+    // Coro instance + setMcpServers) before returning.
     const liveQuery = queryStream as Query
-    let mcpReconnectPending = false
+    let inFlightMcpTool: string | null = null
+    let pendingInterruptHealLog: string | undefined
+
+    const healAfterInterrupt = async (): Promise<void> => {
+      try {
+        const refresh = await healMcpTransport({
+          liveQuery,
+          dynamicMcpServers,
+          serverName: 'coro',
+          forceReconnect: true,
+          rebuildServers: req.mcpRebuild ? rebuildMcpMap : undefined,
+        })
+        pendingInterruptHealLog =
+          `[control] MCP re-attached after interrupt — ` +
+          `status=${refresh.finalStatus ?? 'unknown'} ` +
+          `reconnected=${refresh.reconnected} ` +
+          `errors=${JSON.stringify(refresh.setResult.errors)}` +
+          (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : '')
+      } catch (err) {
+        pendingInterruptHealLog = `[control] MCP re-attach after interrupt failed: ${String(err)}`
+      }
+    }
+
     const controller: ExecutorSessionController = {
-      interrupt: () => {
-        mcpReconnectPending = true
-        return liveQuery.interrupt()
+      interrupt: async (options?: { mode?: SteeringInterruptMode }) => {
+        const mode = options?.mode ?? 'urgent'
+        if (mode === 'safe' && inFlightMcpTool) {
+          return
+        }
+        await liveQuery.interrupt()
+        await healAfterInterrupt()
       },
+      getSteeringState: () => ({ inFlightMcpTool }),
     }
     req.lifecycle?.onSessionStart?.(controller)
 
@@ -609,7 +642,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
           },
           'Refreshed dynamic A5 MCP server on resumed query',
         )
-        if (mcpRefresh.setResult.errors['a5'] || mcpRefresh.finalStatus === 'failed' || mcpRefresh.reconnectError) {
+        if (mcpRefresh.setResult.errors['coro'] || mcpRefresh.finalStatus === 'failed' || mcpRefresh.reconnectError) {
           yield {
             type: 'log',
             level: 'warn',
@@ -649,39 +682,13 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
           yield { type: 'log', level: 'info', message: `[sdk-stderr] ${this._stderrBuffer.shift()!}` }
         }
 
-        // Re-attach dynamic MCP servers after a controller-initiated
-        // interrupt so the agent's next `mcp__coro__*` call lands on a
-        // healthy transport. See the comment above `liveQuery` for why.
-        if (mcpReconnectPending) {
-          mcpReconnectPending = false
-          try {
-            // `forceReconnect: true` — the SDK reports status='connected'
-            // after an interrupt even when the request/response
-            // correlation table is corrupted. Always rebuild the
-            // transport so the next `mcp__coro__*` call lands on a
-            // freshly-handshaked channel.
-            const refresh = await reattachDynamicMcpServers(
-              liveQuery,
-              dynamicMcpServers,
-              'coro',
-              { forceReconnect: true },
-            )
-            yield {
-              type: 'log',
-              level: refresh.reconnectError ? 'warn' : 'info',
-              message:
-                `[control] MCP re-attached after interrupt — ` +
-                `status=${refresh.finalStatus ?? 'unknown'} ` +
-                `reconnected=${refresh.reconnected} ` +
-                `errors=${JSON.stringify(refresh.setResult.errors)}` +
-                (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : ''),
-            }
-          } catch (err) {
-            yield {
-              type: 'log',
-              level: 'warn',
-              message: `[control] MCP re-attach after interrupt failed: ${String(err)}`,
-            }
+        if (pendingInterruptHealLog) {
+          const msg = pendingInterruptHealLog
+          pendingInterruptHealLog = undefined
+          yield {
+            type: 'log',
+            level: msg.includes('failed') ? 'warn' : 'info',
+            message: msg,
           }
         }
 
@@ -736,11 +743,13 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
                 yield { type: 'thinking', content: block['thinking'] as string }
               } else if (bt === 'tool_use' || bt === 'mcp_tool_use') {
                 const toolName = String(block['name'] ?? 'unknown')
+                const isMcp = toolName.startsWith('mcp__')
+                if (isMcp) inFlightMcpTool = toolName
                 yield {
                   type: 'tool_call',
                   toolName,
                   input: block['input'],
-                  isMcp: toolName.startsWith('mcp__'),
+                  isMcp,
                 }
               }
             }
@@ -768,6 +777,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         // etc.). Without this the agent loses MCP tools for the rest
         // of the phase. With this it transparently retries.
         if (eventType === 'user') {
+          inFlightMcpTool = null
           const betaMsg = message['message'] as Record<string, unknown> | undefined
           const content = betaMsg?.['content']
           if (Array.isArray(content)) {
@@ -782,28 +792,20 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
                       .map(c => typeof c['text'] === 'string' ? (c['text'] as string) : '')
                       .join(' ')
                   : ''
-              if (/stream closed|request aborted|mcp(?:\s+|.*)(?:error|closed|disconnected)|connection closed/i.test(text)) {
-                // Eager reattach. The previous lazy implementation
-                // flipped `mcpReconnectPending` and waited for the
-                // next loop iteration to rebuild the transport, but
-                // if the failing tool_result was the last item in
-                // the agent's turn (stop_reason=tool_use, no
-                // follow-up message) the loop would block on
-                // `for await` forever and the reattach would never
-                // run. Do it inline so the transport is healed
-                // before we even yield the warning.
+              if (isMcpTransportErrorText(text)) {
                 yield {
                   type: 'log',
                   level: 'warn',
                   message: `[control] MCP tool_result error detected — reconnecting now. detail=${text.slice(0, 200)}`,
                 }
                 try {
-                  const refresh = await reattachDynamicMcpServers(
+                  const refresh = await healMcpTransport({
                     liveQuery,
                     dynamicMcpServers,
-                    'coro',
-                    { forceReconnect: true },
-                  )
+                    serverName: 'coro',
+                    forceReconnect: true,
+                    rebuildServers: req.mcpRebuild ? rebuildMcpMap : undefined,
+                  })
                   yield {
                     type: 'log',
                     level: refresh.reconnectError ? 'warn' : 'info',
@@ -814,39 +816,12 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
                       `errors=${JSON.stringify(refresh.setResult.errors)}` +
                       (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : ''),
                   }
-                  // Tell the agent the failure was transient so it
-                  // retries instead of replanning around the error
-                  // (which is what it would otherwise do — we have
-                  // logs of agents inventing GOPROXY=direct
-                  // workarounds after a single MCP transport blip).
-                  //
-                  // Gate on the correct success signal: `setMcpServers`
-                  // returning no error for our server AND the SDK
-                  // reporting transport=connected (or null, meaning
-                  // status-unknown — common right after re-registration
-                  // for SDK-type servers). DO NOT gate on
-                  // `refresh.reconnected`: for in-process SDK servers
-                  // like our `coro` MCP server, `reconnectMcpServer`
-                  // is a no-op rejected by the SDK with
-                  // "SDK servers should be handled in print.ts", so
-                  // `reconnected` is structurally always false for
-                  // our setup and gating on it leaves the agent
-                  // hanging on a closed stream forever.
-                  const coroErrored = Boolean(refresh.setResult.errors['coro'])
-                  const transportOk = refresh.finalStatus === 'connected' || refresh.finalStatus === null
-                  if (!coroErrored && transportOk) {
+                  if (isCoroMcpHealthy(refresh)) {
                     pushable.push({
                       type: 'user',
                       message: {
                         role: 'user',
-                        content: [{
-                          type: 'text',
-                          text:
-                            '[system notice] Your previous tool call failed because the MCP transport ' +
-                            'was reset (typically by a developer steering interrupt or a transient SDK ' +
-                            'race). The connection has been rebuilt and is healthy. Retry the exact same ' +
-                            'tool call — do NOT change your plan or invent workarounds based on this failure.',
-                        }],
+                        content: [{ type: 'text', text: MCP_RETRY_NUDGE }],
                       },
                       parent_tool_use_id: null,
                     })
@@ -866,6 +841,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         }
 
         if (eventType === 'tool_use_summary') {
+          inFlightMcpTool = null
           const summary = message['summary']
           if (typeof summary === 'string' && summary.trim()) {
             yield { type: 'log', level: 'info', message: `[tool_summary] ${summary}` }
@@ -1004,6 +980,25 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         },
       }
     } catch (err) {
+      if (isRecoverableSteeringAbort(err)) {
+        stopReason = 'interrupted'
+        const detail = err instanceof Error ? err.message : String(err)
+        yield {
+          type: 'log',
+          level: 'info',
+          message: `[control] Recoverable steering interrupt — ${detail.slice(0, 300)}`,
+        }
+        yield {
+          type: 'done',
+          stopReason,
+          sessionState: { sessionId },
+          metrics: {
+            ...(durationMs !== undefined ? { durationMs } : {}),
+            ...(durationApiMs !== undefined ? { durationApiMs } : {}),
+            numTurns: numTurns || phaseTurns,
+          },
+        }
+      } else {
       // Classify provider rate-limit / overloaded errors so the runner
       // can park the job into STATUS_AWAITING_RATE_LIMIT and schedule
       // an auto-resume instead of treating it as a generic crash. All
@@ -1067,8 +1062,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         throw new RateLimitExceededError(ANTHROPIC_PLUGIN_ID, info, { cause: err })
       }
       throw err
+      }
     } finally {
-      pushable.close()
+      if (pushable.isEmpty()) {
+        pushable.close()
+      }
       req.lifecycle?.onSessionEnd?.()
     }
   }

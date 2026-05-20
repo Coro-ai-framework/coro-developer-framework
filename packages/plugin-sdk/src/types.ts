@@ -521,6 +521,12 @@ export interface PhaseExecutionRequest {
   intelligenceDir: string
   /** In-process Coro MCP server descriptor; always provided. */
   mcpServer: McpServerDescriptor
+  /**
+   * Optional rebuild hook for the in-process Coro MCP server. The Anthropic
+   * executor calls this after an urgent steering interrupt so `setMcpServers`
+   * registers a fresh SDK instance (reconnect is a no-op for SDK servers).
+   */
+  mcpRebuild?: () => McpServerDescriptor
   /** External plugin MCP servers (SCM, tracker, …) keyed by plugin id. */
   pluginMcpServers: Record<string, PluginMcpServerConfig>
   /** Optional subagent specs the executor may dispatch. */
@@ -562,12 +568,27 @@ export interface PhaseExecutorMetrics {
 }
 
 /**
+ * How aggressively to preempt the current agent turn when steering.
+ *
+ * - `safe` — queue the message; skip `interrupt()` while an MCP tool is
+ *   in flight so the transport is not torn down mid-request.
+ * - `urgent` — always `interrupt()` and synchronously heal MCP before
+ *   returning (used for pause and when no MCP tool is active).
+ */
+export type SteeringInterruptMode = 'safe' | 'urgent'
+
+/**
  * Live session controller exposed by the executor at session-start time.
  * The dispatcher uses {@link ExecutorSessionController.interrupt} to
  * cancel an in-flight tool loop (e.g. on developer escalation).
  */
 export interface ExecutorSessionController {
-  interrupt(): Promise<void>
+  interrupt(options?: { mode?: SteeringInterruptMode }): Promise<void>
+  /**
+   * Optional steering snapshot. Anthropic executor reports in-flight MCP
+   * tools so the dispatcher can choose safe vs urgent interrupt.
+   */
+  getSteeringState?(): { inFlightMcpTool: string | null }
 }
 
 /**

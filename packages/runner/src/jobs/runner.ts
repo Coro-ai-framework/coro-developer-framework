@@ -32,6 +32,7 @@ import type {
   PluginMcpServerConfig,
 } from '../plugins/types'
 import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../prompt/builder'
+import { isRecoverableSteeringAbort } from '@coro/llm-anthropic'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
@@ -551,11 +552,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const hasCrossProviderSubagent = (phaseConf?.subagents ?? []).some(
         sa => sa.provider && sa.provider !== executor.manifest.id,
       )
-      const mcpServer = createCoroMcpServer(toolCtx, signals, {
+      const mcpServerOpts = {
         registerFileTools: !executor.capabilities.supportsNativeFileTools,
         registerRunSubagent:
           !executor.capabilities.supportsNativeSubagents || hasCrossProviderSubagent,
-      })
+      }
+      let phaseMcpServer = createCoroMcpServer(toolCtx, signals, mcpServerOpts)
 
       const systemPrompt = await buildSystemPrompt(
         liveJob,
@@ -734,7 +736,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         model,
         cwd: workingDir,
         intelligenceDir: jobIntelligenceDir,
-        mcpServer: { kind: 'sdk-instance', id: 'coro', instance: mcpServer },
+        mcpServer: { kind: 'sdk-instance', id: 'coro', instance: phaseMcpServer },
+        mcpRebuild: () => {
+          phaseMcpServer = createCoroMcpServer(toolCtx, signals, mcpServerOpts)
+          return { kind: 'sdk-instance' as const, id: 'coro', instance: phaseMcpServer }
+        },
         pluginMcpServers: mergedPluginMcpServers,
         subagents: subagentSpecs,
         hookPolicy: {
@@ -1284,6 +1290,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       await stateBackend.appendLog(
         liveJob.id,
         `[control] Agent stream stopped after pause/park — current turn ended at the safe boundary.`,
+      )
+    } else if (isRecoverableSteeringAbort(err)) {
+      logger.info(
+        { jobId: liveJob.id, err: String(err) },
+        'Agent stream ended after recoverable steering interrupt — not marking job failed',
+      )
+      await stateBackend.appendLog(
+        liveJob.id,
+        `[control] Agent turn ended after developer steering interrupt — job continues.`,
       )
     } else {
       logger.error({ err, jobId: liveJob.id }, 'Runner crashed — marking job failed')

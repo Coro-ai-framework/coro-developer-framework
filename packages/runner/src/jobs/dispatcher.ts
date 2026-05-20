@@ -223,7 +223,7 @@ export class Dispatcher {
     // notice the parked status and exit cleanly regardless.
     if (q) {
       void Promise.resolve()
-        .then(() => q.interrupt())
+        .then(() => q.interrupt({ mode: 'urgent' }))
         .catch(err => {
           this.ctx.logger.debug(
             { jobId, err },
@@ -742,14 +742,12 @@ export class Dispatcher {
       //      iteration. The pushable stays open for the entire phase,
       //      so stdin to the Claude Code subprocess is never closed
       //      mid-phase — MCP keeps working, no race, no timeout.
-      //   2. If a Query handle is registered (the agent is mid-turn /
-      //      mid-tool-use), call `q.interrupt()` so the agent yields
-      //      and reads the queued message immediately. We `await` it
-      //      with a generous timeout so the dashboard reflects when
-      //      the agent has actually acknowledged the steering — but
-      //      we never block the HTTP response indefinitely. If the
-      //      interrupt times out the message still goes through; the
-      //      agent will pick it up when it finishes its current turn.
+      //   2. If a Query handle is registered, call `q.interrupt()` so
+      //      the agent yields and reads the queued message. Use `safe`
+      //      mode while an MCP tool is in flight (message queues, no
+      //      transport tear-down); otherwise `urgent` (interrupt +
+      //      synchronous MCP heal). We `await` with a generous timeout
+      //      but never block the HTTP response indefinitely.
       //   3. If no Query is registered yet (push() raced ahead of
       //      query()'s synchronous return), the SDK will read the
       //      message on its very first iteration. No interrupt needed
@@ -764,9 +762,11 @@ export class Dispatcher {
 
       if (q) {
         const INTERRUPT_TIMEOUT_MS = 10_000
+        const inFlightMcp = q.getSteeringState?.()?.inFlightMcpTool
+        const mode = inFlightMcp ? 'safe' as const : 'urgent' as const
         try {
           await Promise.race([
-            q.interrupt(),
+            q.interrupt({ mode }),
             new Promise<void>((_, reject) =>
               setTimeout(
                 () => reject(new Error(`interrupt() did not ack within ${INTERRUPT_TIMEOUT_MS}ms`)),
@@ -776,8 +776,14 @@ export class Dispatcher {
           ])
         } catch (err) {
           this.ctx.logger.warn(
-            { jobId, err },
+            { jobId, err, mode, inFlightMcp },
             'q.interrupt() failed or timed out — message is queued and will be read at next agent turn',
+          )
+        }
+        if (mode === 'safe') {
+          await this.ctx.stateBackend.appendLog(
+            jobId,
+            '[control] Steering message queued — MCP tool in flight; will apply after the current tool completes.',
           )
         }
       }

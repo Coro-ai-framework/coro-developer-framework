@@ -297,6 +297,38 @@ Developer-driven resumption (`coro resume <jobId>`, dashboard "resume"
 button, or `coro message <jobId> <text>`) goes through the same
 dispatcher path.
 
+### 7.5 Mid-phase steering (Anthropic)
+
+While a job is actively running, the dashboard can send a developer
+message without rebuilding the session:
+
+1. **Push** — the message is framed as `[DEVELOPER MESSAGE]` and appended
+   to the phase-long `PushableInput` stream (not `Query.streamInput()`,
+   which would close stdin and break MCP).
+2. **Interrupt** — optional `Query.interrupt()` so the agent yields and
+   reads the queued message on the next iteration.
+
+Two interrupt modes (see `ExecutorSessionController` in
+`@coro/plugin-sdk`):
+
+| Mode | When | Behavior |
+|------|------|----------|
+| `safe` | Default while `mcp__*` tool in flight | Message is queued only; no interrupt (avoids aborting in-flight MCP control requests). |
+| `urgent` | No MCP tool in flight, or **Pause** | `interrupt()` plus synchronous MCP heal: fresh Coro SDK instance via `mcpRebuild`, then `setMcpServers`. |
+
+**Pause** is distinct from steering: it parks the job first, then calls
+`interrupt({ mode: 'urgent' })` and closes the developer-input channel
+so the phase can end cleanly.
+
+Recoverable SDK errors after interrupt (`[ede_diagnostic]`,
+`Request was aborted`) are **not** treated as job failures — the
+executor emits `stopReason: 'interrupted'` and the runner logs a
+control message instead of setting `STATUS_FAILED`.
+
+MCP transport blips (`Stream closed`, etc.) trigger inline
+`healMcpTransport()` and an optional retry nudge so the agent retries
+the same tool call instead of replanning.
+
 ---
 
 ## 8. Intelligence resolution
