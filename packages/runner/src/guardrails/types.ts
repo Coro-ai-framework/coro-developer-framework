@@ -69,3 +69,8 @@ export type GuardrailCheckFn = (
 export const SCM_CREATE_PR_TOOL_NAMES = new Set([
   'mcp__coro__scm_create_pr',
 ])
+
+/** Tool names that represent `scm.merge_pr` at the executor boundary. */
+export const SCM_MERGE_PR_TOOL_NAMES = new Set([
+  'mcp__coro__scm_merge_pr',
+])

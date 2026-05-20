@@ -100,6 +100,8 @@ When approval and CI conditions are met:
 
 **Hard rule — no exceptions:** if at any point you find yourself about to call `scm_merge_pr` without having just confirmed `approvalCount >= 1` via a fresh `scm_get_pr_status` call in this same turn, stop and run the status check first. "I remember an approval from earlier" is not sufficient. "The reviewer said it looked good in a comment" is not sufficient. Only an `APPROVED` review reflected in `scm_get_pr_status.approvalCount` counts.
 
+**Runner guardrails** also block `scm_merge_pr` during review phases when `approvalCount` is below the configured minimum (default: 1). If denied, call `scm_get_pr_status`, wait for human approval (`await_event` with `pr:approved`), then retry merge.
+
 ### 5. Capture cross-PR patterns
 
 Before ending your turn, look at recent comments and the `code-reviewer` verdict. If the same kind of issue is showing up across multiple PRs (recurring style violation, recurring test gap, recurring API misuse), record it via `mcp__coro__add_insight`. The Evaluator consolidates these into self-improvement proposals at the end of the job — do not call `propose_change` yourself unless you are sure the Evaluator will not see it.

@@ -67,7 +67,7 @@ import {
   RateLimitExceededError,
   nextBackoffMs,
 } from '@coro/plugin-sdk'
-import { createGuardrailEngine } from '../guardrails'
+import { createGuardrailEngine, createGuardrailScmDeps } from '../guardrails'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -713,7 +713,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const abortController = new AbortController()
 
-      const guardrailEngine = createGuardrailEngine(loadLocalConfig())
+      const guardrailEngine = createGuardrailEngine(loadLocalConfig(), {
+        scm: createGuardrailScmDeps(toolCtx),
+      })
       const guardrailPreToolUse = (toolName: string, input: unknown) => {
         const toolInput = (input && typeof input === 'object')
           ? input as Record<string, unknown>

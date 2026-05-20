@@ -58,6 +58,34 @@ function PrDescriptionFields({
   )
 }
 
+function MergeRequiresApprovalFields({
+  rule,
+  onConfigChange,
+}: {
+  rule: GuardrailRuleDraft
+  onConfigChange: (config: Record<string, unknown>) => void
+}) {
+  const config = rule.config ?? {}
+  const minApprovals = typeof config.minApprovals === 'number' ? config.minApprovals : 1
+
+  return (
+    <Field label="Minimum human approvals">
+      <Input
+        type="number"
+        min={0}
+        value={minApprovals}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => {
+          const n = Number(e.target.value)
+          onConfigChange({
+            ...config,
+            minApprovals: Number.isFinite(n) ? n : 1,
+          })
+        }}
+      />
+    </Field>
+  )
+}
+
 function PrDiffSizeFields({
   rule,
   onConfigChange,
@@ -159,6 +187,11 @@ export default function GuardrailsSection() {
               />
             ) : rule.check === 'pr-diff-size' ? (
               <PrDiffSizeFields
+                rule={rule}
+                onConfigChange={config => setGuardrailRuleConfig(rule.id, config)}
+              />
+            ) : rule.check === 'merge-requires-approval' ? (
+              <MergeRequiresApprovalFields
                 rule={rule}
                 onConfigChange={config => setGuardrailRuleConfig(rule.id, config)}
               />

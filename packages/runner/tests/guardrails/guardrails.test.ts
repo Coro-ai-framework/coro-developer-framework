@@ -33,12 +33,13 @@ function minimalJob(overrides: Partial<Job> = {}): Job {
 }
 
 describe('resolveGuardrails', () => {
-  it('loads bundled defaults with two PR rules', () => {
+  it('loads bundled defaults with PR and merge rules', () => {
     const { bundled, resolved } = resolveGuardrails(null)
-    expect(bundled.rules.length).toBeGreaterThanOrEqual(2)
+    expect(bundled.rules.length).toBeGreaterThanOrEqual(3)
     expect(resolved.enabled).toBe(true)
     expect(resolved.rules.some(r => r.id === 'pr-description')).toBe(true)
     expect(resolved.rules.some(r => r.id === 'pr-diff-size')).toBe(true)
+    expect(resolved.rules.some(r => r.id === 'merge-requires-approval')).toBe(true)
   })
 
   it('merges overrides by id', () => {
@@ -109,6 +110,86 @@ describe('GuardrailEngine scope', () => {
       }),
     )
     expect(planning.allow).toBe(true)
+  })
+})
+
+describe('GuardrailEngine merge-requires-approval', () => {
+  const scmOk = (approvalCount: number) => ({
+    scm: {
+      getPrApprovalStatus: vi.fn(async () => ({
+        ok: true as const,
+        approvalCount,
+        state: 'open',
+      })),
+    },
+  })
+
+  it('blocks merge when approval count is below minimum', async () => {
+    const engine = GuardrailEngine.fromResolved(
+      resolveGuardrails(null).resolved,
+      scmOk(0),
+    )
+    const decision = await engine.evaluate(
+      'scm.merge_pr',
+      buildGuardrailContext({
+        on: 'scm.merge_pr',
+        toolInput: { repo: 'my-repo', prId: 42 },
+        job: minimalJob({ phase: 'review' }),
+        workingDir: '/tmp/wd',
+      }),
+    )
+    expect(decision.allow).toBe(false)
+    expect(decision.reason).toMatch(/approval/i)
+  })
+
+  it('allows merge when approvals meet minimum', async () => {
+    const engine = GuardrailEngine.fromResolved(
+      resolveGuardrails(null).resolved,
+      scmOk(1),
+    )
+    const decision = await engine.evaluate(
+      'scm.merge_pr',
+      buildGuardrailContext({
+        on: 'scm.merge_pr',
+        toolInput: { repo: 'my-repo', prId: 42 },
+        job: minimalJob({ phase: 'review' }),
+        workingDir: '/tmp/wd',
+      }),
+    )
+    expect(decision.allow).toBe(true)
+  })
+
+  it('does not run during coding phase', async () => {
+    const fetch = vi.fn()
+    const engine = GuardrailEngine.fromResolved(
+      resolveGuardrails(null).resolved,
+      { scm: { getPrApprovalStatus: fetch } },
+    )
+    const decision = await engine.evaluate(
+      'scm.merge_pr',
+      buildGuardrailContext({
+        on: 'scm.merge_pr',
+        toolInput: { repo: 'my-repo', prId: 42 },
+        job: minimalJob({ phase: 'coding' }),
+        workingDir: '/tmp/wd',
+      }),
+    )
+    expect(decision.allow).toBe(true)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('runs for scm_merge_pr via evaluateToolBefore', async () => {
+    const engine = GuardrailEngine.fromResolved(
+      resolveGuardrails(null).resolved,
+      scmOk(0),
+    )
+    const decision = await engine.evaluateToolBefore({
+      toolName: 'mcp__coro__scm_merge_pr',
+      toolInput: { repo: 'my-repo', prId: 7 },
+      job: minimalJob({ phase: 'review-and-verify' }),
+      workingDir: '/tmp/wd',
+    })
+    expect(decision.allow).toBe(false)
   })
 })
 

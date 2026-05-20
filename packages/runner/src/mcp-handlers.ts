@@ -9,6 +9,7 @@ import { PluginResolutionError } from './plugins/registry'
 import {
   buildGuardrailContext,
   createGuardrailEngine,
+  createGuardrailScmDeps,
 } from './guardrails'
 import { loadLocalConfig } from './config/local-config'
 
@@ -193,6 +194,9 @@ function prRef(scm: ScmPluginRuntime, repo: string, prId: number | string): Exte
 export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const text = mcpText
   const error = mcpError
+  const guardrailEngine = createGuardrailEngine(loadLocalConfig(), {
+    scm: createGuardrailScmDeps(ctx),
+  })
 
   const setWorkItems = async ({ workItems }: { workItems: string[] }) => {
     const items: WorkItem[] = workItems.map(name => ({
@@ -259,7 +263,6 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     reviewers?: string[]
   }) => {
     const jobDir = jobWorkingDir()
-    const engine = createGuardrailEngine(loadLocalConfig())
     const guardCtx = buildGuardrailContext({
       on: 'scm.create_pr',
       toolName: 'mcp__coro__scm_create_pr',
@@ -267,7 +270,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       job: ctx.job,
       workingDir: jobDir,
     })
-    const guardDecision = await engine.evaluate('scm.create_pr', guardCtx)
+    const guardDecision = await guardrailEngine.evaluate('scm.create_pr', guardCtx)
     if (!guardDecision.allow) {
       return mcpError(guardDecision.reason ?? 'Guardrail blocked scm_create_pr.')
     }
@@ -429,6 +432,19 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const scm_merge_pr = async (args: {
     pluginId?: string; repo: string; prId: number | string; message?: string; strategy?: 'merge' | 'squash' | 'rebase'
   }) => {
+    const jobDir = jobWorkingDir()
+    const guardCtx = buildGuardrailContext({
+      on: 'scm.merge_pr',
+      toolName: 'mcp__coro__scm_merge_pr',
+      toolInput: args as unknown as Record<string, unknown>,
+      job: ctx.job,
+      workingDir: jobDir,
+    })
+    const guardDecision = await guardrailEngine.evaluate('scm.merge_pr', guardCtx)
+    if (!guardDecision.allow) {
+      return mcpError(guardDecision.reason ?? 'Guardrail blocked scm_merge_pr.')
+    }
+
     const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     if (!r.scm.mergePr) {

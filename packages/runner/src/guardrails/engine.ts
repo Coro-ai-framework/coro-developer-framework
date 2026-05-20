@@ -5,11 +5,14 @@ import {
   type EffectiveGuardrailRule,
   type ResolvedGuardrails,
   SCM_CREATE_PR_TOOL_NAMES,
+  SCM_MERGE_PR_TOOL_NAMES,
 } from './types'
 import { checkPrDescription } from './checks/pr-description'
 import { checkPrDiffSize, gitDiffStat } from './checks/pr-diff-size'
+import { createMergeRequiresApprovalCheck } from './checks/merge-requires-approval'
 import { createScriptCheck } from './checks/script'
 import type { GuardrailCheckFn } from './types'
+import type { GuardrailScmDeps } from './scm-deps'
 
 function matchesGlob(pattern: string, value: string): boolean {
   if (!pattern.includes('*')) return pattern === value
@@ -36,19 +39,30 @@ function ruleMatchesScope(rule: EffectiveGuardrailRule, ctx: GuardrailContext): 
   return true
 }
 
+export interface GuardrailEngineOptions {
+  scm?: GuardrailScmDeps
+}
+
 export class GuardrailEngine {
   private readonly checks: Map<string, GuardrailCheckFn>
 
-  constructor(private readonly resolved: ResolvedGuardrails) {
+  constructor(
+    private readonly resolved: ResolvedGuardrails,
+    options: GuardrailEngineOptions = {},
+  ) {
     this.checks = new Map([
       ['pr-description', checkPrDescription],
       ['pr-diff-size', checkPrDiffSize],
+      ['merge-requires-approval', createMergeRequiresApprovalCheck(options.scm)],
       ['script', createScriptCheck(resolved.scriptsDir)],
     ])
   }
 
-  static fromResolved(resolved: ResolvedGuardrails): GuardrailEngine {
-    return new GuardrailEngine(resolved)
+  static fromResolved(
+    resolved: ResolvedGuardrails,
+    options?: GuardrailEngineOptions,
+  ): GuardrailEngine {
+    return new GuardrailEngine(resolved, options)
   }
 
   isEnabled(): boolean {
@@ -114,6 +128,14 @@ export class GuardrailEngine {
         on: 'scm.create_pr',
       })
       if (!prDecision.allow) return prDecision
+    }
+
+    if (SCM_MERGE_PR_TOOL_NAMES.has(args.toolName)) {
+      const mergeDecision = await this.evaluate('scm.merge_pr', {
+        ...ctx,
+        on: 'scm.merge_pr',
+      })
+      if (!mergeDecision.allow) return mergeDecision
     }
 
     return this.evaluate('tool.before', ctx)

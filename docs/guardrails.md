@@ -12,6 +12,7 @@ Built-in checks today:
 |---------|------|-------|---------|
 | `pr-description` | `scm.create_pr` | `pr-description` | Require a minimum-length PR body with `## What` |
 | `pr-diff-size` | `scm.create_pr` (coding phase) | `pr-diff-size` | Limit diff lines/files before opening a PR |
+| `merge-requires-approval` | `scm.merge_pr` (review phases) | `merge-requires-approval` | Require at least one human PR approval before merge |
 
 ## Settings
 
@@ -74,8 +75,8 @@ The runner loads the script on the next guardrail evaluation. Missing scripts fa
 | Field | Meaning |
 |-------|---------|
 | `id` | Stable name (used for overrides) |
-| `on` | `scm.create_pr` or `tool.before` |
-| `check` | `pr-description`, `pr-diff-size`, `script`, … |
+| `on` | `scm.create_pr`, `scm.merge_pr`, or `tool.before` |
+| `check` | `pr-description`, `pr-diff-size`, `merge-requires-approval`, `script`, … |
 | `config` | Check-specific options |
 | `during` | Optional phase list |
 | `script` | Basename for `check: script` |

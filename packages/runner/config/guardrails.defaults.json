@@ -25,6 +25,18 @@
         "maxLines": 500,
         "maxFiles": 40
       }
+    },
+    {
+      "id": "merge-requires-approval",
+      "title": "Merge requires approval",
+      "description": "Block scm_merge_pr until the PR has at least one human approval (verified via SCM status).",
+      "enabled": true,
+      "on": "scm.merge_pr",
+      "during": ["review", "review-and-verify"],
+      "check": "merge-requires-approval",
+      "config": {
+        "minApprovals": 1
+      }
     }
   ]
 }
