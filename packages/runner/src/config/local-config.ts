@@ -254,6 +254,27 @@ const localConfigSchema = z.object({
    * an operator may not want every job to see.
    */
   inheritClaudeCodeMcps: z.boolean().optional(),
+  /**
+   * Runner-enforced guardrails. Shipped defaults live in
+   * `packages/runner/config/guardrails.defaults.json`; this block
+   * holds overrides only (by rule `id`).
+   */
+  guardrails: z.object({
+    enabled: z.boolean().optional(),
+    rules: z.array(z.object({
+      id: z.string().min(1),
+      title: z.string().optional(),
+      description: z.string().optional(),
+      enabled: z.boolean().optional(),
+      on: z.enum(['scm.create_pr', 'tool.before']).optional(),
+      check: z.string().min(1).optional(),
+      config: z.record(z.string(), z.unknown()).optional(),
+      during: z.array(z.string()).optional(),
+      workflows: z.array(z.string()).optional(),
+      lanes: z.array(z.string()).optional(),
+      script: z.string().optional(),
+    }).passthrough()).optional(),
+  }).optional(),
 })
 
 export type LocalConfig = z.infer<typeof localConfigSchema>
@@ -310,6 +331,11 @@ export function defaultLoaderCacheRoot(): string {
  */
 export function defaultWriterCacheRoot(): string {
   return path.join(defaultConfigDir(), 'cache', 'writers')
+}
+
+/** User-authored guardrail scripts (`check: script`). */
+export function defaultGuardrailsScriptsDir(): string {
+  return path.join(defaultConfigDir(), 'guardrails')
 }
 
 // ── Read / Write ─────────────────────────────────────────────────────────────

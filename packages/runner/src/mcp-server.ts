@@ -92,7 +92,7 @@ export function createCoroMcpServer(
           pluginId: z.string().optional(),
           repo: z.string(),
           title: z.string(),
-          description: z.string().optional(),
+          description: z.string().min(1).describe('PR body (required). Include ## What and implementation details.'),
           sourceBranch: z.string(),
           targetBranch: z.string().optional(),
           reviewers: z.array(z.string()).optional(),

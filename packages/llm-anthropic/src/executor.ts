@@ -457,6 +457,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       workingDir: req.cwd,
       coroIntelligenceDir: req.intelligenceDir,
       allowedTools: req.hookPolicy.allowedTools ?? undefined,
+      hookPolicy: req.hookPolicy,
       logger: this.logger,
     })
 

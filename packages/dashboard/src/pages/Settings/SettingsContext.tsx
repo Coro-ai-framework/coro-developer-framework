@@ -128,15 +128,47 @@ export interface ConfigResponse {
     plugins?: PluginsConfigShape
     mcpServers?: Record<string, McpServerEntry>
     inheritClaudeCodeMcps?: boolean
+    guardrails?: {
+      enabled?: boolean
+      rules?: Array<{
+        id: string
+        enabled?: boolean
+        on?: string
+        check?: string
+        config?: Record<string, unknown>
+        script?: string
+      }>
+    }
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
   resolved: {
     intelligenceDir: string
     workingDir: string
+    guardrails?: {
+      enabled: boolean
+      rules: GuardrailRuleDraft[]
+      scriptsDir: string
+    }
   }
   configError?: string
   rawConfig?: unknown
+}
+
+// ── Guardrails (effective rules from GET /config resolved.guardrails) ───────
+
+export interface GuardrailRuleDraft {
+  id: string
+  title?: string
+  description?: string
+  enabled: boolean
+  on: string
+  check: string
+  config?: Record<string, unknown>
+  during?: string[]
+  script?: string
+  source?: 'bundled' | 'override' | 'custom'
+  scriptFileExists?: boolean
 }
 
 // ── Draft (the unified, dirty-tracked form state) ───────────────────────────
@@ -159,6 +191,10 @@ export interface SettingsDraft {
   intelligenceDir: string
   intelligenceRemote: string
   workingDir: string
+  // Guardrails
+  guardrailsEnabled: boolean
+  guardrailRules: GuardrailRuleDraft[]
+  guardrailsRulesText: string
 }
 
 const EMPTY_DRAFT: SettingsDraft = {
@@ -172,6 +208,9 @@ const EMPTY_DRAFT: SettingsDraft = {
   intelligenceDir: '',
   intelligenceRemote: '',
   workingDir: '',
+  guardrailsEnabled: true,
+  guardrailRules: [],
+  guardrailsRulesText: '[]',
 }
 
 // ── Section identity ────────────────────────────────────────────────────────
@@ -183,6 +222,7 @@ export type SettingsSectionId =
   | 'plugins'
   | 'mcp'
   | 'paths'
+  | 'guardrails'
 
 /** Static (non-plugin) field → section. Plugin entries are mapped
  * dynamically via the plugin manifest kind. */
@@ -196,6 +236,9 @@ const STATIC_FIELD_TO_SECTION: Partial<Record<keyof SettingsDraft, SettingsSecti
   intelligenceDir: 'paths',
   intelligenceRemote: 'paths',
   workingDir: 'paths',
+  guardrailsEnabled: 'guardrails',
+  guardrailRules: 'guardrails',
+  guardrailsRulesText: 'guardrails',
 }
 
 // ── Context shape ───────────────────────────────────────────────────────────
@@ -220,6 +263,8 @@ interface SettingsContextValue {
   setPluginField: (pluginId: string, field: string, value: unknown) => void
   setPluginEnabled: (pluginId: string, enabled: boolean) => void
   setPluginDefault: (kind: 'scm' | 'tracker', pluginId: string) => void
+  setGuardrailRuleEnabled: (ruleId: string, enabled: boolean) => void
+  setGuardrailRuleConfig: (ruleId: string, config: Record<string, unknown>) => void
   isDirty: boolean
   dirtyFields: Set<keyof SettingsDraft>
   dirtyPluginIds: Set<string>
@@ -373,6 +418,12 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     }
   }
 
+  const guardrailRules = (response.resolved?.guardrails?.rules ?? []).map(r => ({
+    ...r,
+    enabled: r.enabled !== false,
+  }))
+  const guardrailsRulesText = JSON.stringify(cfg?.guardrails?.rules ?? [], null, 2)
+
   return {
     llmDefaultProvider: cfg.llm?.defaultProvider ?? '',
     llmAliases: { ...(cfg.llm?.aliases ?? {}) },
@@ -384,6 +435,9 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     intelligenceDir: cfg.intelligence?.dir ?? '',
     intelligenceRemote: cfg.intelligence?.gitRemote ?? '',
     workingDir: cfg.paths?.workingDir ?? '',
+    guardrailsEnabled: response.resolved?.guardrails?.enabled ?? cfg?.guardrails?.enabled ?? true,
+    guardrailRules,
+    guardrailsRulesText,
   }
 }
 
@@ -521,6 +575,62 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     setSaveNotice(null)
   }, [])
 
+  const setGuardrailRuleEnabled = useCallback((ruleId: string, enabled: boolean) => {
+    setDraftState(previous => ({
+      ...previous,
+      guardrailRules: previous.guardrailRules.map(r =>
+        r.id === ruleId ? { ...r, enabled } : r,
+      ),
+    }))
+    setSaveError(null)
+    setSaveNotice(null)
+  }, [])
+
+  const setGuardrailRuleConfig = useCallback((ruleId: string, config: Record<string, unknown>) => {
+    setDraftState(previous => ({
+      ...previous,
+      guardrailRules: previous.guardrailRules.map(r =>
+        r.id === ruleId ? { ...r, config } : r,
+      ),
+    }))
+    setSaveError(null)
+    setSaveNotice(null)
+  }, [])
+
+  function buildGuardrailOverrides(
+    current: GuardrailRuleDraft[],
+    base: GuardrailRuleDraft[],
+  ): Array<Record<string, unknown>> {
+    const baseById = new Map(base.map(r => [r.id, r]))
+    const overrides: Array<Record<string, unknown>> = []
+    for (const rule of current) {
+      const orig = baseById.get(rule.id)
+      if (!orig) {
+        overrides.push({
+          id: rule.id,
+          on: rule.on,
+          check: rule.check,
+          enabled: rule.enabled,
+          ...(rule.config ? { config: rule.config } : {}),
+          ...(rule.script ? { script: rule.script } : {}),
+        })
+        continue
+      }
+      const row: Record<string, unknown> = { id: rule.id }
+      let changed = false
+      if (rule.enabled !== orig.enabled) {
+        row.enabled = rule.enabled
+        changed = true
+      }
+      if (JSON.stringify(rule.config ?? {}) !== JSON.stringify(orig.config ?? {})) {
+        row.config = rule.config ?? {}
+        changed = true
+      }
+      if (changed) overrides.push(row)
+    }
+    return overrides
+  }
+
   const dirtyFields = useMemo(() => {
     const out = new Set<keyof SettingsDraft>()
     ;(Object.keys(draft) as (keyof SettingsDraft)[]).forEach(key => {
@@ -642,6 +752,27 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
       body['paths'] = { workingDir: draft.workingDir || undefined }
     }
 
+    if (
+      dirtyFields.has('guardrailsEnabled') ||
+      dirtyFields.has('guardrailRules') ||
+      dirtyFields.has('guardrailsRulesText')
+    ) {
+      let rules: Array<Record<string, unknown>>
+      if (dirtyFields.has('guardrailsRulesText')) {
+        const parsed = JSON.parse(draft.guardrailsRulesText) as unknown
+        if (!Array.isArray(parsed)) {
+          throw new Error('guardrails.rules must be a JSON array.')
+        }
+        rules = parsed as Array<Record<string, unknown>>
+      } else {
+        rules = buildGuardrailOverrides(draft.guardrailRules, baselineRef.current.guardrailRules)
+      }
+      body['guardrails'] = {
+        enabled: draft.guardrailsEnabled,
+        rules,
+      }
+    }
+
     return body
   }, [draft, dirtyFields])
 
@@ -708,6 +839,8 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     setPluginField,
     setPluginEnabled,
     setPluginDefault,
+    setGuardrailRuleEnabled,
+    setGuardrailRuleConfig,
     isDirty,
     dirtyFields,
     dirtyPluginIds,

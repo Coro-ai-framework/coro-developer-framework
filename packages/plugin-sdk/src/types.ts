@@ -451,7 +451,7 @@ export interface HookPolicy {
   onPreToolUse?(
     toolName: string,
     input: unknown,
-  ): { allow: boolean; reason?: string }
+  ): { allow: boolean; reason?: string } | Promise<{ allow: boolean; reason?: string }>
 }
 
 /**

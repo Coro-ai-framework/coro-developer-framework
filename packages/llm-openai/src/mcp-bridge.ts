@@ -236,7 +236,7 @@ export class McpFunctionBridge {
       }
     }
 
-    const policy = this.enforcePolicy(binding.openAiName, binding.toolName, input)
+    const policy = await this.enforcePolicy(binding.openAiName, binding.toolName, input)
     if (!policy.allow) {
       const output = policy.reason ?? `Tool ${binding.openAiName} was blocked by policy.`
       return {
@@ -309,7 +309,7 @@ export class McpFunctionBridge {
       : prefix
   }
 
-  private enforcePolicy(openAiName: string, rawToolName: string, input: Record<string, unknown>): { allow: boolean; reason?: string } {
+  private async enforcePolicy(openAiName: string, rawToolName: string, input: Record<string, unknown>): Promise<{ allow: boolean; reason?: string }> {
     const allowed = this.opts.hookPolicy.allowedTools
     const allowedDecision = enforceAllowedTools(openAiName, allowed, { phase: this.opts.phase })
     if (!allowedDecision.allow) return allowedDecision
@@ -317,7 +317,7 @@ export class McpFunctionBridge {
     const rawAllowedDecision = enforceAllowedTools(rawToolName, allowed, { phase: this.opts.phase })
     if (!rawAllowedDecision.allow && allowed?.includes(openAiName) !== true) return rawAllowedDecision
 
-    const pre = this.opts.hookPolicy.onPreToolUse?.(openAiName, input)
+    const pre = await this.opts.hookPolicy.onPreToolUse?.(openAiName, input)
     if (pre && !pre.allow) return pre
 
     return enforceWriteGuard({

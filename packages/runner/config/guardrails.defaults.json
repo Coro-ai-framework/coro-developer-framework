@@ -1,0 +1,30 @@
+{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "pr-description",
+      "title": "PR description",
+      "description": "Block pull requests without a useful body (minimum length and required headings).",
+      "enabled": true,
+      "on": "scm.create_pr",
+      "check": "pr-description",
+      "config": {
+        "minLength": 80,
+        "requiredHeadings": ["## What"]
+      }
+    },
+    {
+      "id": "pr-diff-size",
+      "title": "PR diff size",
+      "description": "Block oversized PRs during coding so agents split work across multiple pull requests.",
+      "enabled": true,
+      "on": "scm.create_pr",
+      "during": ["coding"],
+      "check": "pr-diff-size",
+      "config": {
+        "maxLines": 500,
+        "maxFiles": 40
+      }
+    }
+  ]
+}

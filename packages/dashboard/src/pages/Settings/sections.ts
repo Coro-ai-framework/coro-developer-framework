@@ -5,6 +5,7 @@ import {
   GitBranch,
   Plug,
   Server,
+  ShieldCheck,
   Ticket,
 } from 'lucide-react'
 import type { SettingsSectionId } from './SettingsContext'
@@ -61,6 +62,14 @@ export const SETTINGS_SECTIONS: SettingsSectionDescriptor[] = [
     label: 'MCP servers',
     description: 'Bring-your-own MCP servers and Claude Code inheritance.',
     icon: Server,
+    required: false,
+  },
+  {
+    id: 'guardrails',
+    group: 'extensions',
+    label: 'Guardrails',
+    description: 'Policies the runner enforces before agents open PRs or call tools.',
+    icon: ShieldCheck,
     required: false,
   },
   {

@@ -48,4 +48,12 @@ for (const pluginDir of fs.readdirSync(srcRoot, { withFileTypes: true })) {
   copyTree(intelligenceSrc, intelligenceDst)
 }
 
+// Bundled guardrails defaults ship next to dist for runtime resolution.
+const configSrc = path.join(__dirname, '..', 'config', 'guardrails.defaults.json')
+const configDstDir = path.join(__dirname, '..', 'dist', 'config')
+if (fs.existsSync(configSrc)) {
+  fs.mkdirSync(configDstDir, { recursive: true })
+  fs.copyFileSync(configSrc, path.join(configDstDir, 'guardrails.defaults.json'))
+}
+
 console.log('copy-plugin-assets: copied plugin intelligence into dist/')

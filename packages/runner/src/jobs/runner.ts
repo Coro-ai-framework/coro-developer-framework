@@ -66,6 +66,7 @@ import {
   RateLimitExceededError,
   nextBackoffMs,
 } from '@coro/plugin-sdk'
+import { createGuardrailEngine } from '../guardrails'
 
 // ── Runner context ────────────────────────────────────────────────────────────
 
@@ -710,6 +711,23 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const abortController = new AbortController()
 
+      const guardrailEngine = createGuardrailEngine(loadLocalConfig())
+      const guardrailPreToolUse = (toolName: string, input: unknown) => {
+        const toolInput = (input && typeof input === 'object')
+          ? input as Record<string, unknown>
+          : {}
+        const decision = guardrailEngine.evaluateToolBefore({
+          toolName,
+          toolInput,
+          job: liveJob,
+          workingDir,
+        })
+        return decision.then(d => ({
+          allow: d.allow,
+          ...(d.reason ? { reason: d.reason } : {}),
+        }))
+      }
+
       const req: PhaseExecutionRequest = {
         systemPrompt,
         userPrompt: promptText,
@@ -722,6 +740,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         hookPolicy: {
           allowedTools: phaseConf?.tools ?? null,
           writeRoots: [workingDir, jobIntelligenceDir],
+          onPreToolUse: (toolName, input) => guardrailPreToolUse(toolName, input),
         },
         sessionState: { sessionId: resumeSessionId },
         maxTurns: 200,

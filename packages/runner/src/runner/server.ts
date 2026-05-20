@@ -40,6 +40,7 @@ import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
 import { inferKind, validateArtefact } from '../intelligence-validator'
 import { getBaseLayerRoot } from '@coro/intelligence-base'
+import { resolveGuardrails } from '../guardrails'
 
 export interface RunnerServerOptions {
   port: number
@@ -1824,7 +1825,17 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
               ),
             }
           : undefined,
+        guardrails: config.guardrails
+          ? {
+              ...(typeof config.guardrails.enabled === 'boolean'
+                ? { enabled: config.guardrails.enabled }
+                : {}),
+              ...(config.guardrails.rules ? { rules: config.guardrails.rules } : {}),
+            }
+          : undefined,
       } : null
+
+      const guardrailsResolved = resolveGuardrails(config?.guardrails ?? null).resolved
 
       // `resolved` mirrors what the runner will actually use on disk:
       // - if the user has set `paths.workingDir` / `intelligence.dir`, those win
@@ -1838,6 +1849,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         resolved: {
           intelligenceDir: resolveIntelligenceDir(config),
           workingDir: resolveLocalWorkingDir(config),
+          guardrails: guardrailsResolved,
         },
       })
     } catch (err) {
@@ -2056,6 +2068,24 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             ...(nextDefaults ? { defaults: nextDefaults } : {}),
             installed: nextInstalled,
           }
+        }
+      }
+
+      // Guardrails — overrides merged at runtime with bundled defaults.
+      if (Object.prototype.hasOwnProperty.call(updates, 'guardrails')) {
+        const incoming = (updates as Record<string, unknown>)['guardrails'] as
+          | { enabled?: boolean; rules?: LocalConfig['guardrails'] extends infer G ? G extends { rules?: infer R } ? R : never : never }
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).guardrails
+        } else if (incoming && typeof incoming === 'object') {
+          const next: NonNullable<LocalConfig['guardrails']> = {
+            ...(existing.guardrails ?? {}),
+          }
+          if (typeof incoming.enabled === 'boolean') next.enabled = incoming.enabled
+          if (Array.isArray(incoming.rules)) next.rules = incoming.rules
+          ;(merged as Record<string, unknown>).guardrails = next
         }
       }
 

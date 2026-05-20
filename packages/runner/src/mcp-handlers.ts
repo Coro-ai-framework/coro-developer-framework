@@ -6,6 +6,11 @@ import { Artifact, WorkItem, Insight, Job } from '@coro/cloud-protocol'
 import type { ExternalRef } from '@coro/cloud-protocol'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
+import {
+  buildGuardrailContext,
+  createGuardrailEngine,
+} from './guardrails'
+import { loadLocalConfig } from './config/local-config'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -253,6 +258,20 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     targetBranch?: string
     reviewers?: string[]
   }) => {
+    const jobDir = jobWorkingDir()
+    const engine = createGuardrailEngine(loadLocalConfig())
+    const guardCtx = buildGuardrailContext({
+      on: 'scm.create_pr',
+      toolName: 'mcp__coro__scm_create_pr',
+      toolInput: args as unknown as Record<string, unknown>,
+      job: ctx.job,
+      workingDir: jobDir,
+    })
+    const guardDecision = await engine.evaluate('scm.create_pr', guardCtx)
+    if (!guardDecision.allow) {
+      return mcpError(guardDecision.reason ?? 'Guardrail blocked scm_create_pr.')
+    }
+
     const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     const { jobReviewers } = await import('./jobs/helpers')

@@ -205,6 +205,12 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
       status: 'optional',
       detail: 'Using resolved defaults unless overridden',
     },
+    guardrails: {
+      status: 'optional',
+      detail: draft.guardrailsEnabled
+        ? `${draft.guardrailRules.filter(r => r.enabled).length} rule(s) active`
+        : 'Disabled',
+    },
   }
 
   const missingRequired: SettingsSectionId[] = []

@@ -31,6 +31,7 @@ import IssueTrackerSection from './sections/IssueTrackerSection'
 import PluginsSection from './sections/PluginsSection'
 import McpServersSection from './sections/McpServersSection'
 import PathsSection from './sections/PathsSection'
+import GuardrailsSection from './sections/GuardrailsSection'
 
 const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   'llm-provider': LlmProvidersSection,
@@ -39,6 +40,7 @@ const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   plugins: PluginsSection,
   mcp: McpServersSection,
   paths: PathsSection,
+  guardrails: GuardrailsSection,
 }
 
 interface SettingsLayoutProps {

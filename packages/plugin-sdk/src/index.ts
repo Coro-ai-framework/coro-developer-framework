@@ -10,6 +10,7 @@ export * from './base'
 export * from './executor-helpers'
 export * from './mcp'
 export * from './rate-limit'
+export * from './guardrails'
 
 /**
  * The plugin-API host version this SDK release was built against.

@@ -2,6 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { HookCallback, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
 import type { Logger } from 'pino'
+import type { HookPolicy } from '@coro/plugin-sdk'
 
 // PreToolUse hooks fire before every tool call the model makes (builtins AND
 // mcp__coro__*). Returning a `permissionDecision: 'deny'` rejects the call and
@@ -25,6 +26,8 @@ export interface BuildHookOpts {
   coroIntelligenceDir: string
   /** Optional exact tool whitelist for this phase. */
   allowedTools?: ReadonlyArray<string>
+  /** Runner-injected policy (guardrails, proposals, …). */
+  hookPolicy?: HookPolicy
   logger: Logger
 }
 
@@ -85,6 +88,16 @@ export function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hoo
           opts.logger.warn({ phase: opts.liveJobRef().phase, command }, denialReason)
           return deny(denialReason)
         }
+      }
+    }
+
+    const pre = opts.hookPolicy?.onPreToolUse
+    if (pre) {
+      const decision = await pre(toolName, toolInput)
+      if (!decision.allow) {
+        const reason = decision.reason ?? `Blocked ${toolName} by runner policy.`
+        opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
+        return deny(reason)
       }
     }
 

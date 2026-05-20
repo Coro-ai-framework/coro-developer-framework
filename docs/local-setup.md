@@ -29,6 +29,8 @@ For end-to-end job runs you also need (configured in the dashboard or
 - **Anthropic** credentials (executor plugin `anthropic`)
 - **SCM** credentials — built-in **GitHub** or **Bitbucket**; **GitLab** via [`@coro/plugin-gitlab`](../packages/plugin-gitlab/)
 
+Optional: tune runner **guardrails** (PR description, diff size) in **Settings → Guardrails** or see [guardrails.md](./guardrails.md).
+
 ---
 
 ## Workspace bootstrap
