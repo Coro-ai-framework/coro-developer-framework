@@ -35,11 +35,12 @@ function minimalJob(overrides: Partial<Job> = {}): Job {
 describe('resolveGuardrails', () => {
   it('loads bundled defaults with PR and merge rules', () => {
     const { bundled, resolved } = resolveGuardrails(null)
-    expect(bundled.rules.length).toBeGreaterThanOrEqual(3)
+    expect(bundled.rules.length).toBeGreaterThanOrEqual(4)
     expect(resolved.enabled).toBe(true)
     expect(resolved.rules.some(r => r.id === 'pr-description')).toBe(true)
     expect(resolved.rules.some(r => r.id === 'pr-diff-size')).toBe(true)
     expect(resolved.rules.some(r => r.id === 'merge-requires-approval')).toBe(true)
+    expect(resolved.rules.some(r => r.id === 'proposal-markdown-only')).toBe(true)
   })
 
   it('merges overrides by id', () => {
@@ -190,6 +191,43 @@ describe('GuardrailEngine merge-requires-approval', () => {
       workingDir: '/tmp/wd',
     })
     expect(decision.allow).toBe(false)
+  })
+})
+
+describe('GuardrailEngine proposal-markdown-only', () => {
+  it('blocks propose_change with non-md paths', async () => {
+    const engine = GuardrailEngine.fromResolved(resolveGuardrails(null).resolved)
+    const decision = await engine.evaluate(
+      'propose_change',
+      buildGuardrailContext({
+        on: 'propose_change',
+        toolInput: {
+          type: 'memory-update',
+          files: [{ path: 'gocache/foo', content: 'x' }],
+        },
+        job: minimalJob({ phase: 'evaluation' }),
+        workingDir: '/tmp/wd',
+      }),
+    )
+    expect(decision.allow).toBe(false)
+    expect(decision.reason).toMatch(/\.md/)
+  })
+
+  it('allows memory-update entries with .md paths', async () => {
+    const engine = GuardrailEngine.fromResolved(resolveGuardrails(null).resolved)
+    const decision = await engine.evaluate(
+      'propose_change',
+      buildGuardrailContext({
+        on: 'propose_change',
+        toolInput: {
+          type: 'memory-update',
+          entries: [{ file: '.coro/memory/known-pitfalls.md', kind: 'pitfall', title: 't' }],
+        },
+        job: minimalJob({ phase: 'evaluation' }),
+        workingDir: '/tmp/wd',
+      }),
+    )
+    expect(decision.allow).toBe(true)
   })
 })
 

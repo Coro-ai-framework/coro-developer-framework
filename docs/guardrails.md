@@ -13,6 +13,7 @@ Built-in checks today:
 | `pr-description` | `scm.create_pr` | `pr-description` | Require a minimum-length PR body with `## What` |
 | `pr-diff-size` | `scm.create_pr` (coding phase) | `pr-diff-size` | Limit diff lines/files before opening a PR |
 | `merge-requires-approval` | `scm.merge_pr` (review phases) | `merge-requires-approval` | Require at least one human PR approval before merge |
+| `proposal-markdown-only` | `propose_change` | `proposal-markdown-only` | Self-improvement PRs may only include `.md` paths from the tool payload |
 
 ## Settings
 
@@ -75,8 +76,8 @@ The runner loads the script on the next guardrail evaluation. Missing scripts fa
 | Field | Meaning |
 |-------|---------|
 | `id` | Stable name (used for overrides) |
-| `on` | `scm.create_pr`, `scm.merge_pr`, or `tool.before` |
-| `check` | `pr-description`, `pr-diff-size`, `merge-requires-approval`, `script`, … |
+| `on` | `scm.create_pr`, `scm.merge_pr`, `propose_change`, or `tool.before` |
+| `check` | `pr-description`, `pr-diff-size`, `merge-requires-approval`, `proposal-markdown-only`, `script`, … |
 | `config` | Check-specific options |
 | `during` | Optional phase list |
 | `script` | Basename for `check: script` |
@@ -85,7 +86,7 @@ The runner loads the script on the next guardrail evaluation. Missing scripts fa
 
 Guardrails run:
 
-1. In the `scm_create_pr` MCP handler (before the SCM call)
+1. In the `scm_create_pr` and `propose_change` MCP handlers (before the SCM call / writer commit)
 2. At the executor **PreToolUse** boundary (including plugin-mapped PR tools)
 
 Agents see a denial reason and should fix the issue, then retry.

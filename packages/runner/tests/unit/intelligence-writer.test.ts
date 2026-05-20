@@ -41,6 +41,8 @@ function makeGitMock(opts: GitMockOptions = {}) {
 
   /** Mutable remote heads (`for-each-ref`); bootstrap `push` can add names. */
   let simulatedRemoteHeads = [...initialHeads]
+  /** Paths passed to `git.add` — reflected in `status().staged`. */
+  const addedPaths: string[] = []
 
   const clone = vi.fn(async (...args: unknown[]) => {
     calls.push({ method: 'clone', args })
@@ -51,7 +53,13 @@ function makeGitMock(opts: GitMockOptions = {}) {
   })
   const checkout = vi.fn(async (...args: unknown[]) => { calls.push({ method: 'checkout', args }) })
   const reset = vi.fn(async (...args: unknown[]) => { calls.push({ method: 'reset', args }) })
-  const add = vi.fn(async (...args: unknown[]) => { calls.push({ method: 'add', args }) })
+  const add = vi.fn(async (...args: unknown[]) => {
+    calls.push({ method: 'add', args })
+    const p = args[0]
+    if (typeof p === 'string') {
+      addedPaths.push(p.replace(/^\.\//, ''))
+    }
+  })
   const commit = vi.fn(async (...args: unknown[]) => {
     calls.push({ method: 'commit', args })
     return { commit: 'abc123' }
@@ -68,9 +76,9 @@ function makeGitMock(opts: GitMockOptions = {}) {
   })
   const branchLocal = vi.fn(async () => ({ all: opts.branchesLocal ?? [], current: 'main' }))
   const status = vi.fn(async () => ({
-    staged: opts.emptyDiff ? [] : ['file1'],
+    staged: opts.emptyDiff ? [] : [...addedPaths],
     created: [],
-    modified: opts.emptyDiff ? [] : ['file1'],
+    modified: opts.emptyDiff ? [] : [...addedPaths],
     deleted: [],
   }))
   const getConfig = vi.fn(async () => ({ value: opts.remoteUrl ?? 'git@github.com:acme/intel.git' }))
@@ -446,8 +454,9 @@ describe('commitAndPush', () => {
     expect(git.checkout).toHaveBeenCalledWith('main')
     expect(git.checkout).toHaveBeenCalledWith(['-b', 'coro/proposal/test-job-1-tenant'])
 
-    // Staged + committed + pushed
-    expect(git.add).toHaveBeenCalledWith('.')
+    // Staged only declared proposal paths (never `git add .`)
+    expect(git.add).toHaveBeenCalledWith('memory/notes.md')
+    expect(git.add).toHaveBeenCalledWith('agents/coder.md')
     expect(git.commit).toHaveBeenCalledWith('Coro proposal: test')
     expect(git.push).toHaveBeenCalledWith(
       'origin',
@@ -527,6 +536,47 @@ describe('commitAndPush', () => {
 
     // Both `main` and the existing feature branch get hard-reset to origin/main
     expect(git.reset).toHaveBeenCalledWith(['--hard', 'origin/main'])
+  })
+
+  it('does not stage untracked junk in the writer dir (no git add .)', async () => {
+    const dir = path.join(root, 'work')
+    await fs.mkdir(dir, { recursive: true })
+    await fs.mkdir(path.join(dir, 'gocache', 'nested'), { recursive: true })
+    await fs.writeFile(path.join(dir, 'build-kafka.txt'), 'go: downloading foo\n', 'utf-8')
+
+    const git = makeGitMock({ branchesLocal: ['main'] })
+
+    await commitAndPush({
+      dir,
+      branch: 'coro/proposal/job-repo',
+      baseRef: 'main',
+      files: [{ path: '.coro/memory/known-pitfalls.md', content: '# Pitfall\n\n- Symptom: x\n' }],
+      commitMessage: 'Coro proposal: memory only',
+      logger: makeLogger(),
+      gitFactory: git.factory,
+    })
+
+    expect(git.add).toHaveBeenCalledWith('.coro/memory/known-pitfalls.md')
+    expect(git.add).not.toHaveBeenCalledWith('.')
+    expect(git.commit).toHaveBeenCalled()
+  })
+
+  it('rejects non-markdown proposal paths at commit time', async () => {
+    const dir = path.join(root, 'work')
+    await fs.mkdir(dir, { recursive: true })
+    const git = makeGitMock({ branchesLocal: ['main'] })
+
+    await expect(
+      commitAndPush({
+        dir,
+        branch: 'coro/proposal/bad',
+        baseRef: 'main',
+        files: [{ path: 'build-kafka.txt', content: 'oops' }],
+        commitMessage: 'm',
+        logger: makeLogger(),
+        gitFactory: git.factory,
+      }),
+    ).rejects.toThrow(/markdown-only/i)
   })
 })
 

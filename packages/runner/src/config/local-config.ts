@@ -266,7 +266,7 @@ const localConfigSchema = z.object({
       title: z.string().optional(),
       description: z.string().optional(),
       enabled: z.boolean().optional(),
-      on: z.enum(['scm.create_pr', 'scm.merge_pr', 'tool.before']).optional(),
+      on: z.enum(['scm.create_pr', 'scm.merge_pr', 'propose_change', 'tool.before']).optional(),
       check: z.string().min(1).optional(),
       config: z.record(z.string(), z.unknown()).optional(),
       during: z.array(z.string()).optional(),

@@ -251,8 +251,9 @@ Steps:
    ```
 4. For non-memory changes, use `files: [{ path, content }]`. Skill amendments must respect the 15-lines-per-section budget — the runner rejects oversize sections.
 5. For each resolved layer that has at least one approved insight, make **exactly one** `mcp__coro__propose_change` call. The tool returns the PR URL synchronously; record it in your evaluation report.
-6. If validation fails, the tool throws a structured error — fix the input (path, frontmatter, layer mismatch, length budget) and retry. Do **not** open a second PR.
-7. If every insight is either rejected or pending, **do not call `propose_change` at all** — there is nothing approved to ship. Note the skipped counts in your evaluation report.
+6. **Markdown only.** `propose_change` ships **only** the `.md` paths you declare in `entries[]` or `files[]` — never `build-*.txt`, `gocache/`, test output, or anything else sitting in the repo checkout from your build/test steps. The runner stages those paths explicitly; you do not need to `git add` or clean the tree first, but you must not list non-`.md` paths in the proposal.
+7. If validation fails, the tool throws a structured error — fix the input (path, frontmatter, layer mismatch, length budget) and retry. Do **not** open a second PR.
+8. If every insight is either rejected or pending, **do not call `propose_change` at all** — there is nothing approved to ship. Note the skipped counts in your evaluation report.
 
 ### 10. Write the evaluation report
 

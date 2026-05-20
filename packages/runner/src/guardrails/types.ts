@@ -74,3 +74,8 @@ export const SCM_CREATE_PR_TOOL_NAMES = new Set([
 export const SCM_MERGE_PR_TOOL_NAMES = new Set([
   'mcp__coro__scm_merge_pr',
 ])
+
+/** Tool names that represent `propose_change` at the executor boundary. */
+export const PROPOSE_CHANGE_TOOL_NAMES = new Set([
+  'mcp__coro__propose_change',
+])

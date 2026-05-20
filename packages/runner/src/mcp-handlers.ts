@@ -1079,6 +1079,19 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       proposedContent?: string
       targetLayer?: 'tenant' | 'repo'
     }) => {
+      const jobDir = jobWorkingDir()
+      const guardCtx = buildGuardrailContext({
+        on: 'propose_change',
+        toolName: 'mcp__coro__propose_change',
+        toolInput: args as unknown as Record<string, unknown>,
+        job: ctx.job,
+        workingDir: jobDir,
+      })
+      const guardDecision = await guardrailEngine.evaluate('propose_change', guardCtx)
+      if (!guardDecision.allow) {
+        return mcpError(guardDecision.reason ?? 'Guardrail blocked propose_change.')
+      }
+
       const { proposeChange } = await import('./tools/self-improvement')
       try {
         const result = await proposeChange({

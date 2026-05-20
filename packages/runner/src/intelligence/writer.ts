@@ -300,21 +300,45 @@ export async function commitAndPush(args: CommitAndPushArgs): Promise<void> {
   }
 
   // Write files.
+  const stagedPaths: string[] = []
   for (const file of files) {
-    const abs = path.resolve(dir, file.path)
+    const normalised = file.path.replace(/^\.\//, '').trim()
+    const abs = path.resolve(dir, normalised)
     const rel = path.relative(dir, abs)
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
       throw new Error(`commitAndPush: file path "${file.path}" escapes the writer dir`)
     }
+    if (!normalised.toLowerCase().endsWith('.md')) {
+      throw new Error(
+        `commitAndPush: refusing to stage "${file.path}" — proposal commits are markdown-only.`,
+      )
+    }
     await fs.mkdir(path.dirname(abs), { recursive: true })
     await fs.writeFile(abs, file.content, 'utf-8')
+    stagedPaths.push(normalised)
   }
 
-  await git.add('.')
+  // Stage ONLY the declared proposal paths. Never `git add .` — the writer
+  // dir is often the live job repo checkout and may contain gocache/, build
+  // logs, test output, and other artefacts from earlier agent phases.
+  for (const relPath of stagedPaths) {
+    await git.add(relPath)
+  }
 
   // Detect "no changes" — happens if the agent proposed content identical
   // to what already lives on baseRef. Treat as a clean no-op.
   const status = await git.status()
+  const unexpected = [
+    ...status.staged,
+    ...status.created,
+    ...status.modified,
+  ].filter(p => !stagedPaths.includes(p.replace(/^\.\//, '')))
+  if (unexpected.length > 0) {
+    throw new Error(
+      `commitAndPush: refusing to commit — unexpected paths would be included: ${unexpected.join(', ')}. ` +
+        `Only files declared in propose_change are allowed.`,
+    )
+  }
   if (status.staged.length === 0 && status.created.length === 0 && status.modified.length === 0 && status.deleted.length === 0) {
     logger.warn({ branch, dir }, 'No changes detected — skipping commit/push')
     throw new Error(

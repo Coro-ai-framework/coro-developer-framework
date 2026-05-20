@@ -27,6 +27,14 @@
       }
     },
     {
+      "id": "proposal-markdown-only",
+      "title": "Proposal markdown only",
+      "description": "Self-improvement propose_change calls may only ship .md files — never build logs, caches, or other job artefacts.",
+      "enabled": true,
+      "on": "propose_change",
+      "check": "proposal-markdown-only"
+    },
+    {
       "id": "merge-requires-approval",
       "title": "Merge requires approval",
       "description": "Block scm_merge_pr until the PR has at least one human approval (verified via SCM status).",

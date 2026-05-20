@@ -8,6 +8,7 @@ import {
   listProposals,
   proposeChange,
   routeFile,
+  assertProposalPathsAreMarkdown,
   validateProposalFiles,
 } from '../../src/tools/self-improvement'
 import { JobType, type Job, type Proposal } from '@coro/cloud-protocol'
@@ -185,6 +186,14 @@ describe('routeFile', () => {
     it('accepts a consistent explicit targetLayer', () => {
       expect(routeFile('agents/coder.md', 'agent', 'tenant')).toBe('tenant')
     })
+  })
+})
+
+describe('assertProposalPathsAreMarkdown', () => {
+  it('rejects non-md paths', () => {
+    expect(() =>
+      assertProposalPathsAreMarkdown([{ path: 'build-kafka.txt', content: 'log' }]),
+    ).toThrow(/\.md/)
   })
 })
 

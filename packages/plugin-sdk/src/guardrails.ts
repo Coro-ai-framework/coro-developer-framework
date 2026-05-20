@@ -4,7 +4,7 @@
 // stable contract for custom `~/.coro/guardrails/<name>.mjs` scripts.
 
 /** Product-level events guardrails subscribe to. */
-export type GuardrailOn = 'scm.create_pr' | 'scm.merge_pr' | 'tool.before'
+export type GuardrailOn = 'scm.create_pr' | 'scm.merge_pr' | 'propose_change' | 'tool.before'
 
 export interface GuardrailJobSnapshot {
   id: string

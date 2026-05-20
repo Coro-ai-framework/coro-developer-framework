@@ -345,6 +345,19 @@ function applyMemoryEntries(
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n/
 
+/** Every shipped proposal path must be markdown — never logs, caches, binaries. */
+export function assertProposalPathsAreMarkdown(files: ProposalFile[]): void {
+  for (const f of files) {
+    const normalised = f.path.replace(/^\.\//, '').trim()
+    if (!normalised.toLowerCase().endsWith('.md')) {
+      throw new Error(
+        `Proposal path "${f.path}" must end with .md. Self-improvement PRs ship markdown only — ` +
+          `do not include build logs (build-*.txt), gocache/, or other artefacts from the job working directory.`,
+      )
+    }
+  }
+}
+
 export function validateProposalFiles(
   type: ProposalType,
   files: ProposalFile[],
@@ -352,6 +365,8 @@ export function validateProposalFiles(
   if (files.length === 0) {
     throw new Error(`propose_change of type "${type}" requires at least one file.`)
   }
+
+  assertProposalPathsAreMarkdown(files)
 
   for (const f of files) {
     if (!f.content || f.content.trim().length === 0) {
@@ -433,6 +448,9 @@ export function validateProposalFiles(
       for (const f of files) {
         if (!f.path.startsWith('memory/') && !f.path.startsWith('.coro/memory/')) {
           throw new Error(`Memory file "${f.path}" must live under memory/ (tenant) or .coro/memory/ (repo).`)
+        }
+        if (!f.path.endsWith('.md')) {
+          throw new Error(`Memory file "${f.path}" must end with .md.`)
         }
       }
       break

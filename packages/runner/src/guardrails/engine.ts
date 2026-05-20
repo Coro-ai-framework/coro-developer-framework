@@ -6,10 +6,12 @@ import {
   type ResolvedGuardrails,
   SCM_CREATE_PR_TOOL_NAMES,
   SCM_MERGE_PR_TOOL_NAMES,
+  PROPOSE_CHANGE_TOOL_NAMES,
 } from './types'
 import { checkPrDescription } from './checks/pr-description'
 import { checkPrDiffSize, gitDiffStat } from './checks/pr-diff-size'
 import { createMergeRequiresApprovalCheck } from './checks/merge-requires-approval'
+import { checkProposalMarkdownOnly } from './checks/proposal-markdown-only'
 import { createScriptCheck } from './checks/script'
 import type { GuardrailCheckFn } from './types'
 import type { GuardrailScmDeps } from './scm-deps'
@@ -54,6 +56,7 @@ export class GuardrailEngine {
       ['pr-description', checkPrDescription],
       ['pr-diff-size', checkPrDiffSize],
       ['merge-requires-approval', createMergeRequiresApprovalCheck(options.scm)],
+      ['proposal-markdown-only', checkProposalMarkdownOnly],
       ['script', createScriptCheck(resolved.scriptsDir)],
     ])
   }
@@ -136,6 +139,14 @@ export class GuardrailEngine {
         on: 'scm.merge_pr',
       })
       if (!mergeDecision.allow) return mergeDecision
+    }
+
+    if (PROPOSE_CHANGE_TOOL_NAMES.has(args.toolName)) {
+      const proposalDecision = await this.evaluate('propose_change', {
+        ...ctx,
+        on: 'propose_change',
+      })
+      if (!proposalDecision.allow) return proposalDecision
     }
 
     return this.evaluate('tool.before', ctx)

@@ -64,12 +64,16 @@ Each call is **synchronous** and produces exactly **one PR**:
 1. **Validate** — path is in the writable allowlist for the inferred layer; per-type format checks (skill frontmatter, agent headings, etc.).
 2. **Branch** — `coro/proposal/<jobId>-<layer>-<slug>` cut from the layer's default branch.
 3. **Materialise** — the runner resolves the writable source clone for that layer and constructs the final file contents there. This is intentionally separate from the resolver's `_intelligence` tree: `_intelligence` is a read-only, multi-layer view and must never be used as the source of truth for proposal writes.
-4. **Commit** — every file in your `files: []` payload, in one atomic commit.
+4. **Commit** — **only** the paths in your `files: []` / `entries[].file` payload (markdown `.md` files). The runner never runs `git add .` on the repo checkout — build logs, `gocache/`, test output, and other artefacts left in the working directory are **never** included, even if they exist on disk.
 5. **Push** + **open PR** via whichever SCM plugin is active for the layer (GitHub, Bitbucket, GitLab, …).
 6. **Record** in the state backend — surfaces in `list_proposals` and the dashboard.
 7. **Return** the PR URL. A human reviews and merges; the next job's resolver pulls the merged change automatically.
 
 If validation fails, the tool throws — **no commit, no push, no PR**. Fix the input and retry.
+
+### Markdown-only payloads (hard rule)
+
+Every path in `propose_change` must end with `.md` (e.g. `memory/known-pitfalls.md`, `.coro/memory/successful-patterns.md`, `agents/coder.md`, `.claude/skills/foo/SKILL.md`). You cannot ship `build-kafka.txt`, `gocache/`, binaries, or any other file type. The evaluator often runs builds in the same repo checkout — those artefacts are ignored at commit time.
 
 ## How to file a proposal (Evaluator and PR Reviewer)
 
