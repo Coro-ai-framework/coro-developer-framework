@@ -153,6 +153,22 @@ export class GuardrailEngine {
   }
 }
 
+/** Directory name under the job working dir where the target repo checkout lives. */
+export function resolveGuardrailRepoDir(args: {
+  workingDir: string
+  toolInput: Record<string, unknown>
+  params: Record<string, unknown>
+}): string | undefined {
+  const raw =
+    args.toolInput.repo ??
+    args.toolInput.repoSlug ??
+    args.params.targetRepo ??
+    args.params.repoSlug ??
+    args.params.repo
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  return path.join(args.workingDir, raw.trim())
+}
+
 export function buildGuardrailContext(args: {
   on: GuardrailOn
   toolName?: string
@@ -162,7 +178,11 @@ export function buildGuardrailContext(args: {
 }): GuardrailContext {
   const params = (args.job.params ?? {}) as Record<string, unknown>
   const repoSlug = typeof params.repoSlug === 'string' ? params.repoSlug : undefined
-  const repoDir = repoSlug ? path.join(args.workingDir, repoSlug) : undefined
+  const repoDir = resolveGuardrailRepoDir({
+    workingDir: args.workingDir,
+    toolInput: args.toolInput,
+    params,
+  })
 
   return {
     on: args.on,
@@ -178,7 +198,8 @@ export function buildGuardrailContext(args: {
     workingDir: args.workingDir,
     repoDir,
     helpers: {
-      gitDiff: ({ repoDir, base }: { repoDir: string; base?: string }) => gitDiffStat(repoDir, base),
+      gitDiff: ({ repoDir, base, head }: { repoDir: string; base?: string; head?: string }) =>
+        gitDiffStat(repoDir, base, head),
     },
   }
 }

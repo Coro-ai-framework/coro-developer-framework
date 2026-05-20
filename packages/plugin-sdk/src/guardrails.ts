@@ -20,7 +20,8 @@ export interface GuardrailGitDiffStat {
 }
 
 export interface GuardrailHelpers {
-  gitDiff(args: { repoDir: string; base?: string }): Promise<GuardrailGitDiffStat>
+  /** When `head` is set, compares `base...head`; otherwise `base...HEAD`. */
+  gitDiff(args: { repoDir: string; base?: string; head?: string }): Promise<GuardrailGitDiffStat>
 }
 
 export interface GuardrailContext {

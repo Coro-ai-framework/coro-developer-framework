@@ -13,7 +13,17 @@ export const checkPrDiffSize: GuardrailCheckFn = async (rule, ctx) => {
   const cfg = (rule.config ?? {}) as PrDiffSizeConfig
   const maxLines = typeof cfg.maxLines === 'number' ? cfg.maxLines : 500
   const maxFiles = typeof cfg.maxFiles === 'number' ? cfg.maxFiles : 40
-  const base = typeof cfg.base === 'string' && cfg.base.length > 0 ? cfg.base : 'main'
+  const targetBranch =
+    typeof ctx.toolInput.targetBranch === 'string' && ctx.toolInput.targetBranch.length > 0
+      ? ctx.toolInput.targetBranch
+      : undefined
+  const sourceBranch =
+    typeof ctx.toolInput.sourceBranch === 'string' && ctx.toolInput.sourceBranch.length > 0
+      ? ctx.toolInput.sourceBranch
+      : undefined
+  const base =
+    targetBranch ??
+    (typeof cfg.base === 'string' && cfg.base.length > 0 ? cfg.base : 'main')
 
   if (!ctx.repoDir) {
     return {
@@ -33,13 +43,18 @@ export const checkPrDiffSize: GuardrailCheckFn = async (rule, ctx) => {
     return { allow: false, reason: 'Cannot evaluate PR diff size: repository path is missing.' }
   }
 
-  const stat = await ctx.helpers.gitDiff({ repoDir: ctx.repoDir, base })
+  const stat = await ctx.helpers.gitDiff({
+    repoDir: ctx.repoDir,
+    base,
+    head: sourceBranch,
+  })
+  const compareLabel = sourceBranch ? `${base}...${sourceBranch}` : `${base}...HEAD`
   if (stat.lines > maxLines || stat.files > maxFiles) {
     return {
       allow: false,
       reason:
         `PR diff is too large (${stat.lines} lines, ${stat.files} files; limit ${maxLines} lines / ${maxFiles} files ` +
-        `against ${base}). Split the work into smaller PRs (one per work item) and retry.`,
+        `against ${compareLabel}). Split the work into smaller PRs (one per work item) and retry.`,
     }
   }
 
@@ -47,9 +62,14 @@ export const checkPrDiffSize: GuardrailCheckFn = async (rule, ctx) => {
 }
 
 /** Shared helper for built-in and script guardrails. */
-export async function gitDiffStat(repoDir: string, base = 'main'): Promise<{ lines: number; files: number }> {
+export async function gitDiffStat(
+  repoDir: string,
+  base = 'main',
+  head?: string,
+): Promise<{ lines: number; files: number }> {
   const git = simpleGit({ baseDir: repoDir })
-  const summary = await git.diffSummary([`${base}...HEAD`])
+  const ref = head ? `${base}...${head}` : `${base}...HEAD`
+  const summary = await git.diffSummary([ref])
   let lines = 0
   let files = 0
   for (const file of summary.files) {

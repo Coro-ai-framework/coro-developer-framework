@@ -1,6 +1,7 @@
 export {
   GuardrailEngine,
   buildGuardrailContext,
+  resolveGuardrailRepoDir,
 } from './engine'
 export {
   loadBundledGuardrailsFile,

@@ -6,6 +6,7 @@ import {
   resolveGuardrails,
   GuardrailEngine,
   buildGuardrailContext,
+  resolveGuardrailRepoDir,
 } from '../../src/guardrails'
 import type { Job } from '@coro/cloud-protocol'
 
@@ -95,6 +96,26 @@ describe('GuardrailEngine pr-description', () => {
       }),
     )
     expect(decision.allow).toBe(true)
+  })
+})
+
+describe('resolveGuardrailRepoDir', () => {
+  it('prefers scm_create_pr repo over job.params.repoSlug', () => {
+    const dir = resolveGuardrailRepoDir({
+      workingDir: '/tmp/wd',
+      toolInput: { repo: 'a5labs.kyc.go' },
+      params: { repoSlug: 'know_your_customer', targetRepo: 'other.go' },
+    })
+    expect(dir).toBe(path.join('/tmp/wd', 'a5labs.kyc.go'))
+  })
+
+  it('falls back to targetRepo when tool input has no repo', () => {
+    const dir = resolveGuardrailRepoDir({
+      workingDir: '/tmp/wd',
+      toolInput: {},
+      params: { repoSlug: 'know_your_customer', targetRepo: 'a5labs.kyc.go' },
+    })
+    expect(dir).toBe(path.join('/tmp/wd', 'a5labs.kyc.go'))
   })
 })
 
