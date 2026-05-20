@@ -11,6 +11,7 @@ import {
   RefreshCcw,
   Search,
   Settings2,
+  ShieldAlert,
   TriangleAlert,
   Waypoints,
 } from 'lucide-react'
@@ -43,6 +44,7 @@ const LINE_STYLES: Record<LogLineType, {
   thinking:       { textClass: 'text-fg-muted', iconClass: 'text-fg-subtle', icon: Search, label: 'Thinking', dimmed: true },
   tool_progress:  { textClass: 'text-fg-muted', iconClass: 'text-warning-400', icon: Loader2, label: 'Progress', dimmed: true },
   error:          { textClass: 'text-danger-400', iconClass: 'text-danger-400', icon: TriangleAlert, label: 'Error' },
+  guardrail:      { textClass: 'text-warning-400', iconClass: 'text-warning-400', icon: ShieldAlert, label: 'Guardrail' },
   warning:        { textClass: 'text-warning-400', iconClass: 'text-warning-400', icon: TriangleAlert, label: 'Warning' },
   result:         { textClass: 'text-success-400', iconClass: 'text-success-400', icon: CheckCircle2, label: 'Result' },
   phase:          { textClass: 'text-accent-300', iconClass: 'text-accent-300', icon: GitBranch, label: 'Phase' },
@@ -116,7 +118,7 @@ function LineContent({ line }: { line: LogLine }) {
     )
   }
 
-  if (line.lineType === 'error' || line.lineType === 'warning') {
+  if (line.lineType === 'error' || line.lineType === 'warning' || line.lineType === 'guardrail') {
     return (
       <div className={cn(
         'my-1 flex items-start gap-3 rounded-xl px-4 py-2.5',
@@ -248,7 +250,9 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
   }, [autoScroll])
 
   const TOOL_TYPES: LogLineType[] = ['tool_use', 'tool_summary', 'tool_progress', 'thinking', 'system']
-  const MAIN_TYPES: LogLineType[] = ['text', 'phase', 'error', 'result', 'insight', 'session_reset', 'webhook', 'human']
+  const MAIN_TYPES: LogLineType[] = [
+    'text', 'phase', 'error', 'guardrail', 'warning', 'result', 'insight', 'session_reset', 'webhook', 'human',
+  ]
 
   const filteredLines = lines.filter(line => {
     if (filter === 'all') return true

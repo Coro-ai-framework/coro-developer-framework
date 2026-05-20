@@ -90,3 +90,11 @@ Guardrails run:
 2. At the executor **PreToolUse** boundary (including plugin-mapped PR tools)
 
 Agents see a denial reason and should fix the issue, then retry.
+
+When a rule blocks an action, the runner also appends a line to the job **activity log**:
+
+```text
+[guardrail] pr-diff-size blocked mcp__coro__scm_create_pr: Cannot evaluate PR diff size: …
+```
+
+The dashboard classifies these as **Guardrail** (amber, shield icon). Logging happens inside the guardrail engine once per denial — not on every passing check.

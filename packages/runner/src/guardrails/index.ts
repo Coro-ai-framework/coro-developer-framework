@@ -4,6 +4,11 @@ export {
   resolveGuardrailRepoDir,
 } from './engine'
 export {
+  formatGuardrailAgentReason,
+  formatGuardrailDenialLine,
+  type GuardrailDenialRecord,
+} from './denial-log'
+export {
   loadBundledGuardrailsFile,
   resolveGuardrails,
   diffOverridesFromBundled,

@@ -196,6 +196,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const error = mcpError
   const guardrailEngine = createGuardrailEngine(loadLocalConfig(), {
     scm: createGuardrailScmDeps(ctx),
+    activityLog: line => ctx.stateBackend.appendLog(ctx.job.id, line),
   })
 
   const setWorkItems = async ({ workItems }: { workItems: string[] }) => {

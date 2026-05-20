@@ -715,6 +715,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const guardrailEngine = createGuardrailEngine(loadLocalConfig(), {
         scm: createGuardrailScmDeps(toolCtx),
+        activityLog: line => stateBackend.appendLog(toolCtx.job.id, line),
       })
       const guardrailPreToolUse = (toolName: string, input: unknown) => {
         const toolInput = (input && typeof input === 'object')

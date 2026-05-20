@@ -15,6 +15,7 @@ export type LogLineType =
   | 'tool_progress'
   | 'error'
   | 'warning'
+  | 'guardrail'
   | 'result'
   | 'phase'
   | 'insight'
@@ -34,6 +35,7 @@ export function classifyLine(raw: string): { content: string; lineType: LogLineT
   if (content.startsWith('[tool_summary]')) return { content, lineType: 'tool_summary' }
   if (content.startsWith('⏳'))             return { content, lineType: 'tool_progress' }
   if (content.startsWith('[error]'))        return { content, lineType: 'error' }
+  if (content.startsWith('[guardrail]'))    return { content, lineType: 'guardrail' }
   if (content.startsWith('[warning]'))      return { content, lineType: 'warning' }
   if (content.startsWith('[result]'))       return { content, lineType: 'result' }
   if (content.startsWith('[insight]'))      return { content, lineType: 'insight' }

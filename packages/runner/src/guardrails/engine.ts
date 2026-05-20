@@ -15,6 +15,10 @@ import { checkProposalMarkdownOnly } from './checks/proposal-markdown-only'
 import { createScriptCheck } from './checks/script'
 import type { GuardrailCheckFn } from './types'
 import type { GuardrailScmDeps } from './scm-deps'
+import {
+  formatGuardrailAgentReason,
+  formatGuardrailDenialLine,
+} from './denial-log'
 
 function matchesGlob(pattern: string, value: string): boolean {
   if (!pattern.includes('*')) return pattern === value
@@ -43,15 +47,22 @@ function ruleMatchesScope(rule: EffectiveGuardrailRule, ctx: GuardrailContext): 
 
 export interface GuardrailEngineOptions {
   scm?: GuardrailScmDeps
+  /**
+   * When set, each denial is written to the job activity log via
+   * {@link formatGuardrailDenialLine} (`[guardrail]` prefix).
+   */
+  activityLog?: (line: string) => void | Promise<void>
 }
 
 export class GuardrailEngine {
   private readonly checks: Map<string, GuardrailCheckFn>
+  private readonly activityLog?: (line: string) => void | Promise<void>
 
   constructor(
     private readonly resolved: ResolvedGuardrails,
     options: GuardrailEngineOptions = {},
   ) {
+    this.activityLog = options.activityLog
     this.checks = new Map([
       ['pr-description', checkPrDescription],
       ['pr-diff-size', checkPrDiffSize],
@@ -89,23 +100,44 @@ export class GuardrailEngine {
     for (const rule of matching) {
       const fn = this.checks.get(rule.check)
       if (!fn) {
-        return {
-          allow: false,
-          reason:
-            `Guardrail "${rule.id}" references unknown check "${rule.check}". ` +
+        return this.deny(rule, on, ctx, {
+          detail:
+            `references unknown check "${rule.check}". ` +
             `Fix ~/.coro/config.json or update the shipped defaults.`,
-        }
+        })
       }
       const decision = await fn(rule, ctx)
       if (!decision.allow) {
-        const reason = decision.reason
-          ? `Guardrail "${rule.id}" (${rule.title ?? rule.check}): ${decision.reason}`
-          : `Guardrail "${rule.id}" blocked this action.`
-        return { allow: false, reason }
+        return this.deny(rule, on, ctx, {
+          detail: decision.reason ?? 'Blocked this action.',
+        })
       }
     }
 
     return { allow: true }
+  }
+
+  private async deny(
+    rule: EffectiveGuardrailRule,
+    on: GuardrailOn,
+    ctx: GuardrailContext,
+    args: { detail: string },
+  ): Promise<GuardrailDecision> {
+    const detail = args.detail.trim() || 'Blocked this action.'
+    if (this.activityLog) {
+      await this.activityLog(formatGuardrailDenialLine({
+        ruleId: rule.id,
+        on,
+        toolName: ctx.toolName,
+        detail,
+      }))
+    }
+    return {
+      allow: false,
+      ruleId: rule.id,
+      on,
+      reason: formatGuardrailAgentReason(rule, detail),
+    }
   }
 
   /**

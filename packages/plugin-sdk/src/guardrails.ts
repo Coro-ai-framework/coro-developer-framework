@@ -36,6 +36,10 @@ export interface GuardrailContext {
 
 export interface GuardrailDecision {
   allow: boolean
+  /** Set when `allow` is false — the rule id that denied the action. */
+  ruleId?: string
+  /** Product event that was evaluated (e.g. `scm.create_pr`). */
+  on?: GuardrailOn
   reason?: string
 }
 
