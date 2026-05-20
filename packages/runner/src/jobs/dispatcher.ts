@@ -779,6 +779,10 @@ export class Dispatcher {
             { jobId, err, mode, inFlightMcp },
             'q.interrupt() failed or timed out — message is queued and will be read at next agent turn',
           )
+          await this.ctx.stateBackend.appendLog(
+            jobId,
+            '[control] Steering interrupt timed out — your message is queued; MCP heal may still be running in the background.',
+          )
         }
         if (mode === 'safe') {
           await this.ctx.stateBackend.appendLog(

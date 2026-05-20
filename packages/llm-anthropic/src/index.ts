@@ -35,7 +35,12 @@ export {
   type HealMcpResult,
   type HealMcpTransportOptions,
 } from './mcp-heal'
-export { isRecoverableSteeringAbort, isMcpTransportErrorText } from './steering-errors'
+export {
+  isRecoverableSteeringAbort,
+  isSteeringDiagnosticText,
+  isMcpTransportErrorText,
+  isMcpHealExhaustedError,
+} from './steering-errors'
 export { registerAnthropicHttpRoutes } from './http-routes'
 
 export type {

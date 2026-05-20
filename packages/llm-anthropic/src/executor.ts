@@ -53,7 +53,12 @@ import { createPushableInput } from './pushable'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
 import { healMcpTransport, isCoroMcpHealthy, MCP_RETRY_NUDGE } from './mcp-heal'
 import { reattachDynamicMcpServers } from './mcp-reattach'
-import { isMcpTransportErrorText, isRecoverableSteeringAbort } from './steering-errors'
+import {
+  isMcpHealExhaustedError,
+  isMcpTransportErrorText,
+  isRecoverableSteeringAbort,
+  isSteeringDiagnosticText,
+} from './steering-errors'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
 import type { SteeringInterruptMode } from '@coro/plugin-sdk'
 
@@ -589,25 +594,67 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     const liveQuery = queryStream as Query
     let inFlightMcpTool: string | null = null
     let pendingInterruptHealLog: string | undefined
+    let mcpHealInFlight = false
+    let mcpHealFailures = 0
+    let lastMcpHealAt = 0
 
-    const healAfterInterrupt = async (): Promise<void> => {
-      try {
-        const refresh = await healMcpTransport({
-          liveQuery,
-          dynamicMcpServers,
-          serverName: 'coro',
-          forceReconnect: true,
-          rebuildServers: req.mcpRebuild ? rebuildMcpMap : undefined,
-        })
+    const scheduleMcpHeal = (reason: string, options?: { skipDebounce?: boolean }): void => {
+      if (mcpHealInFlight) return
+      if (mcpHealFailures >= 3) {
         pendingInterruptHealLog =
-          `[control] MCP re-attached after interrupt — ` +
-          `status=${refresh.finalStatus ?? 'unknown'} ` +
-          `reconnected=${refresh.reconnected} ` +
-          `errors=${JSON.stringify(refresh.setResult.errors)}` +
-          (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : '')
-      } catch (err) {
-        pendingInterruptHealLog = `[control] MCP re-attach after interrupt failed: ${String(err)}`
+          `[control] MCP heal skipped (${reason}) — prior heal attempts failed; ` +
+          `wait for the next agent turn or restart the phase.`
+        return
       }
+      const now = Date.now()
+      if (!options?.skipDebounce && now - lastMcpHealAt < 3_000) return
+      lastMcpHealAt = now
+      mcpHealInFlight = true
+
+      void (async () => {
+        try {
+          const refresh = await healMcpTransport({
+            liveQuery,
+            dynamicMcpServers,
+            serverName: 'coro',
+            forceReconnect: true,
+            rebuildServers: req.mcpRebuild ? rebuildMcpMap : undefined,
+          })
+          const errText = refresh.reconnectError ?? ''
+          if (isCoroMcpHealthy(refresh) && !isMcpHealExhaustedError(errText)) {
+            mcpHealFailures = 0
+            pendingInterruptHealLog =
+              `[control] MCP re-attached (${reason}) — ` +
+              `status=${refresh.finalStatus ?? 'unknown'} ` +
+              `reconnected=${refresh.reconnected} ` +
+              `errors=${JSON.stringify(refresh.setResult.errors)}` +
+              (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : '')
+            if (reason === 'tool_result') {
+              pushable.push({
+                type: 'user',
+                message: {
+                  role: 'user',
+                  content: [{ type: 'text', text: MCP_RETRY_NUDGE }],
+                },
+                parent_tool_use_id: null,
+              })
+            }
+          } else {
+            mcpHealFailures += 1
+            pendingInterruptHealLog =
+              `[control] MCP re-attach (${reason}) did not recover — ` +
+              `status=${refresh.finalStatus ?? 'unknown'} ` +
+              `errors=${JSON.stringify(refresh.setResult.errors)}` +
+              (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : '')
+          }
+        } catch (err) {
+          mcpHealFailures += 1
+          const detail = err instanceof Error ? err.message : String(err)
+          pendingInterruptHealLog = `[control] MCP re-attach (${reason}) failed: ${detail}`
+        } finally {
+          mcpHealInFlight = false
+        }
+      })()
     }
 
     const controller: ExecutorSessionController = {
@@ -617,7 +664,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
           return
         }
         await liveQuery.interrupt()
-        await healAfterInterrupt()
+        // Heal runs after interrupt ack — do not block the dispatcher HTTP
+        // response on setMcpServers/reconnect (can exceed the 10s steer timeout).
+        if (mode === 'urgent') {
+          scheduleMcpHeal('interrupt', { skipDebounce: true })
+        }
       },
       getSteeringState: () => ({ inFlightMcpTool }),
     }
@@ -792,46 +843,23 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
                       .map(c => typeof c['text'] === 'string' ? (c['text'] as string) : '')
                       .join(' ')
                   : ''
+              if (isSteeringDiagnosticText(text)) {
+                yield {
+                  type: 'log',
+                  level: 'info',
+                  message:
+                    `[control] Steering interrupt reflected in tool_result — ${text.slice(0, 300)}`,
+                }
+                break
+              }
               if (isMcpTransportErrorText(text)) {
                 yield {
                   type: 'log',
                   level: 'warn',
-                  message: `[control] MCP tool_result error detected — reconnecting now. detail=${text.slice(0, 200)}`,
+                  message: `[control] MCP tool_result error detected — scheduling reconnect. detail=${text.slice(0, 200)}`,
                 }
-                try {
-                  const refresh = await healMcpTransport({
-                    liveQuery,
-                    dynamicMcpServers,
-                    serverName: 'coro',
-                    forceReconnect: true,
-                    rebuildServers: req.mcpRebuild ? rebuildMcpMap : undefined,
-                  })
-                  yield {
-                    type: 'log',
-                    level: refresh.reconnectError ? 'warn' : 'info',
-                    message:
-                      `[control] MCP re-attached after tool_result error — ` +
-                      `status=${refresh.finalStatus ?? 'unknown'} ` +
-                      `reconnected=${refresh.reconnected} ` +
-                      `errors=${JSON.stringify(refresh.setResult.errors)}` +
-                      (refresh.reconnectError ? ` reconnectError=${refresh.reconnectError}` : ''),
-                  }
-                  if (isCoroMcpHealthy(refresh)) {
-                    pushable.push({
-                      type: 'user',
-                      message: {
-                        role: 'user',
-                        content: [{ type: 'text', text: MCP_RETRY_NUDGE }],
-                      },
-                      parent_tool_use_id: null,
-                    })
-                  }
-                } catch (err) {
-                  yield {
-                    type: 'log',
-                    level: 'warn',
-                    message: `[control] MCP re-attach after tool_result error failed: ${String(err)}`,
-                  }
+                if (!isMcpHealExhaustedError(text)) {
+                  scheduleMcpHeal('tool_result')
                 }
                 break
               }
@@ -865,10 +893,19 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         if (eventType === 'result') {
           const isError = message['is_error']
           if (isError) {
-            stopReason = 'error'
             const errors = message['errors']
             const errStr = Array.isArray(errors) ? (errors as string[]).join('; ') : 'unknown error'
-            yield { type: 'log', level: 'error', message: `[error] ${errStr}` }
+            if (isSteeringDiagnosticText(errStr)) {
+              stopReason = 'interrupted'
+              yield {
+                type: 'log',
+                level: 'info',
+                message: `[control] Recoverable steering interrupt — ${errStr.slice(0, 300)}`,
+              }
+            } else {
+              stopReason = 'error'
+              yield { type: 'log', level: 'error', message: `[error] ${errStr}` }
+            }
           } else {
             const result = message['result']
             if (typeof result === 'string' && result.trim()) {
