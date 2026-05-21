@@ -1,15 +1,10 @@
-import type { McpServerConfig, McpSetServersResult, Query } from '@anthropic-ai/claude-agent-sdk'
-import { reattachDynamicMcpServers } from './mcp-reattach'
+import type { McpServerConfig, Query } from '@anthropic-ai/claude-agent-sdk'
+import { reattachAllDynamicMcpServers, type ReattachMcpResult } from './mcp-reattach'
+import { isMcpHealExhaustedError } from './steering-errors'
 
 export type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconnectMcpServer'>
 
-export type HealMcpResult = {
-  setResult: McpSetServersResult
-  initialStatus: string | null
-  finalStatus: string | null
-  reconnected: boolean
-  reconnectError?: string
-}
+export type HealMcpResult = ReattachMcpResult
 
 export type HealMcpTransportOptions = {
   liveQuery: DynamicMcpQuery
@@ -32,16 +27,44 @@ export type HealMcpTransportOptions = {
 export async function healMcpTransport(
   opts: HealMcpTransportOptions,
 ): Promise<HealMcpResult> {
-  const serverName = opts.serverName ?? 'coro'
-
   if (opts.rebuildServers) {
     const rebuilt = opts.rebuildServers()
     Object.assign(opts.dynamicMcpServers, rebuilt)
   }
 
-  return reattachDynamicMcpServers(opts.liveQuery, opts.dynamicMcpServers, serverName, {
+  return reattachAllDynamicMcpServers(opts.liveQuery, opts.dynamicMcpServers, {
     forceReconnect: opts.forceReconnect ?? true,
   })
+}
+
+const DEFAULT_HEAL_TIMEOUT_MS = 8_000
+const HEAL_RETRY_BACKOFF_MS = 250
+
+/**
+ * Bounded MCP heal for steering interrupts. Retries until healthy or
+ * timeout (fits within the dispatcher's 10s interrupt race).
+ */
+export async function runBoundedMcpHeal(
+  opts: HealMcpTransportOptions & { timeoutMs?: number },
+): Promise<HealMcpResult> {
+  const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_HEAL_TIMEOUT_MS)
+  let last: HealMcpResult = {
+    setResult: { added: [], removed: [], errors: {} },
+    initialStatus: null,
+    finalStatus: null,
+    reconnected: false,
+  }
+
+  while (Date.now() < deadline) {
+    last = await healMcpTransport(opts)
+    const errText = last.reconnectError ?? ''
+    if (isCoroMcpHealthy(last) && !isMcpHealExhaustedError(errText)) {
+      return last
+    }
+    await new Promise(resolve => setTimeout(resolve, HEAL_RETRY_BACKOFF_MS))
+  }
+
+  return last
 }
 
 /** Whether the Coro MCP server registered cleanly after a heal attempt. */

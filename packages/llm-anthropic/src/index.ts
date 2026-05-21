@@ -27,11 +27,12 @@ export { buildAnthropicAuthEnv } from './auth'
 export { ensureClaudeConfigSymlink } from './intelligence-symlink'
 export { buildPhaseHooks, type BuildHookOpts } from './hooks'
 export { createPushableInput, type PushableInput } from './pushable'
-export { reattachDynamicMcpServers } from './mcp-reattach'
+export { reattachDynamicMcpServers, reattachAllDynamicMcpServers } from './mcp-reattach'
 export {
   healMcpTransport,
   isCoroMcpHealthy,
   MCP_RETRY_NUDGE,
+  runBoundedMcpHeal,
   type HealMcpResult,
   type HealMcpTransportOptions,
 } from './mcp-heal'

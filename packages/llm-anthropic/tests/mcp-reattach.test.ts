@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { reattachDynamicMcpServers } from '../src/mcp-reattach'
+import { reattachAllDynamicMcpServers, reattachDynamicMcpServers } from '../src/mcp-reattach'
 
 function makeQuery(opts: {
   status: string
@@ -98,6 +98,29 @@ describe('reattachDynamicMcpServers', () => {
     expect(calls).toBe(2)
     expect(r.reconnected).toBe(true)
     expect(r.reconnectError).toBeUndefined()
+  })
+
+  it('reattachAll reconnects every non-sdk server when forceReconnect=true', async () => {
+    const q = {
+      setMcpServers: vi.fn(async () => ({ added: ['coro', 'github'], removed: [], errors: {} })),
+      mcpServerStatus: vi.fn(async () => [
+        { name: 'coro', status: 'connected' },
+        { name: 'github', status: 'connected' },
+      ]),
+      reconnectMcpServer: vi.fn(async () => undefined),
+    }
+    const r = await reattachAllDynamicMcpServers(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      q as any,
+      {
+        coro: { type: 'sdk', name: 'coro', instance: {} } as any,
+        github: { type: 'stdio', command: 'gh' } as any,
+      },
+      { forceReconnect: true },
+    )
+    expect(q.reconnectMcpServer).toHaveBeenCalledWith('github')
+    expect(q.reconnectMcpServer).not.toHaveBeenCalledWith('coro')
+    expect(r.reconnected).toBe(true)
   })
 
   it('skips reconnectMcpServer for SDK-type (in-process) servers even with forceReconnect=true', async () => {

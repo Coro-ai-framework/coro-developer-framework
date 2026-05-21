@@ -153,3 +153,40 @@ describe('Bash PreToolUse hook', () => {
     expect(isAllowed(out)).toBe(true)
   })
 })
+
+describe('MCP PreToolUse gate', () => {
+  it('denies mcp__ tools while transport is rebuilding', async () => {
+    let ready = false
+    const logger = pino({ level: 'silent' })
+    const hooks = buildPhaseHooks({
+      liveJobRef: () => ({ phase: 'coding' }),
+      workingDir: WORKING,
+      coroIntelligenceDir: INTEL,
+      getMcpTransportReady: () => ready,
+      logger,
+    })
+    const mcpHook = hooks.PreToolUse[0].hooks[0] as HookCallback
+    const denied = await mcpHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'mcp__coro__set_job_params',
+        tool_input: {},
+      } as unknown as Parameters<HookCallback>[0],
+      'tool-use-id',
+      { signal: new AbortController().signal },
+    ) as HookJSONOutput
+    expect(denied.hookSpecificOutput?.permissionDecision).toBe('deny')
+
+    ready = true
+    const allowed = await mcpHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'mcp__coro__set_job_params',
+        tool_input: {},
+      } as unknown as Parameters<HookCallback>[0],
+      'tool-use-id',
+      { signal: new AbortController().signal },
+    ) as HookJSONOutput
+    expect(isAllowed(allowed)).toBe(true)
+  })
+})

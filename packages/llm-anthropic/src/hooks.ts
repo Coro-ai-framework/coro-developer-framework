@@ -28,6 +28,8 @@ export interface BuildHookOpts {
   allowedTools?: ReadonlyArray<string>
   /** Runner-injected policy (guardrails, proposals, …). */
   hookPolicy?: HookPolicy
+  /** When false, MCP tools are blocked until transport heal completes. */
+  getMcpTransportReady?: () => boolean
   logger: Logger
 }
 
@@ -55,6 +57,13 @@ export function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hoo
         `Blocked ${toolName}: phase ${opts.liveJobRef().phase} only allows ` +
         `${Array.from(allowedTools).join(', ')}. Update the workflow if this phase ` +
         `needs broader tool access.`
+      opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
+      return deny(reason)
+    }
+
+    if (toolName.startsWith('mcp__') && opts.getMcpTransportReady && !opts.getMcpTransportReady()) {
+      const reason =
+        'MCP transport is rebuilding after a developer message. Wait a moment and retry the same tool call.'
       opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
       return deny(reason)
     }

@@ -2,6 +2,54 @@ import type { McpServerConfig, McpSetServersResult, Query } from '@anthropic-ai/
 
 type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconnectMcpServer'>
 
+export type ReattachMcpResult = {
+  setResult: McpSetServersResult
+  initialStatus: string | null
+  finalStatus: string | null
+  reconnected: boolean
+  reconnectError?: string
+}
+
+function isSdkMcpServer(config: McpServerConfig | undefined): boolean {
+  return config !== undefined && (config as { type?: string }).type === 'sdk'
+}
+
+async function reconnectExternalServer(
+  liveQuery: DynamicMcpQuery,
+  serverName: string,
+  forceReconnect: boolean,
+  setResult: McpSetServersResult,
+  currentStatus: string | null,
+): Promise<{ reconnected: boolean; reconnectError?: string; finalStatus: string | null }> {
+  const needsReconnect =
+    forceReconnect ||
+    (currentStatus !== null && currentStatus !== 'connected' && !setResult.errors[serverName])
+
+  if (!needsReconnect) {
+    return { reconnected: false, finalStatus: currentStatus }
+  }
+
+  let reconnected = false
+  let reconnectError: string | undefined
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await liveQuery.reconnectMcpServer(serverName)
+      reconnected = true
+      reconnectError = undefined
+      break
+    } catch (err) {
+      reconnectError = err instanceof Error ? err.message : String(err)
+      if (attempt === 0) {
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+    }
+  }
+
+  const statuses = await liveQuery.mcpServerStatus()
+  const finalStatus = statuses.find(s => s.name === serverName)?.status ?? null
+  return { reconnected, reconnectError, finalStatus }
+}
+
 /**
  * Re-attach dynamic MCP servers (the in-process Coro server + plugin
  * servers) on a resumed query. The Claude Agent SDK has historically
@@ -23,76 +71,71 @@ type DynamicMcpQuery = Pick<Query, 'setMcpServers' | 'mcpServerStatus' | 'reconn
  * showing `status=connected reconnected=false errors={}` followed by
  * "MCP stream closed" tool-call failures.
  */
+/**
+ * Re-attach every dynamic MCP server after `setMcpServers`. External
+ * (stdio/http) servers get `reconnectMcpServer`; SDK in-process servers
+ * rely on `setMcpServers` + optional instance rebuild only.
+ */
+export async function reattachAllDynamicMcpServers(
+  liveQuery: DynamicMcpQuery,
+  dynamicMcpServers: Record<string, McpServerConfig>,
+  options: { forceReconnect?: boolean } = {},
+): Promise<ReattachMcpResult> {
+  const forceReconnect = options.forceReconnect === true
+  const setResult = await liveQuery.setMcpServers(dynamicMcpServers)
+  const statuses = await liveQuery.mcpServerStatus()
+  const statusByName = new Map<string, string | null>(
+    statuses.map(s => [s.name, s.status ?? null]),
+  )
+
+  let reconnected = false
+  let reconnectError: string | undefined
+
+  for (const serverName of Object.keys(dynamicMcpServers)) {
+    if (isSdkMcpServer(dynamicMcpServers[serverName])) continue
+    const result = await reconnectExternalServer(
+      liveQuery,
+      serverName,
+      forceReconnect,
+      setResult,
+      statusByName.get(serverName) ?? null,
+    )
+    if (result.reconnected) reconnected = true
+    if (result.reconnectError) reconnectError = result.reconnectError
+    if (result.finalStatus !== null) statusByName.set(serverName, result.finalStatus)
+  }
+
+  const coroName = 'coro'
+  return {
+    setResult,
+    initialStatus: statusByName.get(coroName) ?? null,
+    finalStatus: statusByName.get(coroName) ?? null,
+    reconnected,
+    ...(reconnectError ? { reconnectError } : {}),
+  }
+}
+
 export async function reattachDynamicMcpServers(
   liveQuery: DynamicMcpQuery,
   dynamicMcpServers: Record<string, McpServerConfig>,
   serverName: string,
   options: { forceReconnect?: boolean } = {},
-): Promise<{
-  setResult: McpSetServersResult
-  initialStatus: string | null
-  finalStatus: string | null
-  reconnected: boolean
-  /**
-   * Populated when `reconnectMcpServer` threw on the final attempt. The
-   * previous implementation swallowed this silently, which made callers
-   * believe MCP was healthy after a `forceReconnect: true` even when
-   * the transport rebuild had failed. Callers MUST surface this in
-   * their log line; the next `mcp__coro__*` call will otherwise fail
-   * with `Stream closed` and look like a fresh bug.
-   */
-  reconnectError?: string
-}> {
+): Promise<ReattachMcpResult> {
   const setResult = await liveQuery.setMcpServers(dynamicMcpServers)
-  const readStatus = async () => {
-    const statuses = await liveQuery.mcpServerStatus()
-    return statuses.find(status => status.name === serverName)?.status ?? null
+  const statuses = await liveQuery.mcpServerStatus()
+  const initialStatus = statuses.find(status => status.name === serverName)?.status ?? null
+
+  if (isSdkMcpServer(dynamicMcpServers[serverName])) {
+    return { setResult, initialStatus, finalStatus: initialStatus, reconnected: false }
   }
 
-  const initialStatus = await readStatus()
-  let finalStatus = initialStatus
-  let reconnected = false
-  let reconnectError: string | undefined
-
-  // SDK-type ("in-process") MCP servers do not have a transport to
-  // reset — they are called directly via an in-process function table.
-  // The Anthropic SDK explicitly rejects `reconnectMcpServer` for them
-  // with `"SDK servers should be handled in print.ts"`, which produced
-  // a constant false-positive `reconnectError` in our logs and made
-  // the auto-recovery steering nudge unreachable (see executor.ts
-  // detector gate). For SDK servers, a successful `setMcpServers` IS
-  // the entire reattach surface — there is nothing else to do.
-  const serverConfig = dynamicMcpServers[serverName]
-  const isSdkServer = serverConfig !== undefined && (serverConfig as { type?: string }).type === 'sdk'
-
-  const needsReconnect =
-    !isSdkServer && (
-      options.forceReconnect === true ||
-      (finalStatus !== null && finalStatus !== 'connected' && !setResult.errors[serverName])
-    )
-
-  if (needsReconnect) {
-    // One bounded retry with a small backoff — the SDK's
-    // `reconnectMcpServer` regularly races the child-process MCP
-    // transport during shutdown/restart and throws on the first call
-    // even though the second call seconds later succeeds. Retrying
-    // once eliminates the most common transient failure without
-    // masking real breakage.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        await liveQuery.reconnectMcpServer(serverName)
-        reconnected = true
-        reconnectError = undefined
-        break
-      } catch (err) {
-        reconnectError = err instanceof Error ? err.message : String(err)
-        if (attempt === 0) {
-          await new Promise(resolve => setTimeout(resolve, 250))
-        }
-      }
-    }
-    finalStatus = await readStatus()
-  }
+  const { reconnected, reconnectError, finalStatus } = await reconnectExternalServer(
+    liveQuery,
+    serverName,
+    options.forceReconnect === true,
+    setResult,
+    initialStatus,
+  )
 
   return {
     setResult,

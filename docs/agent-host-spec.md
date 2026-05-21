@@ -400,7 +400,7 @@ Two interrupt modes (see `ExecutorSessionController` in
 | Mode | When | Behavior |
 |------|------|----------|
 | `safe` | Default while `mcp__*` tool in flight | Message is queued only; no interrupt (avoids aborting in-flight MCP control requests). |
-| `urgent` | No MCP tool in flight, or **Pause** | `interrupt()` then background MCP heal (fresh Coro SDK instance via `mcpRebuild`, then `setMcpServers`). Heal does not block the dashboard HTTP response. |
+| `urgent` | No MCP tool in flight, or **Pause** | `interrupt()` then **await** bounded MCP heal (fresh Coro instance via `mcpRebuild`, `setMcpServers`, reconnect external servers) before returning, within the 10s interrupt timeout. PreToolUse blocks `mcp__*` until heal completes. |
 
 **Pause** is distinct from steering: it parks the job first, then calls
 `interrupt({ mode: 'urgent' })` and closes the developer-input channel
@@ -412,8 +412,7 @@ executor emits `stopReason: 'interrupted'` and logs a `[control]`
 line (never a red `[error]`) instead of setting `STATUS_FAILED`.
 
 If `interrupt()` does not ack within 10s, the steer message stays
-queued and a `[control]` timeout line is appended; MCP heal may still
-run in the background.
+queued and a `[control]` timeout line is appended.
 
 MCP transport blips (`Stream closed`, etc.) trigger inline
 `healMcpTransport()` and an optional retry nudge so the agent retries

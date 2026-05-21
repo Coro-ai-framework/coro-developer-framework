@@ -792,7 +792,7 @@ export class Dispatcher {
           )
           await this.ctx.stateBackend.appendLog(
             jobId,
-            '[control] Steering interrupt timed out — your message is queued; MCP heal may still be running in the background.',
+            '[control] Steering interrupt timed out — your message is queued; MCP heal may not have finished.',
           )
         }
         if (mode === 'safe') {

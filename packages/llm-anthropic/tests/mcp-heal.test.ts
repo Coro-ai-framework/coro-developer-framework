@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { healMcpTransport, isCoroMcpHealthy } from '../src/mcp-heal'
+import { healMcpTransport, isCoroMcpHealthy, runBoundedMcpHeal } from '../src/mcp-heal'
 
 function makeQuery(opts: { status: string }) {
   return {
@@ -29,6 +29,30 @@ describe('healMcpTransport', () => {
     expect(rebuildCalls).toBe(1)
     expect(servers.coro.name).toBe('coro-fresh')
     expect(q.setMcpServers).toHaveBeenCalledWith(servers)
+  })
+})
+
+describe('runBoundedMcpHeal', () => {
+  it('retries until coro status is healthy', async () => {
+    let statusCalls = 0
+    const q = {
+      setMcpServers: vi.fn(async () => ({ added: ['coro'], removed: [], errors: {} })),
+      mcpServerStatus: vi.fn(async () => {
+        statusCalls += 1
+        return [{ name: 'coro', status: statusCalls >= 2 ? 'connected' : 'disconnected' }]
+      }),
+      reconnectMcpServer: vi.fn(async () => undefined),
+    }
+    const servers = { coro: { type: 'sdk', name: 'coro' } }
+    const result = await runBoundedMcpHeal({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      liveQuery: q as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      dynamicMcpServers: servers as any,
+      timeoutMs: 2_000,
+    })
+    expect(isCoroMcpHealthy(result)).toBe(true)
+    expect(q.setMcpServers.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 })
 
