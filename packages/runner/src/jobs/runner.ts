@@ -32,7 +32,6 @@ import type {
   PluginMcpServerConfig,
 } from '../plugins/types'
 import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../prompt/builder'
-import { isRecoverableSteeringAbort } from '@coro/llm-anthropic'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
@@ -1365,7 +1364,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         liveJob.id,
         `[control] Agent stream stopped after pause/park — current turn ended at the safe boundary.`,
       )
-    } else if (isRecoverableSteeringAbort(err)) {
+    } else if (await isRecoverableSteeringAbortDynamic(err)) {
       logger.info(
         { jobId: liveJob.id, err: String(err) },
         'Agent stream ended after recoverable steering interrupt — not marking job failed',
@@ -1474,6 +1473,31 @@ async function syncJob(
   patch: Partial<Job>,
 ): Promise<Job> {
   return stateBackend.updateJob(job.id, patch)
+}
+
+// ── Provider-neutral runner ↔ plugin bridge ─────────────────────────────────
+//
+// The runner core must not statically depend on any LLM plugin (locked
+// down by `tests/unit/runner-no-claude-imports.test.ts`). The only
+// caller for the Anthropic plugin's steering-abort predicate lives in
+// the catch block at the end of `runJob`, on a cold path. We resolve
+// it lazily here so the lockdown stays satisfied without losing the
+// recoverable-interrupt classification.
+//
+// Failure-mode safety: if the plugin can't be loaded for any reason
+// (missing optional dep, runtime resolution error), we conservatively
+// return `false` so the caller falls through to the regular crash
+// handler — better to mark a job failed than to silently swallow a
+// real error as a "steering interrupt".
+async function isRecoverableSteeringAbortDynamic(err: unknown): Promise<boolean> {
+  try {
+    const mod = (await import('@coro/llm-anthropic')) as {
+      isRecoverableSteeringAbort?: (e: unknown) => boolean
+    }
+    return mod.isRecoverableSteeringAbort?.(err) ?? false
+  } catch {
+    return false
+  }
 }
 
 async function refreshJobForBoundary(
