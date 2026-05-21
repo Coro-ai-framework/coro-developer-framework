@@ -197,8 +197,8 @@ describe('PollingTransport', () => {
       expect(pollSpy).not.toHaveBeenCalled()
     })
 
-    it('skips jobs without awaitingPrId', async () => {
-      const job = makeJob({ awaitingPrId: undefined })
+    it('skips jobs without awaitingPrId and without open prMappings', async () => {
+      const job = makeJob({ awaitingPrId: undefined, prMappings: [] })
       const backend = makeMockBackend([job])
       const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
       const pollSpy = vi.spyOn(plugin, 'pollPr')
@@ -382,11 +382,56 @@ describe('PollingTransport', () => {
       expect(ref.externalId).toBe('42')
     })
 
-    it('multi-PR jobs: resolveRef picks the mapping matching awaitingPrId, not the first mapping', async () => {
-      // Regression: when a job has multiple prMappings, the previous
-      // resolveRef used pickRepoKey which returned the first mapping's
-      // repoSlug. For multi-repo (or even single-repo, multi-PR) jobs
-      // the awaiting PR could be polled against the wrong repo.
+    it('polls every unmerged prMapping on a parked job, not only awaitingPrId', async () => {
+      const job = makeJob({
+        awaitingPrId: 7,
+        awaitingEvent: 'pr:approved',
+        prMappings: [
+          { prId: 7, workItem: 'wi-1', repoSlug: 'repo-a', openedAt: '2026-01-01' },
+          { prId: 8, workItem: 'wi-1', repoSlug: 'repo-a', openedAt: '2026-01-02' },
+          { prId: 9, workItem: 'wi-2', repoSlug: 'repo-b', openedAt: '2026-01-03' },
+        ],
+      })
+      const backend = makeMockBackend([job])
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
+      transport = new PollingTransport({
+        stateBackend: backend,
+        plugins: makeRegistry(plugin),
+        logger,
+      })
+
+      await transport.poll()
+
+      expect(pollSpy).toHaveBeenCalledTimes(3)
+      const polledIds = pollSpy.mock.calls.map(c => c[0].externalId).sort()
+      expect(polledIds).toEqual(['7', '8', '9'])
+    })
+
+    it('skips merged prMappings when polling a multi-PR parked job', async () => {
+      const job = makeJob({
+        awaitingPrId: 7,
+        prMappings: [
+          { prId: 7, workItem: 'wi-1', repoSlug: 'repo-a', openedAt: '2026-01-01', mergedAt: '2026-01-02' },
+          { prId: 8, workItem: 'wi-1', repoSlug: 'repo-a', openedAt: '2026-01-02' },
+        ],
+      })
+      const backend = makeMockBackend([job])
+      const { plugin } = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
+      transport = new PollingTransport({
+        stateBackend: backend,
+        plugins: makeRegistry(plugin),
+        logger,
+      })
+
+      await transport.poll()
+
+      expect(pollSpy).toHaveBeenCalledTimes(1)
+      expect(pollSpy.mock.calls[0]![0].externalId).toBe('8')
+    })
+
+    it('multi-PR jobs: polls each mapping with the correct repoKey', async () => {
       const job = makeJob({
         params: {},
         awaitingPrId: 8,
@@ -405,10 +450,12 @@ describe('PollingTransport', () => {
       })
 
       await transport.poll()
-      expect(pollSpy).toHaveBeenCalled()
-      const ref = pollSpy.mock.calls[0]![0]
-      expect(ref.externalId).toBe('8')
-      expect(ref.repoKey).toBe('repo-b')
+      expect(pollSpy).toHaveBeenCalledTimes(2)
+      const byPrId = Object.fromEntries(
+        pollSpy.mock.calls.map(c => [c[0].externalId, c[0].repoKey]),
+      )
+      expect(byPrId['7']).toBe('repo-a')
+      expect(byPrId['8']).toBe('repo-b')
     })
 
     it('polls parked jobs with empty prMappings when repo is in params', async () => {

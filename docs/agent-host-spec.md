@@ -326,27 +326,62 @@ standard `coding → review → evaluation`, fast `review-and-verify`,
 deep extra-QA pipelines, etc. Encoding any specific transition in the
 harness would break those alternatives.
 
-### 7.4 Parking and resumption
+### 7.4 Parking, events, and resumption
 
 When an agent calls `await_event`, the runner sets the awaited event in
-state and ends the SDK query. The slot is freed.
+state (including optional `awaitingPrId` as a **hint** for the dashboard)
+and ends the SDK query. The slot is freed.
 
-- **Local mode:** `PollingTransport` polls the configured Git provider
-  (BitBucket or GitHub) at a fixed interval (default `60s`) and
-  delivers PR-state changes to parked jobs via the dispatcher.
-  Multi-PR jobs resolve the polled `ExternalRef` by matching
-  `job.awaitingPrId` to the corresponding entry in `job.prMappings`,
-  so the poll lands on the correct repository (and the correct SCM
-  plugin via `matchesRemote`) even when the job has open PRs against
-  multiple repos.
-- **Hybrid mode:** the cloud's webhook receiver verifies the HMAC,
-  resolves the team and the parked job, and sends a job-resume
-  message to the runner over WebSocket. The runner re-loads the job
-  and resumes the phase loop.
+#### Per-job event queue (in-memory)
+
+The dispatcher (`packages/runner/src/jobs/dispatcher.ts`) keeps a
+FIFO `eventQueue` per job id:
+
+- While the job is **actively running**, inbound SCM webhooks are
+  **queued** (not dropped). When the current runner turn finishes,
+  the `finally` block drains **the entire queue in one batch** into a
+  single `pendingPrompt` via `buildBatchedWebhookMessage` — e.g. a
+  comment on PR #1 and approvals on PR #2/#3 arrive in one
+  chronological list for the agent's next turn.
+- While the job is **parked**, the first webhook wakes it immediately;
+  additional webhooks that arrive before that run finishes are queued
+  and merged into the same batched prompt on the next drain.
+- The queue is process-scoped (not persisted). After a runner restart,
+  `PollingTransport` cold-start polling resynchronises PR state.
+
+#### Multi-PR polling (local mode)
+
+`PollingTransport` polls the configured SCM provider at a fixed
+interval (default `60s`) and delivers synthetic events to parked jobs.
+
+For each parked job, the poller iterates **every unmerged entry in
+`job.prMappings`** (not only `awaitingPrId`). Each mapping resolves
+to the correct `repoKey` and SCM plugin (`matchesRemote`). This lets
+approvals and comments on sibling PRs wake the job while the agent
+was parked awaiting a different PR.
+
+`scm_merge_pr` stamps `mergedAt` on the matching mapping so open vs
+merged PRs are visible in logs, the completion gate, and the
+**"Open PRs on this job"** block injected into every phase kickoff
+(`packages/runner/src/jobs/phase-kickoff.ts`).
+
+#### Webhooks (hybrid and local)
+
+Plugin webhooks resolve the job via `getJobByPr` / `getJobByExternalRef`
+for **any** PR mapped to the job — not only the PR in `awaitingPrId`.
+Any matched event on a parked job triggers `resumeWithEvent`.
 
 Developer-driven resumption (`coro resume <jobId>`, dashboard "resume"
 button, or `coro message <jobId> <text>`) goes through the same
 dispatcher path.
+
+#### Coding preflight
+
+When a job enters the `coding` phase and `currentWorkItem` already has
+open (non-merged) PRs in `prMappings`, the kickoff prompt prepends a
+`[coding-preflight]` warning — a soft nudge to hand off to `review`
+instead of opening more PRs. The completion gate remains the hard
+backstop.
 
 ### 7.5 Mid-phase steering (Anthropic)
 

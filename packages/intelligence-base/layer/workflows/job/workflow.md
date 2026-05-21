@@ -88,6 +88,10 @@ Work-item state is tracked on the Job object via `workItems[]`. The Planner call
 
 The runner enforces a **completion gate** on this contract: it refuses to mark the job `STATUS_COMPLETE` while any work item is still `pending` or `in-progress`. If an agent ends the final phase prematurely, the runner re-runs the current phase with a `[completion-gate]` corrective prompt naming the unfinished work items and the still-open PRs. A repeated-block retry cap converts a stuck loop into an explicit failure rather than burning tokens. See `docs/agent-host-spec.md` for the harness contract.
 
+**Coder over-run:** If the Coder opens PRs for multiple work items before review runs, the merge gatekeeper is designed to **absorb** the backlog in one `review` phase (group by work item, merge in order) rather than requiring a strict coding→review handoff per item. The Coder should still end its turn after each WI's PRs (`[coding-preflight]` warns when that did not happen).
+
+**SCM events:** While parked, webhook and poll events for **any** open PR on the job are queued and delivered as one batched `[WEBHOOK EVENTS: …]` prompt on wake. Every phase kickoff also includes an **"Open PRs on this job"** table from `prMappings`.
+
 ## Workflow shape
 
 The job pipeline is intentionally tight: each phase has a distinct decision to make, and we avoid running the same checks in two places.

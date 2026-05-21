@@ -132,7 +132,7 @@ export class PollingTransport implements EventTransport {
     try {
       const jobs = await this.stateBackend.listJobs()
       const parkedJobs = jobs.filter(j =>
-        isParkingStatus(j.status) && j.awaitingPrId != null
+        isParkingStatus(j.status) && hasPollablePrs(j),
       )
 
       this.logger.info({ parkedCount: parkedJobs.length }, 'Poll cycle running')
@@ -140,29 +140,31 @@ export class PollingTransport implements EventTransport {
       if (parkedJobs.length === 0) return
 
       for (const job of parkedJobs) {
-        const prId = job.awaitingPrId!
-        const ref = this.resolveRef(job, prId)
-        if (!ref) {
-          this.logger.warn(
-            { jobId: job.id, prId },
-            'Cannot poll PR — no repoKey/repoSlug found on job',
-          )
-          continue
-        }
+        const prIds = prIdsToPoll(job)
+        for (const prId of prIds) {
+          const ref = this.resolveRef(job, prId)
+          if (!ref) {
+            this.logger.warn(
+              { jobId: job.id, prId },
+              'Cannot poll PR — no repoKey/repoSlug found on job',
+            )
+            continue
+          }
 
-        const scm = this.resolveScm(job, ref)
-        if (!scm) {
-          this.logger.warn(
-            { jobId: job.id, prId, pluginId: ref.pluginId },
-            'Cannot poll PR — no matching SCM plugin installed',
-          )
-          continue
-        }
+          const scm = this.resolveScm(job, ref)
+          if (!scm) {
+            this.logger.warn(
+              { jobId: job.id, prId, pluginId: ref.pluginId },
+              'Cannot poll PR — no matching SCM plugin installed',
+            )
+            continue
+          }
 
-        try {
-          await this.checkPr(job.id, scm, ref)
-        } catch (err) {
-          await this.handlePollError(job.id, ref, err)
+          try {
+            await this.checkPr(job.id, scm, ref)
+          } catch (err) {
+            await this.handlePollError(job.id, ref, err)
+          }
         }
       }
     } finally {
@@ -416,6 +418,24 @@ function extractStatusCode(err: unknown): number | undefined {
   if (typeof e.statusCode === 'number') return e.statusCode
   if (typeof e.status === 'number') return e.status
   return undefined
+}
+
+/** Unmerged PR mappings on a job — the set we poll while parked. */
+function openPrMappings(job: { prMappings: PrMapping[] }): PrMapping[] {
+  return job.prMappings.filter(pm => !pm.mergedAt)
+}
+
+function hasPollablePrs(job: { awaitingPrId?: number; prMappings: PrMapping[] }): boolean {
+  if (openPrMappings(job).length > 0) return true
+  return job.awaitingPrId != null
+}
+
+/** PR ids to poll: every open mapping, or legacy scalar awaitingPrId when no mappings. */
+function prIdsToPoll(job: { awaitingPrId?: number; prMappings: PrMapping[] }): number[] {
+  const open = openPrMappings(job)
+  if (open.length > 0) return open.map(pm => pm.prId)
+  if (job.awaitingPrId != null) return [job.awaitingPrId]
+  return []
 }
 
 function pickRepoKey(job: { params: Record<string, unknown>; prMappings: PrMapping[] }): string {

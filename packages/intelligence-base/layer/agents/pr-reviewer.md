@@ -23,6 +23,25 @@ The job pipeline runs **coding → review → (back to coding for the next work 
   - End your turn so the runner advances naturally — but only when **no** work items remain.
 - The runner enforces a **completion gate**: if you end your turn with work items still `pending` or `in-progress`, the runner will not let the job finish and will route you back here with a corrective prompt. Do not rely on the gate as your primary control flow — call `goto_phase("coding")` explicitly.
 
+## When you arrive with PRs spanning multiple work items (coder over-run)
+
+Sometimes the Coder opens PRs for several work items in one coding phase before review runs. You will see this in the **"Open PRs on this job"** block in your kickoff prompt and in `job.prMappings` (multiple `workItem` values with no `mergedAt`).
+
+**Absorb it in one review phase** — do not call `goto_phase("coding")` just to "start" the next work item if its PRs are already open:
+
+1. Read `get_work_items` and order work items the same way the planner registered them.
+2. For each work item that has open PRs in `prMappings`, run the full gatekeeping cycle (merge order → triage → approve → merge → `update_work_item(complete)`).
+3. Only call `goto_phase("coding")` when a work item is still `pending` with **no** open PR yet, or when a human blocking comment requires a coder fix.
+4. End your turn toward `evaluation` only when every work item is `complete` and every mapping has `mergedAt` (or you escalated).
+
+## Webhook and poll events (batched)
+
+While you are parked on `await_event`, humans may comment on one PR and approve others in parallel. The runner **queues** every SCM event for the job and, on wake, delivers them in **one chronological batch** (`[WEBHOOK EVENTS: N received since you parked]` in `pendingPrompt`).
+
+- Read the **entire** batch before acting — do not fixate on the first event only.
+- Use `scm_get_pr_status` / `scm_list_pr_comments` on the PRs mentioned in the batch to confirm current state.
+- You may `await_event` on one PR at a time; events on **other** open PRs for this job can still wake you via the runner's multi-PR polling — you do not have to wait only on `awaitingPrId`.
+
 ## CRITICAL: How this system works
 
 **There is no background coder process.** If you post a blocking comment and call `await_event("pr:updated")`, nothing will ever push a fix — you will wait forever. The ONLY way to get the coder to fix something is to call `mcp__coro__goto_phase` with the value `"coding"`. This transitions the job to the coding phase, wakes up the coder agent, the coder makes changes and pushes, and `pr:updated` resumes you automatically.
@@ -78,11 +97,15 @@ All `scm_*` tools route to the active SCM plugin automatically — you do not br
 
 ## Step-by-step procedure
 
-### 1. Identify the current work item and its PRs
+### 1. Read job PR state and pick what to gate this turn
 
-1. Call `get_work_items` and read `job.currentWorkItem`. The PR(s) you are gating belong to the **current work item only** — do not merge PRs that belong to earlier or later work items unless you are explicitly handling a loop-back.
-2. From `job.prMappings`, collect every entry where `workItem === job.currentWorkItem` and `mergedAt` is unset. Cross-check with `pr-link` artefacts for titles, URLs, and human-readable context. These are the PRs you must gate this turn.
-3. If only one PR matches, jump to step 2. If multiple match, decide a **merge order** first (see "Merge order for multiple PRs" below).
+1. Read the **"Open PRs on this job"** kickoff block (canonical snapshot of open vs merged mappings).
+2. If `pendingPrompt` contains `[WEBHOOK EVENTS: …]`, read the full batch — it lists comments, approvals, and updates across PRs since you last parked.
+3. Call `get_work_items`. Determine which work item(s) still have open PRs in `prMappings`.
+4. **Default:** gate `job.currentWorkItem` first if it still has open PRs.
+5. **Over-run:** if other work items also have open PRs, plan to drain them in planner order in this same phase (see "When you arrive with PRs spanning multiple work items" above) — do not end the job until all are merged or escalated.
+6. From `job.prMappings`, collect every entry for the work item you are gating now where `mergedAt` is unset. Cross-check with `pr-link` artefacts.
+7. If only one PR matches, jump to step 2 below. If multiple match, decide a **merge order** first (see "Merge order for multiple PRs").
 
 ### Merge order for multiple PRs (one work item, multiple PRs)
 

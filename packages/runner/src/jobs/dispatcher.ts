@@ -663,21 +663,23 @@ export class Dispatcher {
       return
     }
 
-    await this.injectAndResume(jobId, event)
+    await this.injectAndResume(jobId, [event])
   }
 
-  private async injectAndResume(jobId: string, event: WebhookEvent): Promise<void> {
+  private async injectAndResume(jobId: string, events: WebhookEvent[]): Promise<void> {
+    if (events.length === 0) return
+
     const job = await this.ctx.stateBackend.getJob(jobId)
     if (!job) return
     if (!isParkingStatus(job.status)) {
       this.ctx.logger.debug(
-        { jobId, status: job.status, eventKey: event.eventKey },
-        'Job is no longer parked — dropping queued webhook event',
+        { jobId, status: job.status, eventKeys: events.map(e => e.eventKey) },
+        'Job is no longer parked — dropping queued webhook events',
       )
       return
     }
 
-    const pendingPrompt = buildWebhookMessage(event.eventKey, event.payload)
+    const pendingPrompt = buildBatchedWebhookMessage(events)
 
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
@@ -686,8 +688,17 @@ export class Dispatcher {
       pendingPrompt,
     })
 
-    await this.ctx.stateBackend.appendLog(jobId, `[webhook] Received: ${event.eventKey}`)
-    this.ctx.logger.info({ jobId, eventKey: event.eventKey }, 'Resuming parked job')
+    const keys = events.map(e => e.eventKey).join(', ')
+    await this.ctx.stateBackend.appendLog(
+      jobId,
+      events.length === 1
+        ? `[webhook] Received: ${keys}`
+        : `[webhook] Received ${events.length} events: ${keys}`,
+    )
+    this.ctx.logger.info(
+      { jobId, count: events.length, eventKeys: events.map(e => e.eventKey) },
+      'Resuming parked job',
+    )
 
     this.fireAndForget(jobId)
   }
@@ -1365,8 +1376,9 @@ export class Dispatcher {
           this.ctx.logger.error({ err, jobId }, 'Failed loading job for campaign coordinator')
         }
 
-        // Process at most ONE queued event. injectAndResume calls fireAndForget
-        // which will eventually hit this finally block again for the next event.
+        // Drain every queued webhook event into one resume so the agent
+        // sees the full batch (e.g. comment on PR#1 + approvals on PR#2/3)
+        // in a single turn instead of N separate LLM cycles.
         const queued = this.eventQueue.get(jobId)
         if (!queued || queued.length === 0) {
           this.eventQueue.delete(jobId)
@@ -1381,16 +1393,15 @@ export class Dispatcher {
           return
         }
 
-        const next = queued.shift()!
-        if (queued.length === 0) this.eventQueue.delete(jobId)
+        const batch = queued.splice(0)
+        this.eventQueue.delete(jobId)
 
         const job = await this.ctx.stateBackend.getJob(jobId)
         if (!job || !isParkingStatus(job.status)) {
-          this.eventQueue.delete(jobId)
           return
         }
 
-        await this.injectAndResume(jobId, next)
+        await this.injectAndResume(jobId, batch)
       })
   }
 
@@ -1511,8 +1522,9 @@ export function buildEscalationResponseMessage(
 
 // ── Webhook message builder ───────────────────────────────────────────────────
 
-export function buildWebhookMessage(eventKey: string, payload: Record<string, unknown>): string {
-  const lines = [`[WEBHOOK EVENT: ${eventKey}]`, `Received at: ${new Date().toISOString()}`, '']
+/** Body lines for one webhook payload (PR metadata, comment text, approval hints). */
+function formatWebhookEventBody(eventKey: string, payload: Record<string, unknown>): string[] {
+  const lines: string[] = []
 
   const pr = payload['pullrequest'] as Record<string, unknown> | undefined
   if (pr) {
@@ -1529,16 +1541,59 @@ export function buildWebhookMessage(eventKey: string, payload: Record<string, un
     if (author) lines.push(`Author: ${author}`)
   }
 
+  const approvalCount = payload['approvalCount']
+  if (typeof approvalCount === 'number') {
+    lines.push(`Approvals: ${approvalCount}`)
+  }
+
   const comment = payload['comment'] as Record<string, unknown> | undefined
   if (comment) {
     const content = (comment['content'] as Record<string, unknown> | undefined)?.['raw']
     const commenter = (comment['user'] as Record<string, unknown> | undefined)?.['display_name']
-    if (commenter) lines.push(`\nComment by ${commenter}:`)
+    if (commenter) lines.push(`Comment by ${commenter}:`)
     if (content) lines.push(String(content))
   }
 
-  lines.push('')
-  lines.push('Please continue your work based on this event. Refer to your current phase instructions.')
+  if (lines.length === 0) {
+    lines.push(`(no structured payload — event: ${eventKey})`)
+  }
+
+  return lines
+}
+
+export function buildWebhookMessage(eventKey: string, payload: Record<string, unknown>): string {
+  return buildBatchedWebhookMessage([{
+    eventKey,
+    payload,
+    receivedAt: new Date().toISOString(),
+  }])
+}
+
+export function buildBatchedWebhookMessage(
+  events: Array<{ eventKey: string; payload: Record<string, unknown>; receivedAt: string }>,
+): string {
+  const n = events.length
+  const header = n === 1
+    ? '[WEBHOOK EVENT: 1 received since you parked]'
+    : `[WEBHOOK EVENTS: ${n} received since you parked]`
+
+  const lines: string[] = [header, '']
+
+  events.forEach((event, index) => {
+    const label = n === 1
+      ? `Event 1 of 1 — ${event.eventKey} at ${event.receivedAt}`
+      : `Event ${index + 1} of ${n} — ${event.eventKey} at ${event.receivedAt}`
+    lines.push(label)
+    lines.push(...formatWebhookEventBody(event.eventKey, event.payload))
+    lines.push('')
+  })
+
+  lines.push(
+    'Decide which to act on first using your workflow intelligence.',
+    'Comments may need replies or a coder loop-back (`goto_phase("coding")`).',
+    'Approvals enable merges when CI and human sign-off are satisfied.',
+    'Refer to your current phase instructions and the "Open PRs on this job" block in your kickoff.',
+  )
 
   return lines.join('\n')
 }

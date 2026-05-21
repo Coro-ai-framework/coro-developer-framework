@@ -67,6 +67,7 @@ import {
   COMPLETION_GATE_MAX_RETRIES,
   evaluateCompletionGate,
 } from './completion-gate'
+import { buildPhaseKickoffMessage } from './phase-kickoff'
 import { assertJobPluginRequirements } from './plugin-preflight'
 import {
   RateLimitExceededError,
@@ -1900,23 +1901,5 @@ export function buildExecutorSubagentSpecs(
   return out
 }
 
-/**
- * Very short per-phase kickoff message. The system prompt already carries
- * the workflow, agent role, and job state — this message just nudges the
- * agent to start (or continue) work in the current phase.
- */
-function buildPhaseKickoffMessage(job: Job): string {
-  if (job.sessionId) {
-    return (
-      `You are now in phase **${job.phase}**. Your role for this phase is in the ` +
-      `system prompt under "Your Role This Phase". Continue the job — do what the phase ` +
-      `instructs, then let your turn end (the runner auto-advances).`
-    )
-  }
-  return (
-    `Begin phase **${job.phase}** of this ${job.type} job. Your role and the full ` +
-    `workflow are in the system prompt. Follow your phase instructions and use the ` +
-    `\`log\` tool to report progress.`
-  )
-}
+// buildPhaseKickoffMessage lives in ./phase-kickoff.ts (exported for tests).
 

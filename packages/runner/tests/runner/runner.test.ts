@@ -488,6 +488,70 @@ describe('runJob (mocked Agent SDK query)', () => {
     })
   })
 
+  describe('coding preflight', () => {
+    const workflowCoding: WorkflowConfig = {
+      initialPhase: 'coding',
+      initialStatus: 'queued',
+      phases: [{ name: 'coding', agent: null, model: 'planning', status: 'running-coding' }],
+      overrides: {},
+    }
+    const workflowReview: WorkflowConfig = {
+      initialPhase: 'review',
+      initialStatus: 'queued',
+      phases: [{ name: 'review', agent: null, model: 'planning', status: 'running-review' }],
+      overrides: {},
+    }
+
+    it('prepends [coding-preflight] when coding phase has open PRs for currentWorkItem', async () => {
+      const bundle = makeStubExecutor(() => yieldEmptyPhase('sess-preflight'))
+      await runJob(
+        makeJob({
+          phase: 'coding',
+          status: 'queued',
+          currentWorkItem: 'wi-1',
+          prMappings: [
+            { prId: 7, workItem: 'wi-1', repoSlug: 'svc', openedAt: '2026-01-01T00:00:00Z' },
+          ],
+        }),
+        ctx,
+        {
+          executorImpl: bundle.executor,
+          onPhaseExecutorBoot: bundle.bootHook,
+          workflowConfigOverride: workflowCoding,
+        },
+      )
+
+      const prompt = bundle.capturedRequests[0]?.userPrompt ?? ''
+      expect(prompt).toContain('[coding-preflight]')
+      expect(prompt).toContain('wi-1')
+      expect(prompt).toContain('## Open PRs on this job')
+    })
+
+    it('does not prepend preflight in review phase', async () => {
+      const bundle = makeStubExecutor(() => yieldEmptyPhase('sess-review'))
+      await runJob(
+        makeJob({
+          phase: 'review',
+          status: 'queued',
+          currentWorkItem: 'wi-1',
+          prMappings: [
+            { prId: 7, workItem: 'wi-1', repoSlug: 'svc', openedAt: '2026-01-01T00:00:00Z' },
+          ],
+        }),
+        ctx,
+        {
+          executorImpl: bundle.executor,
+          onPhaseExecutorBoot: bundle.bootHook,
+          workflowConfigOverride: workflowReview,
+        },
+      )
+
+      const prompt = bundle.capturedRequests[0]?.userPrompt ?? ''
+      expect(prompt).not.toContain('[coding-preflight]')
+      expect(prompt).toContain('## Open PRs on this job')
+    })
+  })
+
   it('advances phases then completes', async () => {
     let call = 0
     await runWithStubExecutor(
