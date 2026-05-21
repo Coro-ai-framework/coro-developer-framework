@@ -31,7 +31,12 @@ import type {
   PhaseExecutorRuntime,
   PluginMcpServerConfig,
 } from '../plugins/types'
-import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../prompt/builder'
+import {
+  buildSystemPrompt,
+  computeGuardrailsPromptContext,
+  computeScmPromptContext,
+  computeTrackerPromptContext,
+} from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
@@ -575,12 +580,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
       let phaseMcpServer = createCoroMcpServer(toolCtx, signals, mcpServerOpts)
 
+      const localConfig = loadLocalConfig()
+      const guardrailsInfo = computeGuardrailsPromptContext(localConfig)
       const systemPrompt = await buildSystemPrompt(
         liveJob,
         jobIntelligenceDir,
         logger,
         trackerInfo,
         scmInfo,
+        guardrailsInfo,
         executor.capabilities,
       )
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
@@ -729,7 +737,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const abortController = new AbortController()
 
-      const guardrailEngine = createGuardrailEngine(loadLocalConfig(), {
+      const guardrailEngine = createGuardrailEngine(localConfig, {
         scm: createGuardrailScmDeps(toolCtx),
         activityLog: line => stateBackend.appendLog(toolCtx.job.id, line),
       })

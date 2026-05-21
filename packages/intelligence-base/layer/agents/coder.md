@@ -136,7 +136,7 @@ Call `mcp__coro__scm_create_pr` — the runner routes it to whichever SCM plugin
 
 **`scm_create_pr` is idempotent.** Call it unconditionally — even on a re-push or a fix-loop where you suspect a PR already exists for this branch. The plugin looks up any open PR on the same source branch and returns its `ExternalRef` instead of erroring. **Do not** `curl` the SCM REST API to dedupe first: Bitbucket has three token/username combinations (App Password + email, repo access token + `x-token-auth`, Bitbucket-scoped API token + `x-bitbucket-api-token-auth`) and the token prefix cannot disambiguate them — guessing wrong burns the rest of your turn on 401s. The plugin is the only thing that knows which combo is configured.
 
-**Runner guardrails** block `scm_create_pr` when the description is missing/too short or the diff is oversized (defaults: `## What`, ≥80 chars, ≤500 lines / 40 files in coding). If denied, fix the description or split the work into another PR — do not argue with the tool error.
+**Runner guardrails** block `scm_create_pr` when the description is missing/too short or the diff is oversized during the coding phase. The effective thresholds for this job are in the **Current Job** JSON under `guardrails` (same values as Settings → Guardrails). If denied, read the tool error for the exact limit, fix the description or split the work into another PR — do not argue with the tool error.
 
 Include in the PR description:
 - Which work item from the plan this implements

@@ -7,6 +7,8 @@ import type { PluginRegistry } from '../plugins/registry'
 import { Job } from '@coro/cloud-protocol'
 import { propagableInsights } from '../insights'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
+import type { LocalConfig } from '../config/local-config'
+import { resolveGuardrails } from '../guardrails/merge'
 
 // ── Tracker prompt context ────────────────────────────────────────────────────
 //
@@ -123,6 +125,40 @@ export function computeScmPromptContext(
   }
 }
 
+// ── Guardrails prompt context ─────────────────────────────────────────────────
+
+export interface GuardrailsPromptRule {
+  id: string
+  on: string
+  check: string
+  enabled: boolean
+  during?: string[]
+  config?: Record<string, unknown>
+}
+
+export interface GuardrailsPromptContext {
+  enabled: boolean
+  rules: GuardrailsPromptRule[]
+}
+
+/** Effective runner guardrails for the job-context JSON block. */
+export function computeGuardrailsPromptContext(
+  config?: LocalConfig | null,
+): GuardrailsPromptContext {
+  const { resolved } = resolveGuardrails(config?.guardrails ?? null)
+  return {
+    enabled: resolved.enabled,
+    rules: resolved.rules.map(rule => ({
+      id: rule.id,
+      on: rule.on,
+      check: rule.check,
+      enabled: rule.enabled,
+      ...(rule.during?.length ? { during: rule.during } : {}),
+      ...(rule.config && Object.keys(rule.config).length > 0 ? { config: rule.config } : {}),
+    })),
+  }
+}
+
 // ── Builder ───────────────────────────────────────────────────────────────────
 
 /**
@@ -164,6 +200,7 @@ export async function buildSystemPrompt(
   logger: Logger,
   trackerInfo?: TrackerPromptContext,
   scmInfo?: ScmPromptContext,
+  guardrailsInfo?: GuardrailsPromptContext,
   executorCapabilities?: { supportsClaudeMdNativeWalkUp: boolean },
 ): Promise<string> {
   const sections: string[] = []
@@ -208,14 +245,19 @@ export async function buildSystemPrompt(
     }
   }
 
-  sections.push(buildJobContext(job, trackerInfo, scmInfo))
+  sections.push(buildJobContext(job, trackerInfo, scmInfo, guardrailsInfo))
 
   return sections.join('\n\n---\n\n')
 }
 
 // ── Job context ───────────────────────────────────────────────────────────────
 
-function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext, scmInfo?: ScmPromptContext): string {
+function buildJobContext(
+  job: Job,
+  trackerInfo?: TrackerPromptContext,
+  scmInfo?: ScmPromptContext,
+  guardrailsInfo?: GuardrailsPromptContext,
+): string {
   const context: Record<string, unknown> = {
     jobId: job.id,
     type: job.type,
@@ -245,6 +287,9 @@ function buildJobContext(job: Job, trackerInfo?: TrackerPromptContext, scmInfo?:
   }
   if (scmInfo) {
     context['scm'] = scmInfo
+  }
+  if (guardrailsInfo) {
+    context['guardrails'] = guardrailsInfo
   }
 
   const parts = [

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
 import { z } from 'zod'
-import { buildSystemPrompt, computeScmPromptContext, computeTrackerPromptContext } from '../../src/prompt/builder'
+import { buildSystemPrompt, computeGuardrailsPromptContext, computeScmPromptContext, computeTrackerPromptContext } from '../../src/prompt/builder'
 import type { Settings } from '../../src/config/settings'
 import type { TrackerClient, TrackerProvider } from '../../src/clients/tracker'
 import { PluginRegistry, type ScmPluginRuntime } from '../../src/plugins'
@@ -475,6 +475,52 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         default: 'github',
       })
     })
+
+    it('omits the guardrails key when no guardrailsInfo is supplied', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['guardrails']).toBeUndefined()
+    })
+
+    it('renders guardrails context when supplied', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const guardrailsInfo = computeGuardrailsPromptContext({
+        guardrails: {
+          rules: [{ id: 'pr-diff-size', config: { maxLines: 1000, maxFiles: 40 } }],
+        },
+      })
+      const prompt = await buildSystemPrompt(
+        makeJob(),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        undefined,
+        undefined,
+        guardrailsInfo,
+      )
+      const ctx = parseJobContext(prompt)
+
+      expect(ctx['guardrails']).toEqual(guardrailsInfo)
+      const prDiffSize = (ctx['guardrails'] as { rules: Array<{ id: string; config?: { maxLines?: number } }> })
+        .rules.find(r => r.id === 'pr-diff-size')
+      expect(prDiffSize?.config?.maxLines).toBe(1000)
+    })
+  })
+})
+
+describe('computeGuardrailsPromptContext', () => {
+  it('merges bundled defaults with user overrides', () => {
+    const out = computeGuardrailsPromptContext({
+      guardrails: {
+        rules: [{ id: 'pr-diff-size', config: { maxLines: 1500 } }],
+      },
+    })
+    const rule = out.rules.find(r => r.id === 'pr-diff-size')
+    expect(rule?.config?.maxLines).toBe(1500)
+    expect(out.enabled).toBe(true)
   })
 })
 
