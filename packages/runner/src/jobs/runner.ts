@@ -62,6 +62,12 @@ import {
   isTerminalStatus,
   emptyTokenUsage,
 } from './helpers'
+import {
+  buildJobCompletionBlockPrompt,
+  buildJobCompletionFailureMessage,
+  COMPLETION_GATE_MAX_RETRIES,
+  evaluateCompletionGate,
+} from './completion-gate'
 import { assertJobPluginRequirements } from './plugin-preflight'
 import {
   RateLimitExceededError,
@@ -332,6 +338,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   }
 
   const signals: PhaseSignals = {}
+
+  // ── Completion-gate state ───────────────────────────────────────────────
+  // Tracks consecutive runs where the agent finished the workflow's last
+  // phase while work items were still unfinished. We re-run the same phase
+  // with an injected pendingPrompt so the agent can self-correct via
+  // `goto_phase` / `update_work_item`. After
+  // `COMPLETION_GATE_MAX_RETRIES` blocks in a row, the job is failed to
+  // avoid an infinite loop. The counter is reset to 0 every time the gate
+  // passes or the runner makes any other phase transition.
+  let completionGateAttempts = 0
 
   logger.info(
     {
@@ -1117,11 +1133,66 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         toolCtx.job = liveJob
         if (shouldStopLoop) break
 
+        // ── Completion gate ────────────────────────────────────────────
+        // Workflow-agnostic: block STATUS_COMPLETE when registered work
+        // items are still pending or in-progress. Re-run the current
+        // phase with a corrective pendingPrompt so the agent uses its
+        // workflow MD to decide where to route work next.
+        const gate = evaluateCompletionGate(liveJob)
+        if (!gate.ready) {
+          completionGateAttempts += 1
+          if (completionGateAttempts > COMPLETION_GATE_MAX_RETRIES) {
+            const failure = buildJobCompletionFailureMessage(gate)
+            logger.warn(
+              { jobId: liveJob.id, attempts: completionGateAttempts },
+              'Completion gate exhausted retries — failing job',
+            )
+            await stateBackend.appendLog(liveJob.id, `[completion-gate] ${failure}`)
+            liveJob = await syncJob(stateBackend, liveJob, {
+              status: STATUS_FAILED,
+              escalationMessage: failure,
+            })
+            toolCtx.job = liveJob
+            break
+          }
+
+          const blockedNames = gate.blockingWorkItems.map(w => w.name).join(', ')
+          logger.info(
+            {
+              jobId: liveJob.id,
+              phase: liveJob.phase,
+              attempt: completionGateAttempts,
+              blocking: blockedNames,
+            },
+            'Completion gate blocked — re-running current phase with corrective prompt',
+          )
+          await stateBackend.appendLog(
+            liveJob.id,
+            `[completion-gate] Blocking job completion (${gate.blockingWorkItems.length} unfinished ` +
+              `work item(s): ${blockedNames}). Re-running phase '${liveJob.phase}' ` +
+              `(attempt ${completionGateAttempts}/${COMPLETION_GATE_MAX_RETRIES}).`,
+          )
+          liveJob = await syncJob(stateBackend, liveJob, {
+            pendingPrompt: buildJobCompletionBlockPrompt(
+              liveJob,
+              gate,
+              completionGateAttempts,
+            ),
+          })
+          toolCtx.job = liveJob
+          continue
+        }
+
+        completionGateAttempts = 0
         liveJob = await syncJob(stateBackend, liveJob, { status: STATUS_COMPLETE })
         await stateBackend.appendLog(liveJob.id, 'All phases complete — job finished successfully')
         logger.info({ jobId: liveJob.id }, 'Job completed')
         break
       }
+
+      // Any non-completion advance resets the gate counter — only
+      // consecutive end-of-workflow blocks count toward the cap.
+      completionGateAttempts = 0
 
       // Re-read `interactive` from state right before the boundary check so
       // a dashboard / API toggle that lands mid-phase is honoured on this

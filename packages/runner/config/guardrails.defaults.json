@@ -22,7 +22,7 @@
       "during": ["coding"],
       "check": "pr-diff-size",
       "config": {
-        "maxLines": 500,
+        "maxLines": 1000,
         "maxFiles": 40
       }
     },

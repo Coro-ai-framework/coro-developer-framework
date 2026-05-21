@@ -275,6 +275,50 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
   })
 })
 
+describe('createMcpToolHandlers — scm_merge_pr', () => {
+  it('marks the PR merged in state after a successful merge so local-mode jobs stay in sync', async () => {
+    const built = makeMockToolContextWithSpies()
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_merge_pr({ repo: 'svc', prId: 99 })) as Record<string, unknown>
+
+    expect(data['merged']).toBe(true)
+    // The plugin actually merged.
+    expect(built.scmSpies['bitbucket'].mergePr).toHaveBeenCalledTimes(1)
+    // The runner stamped mergedAt on the matching prMappings entry.
+    expect(built.ctx.stateBackend.markPrMerged).toHaveBeenCalledWith(
+      'job-mcp-test',
+      99,
+      expect.any(String),
+    )
+  })
+
+  it('soft-fails when markPrMerged throws — the merge itself already succeeded', async () => {
+    const built = makeMockToolContextWithSpies()
+    ;(built.ctx.stateBackend.markPrMerged as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('no mapping for this PR'),
+    )
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_merge_pr({ repo: 'svc', prId: 42 })) as Record<string, unknown>
+
+    expect(data['merged']).toBe(true)
+    expect(built.ctx.logger.warn).toHaveBeenCalled()
+  })
+
+  it('skips markPrMerged when prId is non-numeric (defensive)', async () => {
+    const built = makeMockToolContextWithSpies()
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(
+      await h.scm_merge_pr({ repo: 'svc', prId: 'not-a-number' as unknown as number }),
+    ) as Record<string, unknown>
+
+    expect(data['merged']).toBe(true)
+    expect(built.ctx.stateBackend.markPrMerged).not.toHaveBeenCalled()
+  })
+})
+
 describe('createMcpToolHandlers — start_go_service / stop_go_service', () => {
   let ctx: ReturnType<typeof makeMockToolContext>
   const spawnMock = vi.mocked(cp.spawn)

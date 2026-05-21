@@ -232,6 +232,10 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
       ...makeMockJob(),
       prMappings: [mapping],
     })),
+    markPrMerged: vi.fn().mockImplementation(async (_id: string, prId: number, mergedAt: string) => ({
+      ...makeMockJob(),
+      prMappings: [{ prId, workItem: 'mock', repoSlug: 'svc', openedAt: '2026-01-01T00:00:00Z', mergedAt }],
+    })),
     mapPrToJob: vi.fn().mockResolvedValue(undefined),
     mapRepoToJob: vi.fn().mockResolvedValue(undefined),
     mapExternalRef: vi.fn().mockResolvedValue(undefined),

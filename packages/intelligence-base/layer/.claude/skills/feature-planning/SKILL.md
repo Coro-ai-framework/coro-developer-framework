@@ -23,8 +23,9 @@ When planning an implementation job:
 
 - Each work item should be a self-contained, mergeable unit of work
 - Work items should be ordered so that dependencies are resolved first
-- Keep changes small enough for meaningful code review (under ~500 lines of diff when possible)
+- **Right-size each work item so its PR stays under the `pr-diff-size` guardrail** (default `maxLines: 1000`, `maxFiles: 40`). If a planned work item is obviously larger, split it into two smaller work items at plan time — that is strictly better than letting the Coder discover the limit mid-implementation and split a single work item across multiple PRs (which the review phase then has to sequence by hand).
 - Group related changes together (e.g., API endpoint + tests + documentation)
+- The job's downstream loop is **coding → review → next work item** per item, with a single end-of-job evaluation. Order work items so each one is independently mergeable and reviewable in that loop — do not assume the evaluator will reconcile contracts that two sibling work items rely on at merge time.
 
 ## Implementation plan format
 

@@ -188,7 +188,28 @@ If the as-shipped shape **must** deviate from the design-time shape recorded in 
 
 When responding to review feedback (step 12), do **not** post a new `pr-link` artefact — one per PR is enough. The dashboard will keep showing the original link. Do, however, append register entries for any new decisions/contracts the fix introduces (and update the producer contract file if the as-shipped shape changed).
 
-### 12. Responding to review feedback
+### 12. Hand off to review — one work item at a time
+
+After all PRs for the **current work item** are opened and registered:
+
+1. **End your turn.** Do NOT call `goto_phase("coding")` to start the next work item. The runner advances to `review`, which gates and merges the PRs for the current work item and then routes back to coding for the next item.
+2. Only call `goto_phase("coding")` mid-turn for a **fix loop on the current work item** (response to review feedback or an evaluator finding for the merged commit).
+
+This per-work-item discipline matters because:
+- The merge gatekeeper resolves PR ordering, human approvals, and merge for the **current** work item only. If you chain multiple work items in one coding phase before review, you end up with many open PRs and one review pass that cannot reliably sequence them all.
+- The runner enforces a **completion gate** — if you try to end the job (last phase finishes) while work items remain `pending`/`in-progress`, the runner re-runs the current phase with a corrective prompt. The gate is a safety net, not the primary flow control; follow this step instead.
+
+### 13. Splitting a work item into multiple PRs (when unavoidable)
+
+If a guardrail forces you to split a work item across multiple PRs (e.g. `pr-diff-size` denial), the **review** phase needs to merge them in the right order. Make the order obvious:
+
+- **Prefer planning over splitting.** If you can, escalate or add an insight asking the planner to break the work item further next time. Splits in coding are recoverable but noisier.
+- **Use clear suffixes** on branches and PR titles — `…-1a` before `…-1b`, `…-part-1` before `…-part-2`, or `…-core` before `…-tests`. The reviewer infers merge order from these signals plus branch targets.
+- **Stack branches explicitly** when later PRs depend on earlier ones: branch B from branch A, push B, then open the PR with `targetBranch: A`. The reviewer detects this stack via branch metadata and merges A → B → main in order.
+- **Register every PR** for the work item via `scm_create_pr` (which appends to `job.prMappings` with the current `workItem`) and post a `pr-link` artefact for each. Do NOT leave silent PRs the reviewer cannot discover.
+- **Document the stack** in the last PR's description: "This PR depends on #N (merge that first)." This is also a sanity check for human reviewers.
+
+### 14. Responding to review feedback
 
 There are two distinct loop-backs that can land you here:
 
@@ -218,6 +239,7 @@ Procedure:
 - **Never fall back to `curl` or raw HTTP for SCM operations.** Always use the MCP tools listed above. If an MCP tool fails, check the parameters — do not attempt the same operation via curl.
 - **Use `mcp__coro__log` frequently** so developers can follow your progress.
 - **The runner auto-advances** when you finish the phase — just end your turn. There is no "complete this phase" tool. If you need to re-enter the same phase or jump to a different one, call `goto_phase`. If you need additional developer input mid-phase, call `await_event({ eventName: "developer-input: <reason>" })`. Do not use `await_event` for a normal workflow checkpoint when the workflow docs say the runner enforces that approval.
+- **One work item per coding phase.** When you finish the current work item's PR(s), end your turn — let the merge gatekeeper merge them, and let the gatekeeper hand control back to you for the next work item. Calling `goto_phase("coding")` to start the next work item without going through review skips the gatekeeper for the work item you just finished and produces a job state where one review cycle has to gate every PR for every work item.
 - **Call `mcp__coro__escalate`** if anything blocks you that you cannot resolve.
 - **On persistent auth failures (401/403):** immediately escalate with the exact error. Do not retry more than twice.
 - **Call `mcp__coro__add_insight` aggressively — every wasted turn is a future-run tax.** Do NOT wait until you finish to look back; record the insight in the SAME turn the workaround clicks. Trigger ANY of these and you must record:

@@ -84,7 +84,9 @@ The Planner agent detects the repository's language (from `go.mod`, `package.jso
 
 ## Work-item tracking
 
-Work-item state is tracked on the Job object via `workItems[]`. The Planner calls `set_work_items` to register the ordered work-item list. The Evaluator manages the work-item loop — if multiple work items exist, it uses `goto_phase("coding")` and `request_new_session` to cycle through them.
+Work-item state is tracked on the Job object via `workItems[]`. The Planner calls `set_work_items` to register the ordered work-item list. The merge gatekeeper (`pr-reviewer`) drives the multi-work-item loop: after merging the PR(s) for the current work item, it marks the work item complete (`update_work_item`), and if more work items remain it hands off to the Coder via `request_new_session` + `goto_phase("coding")` — re-entering the per-work-item coding → review loop. Only when every work item is `complete` (or `escalated`) does the runner advance to `evaluation`.
+
+The runner enforces a **completion gate** on this contract: it refuses to mark the job `STATUS_COMPLETE` while any work item is still `pending` or `in-progress`. If an agent ends the final phase prematurely, the runner re-runs the current phase with a `[completion-gate]` corrective prompt naming the unfinished work items and the still-open PRs. A repeated-block retry cap converts a stuck loop into an explicit failure rather than burning tokens. See `docs/agent-host-spec.md` for the harness contract.
 
 ## Workflow shape
 
@@ -150,34 +152,37 @@ CLI-triggered jobs skip this phase — the description is provided directly.
 
 ---
 
-### Phase 3: Review (merge gatekeeper)
+### Phase 3: Review (merge gatekeeper, per work item)
 
 **Agent:** PR Reviewer (`agents/pr-reviewer.md`)
 
 This phase does **not** re-review the diff — that already happened in coding via the `code-reviewer` subagent. The agent here is a thin merge gatekeeper that:
 
-1. Reads the latest PR state and any human comments
-2. Routes blocking human change requests back to the coder via `goto_phase("coding")`
-3. Waits for human approval (`await_event` on `pr:approved`)
-4. Merges the PR when approval and CI conditions are met
-5. Records cross-PR feedback patterns to memory
+1. Identifies every open PR for the **current work item** via `job.prMappings` and `pr-link` artefacts.
+2. When multiple PRs exist for the work item (e.g. guardrail-forced splits or staged change), infers a safe **merge order** from branch dependencies (`targetBranch` → `sourceBranch` stacks), PR title suffixes (`-1a` / `-1b`, `-core` / `-tests`), and `openedAt` as the tiebreaker.
+3. For each PR in order: triages comments, routes blocking change requests back to the coder via `goto_phase("coding")`, waits for human approval (`await_event` on `pr:approved`), and merges via `scm_merge_pr` (the runner stamps `mergedAt` on the matching mapping automatically).
+4. After every PR for the current work item is merged, calls `update_work_item(name, "complete")`. If more work items are `pending`, calls `request_new_session` + `goto_phase("coding")` to start the next work item. Otherwise ends the turn — the runner advances to `evaluation`.
+5. Records cross-PR feedback patterns to memory.
 
 ---
 
-### Phase 4: Evaluation (verify + loop control)
+### Phase 4: Evaluation (final, end-of-job)
 
 **Agent:** Evaluator (`agents/evaluator.md`)
 **Skills:** Agent invokes `feature-testing` for acceptance verification heuristics
 
-1. Check out the merged branch and confirm the build/test suite still passes (`build_status`, `existing_tests_status`)
-2. Verify each acceptance criterion from the implementation plan and record pass/fail with diffs
-3. Query Loki for runtime errors logged during verification (when applicable)
-4. Triage failures, classify root causes, write to memory for new findings
-5. Decision:
-   - **Work item complete:** call `update_work_item(name, status: "complete")`. If more work items remain, call `request_new_session` then `goto_phase("coding")`. Otherwise finish.
-   - **Fix needed:** call `update_work_item(name, incrementLoop: true)`, check loop count, and `goto_phase("coding")` with a fix brief.
-   - **Escalate:** if loop count >= 5 or blocker found.
-6. Review upstream insights and consolidate self-improvement proposals (one `propose_change` per target layer)
+Runs **once** after the per-work-item coding → review loop has driven every work item to `complete`. Verifies the fully merged base branch against the entire plan — not a single work item.
+
+1. Check out the merged base branch and confirm CI is green across every merged PR
+2. Run the build/test suite locally as a second opinion (`build_status`, `existing_tests_status`)
+3. Verify each acceptance criterion across the whole plan — including cross-work-item contracts — and record pass/fail with diffs
+4. Query Loki for runtime errors logged during verification (when applicable)
+5. Triage failures, classify root causes, write to memory for new findings
+6. Decision:
+   - **All good:** end your turn. The runner completes the job.
+   - **Fix needed:** pick the work item whose contract is broken, call `update_work_item(name, status: "in-progress", incrementLoop: true)`, check loop count, and `goto_phase("coding")` with a fix brief. After the Coder lands a fix PR and the gatekeeper merges it, evaluation runs again.
+   - **Escalate:** if loop count >= 5 or a hard blocker.
+7. Review upstream insights and consolidate self-improvement proposals (one `propose_change` per target layer)
 
 ---
 

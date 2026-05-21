@@ -54,7 +54,11 @@ export const checkPrDiffSize: GuardrailCheckFn = async (rule, ctx) => {
       allow: false,
       reason:
         `PR diff is too large (${stat.lines} lines, ${stat.files} files; limit ${maxLines} lines / ${maxFiles} files ` +
-        `against ${compareLabel}). Split the work into smaller PRs (one per work item) and retry.`,
+        `against ${compareLabel}). Prefer splitting the work into additional **work items** in the plan ` +
+        `(one PR per work item is the happy path). If you must split this work item across multiple PRs, ` +
+        `use clear naming (e.g. "${'…-part-1/-part-2'}" or "${'…-1a/-1b'}") and stack branches explicitly ` +
+        `(later PR's targetBranch = earlier PR's sourceBranch) so the review phase can infer merge order — ` +
+        `then register every PR via scm_create_pr before ending your coding turn.`,
     }
   }
 

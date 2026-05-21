@@ -280,6 +280,52 @@ The job runner does **not** decide work-item boundaries, loop counts,
 or feature-specific logic. Those decisions live in the workflow + agent
 markdown and are surfaced to the runner exclusively via tool calls.
 
+### 7.3a Job completion readiness (completion gate)
+
+When the workflow's last phase ends and no `goto_phase` / `await_event`
+signal would re-route the job, the runner is about to transition the
+job into `STATUS_COMPLETE`. Before doing so it evaluates a single,
+workflow-agnostic invariant called the **completion gate**:
+
+- If `job.workItems` is empty, the gate is skipped (campaigns,
+  fast-lane single-implicit-scope jobs, jobs whose planner never
+  called `set_work_items`). The job completes immediately.
+- Otherwise, every entry in `job.workItems` must be in status
+  `complete` or `escalated`. If any work item is still `pending` or
+  `in-progress`, the runner:
+  1. Writes a `[completion-gate]` line to the job log naming the
+     blocking work items and the still-open vs merged PR mappings.
+  2. Sets `job.pendingPrompt` to a structured corrective prompt
+     (see `packages/runner/src/jobs/completion-gate.ts` —
+     `buildJobCompletionBlockPrompt`) that lists every blocking
+     work item, summarises `job.prMappings` by work item (open vs
+     merged via the optional `mergedAt` stamp set by `scm_merge_pr`),
+     and tells the agent to use `get_work_items`, `update_work_item`,
+     and `goto_phase` to drive the missing work to completion.
+  3. **Re-runs the current phase** — `phase` and `status` are
+     unchanged. The agent receives the corrective prompt on its
+     next turn and uses its workflow MD to decide where to route
+     work next (e.g. `goto_phase("coding")` if implementation is
+     incomplete, `goto_phase("review")` if PRs are open and
+     unmerged). The runner does **not** hardcode any specific phase
+     transition — that belongs to intelligence.
+- Five consecutive completion-gate blocks (configurable via
+  `COMPLETION_GATE_MAX_RETRIES`) transition the job to
+  `STATUS_FAILED` with `escalationMessage` naming the work items
+  that never closed. This is the safety net against a model that
+  ends every turn without acting on the corrective prompt.
+
+The counter is reset to zero on any non-completion phase transition,
+so legitimate fix loops that move the job out of the final phase and
+back are not counted against the cap.
+
+The gate intentionally lives at the only place all workflows converge
+on completion (`if (!nextPhase)`). Per-phase gates (e.g. `review →
+evaluation`) are deliberately avoided because workflows differ:
+standard `coding → review → evaluation`, fast `review-and-verify`,
+deep extra-QA pipelines, etc. Encoding any specific transition in the
+harness would break those alternatives.
+
 ### 7.4 Parking and resumption
 
 When an agent calls `await_event`, the runner sets the awaited event in
@@ -288,6 +334,11 @@ state and ends the SDK query. The slot is freed.
 - **Local mode:** `PollingTransport` polls the configured Git provider
   (BitBucket or GitHub) at a fixed interval (default `60s`) and
   delivers PR-state changes to parked jobs via the dispatcher.
+  Multi-PR jobs resolve the polled `ExternalRef` by matching
+  `job.awaitingPrId` to the corresponding entry in `job.prMappings`,
+  so the poll lands on the correct repository (and the correct SCM
+  plugin via `matchesRemote`) even when the job has open PRs against
+  multiple repos.
 - **Hybrid mode:** the cloud's webhook receiver verifies the HMAC,
   resolves the team and the parked job, and sends a job-resume
   message to the runner over WebSocket. The runner re-loads the job

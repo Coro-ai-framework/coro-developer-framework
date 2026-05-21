@@ -356,7 +356,15 @@ export class PollingTransport implements EventTransport {
   // ── Resolution helpers ─────────────────────────────────────────────────────
 
   private resolveRef(job: Job, prId: number): ExternalRef | null {
-    const repoKey = pickRepoKey(job)
+    // Prefer the prMappings entry whose prId matches the parked PR — for
+    // multi-PR (and especially multi-repo) jobs the first mapping is
+    // often a different PR/repo than the one we're currently polling.
+    // Falling back to `pickRepoKey` keeps the legacy behavior when no
+    // mapping carries `prId` (older persisted jobs, edge cases).
+    const matchedMapping = job.prMappings.find(
+      pm => pm.prId === prId && pm.repoSlug,
+    )
+    const repoKey = matchedMapping?.repoSlug ?? pickRepoKey(job)
     if (!repoKey) return null
 
     // Prefer the SCM plugin whose `matchesRemote(repoKey)` claims the

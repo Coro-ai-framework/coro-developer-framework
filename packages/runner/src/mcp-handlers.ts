@@ -466,6 +466,32 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         ...(args.strategy ? { strategy: args.strategy } : {}),
       },
     )
+
+    // Stamp `mergedAt` on the matching prMappings entry so the
+    // completion gate, dashboard, and any agent that re-reads
+    // `job.prMappings` can see which PRs are still open vs merged
+    // without re-querying the SCM. This used to only happen on the
+    // cloud WebSocket merge path (`job:prMerged`), leaving local-mode
+    // jobs with stale mappings.
+    const prIdNumber = Number(args.prId)
+    if (Number.isFinite(prIdNumber)) {
+      try {
+        await ctx.stateBackend.markPrMerged(
+          ctx.job.id,
+          prIdNumber,
+          new Date().toISOString(),
+        )
+      } catch (err) {
+        // Soft-fail: the merge itself already succeeded. A bookkeeping
+        // failure (no mapping for this PR, race with another writer,
+        // etc.) must not surface as a tool error to the agent.
+        ctx.logger.warn(
+          { err, jobId: ctx.job.id, prId: prIdNumber },
+          'markPrMerged failed after successful scm_merge_pr',
+        )
+      }
+    }
+
     return text({ merged: true })
   }
 

@@ -371,6 +371,123 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
   })
 
+  describe('completion gate', () => {
+    it('completes immediately when all work items are complete', async () => {
+      stateBackend = createMockStateBackend(makeJob({
+        phase: 'only',
+        status: 'queued',
+        workItems: [
+          { name: 'wi-1', status: 'complete', loopCount: 0 },
+          { name: 'wi-2', status: 'complete', loopCount: 1 },
+        ],
+      }))
+      ctx = makeRunnerContext(stateBackend)
+
+      await runWithStubExecutor(
+        makeJob({
+          phase: 'only',
+          workItems: [
+            { name: 'wi-1', status: 'complete', loopCount: 0 },
+            { name: 'wi-2', status: 'complete', loopCount: 1 },
+          ],
+        }),
+        ctx,
+        () => yieldEmptyPhase('sess-gate-ready'),
+        { workflowConfigOverride: workflowSingle },
+      )
+
+      expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+      expect(stateBackend.appendLog).not.toHaveBeenCalledWith(
+        'runner-job-1',
+        expect.stringContaining('[completion-gate] Blocking'),
+      )
+    })
+
+    it('blocks completion and re-runs the same phase when work items are unfinished', async () => {
+      const initialWorkItems = [
+        { name: 'wi-1', status: 'complete' as const, loopCount: 0 },
+        { name: 'wi-2', status: 'in-progress' as const, loopCount: 1 },
+      ]
+      stateBackend = createMockStateBackend(makeJob({
+        phase: 'only',
+        status: 'queued',
+        workItems: initialWorkItems,
+      }))
+      ctx = makeRunnerContext(stateBackend)
+
+      let call = 0
+      await runWithStubExecutor(
+        makeJob({
+          phase: 'only',
+          workItems: initialWorkItems,
+        }),
+        ctx,
+        async function* () {
+          call += 1
+          if (call === 2) {
+            // On the second invocation the agent finally marks the
+            // remaining work item complete so the gate passes and the
+            // job can finalise.
+            await stateBackend.updateJob('runner-job-1', {
+              workItems: [
+                { name: 'wi-1', status: 'complete', loopCount: 0 },
+                { name: 'wi-2', status: 'complete', loopCount: 2 },
+              ],
+            })
+          }
+          yield* yieldEmptyPhase(`sess-gate-${call}`)
+        },
+        { workflowConfigOverride: workflowSingle },
+      )
+
+      expect(call).toBe(2)
+      expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+      expect(stateBackend.current.phase).toBe('only')
+      expect(stateBackend.appendLog).toHaveBeenCalledWith(
+        'runner-job-1',
+        expect.stringContaining('[completion-gate] Blocking job completion'),
+      )
+      // The corrective prompt is injected so the agent's next turn sees
+      // exactly why the gate fired.
+      expect(stateBackend.updateJob).toHaveBeenCalledWith(
+        'runner-job-1',
+        expect.objectContaining({
+          pendingPrompt: expect.stringContaining('[completion-gate]'),
+        }),
+      )
+    })
+
+    it('fails the job after the retry cap is exceeded', async () => {
+      stateBackend = createMockStateBackend(makeJob({
+        phase: 'only',
+        status: 'queued',
+        workItems: [{ name: 'wi-1', status: 'pending', loopCount: 0 }],
+      }))
+      ctx = makeRunnerContext(stateBackend)
+
+      let call = 0
+      await runWithStubExecutor(
+        makeJob({
+          phase: 'only',
+          workItems: [{ name: 'wi-1', status: 'pending', loopCount: 0 }],
+        }),
+        ctx,
+        async function* () {
+          call += 1
+          yield* yieldEmptyPhase(`sess-gate-loop-${call}`)
+        },
+        { workflowConfigOverride: workflowSingle },
+      )
+
+      expect(stateBackend.current.status).toBe(STATUS_FAILED)
+      expect(stateBackend.current.escalationMessage).toContain('completion gate')
+      expect(stateBackend.appendLog).toHaveBeenCalledWith(
+        'runner-job-1',
+        expect.stringContaining('[completion-gate] Job failed'),
+      )
+    })
+  })
+
   it('advances phases then completes', async () => {
     let call = 0
     await runWithStubExecutor(
