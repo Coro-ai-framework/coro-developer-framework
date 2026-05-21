@@ -486,7 +486,6 @@ Tool surface (under the `mcp__coro__` prefix):
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | BitBucket                      | `bb_create_repo`, `bb_create_pr`, `bb_get_pr_status`, `bb_get_pr_comments`, `bb_post_pr_comment`, `bb_reply_to_comment`, `bb_approve_pr`, `bb_merge_pr` |
 | GitHub                         | `gh_create_repo`, `gh_create_pr`, `gh_get_pr_status`, `gh_get_pr_comments`, `gh_post_pr_comment`, `gh_reply_to_comment`, `gh_approve_pr`, `gh_merge_pr` |
-| Test harness                   | `run_go_build`, `start_go_service`, `stop_go_service`, `compare_request`                                             |
 | Observability                  | `loki_query`, `tempo_get_trace`, `tempo_search`                                                                       |
 | Jira                           | `jira_get_issue`, `jira_post_comment`, `jira_transition_issue`                                                        |
 | Job control                    | `set_work_items`, `update_work_item`, `get_work_items`, `request_new_session`, `set_job_params`, `goto_phase`, `await_event`, `escalate`, `log` |
@@ -496,6 +495,23 @@ Tool surface (under the `mcp__coro__` prefix):
 The SDK ships standard built-in tools (Read, Write, Edit, Bash, Glob,
 Grep, Skill, …) which the workflow's per-phase tool allowlist may
 restrict.
+
+Language-specific harness tools (`run_go_build`, `start_go_service`,
+`stop_go_service`, `compare_request`) were removed — build and test use
+Bash plus `{language}-conventions` skills.
+
+### 10.1 Workspace layout and intelligence layering
+
+- **`scm_clone_repo`** persists `params.repoCheckoutDir` and
+  `params.repoCheckoutAbsDir` on the job after clone or reuse.
+- The system prompt includes a **Workspace layout** block (see
+  `packages/runner/src/jobs/workspace-layout.ts`) with job root vs repo
+  paths. Phase kickoff repeats a short `cd` reminder.
+- **Shared intelligence** (`CLAUDE.md`, agents, prompt builder) stays
+  language-agnostic: paths, `cd` into repo, invoke Skill for
+  `{language}-conventions`.
+- **Language-specific** compile/test/env recipes live only in
+  `packages/intelligence-base/layer/.claude/skills/*-conventions/`.
 
 ---
 

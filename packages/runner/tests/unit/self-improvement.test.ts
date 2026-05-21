@@ -124,7 +124,6 @@ function makeCtx(opts: MakeCtxOpts = {}): ToolContext {
     jiraClient: {} as ToolContext['jiraClient'],
     trackerClient: {} as ToolContext['trackerClient'],
     plugins: new PluginRegistry(),
-    runningServices: new Map(),
   }
 }
 

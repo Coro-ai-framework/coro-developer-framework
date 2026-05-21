@@ -160,11 +160,16 @@ directly: `mcp__jira__jira_create_issue`, `mcp__jira__jira_link_to_epic`,
 `mcp__linear__create_issue`, `mcp__linear__update_issue`, etc. The
 plugin's intelligence snippet lists the curated tool allowlist.
 
-### Test harness
-- `run_go_build` — Compile a Go project in a directory
-- `start_go_service` — Start a compiled Go binary in the background on a given port
-- `stop_go_service` — Stop a running Go service by label
-- `compare_request` — Send the same HTTP request to both Go and .NET services, then diff responses
+### Workspace layout
+
+Coro jobs run in a **job working directory** (`working/{jobId}/`). The target
+repository is cloned into a **subdirectory** (typically `params.repoSlug` or
+`params.repoCheckoutDir`) via `scm_clone_repo` — not at the job root.
+
+- After clone, `params.repoCheckoutDir` and `params.repoCheckoutAbsDir` are set.
+- The system prompt and phase kickoff include a **Workspace layout** block with paths.
+- Run **git** and **toolchain** commands from the repo tree: `cd <repoCheckoutDir> && …` or `git -C <repoCheckoutDir>`.
+- **Build and test commands** are defined in the **`{language}-conventions`** skill for `params.language` — invoke that skill via the Skill tool before compiling or testing. Do not guess language-specific commands from this file.
 
 ### Observability
 - `loki_query` — Run a LogQL query against Loki

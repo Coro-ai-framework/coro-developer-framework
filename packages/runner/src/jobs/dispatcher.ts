@@ -1300,7 +1300,6 @@ export class Dispatcher {
       trackerClient: this.ctx.trackerClient,
       plugins: this.ctx.plugins,
       logger: this.ctx.logger,
-      runningServices: new Map(),
     }
   }
 

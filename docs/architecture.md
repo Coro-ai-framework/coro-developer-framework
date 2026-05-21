@@ -525,8 +525,6 @@ business-specific capabilities under the `mcp__coro__` prefix:
   `gh_merge_pr`, `gh_get_pr_status`
 - **Observability** — `loki_query`, `tempo_get_trace`, `tempo_search`
 - **Jira** — `jira_get_issue`, `jira_post_comment`, `jira_transition_issue`
-- **Test harness** — `run_go_build`, `start_go_service`, `stop_go_service`,
-  `compare_request`
 - **Job control** — `set_work_items`, `update_work_item`, `get_work_items`,
   `set_job_params`, `goto_phase`, `await_event`, `escalate`, `log`,
   `request_new_session`

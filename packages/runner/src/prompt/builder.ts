@@ -6,6 +6,10 @@ import type { TrackerClient, TrackerProvider } from '../clients/tracker'
 import type { PluginRegistry } from '../plugins/registry'
 import { Job } from '@coro/cloud-protocol'
 import { propagableInsights } from '../insights'
+import {
+  buildWorkspaceLayoutPromptBlock,
+  resolveJobWorkspaceLayout,
+} from '../jobs/workspace-layout'
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 import type { LocalConfig } from '../config/local-config'
 import { resolveGuardrails } from '../guardrails/merge'
@@ -152,7 +156,7 @@ export function computeGuardrailsPromptContext(
       id: rule.id,
       on: rule.on,
       check: rule.check,
-      enabled: rule.enabled,
+      enabled: rule.enabled !== false,
       ...(rule.during?.length ? { during: rule.during } : {}),
       ...(rule.config && Object.keys(rule.config).length > 0 ? { config: rule.config } : {}),
     })),
@@ -202,6 +206,7 @@ export async function buildSystemPrompt(
   scmInfo?: ScmPromptContext,
   guardrailsInfo?: GuardrailsPromptContext,
   executorCapabilities?: { supportsClaudeMdNativeWalkUp: boolean },
+  jobWorkingDir?: string,
 ): Promise<string> {
   const sections: string[] = []
 
@@ -245,7 +250,13 @@ export async function buildSystemPrompt(
     }
   }
 
-  sections.push(buildJobContext(job, trackerInfo, scmInfo, guardrailsInfo))
+  if (jobWorkingDir) {
+    sections.push(
+      buildWorkspaceLayoutPromptBlock(resolveJobWorkspaceLayout(job, jobWorkingDir)),
+    )
+  }
+
+  sections.push(buildJobContext(job, trackerInfo, scmInfo, guardrailsInfo, jobWorkingDir))
 
   return sections.join('\n\n---\n\n')
 }
@@ -257,7 +268,12 @@ function buildJobContext(
   trackerInfo?: TrackerPromptContext,
   scmInfo?: ScmPromptContext,
   guardrailsInfo?: GuardrailsPromptContext,
+  jobWorkingDir?: string,
 ): string {
+  const workspace = jobWorkingDir
+    ? resolveJobWorkspaceLayout(job, jobWorkingDir)
+    : undefined
+
   const context: Record<string, unknown> = {
     jobId: job.id,
     type: job.type,
@@ -276,6 +292,15 @@ function buildJobContext(
     awaitingNextPhase: job.awaitingNextPhase ?? null,
     approvedAdvanceFromPhase: job.approvedAdvanceFromPhase ?? null,
     escalationMessage: job.escalationMessage ?? null,
+    ...(workspace
+      ? {
+          workspace: {
+            jobWorkingDir: workspace.jobWorkingDir,
+            repoCheckoutDir: workspace.repoCheckoutDir ?? null,
+            repoCheckoutAbsDir: workspace.repoCheckoutAbsDir ?? null,
+          },
+        }
+      : {}),
   }
 
   // Surface tracker availability so agents (campaign-planner today, others

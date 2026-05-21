@@ -11,6 +11,39 @@ description: >-
 > **Note to developer (Emre):** This is a starter file. Please enhance it with your team's specific preferences.
 > Agents will read this file strictly — anything you add here becomes a rule they follow.
 
+## Coro job workspace
+
+Coro clones the target repo into a subdirectory of the job working directory, not at the job root.
+
+- **Job root:** `working/{jobId}/` — Bash may start here; `go.mod` is usually **not** here.
+- **Repo:** `params.repoCheckoutAbsDir` or `working/{jobId}/{repoCheckoutDir}/` — all `go` and `git` commands run here.
+- Always prefix: `cd <repoCheckoutDir> && …` (relative dir from `scm_clone_repo` or job context).
+
+## Build verification (Coro runner)
+
+From the **job root** (`JOB` below), with repo relative dir `REL` (e.g. `a5labs.kyc.go`):
+
+```bash
+cd "$REL" && mkdir -p "$JOB/.cache/go-build" && \
+  GOCACHE="$JOB/.cache/go-build" go build -buildvcs=false ./...
+```
+
+- Use **`GOCACHE` under the job root** (writable). Inherit **`GOMODCACHE`** and **`GOPROXY`** from the environment.
+- **Forbidden:** custom isolated caches under `$TMPDIR/*-gomod` unless tenant memory documents an exception.
+- Scope packages per the implementation plan (e.g. `./internal/persistence/...` only when the plan says so).
+
+## Test verification (Coro runner)
+
+```bash
+cd "$REL" && GOCACHE="$JOB/.cache/go-build" go test ./...
+```
+
+For long runs, redirect to a file under the job root: `go test ./... > test-output.txt 2>&1; echo "EXIT:$?" >> test-output.txt`
+
+## Failure policy
+
+After two failed build attempts with the same goal: `add_insight` + `escalate`. Do not spiral on `GOPROXY=file://…` or merged module caches.
+
 ## Project Layout
 
 ```

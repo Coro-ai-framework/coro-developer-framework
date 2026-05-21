@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync } from 'fs'
 import { Logger } from 'pino'
-import { ChildProcess } from 'child_process'
 import path from 'path'
 import { BitBucketClient } from '../clients/bitbucket'
 import { GitHubClient } from '../clients/github'
@@ -205,8 +204,6 @@ export interface RunJobOptions {
 export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptions): Promise<void> {
   const { stateBackend, settings, tenantContext, logger } = ctx
 
-  const runningServices = new Map<string, ChildProcess>()
-
   // Pull the legacy intelligence checkout BEFORE materialising the per-job
   // overlay. In legacy / single-tenant deployments this is the upstream
   // company intelligence repo; pulling here keeps "company changes" fresh
@@ -339,7 +336,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     trackerClient: ctx.trackerClient,
     plugins: ctx.plugins,
     logger,
-    runningServices,
   }
 
   const signals: PhaseSignals = {}
@@ -507,7 +503,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // injected a pendingPrompt (webhook event or developer message), use
       // that verbatim instead — it carries the event payload the agent
       // needs to react to.
-      const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(liveJob)
+      const jobWorkingDir = path.join(settings.paths.workingDir, liveJob.id)
+      const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(liveJob, jobWorkingDir)
 
       // Clear pendingPrompt immediately so it isn't replayed on the next turn.
       if (liveJob.pendingPrompt) {
@@ -590,6 +587,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         scmInfo,
         guardrailsInfo,
         executor.capabilities,
+        jobWorkingDir,
       )
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(
@@ -1402,11 +1400,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         // Best-effort
       }
     }
-  } finally {
-    for (const [label, proc] of runningServices) {
-      proc.kill('SIGTERM')
-      logger.debug({ label }, 'Cleaned up running service')
-    }
   }
 }
 
@@ -1426,9 +1419,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
  * self-update jobs that don't target a specific repo).
  */
 function deriveRepoCheckoutDir(job: Job, workingRoot: string): string | undefined {
-  const slug = (job.params as Record<string, unknown> | undefined)?.['repoSlug']
-  if (typeof slug !== 'string' || slug.length === 0) return undefined
-  return path.join(workingRoot, job.id, slug)
+  const params = job.params as Record<string, unknown> | undefined
+  if (typeof params?.['repoCheckoutAbsDir'] === 'string' && params['repoCheckoutAbsDir'].length > 0) {
+    return params['repoCheckoutAbsDir']
+  }
+  const rel =
+    typeof params?.['repoCheckoutDir'] === 'string' ? params['repoCheckoutDir']
+    : typeof params?.['repoSlug'] === 'string' ? params['repoSlug']
+    : typeof params?.['repo'] === 'string' ? params['repo']
+    : undefined
+  if (typeof rel !== 'string' || rel.length === 0) return undefined
+  return path.join(workingRoot, job.id, rel)
 }
 
 const MAX_ACTIVITY_LOG_ENTRY_CHARS = 1600

@@ -1,4 +1,3 @@
-import { ChildProcess } from 'child_process'
 import { Logger } from 'pino'
 import type { HookPolicy, McpServerDescriptor, PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro/plugin-sdk'
 import { BitBucketClient } from '../clients/bitbucket'
@@ -19,8 +18,6 @@ import type { PhaseConfig } from '../workflow-parser'
 //
 // Shared mutable state passed to every MCP tool handler.
 // The `job` field is swapped between phases by the runner.
-// `runningServices` tracks Go processes started by the test harness.
-
 export interface ToolContext {
   job: Job
   stateBackend: StateBackend
@@ -61,7 +58,6 @@ export interface ToolContext {
    */
   plugins: PluginRegistry
   logger: Logger
-  runningServices: Map<string, ChildProcess>
   /**
    * Live phase context — set by the runner at every phase boundary,
    * before the in-process MCP server is created. Used by the

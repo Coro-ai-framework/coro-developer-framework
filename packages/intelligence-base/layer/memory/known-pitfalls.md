@@ -25,4 +25,20 @@ identifies a recurring failure pattern that future jobs should avoid.
 
 ---
 
-*No entries yet. The Evaluator will populate this file as jobs run.*
+## Toolchain command from job working directory
+
+**Discovered:** 2026-05-21 | **Job:** (base layer template) | **Severity:** high
+
+Agents often run compile commands from the Coro **job root** (`working/{jobId}/`) instead of the **cloned repo subdirectory**. Symptoms include "directory prefix does not contain main module", missing `go.mod`, or git commands that touch the wrong tree.
+
+**Key details:**
+- `scm_clone_repo` lands the checkout at `params.repoCheckoutDir` under the job root.
+- The system prompt and phase kickoff include a **Workspace layout** block with absolute and relative paths.
+
+**Prevention:**
+- Read the workspace block; `cd <repoCheckoutDir> && …` before any toolchain command.
+- Invoke the **`{language}-conventions`** skill for build/test commands — do not invent env vars from the job root.
+
+---
+
+*Additional entries are added by the Evaluator via `propose_change` as jobs run.*

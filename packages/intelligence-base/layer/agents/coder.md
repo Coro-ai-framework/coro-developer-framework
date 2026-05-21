@@ -90,14 +90,13 @@ Follow the implementation plan exactly:
 
 ### 6. Verify the build
 
-Run the build and test commands specified in the implementation plan. If not specified, use the language-appropriate defaults:
-- **Go:** `go build ./...` and `go test ./...`
-- **TypeScript/Node:** `npm run build` and `npm test`
-- **C#/.NET:** `dotnet build` and `dotnet test`
+1. Invoke the **`{language}-conventions`** skill (from `params.language`) for build and test commands and Coro runner sandbox env vars.
+2. Run every command from the **repo checkout** — use `cd <repoCheckoutDir> && …` or paths from the **Workspace layout** block in the system prompt / phase kickoff (`params.repoCheckoutAbsDir`). Never run toolchain commands from the job root.
+3. Follow the implementation plan's package scope when it names a narrower target than the whole repo.
+4. If the build fails, fix the errors before proceeding. If you cannot fix them, call `mcp__coro__escalate` with the full build output.
+5. After **two failed attempts** with the same build goal, call `add_insight` and `escalate` — do not experiment with custom module caches or proxy settings unless tenant memory documents an exception.
 
-If the build fails, fix the errors before proceeding. If you cannot fix them, call `mcp__coro__escalate` with the full build output.
-
-If a command is likely to exceed a short inline timeout, run it with workspace-local output capture first so you can inspect the result deterministically, for example `dotnet test > test-output.txt 2>&1; echo "EXIT:$?" >> test-output.txt`.
+For long-running commands, redirect output to a file under the **job working directory** and read that file afterward (see runtime rule on executor temp paths).
 
 ### 7. Commit (do not push yet)
 

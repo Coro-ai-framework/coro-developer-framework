@@ -194,50 +194,6 @@ export function createCoroMcpServer(
         h.scm_clone_repo,
       ),
 
-      // ── Test harness ──────────────────────────────────────────────────────
-
-      tool(
-        'run_go_build',
-        'Compile the Go project in a directory. Returns stdout/stderr.',
-        { repoDir: z.string() },
-        h.run_go_build,
-      ),
-
-      tool(
-        'start_go_service',
-        'Start a compiled Go binary in the background on a given port.',
-        {
-          label: z.string(),
-          repoDir: z.string(),
-          binaryName: z.string(),
-          port: z.number(),
-          env: z.record(z.string(), z.string()).optional(),
-        },
-        h.start_go_service,
-      ),
-
-      tool(
-        'stop_go_service',
-        'Stop a running Go service by its label.',
-        { label: z.string() },
-        h.stop_go_service,
-      ),
-
-      tool(
-        'compare_request',
-        'Send the same HTTP request to both Go and .NET services, then diff responses.',
-        {
-          goBaseUrl: z.string(),
-          dotnetBaseUrl: z.string(),
-          method: z.string(),
-          path: z.string(),
-          headers: z.record(z.string(), z.string()).optional(),
-          body: z.string().optional(),
-        },
-        h.compare_request,
-        { annotations: { readOnlyHint: true } },
-      ),
-
       // ── Observability ─────────────────────────────────────────────────────
 
       tool(

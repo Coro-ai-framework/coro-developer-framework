@@ -53,9 +53,9 @@ behaviour.
 ## Build verification
 
 The build must pass cleanly:
-- Run the language-appropriate build command.
-- Run the language-appropriate lint command if available.
-- Run the full existing test suite.
+- Invoke the job's **`{language}-conventions`** skill for build, lint, and test commands.
+- Run all commands from the repo checkout directory (`params.repoCheckoutDir` / workspace layout in the system prompt).
+- Run the full existing test suite per the language skill.
 
 If the build fails, stop immediately and report.
 

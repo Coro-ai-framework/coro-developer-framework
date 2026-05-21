@@ -9,6 +9,10 @@ description: >-
 
 # Ruby Conventions
 
+## Coro job workspace
+
+Run `bundle` / `rspec` and `git` from the repo checkout (`cd <repoCheckoutDir> && …`). See **golang-conventions** for Coro path layout; add Ruby-specific build recipes here per tenant.
+
 > **Note to tenants:** This is a generic baseline. Override with your team's
 > preferences in your tenant overlay. Agents read this file strictly.
 

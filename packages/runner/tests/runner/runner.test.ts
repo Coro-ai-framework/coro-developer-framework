@@ -38,6 +38,7 @@ vi.mock('../../src/prompt/builder', () => ({
   // function so the runner's call site stays exercised without forcing
   // every test to wire up a real Settings + TrackerClient pair.
   computeTrackerPromptContext: vi.fn().mockReturnValue({ provider: 'none', available: false }),
+  computeGuardrailsPromptContext: vi.fn().mockReturnValue({ enabled: false, rules: [] }),
 }))
 
 vi.mock('@coro/llm-anthropic', async () => {

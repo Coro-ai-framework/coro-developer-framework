@@ -476,6 +476,33 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       })
     })
 
+    it('includes workspace layout when jobWorkingDir is supplied', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({ params: { repoSlug: 'my-svc' } }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        '/work/job-1',
+      )
+
+      expect(prompt).toContain('## Workspace layout')
+      expect(prompt).toContain('/work/job-1/my-svc')
+      expect(prompt).toContain('{language}-conventions')
+      expect(prompt).not.toMatch(/\bgo build\b/)
+
+      const ctx = parseJobContext(prompt)
+      expect(ctx['workspace']).toEqual({
+        jobWorkingDir: '/work/job-1',
+        repoCheckoutDir: 'my-svc',
+        repoCheckoutAbsDir: '/work/job-1/my-svc',
+      })
+    })
+
     it('omits the guardrails key when no guardrailsInfo is supplied', async () => {
       setupFs({ [WORKFLOW_PATH]: '' })
 

@@ -1,5 +1,4 @@
 import { vi } from 'vitest'
-import type { ChildProcess } from 'child_process'
 import { JobType, STATUS_QUEUED } from '@coro/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
@@ -298,7 +297,6 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
       warn: vi.fn(),
       error: vi.fn(),
     } as unknown as ToolContext['logger'],
-    runningServices: new Map<string, ChildProcess>(),
     ...overrides,
   }
 }

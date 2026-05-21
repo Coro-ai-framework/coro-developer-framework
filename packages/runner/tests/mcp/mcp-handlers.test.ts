@@ -1,5 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import * as cp from 'child_process'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as fs from 'fs/promises'
 import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
@@ -12,14 +11,6 @@ import {
 } from './fixtures'
 
 vi.mock('fs/promises')
-
-vi.mock('child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('child_process')>()
-  return {
-    ...actual,
-    spawn: vi.fn(),
-  }
-})
 
 vi.mock('simple-git', () => ({
   simpleGit: vi.fn(),
@@ -132,76 +123,6 @@ describe('createMcpToolHandlers — observability', () => {
   })
 })
 
-describe('createMcpToolHandlers — compare_request', () => {
-  let ctx: ReturnType<typeof makeMockToolContext>
-  const originalFetch = globalThis.fetch
-
-  beforeEach(() => {
-    ctx = makeMockToolContext()
-  })
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch
-  })
-
-  it('reports match when both bodies normalize to same JSON', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      status: 200,
-      text: async () => '{"a":1}',
-    }) as unknown as typeof fetch
-
-    const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(
-      await h.compare_request({
-        goBaseUrl: 'http://go',
-        dotnetBaseUrl: 'http://net',
-        method: 'GET',
-        path: '/x',
-      }),
-    ) as Record<string, unknown>
-
-    expect(data['match']).toBe(true)
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
-  })
-
-  it('reports no match when status differs', async () => {
-    let n = 0
-    globalThis.fetch = vi.fn().mockImplementation(async () => {
-      n += 1
-      return {
-        status: n === 1 ? 200 : 500,
-        text: async () => '{}',
-      }
-    }) as unknown as typeof fetch
-
-    const h = createMcpToolHandlers(ctx, {})
-    const data = parseJson(
-      await h.compare_request({
-        goBaseUrl: 'http://go',
-        dotnetBaseUrl: 'http://net',
-        method: 'GET',
-        path: '/',
-      }),
-    ) as Record<string, unknown>
-
-    expect(data['match']).toBe(false)
-  })
-})
-
-describe('createMcpToolHandlers — run_go_build', () => {
-  let ctx: ReturnType<typeof makeMockToolContext>
-
-  beforeEach(() => {
-    ctx = makeMockToolContext()
-  })
-
-  it('returns error result when go build fails (invalid module path)', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const result = await h.run_go_build({ repoDir: '/nonexistent-dir-for-go-build-test-xyz' })
-    expect('isError' in result && result.isError).toBe(true)
-  })
-})
-
 describe('createMcpToolHandlers — scm_clone_repo', () => {
   const simpleGitMock = vi.mocked(simpleGit)
   const mkdirMock = vi.mocked(fs.mkdir)
@@ -255,6 +176,15 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
       ]),
     )
     expect(built.ctx.stateBackend.mapRepoToJob).toHaveBeenCalledWith('svc', 'job-mcp-test')
+    expect(built.ctx.stateBackend.updateJob).toHaveBeenCalledWith(
+      'job-mcp-test',
+      expect.objectContaining({
+        params: expect.objectContaining({
+          repoCheckoutDir: 'svc',
+          repoCheckoutAbsDir: '/tmp/work-mcp/job-mcp-test/svc',
+        }),
+      }),
+    )
     expect(data['repoDir']).toBe('/tmp/work-mcp/job-mcp-test/svc')
     expect(data['reused']).toBe(false)
   })
@@ -270,6 +200,15 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
 
     expect(simpleGitMock).not.toHaveBeenCalled()
+    expect(built.ctx.stateBackend.updateJob).toHaveBeenCalledWith(
+      'job-mcp-test',
+      expect.objectContaining({
+        params: expect.objectContaining({
+          repoCheckoutDir: 'svc',
+          repoCheckoutAbsDir: '/tmp/work-mcp/job-mcp-test/svc',
+        }),
+      }),
+    )
     expect(data['reused']).toBe(true)
     expect(data['relativeDir']).toBe('svc')
   })
@@ -316,67 +255,6 @@ describe('createMcpToolHandlers — scm_merge_pr', () => {
 
     expect(data['merged']).toBe(true)
     expect(built.ctx.stateBackend.markPrMerged).not.toHaveBeenCalled()
-  })
-})
-
-describe('createMcpToolHandlers — start_go_service / stop_go_service', () => {
-  let ctx: ReturnType<typeof makeMockToolContext>
-  const spawnMock = vi.mocked(cp.spawn)
-
-  beforeEach(() => {
-    ctx = makeMockToolContext()
-    vi.useFakeTimers()
-    spawnMock.mockReturnValue({
-      pid: 111,
-      on: vi.fn(),
-      kill: vi.fn(),
-    } as never)
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  it('rejects duplicate label', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-
-    const p = h.start_go_service({
-      label: 'svc',
-      repoDir: '/tmp',
-      binaryName: 'app',
-      port: 3000,
-    })
-    await vi.advanceTimersByTimeAsync(1600)
-    await p
-
-    const again = h.start_go_service({
-      label: 'svc',
-      repoDir: '/tmp',
-      binaryName: 'app',
-      port: 3001,
-    })
-    await vi.advanceTimersByTimeAsync(1600)
-    const second = await again
-
-    expect('isError' in second && second.isError).toBe(true)
-  })
-
-  it('stop_go_service kills process and clears label', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const kill = vi.fn()
-    const fake = { pid: 222, on: vi.fn(), kill }
-    ctx.runningServices.set('x', fake as never)
-
-    const data = parseJson(await h.stop_go_service({ label: 'x' })) as Record<string, unknown>
-    expect(kill).toHaveBeenCalledWith('SIGTERM')
-    expect(ctx.runningServices.has('x')).toBe(false)
-    expect(data['stopped']).toBe('x')
-  })
-
-  it('stop_go_service errors when label unknown', async () => {
-    const h = createMcpToolHandlers(ctx, {})
-    const r = await h.stop_go_service({ label: 'nope' })
-    expect('isError' in r && r.isError).toBe(true)
   })
 })
 

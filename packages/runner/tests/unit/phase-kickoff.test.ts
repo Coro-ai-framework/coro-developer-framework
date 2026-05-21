@@ -87,6 +87,8 @@ describe('buildCodingPreflightWarning', () => {
 })
 
 describe('buildPhaseKickoffMessage', () => {
+  const JOB_DIR = '/tmp/work/kickoff-job'
+
   it('includes preflight and open PR block in coding phase', () => {
     const msg = buildPhaseKickoffMessage(makeJob({
       phase: 'coding',
@@ -94,10 +96,24 @@ describe('buildPhaseKickoffMessage', () => {
       prMappings: [
         { prId: 7, workItem: 'wi-1', repoSlug: 'r', openedAt: '2026-05-21T07:00:00Z' },
       ],
-    }), NOW)
+    }), JOB_DIR, NOW)
 
     expect(msg).toContain('[coding-preflight]')
     expect(msg).toContain('## Open PRs on this job')
     expect(msg).toContain('Begin phase **coding**')
+  })
+
+  it('includes workspace block when repo checkout params are set', () => {
+    const msg = buildPhaseKickoffMessage(makeJob({
+      params: {
+        repoCheckoutDir: 'my-service',
+        repoCheckoutAbsDir: '/tmp/work/kickoff-job/my-service',
+      },
+    }), JOB_DIR, NOW)
+
+    expect(msg).toContain('## Workspace')
+    expect(msg).toContain('cd my-service &&')
+    expect(msg).toContain('{language}-conventions')
+    expect(msg).not.toContain('go build')
   })
 })

@@ -95,21 +95,17 @@ signal is authoritative — respect it, then layer your local re-run on top.
 
 ### 2. Verify the build
 
-Run the build commands from the implementation plan. If the plan does not specify them, use language defaults:
-
-- **Go:** `go build ./...`
-- **TypeScript/Node:** `npm run build`
-- **C#/.NET:** `dotnet build`
-- **Rust:** `cargo build`
-- **Python:** the project-defined build/lint command
+1. Invoke the **`{language}-conventions`** skill (from `params.language`) for build commands.
+2. Run from the repo checkout (`cd <repoCheckoutDir> && …` — paths in **Workspace layout** / `params.repoCheckoutAbsDir`).
+3. Use commands from the implementation plan when specified; otherwise follow the language skill.
 
 Capture stdout/stderr. A build failure on the merged commit is a hard finding — it almost always means the merge surfaced an integration bug the Coder could not see in isolation.
 
-For long-running builds/tests, prefer a pattern like `command > build-output.txt 2>&1; echo "EXIT:$?" >> build-output.txt` and then inspect `build-output.txt` with Read/Bash inside the workspace.
+For long-running builds/tests, redirect output to a file under the job working directory and inspect that file (not executor-private temp paths).
 
 ### 3. Run the existing test suite
 
-Run the project's test suite (`go test ./...`, `npm test`, `dotnet test`, etc.). Existing tests must still pass — a regression here is a critical finding.
+Invoke the language conventions skill for test commands. Run from the repo checkout. Existing tests must still pass — a regression here is a critical finding.
 
 ### 4. Verify each acceptance criterion
 

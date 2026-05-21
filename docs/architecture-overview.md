@@ -168,7 +168,7 @@ Agents have access to ~30 domain-specific MCP tools (under the
   post reviews, approve, merge.
 - **Observability** — query Loki logs and Tempo traces.
 - **Jira** — read tickets, post comments, transition issues.
-- **Test harness** — build services, run comparison tests.
+- **Build verification** — Bash from the repo checkout; language-specific commands live in `{language}-conventions` skills.
 - **Job control** — manage phases, work items, park/resume, escalate
   to humans.
 - **Self-improvement** — record insights, propose changes to agent

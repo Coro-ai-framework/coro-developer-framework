@@ -5,6 +5,10 @@
 // Includes multi-PR awareness for jobs with several open mappings.
 
 import type { Job, PrMapping } from '@coro/cloud-protocol'
+import {
+  buildWorkspaceLayoutKickoffBlock,
+  resolveJobWorkspaceLayout,
+} from './workspace-layout'
 
 export function formatRelativeAge(isoTimestamp: string, nowMs = Date.now()): string {
   const then = Date.parse(isoTimestamp)
@@ -81,8 +85,15 @@ export function buildCodingPreflightWarning(job: Job): string {
   ].join('\n')
 }
 
-export function buildPhaseKickoffMessage(job: Job, nowMs = Date.now()): string {
+export function buildPhaseKickoffMessage(
+  job: Job,
+  jobWorkingDir: string,
+  nowMs = Date.now(),
+): string {
   const preflight = buildCodingPreflightWarning(job)
+  const workspace = buildWorkspaceLayoutKickoffBlock(
+    resolveJobWorkspaceLayout(job, jobWorkingDir),
+  )
   const base = job.sessionId
     ? (
       `You are now in phase **${job.phase}**. Your role for this phase is in the ` +
@@ -96,5 +107,5 @@ export function buildPhaseKickoffMessage(job: Job, nowMs = Date.now()): string {
     )
 
   const openPrs = buildOpenPrsKickoffBlock(job, nowMs)
-  return [preflight, base, openPrs].filter(Boolean).join('\n')
+  return [preflight, workspace, base, openPrs].filter(Boolean).join('\n')
 }

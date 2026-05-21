@@ -10,6 +10,27 @@ description: >-
 
 Coding standards for .NET/C# services. Agents reading or writing .NET code must follow these conventions.
 
+## Coro job workspace
+
+- **Job root:** `working/{jobId}/` — executor may start here; the `.sln` is usually in a repo subdirectory.
+- **Repo:** `params.repoCheckoutAbsDir` — run `dotnet` and `git` from this tree via `cd <repoCheckoutDir> && …`.
+
+## Build verification (Coro runner)
+
+```bash
+cd "$REL" && dotnet build
+```
+
+Use the solution or project path from the implementation plan. Prefer the system NuGet cache (`~/.nuget`) — do not invent alternate package directories unless tenant memory says so.
+
+## Test verification (Coro runner)
+
+```bash
+cd "$REL" && dotnet test
+```
+
+Redirect long output to a file under the job root when needed.
+
 ## Project Layout
 
 ```

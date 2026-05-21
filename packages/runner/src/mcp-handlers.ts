@@ -191,6 +191,22 @@ function prRef(scm: ScmPluginRuntime, repo: string, prId: number | string): Exte
  * wrapper branch graduated past N+2 ahead of cycle because the
  * plugins migration replaced every legacy call site at once.
  */
+/** Persist repo checkout paths on the job after clone/reuse for prompt and kickoff. */
+async function persistRepoCheckoutParams(
+  ctx: ToolContext,
+  repoCheckoutDir: string,
+  repoCheckoutAbsDir: string,
+): Promise<void> {
+  const updated = await ctx.stateBackend.updateJob(ctx.job.id, {
+    params: {
+      ...ctx.job.params,
+      repoCheckoutDir,
+      repoCheckoutAbsDir,
+    },
+  })
+  ctx.job = updated
+}
+
 export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const text = mcpText
   const error = mcpError
@@ -521,6 +537,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
     if (await isGitRepo(repoDir)) {
       await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
+      await persistRepoCheckoutParams(ctx, repo, repoDir)
       return text({
         pluginId: r.scm.manifest.id,
         repo,
@@ -561,6 +578,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     await git.clone(info.url, repoDir, insteadOfOverrides)
     await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
     await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)
+    await persistRepoCheckoutParams(ctx, repo, repoDir)
 
     return text({
       pluginId: r.scm.manifest.id,
@@ -878,79 +896,6 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     // the MCP-wrapper branch has been graduated past N+2 ahead of
     // the cycle because the plugins migration replaced all the
     // legacy call sites.
-
-    // Test harness
-    run_go_build: async ({ repoDir }: { repoDir: string }) => {
-      const { exec: execCb } = await import('child_process')
-      const { promisify } = await import('util')
-      const execAsync = promisify(execCb)
-      try {
-        const { stdout, stderr } = await execAsync('go build ./...', {
-          cwd: repoDir, timeout: 120_000,
-          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        })
-        return text({ stdout: stdout.trim(), stderr: stderr.trim() })
-      } catch (err: unknown) {
-        const e = err as { stderr?: string; message?: string }
-        return error(e.stderr ?? e.message ?? String(err))
-      }
-    },
-
-    start_go_service: async ({
-      label, repoDir, binaryName, port, env: extraEnv,
-    }: {
-      label: string
-      repoDir: string
-      binaryName: string
-      port: number
-      env?: Record<string, string>
-    }) => {
-      if (ctx.runningServices.has(label)) return error(`Service "${label}" is already running`)
-      const { spawn } = await import('child_process')
-      const child = spawn(`./${binaryName}`, [], {
-        cwd: repoDir,
-        env: { ...process.env, PORT: String(port), ...extraEnv },
-        stdio: 'ignore', detached: false,
-      })
-      ctx.runningServices.set(label, child)
-      child.on('exit', () => { ctx.runningServices.delete(label) })
-      await new Promise(r => setTimeout(r, 1500))
-      return text({ label, port, pid: child.pid })
-    },
-
-    stop_go_service: async ({ label }: { label: string }) => {
-      const child = ctx.runningServices.get(label)
-      if (!child) return error(`No running service with label "${label}"`)
-      child.kill('SIGTERM')
-      ctx.runningServices.delete(label)
-      return text({ stopped: label })
-    },
-
-    compare_request: async ({
-      goBaseUrl, dotnetBaseUrl, method, path: reqPath, headers, body,
-    }: {
-      goBaseUrl: string
-      dotnetBaseUrl: string
-      method: string
-      path: string
-      headers?: Record<string, string>
-      body?: string
-    }) => {
-      const doReq = async (base: string) => {
-        const res = await fetch(`${base}${reqPath}`, {
-          method, body: body ?? undefined,
-          headers: { 'Content-Type': 'application/json', ...headers },
-          signal: AbortSignal.timeout(15_000),
-        })
-        return { status: res.status, body: await res.text() }
-      }
-      const [goRes, dotnetRes] = await Promise.all([doReq(goBaseUrl), doReq(dotnetBaseUrl)])
-      const norm = (s: string) => { try { return JSON.stringify(JSON.parse(s)) } catch { return s.trim() } }
-      return text({
-        match: goRes.status === dotnetRes.status && norm(goRes.body) === norm(dotnetRes.body),
-        go: goRes, dotnet: dotnetRes,
-      })
-    },
 
     // Observability
     loki_query: async ({
