@@ -5,6 +5,7 @@ import {
   Bug,
   ChevronDown,
   Clock3,
+  CornerDownRight,
   GitPullRequest,
   Lightbulb,
   Send,
@@ -113,6 +114,30 @@ function deriveWorkflowPhases(job: Job | null): WorkflowPhase[] {
 
 /* ─── Header ─────────────────────────────────────────────────────────────── */
 
+function SubRunParentIndicator({ parentRunId }: { parentRunId: string }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[13px]">
+      <span
+        className="inline-flex items-center gap-1 rounded-md border border-line bg-overlay px-1.5 py-0.5 text-[10px] uppercase tracking-[0.14em] text-fg-subtle"
+        title={SUB_RUN_NOUN.singular}
+      >
+        <CornerDownRight className="size-2.5" aria-hidden />
+        {SUB_RUN_NOUN.singularLower}
+      </span>
+      <span className="text-fg-muted">
+        of{' '}
+        <Link
+          to={getRunDetailPath({ id: parentRunId })}
+          className="inline-block max-w-[min(100%,28rem)] truncate align-bottom font-mono text-[12px] font-medium text-accent-300 underline-offset-2 hover:text-accent-400 hover:underline"
+          title={parentRunId}
+        >
+          {parentRunId}
+        </Link>
+      </span>
+    </div>
+  )
+}
+
 function HeaderSummary({ job }: { job: Job }) {
   const repoSlug = getRepoSlug(job)
   const description = deriveJobDescription(job)
@@ -120,27 +145,16 @@ function HeaderSummary({ job }: { job: Job }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-        <Link
-          to={RUNS_LIST_PATH}
-          className="inline-flex items-center gap-1.5 text-fg-muted transition-colors hover:text-fg"
-        >
-          <ArrowLeft className="size-4" />
-          {PAGE_TITLES.backToRuns}
-        </Link>
-        {parentRunId ? (
-          <Link
-            to={getRunDetailPath({ id: parentRunId })}
-            className="inline-flex items-center gap-1.5 text-fg-muted transition-colors hover:text-fg"
-          >
-            <ArrowLeft className="size-4 opacity-60" />
-            {getParentRunBreadcrumbLabel()}{' '}
-            <span className="font-mono text-[12px]">{parentRunId}</span>
-          </Link>
-        ) : null}
-      </div>
+      <Link
+        to={RUNS_LIST_PATH}
+        className="inline-flex items-center gap-1.5 text-sm text-fg-muted transition-colors hover:text-fg"
+      >
+        <ArrowLeft className="size-4" />
+        {PAGE_TITLES.backToRuns}
+      </Link>
 
       <div className="space-y-3">
+        {parentRunId ? <SubRunParentIndicator parentRunId={parentRunId} /> : null}
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-[1.75rem] font-semibold tracking-tight text-fg sm:text-[2rem]">
             {deriveJobTitle(job)}
@@ -379,29 +393,12 @@ function PhaseUsageTable({ phases }: { phases: PhaseUsage[] }) {
 }
 
 function JobAlerts({ job }: { job: Job }) {
-  const parentRunId = getParentRunId(job)
-
-  if (!parentRunId && !job.awaitingEvent && !job.escalationMessage && !job.rateLimitInfo) {
+  if (!job.awaitingEvent && !job.escalationMessage && !job.rateLimitInfo) {
     return null
   }
 
   return (
     <div className="space-y-3">
-      {parentRunId ? (
-        <AlertCard title={`Dispatched as a ${SUB_RUN_NOUN.singularLower}`} tone="accent">
-          {`This ${RUN_NOUN.singularLower} runs as a ${SUB_RUN_NOUN.singularLower} of `}
-          <Link
-            to={getRunDetailPath({ id: parentRunId })}
-            className="font-mono text-accent-300 underline underline-offset-2"
-          >
-            {parentRunId}
-          </Link>
-          {typeof job.params['campaignChildName'] === 'string'
-            ? ` (named ${job.params['campaignChildName'] as string}).`
-            : '.'}
-        </AlertCard>
-      ) : null}
-
       {job.status === 'awaiting-rate-limit' && job.rateLimitInfo ? (
         <RateLimitBanner info={job.rateLimitInfo} />
       ) : null}
