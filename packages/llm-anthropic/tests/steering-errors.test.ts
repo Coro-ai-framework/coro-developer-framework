@@ -5,6 +5,7 @@ import {
   isMcpTransportErrorText,
   isRecoverableSteeringAbort,
   isSteeringDiagnosticText,
+  shouldClosePushableAfterResult,
 } from '../src/steering-errors'
 
 describe('isRecoverableSteeringAbort', () => {
@@ -46,6 +47,15 @@ describe('isMcpTransportErrorText', () => {
 
   it('rejects benign tool errors', () => {
     expect(isMcpTransportErrorText('file not found')).toBe(false)
+  })
+})
+
+describe('shouldClosePushableAfterResult', () => {
+  it('closes only on terminal stop reasons', () => {
+    expect(shouldClosePushableAfterResult('end_turn')).toBe(true)
+    expect(shouldClosePushableAfterResult('max_turns')).toBe(true)
+    expect(shouldClosePushableAfterResult('interrupted')).toBe(false)
+    expect(shouldClosePushableAfterResult('tool_use')).toBe(false)
   })
 })
 

@@ -18,8 +18,8 @@ export interface PushableInput {
   close(): void
   /**
    * `true` when no buffered messages are waiting to be read by the SDK.
-   * The executor keeps the pushable open for the whole phase and only
-   * calls {@link PushableInput.close} in `finally` when the phase ends.
+   * The executor closes the pushable only after a terminal `result`
+   * (`end_turn`, etc.), not after steering interrupts.
    */
   isEmpty(): boolean
   /** Whether {@link close} has been called (or the iterable ended). */

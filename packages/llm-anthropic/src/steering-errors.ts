@@ -40,3 +40,13 @@ export function isMcpHealExhaustedError(text: string): boolean {
 export function isMcpInputDeadText(text: string): boolean {
   return /inputClosed|Stream closed/i.test(text)
 }
+
+/**
+ * Whether closing the phase pushable after a `result` event is safe.
+ * Closing on steering/interrupt (`interrupted`, `tool_use`) kills MCP;
+ * never closing leaves the query stream open forever after the agent's
+ * final `end_turn` and the runner never advances phases.
+ */
+export function shouldClosePushableAfterResult(stopReason: string): boolean {
+  return stopReason === 'end_turn' || stopReason === 'max_turns' || stopReason === 'stop'
+}

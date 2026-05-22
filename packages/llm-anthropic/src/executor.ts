@@ -59,6 +59,7 @@ import {
   isMcpTransportErrorText,
   isRecoverableSteeringAbort,
   isSteeringDiagnosticText,
+  shouldClosePushableAfterResult,
 } from './steering-errors'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
 import type { SteeringInterruptMode } from '@coro/plugin-sdk'
@@ -1018,11 +1019,13 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             ...(resultModelUsage ? { modelUsage: resultModelUsage } : {}),
           }
 
-          // Do NOT close the pushable here. Mid-phase steering reads the
-          // developer message and emits another `result` with an empty
-          // buffer; closing stdin (`inputClosed`) breaks every subsequent
-          // MCP control_request for the rest of the phase. The pushable
-          // closes only in `finally` when executePhase exits.
+          // Close stdin only on a terminal model stop so the SDK query
+          // stream ends and the runner can advance phases. Do NOT close on
+          // `interrupted` / `tool_use` results — that breaks MCP mid-phase
+          // (steering) or ends the stream before the agent finishes working.
+          if (pushable.isEmpty() && shouldClosePushableAfterResult(stopReason)) {
+            pushable.close()
+          }
           continue
         }
 

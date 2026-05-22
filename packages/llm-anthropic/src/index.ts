@@ -41,6 +41,7 @@ export {
   isMcpTransportErrorText,
   isMcpHealExhaustedError,
   isMcpInputDeadText,
+  shouldClosePushableAfterResult,
 } from './steering-errors'
 export { registerAnthropicHttpRoutes } from './http-routes'
 
