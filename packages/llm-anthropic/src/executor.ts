@@ -957,18 +957,19 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
 
         if (eventType === 'result') {
           const isError = message['is_error']
+          let resultStopReason = stopReason
           if (isError) {
             const errors = message['errors']
             const errStr = Array.isArray(errors) ? (errors as string[]).join('; ') : 'unknown error'
             if (isSteeringDiagnosticText(errStr)) {
-              stopReason = 'interrupted'
+              resultStopReason = 'interrupted'
               yield {
                 type: 'log',
                 level: 'info',
                 message: `[control] Recoverable steering interrupt — ${errStr.slice(0, 300)}`,
               }
             } else {
-              stopReason = 'error'
+              resultStopReason = 'error'
               yield { type: 'log', level: 'error', message: `[error] ${errStr}` }
             }
           } else {
@@ -977,8 +978,10 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
               yield { type: 'log', level: 'info', message: `[result] ${result}` }
             }
             const sr = message['stop_reason']
-            if (typeof sr === 'string') stopReason = sr
+            // SDK may omit stop_reason on success; treat as natural completion.
+            resultStopReason = typeof sr === 'string' ? sr : 'end_turn'
           }
+          stopReason = resultStopReason
 
           const resultUsage = message['usage'] as Record<string, number> | undefined
           if (resultUsage) {
@@ -1019,11 +1022,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             ...(resultModelUsage ? { modelUsage: resultModelUsage } : {}),
           }
 
-          // Close stdin only on a terminal model stop so the SDK query
-          // stream ends and the runner can advance phases. Do NOT close on
-          // `interrupted` / `tool_use` results — that breaks MCP mid-phase
-          // (steering) or ends the stream before the agent finishes working.
-          if (pushable.isEmpty() && shouldClosePushableAfterResult(stopReason)) {
+          // Restore pre-steering-fix phase completion: close when the buffer
+          // is empty so the query stream ends and the runner advances. Skip
+          // only mid-phase stop reasons (steering interrupt / tool_use) that
+          // must keep stdin open for subsequent MCP control_requests.
+          if (pushable.isEmpty() && shouldClosePushableAfterResult(resultStopReason)) {
             pushable.close()
           }
           continue

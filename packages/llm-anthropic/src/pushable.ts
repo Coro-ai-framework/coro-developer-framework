@@ -18,8 +18,9 @@ export interface PushableInput {
   close(): void
   /**
    * `true` when no buffered messages are waiting to be read by the SDK.
-   * The executor closes the pushable only after a terminal `result`
-   * (`end_turn`, etc.), not after steering interrupts.
+   * The executor closes the pushable when empty after most `result`
+   * events; it stays open only for mid-phase stop reasons (`tool_use`,
+   * `interrupted`, `pause_turn`).
    */
   isEmpty(): boolean
   /** Whether {@link close} has been called (or the iterable ended). */

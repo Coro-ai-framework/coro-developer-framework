@@ -3,6 +3,7 @@ import {
   isMcpHealExhaustedError,
   isMcpInputDeadText,
   isMcpTransportErrorText,
+  isMidPhaseStopReason,
   isRecoverableSteeringAbort,
   isSteeringDiagnosticText,
   shouldClosePushableAfterResult,
@@ -51,11 +52,24 @@ describe('isMcpTransportErrorText', () => {
 })
 
 describe('shouldClosePushableAfterResult', () => {
-  it('closes only on terminal stop reasons', () => {
+  it('matches original behavior: close on empty buffer unless mid-phase', () => {
     expect(shouldClosePushableAfterResult('end_turn')).toBe(true)
     expect(shouldClosePushableAfterResult('max_turns')).toBe(true)
+    expect(shouldClosePushableAfterResult('max_tokens')).toBe(true)
+    expect(shouldClosePushableAfterResult('stop_sequence')).toBe(true)
+    expect(shouldClosePushableAfterResult('refusal')).toBe(true)
+    expect(shouldClosePushableAfterResult('error')).toBe(true)
+    // Unknown values close too — same as pre-steering-fix default.
+    expect(shouldClosePushableAfterResult('some_future_reason')).toBe(true)
+  })
+
+  it('keeps pushable open for steering and in-flight tool rounds', () => {
+    expect(isMidPhaseStopReason('interrupted')).toBe(true)
+    expect(isMidPhaseStopReason('tool_use')).toBe(true)
+    expect(isMidPhaseStopReason('pause_turn')).toBe(true)
     expect(shouldClosePushableAfterResult('interrupted')).toBe(false)
     expect(shouldClosePushableAfterResult('tool_use')).toBe(false)
+    expect(shouldClosePushableAfterResult('pause_turn')).toBe(false)
   })
 })
 

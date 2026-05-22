@@ -400,7 +400,7 @@ Two interrupt modes (see `ExecutorSessionController` in
 | Mode | When | Behavior |
 |------|------|----------|
 | `safe` | Default while `mcp__*` tool in flight | Message is queued only; no interrupt (avoids aborting in-flight MCP control requests). |
-| `urgent` | No MCP tool in flight, or **Pause** | `interrupt()` (5s ack budget) then async MCP heal (`mcpRebuild`, `setMcpServers`, reconnect external servers). PreToolUse blocks `mcp__*` while heal runs. The phase pushable **must stay open** across `result` events — closing stdin breaks MCP (`Stream closed`). |
+| `urgent` | No MCP tool in flight, or **Pause** | `interrupt()` (5s ack budget) then async MCP heal (`mcpRebuild`, `setMcpServers`, reconnect external servers). PreToolUse blocks `mcp__*` while heal runs. The pushable stays open on `result` events whose `stop_reason` is `interrupted`, `tool_use`, or `pause_turn`; on all other reasons it closes when empty (same as pre-steering behavior) so the runner advances phases. |
 
 **Pause** is distinct from steering: it parks the job first, then calls
 `interrupt({ mode: 'urgent' })` and closes the developer-input channel

@@ -42,11 +42,31 @@ export function isMcpInputDeadText(text: string): boolean {
 }
 
 /**
- * Whether closing the phase pushable after a `result` event is safe.
- * Closing on steering/interrupt (`interrupted`, `tool_use`) kills MCP;
- * never closing leaves the query stream open forever after the agent's
- * final `end_turn` and the runner never advances phases.
+ * Stop reasons where the agent loop is still in progress — stdin must stay
+ * open. Matches pre-fix behavior for everything else: when the pushable
+ * buffer is empty after a `result`, we close (ends the query stream so the
+ * runner advances phases).
+ *
+ * Steering broke MCP because `interrupt()` yields a `result` with
+ * `interrupted` / `tool_use` while the buffer is empty; closing then set
+ * `inputClosed` and killed all later `mcp__*` calls.
+ */
+const MID_PHASE_STOP_REASONS = new Set([
+  'tool_use',
+  'interrupted',
+  'pause_turn',
+])
+
+/** True when this `result` stop_reason must keep the phase pushable open. */
+export function isMidPhaseStopReason(stopReason: string): boolean {
+  return MID_PHASE_STOP_REASONS.has(stopReason)
+}
+
+/**
+ * Whether to close the phase pushable after a `result` event.
+ * Default: close when the buffer is empty (original Coro behavior).
+ * Exception: mid-phase stop reasons after steering / tool rounds.
  */
 export function shouldClosePushableAfterResult(stopReason: string): boolean {
-  return stopReason === 'end_turn' || stopReason === 'max_turns' || stopReason === 'stop'
+  return !isMidPhaseStopReason(stopReason)
 }
