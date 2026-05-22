@@ -32,7 +32,6 @@ export {
   healMcpTransport,
   isCoroMcpHealthy,
   MCP_RETRY_NUDGE,
-  runBoundedMcpHeal,
   type HealMcpResult,
   type HealMcpTransportOptions,
 } from './mcp-heal'
@@ -41,6 +40,7 @@ export {
   isSteeringDiagnosticText,
   isMcpTransportErrorText,
   isMcpHealExhaustedError,
+  isMcpInputDeadText,
 } from './steering-errors'
 export { registerAnthropicHttpRoutes } from './http-routes'
 

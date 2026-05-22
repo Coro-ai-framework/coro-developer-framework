@@ -51,10 +51,11 @@ import { registerAnthropicHttpRoutes } from './http-routes'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
-import { healMcpTransport, isCoroMcpHealthy, MCP_RETRY_NUDGE, runBoundedMcpHeal } from './mcp-heal'
+import { healMcpTransport, isCoroMcpHealthy, MCP_RETRY_NUDGE } from './mcp-heal'
 import { reattachDynamicMcpServers } from './mcp-reattach'
 import {
   isMcpHealExhaustedError,
+  isMcpInputDeadText,
   isMcpTransportErrorText,
   isRecoverableSteeringAbort,
   isSteeringDiagnosticText,
@@ -509,6 +510,8 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       }
     }
 
+    let mcpInputDead = false
+
     const resumeSessionId = req.sessionState.sessionId
     const queryOptions: Record<string, unknown> = {
       pathToClaudeCodeExecutable: claudeCodeCliPath,
@@ -550,7 +553,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
           // MCP / Transport / control_request lines are surfaced into
           // the job log via a `log` event so the runner can chunk them.
           if (/mcp|Transport|sdkMcp|control_request/i.test(trimmed)) {
-            // Buffered into the per-iteration emit below — see _stderrBuffer.
+            if (isMcpInputDeadText(trimmed)) mcpInputDead = true
             this._stderrBuffer.push(trimmed)
           }
         }
@@ -589,8 +592,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     // lifecycle controller so the runner / dispatcher can interrupt.
     //
     // `safe` steering skips interrupt while an MCP tool is in flight;
-    // `urgent` always interrupts and synchronously heals MCP (fresh
-    // Coro instance + setMcpServers) before returning.
+    // `urgent` interrupts (bounded ack) then schedules async MCP heal.
     const liveQuery = queryStream as Query
     let inFlightMcpTool: string | null = null
     let pendingInterruptHealLog: string | undefined
@@ -599,6 +601,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     let mcpHealFailures = 0
     let lastMcpHealAt = 0
     let pendingMcpHealAfterSafeSteer = false
+    const INTERRUPT_ACK_MS = 5_000
 
     const healOpts = () => ({
       liveQuery,
@@ -647,6 +650,12 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     }
 
     const runMcpHealAsync = (reason: string): void => {
+      if (mcpInputDead) {
+        pendingInterruptHealLog =
+          `[control] MCP heal skipped (${reason}) — control stream is closed; ` +
+          `restart the job phase to restore MCP tools.`
+        return
+      }
       if (mcpHealFailures >= 3) {
         pendingInterruptHealLog =
           `[control] MCP heal skipped (${reason}) — prior heal attempts failed; ` +
@@ -702,17 +711,23 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         }
         mcpTransportReady = false
         try {
-          await liveQuery.interrupt()
-          if (mode === 'urgent') {
-            const refresh = await runBoundedMcpHeal(healOpts())
-            applyHealResult('interrupt', refresh)
-          }
+          await Promise.race([
+            liveQuery.interrupt(),
+            new Promise<void>((_, reject) =>
+              setTimeout(
+                () => reject(new Error(`interrupt ack timeout after ${INTERRUPT_ACK_MS}ms`)),
+                INTERRUPT_ACK_MS,
+              ),
+            ),
+          ])
         } catch (err) {
-          mcpHealFailures += 1
           const detail = err instanceof Error ? err.message : String(err)
-          pendingInterruptHealLog = `[control] MCP re-attach (interrupt) failed: ${detail}`
+          pendingInterruptHealLog = `[control] Steering interrupt did not ack — ${detail}`
         } finally {
           mcpTransportReady = true
+        }
+        if (mode === 'urgent') {
+          scheduleMcpHeal('interrupt', { skipDebounce: true })
         }
       },
       getSteeringState: () => ({ inFlightMcpTool }),
@@ -898,10 +913,14 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
                 break
               }
               if (isMcpTransportErrorText(text)) {
+                if (isMcpInputDeadText(text)) mcpInputDead = true
                 yield {
                   type: 'log',
                   level: 'warn',
-                  message: `[control] MCP tool_result error detected — scheduling reconnect. detail=${text.slice(0, 200)}`,
+                  message:
+                    mcpInputDead
+                      ? `[control] MCP control stream closed — setMcpServers cannot recover; restart the phase. detail=${text.slice(0, 200)}`
+                      : `[control] MCP tool_result error detected — scheduling reconnect. detail=${text.slice(0, 200)}`,
                 }
                 if (!isMcpHealExhaustedError(text)) {
                   scheduleMcpHeal('tool_result')
@@ -999,19 +1018,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             ...(resultModelUsage ? { modelUsage: resultModelUsage } : {}),
           }
 
-          // Close the streaming-input pushable so the SDK's outer iterator
-          // ends — but ONLY when the input buffer is empty. In streaming-
-          // input mode the SDK awaits more user messages after every
-          // `result`; if we close unconditionally we drop steering messages
-          // that were pushed while the agent was mid-turn (the dispatcher
-          // queues them and calls `q.interrupt()`, which itself produces a
-          // `result` event). When the buffer holds a queued message we
-          // leave the pushable open so the SDK reads it on its next
-          // iteration; the agent will emit another `result` when that
-          // follow-up turn ends, and we'll re-evaluate then.
-          if (pushable.isEmpty()) {
-            pushable.close()
-          }
+          // Do NOT close the pushable here. Mid-phase steering reads the
+          // developer message and emits another `result` with an empty
+          // buffer; closing stdin (`inputClosed`) breaks every subsequent
+          // MCP control_request for the rest of the phase. The pushable
+          // closes only in `finally` when executePhase exits.
           continue
         }
 

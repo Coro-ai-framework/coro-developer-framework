@@ -27,7 +27,16 @@ export function isMcpTransportErrorText(text: string): boolean {
 
 /** True when MCP heal should not be retried (subprocess dead or account limit). */
 export function isMcpHealExhaustedError(text: string): boolean {
-  return /process\s*transport is not ready|you['']ve hit your limit|rate.?limit|exited with code/i.test(
-    text,
+  return (
+    isMcpInputDeadText(text) ||
+    /process\s*transport is not ready|you['']ve hit your limit|rate.?limit|exited with code/i.test(text)
   )
+}
+
+/**
+ * True when the Claude Code control-request channel is permanently closed.
+ * `setMcpServers` cannot recover from this — only ending the phase / query helps.
+ */
+export function isMcpInputDeadText(text: string): boolean {
+  return /inputClosed|Stream closed/i.test(text)
 }

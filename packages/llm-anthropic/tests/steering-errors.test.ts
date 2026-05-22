@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   isMcpHealExhaustedError,
+  isMcpInputDeadText,
   isMcpTransportErrorText,
   isRecoverableSteeringAbort,
   isSteeringDiagnosticText,
@@ -48,9 +49,17 @@ describe('isMcpTransportErrorText', () => {
   })
 })
 
+describe('isMcpInputDeadText', () => {
+  it('detects closed control stream', () => {
+    expect(isMcpInputDeadText('if(this.inputClosed)throw Error("Stream closed")')).toBe(true)
+    expect(isMcpInputDeadText('Stream closed')).toBe(true)
+  })
+})
+
 describe('isMcpHealExhaustedError', () => {
   it('detects rate limit and dead transport', () => {
     expect(isMcpHealExhaustedError("You've hit your limit · resets 1am")).toBe(true)
     expect(isMcpHealExhaustedError('ProcessTransport is not ready for writing')).toBe(true)
+    expect(isMcpHealExhaustedError('Stream closed')).toBe(true)
   })
 })

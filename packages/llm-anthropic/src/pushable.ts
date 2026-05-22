@@ -18,13 +18,12 @@ export interface PushableInput {
   close(): void
   /**
    * `true` when no buffered messages are waiting to be read by the SDK.
-   * The executor uses this at `result`-event time to decide whether the
-   * current turn is a natural completion (buffer empty → safe to close
-   * the pushable so the SDK iterator ends) or an interrupt-driven
-   * steering yield (buffer holds a queued developer message → leave the
-   * pushable open so the SDK reads it on the next iteration).
+   * The executor keeps the pushable open for the whole phase and only
+   * calls {@link PushableInput.close} in `finally` when the phase ends.
    */
   isEmpty(): boolean
+  /** Whether {@link close} has been called (or the iterable ended). */
+  isClosed(): boolean
 }
 
 /**
@@ -74,7 +73,10 @@ export function createPushableInput(): PushableInput {
   return {
     iterable,
     push(msg: SDKUserMessage): void {
-      if (closed) return
+      // Re-open after an mistaken mid-phase close so steering messages
+      // are not silently dropped (the SDK stdin must stay open for the
+      // whole phase — see executor `result` handler).
+      if (closed) closed = false
       buffer.push(msg)
       wakeup()
     },
@@ -85,6 +87,9 @@ export function createPushableInput(): PushableInput {
     },
     isEmpty(): boolean {
       return buffer.length === 0
+    },
+    isClosed(): boolean {
+      return closed
     },
   }
 }
