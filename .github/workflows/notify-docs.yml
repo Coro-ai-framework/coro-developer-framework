@@ -1,0 +1,28 @@
+name: Notify coro-web of docs changes
+
+# When docs/ changes on main, fire a repository_dispatch into Coro-ai-framework/coro-web
+# so its sync-docs workflow pulls the latest content into apps/docs/src/content/docs/concepts/.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch framework-docs-changed
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CORO_WEB_DISPATCH_TOKEN }}
+          repository: Coro-ai-framework/coro-web
+          event-type: framework-docs-changed
+          client-payload: |
+            {
+              "ref": "${{ github.sha }}",
+              "actor": "${{ github.actor }}",
+              "source": "docs-push"
+            }
