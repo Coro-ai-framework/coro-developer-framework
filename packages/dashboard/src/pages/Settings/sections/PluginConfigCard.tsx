@@ -133,31 +133,55 @@ export default function PluginConfigCard({
 }: PluginConfigCardProps) {
   const { draft, setPluginField, setPluginEnabled, dirtyPluginIds } = useSettings()
   const { manifest, source, configured, active, activationHint } = plugin
-  const entry: PluginInstalledEntry = draft.pluginInstalled[manifest.id] ?? { config: {} }
-  const enabled = entry.enabled !== false
+  // `entryExists` differentiates "the user has never touched this
+  // plugin" from "the user explicitly toggled it off". The runner
+  // auto-loads built-in executor plugins (Anthropic / OpenAI) with
+  // empty config so their HTTP routes mount on a fresh install — that
+  // path leaves `draft.pluginInstalled[id]` undefined, and we use
+  // that absence as the signal to render the card collapsed with
+  // the Enable switch OFF. Only an explicit `enabled: true` (or a
+  // saved entry without the field, for back-compat with pre-Phase-G
+  // configs) opens the form.
+  const entryExists = manifest.id in draft.pluginInstalled
+  const entry: PluginInstalledEntry = entryExists
+    ? draft.pluginInstalled[manifest.id]
+    : { config: {} }
+  const enabled = entryExists && entry.enabled !== false
   const fields = useMemo(() => decodeSchema(manifest.configSchema), [manifest.configSchema])
   const dirty = dirtyPluginIds.has(manifest.id)
-  // Plugins may opt into a custom configuration UI via
-  // `manifest.ui.customPanel`. We still render the standard header so
-  // the activation/source badges + Enable switch remain consistent.
   const CustomPanel = manifest.ui?.customPanel
     ? customPanels[manifest.ui.customPanel]
     : undefined
 
+  // Required fields filled (vacuously true when the plugin has none).
+  // Tracked separately from `hasAnyConfig` because the readiness
+  // logic only cares about required fields, but the status pill
+  // shouldn't claim "ready to save" when the user has typed nothing.
+  const hasRequiredFields = fields.some(f => f.required)
   const allRequiredFilled = fields
     .filter(f => f.required)
     .every(f => {
       const v = entry.config[f.name]
       return typeof v === 'string' ? v.length > 0 : v != null
     })
+  // Has the user actually entered anything? Used as the gate for the
+  // "ready to save" status pill on plugins whose entire schema is
+  // optional (OpenAI's apiKey / baseUrl / organization / project /
+  // defaultModel are all optional, so `allRequiredFilled` is
+  // vacuously true with the form blank).
+  const hasAnyConfigValue = Object.values(entry.config).some(v =>
+    typeof v === 'string' ? v.length > 0 : v != null,
+  )
 
   const status: { label: string; tone: Tone } = !enabled
-    ? { label: 'disabled', tone: 'neutral' }
+    ? entryExists
+      ? { label: 'disabled', tone: 'neutral' }
+      : { label: 'not configured', tone: 'neutral' }
     : active && configured
       ? { label: 'active', tone: 'success' }
       : configured
         ? { label: 'configured', tone: 'warning' }
-        : allRequiredFilled
+        : allRequiredFilled && (hasRequiredFields || hasAnyConfigValue)
           ? { label: 'ready to save', tone: 'warning' }
           : { label: 'needs setup', tone: 'neutral' }
 
