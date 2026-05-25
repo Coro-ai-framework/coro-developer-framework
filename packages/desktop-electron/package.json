@@ -22,6 +22,9 @@
     "package:win": "pnpm run build && electron-builder --config electron-builder.json5 --win dir --x64 --publish never",
     "dist:win": "pnpm run build && electron-builder --config electron-builder.json5 --win nsis --x64 --publish never",
     "release:win": "pnpm run build && electron-builder --config electron-builder.json5 --win nsis --x64 --publish always",
+    "package:linux": "pnpm run build && electron-builder --config electron-builder.json5 --linux dir --x64 --publish never",
+    "dist:linux": "pnpm run build && electron-builder --config electron-builder.json5 --linux appImage --x64 --publish never",
+    "release:linux": "pnpm run build && electron-builder --config electron-builder.json5 --linux appImage --x64 --publish always",
     "clean": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('release',{recursive:true,force:true});\""
   },
   "dependencies": {

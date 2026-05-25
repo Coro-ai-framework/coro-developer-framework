@@ -151,3 +151,60 @@ jobs:
             packages/desktop-electron/release/*.blockmap
             packages/desktop-electron/release/*.yml
             packages/desktop-electron/release/builder-effective-config.yaml
+
+  package-linux:
+    name: Package Linux desktop shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: true
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Capture desktop version
+        run: |
+          echo "DESKTOP_VERSION=$(node -p 'require("./packages/desktop-electron/package.json").version')" >> "$GITHUB_ENV"
+
+      - name: Typecheck desktop package
+        run: pnpm --filter @coro/desktop-electron typecheck
+
+      - name: Build Linux release artifacts without publishing
+        run: pnpm --filter @coro/desktop-electron dist:linux
+
+      - name: Verify packaged artifacts exist
+        run: |
+          set -euo pipefail
+          test -f "packages/desktop-electron/release/Coro-${DESKTOP_VERSION}-x64.AppImage"
+          test -d "packages/desktop-electron/release/linux-unpacked"
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-${{ env.DESKTOP_VERSION }}
+          retention-days: 14
+          path: |
+            packages/desktop-electron/release/Coro-${{ env.DESKTOP_VERSION }}-x64.AppImage
+            packages/desktop-electron/release/*.blockmap
+            packages/desktop-electron/release/*.yml
+            packages/desktop-electron/release/builder-effective-config.yaml
