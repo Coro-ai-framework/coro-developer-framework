@@ -104,11 +104,24 @@ export default function PluginsSection() {
       const body: Record<string, string> = { spec }
       const id = installId.trim()
       if (id) body['id'] = id
-      const result = await requestJson<{ manifest: { id: string; displayName: string }; restartHint?: string }>(
+      const result = await requestJson<{
+        manifest: { id: string; displayName: string }
+        restartHint?: string
+        reload?: { added: string[]; updated: string[] }
+      }>(
         '/plugins/install',
         jsonRequest(body, { method: 'POST' }),
       )
-      setInstallNotice(`Installed "${result.manifest.displayName}". ${result.restartHint ?? 'Restart the runner to load it.'}`)
+      // The runner attempts a hot reload immediately. `restartHint` is
+      // only present when the plugin can't be activated yet (e.g. no
+      // config slot exists). Surface either the success message or the
+      // hint, not both, so the toast is unambiguous.
+      const wasLoaded = !result.restartHint
+      setInstallNotice(
+        wasLoaded
+          ? `Installed "${result.manifest.displayName}" and loaded into the registry — no restart needed.`
+          : `Installed "${result.manifest.displayName}". ${result.restartHint}`,
+      )
       setInstallSpec('')
       setInstallId('')
       void loadPlugins()
@@ -143,7 +156,7 @@ export default function PluginsSection() {
     <div className="space-y-6">
       <SettingsSection
         title="Install a plugin"
-        description="Drop-in plugins live under ~/.coro/plugins/. Paste any npm package name or git/tarball spec — the runner installs it locally and merges it into the registry on the next restart."
+        description="Drop-in plugins live under ~/.coro/plugins/. Paste any npm package name or git/tarball spec — the runner installs it locally and hot-loads it into the registry; configure credentials below to start using it."
       >
         <form onSubmit={installPlugin} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-[2fr_1fr_auto] sm:items-end">

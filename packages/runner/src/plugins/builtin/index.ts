@@ -245,7 +245,19 @@ export async function buildBuiltinPluginRegistry(
   return registry
 }
 
-async function instantiatePlugin(args: {
+/**
+ * Instantiate a single plugin runtime by id. Tries the built-in
+ * factory map first, then falls back to a drop-in factory loaded
+ * from `~/.coro/plugins/<id>/`. Returns null when the id matches
+ * neither — callers (registry bootstrap, hot-reload) decide how to
+ * surface that to the operator.
+ *
+ * Exported so the hot-reload path (`runner/config-reload.ts`) can
+ * instantiate a newly-enabled plugin slot at runtime using the same
+ * resolution rules as boot — without duplicating built-in vs drop-in
+ * dispatch logic.
+ */
+export async function instantiatePlugin(args: {
   id: string
   config: Record<string, unknown>
   logger: Logger

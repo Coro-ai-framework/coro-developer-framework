@@ -120,13 +120,6 @@ function useAliasUsages(): {
   return { usagesByAlias, referencedNames }
 }
 
-interface LlmProvidersSectionProps {
-  /** When true, render without the SettingsSection card (used by the wizard). */
-  embedded?: boolean
-  /** Forwarded to provider custom panels (e.g. Claude login completion). */
-  onConnected?: () => void
-}
-
 /**
  * Lists every executor plugin (LLM provider) discovered in the
  * runner's catalogue, plus the multi-provider routing surface
@@ -136,8 +129,13 @@ interface LlmProvidersSectionProps {
  * key, an OpenAI key + base URL, …) is rendered by
  * {@link PluginConfigCard}. Plugins that need a richer flow opt
  * into a custom panel via `manifest.ui.customPanel`.
+ *
+ * The FTUE wizard previously embedded this section directly with an
+ * `embedded` + `onConnected` flag. That mode is gone — the wizard
+ * now has its own purpose-built LLM step with a curated minimal
+ * field set. This component is for Settings power users only.
  */
-export default function LlmProvidersSection({ embedded = false, onConnected }: LlmProvidersSectionProps) {
+export default function LlmProvidersSection() {
   const {
     draft,
     setDraft,
@@ -317,7 +315,14 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
   // suggestion pool.
   const aliasNameDatalistId = `alias-name-suggestions-${useId()}`
 
-  const body = (
+  return (
+    <SettingsSection
+      title="LLM providers"
+      description="Configure one or more model providers and route workflow aliases to specific provider/model pairs."
+      required
+      status={readiness.status}
+      statusLabel={readiness.label}
+    >
     <div className="space-y-6">
       {pluginsCatalogueError ? (
         <SettingsNotice tone="warning">
@@ -335,7 +340,6 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
             <PluginConfigCard
               key={plugin.manifest.id}
               plugin={plugin}
-              onConnected={onConnected}
             />
           ))}
         </div>
@@ -576,21 +580,6 @@ export default function LlmProvidersSection({ embedded = false, onConnected }: L
 
       <div className="text-xs text-fg-subtle">{readiness.detail}</div>
     </div>
-  )
-
-  if (embedded) {
-    return body
-  }
-
-  return (
-    <SettingsSection
-      title="LLM providers"
-      description="Configure one or more model providers and route workflow aliases to specific provider/model pairs."
-      required
-      status={readiness.status}
-      statusLabel={readiness.label}
-    >
-      {body}
     </SettingsSection>
   )
 }

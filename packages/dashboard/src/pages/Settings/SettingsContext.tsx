@@ -128,6 +128,10 @@ export interface ConfigResponse {
     plugins?: PluginsConfigShape
     mcpServers?: Record<string, McpServerEntry>
     inheritClaudeCodeMcps?: boolean
+    /** FTUE wizard completion. Server-side fallback for the browser
+     * localStorage flag — when present, the dashboard no longer
+     * auto-launches the wizard on a fresh browser. */
+    setup?: { completedAt?: string; skipped?: Array<'llm' | 'scm' | 'tracker'> }
     guardrails?: {
       enabled?: boolean
       rules?: Array<{
@@ -283,10 +287,24 @@ interface SettingsContextValue {
   pluginsCatalogue: PluginsCatalogue | null
   pluginsCatalogueError: string | null
   reloadPlugins: () => Promise<void>
-  // First run (persisted in localStorage so we don't need a backend schema change)
+  // First run — preferred source is server-side `config.setup.completedAt`
+  // (persisted via PUT /config). The browser localStorage flag is kept as
+  // a fallback for older runners and for instant client-side state after
+  // the wizard finishes.
   firstRunCompleted: boolean
-  markFirstRunComplete: () => void
+  markFirstRunComplete: (opts?: { skipped?: Array<'llm' | 'scm' | 'tracker'> }) => Promise<void>
   resetFirstRun: () => void
+  /**
+   * Commit a single FTUE step's draft into the global config + persist
+   * immediately. Used by SetupWizard so that each verified step
+   * survives a closed browser before the user finishes the wizard.
+   */
+  commitWizardStep: (input: {
+    kind: 'scm' | 'tracker' | 'executor'
+    pluginId: string
+    config: Record<string, unknown>
+    setAsDefault?: boolean
+  }) => Promise<void>
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
@@ -505,6 +523,16 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
         configError: data.configError,
         rawConfig: data.rawConfig,
       })
+
+      // Server-side FTUE completion wins over the browser flag. This is
+      // how the dashboard avoids re-prompting a user who finished setup
+      // on a different browser / device.
+      if (data.config?.setup?.completedAt) {
+        setFirstRunCompleted(true)
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem('coro.firstRun.completed', 'true')
+        }
+      }
 
       const nextDraft = configToDraft(data)
       setDraftState(nextDraft)
@@ -787,8 +815,25 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
         return
       }
 
-      await requestJson('/config', jsonRequest(payload, { method: 'PUT' }))
-      setSaveNotice('Configuration saved. Restart the runner if any path or auth mode changed.')
+      const response = await requestJson<{
+        saved: boolean
+        reload?: { updated: string[]; added: string[]; failed: Array<{ id: string; error: string }> }
+      }>('/config', jsonRequest(payload, { method: 'PUT' }))
+      // The runner hot-reloads its in-memory state after every save —
+      // new credentials apply to the next job without a restart.
+      // Paths and cloud-mode toggles still need a restart, so we
+      // hint that only when the user changed one of those.
+      const pathsChanged = payload && typeof payload === 'object' && 'paths' in payload
+      const cloudChanged = payload && typeof payload === 'object' && 'cloud' in payload
+      const reloadFailed = (response.reload?.failed ?? []).length > 0
+      if (reloadFailed) {
+        const failedIds = response.reload?.failed.map(f => f.id).join(', ')
+        setSaveNotice(`Configuration saved. Some plugins failed to hot-reload (${failedIds}) — restart the runner if they keep failing.`)
+      } else if (pathsChanged || cloudChanged) {
+        setSaveNotice('Configuration saved. Restart the runner to apply path or cloud-mode changes.')
+      } else {
+        setSaveNotice('Configuration saved. Changes are live for the next job — no restart needed.')
+      }
       setLastSavedAt(new Date().toISOString())
       await reload()
     } catch (err) {
@@ -816,12 +861,34 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     return () => window.removeEventListener('beforeunload', handler)
   }, [isDirty])
 
-  const markFirstRunComplete = useCallback(() => {
-    setFirstRunCompleted(true)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('coro.firstRun.completed', 'true')
-    }
-  }, [])
+  const markFirstRunComplete = useCallback(
+    async (opts?: { skipped?: Array<'llm' | 'scm' | 'tracker'> }) => {
+      setFirstRunCompleted(true)
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('coro.firstRun.completed', 'true')
+      }
+      // Best-effort server-side persistence so a different browser /
+      // device doesn't auto-launch the wizard again.
+      try {
+        await requestJson(
+          '/config',
+          jsonRequest(
+            {
+              setup: {
+                completedAt: new Date().toISOString(),
+                ...(opts?.skipped && opts.skipped.length > 0 ? { skipped: opts.skipped } : {}),
+              },
+            },
+            { method: 'PUT' },
+          ),
+        )
+      } catch {
+        // Older runners that don't accept `setup` simply ignore this —
+        // localStorage still suppresses the auto-launch on this browser.
+      }
+    },
+    [],
+  )
 
   const resetFirstRun = useCallback(() => {
     setFirstRunCompleted(false)
@@ -829,6 +896,61 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
       window.localStorage.removeItem('coro.firstRun.completed')
     }
   }, [])
+
+  /**
+   * Commit a single FTUE step's verified config to disk. We pull the
+   * latest persisted config so the patch we send doesn't accidentally
+   * undo a save from another tab.
+   */
+  const commitWizardStep = useCallback(
+    async ({
+      kind,
+      pluginId,
+      config,
+      setAsDefault,
+    }: {
+      kind: 'scm' | 'tracker' | 'executor'
+      pluginId: string
+      config: Record<string, unknown>
+      setAsDefault?: boolean
+    }) => {
+      const current = await requestJson<ConfigResponse>('/config')
+      const existing = current.config?.plugins?.installed ?? {}
+      const installed: Record<string, { enabled?: boolean; config: Record<string, unknown> }> = {}
+      for (const [id, entry] of Object.entries(existing)) {
+        installed[id] = {
+          ...(typeof entry.enabled === 'boolean' ? { enabled: entry.enabled } : {}),
+          config: { ...(entry.config ?? {}) },
+        }
+      }
+      installed[pluginId] = {
+        enabled: true,
+        // Merge so we don't blow away on-disk secrets the user didn't
+        // re-enter this session.
+        config: { ...(installed[pluginId]?.config ?? {}), ...config },
+      }
+      const defaults: Record<string, string> = { ...(current.config?.plugins?.defaults ?? {}) }
+      if (setAsDefault) {
+        if (kind === 'scm') defaults['scm'] = pluginId
+        if (kind === 'tracker') defaults['tracker'] = pluginId
+      }
+      const payload: Record<string, unknown> = {
+        plugins: { ...(Object.keys(defaults).length > 0 ? { defaults } : {}), installed },
+      }
+      // LLM step: also pin defaultProvider so the runner doesn't fall
+      // back to a different executor at job-dispatch time.
+      if (kind === 'executor') {
+        payload['llm'] = {
+          ...(current.config?.llm ?? {}),
+          defaultProvider: pluginId,
+        }
+      }
+      await requestJson('/config', jsonRequest(payload, { method: 'PUT' }))
+      // Refresh local draft so the rest of the UI sees the new state.
+      await reload()
+    },
+    [reload],
+  )
 
   const value: SettingsContextValue = {
     loading,
@@ -859,6 +981,7 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     firstRunCompleted,
     markFirstRunComplete,
     resetFirstRun,
+    commitWizardStep,
   }
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
