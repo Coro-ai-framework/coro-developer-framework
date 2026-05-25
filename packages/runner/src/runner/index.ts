@@ -64,7 +64,6 @@ import {
   loadLocalConfig,
   detectMode,
   resolveIntelligenceDir,
-  resolveProposalsConfig,
   resolvePluginsConfig,
   resolveTenantOverlaySource,
   resolveWorkingDir as resolveLocalWorkingDir,
@@ -72,10 +71,8 @@ import {
 } from '../config/local-config'
 import { buildBuiltinPluginRegistry } from '../plugins/builtin'
 import { makePluginWebhookNormalizer } from '../plugins/webhook-bridge'
-import type { PluginRegistry } from '../plugins/registry'
-import { getBaseLayerRoot } from '@coro/intelligence-base'
 
-import { Settings } from '../config/settings'
+import { buildSettingsFromLocal, seedExecutorDefaultAliases } from './build-settings'
 import { CloudStateBackend } from '../state/cloud-backend'
 import { WebSocketTransport } from '../state/ws-transport'
 import { SqliteStateBackend } from '../state/sqlite-backend'
@@ -96,132 +93,6 @@ import { createRunnerServer } from './server'
 export interface RunnerOptions {
   configPath?: string
   port?: number
-}
-
-// ── Build Settings from LocalConfig ──────────────────────────────────────────
-
-/**
- * Seed `settings.llm.aliases` from each executor plugin's
- * {@link PhaseExecutorRuntime.defaultAliases}. Operator-supplied
- * aliases (loaded from `LocalConfig` in a future phase) win over
- * plugin defaults. Env var overrides (`CLAUDE_PLANNING_MODEL` /
- * `CLAUDE_CODING_MODEL`) trump everything for back-compat with the
- * pre-Phase-C bootstrap behaviour.
- */
-function seedExecutorDefaultAliases(args: { plugins: PluginRegistry; settings: Settings }): void {
-  const llm = args.settings.llm ?? (args.settings.llm = {})
-  const aliases = llm.aliases ?? (llm.aliases = {})
-  for (const runtime of args.plugins.all()) {
-    if (runtime.manifest.kind !== 'executor') continue
-    const exec = runtime as unknown as { defaultAliases?: () => Record<string, { provider: string; model: string }> }
-    if (typeof exec.defaultAliases !== 'function') continue
-    for (const [k, v] of Object.entries(exec.defaultAliases())) {
-      if (!aliases[k]) aliases[k] = v
-    }
-  }
-  // Legacy env overrides — Anthropic-pinned for back-compat. Future
-  // env knobs will land under provider-neutral names (LLM_*).
-  const planEnv = process.env['CLAUDE_PLANNING_MODEL']
-  if (planEnv) aliases['planning'] = { provider: 'anthropic', model: planEnv }
-  const codeEnv = process.env['CLAUDE_CODING_MODEL']
-  if (codeEnv) aliases['coding'] = { provider: 'anthropic', model: codeEnv }
-}
-
-/**
- * Build the in-memory `Settings` object that the runner hands to its API
- * clients (BitBucket, GitHub, Loki, …) and the job runner. We synthesise it
- * from `LocalConfig`; legacy disk-based settings.json loading was removed
- * along with the Redis monolith.
- */
-function buildSettingsFromLocal(config: LocalConfig): Settings {
-  const intelligenceDir = resolveIntelligenceDir(config)
-  const workingDir = resolveLocalWorkingDir(config)
-
-  return {
-    host: {
-      port: 0,
-      webhookSecret: '',
-      logLevel: process.env.LOG_LEVEL ?? 'info',
-    },
-    bitbucket: {
-      workspace: config.git?.workspace ?? process.env.BITBUCKET_WORKSPACE ?? '',
-      baseUrl: process.env.BITBUCKET_BASE_URL ?? 'https://api.bitbucket.org/2.0',
-      coderAccount: {
-        username: config.git?.username ?? '',
-        appPassword: config.git?.token ?? '',
-      },
-      reviewerAccount: {
-        username: process.env.BITBUCKET_REVIEWER_USERNAME ?? config.git?.username ?? '',
-        appPassword: process.env.BITBUCKET_REVIEWER_APP_PASSWORD ?? config.git?.token ?? '',
-      },
-    },
-    github: {
-      owner: config.git?.workspace ?? process.env.GITHUB_OWNER ?? '',
-      token: config.git?.provider === 'github'
-        ? (config.git?.token ?? process.env.GITHUB_TOKEN ?? '')
-        : (process.env.GITHUB_TOKEN ?? ''),
-      baseUrl: process.env.GITHUB_API_BASE_URL ?? 'https://api.github.com',
-    },
-    redis: {
-      url: '',  // Reserved for future cloud-worker use; unused in local + hybrid modes.
-    },
-    paths: {
-      workingDir,
-      coroIntelligenceDir: intelligenceDir,
-      baseLayerDir: getBaseLayerRoot(),
-    },
-    loki: {
-      baseUrl: process.env.LOKI_BASE_URL ?? '',
-      apiKey: process.env.LOKI_API_KEY ?? '',
-      username: process.env.LOKI_USERNAME ?? '',
-    },
-    tempo: {
-      baseUrl: process.env.TEMPO_BASE_URL ?? '',
-      apiKey: process.env.TEMPO_API_KEY ?? '',
-    },
-    jira: {
-      // Local config wins so the dashboard's Tracker section is the
-      // single source of truth; env vars stay as a no-config fallback
-      // for headless deployments that drove the runner before the
-      // dashboard existed.
-      baseUrl: config.tracker?.jira?.baseUrl ?? process.env.JIRA_BASE_URL ?? '',
-      username: config.tracker?.jira?.username ?? process.env.JIRA_USERNAME ?? '',
-      apiToken: config.tracker?.jira?.apiToken ?? process.env.JIRA_API_TOKEN ?? '',
-      pollIntervalSeconds: 60,
-    },
-    // The campaign workflow consults `tracker.provider` to pick a client.
-    // When the user leaves the dashboard field unset we infer from
-    // available credentials at the factory layer, so saving a partial
-    // config never crashes the runner.
-    ...(config.tracker?.provider
-      ? { tracker: { provider: config.tracker.provider } }
-      : {}),
-    ...(config.tracker?.linear?.apiKey
-      ? {
-          linear: {
-            apiKey: config.tracker.linear.apiKey,
-            ...(config.tracker.linear.teamKey ? { teamKey: config.tracker.linear.teamKey } : {}),
-          },
-        }
-      : {}),
-    ngrok: {
-      authToken: '',
-      staticDomain: '',
-    },
-    proposals: resolveProposalsConfig(config),
-    // Multi-provider LLM configuration. Defaults + aliases come from
-    // the user's persisted `config.llm` block; aliases are then
-    // augmented post-bootstrap by {@link seedExecutorDefaultAliases}
-    // so each executor plugin's `defaultAliases()` fills in any
-    // entries the user hasn't customised. Provider configs themselves
-    // live under `plugins.installed.<id>.config` (forwarded to the
-    // plugin's `init()`).
-    llm: {
-      defaultProvider: config.llm?.defaultProvider ?? 'anthropic',
-      providers: {},
-      aliases: { ...(config.llm?.aliases ?? {}) },
-    },
-  }
 }
 
 // ── Local Mode Bootstrap (SQLite + Polling) ──────────────────────────────────
@@ -346,7 +217,10 @@ export async function startLocalRunner(
     logger.warn({ err }, 'RateLimitScheduler bootstrap failed')
   })
 
-  // Start local HTTP server (same as hybrid but serves dashboard too)
+  // Start local HTTP server (same as hybrid but serves dashboard too).
+  // We pass `runnerCtx` so the server can hot-reload its in-memory
+  // copy of settings/clients/plugins after `PUT /config` instead of
+  // forcing the operator to restart the runner.
   const server = createRunnerServer({
     port: localPort,
     dispatcher,
@@ -355,6 +229,7 @@ export async function startLocalRunner(
     mode: 'local',
     tenantId: tenantContext.tenantId,
     plugins,
+    runnerCtx,
   })
 
   const shutdown = async () => {
@@ -473,7 +348,9 @@ export async function startHybridRunner(
   // Wire cloud-initiated job dispatch and proposal apply
   wireCloudJobDispatch(dispatcher, transport, runnerCtx)
 
-  // Start local HTTP server for CLI commands
+  // Start local HTTP server for CLI commands. `runnerCtx` is forwarded
+  // so dashboard config writes hot-reload in-memory state without a
+  // runner restart.
   const server = createRunnerServer({
     port: localPort,
     dispatcher,
@@ -482,6 +359,7 @@ export async function startHybridRunner(
     mode: 'hybrid',
     tenantId: tenantContext.tenantId,
     plugins,
+    runnerCtx,
   })
 
   const shutdown = async () => {

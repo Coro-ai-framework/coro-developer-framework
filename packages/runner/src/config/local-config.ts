@@ -207,6 +207,22 @@ const llmConfigSchema = z.object({
 export type LlmConfig = NonNullable<z.infer<typeof llmConfigSchema>>
 export type LlmAliasConfig = z.infer<typeof llmAliasSchema>
 
+// ── FTUE / onboarding completion ─────────────────────────────────────────────
+//
+// Tracks whether the user has finished the first-time setup wizard.
+// Persisted server-side so dashboards on a different browser / device
+// don't re-prompt the user. The browser localStorage flag is still
+// consulted as a fallback when the runner is older than this field.
+//
+// `skipped` records which required step the user chose to defer (LLM
+// or SCM). The dashboard reads this to soften its "click here to
+// finish setup" CTA on subsequent visits.
+
+const setupConfigSchema = z.object({
+  completedAt: z.string().optional(),
+  skipped: z.array(z.enum(['llm', 'scm', 'tracker'])).optional(),
+}).optional()
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   intelligence: intelligenceConfigSchema,
@@ -259,6 +275,12 @@ const localConfigSchema = z.object({
    * `packages/runner/config/guardrails.defaults.json`; this block
    * holds overrides only (by rule `id`).
    */
+  /**
+   * First-time setup wizard completion + which optional steps were
+   * skipped. Set when the user finishes (or explicitly skips out of)
+   * the FTUE wizard so the dashboard doesn't auto-launch it again.
+   */
+  setup: setupConfigSchema,
   guardrails: z.object({
     enabled: z.boolean().optional(),
     rules: z.array(z.object({
@@ -440,6 +462,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     mcpServers: patch.mcpServers !== undefined ? patch.mcpServers : existing.mcpServers,
     inheritClaudeCodeMcps:
       patch.inheritClaudeCodeMcps !== undefined ? patch.inheritClaudeCodeMcps : existing.inheritClaudeCodeMcps,
+    setup: patch.setup !== undefined ? patch.setup : existing.setup,
   }
   saveLocalConfig(merged, configPath)
   return merged

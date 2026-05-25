@@ -1,5 +1,6 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, CheckCircle2, Circle, Cpu, GitBranch, KanbanSquare, Loader2, Rocket, Sparkles } from 'lucide-react'
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react'
+import type { WizardState } from './wizard-state'
+import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react'
 import {
   Dialog,
   DialogBody,
@@ -11,373 +12,417 @@ import {
 import { Button } from '../ui/button'
 import { cn } from '../../lib/utils'
 import { useSettings } from '../../pages/Settings/SettingsContext'
-import { evaluateReadiness } from '../../pages/Settings/readiness'
-import { getSectionDescriptor } from '../../pages/Settings/sections'
-import LlmProvidersSection from '../../pages/Settings/sections/LlmProvidersSection'
-import SourceControlSection from '../../pages/Settings/sections/SourceControlSection'
-import IssueTrackerSection from '../../pages/Settings/sections/IssueTrackerSection'
-import SettingsStatusBadge from '../settings/StatusBadge'
-import SettingsNotice from '../settings/SettingsNotice'
+import WelcomeStep from './steps/WelcomeStep'
+import LlmStep from './steps/LlmStep'
+import ScmStep from './steps/ScmStep'
+import TrackerStep from './steps/TrackerStep'
+import SuccessStep from './steps/SuccessStep'
+import CustomPluginDrawer from './panels/CustomPluginDrawer'
+import {
+  INITIAL_WIZARD_STATE,
+  hasSkippedRequiredStep,
+  wizardReducer,
+  type WizardStepId,
+} from './wizard-state'
+import type { StepKind } from './provider-catalog'
 
 interface SetupWizardProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-interface StepDef {
-  id: 'welcome' | 'llm' | 'git' | 'tracker' | 'review'
-  title: string
-  description: string
-  body: ReactNode
-  /** Required to proceed to next step. */
-  requiredReadyKey?: 'llm-provider' | 'source-control'
-  /** Show "Skip for now" instead of disabling Next when not ready. */
-  skippable?: boolean
-  /** Render the body full-bleed (no standard header / stepper above it). */
-  fullBleed?: boolean
-  /** Label override for the primary action button on this step. */
-  nextLabel?: string
-}
+const STEP_ORDER: WizardStepId[] = ['welcome', 'llm', 'scm', 'tracker', 'success']
 
+/**
+ * First-time-user setup wizard. The legacy implementation embedded
+ * full Settings sections (with their own card chrome, dirty-tracking,
+ * and aliases editor) into a modal — overwhelming on first run.
+ *
+ * This rewrite is purpose-built:
+ *   - Local state machine (`wizardReducer`) holds per-step selection,
+ *     draft, and last test result. No coupling to the global draft
+ *     except at commit time.
+ *   - Each config step (LLM / SCM / tracker) has its own dedicated
+ *     component with a single question, provider radio cards, the
+ *     minimum field set, and a "Test & Continue" button that pings
+ *     the runner for live verification.
+ *   - Every step is skippable; the success step warns when a
+ *     required step was skipped.
+ *   - A custom-plugin drawer slides in over the step body so the user
+ *     can install drop-in plugins (GitLab, etc.) without leaving the
+ *     wizard.
+ */
 export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
-  const {
-    draft,
-    pluginsCatalogue,
-    isDirty,
-    save,
-    saving,
-    saveError,
-    markFirstRunComplete,
-  } = useSettings()
-  const [stepIndex, setStepIndex] = useState(0)
-  const [completing, setCompleting] = useState(false)
+  const { markFirstRunComplete, commitWizardStep, reloadPlugins, draft, pluginsCatalogue } = useSettings()
+  const [state, dispatch] = useReducer(wizardReducer, INITIAL_WIZARD_STATE)
+  const [advancing, setAdvancing] = useState(false)
+  const [advanceError, setAdvanceError] = useState<string | null>(null)
+  const [finishing, setFinishing] = useState(false)
+  const hydratedRef = useRef(false)
 
-  const readiness = useMemo(
-    () => evaluateReadiness({ draft, pluginsCatalogue }),
-    [draft, pluginsCatalogue],
+  // Pre-select providers the user already has configured (the wizard
+  // is also reachable from Settings → "Run setup wizard"). This means
+  // a returning user sees their existing GitHub / Anthropic choice
+  // already filled in instead of an empty picker.
+  useEffect(() => {
+    if (!open) {
+      hydratedRef.current = false
+      return
+    }
+    if (hydratedRef.current) return
+    if (!pluginsCatalogue) return
+    hydratedRef.current = true
+
+    const llmId = draft.llmDefaultProvider
+    if (llmId && draft.pluginInstalled[llmId]) {
+      dispatch({ type: 'selectProvider', step: 'llm', providerId: llmId })
+      for (const [k, v] of Object.entries(draft.pluginInstalled[llmId].config)) {
+        dispatch({ type: 'setField', step: 'llm', key: k, value: v })
+      }
+    }
+    const scmIds = Object.entries(draft.pluginInstalled).filter(
+      ([id, e]) =>
+        e.enabled !== false &&
+        pluginsCatalogue.plugins.find(p => p.manifest.id === id)?.manifest.kind === 'scm',
+    )
+    const scm = scmIds.find(([id]) => id === draft.pluginDefaultScm) ?? scmIds[0]
+    if (scm) {
+      dispatch({ type: 'selectProvider', step: 'scm', providerId: scm[0] })
+      for (const [k, v] of Object.entries(scm[1].config)) {
+        dispatch({ type: 'setField', step: 'scm', key: k, value: v })
+      }
+    }
+    const trackerIds = Object.entries(draft.pluginInstalled).filter(
+      ([id, e]) =>
+        e.enabled !== false &&
+        pluginsCatalogue.plugins.find(p => p.manifest.id === id)?.manifest.kind === 'tracker',
+    )
+    const tracker = trackerIds.find(([id]) => id === draft.pluginDefaultTracker) ?? trackerIds[0]
+    if (tracker) {
+      dispatch({ type: 'selectProvider', step: 'tracker', providerId: tracker[0] })
+      for (const [k, v] of Object.entries(tracker[1].config)) {
+        dispatch({ type: 'setField', step: 'tracker', key: k, value: v })
+      }
+    }
+  }, [open, draft, pluginsCatalogue])
+
+  const currentIndex = STEP_ORDER.indexOf(state.currentStep)
+  const isFinal = state.currentStep === 'success'
+
+  const advanceTo = useCallback(
+    (next: WizardStepId) => {
+      setAdvanceError(null)
+      dispatch({ type: 'goto', step: next })
+    },
+    [],
   )
 
-  const steps: StepDef[] = [
-    {
-      id: 'welcome',
-      title: 'Welcome to Coro',
-      description: 'A short setup before your first agent run.',
-      body: <WelcomeStep />,
-      fullBleed: true,
-      nextLabel: "Let's get started",
-    },
-    {
-      id: 'llm',
-      title: 'Pick your LLM provider',
-      description:
-        'The runner needs access to a model. Claude login is the recommended path — no manual token to manage.',
-      body: <LlmProvidersSection embedded onConnected={() => setStepIndex(stepIdx => Math.min(stepIdx + 1, 4))} />,
-      requiredReadyKey: 'llm-provider',
-    },
-    {
-      id: 'git',
-      title: 'Connect your code host',
-      description: 'Git credentials power clone, branch, push, PR, and review actions.',
-      body: <SourceControlSection />,
-      requiredReadyKey: 'source-control',
-    },
-    {
-      id: 'tracker',
-      title: 'Connect an issue tracker',
-      description:
-        'Optional. Required only for campaigns that file an epic and child issues. You can do this later from Settings.',
-      body: <IssueTrackerSection />,
-      skippable: true,
-    },
-    {
-      id: 'review',
-      title: 'You are ready to go',
-      description: 'Verify the readiness summary, then jump into the dashboard to create your first job.',
-      body: <ReviewStep />,
-    },
-  ]
+  const handleBack = useCallback(() => {
+    setAdvanceError(null)
+    const prev = STEP_ORDER[Math.max(0, currentIndex - 1)]
+    advanceTo(prev)
+  }, [advanceTo, currentIndex])
 
-  const step = steps[stepIndex]
-  const isLastStep = stepIndex === steps.length - 1
-  const isFirstStep = stepIndex === 0
-  const requiredReady = step.requiredReadyKey ? readiness.byId[step.requiredReadyKey].status === 'ok' : true
-  const canAdvance = requiredReady || step.skippable === true
+  const handleClose = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      const completed = window.localStorage.getItem('coro.firstRun.completed') === 'true'
+      if (!completed) window.localStorage.setItem('coro.firstRun.dismissed', 'true')
+    }
+    onOpenChange(false)
+  }, [onOpenChange])
 
-  async function finish() {
-    setCompleting(true)
-    try {
-      if (isDirty) {
-        await save()
+  /**
+   * Commits the just-passed step's draft to the runner and moves to
+   * the next step. We persist incrementally so closing mid-wizard
+   * doesn't lose verified credentials.
+   */
+  const handleContinue = useCallback(async () => {
+    setAdvanceError(null)
+    const step = state.currentStep
+    const stepKind: StepKind | null =
+      step === 'llm' ? 'llm' : step === 'scm' ? 'scm' : step === 'tracker' ? 'tracker' : null
+
+    if (stepKind && state.steps[stepKind].status === 'passed') {
+      const providerId = state.steps[stepKind].selectedProviderId
+      if (providerId && providerId !== '__skip__') {
+        setAdvancing(true)
+        try {
+          await commitWizardStep({
+            kind: stepKind === 'llm' ? 'executor' : stepKind,
+            pluginId: providerId,
+            config: state.steps[stepKind].draftConfig,
+            setAsDefault: true,
+          })
+        } catch (err) {
+          setAdvanceError(err instanceof Error ? err.message : String(err))
+          setAdvancing(false)
+          return
+        } finally {
+          setAdvancing(false)
+        }
       }
-      markFirstRunComplete()
-      onOpenChange(false)
-    } finally {
-      setCompleting(false)
+    }
+
+    // Welcome → llm → scm → tracker → success. Tracker auto-advances
+    // to success even if the user skipped via the "I don't use a tracker"
+    // card (the TrackerStep dispatches `skip` before we get here).
+    const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
+    advanceTo(next)
+  }, [state, currentIndex, advanceTo, commitWizardStep])
+
+  const handleSkip = useCallback(() => {
+    setAdvanceError(null)
+    const step = state.currentStep
+    if (step === 'llm' || step === 'scm' || step === 'tracker') {
+      dispatch({ type: 'skip', step })
+    }
+    const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
+    advanceTo(next)
+  }, [state.currentStep, currentIndex, advanceTo])
+
+  const finish = useCallback(
+    async (target: 'newJob' | 'dashboard' | 'settings') => {
+      setFinishing(true)
+      try {
+        const skipped: Array<'llm' | 'scm' | 'tracker'> = []
+        if (state.steps.llm.status === 'skipped') skipped.push('llm')
+        if (state.steps.scm.status === 'skipped') skipped.push('scm')
+        if (state.steps.tracker.status === 'skipped') skipped.push('tracker')
+        await markFirstRunComplete({ skipped })
+      } finally {
+        setFinishing(false)
+        // `target` is a hint for analytics / navigation. The Link in
+        // SuccessStep handles the actual navigation via react-router.
+        void target
+        onOpenChange(false)
+      }
+    },
+    [markFirstRunComplete, onOpenChange, state.steps],
+  )
+
+  // ── Drawer ─────────────────────────────────────────────────────────────
+  const drawerStep = state.drawerForStep
+  const drawerOpen = state.drawerOpen && drawerStep !== null
+
+  // ── Footer compute ─────────────────────────────────────────────────────
+  const currentStepKind: StepKind | null =
+    state.currentStep === 'llm' ? 'llm' :
+    state.currentStep === 'scm' ? 'scm' :
+    state.currentStep === 'tracker' ? 'tracker' :
+    null
+  const currentStepState = currentStepKind ? state.steps[currentStepKind] : null
+  const canAdvance = currentStepState ? currentStepState.status === 'passed' : true
+
+  // ── Body ───────────────────────────────────────────────────────────────
+  let body: ReactNode = null
+  if (drawerOpen && drawerStep) {
+    body = (
+      <CustomPluginDrawer
+        step={drawerStep}
+        onClose={() => {
+          void reloadPlugins()
+          dispatch({ type: 'closeDrawer' })
+        }}
+      />
+    )
+  } else {
+    switch (state.currentStep) {
+      case 'welcome':
+        body = <WelcomeStep />
+        break
+      case 'llm':
+        body = (
+          <LlmStep
+            state={state.steps.llm}
+            dispatch={dispatch}
+            onOpenDrawer={() => dispatch({ type: 'openDrawer', step: 'llm' })}
+          />
+        )
+        break
+      case 'scm':
+        body = (
+          <ScmStep
+            state={state.steps.scm}
+            dispatch={dispatch}
+            onOpenDrawer={() => dispatch({ type: 'openDrawer', step: 'scm' })}
+          />
+        )
+        break
+      case 'tracker':
+        body = (
+          <TrackerStep
+            state={state.steps.tracker}
+            dispatch={dispatch}
+            onSkip={() => {
+              const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
+              advanceTo(next)
+            }}
+            onOpenDrawer={() => dispatch({ type: 'openDrawer', step: 'tracker' })}
+          />
+        )
+        break
+      case 'success':
+        body = <SuccessStep wizardState={state} onFinish={finish} />
+        break
     }
   }
 
-  function nextLabel(): ReactNode {
-    if (isLastStep) {
-      if (completing || saving) return (<><Loader2 className="animate-spin" /> Finishing…</>)
-      return (<><Rocket /> Open dashboard</>)
-    }
-    if (step.nextLabel) return (<>{step.nextLabel} <ArrowRight /></>)
-    if (!requiredReady && step.skippable) return (<>Skip for now <ArrowRight /></>)
-    return (<>Continue <ArrowRight /></>)
-  }
+  // ── Render ─────────────────────────────────────────────────────────────
+  const isWelcome = state.currentStep === 'welcome'
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/*
-        Override the default DialogContent layout: switch the grid to a
-        strict flex column with no gap, give the body `flex-1 min-h-0
-        overflow-y-auto`, and let the footer be `shrink-0`. The grid +
-        `gap-4` default was leaving a gap row that pushed the footer
-        past the dialog's max-height clip on shorter viewports.
-      */}
-      <DialogContent className="flex flex-col gap-0 max-h-[min(720px,calc(100vh-2rem))]">
-        {step.fullBleed ? (
+      <DialogContent className="flex flex-col gap-0 max-h-[min(760px,calc(100vh-2rem))]">
+        {isWelcome ? (
           <DialogHeader className="sr-only">
-            <DialogTitle>{step.title}</DialogTitle>
-            <DialogDescription>{step.description}</DialogDescription>
+            <DialogTitle>Welcome to Coro</DialogTitle>
+            <DialogDescription>First-time setup</DialogDescription>
           </DialogHeader>
         ) : (
           <DialogHeader className="shrink-0">
             <div className="flex items-start justify-between gap-3 pr-10">
               <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-fg-subtle">
-                  Step {stepIndex} of {steps.length - 1}
-                </div>
-                <DialogTitle>{step.title}</DialogTitle>
-                <DialogDescription>{step.description}</DialogDescription>
+                <DialogTitle>{isFinal ? 'You are set!' : 'First-time setup'}</DialogTitle>
+                <DialogDescription>
+                  {isFinal
+                    ? 'Recap of what you just configured and what to do next.'
+                    : 'Configure the essentials — one minute, three steps.'}
+                </DialogDescription>
               </div>
             </div>
-            <ol className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-fg-subtle">
-              {steps.slice(1).map((each, index) => {
-                const realIndex = index + 1
-                const completed = realIndex < stepIndex
-                const current = realIndex === stepIndex
-                return (
-                  <li
-                    key={each.id}
-                    className={cn(
-                      'flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-colors',
-                      completed
-                        ? 'border-success-500/30 bg-success-500/8 text-success-300'
-                        : current
-                          ? 'border-accent-500/35 bg-accent-500/8 text-fg'
-                          : 'border-line bg-overlay/40',
-                    )}
-                  >
-                    {completed ? <CheckCircle2 className="size-3.5" /> : <Circle className="size-3.5" />}
-                    <span className="font-medium uppercase tracking-[0.16em]">{each.id}</span>
-                  </li>
-                )
-              })}
-            </ol>
+            <Stepper currentStep={state.currentStep} wizardState={state} />
           </DialogHeader>
         )}
 
-        {step.fullBleed ? (
-          <div className="flex-1 min-h-0 overflow-y-auto">{step.body}</div>
+        {isWelcome ? (
+          <div className="flex-1 min-h-0 overflow-y-auto">{body}</div>
         ) : (
-          <DialogBody className="flex-1 min-h-0 space-y-4">
-            {saveError ? (
-              <SettingsNotice tone="danger" title="Save failed">
-                {saveError}
-              </SettingsNotice>
+          <DialogBody className="flex-1 min-h-0 space-y-5 pt-4">
+            {advanceError ? (
+              <div className="rounded-xl border border-danger-500/35 bg-danger-500/8 px-3 py-2.5 text-sm text-danger-300">
+                Could not save the step: {advanceError}
+              </div>
             ) : null}
-            {step.body}
+            {body}
           </DialogBody>
         )}
 
-        <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-overlay/30 px-6 py-4">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setStepIndex(idx => Math.max(0, idx - 1))}
-            disabled={isFirstStep}
-          >
-            <ArrowLeft />
-            Back
-          </Button>
+        {/* ── Footer ───────────────────────────────────────────────── */}
+        {!isFinal && !drawerOpen ? (
+          <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-overlay/30 px-6 py-4">
+            <div className="flex items-center gap-2">
+              {!isWelcome && currentStepKind ? (
+                <Button type="button" variant="ghost" size="sm" onClick={handleSkip} disabled={advancing}>
+                  Skip for now
+                </Button>
+              ) : null}
+            </div>
 
-          <div className="flex items-center gap-2">
-            {!isLastStep ? (
+            <div className="flex items-center gap-2">
               <Button
                 type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => onOpenChange(false)}
+                variant="outline"
+                onClick={handleBack}
+                disabled={isWelcome || advancing}
               >
-                Close — finish later
+                <ArrowLeft />
+                Back
               </Button>
-            ) : null}
-            {isLastStep ? (
-              <Button type="button" onClick={() => void finish()} disabled={completing || saving}>
-                {nextLabel()}
-              </Button>
-            ) : (
+              {!isWelcome ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleClose}
+                  disabled={advancing}
+                >
+                  Close — finish later
+                </Button>
+              ) : null}
               <Button
                 type="button"
-                onClick={() => setStepIndex(idx => Math.min(steps.length - 1, idx + 1))}
-                disabled={!canAdvance}
+                onClick={() => void handleContinue()}
+                disabled={(currentStepKind ? !canAdvance : false) || advancing}
               >
-                {nextLabel()}
+                {advancing ? (
+                  <>
+                    <Loader2 className="animate-spin" /> Saving…
+                  </>
+                ) : isWelcome ? (
+                  <>
+                    Let's get started <ArrowRight />
+                  </>
+                ) : (
+                  <>
+                    Continue <ArrowRight />
+                  </>
+                )}
               </Button>
-            )}
+            </div>
           </div>
-        </div>
+        ) : null}
+
+        {isFinal ? (
+          <div className="shrink-0 border-t border-line bg-overlay/30 px-6 py-4 text-[12px] text-fg-subtle">
+            {finishing ? 'Saving your setup…' : hasSkippedRequiredStep(state)
+              ? 'Click "Finish setup in Settings" to wrap up the remaining required pieces.'
+              : 'Click "Create my first job" to dispatch a run.'}
+          </div>
+        ) : null}
       </DialogContent>
     </Dialog>
   )
 }
 
-function ReviewStep() {
-  const { draft, pluginsCatalogue, isDirty, dirtySections } = useSettings()
-  const readiness = useMemo(
-    () => evaluateReadiness({ draft, pluginsCatalogue }),
-    [draft, pluginsCatalogue],
-  )
+// ── Stepper pills ───────────────────────────────────────────────────────────
 
-  const items: { id: 'llm-provider' | 'source-control' | 'issue-tracker'; required: boolean }[] = [
-    { id: 'llm-provider', required: true },
-    { id: 'source-control', required: true },
-    { id: 'issue-tracker', required: false },
+function Stepper({
+  currentStep,
+  wizardState,
+}: {
+  currentStep: WizardStepId
+  wizardState: WizardState
+}) {
+  const labels: Array<{ id: WizardStepId; label: string; kind?: StepKind }> = [
+    { id: 'llm', label: 'Model', kind: 'llm' },
+    { id: 'scm', label: 'Code host', kind: 'scm' },
+    { id: 'tracker', label: 'Tracker', kind: 'tracker' },
   ]
+  const order = STEP_ORDER
+  const currentIdx = order.indexOf(currentStep)
 
   return (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        {items.map(item => {
-          const descriptor = getSectionDescriptor(item.id)
-          const status = readiness.byId[item.id]
-          return (
-            <div
-              key={item.id}
-              className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3.5"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-medium text-fg">
-                  {descriptor.label}
-                  {item.required ? (
-                    <span className="rounded-full border border-line bg-overlay/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.18em] text-fg-subtle">
-                      Required
-                    </span>
-                  ) : null}
-                </div>
-                <div className="mt-0.5 truncate text-xs text-fg-muted">{status.detail}</div>
-              </div>
-              <SettingsStatusBadge status={status.status} label={status.label} />
-            </div>
-          )
-        })}
-      </div>
-
-      {isDirty ? (
-        <SettingsNotice tone="accent" title="Unsaved changes">
-          {dirtySections.size} section{dirtySections.size === 1 ? '' : 's'} have pending changes. They will be saved when you press <strong>Open dashboard</strong>.
-        </SettingsNotice>
-      ) : null}
-
-      {!readiness.ready ? (
-        <SettingsNotice tone="warning">
-          You can still finish the wizard, but jobs will fail until the missing required sections are configured. Use <strong>Settings → Setup</strong> to come back any time.
-        </SettingsNotice>
-      ) : (
-        <SettingsNotice tone="success">
-          All required setup is complete. Click <strong>Open dashboard</strong> to start your first job.
-        </SettingsNotice>
-      )}
-    </div>
+    <ol className="mt-4 flex flex-wrap items-center gap-1.5 text-[11px] text-fg-subtle">
+      {labels.map(({ id, label, kind }) => {
+        const idx = order.indexOf(id)
+        const current = idx === currentIdx
+        const passed = kind ? wizardState.steps[kind].status === 'passed' : idx < currentIdx
+        const skipped = kind ? wizardState.steps[kind].status === 'skipped' : false
+        const done = passed || skipped || idx < currentIdx
+        return (
+          <li
+            key={id}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-colors',
+              current
+                ? 'border-accent-500/45 bg-accent-500/10 text-fg'
+                : passed
+                  ? 'border-success-500/30 bg-success-500/8 text-success-300'
+                  : skipped
+                    ? 'border-warning-500/25 bg-warning-500/8 text-warning-300'
+                    : 'border-line bg-overlay/40',
+            )}
+          >
+            <span
+              className={cn(
+                'inline-block size-1.5 rounded-full',
+                current ? 'bg-accent-400' : done ? 'bg-success-400' : 'bg-fg-subtle/60',
+              )}
+            />
+            <span className="font-medium uppercase tracking-[0.14em]">{label}</span>
+          </li>
+        )
+      })}
+    </ol>
   )
 }
-
-function WelcomeStep() {
-  const highlights = [
-    {
-      icon: Cpu,
-      title: 'Pick your model',
-      copy: 'Sign in with Claude or paste an API key — Coro handles the rest.',
-    },
-    {
-      icon: GitBranch,
-      title: 'Connect your code host',
-      copy: 'GitHub, Bitbucket, or GitLab. Branches, PRs, reviews — fully automated.',
-    },
-    {
-      icon: KanbanSquare,
-      title: 'Optional issue tracker',
-      copy: 'Wire up Jira, Linear, or GitHub Issues for end-to-end campaigns.',
-    },
-  ]
-
-  return (
-    <div className="relative isolate overflow-hidden">
-      {/* Layered ambient glows + grid — gives the welcome a futuristic feel
-          without leaving the existing canvas/accent palette. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_60%_45%_at_50%_-10%,rgba(97,114,255,0.22),transparent_70%),radial-gradient(ellipse_50%_40%_at_85%_110%,rgba(56,189,248,0.16),transparent_75%),radial-gradient(ellipse_40%_35%_at_15%_115%,rgba(168,85,247,0.14),transparent_75%)]"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 -z-10 opacity-[0.07] [background-image:linear-gradient(to_right,rgba(255,255,255,0.6)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.6)_1px,transparent_1px)] [background-size:36px_36px] [mask-image:radial-gradient(ellipse_at_center,black_40%,transparent_75%)]"
-      />
-
-      <div className="flex flex-col items-center gap-5 px-6 py-8 text-center sm:gap-6 sm:px-10 sm:py-10">
-        {/* Brand orb — concentric arcs that read as a stylised "C", glowing. */}
-        <div className="relative flex size-24 items-center justify-center">
-          <span className="absolute inset-0 rounded-full bg-accent-500/20 blur-2xl" />
-          <span className="relative inline-flex size-24 items-center justify-center rounded-3xl bg-gradient-to-br from-accent-500/25 via-accent-500/10 to-transparent ring-1 ring-accent-500/35 shadow-[0_0_60px_-20px_rgba(97,114,255,0.6)]">
-            <svg viewBox="0 0 24 24" fill="none" className="size-12 text-accent-200 drop-shadow-[0_0_12px_rgba(125,150,255,0.55)]">
-              <path
-                d="M19 7.5A8 8 0 1 0 19 16.5"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-              />
-              <circle cx="18.25" cy="12" r="1.6" fill="currentColor" />
-            </svg>
-          </span>
-        </div>
-
-        <div className="space-y-3">
-          <div className="inline-flex items-center gap-1.5 rounded-full border border-accent-500/30 bg-accent-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-accent-200">
-            <Sparkles className="size-3.5" />
-            First-time setup
-          </div>
-          <h1 className="text-balance bg-gradient-to-b from-fg via-fg to-fg-muted bg-clip-text text-4xl font-semibold tracking-tight text-transparent sm:text-5xl">
-            Welcome to Coro
-          </h1>
-          <p className="mx-auto max-w-xl text-pretty text-sm text-fg-muted sm:text-base">
-            A plug-and-play AI harness for your SDLC. Coro turns your engineering process into deterministic, markdown-defined workflows — specialised agents plan, code, review, merge, and learn from every run your team controls.
-          </p>
-          <p className="mx-auto max-w-xl text-pretty text-xs text-fg-subtle sm:text-sm">
-            A short three-step setup gets you wired up. You can revisit anything later from <strong className="text-fg-muted">Settings → Setup</strong>.
-          </p>
-        </div>
-
-        <div className="grid w-full max-w-2xl gap-3 sm:grid-cols-3">
-          {highlights.map(({ icon: Icon, title, copy }) => (
-            <div
-              key={title}
-              className="group relative overflow-hidden rounded-2xl border border-line bg-overlay/40 p-4 text-left transition-colors hover:border-accent-500/30 hover:bg-overlay/60"
-            >
-              <div
-                aria-hidden
-                className="pointer-events-none absolute -right-6 -top-6 size-20 rounded-full bg-accent-500/10 blur-2xl transition-opacity group-hover:opacity-100"
-              />
-              <span className="relative inline-flex size-9 items-center justify-center rounded-xl bg-accent-500/12 ring-1 ring-accent-500/25 text-accent-200">
-                <Icon className="size-4" />
-              </span>
-              <div className="relative mt-3 text-sm font-medium text-fg">{title}</div>
-              <div className="relative mt-1 text-xs leading-relaxed text-fg-muted">{copy}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-

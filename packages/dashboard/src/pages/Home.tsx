@@ -20,9 +20,9 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import SetupWizard from '../components/wizard/SetupWizard'
-import { SettingsProvider } from './Settings/SettingsContext'
+import { SettingsProvider, useSettings } from './Settings/SettingsContext'
+import { evaluateReadiness } from './Settings/readiness'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
-import { requestJson } from '../lib/http'
 import { deriveJobDescription, deriveJobTitle, getRunDetailPath, sortJobsByUpdatedAt } from '../lib/jobs'
 import {
   PAGE_TITLES,
@@ -36,37 +36,11 @@ import { isTerminalStatus } from '../lib/status'
 import { useJobs } from '../hooks/useJobs'
 import type { Job } from '../types'
 
-interface ConfigSnapshot {
-  config: {
-    llm?: { defaultProvider?: string }
-    git?: { provider?: string; username?: string; token?: string }
-  } | null
-  /** Result of the live healthcheck for the configured default LLM provider. */
-  llmHealthy?: boolean
-}
-
 type SetupState = 'loading' | 'not-configured' | 'partial' | 'configured'
 
 interface SetupSummary {
   state: SetupState
   missing: string[]
-}
-
-function summariseConfig(snapshot: ConfigSnapshot | null): SetupSummary {
-  if (snapshot === null) return { state: 'loading', missing: [] }
-  if (snapshot.config === null) return { state: 'not-configured', missing: [] }
-
-  const missing: string[] = []
-  const { llm, git } = snapshot.config
-  // Treat the LLM as ready only when the runner can actually talk to
-  // the configured default provider. The defaultProvider field on its
-  // own only proves the user picked a name; healthcheck proves the
-  // credentials work.
-  if (!llm?.defaultProvider || snapshot.llmHealthy !== true) missing.push('LLM provider')
-  if (!git?.provider) missing.push('Git provider')
-  if (!git?.username || !git?.token) missing.push('Git credentials')
-
-  return missing.length === 0 ? { state: 'configured', missing } : { state: 'partial', missing }
 }
 
 interface OverviewListProps {
@@ -186,43 +160,39 @@ export default function Home() {
 
 function HomeInner() {
   const { jobs, loading, error } = useJobs()
-  const [snapshot, setSnapshot] = useState<ConfigSnapshot | null>(null)
+  const { draft, pluginsCatalogue, loading: settingsLoading, firstRunCompleted } = useSettings()
   const [wizardOpen, setWizardOpen] = useState(false)
   const [autoLaunched, setAutoLaunched] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const data = await requestJson<ConfigSnapshot>('/config')
-        // Probe the configured default executor's healthcheck so the
-        // banner reflects "can the runner actually reach the model?"
-        // rather than "did the user fill out the form?".
-        const providerId = data.config?.llm?.defaultProvider
-        let llmHealthy: boolean | undefined
-        if (providerId) {
-          try {
-            const result = await requestJson<{ ok?: boolean }>(
-              `/plugins/${encodeURIComponent(providerId)}/healthcheck`,
-              { method: 'POST' },
-            )
-            llmHealthy = result.ok === true
-          } catch {
-            llmHealthy = false
-          }
-        }
-        if (!cancelled) setSnapshot({ ...data, llmHealthy })
-      } catch {
-        if (!cancelled) setSnapshot({ config: null })
-      }
-    })()
-
-    return () => {
-      cancelled = true
+  // Derive readiness from the same plugin-based logic the wizard uses
+  // (`evaluateReadiness`). This replaces the legacy `config.git.*`
+  // field check that diverged from the wizard's source of truth and
+  // gave users a misleading "Runner is ready" pill even when only
+  // legacy keys were filled.
+  const setup: SetupSummary = useMemo(() => {
+    if (settingsLoading) return { state: 'loading', missing: [] }
+    if (!pluginsCatalogue) return { state: 'loading', missing: [] }
+    const readiness = evaluateReadiness({ draft, pluginsCatalogue })
+    const llmReady = readiness.byId['llm-provider'].status === 'ok'
+    const scmReady = readiness.byId['source-control'].status === 'ok'
+    const missing: string[] = []
+    if (!llmReady) missing.push('LLM provider')
+    if (!scmReady) missing.push('Source control')
+    if (missing.length === 0) return { state: 'configured', missing }
+    // If nothing at all is set, prefer "not-configured" so the banner
+    // copy reads "Welcome to Coro — finish setup" instead of the
+    // generic "incomplete" message.
+    const anyConfigured =
+      Object.values(draft.pluginInstalled).some(
+        entry =>
+          (entry.enabled !== false) && Object.keys(entry.config ?? {}).length > 0,
+      ) || !!draft.llmDefaultProvider
+    return {
+      state: anyConfigured ? 'partial' : 'not-configured',
+      missing,
     }
-  }, [])
+  }, [draft, pluginsCatalogue, settingsLoading])
 
-  const setup = summariseConfig(snapshot)
   const sortedJobs = useMemo(() => sortJobsByUpdatedAt(jobs), [jobs])
   const activeRuns = sortedJobs.filter(job => !isTerminalStatus(job.status))
   const activeSoloRuns = activeRuns.filter(job => !hostsSubRuns(job))
@@ -231,27 +201,26 @@ function HomeInner() {
   const recentHistory = sortedJobs.filter(job => isTerminalStatus(job.status)).slice(0, 5)
   const liveSpend = activeRuns.reduce((sum, job) => sum + (job.tokenUsage?.totalCostUsd ?? 0), 0)
 
-  // Auto-launch the wizard on first boot when nothing is configured and the
-  // user has not dismissed it before. The localStorage flag is also set when
-  // the wizard's "Open dashboard" button is clicked, so re-loads stay quiet.
+  // Auto-launch the wizard on first boot when nothing is configured
+  // and the user has neither completed nor dismissed it before.
+  // `firstRunCompleted` is driven by the server-side
+  // `config.setup.completedAt` flag with a localStorage fallback,
+  // so a finish on one device suppresses the prompt on the next.
   useEffect(() => {
     if (autoLaunched) return
     if (setup.state !== 'not-configured') return
+    if (firstRunCompleted) return
     if (typeof window === 'undefined') return
-    const completed = window.localStorage.getItem('coro.firstRun.completed') === 'true'
     const dismissed = window.localStorage.getItem('coro.firstRun.dismissed') === 'true'
-    if (completed || dismissed) return
+    if (dismissed) return
     setWizardOpen(true)
     setAutoLaunched(true)
-  }, [setup.state, autoLaunched])
+  }, [setup.state, autoLaunched, firstRunCompleted])
 
   function handleWizardOpenChange(next: boolean) {
     setWizardOpen(next)
-    // If the user closed the wizard without finishing, suppress auto-launch
-    // for the rest of the browser session so it does not nag.
-    if (!next && typeof window !== 'undefined') {
-      const completed = window.localStorage.getItem('coro.firstRun.completed') === 'true'
-      if (!completed) window.localStorage.setItem('coro.firstRun.dismissed', 'true')
+    if (!next && typeof window !== 'undefined' && !firstRunCompleted) {
+      window.localStorage.setItem('coro.firstRun.dismissed', 'true')
     }
   }
 

@@ -16,6 +16,9 @@ import { Logger } from 'pino'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { StateBackend } from '../state/backend'
 import type { PluginRegistry } from '../plugins/registry'
+import type { RunnerContext } from '../jobs/runner'
+import type { PluginRuntime } from '../plugins/types'
+import { reloadRunnerState, type ReloadResult } from './config-reload'
 import {
   loadLocalConfig,
   loadLocalConfigRaw,
@@ -61,6 +64,16 @@ export interface RunnerServerOptions {
    * provider names.
    */
   plugins?: PluginRegistry
+  /**
+   * Live `RunnerContext` reference. Required for the hot-reload path
+   * triggered after `PUT /config` / `POST /plugins/install`: the
+   * server mutates `ctx.settings` / `ctx.gitClient` / `ctx.plugins`
+   * field-by-field on the same reference so the Dispatcher (which
+   * holds `ctx` privately) picks up the new values for the next job
+   * without a runner restart. Optional purely for back-compat with
+   * tests that exercise the server in isolation.
+   */
+  runnerCtx?: RunnerContext
 }
 
 /** Mask a secret for display: show enough prefix/suffix to recognise it, hide the middle. */
@@ -370,9 +383,96 @@ function mimeForPath(filePath: string): string {
  * CLI commands (`coro job`, `coro status`, etc.) talk to this.
  */
 export function createRunnerServer(opts: RunnerServerOptions): http.Server {
-  const { port, dispatcher, stateBackend, logger, mode = 'hybrid', tenantId, plugins } = opts
+  const { port, dispatcher, stateBackend, logger, mode = 'hybrid', tenantId, plugins, runnerCtx } = opts
   const app = express()
   app.use(express.json())
+
+  // ── Plugin HTTP-route helpers (boot + late-mount) ───────────────────────
+  //
+  // Both the boot-time route registration loop (further below in this
+  // file) and the hot-reload late-mount path (used after a new plugin
+  // slot is added via `PUT /config` / `POST /plugins/install`) share
+  // these helpers. Keeping them as named locals here means a
+  // late-mounted plugin sees identical `saveLocalConfig` /
+  // `savePluginConfig` semantics — including the auto-elect-default-LLM
+  // logic — as one that was registered at boot.
+  const pluginSaveLocalConfig = (patch: Record<string, unknown>): void => {
+    const existing = loadLocalConfig() ?? ({} as LocalConfig)
+    saveLocalConfig({ ...existing, ...patch } as LocalConfig)
+  }
+  const pluginSavePluginConfig = (
+    pluginId: string,
+    configPatch: Record<string, unknown>,
+  ): void => {
+    const existing = loadLocalConfig() ?? ({} as LocalConfig)
+    const existingPlugins = existing.plugins ?? { installed: {} }
+    const existingInstalled = existingPlugins.installed ?? {}
+    const existingEntry = existingInstalled[pluginId] ?? { enabled: true, config: {} }
+    const existingConfig = (existingEntry.config ?? {}) as Record<string, unknown>
+    const nextEntry = {
+      ...existingEntry,
+      enabled: existingEntry.enabled ?? true,
+      config: { ...existingConfig, ...configPatch },
+    }
+    // Auto-elect this plugin as the default LLM provider when it is an
+    // executor and the user has not yet picked one. Mirrors the
+    // first-run wizard so claude-login produces a usable default in
+    // one step.
+    const runtime = (runnerCtx?.plugins ?? plugins)?.byId(pluginId)
+    const isExecutor = runtime?.manifest.kind === 'executor'
+    const existingLlm = (existing.llm ?? {}) as { defaultProvider?: string; aliases?: unknown }
+    const nextLlm = isExecutor && !existingLlm.defaultProvider
+      ? { ...existingLlm, defaultProvider: pluginId }
+      : existingLlm
+    saveLocalConfig({
+      ...existing,
+      llm: nextLlm,
+      plugins: {
+        ...existingPlugins,
+        installed: { ...existingInstalled, [pluginId]: nextEntry },
+      },
+    } as LocalConfig)
+  }
+
+  // ── Hot reload of in-memory runner state ────────────────────────────────
+  //
+  // Built once here so both `PUT /config` and `POST /plugins/install`
+  // can call the same function. The closure captures `app` so newly
+  // instantiated plugins can mount their HTTP routes against the live
+  // express stack at runtime. See `runner/config-reload.ts` for the
+  // rebuild semantics.
+  const lateMountPlugin = (runtime: PluginRuntime): void => {
+    if (typeof runtime.registerHttpRoutes !== 'function') return
+    try {
+      runtime.registerHttpRoutes({
+        app,
+        logger,
+        saveLocalConfig: pluginSaveLocalConfig,
+        savePluginConfig: pluginSavePluginConfig,
+        redactSecret,
+      })
+    } catch (err) {
+      logger.error({ err, plugin: runtime.manifest.id }, 'Late-mount plugin HTTP routes failed')
+    }
+  }
+
+  /**
+   * Reload runner state from `~/.coro/config.json` and surface the
+   * outcome to the dashboard. Wrapped in a single helper so both
+   * config-write endpoints share the same try/log/return path.
+   * Never throws — failures are downgraded to a warn-log + an empty
+   * `ReloadResult`-shaped object so a misbehaving plugin can't 500
+   * the unrelated save endpoint.
+   */
+  const reloadInMemoryState = async (): Promise<ReloadResult | null> => {
+    if (!runnerCtx) return null
+    try {
+      return await reloadRunnerState({ ctx: runnerCtx, lateMountPlugin, logger })
+    } catch (err) {
+      logger.warn({ err }, 'Hot reload of runner state failed — restart may be required')
+      return { updated: [], added: [], failed: [{ id: '*', error: (err as Error).message }] }
+    }
+  }
 
   // ── Health ──────────────────────────────────────────────────────────────
 
@@ -861,10 +961,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // POST /plugins/install — drop-in install via npm spec. Wraps the
   // CLI flow (`coro plugin install …`) in an HTTP endpoint so the
   // dashboard's "Install plugin" form can spawn the same install
-  // pipeline without shelling out client-side. The runner reloads
-  // its plugin registry by re-bootstrapping on the next job; the
-  // response includes a `restartHint` flag the dashboard surfaces
-  // verbatim.
+  // pipeline without shelling out client-side. The handler triggers a
+  // hot reload immediately so the registry picks up the new drop-in
+  // without a runner restart; the `restartHint` field is only set
+  // when the slot isn't configured yet and the reload couldn't load it.
   app.post('/plugins/install', async (req: Request, res: Response) => {
     try {
       const body = (req.body ?? {}) as { spec?: unknown; id?: unknown }
@@ -874,14 +974,31 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       }
       const explicitId = typeof body.id === 'string' && body.id.length > 0 ? body.id : undefined
       const result = await installDropinPlugin({ spec: body.spec, id: explicitId, logger })
+
+      // Try a hot reload so the registry picks up the new drop-in
+      // immediately. The plugin only loads if a `plugins.installed.<id>`
+      // slot exists in config — for first-time installs the dashboard
+      // typically follows up with a `PUT /config` to add the slot, and
+      // that PUT triggers its own reload. We still attempt one here so
+      // a slot that was pre-configured (or carries no required config)
+      // is live without a manual save.
+      const reload = await reloadInMemoryState()
+      const loaded =
+        reload?.added.includes(result.manifest.id) ||
+        reload?.updated.includes(result.manifest.id) ||
+        false
+
       res.json({
         ok: true,
         installedAt: result.pluginDir,
         manifest: result.manifest,
-        restartHint:
-          'Plugin installed. Restart the runner (`coro start`) so the new ' +
-          'plugin is loaded into the registry — running jobs continue with ' +
-          'the previous registry until you restart.',
+        ...(reload ? { reload } : {}),
+        ...(loaded
+          ? {}
+          : {
+              restartHint:
+                'Plugin installed on disk. Configure it in Settings to enable it; the registry picks up the new plugin as soon as you save credentials.',
+            }),
       })
     } catch (err) {
       logger.error({ err }, 'POST /plugins/install failed')
@@ -953,6 +1070,12 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // configured without dispatching a real job. Generic across plugin
   // kinds; the dashboard's "Test connection" buttons + the Home
   // readiness banner both use this.
+  //
+  // Optional body: `{ config?: Record<string, unknown> }`. When
+  // supplied, the runner spins up an ephemeral re-init with the
+  // merged (on-disk + draft) config so the FTUE wizard can verify a
+  // credential before the user saves. Redacted `...` values fall back
+  // to whatever is on disk so partial drafts still test cleanly.
   app.post('/plugins/:id/healthcheck', async (req: Request, res: Response) => {
     try {
       const rawId = req.params['id']
@@ -966,6 +1089,42 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         res.status(404).json({ error: `Plugin "${id}" is not registered` })
         return
       }
+
+      const body = (req.body ?? {}) as { config?: Record<string, unknown> }
+      if (body.config && typeof body.config === 'object') {
+        // Caller wants to test a draft config. Reinitialise the plugin
+        // with the merged config (drops back to on-disk for redacted
+        // secrets), run healthcheck, then restore the persisted state
+        // so we don't leave the registry in a weird mid-draft mode.
+        const existing = loadLocalConfig()
+        const onDisk = (existing?.plugins?.installed?.[id]?.config ?? {}) as Record<string, unknown>
+        const merged: Record<string, unknown> = { ...onDisk }
+        for (const [k, v] of Object.entries(body.config)) {
+          if (typeof v === 'string' && isRedacted(v)) continue
+          merged[k] = v
+        }
+        const pluginDeps = { logger, fetch: fetch.bind(globalThis) }
+        try {
+          await runtime.init(merged, pluginDeps)
+          const health = await runtime.healthcheck()
+          res.json(health)
+        } finally {
+          // Best-effort restore. If the on-disk config is malformed
+          // the plugin keeps the draft state until the next runner
+          // restart — the dashboard surfaces this via the standard
+          // save flow.
+          try {
+            await runtime.init(onDisk, pluginDeps)
+          } catch (restoreErr) {
+            logger.warn(
+              { err: restoreErr, plugin: id },
+              'Failed to restore plugin config after draft healthcheck',
+            )
+          }
+        }
+        return
+      }
+
       const health = await runtime.healthcheck()
       res.json(health)
     } catch (err) {
@@ -1889,7 +2048,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
-  app.put('/config', (req: Request, res: Response) => {
+  app.put('/config', async (req: Request, res: Response) => {
     try {
       const updates = req.body
       if (!updates || typeof updates !== 'object') {
@@ -2071,6 +2230,35 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         }
       }
 
+      // Setup (FTUE completion) — replace wholesale so the dashboard
+      // can reset the flag by sending `null`. Validation happens via
+      // the schema after merge.
+      if (Object.prototype.hasOwnProperty.call(updates, 'setup')) {
+        const incoming = (updates as Record<string, unknown>)['setup'] as
+          | { completedAt?: string; skipped?: Array<'llm' | 'scm' | 'tracker'> }
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).setup
+        } else if (incoming && typeof incoming === 'object') {
+          const next: NonNullable<LocalConfig['setup']> = {}
+          if (typeof incoming.completedAt === 'string' && incoming.completedAt.length > 0) {
+            next.completedAt = incoming.completedAt
+          }
+          if (Array.isArray(incoming.skipped)) {
+            next.skipped = incoming.skipped.filter(
+              (s): s is 'llm' | 'scm' | 'tracker' =>
+                s === 'llm' || s === 'scm' || s === 'tracker',
+            )
+          }
+          if (Object.keys(next).length > 0) {
+            ;(merged as Record<string, unknown>).setup = next
+          } else {
+            delete (merged as Record<string, unknown>).setup
+          }
+        }
+      }
+
       // Guardrails — overrides merged at runtime with bundled defaults.
       if (Object.prototype.hasOwnProperty.call(updates, 'guardrails')) {
         const incoming = (updates as Record<string, unknown>)['guardrails'] as
@@ -2145,7 +2333,18 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
       saveLocalConfig(validation.config)
       logger.info('Configuration updated via dashboard')
-      res.json({ saved: true, configPath: defaultConfigPath() })
+
+      // Hot-reload the in-memory state so the next job (and the
+      // dashboard's "Test connection" probes) immediately uses the
+      // freshly-saved credentials. Failures are surfaced in the
+      // response payload as `reload.failed` but never block the
+      // save — the JSON is already on disk.
+      const reload = await reloadInMemoryState()
+      res.json({
+        saved: true,
+        configPath: defaultConfigPath(),
+        ...(reload ? { reload } : {}),
+      })
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
     }
@@ -2792,6 +2991,173 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  // POST /test/llm — Live credential probe for executor (LLM) plugins,
+  // used by the FTUE wizard. Mirrors the /test/git + /test/tracker
+  // contract: accepts a draft config that may include redacted `...`
+  // secrets, fills those in from the on-disk plugin config, then
+  // performs a minimal live API call.
+  //
+  // Built-in coverage:
+  //   - anthropic + method=claudeLogin → trusts the persisted OAuth
+  //     session (Claude Code manages its own refresh); we report ok
+  //     when an account is present on disk.
+  //   - anthropic + method=apiKey      → POST /v1/messages with
+  //     max_tokens:1 and a single-token prompt.
+  //   - anthropic + method=oauth       → same Messages probe with the
+  //     legacy bearer token.
+  //   - openai                         → GET /v1/models with the key.
+  //
+  // Drop-in executors fall back to the in-process plugin's healthcheck.
+  app.post('/test/llm', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as {
+        provider?: string
+        config?: Record<string, unknown>
+      }
+      const provider = body.provider
+      if (!provider || typeof provider !== 'string') {
+        res.status(400).json({ ok: false, message: 'provider is required' })
+        return
+      }
+
+      const incoming = (body.config ?? {}) as Record<string, unknown>
+      const existing = loadLocalConfig()
+      const onDisk = (existing?.plugins?.installed?.[provider]?.config ?? {}) as Record<string, unknown>
+
+      if (provider === 'anthropic') {
+        const method =
+          typeof incoming['method'] === 'string'
+            ? (incoming['method'] as string)
+            : typeof onDisk['method'] === 'string'
+              ? (onDisk['method'] as string)
+              : 'claudeLogin'
+
+        if (method === 'claudeLogin') {
+          const account = (incoming['account'] ?? onDisk['account']) as
+            | { email?: string; organization?: string }
+            | undefined
+          if (account && (account.email || account.organization)) {
+            res.json({
+              ok: true,
+              message: `Claude login is active${account.email ? ` (${account.email})` : ''}.`,
+            })
+            return
+          }
+          res.json({
+            ok: false,
+            message: 'Claude is not connected yet — click "Connect Claude" to sign in.',
+          })
+          return
+        }
+
+        const apiKey =
+          method === 'apiKey'
+            ? resolveSecret(incoming['apiKey'], (onDisk['apiKey'] as string | undefined) ?? undefined)
+            : resolveSecret(incoming['oauthToken'], (onDisk['oauthToken'] as string | undefined) ?? undefined)
+        if (!apiKey) {
+          res.json({
+            ok: false,
+            message:
+              method === 'apiKey'
+                ? 'An Anthropic API key is required.'
+                : 'An OAuth token is required.',
+          })
+          return
+        }
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+        }
+        if (method === 'apiKey') headers['x-api-key'] = apiKey
+        else headers['Authorization'] = `Bearer ${apiKey}`
+
+        const r = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5',
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'ping' }],
+          }),
+        })
+        if (r.ok) {
+          res.json({ ok: true, message: 'Anthropic API key is valid and accepted by /v1/messages.' })
+          return
+        }
+        const detail = await describeHttpFailure(r)
+        const hint =
+          r.status === 401
+            ? 'The key was rejected. Double-check that it starts with "sk-ant-" and that you copied the entire value.'
+            : r.status === 403
+              ? 'The key authenticated but does not have access to the Messages API.'
+              : r.status === 429
+                ? 'Rate limited. The key is valid; you can finish setup and try again.'
+                : undefined
+        res.json({ ok: false, message: `Anthropic ${detail}`, ...(hint ? { hint } : {}) })
+        return
+      }
+
+      if (provider === 'openai') {
+        const apiKey = resolveSecret(incoming['apiKey'], (onDisk['apiKey'] as string | undefined) ?? undefined)
+        if (!apiKey) {
+          res.json({ ok: false, message: 'An OpenAI API key is required.' })
+          return
+        }
+        const baseUrlRaw =
+          typeof incoming['baseURL'] === 'string' && (incoming['baseURL'] as string).length > 0
+            ? (incoming['baseURL'] as string)
+            : typeof onDisk['baseURL'] === 'string' && (onDisk['baseURL'] as string).length > 0
+              ? (onDisk['baseURL'] as string)
+              : 'https://api.openai.com/v1'
+        const url = `${trimSlash(baseUrlRaw)}/models`
+        const r = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            ...(typeof incoming['organization'] === 'string' && (incoming['organization'] as string).length > 0
+              ? { 'OpenAI-Organization': incoming['organization'] as string }
+              : {}),
+          },
+        })
+        if (r.ok) {
+          const data = (await r.json().catch(() => ({}))) as { data?: Array<{ id?: string }> }
+          const count = Array.isArray(data?.data) ? data.data.length : 0
+          res.json({
+            ok: true,
+            message: `OpenAI API key is valid${count > 0 ? ` (${count} models available)` : ''}.`,
+          })
+          return
+        }
+        const detail = await describeHttpFailure(r)
+        const hint =
+          r.status === 401
+            ? 'The key was rejected. Verify the value and that the key still exists in your OpenAI account.'
+            : r.status === 429
+              ? 'Rate limited. The key is valid; you can finish setup and try again.'
+              : undefined
+        res.json({ ok: false, message: `OpenAI ${detail}`, ...(hint ? { hint } : {}) })
+        return
+      }
+
+      // Drop-in executor — best effort: ask the in-process plugin to
+      // healthcheck against its current persisted config.
+      const runtime = plugins?.byId(provider)
+      if (!runtime) {
+        res.status(404).json({ ok: false, message: `Unknown executor plugin "${provider}"` })
+        return
+      }
+      const health = await runtime.healthcheck()
+      res.json({
+        ok: health.ok,
+        message: health.ok
+          ? `${runtime.manifest.displayName} is configured.`
+          : (health.reason ?? `${runtime.manifest.displayName} is not configured.`),
+      })
+    } catch (err) {
+      logger.warn({ err }, 'POST /test/llm failed')
+      res.json({ ok: false, message: (err as Error).message })
+    }
+  })
+
   // ── Plugin-registered HTTP routes ───────────────────────────────────────
   //
   // Provider-specific endpoints (Anthropic OAuth login, future OpenAI
@@ -2799,65 +3165,13 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // here via the `PluginRuntime.registerHttpRoutes` hook. The runner
   // core has no knowledge of which provider routes exist — adding a
   // new LLM plugin requires zero changes in this file.
+  // Use the same `lateMountPlugin` closure as the hot-reload path so
+  // boot and runtime route registration share semantics — auto-elect
+  // default LLM, redaction, and error handling all flow through one
+  // place.
   if (plugins) {
-    // Patch-merge helper passed to plugins so they can persist their
-    // own slice of the local config without having to re-load the full
-    // file or know the runner's `LocalConfig` type.
-    const pluginSaveLocalConfig = (patch: Record<string, unknown>): void => {
-      const existing = loadLocalConfig() ?? ({} as LocalConfig)
-      saveLocalConfig({ ...existing, ...patch } as LocalConfig)
-    }
-    // Namespaced helper for the common case of a plugin persisting its
-    // own slot under `plugins.installed[pluginId].config`. Deep-merges
-    // so concurrent writes from different plugins don't clobber each
-    // other's `installed` entries.
-    const pluginSavePluginConfig = (pluginId: string, configPatch: Record<string, unknown>): void => {
-      const existing = loadLocalConfig() ?? ({} as LocalConfig)
-      const existingPlugins = existing.plugins ?? { installed: {} }
-      const existingInstalled = existingPlugins.installed ?? {}
-      const existingEntry = existingInstalled[pluginId] ?? { enabled: true, config: {} }
-      const existingConfig = (existingEntry.config ?? {}) as Record<string, unknown>
-      const nextEntry = {
-        ...existingEntry,
-        enabled: existingEntry.enabled ?? true,
-        config: { ...existingConfig, ...configPatch },
-      }
-      // Auto-elect this plugin as the default LLM provider when it is
-      // an executor and the user has not yet picked one. Without this,
-      // a fresh install completes claude-login but the dashboard still
-      // reports "Missing: LLM provider" because `llm.defaultProvider`
-      // is empty — the runner's resolveExecutor sole-installed-fallback
-      // would happily pick it for jobs, but the readiness UI doesn't
-      // know about that fallback. Setting it explicitly keeps both
-      // surfaces consistent and is a no-op once the user has chosen.
-      const runtime = plugins.byId(pluginId)
-      const isExecutor = runtime?.manifest.kind === 'executor'
-      const existingLlm = (existing.llm ?? {}) as { defaultProvider?: string; aliases?: unknown }
-      const nextLlm = isExecutor && !existingLlm.defaultProvider
-        ? { ...existingLlm, defaultProvider: pluginId }
-        : existingLlm
-      saveLocalConfig({
-        ...existing,
-        llm: nextLlm,
-        plugins: {
-          ...existingPlugins,
-          installed: { ...existingInstalled, [pluginId]: nextEntry },
-        },
-      } as LocalConfig)
-    }
     for (const runtime of plugins.all()) {
-      if (typeof runtime.registerHttpRoutes !== 'function') continue
-      try {
-        runtime.registerHttpRoutes({
-          app,
-          logger,
-          saveLocalConfig: pluginSaveLocalConfig,
-          savePluginConfig: pluginSavePluginConfig,
-          redactSecret,
-        })
-      } catch (err) {
-        logger.error({ err, plugin: runtime.manifest.id }, 'Plugin failed to register HTTP routes')
-      }
+      lateMountPlugin(runtime)
     }
   }
 
