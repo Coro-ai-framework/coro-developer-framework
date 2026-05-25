@@ -118,6 +118,39 @@ export interface PluginHealth {
 }
 
 /**
+ * One step in a multi-step credential probe — surfaced as a bullet
+ * under the test button. Plugins that touch multiple resources (e.g.
+ * SCM auth + workspace access + clone scope) use this to tell the
+ * user exactly which leg failed.
+ */
+export interface PluginTestCheck {
+  name: string
+  ok: boolean
+  message: string
+  /** Optional remediation tip shown under failed checks. */
+  hint?: string
+}
+
+/**
+ * Result of {@link PluginRuntime.testConnection}. Mirrors the
+ * dashboard's `TestConnectionResult` so the runner is a thin pass-through.
+ *
+ * Distinct from {@link PluginHealth} because `testConnection` actively
+ * contacts the upstream (and may cost a tiny amount of tokens / a real
+ * round-trip) whereas `healthcheck()` is a fast in-process shape check.
+ * The dashboard's "Test connection" button is the only caller of
+ * `testConnection`; periodic health surfaces use `healthcheck()`.
+ */
+export interface PluginTestResult {
+  ok: boolean
+  message?: string
+  /** Optional remediation tip — shown next to the status line. */
+  hint?: string
+  /** Optional per-step breakdown. */
+  checks?: ReadonlyArray<PluginTestCheck>
+}
+
+/**
  * Minimal route-registration surface a plugin can hang HTTP endpoints
  * off of. Structurally compatible with `express.Express` (and
  * `Router`) so plugins can cast to the full express type if they need
@@ -169,6 +202,26 @@ export interface PluginRuntime<Config = unknown> {
    * runner's HTTP server alongside the built-in routes.
    */
   registerHttpRoutes?(ctx: PluginHttpRoutesContext): void
+  /**
+   * Optional active credential probe. The runner invokes this from
+   * the dashboard's "Test connection" button (`POST /test/llm` for
+   * executors; the equivalent SCM/tracker endpoints in future
+   * refactors). Plugins receive the *merged* config the user is
+   * about to save — redacted secrets (`'…'`) already filled in from
+   * the on-disk config — and reach out to their upstream to verify
+   * the credentials actually work.
+   *
+   * This is the seam that keeps the runner core provider-agnostic.
+   * Without it, every new LLM/SCM/tracker plugin needs a `case`
+   * branch in `server.ts`. Plugins that don't implement it fall
+   * back to {@link PluginRuntime.healthcheck} — which is the right
+   * default for "config-only" plugins whose only check is "is the
+   * field non-empty".
+   *
+   * Implementations MUST NOT throw — return `{ ok: false, message }`
+   * for any failure so the dashboard always gets a structured result.
+   */
+  testConnection?(config: Config): Promise<PluginTestResult>
 }
 
 // ── SCM plugin ───────────────────────────────────────────────────────────────

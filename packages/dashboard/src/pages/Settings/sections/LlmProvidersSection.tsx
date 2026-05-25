@@ -5,7 +5,8 @@ import SettingsNotice from '../../../components/settings/SettingsNotice'
 import Field from '../../../components/forms/field'
 import { Input } from '../../../components/ui/input'
 import { Button } from '../../../components/ui/button'
-import { requestJson } from '../../../lib/http'
+import { jsonRequest, requestJson } from '../../../lib/http'
+import type { TestConnectionResult } from '../../../components/settings/TestConnectionButton'
 import ModelPicker from '../../../components/llm/ModelPicker'
 import {
   useProviderModels,
@@ -32,6 +33,32 @@ interface DiscoveredWorkflowsResponse {
     name: string
     phases?: Array<{ name: string; model?: string; tier?: string }>
   }>
+}
+
+/**
+ * Hit `POST /test/llm` with the draft config and translate the
+ * runner's response into the {@link TestConnectionResult} shape the
+ * generic button expects. The runner now dispatches every probe
+ * through the plugin's own `testConnection()` method, so the same
+ * code path covers Anthropic, OpenAI, and any future drop-in
+ * executor — the dashboard does no provider branching.
+ */
+async function testLlmProvider(
+  providerId: string,
+  config: Record<string, unknown>,
+): Promise<TestConnectionResult> {
+  try {
+    const result = await requestJson<TestConnectionResult>(
+      '/test/llm',
+      jsonRequest({ provider: providerId, config }, { method: 'POST' }),
+    )
+    return result
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+    }
+  }
 }
 
 /**
@@ -340,6 +367,7 @@ export default function LlmProvidersSection() {
             <PluginConfigCard
               key={plugin.manifest.id}
               plugin={plugin}
+              onTest={config => testLlmProvider(plugin.manifest.id, config)}
             />
           ))}
         </div>

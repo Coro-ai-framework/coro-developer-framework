@@ -2992,22 +2992,18 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   })
 
   // POST /test/llm — Live credential probe for executor (LLM) plugins,
-  // used by the FTUE wizard. Mirrors the /test/git + /test/tracker
-  // contract: accepts a draft config that may include redacted `...`
-  // secrets, fills those in from the on-disk plugin config, then
-  // performs a minimal live API call.
+  // used by the Settings page and the FTUE wizard. Pure dispatcher:
+  // the runner core knows nothing about Anthropic / OpenAI / Foundry
+  // auth shapes. Each LLM plugin owns its own probe via the optional
+  // `PluginRuntime.testConnection(config)` method declared on
+  // `@coro/plugin-sdk`. Plugins that don't implement it fall back to
+  // the cheaper `healthcheck()` — the right default for "config-only"
+  // providers whose only check is "is the required field non-empty".
   //
-  // Built-in coverage:
-  //   - anthropic + method=claudeLogin → trusts the persisted OAuth
-  //     session (Claude Code manages its own refresh); we report ok
-  //     when an account is present on disk.
-  //   - anthropic + method=apiKey      → POST /v1/messages with
-  //     max_tokens:1 and a single-token prompt.
-  //   - anthropic + method=oauth       → same Messages probe with the
-  //     legacy bearer token.
-  //   - openai                         → GET /v1/models with the key.
-  //
-  // Drop-in executors fall back to the in-process plugin's healthcheck.
+  // The dashboard ships a redacted form of any secret it has already
+  // seen (`'…'`). We deep-merge the incoming draft over the on-disk
+  // config so the plugin always receives the real credential to probe
+  // with — without the dashboard ever transporting the real secret.
   app.post('/test/llm', async (req: Request, res: Response) => {
     try {
       const body = (req.body ?? {}) as {
@@ -3019,132 +3015,22 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         res.status(400).json({ ok: false, message: 'provider is required' })
         return
       }
-
-      const incoming = (body.config ?? {}) as Record<string, unknown>
-      const existing = loadLocalConfig()
-      const onDisk = (existing?.plugins?.installed?.[provider]?.config ?? {}) as Record<string, unknown>
-
-      if (provider === 'anthropic') {
-        const method =
-          typeof incoming['method'] === 'string'
-            ? (incoming['method'] as string)
-            : typeof onDisk['method'] === 'string'
-              ? (onDisk['method'] as string)
-              : 'claudeLogin'
-
-        if (method === 'claudeLogin') {
-          const account = (incoming['account'] ?? onDisk['account']) as
-            | { email?: string; organization?: string }
-            | undefined
-          if (account && (account.email || account.organization)) {
-            res.json({
-              ok: true,
-              message: `Claude login is active${account.email ? ` (${account.email})` : ''}.`,
-            })
-            return
-          }
-          res.json({
-            ok: false,
-            message: 'Claude is not connected yet — click "Connect Claude" to sign in.',
-          })
-          return
-        }
-
-        const apiKey =
-          method === 'apiKey'
-            ? resolveSecret(incoming['apiKey'], (onDisk['apiKey'] as string | undefined) ?? undefined)
-            : resolveSecret(incoming['oauthToken'], (onDisk['oauthToken'] as string | undefined) ?? undefined)
-        if (!apiKey) {
-          res.json({
-            ok: false,
-            message:
-              method === 'apiKey'
-                ? 'An Anthropic API key is required.'
-                : 'An OAuth token is required.',
-          })
-          return
-        }
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          'anthropic-version': '2023-06-01',
-        }
-        if (method === 'apiKey') headers['x-api-key'] = apiKey
-        else headers['Authorization'] = `Bearer ${apiKey}`
-
-        const r = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model: 'claude-haiku-4-5',
-            max_tokens: 1,
-            messages: [{ role: 'user', content: 'ping' }],
-          }),
-        })
-        if (r.ok) {
-          res.json({ ok: true, message: 'Anthropic API key is valid and accepted by /v1/messages.' })
-          return
-        }
-        const detail = await describeHttpFailure(r)
-        const hint =
-          r.status === 401
-            ? 'The key was rejected. Double-check that it starts with "sk-ant-" and that you copied the entire value.'
-            : r.status === 403
-              ? 'The key authenticated but does not have access to the Messages API.'
-              : r.status === 429
-                ? 'Rate limited. The key is valid; you can finish setup and try again.'
-                : undefined
-        res.json({ ok: false, message: `Anthropic ${detail}`, ...(hint ? { hint } : {}) })
-        return
-      }
-
-      if (provider === 'openai') {
-        const apiKey = resolveSecret(incoming['apiKey'], (onDisk['apiKey'] as string | undefined) ?? undefined)
-        if (!apiKey) {
-          res.json({ ok: false, message: 'An OpenAI API key is required.' })
-          return
-        }
-        const baseUrlRaw =
-          typeof incoming['baseURL'] === 'string' && (incoming['baseURL'] as string).length > 0
-            ? (incoming['baseURL'] as string)
-            : typeof onDisk['baseURL'] === 'string' && (onDisk['baseURL'] as string).length > 0
-              ? (onDisk['baseURL'] as string)
-              : 'https://api.openai.com/v1'
-        const url = `${trimSlash(baseUrlRaw)}/models`
-        const r = await fetch(url, {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            ...(typeof incoming['organization'] === 'string' && (incoming['organization'] as string).length > 0
-              ? { 'OpenAI-Organization': incoming['organization'] as string }
-              : {}),
-          },
-        })
-        if (r.ok) {
-          const data = (await r.json().catch(() => ({}))) as { data?: Array<{ id?: string }> }
-          const count = Array.isArray(data?.data) ? data.data.length : 0
-          res.json({
-            ok: true,
-            message: `OpenAI API key is valid${count > 0 ? ` (${count} models available)` : ''}.`,
-          })
-          return
-        }
-        const detail = await describeHttpFailure(r)
-        const hint =
-          r.status === 401
-            ? 'The key was rejected. Verify the value and that the key still exists in your OpenAI account.'
-            : r.status === 429
-              ? 'Rate limited. The key is valid; you can finish setup and try again.'
-              : undefined
-        res.json({ ok: false, message: `OpenAI ${detail}`, ...(hint ? { hint } : {}) })
-        return
-      }
-
-      // Drop-in executor — best effort: ask the in-process plugin to
-      // healthcheck against its current persisted config.
       const runtime = plugins?.byId(provider)
       if (!runtime) {
         res.status(404).json({ ok: false, message: `Unknown executor plugin "${provider}"` })
         return
       }
+      const merged = mergePluginConfigForProbe(provider, body.config ?? {})
+
+      if (typeof runtime.testConnection === 'function') {
+        const result = await runtime.testConnection(merged)
+        res.json(result)
+        return
+      }
+
+      // Plugin hasn't been updated to expose an active probe. Best
+      // effort: surface the shape-only healthcheck as a result so the
+      // dashboard can still render *something* useful.
       const health = await runtime.healthcheck()
       res.json({
         ok: health.ok,
@@ -3157,6 +3043,51 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ ok: false, message: (err as Error).message })
     }
   })
+
+  /**
+   * Merge an incoming draft plugin config with the on-disk config so
+   * `testConnection` always receives the real secret instead of the
+   * `'…'` redaction the dashboard echoes back. Recursive so nested
+   * objects (Anthropic's `account`, OpenAI's transports) merge too.
+   */
+  function mergePluginConfigForProbe(
+    providerId: string,
+    draft: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const existing = loadLocalConfig()
+    const onDisk = (existing?.plugins?.installed?.[providerId]?.config ?? {}) as Record<string, unknown>
+    return mergeWithRedactionFill(onDisk, draft)
+  }
+
+  function mergeWithRedactionFill(
+    onDisk: Record<string, unknown>,
+    draft: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...onDisk }
+    for (const [key, draftValue] of Object.entries(draft)) {
+      const diskValue = onDisk[key]
+      if (isRedacted(draftValue)) {
+        if (diskValue !== undefined) out[key] = diskValue
+        continue
+      }
+      if (
+        draftValue &&
+        typeof draftValue === 'object' &&
+        !Array.isArray(draftValue) &&
+        diskValue &&
+        typeof diskValue === 'object' &&
+        !Array.isArray(diskValue)
+      ) {
+        out[key] = mergeWithRedactionFill(
+          diskValue as Record<string, unknown>,
+          draftValue as Record<string, unknown>,
+        )
+        continue
+      }
+      out[key] = draftValue
+    }
+    return out
+  }
 
   // ── Plugin-registered HTTP routes ───────────────────────────────────────
   //

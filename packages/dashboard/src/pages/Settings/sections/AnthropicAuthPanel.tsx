@@ -11,6 +11,9 @@ import SettingsStatusBadge, {
 } from '../../../components/settings/StatusBadge'
 import { useSettings } from '../SettingsContext'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
+import TestConnectionButton, {
+  type TestConnectionResult,
+} from '../../../components/settings/TestConnectionButton'
 
 // ── Anthropic-specific types ──────────────────────────────────────────────
 //
@@ -193,6 +196,37 @@ export default function AnthropicAuthPanel({ pluginId, onConnected }: AnthropicA
       setSubmittingCallback(false)
     }
   }
+
+  /**
+   * Hit `POST /test/llm` with the panel's current draft config. The
+   * runner dispatches through the Anthropic plugin's own
+   * `testConnection`, which performs the real API probe — including
+   * reading the local Claude Code OAuth session from the platform's
+   * credential store for `method=claudeLogin`. This is the only path
+   * that catches the "Claude says I'm logged in but Anthropic still
+   * 401s" failure mode, so it's important the user has a one-click
+   * way to run it from Settings.
+   */
+  async function testConnection(): Promise<TestConnectionResult> {
+    try {
+      return await requestJson<TestConnectionResult>(
+        '/test/llm',
+        jsonRequest({ provider: pluginId, config: cfg }, { method: 'POST' }),
+      )
+    } catch (err) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+
+  const canTest =
+    method === 'claudeLogin'
+      ? claudeLogin.status === 'connected' || !!persistedAccount
+      : method === 'apiKey'
+        ? apiKey.length > 0
+        : oauthToken.length > 0
 
   async function generateOauthToken() {
     setOauthGenerating(true)
@@ -377,6 +411,24 @@ export default function AnthropicAuthPanel({ pluginId, onConnected }: AnthropicA
           ) : null}
         </div>
       ) : null}
+
+      {/*
+        Active credential probe. Always rendered (any of the three
+        methods can fail in a way the dashboard's local status
+        wouldn't catch — most notably claudeLogin, where the local
+        keychain entry can be present-but-revoked).
+      */}
+      <div className="border-t border-line pt-4">
+        <TestConnectionButton
+          onTest={testConnection}
+          disabled={!canTest}
+          label="Test connection"
+        />
+        <p className="mt-2 text-[12px] text-fg-subtle">
+          Sends a 1-token <span className="font-mono">/v1/messages</span> ping with your current credentials.
+          For Claude login, reads the OAuth session from your local keychain.
+        </p>
+      </div>
     </div>
   )
 }

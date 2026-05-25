@@ -258,6 +258,33 @@ export interface PluginHealth {
 }
 
 /**
+ * One step in a multi-step credential probe — surfaced as a bullet
+ * under the test button.
+ *
+ * Mirrors {@link import('@coro/plugin-sdk').PluginTestCheck} — the
+ * shapes are duplicated (not re-exported) so the runner stays
+ * importable without the SDK package, same as `PluginHealth`. The
+ * conformance pack checks both shapes stay in lock-step.
+ */
+export interface PluginTestCheck {
+  name: string
+  ok: boolean
+  message: string
+  hint?: string
+}
+
+/**
+ * Result of {@link PluginRuntime.testConnection}.
+ * Mirrors {@link import('@coro/plugin-sdk').PluginTestResult}.
+ */
+export interface PluginTestResult {
+  ok: boolean
+  message?: string
+  hint?: string
+  checks?: ReadonlyArray<PluginTestCheck>
+}
+
+/**
  * Common runtime contract every plugin honours, regardless of kind.
  * Kind-specific extensions live below ({@link ScmPluginRuntime},
  * {@link TrackerPluginRuntime}).
@@ -321,6 +348,13 @@ export interface PluginRuntime<Config = unknown> {
    * to {@link createRunnerServer}.
    */
   registerHttpRoutes?(ctx: import('@coro/plugin-sdk').PluginHttpRoutesContext): void
+  /**
+   * Optional active credential probe (see SDK mirror for full notes).
+   * Invoked by the runner's `POST /test/llm` / `/test/git` /
+   * `/test/tracker` endpoints so every provider-specific test path
+   * lives in its own plugin package instead of the runner core.
+   */
+  testConnection?(config: Config): Promise<PluginTestResult>
 }
 
 // ── SCM plugin runtime ───────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ import type {
   PluginDeps,
   PluginHealth,
   PluginManifest,
+  PluginTestResult,
   SubagentExecutionRequest,
   SubagentResult,
 } from '@coro/plugin-sdk'
@@ -24,6 +25,7 @@ import {
 } from '@coro/plugin-sdk'
 import type { ClassifyOptions } from '@coro/plugin-sdk'
 import { hasOpenAiApiKey, resolveOpenAiClientOptions } from './auth'
+import { testOpenAiCredentials } from './test-connection'
 import { McpFunctionBridge, type OpenAiFunctionOutputItem, type OpenAiToolCall } from './mcp-bridge'
 import { ExternalMcpConnectionPool } from './mcp-pool'
 import {
@@ -144,6 +146,19 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       return { ok: false, reason: 'OpenAI API key is not configured. Set plugins.installed.openai.config.apiKey or OPENAI_API_KEY.' }
     }
     return { ok: true }
+  }
+
+  /**
+   * Active credential probe. Validates the supplied config against
+   * the configured OpenAI-compatible endpoint by listing models.
+   * See {@link testOpenAiCredentials} for the wire details.
+   */
+  async testConnection(config: unknown): Promise<PluginTestResult> {
+    const parsed = openAiConfigSchema.safeParse(config ?? {})
+    if (!parsed.success) {
+      return { ok: false, message: `Invalid OpenAI plugin config: ${parsed.error.message}` }
+    }
+    return testOpenAiCredentials(parsed.data)
   }
 
   async dispose(): Promise<void> {

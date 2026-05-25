@@ -19,6 +19,8 @@ export {
   hasOpenAiApiKey,
 } from './auth'
 
+export { testOpenAiCredentials } from './test-connection'
+
 export type {
   OpenAiAuthConfig,
   OpenAiClientOptions,

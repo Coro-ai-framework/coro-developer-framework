@@ -45,6 +45,7 @@ export {
   shouldClosePushableAfterResult,
 } from './steering-errors'
 export { registerAnthropicHttpRoutes } from './http-routes'
+export { testAnthropicCredentials, readClaudeLocalSession } from './test-connection'
 
 export type {
   AnthropicExecutorSettings,

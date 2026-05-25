@@ -43,11 +43,13 @@ import type {
   PluginHttpRoutesContext,
   PluginManifest,
   PluginMcpServerConfig,
+  PluginTestResult,
 } from '@coro/plugin-sdk'
 import { RateLimitExceededError, classifyProviderError } from '@coro/plugin-sdk'
 import type { ClassifyOptions } from '@coro/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
+import { testAnthropicCredentials } from './test-connection'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
@@ -354,6 +356,36 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     // `claudeLogin` defers to Claude Code's persisted session — nothing
     // to verify in-process; it either works on first call or doesn't.
     return { ok: true }
+  }
+
+  /**
+   * Active credential probe. Distinct from {@link healthcheck} — this
+   * one actually rings the Anthropic API to verify the credential is
+   * accepted. Called from the dashboard's Test connection button via
+   * the runner's `POST /test/llm` dispatcher.
+   *
+   * The `config` argument is the merged draft + on-disk config the
+   * user is about to save; redacted secrets ('…') have already been
+   * filled in upstream by the runner. We coerce it through the same
+   * Zod schema {@link init} uses so a malformed payload surfaces as a
+   * clear failure rather than a thrown exception.
+   */
+  async testConnection(config: unknown): Promise<PluginTestResult> {
+    const parsed = anthropicConfigSchema.safeParse(config ?? {})
+    if (!parsed.success) {
+      return {
+        ok: false,
+        message: `Invalid Anthropic plugin config: ${parsed.error.message}`,
+      }
+    }
+    const cfg = parsed.data
+    const auth: ClaudeAuthConfig = {
+      method: cfg.method ?? this.auth.method ?? 'claudeLogin',
+      ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+      ...(cfg.oauthToken ? { oauthToken: cfg.oauthToken } : {}),
+      ...(cfg.account ? { account: cfg.account } : {}),
+    }
+    return testAnthropicCredentials(auth)
   }
 
   async dispose(): Promise<void> {
