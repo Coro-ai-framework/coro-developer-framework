@@ -358,10 +358,6 @@ pnpm --filter @coro/runner test        # runner unit + MCP + integration
 pnpm --filter @coro/runner test -- tests/unit/foo.test.ts
 ```
 
-Some integration tests expect **Redis** on `localhost:6379` (e.g. job registry,
-dispatcher). Start Redis via the cloud compose file or skip those suites when
-iterating on solo-only work.
-
 ---
 
 ## Troubleshooting
