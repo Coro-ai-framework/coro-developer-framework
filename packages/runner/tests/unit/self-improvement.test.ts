@@ -19,8 +19,7 @@ import { PluginRegistry } from '../../src/plugins/registry'
 
 // ── Mock the writer module ───────────────────────────────────────────────────
 //
-// `proposeChange` end-to-end is exercised in the integration test. Here
-// we stub the writer so the unit tests focus on routing / validation /
+// Stub the writer so unit tests focus on routing / validation /
 // state-recording behaviour.
 
 vi.mock('../../src/intelligence/writer', () => ({
