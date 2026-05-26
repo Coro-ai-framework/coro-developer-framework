@@ -25,7 +25,14 @@ export function resolveDashboardDist(logger: Logger): string | null {
   const fromPackage = resolveDashboardFromInstalledPackage()
   if (fromPackage) return fromPackage
 
+  // Bundled-with-runner layout. The published tarball ships `dashboard-dist/`
+  // at the runner package root alongside `dist/`. After compilation this file
+  // lives at `<runner>/dist/src/dashboard-dist.js`, so `../../dashboard-dist`
+  // is the canonical hit. The deeper paths cover hypothetical nested layouts
+  // (e.g. desktop bundles) without false positives because we still require
+  // an `index.html` in the candidate.
   const bundledCandidates = [
+    path.resolve(__dirname, '../../dashboard-dist'),
     path.resolve(__dirname, '../../../dashboard-dist'),
     path.resolve(__dirname, '../../../../dashboard-dist'),
   ]
