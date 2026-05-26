@@ -159,8 +159,7 @@ packages/
 ├── plugin-gitlab/        ← Reference SCM plugin (GitLab)
 ├── llm-anthropic/        ← Executor plugin (Claude Agent SDK)
 ├── llm-openai/           ← Executor plugin (OpenAI)
-├── cloud-protocol/       ← Shared runner ↔ cloud protocol types
-└── landing/              ← Marketing site
+└── cloud-protocol/       ← Shared runner ↔ cloud protocol types
 
 runner/src/plugins/builtin/   ← Built-in github (SCM) and jira (tracker)
 

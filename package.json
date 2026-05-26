@@ -22,8 +22,6 @@
     "dev:runner": "pnpm --filter @coro-ai/runner dev",
     "dev:cloud": "pnpm --filter @coro-ai/runner dev:cloud",
     "dev:dashboard": "pnpm --filter @coro-ai/dashboard dev",
-    "dev:landing": "pnpm --filter @coro-ai/landing dev",
-    "build:landing": "pnpm --filter @coro-ai/landing build",
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo"
   },
   "devDependencies": {

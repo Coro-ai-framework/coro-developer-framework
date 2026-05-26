@@ -59,8 +59,7 @@ Coro ships as a pnpm workspace. The core packages are:
 | `@coro-ai/llm-anthropic`         | Built-in Anthropic phase executor plugin. Wraps `@anthropic-ai/claude-agent-sdk`; registered automatically via `buildBuiltinPluginRegistry`. |
 
 Additional shipped packages: `@coro-ai/desktop-electron` (Electron shell
-that bundles runner + dashboard), `@coro-ai/landing` (marketing site),
-`@coro-ai/plugin-gitlab` (example external SCM plugin).
+that bundles runner + dashboard), `@coro-ai/plugin-gitlab` (example external SCM plugin).
 
 There is no monolithic "Agent Host" service; the runner *is* the host
 and the cloud control plane is a separate `@coro-ai/runner` entrypoint

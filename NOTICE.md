@@ -30,7 +30,7 @@ See the **Additional Use Grant** in [LICENSE](LICENSE) for the legal wording.
 Includes, among others:
 
 - `packages/runner/` (CLI, job engine, hybrid client — **not** `src/cloud/`)
-- `packages/dashboard/`, `packages/landing/`, `packages/desktop-electron/`
+- `packages/dashboard/`, `packages/desktop-electron/`
 - `packages/intelligence-base/`, `packages/plugin-sdk/`, `packages/plugin-gitlab/`
 - `packages/llm-anthropic/`, `packages/llm-openai/`
 - `packages/cloud-protocol/` (shared protocol types used by OSS runners and Cloud)

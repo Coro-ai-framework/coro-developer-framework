@@ -35,7 +35,7 @@ These are workspace-only; bundled into `@coro-ai/runner` at publish time:
 - `@coro-ai/intelligence-base` (generic agents / workflows / skills)
 - `@coro-ai/cloud-protocol` (runner ↔ cloud types; plugin authors use types via `@coro-ai/plugin-sdk`)
 
-Also not published: `@coro-ai/desktop-electron`, `@coro-ai/landing`, workspace root `coro`.
+Also not published: `@coro-ai/desktop-electron`, workspace root `coro`.
 
 Manifest: [`scripts/publish-packages.json`](../scripts/publish-packages.json).  
 Runner staging: [`scripts/prepare-runner-npm-publish.mjs`](../scripts/prepare-runner-npm-publish.mjs).

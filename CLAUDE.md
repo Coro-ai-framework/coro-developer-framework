@@ -324,6 +324,5 @@ coro/                                    ← workspace root
     ├── llm-anthropic/                   ← @coro-ai/llm-anthropic — built-in Anthropic phase executor plugin
     │   └── src/                         ← executor.ts (wraps @anthropic-ai/claude-agent-sdk), auth.ts, index.ts
     ├── plugin-gitlab/                   ← @coro-ai/plugin-gitlab — example external SCM plugin
-    ├── desktop-electron/                ← @coro-ai/desktop-electron — Electron shell that bundles runner + dashboard
-    └── landing/                         ← @coro-ai/landing — public marketing site
+    └── desktop-electron/                ← @coro-ai/desktop-electron — Electron shell that bundles runner + dashboard
 ```
