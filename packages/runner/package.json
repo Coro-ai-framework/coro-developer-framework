@@ -1,9 +1,8 @@
 {
   "name": "@coro/runner",
   "version": "0.1.0",
-  "description": "Coro Runner — local agent runtime, cloud control plane, and CLI",
+  "description": "Coro Runner — local agent runtime, cloud control plane, and CLI (`coro` command).",
   "license": "BUSL-1.1",
-  "private": true,
   "engines": {
     "node": ">=20.0.0"
   },
@@ -11,6 +10,27 @@
   "bin": {
     "coro": "./dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Coro-ai-framework/coro-developer-framework.git",
+    "directory": "packages/runner"
+  },
+  "bugs": "https://github.com/Coro-ai-framework/coro-developer-framework/issues",
+  "homepage": "https://coro.build",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "coro",
+    "ai",
+    "agents",
+    "workflow",
+    "cli"
+  ],
   "scripts": {
     "build": "tsc && node scripts/copy-plugin-assets.js",
     "start": "node dist/cli/index.js start",

@@ -1,0 +1,20 @@
+      - name: Verify npm pack tarballs
+        run: pnpm run verify:npm-pack
+
+      - name: Publish to npm
+        if: github.event_name == 'push' || inputs.dry_run == false
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::Repository secret NPM_TOKEN is required to publish."
+            exit 1
+          fi
+          node scripts/prepare-runner-npm-publish.mjs
+          pnpm -r publish --access public --no-git-checks --provenance \
+            --filter @coro/llm-anthropic \
+            --filter @coro/llm-openai \
+            --filter @coro/plugin-sdk \
+            --filter @coro/plugin-gitlab
+          npm publish --access public --provenance packages/runner/.npm-publish

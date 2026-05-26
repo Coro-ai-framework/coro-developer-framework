@@ -11,9 +11,12 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present run build",
+    "build:publishable": "pnpm --filter @coro/cloud-protocol --filter @coro/intelligence-base --filter @coro/plugin-sdk --filter @coro/dashboard --filter @coro/llm-anthropic --filter @coro/llm-openai --filter @coro/plugin-gitlab --filter @coro/runner run build",
+    "prepare:runner-npm": "node scripts/prepare-runner-npm-publish.mjs",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
     "test:runner": "pnpm --filter @coro/runner test",
+    "verify:npm-pack": "node scripts/verify-npm-pack.mjs",
     "start": "pnpm --filter @coro/runner start",
     "dev": "pnpm --filter @coro/runner dev",
     "dev:runner": "pnpm --filter @coro/runner dev",

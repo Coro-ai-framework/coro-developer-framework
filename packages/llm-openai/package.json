@@ -2,7 +2,6 @@
   "name": "@coro/llm-openai",
   "version": "0.1.0",
   "description": "OpenAI Responses API phase executor for Coro — stateless conversation replay, MCP-backed tools, and provider-owned cost accounting.",
-  "private": true,
   "license": "BUSL-1.1",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -16,6 +15,16 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Coro-ai-framework/coro-developer-framework.git",
+    "directory": "packages/llm-openai"
+  },
+  "bugs": "https://github.com/Coro-ai-framework/coro-developer-framework/issues",
+  "homepage": "https://coro.build",
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",
