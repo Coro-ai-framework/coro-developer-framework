@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -41,6 +41,26 @@ for (const rel of manifest.packages) {
     stdio: 'inherit',
   })
   console.log(`packed ${pkg.name}@${pkg.version}`)
+
+  if (rel === 'packages/runner') {
+    verifyRunnerTarballRuntimeDeps(outDir, pkg)
+  }
 }
 
 console.log(`\nAll ${manifest.packages.length} packages packed to ${outDir}`)
+
+function verifyRunnerTarballRuntimeDeps(outDir, pkg) {
+  const tarball = path.join(outDir, `${pkg.name.replace('/', '-')}-${pkg.version}.tgz`)
+  if (!existsSync(tarball)) {
+    console.error(`::error::Expected runner pack tarball at ${tarball}`)
+    process.exit(1)
+  }
+  const listing = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' })
+  for (const dep of ['package/node_modules/pino/package.json', 'package/node_modules/express/package.json']) {
+    if (!listing.includes(dep)) {
+      console.error(`::error::Runner tarball missing ${dep} — global \`npm install -g\` will break (see prepare-runner-npm-publish.mjs)`)
+      process.exit(1)
+    }
+  }
+  console.log('runner tarball includes vendored production node_modules (pino, express, …)')
+}

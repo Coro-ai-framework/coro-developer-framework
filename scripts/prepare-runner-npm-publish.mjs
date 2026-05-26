@@ -122,7 +122,13 @@ writeFileSync(
       engines: runnerPkg.engines,
       main: runnerPkg.main,
       bin: runnerPkg.bin,
-      files: ['dist', 'dashboard-dist', 'README.md'],
+      // Ship production node_modules in the tarball. `npm install -g` does
+      // not reliably install a package's regular dependencies when only
+      // `bundledDependencies` are packed (see pino/express missing after
+      // global install). Local `npm install` hoists to the prefix root and
+      // works; global install does not — so vendoring node_modules here is
+      // the reliable fix for `coro` on PATH.
+      files: ['dist', 'dashboard-dist', 'README.md', 'node_modules'],
       repository: runnerPkg.repository,
       bugs: runnerPkg.bugs,
       homepage: runnerPkg.homepage,
@@ -151,7 +157,9 @@ try {
   // optional
 }
 
-// Published tarball: LLM executors are normal npm deps; internals ship via bundledDependencies.
+// Pin @coro-ai/* dependency versions in package.json metadata. Keep every
+// production package in node_modules — the tarball ships that tree via
+// `files` above (required for `npm install -g`).
 const stagedPkgPath = path.join(stagingRoot, 'package.json')
 const stagedPkg = JSON.parse(readFileSync(stagedPkgPath, 'utf8'))
 const bundledNames = [
@@ -160,17 +168,14 @@ const bundledNames = [
   '@coro-ai/plugin-sdk',
 ]
 for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
-  if (name.startsWith('@coro-ai/llm-')) {
-    stagedPkg.dependencies[name] = version
-    rmSync(path.join(stagingRoot, 'node_modules', ...name.split('/')), { recursive: true, force: true })
-    continue
-  }
-  if (bundledNames.includes(name)) {
+  if (name.startsWith('@coro-ai/')) {
     stagedPkg.dependencies[name] = version
   }
 }
 stagedPkg.bundledDependencies = bundledNames
 writeFileSync(stagedPkgPath, `${JSON.stringify(stagedPkg, null, 2)}\n`)
+
+assertProductionNodeModules(stagingRoot)
 
 console.log(`Prepared npm publish staging at ${stagingRoot}`)
 
@@ -201,4 +206,22 @@ function materializeLocalDependency(sourceDir, installedDir) {
   rmSync(installedDir, { recursive: true, force: true })
   mkdirSync(path.dirname(installedDir), { recursive: true })
   cpSync(sourceDir, installedDir, { recursive: true })
+}
+
+/** Fail fast if the staging tree is missing runtime deps we know global installs omit. */
+function assertProductionNodeModules(stagingRoot) {
+  const required = ['pino', 'express', 'commander', '@coro-ai/llm-anthropic']
+  const missing = []
+  for (const name of required) {
+    const dir = path.join(stagingRoot, 'node_modules', ...name.split('/'))
+    try {
+      readFileSync(path.join(dir, 'package.json'))
+    } catch {
+      missing.push(name)
+    }
+  }
+  if (missing.length) {
+    console.error(`::error::Staging node_modules is missing: ${missing.join(', ')}`)
+    process.exit(1)
+  }
 }

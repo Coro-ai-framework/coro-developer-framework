@@ -96,3 +96,12 @@ ls .npm-pack-verify/
 - **`@coro-ai/runner`** depends on `@coro-ai/llm-anthropic` and `@coro-ai/llm-openai` as normal npm deps (same version as the release).
 - **License** — BUSL-1.1 on all published packages.
 - **Native modules** — `better-sqlite3` rebuilds on install.
+- **Vendored `node_modules`** — The runner publish tarball ships a production `node_modules` tree (see `prepare-runner-npm-publish.mjs`). This is required because `npm install -g` does not reliably install all listed dependencies when only `dist/` and `bundledDependencies` are packed; symptoms include `Cannot find module 'pino'` when running `coro start`.
+
+### Troubleshooting `Cannot find module 'pino'` after `npm install -g`
+
+You are on a runner release published **before** the vendored-`node_modules` fix. Either upgrade to a newer `@coro-ai/runner` once republished, or work around on the broken version:
+
+```bash
+cd "$(npm root -g)/@coro-ai/runner" && npm install --omit=dev
+```
