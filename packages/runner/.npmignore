@@ -1,0 +1,7 @@
+# Source and test artifacts — published tarball ships compiled dist/ only.
+src/
+cli/
+tests/
+vitest.config.ts
+dist/tests/
+dist/vitest.config.*

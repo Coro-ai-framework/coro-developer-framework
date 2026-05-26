@@ -1,0 +1,116 @@
+name: NPM Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semver to publish for all @coro/* packages
+        required: true
+        type: string
+      dry_run:
+        description: Build and pack only — do not publish to npm
+        required: false
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "npm/v*.*.*"
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish @coro packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NPM_CONFIG_PROVENANCE: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#npm/v}"
+          fi
+          export VERSION="$version"
+          node <<'NODE'
+          const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+          const version = process.env.VERSION
+          if (!semver.test(version)) {
+            console.error(`Invalid semver: ${version}`)
+            process.exit(1)
+          }
+          console.log(`Resolved publish version: ${version}`)
+          NODE
+          echo "PUBLISH_VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply publish version to workspace packages
+        run: node scripts/set-publish-versions.mjs "$PUBLISH_VERSION"
+
+      - name: Build publishable packages
+        run: pnpm run build:publishable
+
+      - name: Run pre-publish tests
+        run: |
+          pnpm --filter @coro/runner test
+          pnpm --filter @coro/plugin-sdk test
+
+      - name: Verify npm pack tarballs
+        run: pnpm run verify:npm-pack
+
+      - name: Publish to npm
+        if: github.event_name == 'push' || inputs.dry_run == false
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::Repository secret NPM_TOKEN is required to publish."
+            exit 1
+          fi
+          node scripts/prepare-runner-npm-publish.mjs
+          pnpm -r publish --access public --no-git-checks --provenance \
+            --filter @coro/llm-anthropic \
+            --filter @coro/llm-openai \
+            --filter @coro/plugin-sdk \
+            --filter @coro/plugin-gitlab
+          npm publish --access public --provenance packages/runner/.npm-publish
+
+      - name: Dry run summary
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        run: |
+          {
+            echo '## NPM publish dry run'
+            echo
+            echo "- Version: \`${PUBLISH_VERSION}\`"
+            echo "- Built and packed all packages in \`scripts/publish-packages.json\`"
+            echo "- Re-run with **dry_run: false** or push tag \`npm/v${PUBLISH_VERSION}\` to publish"
+            echo
+            echo 'After publish, install with:'
+            echo '```bash'
+            echo "npm install -g @coro/runner@${PUBLISH_VERSION}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

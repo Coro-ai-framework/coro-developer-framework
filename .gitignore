@@ -17,3 +17,5 @@ packages/runner/*_output.txt
 packages/runner/*_output.log
 packages/runner/*_result.log
 packages/runner/coverage/
+.npm-pack-verify/
+packages/runner/.npm-publish/

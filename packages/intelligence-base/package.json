@@ -2,8 +2,8 @@
   "name": "@coro/intelligence-base",
   "version": "0.1.0",
   "description": "Coro base intelligence layer — generic, company-agnostic agents, workflows, skills, and runtime instructions that ship with every Coro install.",
-  "private": true,
   "license": "BUSL-1.1",
+  "private": true,
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,6 +18,13 @@
       "default": "./dist/index.js"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Coro-ai-framework/coro-developer-framework.git",
+    "directory": "packages/intelligence-base"
+  },
+  "bugs": "https://github.com/Coro-ai-framework/coro-developer-framework/issues",
+  "homepage": "https://coro.build",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",

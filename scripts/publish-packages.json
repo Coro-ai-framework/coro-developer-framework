@@ -1,0 +1,52 @@
+{
+  "description": "User-facing npm packages. @coro/runner bundles the dashboard and other runtime-only workspace packages.",
+  "build": [
+    "packages/cloud-protocol",
+    "packages/intelligence-base",
+    "packages/plugin-sdk",
+    "packages/dashboard",
+    "packages/llm-anthropic",
+    "packages/llm-openai",
+    "packages/plugin-gitlab",
+    "packages/runner"
+  ],
+  "packages": [
+    "packages/llm-anthropic",
+    "packages/llm-openai",
+    "packages/plugin-sdk",
+    "packages/plugin-gitlab",
+    "packages/runner"
+  ],
+  "runnerBundle": [
+    {
+      "name": "@coro/intelligence-base",
+      "folder": "intelligence-base",
+      "source": "packages/intelligence-base",
+      "extraFiles": ["layer"]
+    },
+    {
+      "name": "@coro/cloud-protocol",
+      "folder": "cloud-protocol",
+      "source": "packages/cloud-protocol",
+      "extraFiles": []
+    },
+    {
+      "name": "@coro/plugin-sdk",
+      "folder": "plugin-sdk",
+      "source": "packages/plugin-sdk",
+      "extraFiles": []
+    },
+    {
+      "name": "@coro/llm-anthropic",
+      "folder": "llm-anthropic",
+      "source": "packages/llm-anthropic",
+      "extraFiles": []
+    },
+    {
+      "name": "@coro/llm-openai",
+      "folder": "llm-openai",
+      "source": "packages/llm-openai",
+      "extraFiles": []
+    }
+  ]
+}

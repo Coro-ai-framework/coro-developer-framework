@@ -1,10 +1,21 @@
 {
   "name": "@coro/dashboard",
-  "private": true,
   "version": "0.1.0",
-  "description": "Coro Dashboard — multi-tenant agent platform UI",
+  "description": "Coro Dashboard — web UI for runs, intelligence, and settings (static build served by @coro/runner).",
   "license": "BUSL-1.1",
+  "private": true,
   "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Coro-ai-framework/coro-developer-framework.git",
+    "directory": "packages/dashboard"
+  },
+  "bugs": "https://github.com/Coro-ai-framework/coro-developer-framework/issues",
+  "homepage": "https://coro.build",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

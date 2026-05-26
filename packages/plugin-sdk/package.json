@@ -20,6 +20,16 @@
       "default": "./dist/guardrails.js"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Coro-ai-framework/coro-developer-framework.git",
+    "directory": "packages/plugin-sdk"
+  },
+  "bugs": "https://github.com/Coro-ai-framework/coro-developer-framework/issues",
+  "homepage": "https://coro.build",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
@@ -31,10 +41,10 @@
     "zod": "^3.0.0 || ^4.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.92",
-    "@coro/cloud-protocol": "workspace:*"
+    "@anthropic-ai/claude-agent-sdk": "^0.2.92"
   },
   "devDependencies": {
+    "@coro/cloud-protocol": "workspace:*",
     "@types/node": "^22.13.14",
     "pino": "^9.7.0",
     "typescript": "^5.8.2",
