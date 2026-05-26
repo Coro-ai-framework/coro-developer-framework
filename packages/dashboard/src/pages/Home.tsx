@@ -22,6 +22,8 @@ import { Skeleton } from '../components/ui/skeleton'
 import SetupWizard from '../components/wizard/SetupWizard'
 import { SettingsProvider, useSettings } from './Settings/SettingsContext'
 import { evaluateReadiness } from './Settings/readiness'
+import { jsonRequest, requestJson } from '../lib/http'
+import { shouldShowGraduationCard } from '../lib/coach-mode'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { deriveJobDescription, deriveJobTitle, getRunDetailPath, sortJobsByUpdatedAt } from '../lib/jobs'
 import {
@@ -150,6 +152,38 @@ function ReadyChip() {
   )
 }
 
+function GraduationCard({
+  totalRuns,
+  onTurnOff,
+  onKeepOn,
+}: {
+  totalRuns: number
+  onTurnOff: () => Promise<void>
+  onKeepOn: () => Promise<void>
+}) {
+  return (
+    <div className="flex flex-col gap-4 rounded-2xl border border-accent-500/25 bg-accent-500/8 p-5 lg:flex-row lg:items-center lg:justify-between">
+      <div>
+        <div className="text-[15px] font-semibold text-fg">
+          You&apos;ve done {totalRuns} runs. Ready to fly solo?
+        </div>
+        <p className="mt-1 max-w-2xl text-sm text-fg-muted">
+          Coach mode pauses Coro at every checkpoint. Turn it off and Coro will run end-to-end by
+          default — you can still flip back on for any run.
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" onClick={() => void onTurnOff()}>
+          Turn off coach mode
+        </Button>
+        <Button type="button" variant="outline" onClick={() => void onKeepOn()}>
+          Keep it on
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export default function Home() {
   return (
     <SettingsProvider>
@@ -160,7 +194,7 @@ export default function Home() {
 
 function HomeInner() {
   const { jobs, loading, error } = useJobs()
-  const { draft, pluginsCatalogue, loading: settingsLoading, firstRunCompleted } = useSettings()
+  const { draft, pluginsCatalogue, loading: settingsLoading, firstRunCompleted, preferences, reload } = useSettings()
   const [wizardOpen, setWizardOpen] = useState(false)
   const [autoLaunched, setAutoLaunched] = useState(false)
 
@@ -243,6 +277,37 @@ function HomeInner() {
         <SetupBanner setup={setup} onLaunchWizard={() => setWizardOpen(true)} />
       ) : null}
       {setup.state === 'configured' ? <ReadyChip /> : null}
+      {shouldShowGraduationCard(preferences?.coachMode) ? (
+        <GraduationCard
+          totalRuns={preferences?.coachMode?.totalRuns ?? 0}
+          onTurnOff={async () => {
+            await requestJson(
+              '/config',
+              jsonRequest(
+                { coachMode: { enabled: false, graduatedAt: new Date().toISOString() } },
+                { method: 'PUT' },
+              ),
+            )
+            await reload()
+          }}
+          onKeepOn={async () => {
+            const total = preferences?.coachMode?.totalRuns ?? 0
+            await requestJson(
+              '/config',
+              jsonRequest(
+                {
+                  coachMode: {
+                    graduateAfterRuns: total + 10,
+                    graduatedAt: new Date().toISOString(),
+                  },
+                },
+                { method: 'PUT' },
+              ),
+            )
+            await reload()
+          }}
+        />
+      ) : null}
 
       <SetupWizard open={wizardOpen} onOpenChange={handleWizardOpenChange} />
 

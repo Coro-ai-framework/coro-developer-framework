@@ -60,3 +60,17 @@ export async function fetchLaunchableWorkflows(): Promise<WorkflowOption[]> {
   const data = await requestJson<WorkflowsResponse>('/workflows?kind=job')
   return data.workflows
 }
+
+const DURATION_BANDS: Record<string, string> = {
+  'workflows/job/workflow.md': '15–35 minutes',
+  'workflows/job-fast/workflow.md': '5–15 minutes',
+  'workflows/job-deep/workflow.md': '45–90 minutes',
+  'workflows/campaign/workflow.md': '1–4 hours, sometimes much longer',
+}
+
+/** Coarse duration estimate for the pre-submit preview card. */
+export function durationBandFor(workflowPath: string, phaseCount: number): string {
+  if (DURATION_BANDS[workflowPath]) return DURATION_BANDS[workflowPath]
+  if (phaseCount <= 0) return 'Duration varies'
+  return `${phaseCount * 8}–${phaseCount * 15} minutes (estimate)`
+}

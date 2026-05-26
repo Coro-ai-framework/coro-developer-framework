@@ -223,6 +223,20 @@ const setupConfigSchema = z.object({
   skipped: z.array(z.enum(['llm', 'scm', 'tracker'])).optional(),
 }).optional()
 
+/** Coach mode — safer defaults for new users (interactive checkpoints on). */
+const coachModeConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  graduateAfterRuns: z.number().int().min(1).optional(),
+  totalRuns: z.number().int().min(0).optional(),
+  lastRunAt: z.string().optional(),
+  graduatedAt: z.string().optional(),
+}).optional()
+
+/** New-run intake surface preference (AI chat vs classic form). */
+const intakeConfigSchema = z.object({
+  mode: z.enum(['ai', 'form', 'ask-each-time']).optional(),
+}).optional()
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   intelligence: intelligenceConfigSchema,
@@ -281,6 +295,8 @@ const localConfigSchema = z.object({
    * the FTUE wizard so the dashboard doesn't auto-launch it again.
    */
   setup: setupConfigSchema,
+  coachMode: coachModeConfigSchema,
+  intake: intakeConfigSchema,
   guardrails: z.object({
     enabled: z.boolean().optional(),
     rules: z.array(z.object({
@@ -463,6 +479,8 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     inheritClaudeCodeMcps:
       patch.inheritClaudeCodeMcps !== undefined ? patch.inheritClaudeCodeMcps : existing.inheritClaudeCodeMcps,
     setup: patch.setup !== undefined ? patch.setup : existing.setup,
+    coachMode: patch.coachMode !== undefined ? patch.coachMode : existing.coachMode,
+    intake: patch.intake !== undefined ? patch.intake : existing.intake,
   }
   saveLocalConfig(merged, configPath)
   return merged

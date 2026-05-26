@@ -1,6 +1,6 @@
 ---
 display_name: Implementation Job
-description: General-purpose work-item workflow for scoped changes in an existing repository. Coro plans, codes, reviews, and ships a pull request.
+description: The default lane for almost every job — scoped feature work, bug fixes, refactors, reversible schema changes, dependency updates that need a plan. Coro writes a brief spec, plans, codes, reviews, and ships a PR. Pick this unless the work is either *tiny* (one-file/doc tweak → fast lane) or *genuinely high-stakes* (new public API, security/auth, irreversible migration → deep lane).
 kind: job
 
 initial_phase: spec-writing
@@ -9,7 +9,7 @@ initial_status: queued
 phases:
   - name: spec-writing
     agent: agents/spec-writer.md
-    tier: mini
+    tier: coding
     status: spec-writing
     interactive_checkpoint: true
 
@@ -98,7 +98,7 @@ The job pipeline is intentionally tight: each phase has a distinct decision to m
 
 | Phase | Who | What is unique to this phase |
 |---|---|---|
-| `spec-writing` (tracker-triggered) | spec-writer | Translate the ticket into a concrete spec |
+| `spec-writing` | spec-writer | Translate the ticket (or CLI/plan-mode brief) into a concrete, testable spec the Planner can act on |
 | `planning` | planner | Decide scope, sequence, language; produce work items |
 | `coding` | coder + `code-reviewer` subagent | Implement, build, test locally, self-review the diff against conventions/plan, open the PR |
 | `review` | pr-reviewer (merge gatekeeper) | Coordinate with humans, route fix requests back to coder, merge when approved |
@@ -112,16 +112,14 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 ---
 
-### Phase 0: Spec Writing (tracker-triggered only)
+### Phase 0: Spec Writing
 
 **Agent:** Spec Writer (`agents/spec-writer.md`)
 
-1. Read the tracker ticket via `tracker_get_issue({ trackerRef: params.trackerRef })`: title, description, acceptance criteria, components
+1. **Tracker-triggered jobs:** read the ticket via `tracker_get_issue({ trackerRef: params.trackerRef })`: title, description, acceptance criteria, components. **CLI / plan-mode jobs:** work directly from `params.description` (the brief produced by Coro plan mode is already structured).
 2. Infer: repo, affected files/services, reviewers, and test plan
-3. Output: `working/{job-id}/feature-spec.md`
-4. Post a comment on the tracker ticket confirming receipt
-
-CLI-triggered jobs skip this phase — the description is provided directly.
+3. Output: write `feature-spec.md` in the job working directory and register it via `post_artifact({ kind: "spec-md", … })` so it shows up on the dashboard
+4. Tracker-triggered jobs only: post a comment on the tracker ticket confirming receipt
 
 ---
 

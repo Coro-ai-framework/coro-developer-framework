@@ -32,8 +32,10 @@ import PluginsSection from './sections/PluginsSection'
 import McpServersSection from './sections/McpServersSection'
 import PathsSection from './sections/PathsSection'
 import GuardrailsSection from './sections/GuardrailsSection'
+import GeneralSection from './sections/GeneralSection'
 
 const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
+  general: GeneralSection,
   'llm-provider': LlmProvidersSection,
   'source-control': SourceControlSection,
   'issue-tracker': IssueTrackerSection,
