@@ -9,7 +9,7 @@ initial_status: queued
 phases:
   - name: spec-writing
     agent: agents/spec-writer.md
-    tier: mini
+    tier: coding
     status: spec-writing
     interactive_checkpoint: true
 

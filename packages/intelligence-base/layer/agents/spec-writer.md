@@ -15,7 +15,10 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | `log` | Report progress to developers |
 | `tracker_get_issue` | Read tracker ticket details (title, description, fields, links) |
 | `tracker_post_comment` | Post a confirmation comment on the tracker ticket |
+| `post_artifact` | Register the feature spec so the dashboard can render it on the spec-writing phase node |
 | `escalate` | Escalate blockers to human |
+
+Built-in tools you'll use this phase: `Write` (create the spec file) and `Read` (inspect the repo when inferring scope).
 
 (The active Tracker plugin's snippet — read via `read_memory({ file: "snippets/<plugin-id>-*.md" })` — documents the identifier shape and any custom fields you should look for.)
 
@@ -28,7 +31,17 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 
 ## Outputs
 
-Write `working/{job-id}/feature-spec.md` with the following structure:
+A single artefact: `feature-spec.md` in the job working directory (the runner has already set your `cwd` to `working/{job-id}/`, so use the bare filename when calling `Write`). After writing, register it via:
+
+```
+post_artifact({
+  kind: "spec-md",
+  title: "Feature spec — {job-id}",
+  data: { path: "feature-spec.md" }
+})
+```
+
+The file must follow this structure:
 
 ```markdown
 # Feature Spec: {ticket title}
@@ -90,10 +103,22 @@ If the repository cannot be determined from the ticket, check `config/repos.md` 
 
 ### 3. Write the feature spec
 
-Produce a clear, structured spec that the Planner can use to create an implementation plan. The spec should:
+Use the `Write` tool to create `feature-spec.md` (relative path — your `cwd` is already the job working directory). The spec should:
 - Translate vague ticket descriptions into specific, actionable requirements
 - Identify ambiguities and flag them explicitly
 - Include enough detail that the Planner doesn't need to read the original ticket
+
+Immediately after the file is on disk, call `mcp__coro__post_artifact` so it appears on the dashboard:
+
+```
+post_artifact({
+  kind: "spec-md",
+  title: "Feature spec — {job-id}",
+  data: { path: "feature-spec.md" }
+})
+```
+
+**Do not end the phase without posting the artefact.** The dashboard and downstream agents discover the spec through this call, not by scanning the working directory.
 
 ### 4. Post a tracker comment (tracker-triggered jobs only)
 
@@ -123,6 +148,7 @@ The Planner depends on your spec to create an accurate implementation plan. If t
 ## Critical rules
 
 - **Never guess requirements.** If something is ambiguous, flag it in the Notes section.
+- **Always write `feature-spec.md`** with the `Write` tool, and **always call `post_artifact({ kind: "spec-md", … })`** before ending your turn — even on CLI / plan-mode jobs. The Planner and the dashboard both depend on the artefact.
 - **Always run the `spec-quality` self-audit** before ending your turn.
 - **Always post a tracker comment** confirming the ticket has been picked up (tracker-triggered jobs only).
 - **Stay faithful to the source.** Do not add requirements that aren't in the ticket / description.
