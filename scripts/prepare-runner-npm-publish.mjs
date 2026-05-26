@@ -158,21 +158,22 @@ try {
 }
 
 // Pin @coro-ai/* dependency versions in package.json metadata. Keep every
-// production package in node_modules — the tarball ships that tree via
-// `files` above (required for `npm install -g`).
+// production package in node_modules — the tarball must ship that tree for
+// `npm install -g` (global installs do not hoist sibling deps like local
+// installs do).
+//
+// npm ignores `node_modules` in `files` unless dependencies are bundled.
+// A partial `bundledDependencies` list only packs those packages and their
+// transitive tree — direct deps like pino/express are omitted. Bundle all
+// production dependencies instead.
 const stagedPkgPath = path.join(stagingRoot, 'package.json')
 const stagedPkg = JSON.parse(readFileSync(stagedPkgPath, 'utf8'))
-const bundledNames = [
-  '@coro-ai/intelligence-base',
-  '@coro-ai/cloud-protocol',
-  '@coro-ai/plugin-sdk',
-]
 for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
   if (name.startsWith('@coro-ai/')) {
     stagedPkg.dependencies[name] = version
   }
 }
-stagedPkg.bundledDependencies = bundledNames
+stagedPkg.bundleDependencies = true
 writeFileSync(stagedPkgPath, `${JSON.stringify(stagedPkg, null, 2)}\n`)
 
 assertProductionNodeModules(stagingRoot)
