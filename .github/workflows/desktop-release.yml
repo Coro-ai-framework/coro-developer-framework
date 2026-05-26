@@ -52,10 +52,11 @@ jobs:
           const allowed = new Map([
             ['macos', { platform: 'macos', runner: 'macos-14-xlarge' }],
             ['windows', { platform: 'windows', runner: 'windows-2022' }],
+            ['linux', { platform: 'linux', runner: 'ubuntu-latest' }],
           ])
 
           if (tokens.length === 0) {
-            console.error('At least one platform is required. Use macos, windows, or macos,windows.')
+            console.error('At least one platform is required. Use macos, windows, linux, or any comma-separated combination.')
             process.exit(1)
           }
 
@@ -301,12 +302,20 @@ jobs:
             echo "$password_delimiter"
           } >> "$GITHUB_ENV"
 
+      - name: Install Linux packaging dependencies
+        if: ${{ matrix.platform == 'linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
       - name: Publish desktop release artifacts
         run: |
           if [[ "$RELEASE_PLATFORM" == 'macos' ]]; then
             pnpm --filter @coro/desktop-electron release:mac
-          else
+          elif [[ "$RELEASE_PLATFORM" == 'windows' ]]; then
             pnpm --filter @coro/desktop-electron release:win
+          else
+            pnpm --filter @coro/desktop-electron release:linux
           fi
 
       - name: Capture public release metadata
@@ -364,6 +373,20 @@ jobs:
           retention-days: 30
           path: |
             packages/desktop-electron/release/Coro-${{ env.DESKTOP_VERSION }}-x64.exe
+            packages/desktop-electron/release/*.blockmap
+            packages/desktop-electron/release/*.yml
+            packages/desktop-electron/release/builder-effective-config.yaml
+            ${{ runner.temp }}/public-release.json
+            ${{ runner.temp }}/coro-desktop-provenance-${{ env.RELEASE_PLATFORM }}.json
+
+      - name: Upload Linux release outputs
+        if: ${{ matrix.platform == 'linux' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-${{ env.RELEASE_PLATFORM }}-${{ env.DESKTOP_VERSION }}
+          retention-days: 30
+          path: |
+            packages/desktop-electron/release/Coro-${{ env.DESKTOP_VERSION }}-x64.AppImage
             packages/desktop-electron/release/*.blockmap
             packages/desktop-electron/release/*.yml
             packages/desktop-electron/release/builder-effective-config.yaml

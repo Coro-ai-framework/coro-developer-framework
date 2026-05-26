@@ -56,4 +56,24 @@
     perMachine: false,
     allowToChangeInstallationDirectory: false,
   },
+  linux: {
+    icon: 'dist/icon.png',
+    category: 'Development',
+    maintainer: 'Coro',
+    // AppImages mount read-only; Chromium's setuid sandbox cannot run on the FUSE path.
+    executableArgs: ['--no-sandbox'],
+    target: [
+      {
+        target: 'appImage',
+        arch: ['x64'],
+      },
+    ],
+    desktop: {
+      entry: {
+        Name: 'Coro',
+        Comment: 'Coro desktop — AI-assisted software delivery',
+        Categories: 'Development;',
+      },
+    },
+  },
 }

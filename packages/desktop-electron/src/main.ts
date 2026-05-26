@@ -3,6 +3,12 @@ import path from 'node:path'
 import { app, BrowserWindow, dialog, shell, type MessageBoxOptions } from 'electron'
 import { autoUpdater, type UpdateDownloadedEvent } from 'electron-updater'
 
+// Packaged Linux builds also set this via electron-builder `linux.executableArgs`.
+// AppImage/FUSE mounts cannot configure chrome-sandbox; --no-sandbox is required to start.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('no-sandbox')
+}
+
 import { RunnerSidecar, resolveLocalResourcesRoot } from './runner-sidecar'
 
 let mainWindow: BrowserWindow | null = null
@@ -175,12 +181,28 @@ function startAutoUpdater(): void {
   })
 
   autoUpdater.on('error', (error) => {
-    logAutoUpdater('Updater error', serializeError(error))
+    logUpdaterIssue(error)
   })
 
   void autoUpdater.checkForUpdates().catch((error) => {
-    logAutoUpdater('checkForUpdates failed', serializeError(error))
+    logUpdaterIssue(error)
   })
+}
+
+function isMissingLinuxUpdateMetadataError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error)
+  return text.includes('latest-linux.yml')
+}
+
+function logUpdaterIssue(error: unknown): void {
+  if (process.platform === 'linux' && isMissingLinuxUpdateMetadataError(error)) {
+    logAutoUpdater(
+      'Linux auto-update metadata is not on coro-release yet (publish with platforms=linux to enable).',
+    )
+    return
+  }
+
+  logAutoUpdater('Updater error', serializeError(error))
 }
 
 async function promptToInstallDownloadedUpdate(info: UpdateDownloadedEvent): Promise<void> {

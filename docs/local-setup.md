@@ -344,8 +344,9 @@ pnpm install && pnpm -r build
 pnpm --filter @coro/desktop-electron dev
 ```
 
-Packages a local run (macOS arm64 / Windows x64) via
-`pnpm --filter @coro/desktop-electron dist:mac` or `dist:win`. Releases publish to
+Packages a local run (macOS arm64 / Windows x64 / Linux x64 AppImage) via
+`pnpm --filter @coro/desktop-electron dist:mac`, `dist:win`, or `dist:linux`.
+Releases publish to
 [Coro-ai-framework/coro-release](https://github.com/Coro-ai-framework/coro-release).
 
 ---

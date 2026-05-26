@@ -76,6 +76,7 @@ on machines where port `3000` is already in use.
 - No packaging pipeline yet.
 - No updater wiring yet.
 - No signing or notarization yet.
-- No Windows or Linux work yet.
+- Windows and Linux desktop packaging are implemented in
+  `packages/desktop-electron` (see [desktop-packaging.md](desktop-packaging.md)).
 
 Phase 2 will consume this contract to build the actual Electron shell.

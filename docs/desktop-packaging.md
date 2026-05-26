@@ -1,17 +1,20 @@
 # Desktop Packaging And Release Notes
 
-This document captures the current desktop distribution shape for Coro and the
-next platform extension work, with emphasis on Windows packaging.
+This document captures the current desktop distribution shape for Coro across
+macOS, Windows, and Linux.
 
 ## Current State
 
 - The shipping desktop shell is Electron-based and wraps the existing runner and
   dashboard.
-- macOS arm64 is the only production platform currently wired end to end.
-- Windows x64 packaging is now supported through GitHub Actions runners, so a
-  local Windows machine is not required to create installer artifacts.
-- Production releases are signed, notarized, published to the public releases
-  repository, and verified to auto-update successfully.
+- **macOS arm64**, **Windows x64**, and **Linux x64 (AppImage)** are wired
+  through GitHub Actions for validation and release.
+- macOS releases are signed and notarized; Windows signing is optional via CI
+  secrets; Linux v1 ships unsigned (same optional-signing posture as unsigned
+  Windows).
+- Production releases publish to the public releases repository and use
+  `electron-updater` per platform (`latest-mac.yml`, `latest.yml`,
+  `latest-linux.yml`).
 - User state remains under `~/.coro`, matching the CLI and existing local
   runtime expectations.
 
@@ -22,11 +25,11 @@ next platform extension work, with emphasis on Windows packaging.
 - Validation workflow: `.github/workflows/desktop-validation.yml`
 - Release workflow: `.github/workflows/desktop-release.yml`
 - Public update repo: `Coro-ai-framework/coro-release`
-- Published artifacts today:
-  - `Coro-<version>-arm64.dmg`
-  - `Coro-<version>-arm64.zip`
-  - `*.blockmap`
-  - `latest-mac.yml`
+- Published artifacts:
+  - macOS: `Coro-<version>-arm64.dmg`, `Coro-<version>-arm64.zip`, `latest-mac.yml`
+  - Windows: `Coro-<version>-x64.exe`, `latest.yml`
+  - Linux: `Coro-<version>-x64.AppImage`, `latest-linux.yml`
+  - `*.blockmap` where emitted by electron-builder
 
 The macOS updater path uses `electron-updater` against GitHub Releases. The app
 checks at startup, downloads in the background, prompts when the update is
@@ -45,15 +48,18 @@ The current operator workflow is:
 5. For Windows releases, the workflow builds on a Windows runner and publishes
   NSIS installer artifacts. If Windows signing secrets are present, it signs
   the installer during the same workflow run.
-6. Verify the public release includes the platform-appropriate updater metadata
+6. For Linux releases, the workflow builds on `ubuntu-latest` and publishes an
+  AppImage. No Linux signing step in v1.
+7. Verify the public release includes the platform-appropriate updater metadata
   and binaries.
-7. Validate the installed app updates from the previously released version.
+8. Validate the installed app updates from the previously released version.
 
 Valid `platforms` examples:
 
 - `macos`
 - `windows`
-- `macos,windows`
+- `linux`
+- `macos,windows,linux`
 
 Required secrets already used by the workflow:
 
@@ -174,9 +180,69 @@ Before calling Windows packaging complete, we should verify:
 3. Verify updater behavior across two real Windows releases.
 4. Evaluate whether Windows `arm64` is worth adding.
 
+## Linux Packaging (AppImage x64)
+
+Linux packaging runs on Ubuntu GitHub Actions runners. A local Linux machine is
+not required to produce release artifacts.
+
+### Recommended Linux Packaging Shape
+
+- Target: `appImage` on `x64`
+- Update mechanism: `electron-updater` with AppImage artifacts and
+  `latest-linux.yml` on `coro-release`
+- Icon: `dist/icon.png` from `prepare-icon.mjs`
+
+AppImage is the Linux target because it is the `electron-updater` path
+electron-builder supports for auto-update (analogous to NSIS on Windows).
+
+### Expected Linux Artifacts
+
+- `Coro-<version>-x64.AppImage`
+- `latest-linux.yml`
+- optional `*.blockmap` files
+
+### Install Notes For Users
+
+1. Download `Coro-<version>-x64.AppImage` from
+   [coro-release](https://github.com/Coro-ai-framework/coro-release/releases/latest).
+2. `chmod +x Coro-*.AppImage` and run the file (or integrate via your desktop
+   environment’s “Run” / AppImage launcher).
+3. **FUSE:** many distributions require `libfuse2` (package name varies) to run
+   AppImages. If the app fails to start, install FUSE and retry.
+4. Packaged builds pass `--no-sandbox` because AppImage FUSE mounts cannot configure
+   Chromium’s `chrome-sandbox` helper (required for the app to start).
+5. **Auto-update:** until a release is published with `platforms=linux`, the app logs a
+   single informational line instead of errors about missing `latest-linux.yml` on
+   existing macOS/Windows-only releases.
+6. **Wayland:** harmless `wayland_wp_color_manager` log lines from Chromium on some
+   compositors can be ignored.
+
+### Local / CI Commands
+
+```bash
+pnpm --filter @coro/desktop-electron dist:linux      # AppImage, no publish
+pnpm --filter @coro/desktop-electron package:linux   # unpacked dir for debugging
+pnpm --filter @coro/desktop-electron release:linux   # publish to coro-release
+```
+
+Validation workflow job: `package-linux` in
+`.github/workflows/desktop-validation.yml`.
+
+### Validation Checklist For Linux (before first public release)
+
+Run on a clean Ubuntu 22.04 or 24.04 VM:
+
+1. Fresh install from published AppImage (`chmod +x`, execute).
+2. Runner sidecar boots and dashboard loads in the Electron window.
+3. Settings persist under `~/.coro` without regressing CLI compatibility.
+4. **Auto-update:** publish two sequential Linux versions via
+   `platforms=linux`; confirm update download, “Restart and Install”, and
+   successful restart on the newer version.
+5. Quit during update does not leave the UI running against a dead runner.
+
 ## Out Of Scope For This Document
 
-- Linux desktop packaging
+- `.deb` / Flatpak / Snap / Linux arm64 AppImage
 - tray integration
 - background updater UI improvements
 - release channels beyond the default latest channel

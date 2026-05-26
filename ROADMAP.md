@@ -22,7 +22,7 @@ New integrations should be separate packages using [`@coro/plugin-sdk`](packages
 
 We need feedback from **different codebases and stacks**—not just happy-path demos:
 
-- Run the **desktop app** on macOS or Windows against your own repos
+- Run the **desktop app** on macOS, Windows, or Linux against your own repos
 - Try solo workflows (`job`, `job-fast`, `job-deep`, `campaign`) and report what breaks
 - Share stack context (language, monorepo vs polyrepo, SCM, tracker) when you file bugs or discussions
 

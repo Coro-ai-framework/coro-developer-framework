@@ -2,7 +2,7 @@
 
 ## An open workflow harness for AI-assisted software delivery
 
-Open-source workflow runner for the full **spec-to-merge** path on your codebases, with **layered markdown intelligence** and **review-gated self-improvement** so conventions and lessons accumulate in git—not in one-off threads. **Desktop app** for macOS and Windows; CLI for automation.
+Open-source workflow runner for the full **spec-to-merge** path on your codebases, with **layered markdown intelligence** and **review-gated self-improvement** so conventions and lessons accumulate in git—not in one-off threads. **Desktop app** for macOS, Windows, and Linux; CLI for automation.
 
 [![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](NOTICE.md)
 [![Releases](https://img.shields.io/github/v/release/Coro-ai-framework/coro-release)](https://github.com/Coro-ai-framework/coro-release/releases/latest)
@@ -27,6 +27,7 @@ Download the latest release from **[Coro-ai-framework/coro-release](https://gith
 | -------- | ---- |
 | **macOS** (Apple Silicon) | `Coro-*-arm64.dmg` (or `.zip`) |
 | **Windows** (x64) | `Coro-*-x64.exe` |
+| **Linux** (x64) | `Coro-*-x64.AppImage` (may require `libfuse2`; see [desktop-packaging.md](docs/desktop-packaging.md)) |
 
 Install and open **Coro**. The app starts a local runner in the background and opens the dashboard in a window.
 
@@ -50,8 +51,8 @@ Open **New Job**, choose a repository, and describe the change. Watch phases pro
 
 | Method | Best for |
 | ------ | -------- |
-| **Desktop app** | Daily use on macOS and Windows |
-| **Browser + local runner** | Linux, or hacking on Coro itself — see [docs/local-setup.md](docs/local-setup.md) |
+| **Desktop app** | Daily use on macOS, Windows, and Linux |
+| **Browser + local runner** | Hacking on Coro itself, or when you prefer not to install the desktop shell — see [docs/local-setup.md](docs/local-setup.md) |
 | **CLI** | Scripts, CI, automation — requires a running runner ([CLI reference](#cli-reference)) |
 
 ### Browser + runner (developers)
@@ -151,7 +152,7 @@ Config schema: [`packages/runner/src/config/local-config.ts`](packages/runner/sr
 
 ```
 packages/
-├── desktop-electron/     ← macOS + Windows desktop app
+├── desktop-electron/     ← macOS, Windows, and Linux desktop app
 ├── runner/               ← CLI, job engine, MCP tools, REST server
 ├── dashboard/            ← React UI (embedded in desktop + served by runner)
 ├── intelligence-base/    ← Base agents, workflows, skills, memory templates
