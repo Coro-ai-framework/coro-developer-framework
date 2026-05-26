@@ -32,6 +32,11 @@ export interface IntakeStreamContext {
   userLocale?: string
 }
 
+export interface IntakeModelChoice {
+  provider?: string
+  model?: string
+}
+
 export function useIntakeStream() {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,6 +61,7 @@ export function useIntakeStream() {
       messages: IntakeChatMessage[],
       context: IntakeStreamContext,
       onToken: (text: string) => void,
+      modelChoice?: IntakeModelChoice,
     ): Promise<{ assistantText: string; usage?: IntakeStreamDone['usage']; error?: string; noLlm?: boolean }> => {
       setError(null)
       setNoLlm(false)
@@ -72,6 +78,12 @@ export function useIntakeStream() {
             {
               sessionId: sessionIdRef.current,
               messages,
+              ...(modelChoice?.model?.trim()
+                ? {
+                    model: modelChoice.model.trim(),
+                    ...(modelChoice.provider?.trim() ? { provider: modelChoice.provider.trim() } : {}),
+                  }
+                : {}),
               context: {
                 recentRepos: context.recentRepos,
                 recentReviewers: context.recentReviewers,

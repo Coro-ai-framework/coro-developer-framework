@@ -31,6 +31,8 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-path'
 import type {
+  ChatRequest,
+  ChatResult,
   ConversationMessage,
   ExecutorCapabilities,
   ExecutorModelDescriptor,
@@ -49,7 +51,7 @@ import { RateLimitExceededError, classifyProviderError } from '@coro-ai/plugin-s
 import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
-import { testAnthropicCredentials } from './test-connection'
+import { readClaudeLocalSession, testAnthropicCredentials } from './test-connection'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
@@ -391,6 +393,135 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   async dispose(): Promise<void> {
     // The Claude Agent SDK owns its own subprocess lifecycle and tears
     // down on stream close. Nothing executor-owned to release here.
+  }
+
+  /**
+   * Lightweight conversational chat used by surfaces that don't need
+   * the full Claude Agent SDK stack (Coro plan mode intake).
+   *
+   * Talks to Anthropic's `/v1/messages` REST endpoint directly so we
+   * skip the Claude Code CLI subprocess, the MCP bridge, hook
+   * enforcement, and the working-dir / intelligence-dir setup
+   * `executePhase` needs. Auth follows the same priority ladder as
+   * {@link testAnthropicCredentials}: explicit `apiKey`, explicit
+   * `oauth`, or the persisted Claude CLI session.
+   */
+  async chat(req: ChatRequest): Promise<ChatResult> {
+    this.logger.debug(
+      {
+        model: req.model,
+        messageCount: req.messages.length,
+        signalAbortedAtEntry: req.signal.aborted,
+        authMethod: this.auth.method ?? 'claudeLogin',
+      },
+      'anthropic.chat: invoked',
+    )
+    const headers = await this.buildAnthropicRestHeaders()
+    const body: Record<string, unknown> = {
+      model: req.model,
+      max_tokens: req.maxOutputTokens ?? 1024,
+      messages: req.messages.map(m => ({ role: m.role, content: m.content })),
+    }
+    if (req.systemPrompt) body.system = req.systemPrompt
+
+    let response: Response
+    try {
+      this.logger.debug({ model: req.model, signalAborted: req.signal.aborted }, 'anthropic.chat: posting to /v1/messages')
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: req.signal,
+      })
+    } catch (err) {
+      this.logger.warn(
+        {
+          err,
+          errName: (err as { name?: string }).name,
+          errMessage: (err as { message?: string }).message,
+          signalAborted: req.signal.aborted,
+        },
+        'anthropic.chat: fetch threw',
+      )
+      if ((err as Error).name === 'AbortError') throw err
+      throw new Error(`Anthropic chat request failed: ${(err as Error).message}`)
+    }
+
+    if (!response.ok) {
+      // Classify rate-limit / overloaded errors so callers can surface
+      // a recoverable state instead of an opaque crash, matching how
+      // `executePhase` parks the runner on the same conditions.
+      const errBody = await response.text().catch(() => '')
+      const info = classifyProviderError(
+        { status: response.status, message: errBody },
+        ANTHROPIC_CLASSIFY_OPTIONS,
+      )
+      if (info) {
+        throw new RateLimitExceededError(ANTHROPIC_PLUGIN_ID, info)
+      }
+      throw new Error(`Anthropic ${response.status}: ${errBody.slice(0, 400)}`)
+    }
+
+    const data = (await response.json()) as {
+      content?: Array<{ type: string; text?: string }>
+      usage?: {
+        input_tokens?: number
+        output_tokens?: number
+        cache_read_input_tokens?: number
+        cache_creation_input_tokens?: number
+      }
+    }
+    const output = (data.content ?? [])
+      .filter(block => block.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text as string)
+      .join('\n')
+
+    return {
+      output,
+      usage: {
+        inputTokens: Number(data.usage?.input_tokens ?? 0),
+        outputTokens: Number(data.usage?.output_tokens ?? 0),
+        cacheReadInputTokens: Number(data.usage?.cache_read_input_tokens ?? 0),
+        cacheCreationInputTokens: Number(data.usage?.cache_creation_input_tokens ?? 0),
+      },
+    }
+  }
+
+  /**
+   * Build the auth + version headers used by direct REST calls to
+   * Anthropic. Mirrors {@link testAnthropicCredentials} so the
+   * "Test connection" path and the live {@link chat} path agree on
+   * which credential to send.
+   */
+  private async buildAnthropicRestHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    }
+    const method = this.auth.method ?? 'claudeLogin'
+    if (method === 'apiKey') {
+      const apiKey = (this.auth.apiKey ?? '').trim()
+      if (!apiKey) throw new Error('Anthropic auth method is "apiKey" but no apiKey is configured.')
+      headers['x-api-key'] = apiKey
+      return headers
+    }
+    if (method === 'oauth') {
+      const token = (this.auth.oauthToken ?? '').trim()
+      if (!token) throw new Error('Anthropic auth method is "oauth" but no oauthToken is configured.')
+      headers['Authorization'] = `Bearer ${token}`
+      headers['anthropic-beta'] = 'oauth-2025-04-20'
+      return headers
+    }
+    const session = readClaudeLocalSession()
+    if (!session.accessToken) {
+      throw new Error('Claude session is not signed in on this machine. Connect Claude in Settings or switch to API key auth.')
+    }
+    if (session.expiresAt && session.expiresAt < Date.now()) {
+      throw new Error('Your Claude session has expired. Reconnect Claude in Settings.')
+    }
+    headers['Authorization'] = `Bearer ${session.accessToken}`
+    headers['anthropic-beta'] = 'oauth-2025-04-20'
+    return headers
   }
 
   /**

@@ -789,6 +789,40 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    * emits an assistant message with no tool calls.
    */
   runSubagent?(req: SubagentExecutionRequest): Promise<SubagentResult>
+
+  /**
+   * Optional simple chat completion path. Bypasses workflow tools, MCP
+   * bridges, hooks, working dirs, and subagent orchestration — intended
+   * for surfaces that just need a conversational response (e.g. Coro
+   * plan mode intake). Implementations should call the provider's HTTP
+   * API directly, without spawning subprocess agents.
+   */
+  chat?(req: ChatRequest): Promise<ChatResult>
+}
+
+/**
+ * Per-call request for {@link PhaseExecutorRuntime.chat}. Strictly
+ * stateless — no session, no tools, no recursion.
+ */
+export interface ChatRequest {
+  /** Conversation messages (alternating user/assistant). */
+  messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>
+  /** Optional system instructions. */
+  systemPrompt?: string
+  /** Concrete model id. */
+  model: string
+  /** Optional max output tokens. Provider default applies when omitted. */
+  maxOutputTokens?: number
+  /** Cancellation signal. */
+  signal: AbortSignal
+}
+
+/** Terminal result from a single {@link PhaseExecutorRuntime.chat} call. */
+export interface ChatResult {
+  /** Concatenated assistant text. */
+  output: string
+  /** Normalized token usage; cost is owned by the runner's accounting. */
+  usage: NormalizedTokenUsage
 }
 
 /**

@@ -1176,6 +1176,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     const body = req.body as {
       sessionId?: string
       messages?: Array<{ role: 'user' | 'assistant'; content: string }>
+      model?: string
+      provider?: string
       context?: {
         recentRepos?: string[]
         recentReviewers?: string[]
@@ -1198,13 +1200,25 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     res.setHeader('Connection', 'keep-alive')
     res.flushHeaders?.()
 
+    // Plan-mode requests are short (a single LLM round-trip, typically
+    // under 10s). We intentionally do NOT tie the LLM's abort signal
+    // to `req.close` / `res.close`: under Express 4 + Node 20 the
+    // request emits 'close' as soon as `express.json()` finishes
+    // draining the POST body, which would cancel every LLM call a few
+    // ms after it starts. If the browser disconnects mid-flight we'll
+    // simply write SSE bytes into a closed socket — harmless. Longer-
+    // running stream surfaces should bring their own cancellation
+    // protocol rather than borrow the HTTP request lifecycle.
     const abortController = new AbortController()
-    req.on('close', () => abortController.abort())
+    logger.debug({ url: req.originalUrl }, 'intake stream: request received')
 
     try {
       for await (const event of runIntakeStream({
         sessionId: body.sessionId.trim(),
         messages: body.messages,
+        ...(typeof body.model === 'string' && body.model.trim()
+          ? { model: body.model.trim(), provider: typeof body.provider === 'string' ? body.provider.trim() : undefined }
+          : {}),
         context: {
           recentRepos: body.context?.recentRepos ?? [],
           recentReviewers: body.context?.recentReviewers ?? [],
@@ -1214,6 +1228,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         registry: plugins,
         settings: runnerCtx.settings,
         signal: abortController.signal,
+        logger,
       })) {
         if (event.type === 'token') {
           res.write(formatSseFrame(JSON.stringify({ type: 'token', text: event.text }), 'message'))

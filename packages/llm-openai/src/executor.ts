@@ -1,6 +1,8 @@
 import OpenAI from 'openai'
 import type { Logger } from 'pino'
 import type {
+  ChatRequest,
+  ChatResult,
   ConversationMessage,
   ExecutorCapabilities,
   ExecutorModelDescriptor,
@@ -438,6 +440,63 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       output: collected.join('\n').trim(),
       usage,
       stopReason,
+    }
+  }
+
+  /**
+   * Lightweight conversational chat used by surfaces that don't need
+   * the executor's full tool / MCP / hook pipeline (Coro plan mode
+   * intake). Single Responses-API call against the configured OpenAI
+   * client — no MCP bridge, no working-dir wiring, no subagent
+   * orchestration.
+   */
+  async chat(req: ChatRequest): Promise<ChatResult> {
+    this.logger.debug(
+      {
+        model: req.model,
+        messageCount: req.messages.length,
+        signalAbortedAtEntry: req.signal.aborted,
+      },
+      'openai.chat: invoked',
+    )
+    const health = await this.healthcheck()
+    if (!health.ok) {
+      this.logger.warn({ reason: health.reason }, 'openai.chat: healthcheck failed')
+      throw new Error(health.reason ?? 'OpenAI executor is not configured.')
+    }
+    const client = this.getClient()
+    const input = req.messages.map(m => ({ role: m.role, content: m.content }))
+
+    const params: Record<string, unknown> = {
+      model: req.model,
+      input,
+      store: false,
+    }
+    if (req.systemPrompt) params.instructions = req.systemPrompt
+    if (req.maxOutputTokens) params.max_output_tokens = req.maxOutputTokens
+
+    let response: OpenAiResponseLike
+    try {
+      this.logger.debug({ model: req.model, signalAborted: req.signal.aborted }, 'openai.chat: posting to /v1/responses')
+      response = await client.responses.create(params, { signal: req.signal })
+    } catch (err) {
+      this.logger.warn(
+        {
+          err,
+          errName: (err as { name?: string }).name,
+          errMessage: (err as { message?: string }).message,
+          signalAborted: req.signal.aborted,
+        },
+        'openai.chat: responses.create threw',
+      )
+      if (isAbortError(err) || req.signal.aborted) throw err
+      const info = classifyProviderError(err, OPENAI_CLASSIFY_OPTIONS)
+      if (info) throw new RateLimitExceededError(OPENAI_PLUGIN_ID, info, { cause: err })
+      throw err
+    }
+    return {
+      output: extractOutputText(response),
+      usage: normalizeUsage(response.usage),
     }
   }
 

@@ -1,14 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Send, Sparkles } from 'lucide-react'
+import { Check, Loader2, Send, Sparkles } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Textarea } from './ui/textarea'
 import Field from './forms/field'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu'
+import { findModel } from './llm/pricing'
+import type { ProviderOption } from './llm/ModelPicker'
+import { useExecutorPlugins } from './llm/useExecutorPlugins'
+import { useProviderModels, type ProviderModelDescriptor } from './llm/useProviderModels'
 import { jsonRequest, requestJson, ApiError } from '../lib/http'
 import { parseBrief, type BriefDraft } from '../lib/intake-brief'
 import { deriveRunHistoryHints, findSimilarRuns } from '../lib/run-history'
 import { useIntakeStream, type IntakeChatMessage } from '../hooks/useIntakeStream'
+import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import type { Job } from '../types'
 import type { WorkflowOption } from '../workflows'
 import { cn } from '../lib/utils'
@@ -34,8 +47,21 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
   const [brief, setBrief] = useState<BriefDraft | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [modelChoice, setModelChoice] = useState({ provider: '', model: '' })
   const listRef = useRef<HTMLDivElement>(null)
   const userTurns = useMemo(() => messages.filter(m => m.role === 'user').length, [messages])
+
+  const { providers } = useExecutorPlugins()
+  const { modelsByProvider, loadModels } = useProviderModels()
+
+  useEffect(() => {
+    void requestJson<ConfigResponse>('/config').then(data => {
+      const tier =
+        data.config?.llm?.aliases?.['tier:planning'] ?? data.config?.llm?.aliases?.['planning']
+      if (!tier?.model) return
+      setModelChoice(prev => (prev.model ? prev : { provider: tier.provider ?? '', model: tier.model }))
+    })
+  }, [])
 
   const history = useMemo(() => deriveRunHistoryHints(jobs), [jobs])
   const similar = useMemo(
@@ -85,6 +111,7 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
           userLocale: navigator.language,
         },
         token => setPartial(prev => prev + token),
+        modelChoice.model ? modelChoice : undefined,
       )
 
       if (result.noLlm) return
@@ -102,7 +129,7 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
         setSubmitError('We could not get to a clean brief. Try the form with your description prefilled.')
       }
     },
-    [messages, send, history, workflows, workflowPaths, partial, userTurns],
+    [messages, send, history, workflows, workflowPaths, partial, userTurns, modelChoice],
   )
 
   async function dispatchBrief() {
@@ -187,21 +214,31 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
               <Send />
             </Button>
           </form>
-          <div className="mt-2 flex justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <PlanModeModelSelect
+              value={modelChoice}
+              onChange={setModelChoice}
+              providers={providers}
+              modelsByProvider={modelsByProvider}
+              loadModels={loadModels}
               disabled={streaming}
-              onClick={() => void sendMessage(input, true)}
-            >
-              Force brief now
-            </Button>
-            {streaming ? (
-              <Button type="button" variant="ghost" size="sm" onClick={cancel}>
-                Stop
+            />
+            <div className="flex items-center">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={streaming}
+                onClick={() => void sendMessage(input, true)}
+              >
+                Force brief now
               </Button>
-            ) : null}
+              {streaming ? (
+                <Button type="button" variant="ghost" size="sm" onClick={cancel}>
+                  Stop
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
@@ -247,6 +284,71 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
         )}
       </div>
     </div>
+  )
+}
+
+function PlanModeModelSelect({
+  value,
+  onChange,
+  providers,
+  modelsByProvider,
+  loadModels,
+  disabled = false,
+}: {
+  value: { provider: string; model: string }
+  onChange: (next: { provider: string; model: string }) => void
+  providers: ProviderOption[]
+  modelsByProvider: Record<string, ProviderModelDescriptor[] | null | undefined>
+  loadModels: (providerId: string) => Promise<void>
+  disabled?: boolean
+}) {
+  const providerKey = providers.map(p => p.id).join('|')
+  useEffect(() => {
+    for (const p of providers) void loadModels(p.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerKey])
+
+  const label = useMemo(() => {
+    if (!value.model) return 'Planning tier default'
+    const descriptor = findModel(modelsByProvider, value.provider, value.model)
+    return descriptor?.displayName ?? value.model
+  }, [value, modelsByProvider])
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <button
+          type="button"
+          className="text-[11px] text-fg-subtle transition-colors hover:text-fg-muted disabled:opacity-50"
+        >
+          Model: <span className="font-mono text-fg-muted">{label}</span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+        {providers.map((p, index) => {
+          const models = modelsByProvider[p.id]
+          if (!models?.length) return null
+          return (
+            <div key={p.id}>
+              {index > 0 ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuLabel>{p.displayName}</DropdownMenuLabel>
+              {models.map(m => {
+                const selected = value.provider === p.id && value.model === m.id
+                return (
+                  <DropdownMenuItem
+                    key={`${p.id}:${m.id}`}
+                    onClick={() => onChange({ provider: p.id, model: m.id })}
+                  >
+                    <span className={cn(selected && 'text-accent-300')}>{m.displayName}</span>
+                    {selected ? <Check className="ml-auto size-3.5 text-accent-300" /> : null}
+                  </DropdownMenuItem>
+                )
+              })}
+            </div>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
