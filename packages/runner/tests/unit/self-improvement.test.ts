@@ -11,7 +11,7 @@ import {
   assertProposalPathsAreMarkdown,
   validateProposalFiles,
 } from '../../src/tools/self-improvement'
-import { JobType, type Job, type Proposal } from '@coro/cloud-protocol'
+import { JobType, type Job, type Proposal } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
 import * as writerMock from '../../src/intelligence/writer'

@@ -3,7 +3,7 @@ import {
   buildWorkspaceLayoutPromptBlock,
   resolveJobWorkspaceLayout,
 } from '../../src/jobs/workspace-layout'
-import { JobType, type Job } from '@coro/cloud-protocol'
+import { JobType, type Job } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 function makeJob(overrides: Partial<Job> = {}): Job {

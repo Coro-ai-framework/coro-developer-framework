@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Stage @coro/runner for npm publish: bundle dashboard + internal workspace
+ * Stage @coro-ai/runner for npm publish: bundle dashboard + internal workspace
  * packages into the tarball. LLM executors stay as normal npm dependencies.
  *
  * Output: packages/runner/.npm-publish/  (safe to delete and regenerate)
@@ -27,7 +27,7 @@ mkdirSync(stagingRoot, { recursive: true })
 try {
   readFileSync(path.join(dashboardDist, 'index.html'))
 } catch {
-  console.error('::error::Dashboard build missing. Run pnpm --filter @coro/dashboard build first.')
+  console.error('::error::Dashboard build missing. Run pnpm --filter @coro-ai/dashboard build first.')
   process.exit(1)
 }
 
@@ -104,7 +104,7 @@ for (const [name, spec] of Object.entries(runnerPkg.dependencies ?? {})) {
       npmDeps[name] = `file:./vendor/${bundledByName.get(name).folder}`
       continue
     }
-    if (name === '@coro/dashboard') continue
+    if (name === '@coro-ai/dashboard') continue
     console.error(`::error::Unhandled workspace dependency for npm publish: ${name}`)
     process.exit(1)
   }
@@ -155,12 +155,12 @@ try {
 const stagedPkgPath = path.join(stagingRoot, 'package.json')
 const stagedPkg = JSON.parse(readFileSync(stagedPkgPath, 'utf8'))
 const bundledNames = [
-  '@coro/intelligence-base',
-  '@coro/cloud-protocol',
-  '@coro/plugin-sdk',
+  '@coro-ai/intelligence-base',
+  '@coro-ai/cloud-protocol',
+  '@coro-ai/plugin-sdk',
 ]
 for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
-  if (name.startsWith('@coro/llm-')) {
+  if (name.startsWith('@coro-ai/llm-')) {
     stagedPkg.dependencies[name] = version
     rmSync(path.join(stagingRoot, 'node_modules', ...name.split('/')), { recursive: true, force: true })
     continue

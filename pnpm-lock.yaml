@@ -204,7 +204,7 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
-      '@coro/plugin-sdk':
+      '@coro-ai/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
       '@types/node':
@@ -232,7 +232,7 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
-      '@coro/plugin-sdk':
+      '@coro-ai/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
       '@types/node':
@@ -250,14 +250,14 @@ importers:
 
   packages/plugin-gitlab:
     dependencies:
-      '@coro/plugin-sdk':
+      '@coro-ai/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
       zod:
         specifier: ^4.0.0
         version: 4.3.6
     devDependencies:
-      '@coro/cloud-protocol':
+      '@coro-ai/cloud-protocol':
         specifier: workspace:*
         version: link:../cloud-protocol
       '@types/node':
@@ -279,7 +279,7 @@ importers:
         specifier: ^0.2.92
         version: 0.2.119(zod@4.3.6)
     devDependencies:
-      '@coro/cloud-protocol':
+      '@coro-ai/cloud-protocol':
         specifier: workspace:*
         version: link:../cloud-protocol
       '@types/node':
@@ -300,19 +300,19 @@ importers:
 
   packages/runner:
     dependencies:
-      '@coro/cloud-protocol':
+      '@coro-ai/cloud-protocol':
         specifier: workspace:*
         version: link:../cloud-protocol
-      '@coro/intelligence-base':
+      '@coro-ai/intelligence-base':
         specifier: workspace:*
         version: link:../intelligence-base
-      '@coro/llm-anthropic':
+      '@coro-ai/llm-anthropic':
         specifier: workspace:*
         version: link:../llm-anthropic
-      '@coro/llm-openai':
+      '@coro-ai/llm-openai':
         specifier: workspace:*
         version: link:../llm-openai
-      '@coro/plugin-sdk':
+      '@coro-ai/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
       bcryptjs:

@@ -34,7 +34,7 @@ import {
   CAMPAIGN_WORKFLOW_PATH,
   type Job,
   type WorkflowSwitchEntry,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { isEpicAllowed } from '../jobs/helpers'
 import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 

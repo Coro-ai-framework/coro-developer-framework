@@ -44,7 +44,7 @@ import {
   type CampaignChildStatus,
   type Job,
   type TrackerRef,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import {
   cancelledJobPatch,
   isCampaignJob,

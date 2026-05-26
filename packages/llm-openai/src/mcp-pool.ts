@@ -12,7 +12,7 @@
 // rapid re-acquire (next phase / next subagent call) reuses it.
 // After the grace period with zero refs, the connection is closed.
 
-import type { PluginMcpServerConfig } from '@coro/plugin-sdk'
+import type { PluginMcpServerConfig } from '@coro-ai/plugin-sdk'
 import {
   connectExternalMcpServer,
   type ExternalMcpClientConnection,

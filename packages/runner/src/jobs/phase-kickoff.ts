@@ -4,7 +4,7 @@
 // pendingPrompt from webhooks / developer input takes precedence).
 // Includes multi-PR awareness for jobs with several open mappings.
 
-import type { Job, PrMapping } from '@coro/cloud-protocol'
+import type { Job, PrMapping } from '@coro-ai/cloud-protocol'
 import {
   buildWorkspaceLayoutKickoffBlock,
   resolveJobWorkspaceLayout,

@@ -53,11 +53,11 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
     if (!settings) {
       throw new Error("Anthropic executor requires runner settings (built-in registry must be built with `settings`)")
     }
-    const mod = await import('@coro/llm-anthropic')
+    const mod = await import('@coro-ai/llm-anthropic')
     return mod.createAnthropicExecutor({ settings, logger })
   },
   openai: async ({ logger }) => {
-    const mod = await import('@coro/llm-openai')
+    const mod = await import('@coro-ai/llm-openai')
     return mod.createOpenAiExecutor({ logger })
   },
 }
@@ -113,15 +113,15 @@ export async function listBuiltinPluginMetadata(logger: Logger): Promise<Builtin
       ?? 'Built in. Configure this plugin in Settings before using it in a job.'
     if (id === 'anthropic') {
       // Static manifest pulled via dynamic import to avoid a top-level
-      // `@coro/llm-anthropic` import in the runner core. The factory
+      // `@coro-ai/llm-anthropic` import in the runner core. The factory
       // itself can't be invoked here because the executor's
       // constructor needs `Settings`.
-      const mod = await import('@coro/llm-anthropic')
+      const mod = await import('@coro-ai/llm-anthropic')
       out.push({ manifest: mod.ANTHROPIC_MANIFEST, activationHint })
       continue
     }
     if (id === 'openai') {
-      const mod = await import('@coro/llm-openai')
+      const mod = await import('@coro-ai/llm-openai')
       out.push({ manifest: mod.OPENAI_MANIFEST, activationHint })
       continue
     }

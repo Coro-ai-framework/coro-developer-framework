@@ -27,7 +27,7 @@ For end-to-end job runs you also need (configured in the dashboard or
 `~/.coro/config.json`):
 
 - **Anthropic** credentials (executor plugin `anthropic`)
-- **SCM** credentials — built-in **GitHub** or **Bitbucket**; **GitLab** via [`@coro/plugin-gitlab`](../packages/plugin-gitlab/)
+- **SCM** credentials — built-in **GitHub** or **Bitbucket**; **GitLab** via [`@coro-ai/plugin-gitlab`](../packages/plugin-gitlab/)
 
 Optional: tune runner **guardrails** (PR description, diff size) in **Settings → Guardrails** or see [guardrails.md](./guardrails.md).
 
@@ -50,7 +50,7 @@ pnpm test              # all packages; see Testing below
 | `pnpm dev` | Runner from source via `tsx` (fast iteration) |
 | `pnpm dev:dashboard` | Vite HMR for dashboard (proxies API to `:3000`) |
 | `pnpm dev:cloud` | Cloud control plane (needs Postgres + `.env.cloud`) |
-| `pnpm --filter @coro/desktop-electron dev` | Electron shell + bundled sidecar |
+| `pnpm --filter @coro-ai/desktop-electron dev` | Electron shell + bundled sidecar |
 | `pnpm clean` | Remove `dist/` and `node_modules/` everywhere |
 
 ---
@@ -83,7 +83,7 @@ This:
 - opens the browser by default (skipped in headless/SSH/CI; use `--open`,
   `--no-open`, or `CORO_NO_OPEN=1`)
 
-Optional: `pnpm --filter @coro/runner exec npm link` then use `coro start`
+Optional: `pnpm --filter @coro-ai/runner exec npm link` then use `coro start`
 anywhere.
 
 ### Configure
@@ -140,7 +140,7 @@ and **drop-in** plugins from `~/.coro/plugins/<id>/` (with `coro-plugin.json`).
 **GitLab (SCM):** install the reference package:
 
 ```bash
-coro plugin install @coro/plugin-gitlab
+coro plugin install @coro-ai/plugin-gitlab
 # configure plugins.installed.gitlab in Settings or config.json
 ```
 
@@ -336,16 +336,16 @@ pnpm start
 
 ## Developing the desktop app
 
-The shipping app is `@coro/desktop-electron` — Electron wraps the runner sidecar
+The shipping app is `@coro-ai/desktop-electron` — Electron wraps the runner sidecar
 and dashboard ([desktop-packaging.md](desktop-packaging.md)).
 
 ```bash
 pnpm install && pnpm -r build
-pnpm --filter @coro/desktop-electron dev
+pnpm --filter @coro-ai/desktop-electron dev
 ```
 
 Packages a local run (macOS arm64 / Windows x64) via
-`pnpm --filter @coro/desktop-electron dist:mac` or `dist:win`. Releases publish to
+`pnpm --filter @coro-ai/desktop-electron dist:mac` or `dist:win`. Releases publish to
 [Coro-ai-framework/coro-release](https://github.com/Coro-ai-framework/coro-release).
 
 ---
@@ -354,8 +354,8 @@ Packages a local run (macOS arm64 / Windows x64) via
 
 ```bash
 pnpm test                              # all workspace packages
-pnpm --filter @coro/runner test        # runner unit + MCP + integration
-pnpm --filter @coro/runner test -- tests/unit/foo.test.ts
+pnpm --filter @coro-ai/runner test        # runner unit + MCP + integration
+pnpm --filter @coro-ai/runner test -- tests/unit/foo.test.ts
 ```
 
 ---

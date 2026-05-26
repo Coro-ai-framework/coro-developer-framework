@@ -25,7 +25,7 @@ Coro stacks intelligence in three layers. Each layer has different write rules:
 
 | Layer | Source of truth | Writable? | When it applies |
 |-------|-----------------|-----------|-----------------|
-| `base` | `@coro/intelligence-base` (ships with the runner) | **No** — never | Always; product-level conventions |
+| `base` | `@coro-ai/intelligence-base` (ships with the runner) | **No** — never | Always; product-level conventions |
 | `tenant` | `tenant.overlay.gitRemote.url` (configured per solo dev or team) | **Yes** | Solo & team — your durable, cross-repo learnings |
 | `repo` | The active job's target repo, under `.coro/` | **Yes** | This repo only — project-specific conventions |
 
@@ -38,7 +38,7 @@ Solo and team are identical here: a solo developer points the tenant overlay at 
 - Path starts with `.coro/...` → **repo** layer (PR against the project repo)
 - Anything else → **tenant** layer (PR against the tenant intelligence repo)
 
-You can also pass `targetLayer: 'tenant' | 'repo'` explicitly; the tool validates the explicit choice agrees with the path. **Base is never writable** — proposals to `@coro/intelligence-base/layer/...` are rejected.
+You can also pass `targetLayer: 'tenant' | 'repo'` explicitly; the tool validates the explicit choice agrees with the path. **Base is never writable** — proposals to `@coro-ai/intelligence-base/layer/...` are rejected.
 
 | Goal | Use the … layer | Path |
 |------|-----------------|------|

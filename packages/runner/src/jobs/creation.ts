@@ -1,11 +1,11 @@
-import { getBaseLayerRoot } from '@coro/intelligence-base'
+import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
 import { getPhaseConfig, loadWorkflowConfigFromRoots, resolveInitialPhase } from '../workflow-parser'
 import {
   type Job,
   type JobInput,
   type JobType,
   type PrMapping,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { propagableInsights } from '../insights'
 import { emptyTokenUsage } from './helpers'
 
@@ -36,7 +36,7 @@ export interface JobBootstrapOptions {
    */
   coroIntelligenceDir?: string
   /**
-   * Base layer shipped with `@coro/intelligence-base`. Searched as a
+   * Base layer shipped with `@coro-ai/intelligence-base`. Searched as a
    * deterministic fallback so a missing/empty tenant overlay does not
    * cause workflow-resolution to fail. Defaults to `getBaseLayerRoot()`
    * if omitted — supplying it explicitly is recommended for tests that
@@ -63,7 +63,7 @@ export class WorkflowResolutionError extends Error {
       `Cannot resolve workflow file '${workflowPath}'. Searched roots: ` +
         `${searchedRoots.length === 0 ? '(none)' : searchedRoots.join(', ')}. ` +
         `Verify that paths.coroIntelligenceDir points at an intelligence ` +
-        `tree containing this workflow, or that @coro/intelligence-base ` +
+        `tree containing this workflow, or that @coro-ai/intelligence-base ` +
         `ships it at the same path.`,
     )
     this.name = 'WorkflowResolutionError'

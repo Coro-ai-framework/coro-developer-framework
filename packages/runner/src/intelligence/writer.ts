@@ -7,7 +7,7 @@
 //   - repo:   the active job's already-cloned target repo
 //             (`<workingRoot>/<jobId>/<repoSlug>`), writing under `.coro/`
 //
-// The base layer (`@coro/intelligence-base`) is intentionally not writable.
+// The base layer (`@coro-ai/intelligence-base`) is intentionally not writable.
 //
 // Why a separate clone for tenant?
 //   The intelligence resolver's read cache (`loaders/git-remote.ts`) is

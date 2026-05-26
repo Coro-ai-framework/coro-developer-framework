@@ -21,7 +21,7 @@ import type {
   CloudMessage,
   WsRunnerRegister,
   WsRunnerHeartbeat,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 
 export interface GatewayContext {
   config: CloudConfig
@@ -195,7 +195,7 @@ export class WsGateway {
       }
 
       case 'job:listByType': {
-        const jobs = await backend.listJobsByType(msg.jobType as import('@coro/cloud-protocol').JobType)
+        const jobs = await backend.listJobsByType(msg.jobType as import('@coro-ai/cloud-protocol').JobType)
         this.reply(ws, msg.messageId, jobs)
         return
       }

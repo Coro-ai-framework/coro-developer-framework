@@ -7,7 +7,7 @@ import {
   STATUS_COMPLETE,
   STATUS_FAILED,
   type Job,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 vi.mock('../../src/jobs/runner', () => ({

@@ -14,7 +14,7 @@ import type {
   PhaseExecutorEvent,
   PhaseExecutorRuntime,
 } from '../../src/plugins/types'
-import type { PluginManifest } from '@coro/plugin-sdk'
+import type { PluginManifest } from '@coro-ai/plugin-sdk'
 
 const ZERO_CAPS: ExecutorCapabilities = {
   supportsNativeSubagents: false,

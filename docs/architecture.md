@@ -40,7 +40,7 @@ Workflow logic, agent procedures, language conventions, and accumulated
 memory all live in markdown. The runner does not hardcode product features
 or workflow-specific logic. A job carries a `workflowPath`; the runner
 materialises the right intelligence overlay, resolves a `PhaseExecutor`
-plugin (default: `@coro/llm-anthropic`) for each phase, and exposes a
+plugin (default: `@coro-ai/llm-anthropic`) for each phase, and exposes a
 domain-specific MCP toolset. The executor owns the LLM SDK call; the
 runner core has no direct LLM-SDK imports.
 
@@ -52,18 +52,18 @@ Coro ships as a pnpm workspace. The core packages are:
 
 | Package                       | Role                                                         |
 | ----------------------------- | ------------------------------------------------------------ |
-| `@coro/runner`                | The runtime: `coro` CLI, REST + dashboard server, job runner, MCP server, intelligence resolver, plugin registry, state backends, cloud control plane. |
-| `@coro/dashboard`             | React + Vite + Tailwind UI. Built statically and served by the runner at `/dashboard/`. |
-| `@coro/intelligence-base`     | The base intelligence layer: generic agents, workflows, skills, and empty memory templates. The runner imports `getBaseLayerRoot()` from this package. |
-| `@coro/plugin-sdk`            | Public SDK for authoring Coro plugins. Defines the three plugin kinds — `ScmPluginBase`, `TrackerPluginBase`, `ExecutorPluginBase` — plus the `PhaseExecutor` runtime contract. |
-| `@coro/llm-anthropic`         | Built-in Anthropic phase executor plugin. Wraps `@anthropic-ai/claude-agent-sdk`; registered automatically via `buildBuiltinPluginRegistry`. |
+| `@coro-ai/runner`                | The runtime: `coro` CLI, REST + dashboard server, job runner, MCP server, intelligence resolver, plugin registry, state backends, cloud control plane. |
+| `@coro-ai/dashboard`             | React + Vite + Tailwind UI. Built statically and served by the runner at `/dashboard/`. |
+| `@coro-ai/intelligence-base`     | The base intelligence layer: generic agents, workflows, skills, and empty memory templates. The runner imports `getBaseLayerRoot()` from this package. |
+| `@coro-ai/plugin-sdk`            | Public SDK for authoring Coro plugins. Defines the three plugin kinds — `ScmPluginBase`, `TrackerPluginBase`, `ExecutorPluginBase` — plus the `PhaseExecutor` runtime contract. |
+| `@coro-ai/llm-anthropic`         | Built-in Anthropic phase executor plugin. Wraps `@anthropic-ai/claude-agent-sdk`; registered automatically via `buildBuiltinPluginRegistry`. |
 
-Additional shipped packages: `@coro/desktop-electron` (Electron shell
-that bundles runner + dashboard), `@coro/landing` (marketing site),
-`@coro/plugin-gitlab` (example external SCM plugin).
+Additional shipped packages: `@coro-ai/desktop-electron` (Electron shell
+that bundles runner + dashboard), `@coro-ai/landing` (marketing site),
+`@coro-ai/plugin-gitlab` (example external SCM plugin).
 
 There is no monolithic "Agent Host" service; the runner *is* the host
-and the cloud control plane is a separate `@coro/runner` entrypoint
+and the cloud control plane is a separate `@coro-ai/runner` entrypoint
 (`src/cloud/`) that team-mode runners connect to.
 
 ---
@@ -75,8 +75,8 @@ and the cloud control plane is a separate `@coro/runner` entrypoint
                                 │
                                 ▼
                     ┌──────────────────────────┐
-                    │   @coro/runner (local)   │   one process per developer
-                    │   + bundled @coro/       │   • REST server (CLI + dashboard)
+                    │   @coro-ai/runner (local)   │   one process per developer
+                    │   + bundled @coro-ai/       │   • REST server (CLI + dashboard)
                     │     dashboard at         │   • Job runner (PhaseExecutor plugin)
                     │     /dashboard/          │   • In-process MCP server
                     └──────────┬───────────────┘
@@ -96,7 +96,7 @@ and the cloud control plane is a separate `@coro/runner` entrypoint
                                 Hybrid mode only:
                                 ▼
                     ┌──────────────────────────┐
-                    │ @coro/runner (cloud)     │
+                    │ @coro-ai/runner (cloud)     │
                     │  src/cloud/              │
                     │  • Postgres (Drizzle)    │
                     │  • WebSocket gateway     │
@@ -126,13 +126,13 @@ merged result to `<workingDir>/<jobId>/_intelligence/`:
 ├─────────────────────────────────────────────────────────────┤
 │ Tenant overlay      localDir | gitRemote | cloudBlob        │
 ├─────────────────────────────────────────────────────────────┤
-│ Base intelligence   @coro/intelligence-base/layer/          │
+│ Base intelligence   @coro-ai/intelligence-base/layer/          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 | Layer      | Source                           | Owner               | Loads at                                                                       |
 | ---------- | -------------------------------- | ------------------- | ------------------------------------------------------------------------------ |
-| **Base**   | `@coro/intelligence-base/layer/` | Coro maintainers    | Runner start                                                                   |
+| **Base**   | `@coro-ai/intelligence-base/layer/` | Coro maintainers    | Runner start                                                                   |
 | **Tenant** | `tenant.overlay` (config or JWT) | The customer team   | Job start                                                                      |
 | **Repo**   | `<targetRepo>/.coro/`            | The target repo     | Each phase boundary (opportunistic — appears once the agent clones the repo)   |
 
@@ -559,7 +559,7 @@ teams getting started.
 Each developer runs their own runner; a shared cloud control plane
 holds team state and federates webhook events:
 
-- Cloud process: `@coro/runner`'s `src/cloud/` entrypoint, backed by
+- Cloud process: `@coro-ai/runner`'s `src/cloud/` entrypoint, backed by
   Postgres (Drizzle ORM), with a WebSocket gateway and REST API.
 - Runner ↔ cloud: authenticated WebSocket; the runner extracts `teamId`
   from a JWT to derive its tenant context.

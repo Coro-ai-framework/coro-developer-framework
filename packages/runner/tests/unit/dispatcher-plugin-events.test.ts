@@ -8,9 +8,9 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { Dispatcher } from '../../src/jobs/dispatcher'
-import type { InboundEvent } from '@coro/cloud-protocol'
+import type { InboundEvent } from '@coro-ai/cloud-protocol'
 import type { EventTransport } from '../../src/state/transport'
-import type { ExternalRef } from '@coro/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import {
   JobType,
   STATUS_AWAITING_PR_MERGE,
@@ -18,7 +18,7 @@ import {
   STATUS_CANCELLED,
   STATUS_CODING,
   type Job,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 vi.mock('../../src/jobs/runner', () => ({

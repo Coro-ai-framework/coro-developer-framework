@@ -38,13 +38,13 @@ jobs:
         run: pnpm run build:publishable
 
       - name: Typecheck runner
-        run: pnpm --filter @coro/runner typecheck
+        run: pnpm --filter @coro-ai/runner typecheck
 
       - name: Run runner unit tests
-        run: pnpm --filter @coro/runner test
+        run: pnpm --filter @coro-ai/runner test
 
       - name: Run plugin-sdk tests
-        run: pnpm --filter @coro/plugin-sdk test
+        run: pnpm --filter @coro-ai/plugin-sdk test
 
       - name: Verify npm pack tarballs
         run: pnpm run verify:npm-pack

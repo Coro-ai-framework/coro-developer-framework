@@ -2,7 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { HookCallback, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
 import type { Logger } from 'pino'
-import type { HookPolicy } from '@coro/plugin-sdk'
+import type { HookPolicy } from '@coro-ai/plugin-sdk'
 
 // PreToolUse hooks fire before every tool call the model makes (builtins AND
 // mcp__coro__*). Returning a `permissionDecision: 'deny'` rejects the call and

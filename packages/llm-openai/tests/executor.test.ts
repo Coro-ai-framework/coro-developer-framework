@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import pino from 'pino'
-import { tool, createSdkMcpServer } from '@coro/plugin-sdk'
+import { tool, createSdkMcpServer } from '@coro-ai/plugin-sdk'
 import { z } from 'zod'
 import {
   OpenAiExecutor,

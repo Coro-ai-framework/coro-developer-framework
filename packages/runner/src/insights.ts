@@ -4,7 +4,7 @@
 // These helpers define which entries may steer agents (system prompt) or
 // campaign siblings (dispatcher aggregate / initialInsights seed).
 
-import type { Insight } from '@coro/cloud-protocol'
+import type { Insight } from '@coro-ai/cloud-protocol'
 
 /** True when the user soft-deleted or explicitly rejected this insight. */
 export function isInsightRejected(insight: Insight): boolean {

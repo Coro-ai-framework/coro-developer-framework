@@ -58,7 +58,7 @@ import {
   STATUS_AWAITING_RATE_LIMIT,
   TokenUsage,
   PhaseUsage,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import {
   isCampaignJob,
   isParkingStatus,
@@ -76,7 +76,7 @@ import { assertJobPluginRequirements } from './plugin-preflight'
 import {
   RateLimitExceededError,
   nextBackoffMs,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 import { createGuardrailEngine, createGuardrailScmDeps } from '../guardrails'
 
 // ── Runner context ────────────────────────────────────────────────────────────
@@ -1501,7 +1501,7 @@ async function syncJob(
 // real error as a "steering interrupt".
 async function isRecoverableSteeringAbortDynamic(err: unknown): Promise<boolean> {
   try {
-    const mod = (await import('@coro/llm-anthropic')) as {
+    const mod = (await import('@coro-ai/llm-anthropic')) as {
       isRecoverableSteeringAbort?: (e: unknown) => boolean
     }
     return mod.isRecoverableSteeringAbort?.(err) ?? false

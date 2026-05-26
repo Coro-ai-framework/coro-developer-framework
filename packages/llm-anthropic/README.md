@@ -1,6 +1,6 @@
-# @coro/llm-anthropic
+# @coro-ai/llm-anthropic
 
-Anthropic Claude phase executor for Coro. Wraps the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) (`query()` + bundled CLI) and exposes it through the `PhaseExecutorRuntime` contract from `@coro/plugin-sdk`.
+Anthropic Claude phase executor for Coro. Wraps the [Claude Agent SDK](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) (`query()` + bundled CLI) and exposes it through the `PhaseExecutorRuntime` contract from `@coro-ai/plugin-sdk`.
 
 This package owns:
 

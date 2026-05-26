@@ -74,10 +74,10 @@ jobs:
           echo "DESKTOP_VERSION=$(node -p 'require("./packages/desktop-electron/package.json").version')" >> "$GITHUB_ENV"
 
       - name: Typecheck desktop package
-        run: pnpm --filter @coro/desktop-electron typecheck
+        run: pnpm --filter @coro-ai/desktop-electron typecheck
 
       - name: Build release artifacts without publishing
-        run: pnpm --filter @coro/desktop-electron dist:mac
+        run: pnpm --filter @coro-ai/desktop-electron dist:mac
 
       - name: Verify packaged artifacts exist
         run: |
@@ -130,10 +130,10 @@ jobs:
           echo "DESKTOP_VERSION=$(node -p 'require("./packages/desktop-electron/package.json").version')" >> "$GITHUB_ENV"
 
       - name: Typecheck desktop package
-        run: pnpm --filter @coro/desktop-electron typecheck
+        run: pnpm --filter @coro-ai/desktop-electron typecheck
 
       - name: Build Windows release artifacts without publishing
-        run: pnpm --filter @coro/desktop-electron dist:win
+        run: pnpm --filter @coro-ai/desktop-electron dist:win
 
       - name: Verify packaged artifacts exist
         run: |

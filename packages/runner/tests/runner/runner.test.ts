@@ -6,7 +6,7 @@ import {
   type RunJobOptions,
   type RunnerContext,
 } from '../../src/jobs/runner'
-import { buildPhaseHooks, reattachDynamicMcpServers } from '@coro/llm-anthropic'
+import { buildPhaseHooks, reattachDynamicMcpServers } from '@coro-ai/llm-anthropic'
 import {
   STATUS_CANCELLED,
   JobType,
@@ -16,9 +16,9 @@ import {
   STATUS_AWAITING_PR_MERGE,
   STATUS_AWAITING_PLAN_APPROVAL,
   STATUS_AWAITING_DEVELOPER_INPUT,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
-import type { Job } from '@coro/cloud-protocol'
+import type { Job } from '@coro-ai/cloud-protocol'
 import type { WorkflowConfig } from '../../src/workflow-parser'
 import type { Settings } from '../../src/config/settings'
 import { PluginRegistry } from '../../src/plugins/registry'
@@ -41,8 +41,8 @@ vi.mock('../../src/prompt/builder', () => ({
   computeGuardrailsPromptContext: vi.fn().mockReturnValue({ enabled: false, rules: [] }),
 }))
 
-vi.mock('@coro/llm-anthropic', async () => {
-  const actual = await vi.importActual<typeof import('@coro/llm-anthropic')>('@coro/llm-anthropic')
+vi.mock('@coro-ai/llm-anthropic', async () => {
+  const actual = await vi.importActual<typeof import('@coro-ai/llm-anthropic')>('@coro-ai/llm-anthropic')
   return {
     ...actual,
     resolveClaudeCodeCliPath: vi.fn().mockReturnValue('/tmp/mock-claude-cli.js'),

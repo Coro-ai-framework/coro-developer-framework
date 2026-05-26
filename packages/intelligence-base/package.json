@@ -1,5 +1,5 @@
 {
-  "name": "@coro/intelligence-base",
+  "name": "@coro-ai/intelligence-base",
   "version": "0.1.0",
   "description": "Coro base intelligence layer — generic, company-agnostic agents, workflows, skills, and runtime instructions that ship with every Coro install.",
   "license": "BUSL-1.1",

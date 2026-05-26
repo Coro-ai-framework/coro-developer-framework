@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import pino from 'pino'
-import { createSdkMcpServer, RateLimitExceededError } from '@coro/plugin-sdk'
+import { createSdkMcpServer, RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import { createOpenAiExecutor } from '../src/executor'
 
 const silentLogger = pino({ level: 'silent' })

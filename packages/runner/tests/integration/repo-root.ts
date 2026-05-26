@@ -1,12 +1,12 @@
 import fs from 'fs'
 import path from 'path'
-import { getBaseLayerRoot } from '@coro/intelligence-base'
+import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
 
 /**
  * Resolves the Coro intelligence root for tests.
  *
  * Production code reads the base intelligence from
- * `@coro/intelligence-base/layer/` via `getBaseLayerRoot()`, so tests do
+ * `@coro-ai/intelligence-base/layer/` via `getBaseLayerRoot()`, so tests do
  * the same — no more walking up looking for `./workflows/` at the repo
  * root (which no longer exists post-Phase-2).
  */
@@ -16,7 +16,7 @@ export function resolveIntelligenceRoot(): string {
     throw new Error(
       `Coro base intelligence layer is missing the canonical workflow ` +
         `marker (workflows/job/workflow.md) at ${root}. Did you delete or ` +
-        `move @coro/intelligence-base/layer/?`,
+        `move @coro-ai/intelligence-base/layer/?`,
     )
   }
   return root

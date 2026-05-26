@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import { JobType, STATUS_QUEUED } from '@coro/cloud-protocol'
+import { JobType, STATUS_QUEUED } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
 import type { BitBucketClient } from '../../src/clients/bitbucket'

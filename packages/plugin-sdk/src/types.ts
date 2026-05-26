@@ -1,10 +1,10 @@
 // ── Plugin SDK types ─────────────────────────────────────────────────────────
 //
 // Public, authoring-side mirror of the runner's `plugins/types.ts`. We
-// deliberately *duplicate* (rather than re-export from `@coro/runner`)
+// deliberately *duplicate* (rather than re-export from `@coro-ai/runner`)
 // so:
 //
-//   1. Drop-in plugin authors can install `@coro/plugin-sdk` without
+//   1. Drop-in plugin authors can install `@coro-ai/plugin-sdk` without
 //      pulling the entire runner (which carries `simple-git`,
 //      `better-sqlite3`, the Claude SDK, etc.) into their dependency
 //      tree.
@@ -21,21 +21,21 @@
 //
 // Note: `ExternalRef`, `ExternalRefKind`, and `NormalizedEvent` used
 // to be declared here as a deliberate duplicate of the runner's
-// `plugins/refs.ts`. They now live in `@coro/cloud-protocol` — the
+// `plugins/refs.ts`. They now live in `@coro-ai/cloud-protocol` — the
 // shared wire-contract package depended on by runner, cloud, and SDK
 // alike — so there is exactly one canonical definition. Plugin
-// authors import them directly from `@coro/cloud-protocol`.
+// authors import them directly from `@coro-ai/cloud-protocol`.
 
 import type { Logger } from 'pino'
 import type { ZodTypeAny } from 'zod'
-import type { ConversationMessage, ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
+import type { ConversationMessage, ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
 
 // Re-export `ConversationMessage` so plugin authors authoring an
-// executor can import it from `@coro/plugin-sdk` alongside the rest of
+// executor can import it from `@coro-ai/plugin-sdk` alongside the rest of
 // the executor contract (`ExecutorSessionState`, `PhaseExecutorRuntime`,
-// etc.). The canonical definition lives in `@coro/cloud-protocol`
+// etc.). The canonical definition lives in `@coro-ai/cloud-protocol`
 // because it's part of the persisted `Job.conversationHistory` wire shape.
-export type { ConversationMessage } from '@coro/cloud-protocol'
+export type { ConversationMessage } from '@coro-ai/cloud-protocol'
 
 // ── External MCP server descriptor ──────────────────────────────────────────
 
@@ -724,7 +724,7 @@ export type PhaseExecutorEvent =
 
 /**
  * Phase executor runtime contract. Implementations live in their own
- * package (`@coro/llm-anthropic`, `@coro/llm-openai`, …) and register
+ * package (`@coro-ai/llm-anthropic`, `@coro-ai/llm-openai`, …) and register
  * themselves under `kind: 'executor'` via the standard plugin loader.
  *
  * Every executor MUST:

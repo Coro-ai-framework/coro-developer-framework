@@ -1,4 +1,4 @@
-import type { ExecutorModelDescriptor, NormalizedTokenUsage } from '@coro/plugin-sdk'
+import type { ExecutorModelDescriptor, NormalizedTokenUsage } from '@coro-ai/plugin-sdk'
 
 export const OPENAI_PLUGIN_ID = 'openai' as const
 

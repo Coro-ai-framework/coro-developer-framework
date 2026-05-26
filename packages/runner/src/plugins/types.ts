@@ -25,7 +25,7 @@
 
 import type { Logger } from 'pino'
 import type { ZodTypeAny } from 'zod'
-import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
+import type { ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
 
 // ── External MCP server descriptor ──────────────────────────────────────────
 //
@@ -82,7 +82,7 @@ export type PluginMcpServerConfig =
 
 // ── Executor contract re-exports (multi-provider LLM) ───────────────────────
 //
-// The phase-executor surface is authored in `@coro/plugin-sdk` so external
+// The phase-executor surface is authored in `@coro-ai/plugin-sdk` so external
 // LLM provider plugins can implement `PhaseExecutorRuntime` without
 // pulling in the runner's transitive deps. The runner re-exports the
 // shapes here so internal call sites import from a single place
@@ -106,7 +106,7 @@ export type {
   ConversationMessage,
   PluginHttpApp,
   PluginHttpRoutesContext,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 
 /**
  * Open-ended plugin kind. v1 ships `scm` and `tracker`; later cuts may
@@ -261,7 +261,7 @@ export interface PluginHealth {
  * One step in a multi-step credential probe — surfaced as a bullet
  * under the test button.
  *
- * Mirrors {@link import('@coro/plugin-sdk').PluginTestCheck} — the
+ * Mirrors {@link import('@coro-ai/plugin-sdk').PluginTestCheck} — the
  * shapes are duplicated (not re-exported) so the runner stays
  * importable without the SDK package, same as `PluginHealth`. The
  * conformance pack checks both shapes stay in lock-step.
@@ -275,7 +275,7 @@ export interface PluginTestCheck {
 
 /**
  * Result of {@link PluginRuntime.testConnection}.
- * Mirrors {@link import('@coro/plugin-sdk').PluginTestResult}.
+ * Mirrors {@link import('@coro-ai/plugin-sdk').PluginTestResult}.
  */
 export interface PluginTestResult {
   ok: boolean
@@ -347,7 +347,7 @@ export interface PluginRuntime<Config = unknown> {
    * stays provider-agnostic — adding a new LLM plugin requires zero edits
    * to {@link createRunnerServer}.
    */
-  registerHttpRoutes?(ctx: import('@coro/plugin-sdk').PluginHttpRoutesContext): void
+  registerHttpRoutes?(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void
   /**
    * Optional active credential probe (see SDK mirror for full notes).
    * Invoked by the runner's `POST /test/llm` / `/test/git` /

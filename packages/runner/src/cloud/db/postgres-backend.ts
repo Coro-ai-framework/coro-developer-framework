@@ -17,10 +17,10 @@ import {
   PhaseUsage,
   Artifact,
   CampaignChild,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { defaultWorkflowPath } from '../../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../../jobs/creation'
-import type { ExternalRef } from '@coro/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../../plugins/refs'
 
 // ── Row ↔ Job mapping ─────────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ export class PostgresStateBackend implements StateBackend {
     private readonly coroIntelligenceDir: string = '',
     /**
      * Optional base layer fallback. When omitted, `buildJobRecord`
-     * defaults to `getBaseLayerRoot()` from `@coro/intelligence-base`.
+     * defaults to `getBaseLayerRoot()` from `@coro-ai/intelligence-base`.
      */
     private readonly baseLayerDir?: string,
   ) {}

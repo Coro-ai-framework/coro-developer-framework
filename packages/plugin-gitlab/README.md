@@ -1,4 +1,4 @@
-# `@coro/plugin-gitlab`
+# `@coro-ai/plugin-gitlab`
 
 Reference Coro plugin for GitLab. Operates in **MCP mode**: day-to-day
 SCM operations (creating MRs, posting comments, merging) are served by
@@ -19,7 +19,7 @@ shape is used by every published Coro plugin.
 ## Install
 
 ```bash
-coro plugin install @coro/plugin-gitlab
+coro plugin install @coro-ai/plugin-gitlab
 ```
 
 Then configure under `plugins.installed.gitlab` in `~/.coro/config.json`:

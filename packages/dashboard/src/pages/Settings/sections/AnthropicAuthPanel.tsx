@@ -79,7 +79,7 @@ interface AnthropicAuthPanelProps {
 }
 
 /**
- * Custom configuration panel for the `@coro/llm-anthropic` executor
+ * Custom configuration panel for the `@coro-ai/llm-anthropic` executor
  * plugin. Selected by `manifest.ui.customPanel === 'anthropic-auth'`
  * via the {@link customPanels} registry. Treated as a standalone
  * provider plugin so the rest of the dashboard contains no

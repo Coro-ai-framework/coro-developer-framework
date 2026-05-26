@@ -17,7 +17,7 @@
 // A retry cap converts a stuck loop (model ends turn without acting)
 // into an explicit failure rather than burning tokens forever.
 
-import type { Job, PrMapping, WorkItem } from '@coro/cloud-protocol'
+import type { Job, PrMapping, WorkItem } from '@coro-ai/cloud-protocol'
 
 /** Maximum consecutive completion-gate blocks before failing the job. */
 export const COMPLETION_GATE_MAX_RETRIES = 5

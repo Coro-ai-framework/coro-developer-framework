@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { isInsightRejected, propagableInsights } from '../../src/insights'
-import type { Insight } from '@coro/cloud-protocol'
+import type { Insight } from '@coro-ai/cloud-protocol'
 
 function insight(overrides: Partial<Insight> = {}): Insight {
   return {

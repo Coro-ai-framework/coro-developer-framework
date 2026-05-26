@@ -2,7 +2,7 @@
 
 export type { StateBackend } from './backend'
 export type { EventTransport } from './transport'
-export type { InboundEvent, OutboundEvent } from '@coro/cloud-protocol'
+export type { InboundEvent, OutboundEvent } from '@coro-ai/cloud-protocol'
 export { RedisStateBackend } from './redis-backend'
 export { InProcessTransport } from './in-process-transport'
 export { SqliteStateBackend } from './sqlite-backend'

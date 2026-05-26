@@ -16,14 +16,14 @@ import type {
   PluginTestResult,
   SubagentExecutionRequest,
   SubagentResult,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 import {
   emptyNormalizedUsage,
   mergeConversationHistory,
   RateLimitExceededError,
   classifyProviderError,
-} from '@coro/plugin-sdk'
-import type { ClassifyOptions } from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
+import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { hasOpenAiApiKey, resolveOpenAiClientOptions } from './auth'
 import { testOpenAiCredentials } from './test-connection'
 import { McpFunctionBridge, type OpenAiFunctionOutputItem, type OpenAiToolCall } from './mcp-bridge'
@@ -602,7 +602,7 @@ function isAbortError(err: unknown): boolean {
 /**
  * OpenAI-specific extensions for the shared
  * {@link classifyProviderError} helper. Keeps vendor-specific
- * detection isolated to this package so `@coro/plugin-sdk` can stay
+ * detection isolated to this package so `@coro-ai/plugin-sdk` can stay
  * provider-neutral.
  */
 const OPENAI_CLASSIFY_OPTIONS: ClassifyOptions = {

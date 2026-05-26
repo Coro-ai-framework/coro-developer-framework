@@ -91,10 +91,10 @@ sequenceDiagram
 
 **Packages:**
 
-- **`@coro/plugin-sdk`** — `PhaseExecutorRuntime`, `PhaseExecutorEvent`, `NormalizedTokenUsage`, `ExecutorModelDescriptor.contextTokens`
-- **`@coro/llm-anthropic`** — wraps `query()`; `persistSession`, `resume`, `systemPromptCacheControl: ephemeral`, native subagents; maps SDK `usage` → runner events
-- **`@coro/llm-openai`** — Responses API; full `conversationHistory` replay (no trimming); local `calculateOpenAiCostUsd`
-- **`@coro/runner`** — orchestration only; zero direct Anthropic imports (CI-enforced)
+- **`@coro-ai/plugin-sdk`** — `PhaseExecutorRuntime`, `PhaseExecutorEvent`, `NormalizedTokenUsage`, `ExecutorModelDescriptor.contextTokens`
+- **`@coro-ai/llm-anthropic`** — wraps `query()`; `persistSession`, `resume`, `systemPromptCacheControl: ephemeral`, native subagents; maps SDK `usage` → runner events
+- **`@coro-ai/llm-openai`** — Responses API; full `conversationHistory` replay (no trimming); local `calculateOpenAiCostUsd`
+- **`@coro-ai/runner`** — orchestration only; zero direct Anthropic imports (CI-enforced)
 
 **Context actually sent to the model (Anthropic path):**
 
@@ -175,7 +175,7 @@ Full transcript summary via a cheap model at compaction time. Reserve for **crit
 
 Goal: expose **how full the context is** and drive **graded compaction** before hard failures or runaway cost.
 
-### New types (`@coro/cloud-protocol` + `plugin-sdk`)
+### New types (`@coro-ai/cloud-protocol` + `plugin-sdk`)
 
 ```ts
 export interface ContextBudget {

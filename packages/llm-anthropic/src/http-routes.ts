@@ -11,7 +11,7 @@
 
 import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
-import type { PluginHttpRoutesContext } from '@coro/plugin-sdk'
+import type { PluginHttpRoutesContext } from '@coro-ai/plugin-sdk'
 import { ClaudeLoginManager } from './login'
 import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-path'
 

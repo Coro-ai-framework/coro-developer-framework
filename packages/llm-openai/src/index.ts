@@ -1,4 +1,4 @@
-// Public surface of the @coro/llm-openai package.
+// Public surface of the @coro-ai/llm-openai package.
 
 export {
   OpenAiExecutor,

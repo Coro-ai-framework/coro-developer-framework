@@ -1,8 +1,8 @@
-// ── @coro/plugin-sdk public surface ──────────────────────────────────────────
+// ── @coro-ai/plugin-sdk public surface ──────────────────────────────────────────
 //
 // Single entry point for plugin authors. Re-exports the type
 // surface, helpers, and base classes so consumers do
-// `import { ScmPluginBase, mcpStdioDescriptor, … } from '@coro/plugin-sdk'`.
+// `import { ScmPluginBase, mcpStdioDescriptor, … } from '@coro-ai/plugin-sdk'`.
 
 export * from './types'
 export * from './helpers'

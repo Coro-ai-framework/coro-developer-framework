@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Dispatcher } from '../../src/jobs/dispatcher'
-import { JobType, STATUS_CODING, type Job } from '@coro/cloud-protocol'
+import { JobType, STATUS_CODING, type Job } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
-import type { DeveloperInputChannel, ExecutorSessionController } from '@coro/plugin-sdk'
+import type { DeveloperInputChannel, ExecutorSessionController } from '@coro-ai/plugin-sdk'
 
 vi.mock('../../src/jobs/runner', () => ({
   runJob: vi.fn().mockResolvedValue(undefined),

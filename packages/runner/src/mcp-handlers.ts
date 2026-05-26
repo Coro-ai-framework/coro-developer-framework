@@ -2,8 +2,8 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
 import { ToolContext, PhaseSignals } from './tools/types'
-import { Artifact, WorkItem, Insight, Job } from '@coro/cloud-protocol'
-import type { ExternalRef } from '@coro/cloud-protocol'
+import { Artifact, WorkItem, Insight, Job } from '@coro-ai/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
 import {
@@ -952,7 +952,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     },
 
     escalate: async ({ reason }: { reason: string }) => {
-      const { STATUS_ESCALATED } = await import('@coro/cloud-protocol')
+      const { STATUS_ESCALATED } = await import('@coro-ai/cloud-protocol')
       await ctx.stateBackend.updateJob(ctx.job.id, {
         status: STATUS_ESCALATED,
         escalationMessage: reason,

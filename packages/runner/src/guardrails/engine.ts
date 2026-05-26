@@ -1,5 +1,5 @@
 import path from 'node:path'
-import type { Job } from '@coro/cloud-protocol'
+import type { Job } from '@coro-ai/cloud-protocol'
 import type { GuardrailContext, GuardrailDecision, GuardrailOn } from './types'
 import {
   type EffectiveGuardrailRule,

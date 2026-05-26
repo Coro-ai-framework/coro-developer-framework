@@ -11,7 +11,7 @@ import {
   STATUS_QUEUED,
   type Job,
   type CampaignChildStatus,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import {
   isCampaignJob,
   isEpicAllowed,

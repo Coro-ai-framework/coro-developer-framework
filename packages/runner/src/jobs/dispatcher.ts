@@ -2,7 +2,7 @@ import type {
   ConversationMessage,
   DeveloperInputChannel,
   ExecutorSessionController,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 import {
   Artifact,
   CampaignChild,
@@ -16,7 +16,7 @@ import {
   STATUS_ESCALATED,
   STATUS_FAILED,
   PAUSED_AWAITING_EVENT,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { propagableInsights } from '../insights'
 import {
   cancelledJobPatch,
@@ -36,8 +36,8 @@ import {
 import { runJob, RunnerContext } from './runner'
 import { RateLimitScheduler } from './rate-limit-scheduler'
 import type { EventTransport } from '../state/transport'
-import type { InboundEvent, InboundEventSource } from '@coro/cloud-protocol'
-import type { ExternalRef } from '@coro/cloud-protocol'
+import type { InboundEvent, InboundEventSource } from '@coro-ai/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { resolveJobByExternalRef } from '../plugins/refs'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'

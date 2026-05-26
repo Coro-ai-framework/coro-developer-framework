@@ -22,7 +22,7 @@
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
-import type { NormalizedEvent } from '@coro/cloud-protocol'
+import type { NormalizedEvent } from '@coro-ai/cloud-protocol'
 import { externalIdString } from '../../refs'
 import type {
   PluginDeps,

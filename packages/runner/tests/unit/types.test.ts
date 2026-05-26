@@ -12,7 +12,7 @@ import {
   STATUS_AWAITING_RATE_LIMIT,
   STATUS_CODING,
   type Job,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import {
   isTerminalStatus,
   isStoppedStatus,

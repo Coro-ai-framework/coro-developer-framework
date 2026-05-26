@@ -9,7 +9,7 @@
 // Why duplicate (rather than re-export from the runner): plugins ship
 // independently of the runner, so embedding the canonical enforcement
 // into the SDK lets each provider build its own tool loop without
-// importing `@coro/runner`. The conformance test pack at
+// importing `@coro-ai/runner`. The conformance test pack at
 // `packages/plugin-sdk/tests/executor-helpers.test.ts` pins these
 // against the runner's behaviour.
 

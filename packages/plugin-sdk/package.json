@@ -1,5 +1,5 @@
 {
-  "name": "@coro/plugin-sdk",
+  "name": "@coro-ai/plugin-sdk",
   "version": "0.1.0",
   "description": "Public SDK for authoring Coro plugins (SCM, tracker, …). Re-exports the runner's plugin contracts plus a small set of authoring helpers (HMAC verification, base classes, MCP-server descriptors).",
   "license": "BUSL-1.1",
@@ -44,7 +44,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.92"
   },
   "devDependencies": {
-    "@coro/cloud-protocol": "workspace:*",
+    "@coro-ai/cloud-protocol": "workspace:*",
     "@types/node": "^22.13.14",
     "pino": "^9.7.0",
     "typescript": "^5.8.2",

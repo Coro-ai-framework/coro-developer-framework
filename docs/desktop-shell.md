@@ -48,7 +48,7 @@ Phase 1 locks the packaged resources directory to this tree:
 
 Notes:
 
-- `@coro/intelligence-base` ships as a normal runner dependency, so its `layer/`
+- `@coro-ai/intelligence-base` ships as a normal runner dependency, so its `layer/`
   assets remain inside the packaged runner dependency tree.
 - The packaged runner must preserve the Claude Agent SDK's platform-specific
   optional dependency so `resolveClaudeCodeCliPath()` continues to work without a

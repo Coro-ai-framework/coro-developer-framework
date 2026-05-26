@@ -96,7 +96,7 @@ export default function PluginsSection() {
     setInstallNotice(null)
     const spec = installSpec.trim()
     if (!spec) {
-      setInstallError('Enter an npm package name (e.g. `@coro/plugin-gitlab`).')
+      setInstallError('Enter an npm package name (e.g. `@coro-ai/plugin-gitlab`).')
       return
     }
     try {
@@ -163,13 +163,13 @@ export default function PluginsSection() {
             <Field
               label="npm spec"
               htmlFor="plugin-install-spec"
-              hint="Examples: @coro/plugin-gitlab, coro-plugin-jenkins@1.2.0, github:my-org/coro-plugin-acme."
+              hint="Examples: @coro-ai/plugin-gitlab, coro-plugin-jenkins@1.2.0, github:my-org/coro-plugin-acme."
             >
               <Input
                 id="plugin-install-spec"
                 value={installSpec}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setInstallSpec(e.target.value)}
-                placeholder="@coro/plugin-gitlab"
+                placeholder="@coro-ai/plugin-gitlab"
                 disabled={installing}
               />
             </Field>

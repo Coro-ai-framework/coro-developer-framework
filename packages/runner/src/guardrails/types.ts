@@ -2,7 +2,7 @@ import type {
   GuardrailContext,
   GuardrailDecision,
   GuardrailOn,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 
 export type { GuardrailContext, GuardrailDecision, GuardrailOn }
 

@@ -6,7 +6,7 @@ import { RunnerRegistry } from '../../src/cloud/ws/runner-registry'
 import { WsGateway } from '../../src/cloud/ws/gateway'
 import { signRunnerToken } from '../../src/cloud/auth/jwt'
 import type { CloudConfig } from '../../src/cloud/config'
-import type { CloudMessage } from '@coro/cloud-protocol'
+import type { CloudMessage } from '@coro-ai/cloud-protocol'
 
 const logger = pino({ level: 'silent' })
 

@@ -1,5 +1,5 @@
 import { Logger } from 'pino'
-import type { HookPolicy, McpServerDescriptor, PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro/plugin-sdk'
+import type { HookPolicy, McpServerDescriptor, PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro-ai/plugin-sdk'
 import { BitBucketClient } from '../clients/bitbucket'
 import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
@@ -11,7 +11,7 @@ import { Settings } from '../config/settings'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
 import type { StateBackend } from '../state/backend'
-import { Job } from '@coro/cloud-protocol'
+import { Job } from '@coro-ai/cloud-protocol'
 import type { PhaseConfig } from '../workflow-parser'
 
 // ── Tool execution context ────────────────────────────────────────────────────

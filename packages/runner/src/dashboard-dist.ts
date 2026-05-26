@@ -11,7 +11,7 @@ const nodeRequire = createRequire(__filename)
  * Resolution order (first existing match wins):
  *   1. `CORO_DASHBOARD_DIST` env override (used by container images / packaged
  *      desktop builds where the layout is non-standard).
- *   2. Installed `@coro/dashboard` npm package (`node_modules/@coro/dashboard/dist`).
+ *   2. Installed `@coro-ai/dashboard` npm package (`node_modules/@coro-ai/dashboard/dist`).
  *   3. Monorepo / dev clone paths walked relative to this module's `__dirname`
  *      so we work in both compiled and ts-node/tsx layouts.
  *
@@ -50,18 +50,18 @@ export function resolveDashboardDist(logger: Logger): string | null {
 
   logger.warn(
     { candidates: Array.from(new Set(candidates)) },
-    'Dashboard build not found; /dashboard will return 503. Install @coro/dashboard or run `pnpm --filter @coro/dashboard build`.',
+    'Dashboard build not found; /dashboard will return 503. Install @coro-ai/dashboard or run `pnpm --filter @coro-ai/dashboard build`.',
   )
   return null
 }
 
 function resolveDashboardFromInstalledPackage(): string | null {
   try {
-    const pkgJson = nodeRequire.resolve('@coro/dashboard/package.json')
+    const pkgJson = nodeRequire.resolve('@coro-ai/dashboard/package.json')
     const dist = path.join(path.dirname(pkgJson), 'dist')
     if (fs.existsSync(path.join(dist, 'index.html'))) return dist
   } catch {
-    // @coro/dashboard not installed — expected in monorepo dev without npm link
+    // @coro-ai/dashboard not installed — expected in monorepo dev without npm link
   }
   return null
 }

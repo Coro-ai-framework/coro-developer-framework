@@ -6,11 +6,11 @@ import {
   PrMapping,
   Proposal,
   ProposalStatus,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { defaultWorkflowPath } from '../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
-import type { ExternalRef } from '@coro/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ export class RedisStateBackend implements StateBackend {
     private readonly logger?: { warn: (obj: object, msg: string) => void; debug?: (obj: object, msg: string) => void },
     /**
      * Optional base layer fallback. When omitted, `buildJobRecord`
-     * defaults to `getBaseLayerRoot()` from `@coro/intelligence-base`.
+     * defaults to `getBaseLayerRoot()` from `@coro-ai/intelligence-base`.
      */
     private readonly baseLayerDir?: string,
   ) {}

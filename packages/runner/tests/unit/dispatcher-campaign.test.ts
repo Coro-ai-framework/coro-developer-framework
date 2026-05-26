@@ -23,7 +23,7 @@ import {
   type Job,
   type CampaignChild,
   type JobInput,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ describe('Dispatcher.coordinateCampaign — halt on failure', () => {
 
 describe('Dispatcher.coordinateCampaign — un-park after halt resolution', () => {
   it('un-parks parent to awaiting-children when no halted children remain', async () => {
-    const { STATUS_AWAITING_CHILDREN } = await import('@coro/cloud-protocol')
+    const { STATUS_AWAITING_CHILDREN } = await import('@coro-ai/cloud-protocol')
     const parent = makeCampaignJob(
       [
         // Recently-resumed child re-dispatched, sibling still in flight.

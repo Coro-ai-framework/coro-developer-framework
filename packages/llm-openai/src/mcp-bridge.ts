@@ -3,13 +3,13 @@ import {
   enforceAllowedTools,
   enforceWriteGuard,
   formatToolCallLogLine,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 import type {
   HookPolicy,
   McpServerDescriptor,
   PhaseExecutorEvent,
   PluginMcpServerConfig,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 import {
   connectExternalMcpServer,
   type ExternalMcpClientConnection,

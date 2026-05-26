@@ -1,5 +1,5 @@
-import { Job, JobInput, JobType, PrMapping, Proposal, ProposalStatus } from '@coro/cloud-protocol'
-import type { ExternalRef } from '@coro/cloud-protocol'
+import { Job, JobInput, JobType, PrMapping, Proposal, ProposalStatus } from '@coro-ai/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 
 // ── State backend interface ───────────────────────────────────────────────────
 //

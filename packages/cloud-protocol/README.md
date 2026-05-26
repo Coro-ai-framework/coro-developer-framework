@@ -1,4 +1,4 @@
-# @coro/cloud-protocol
+# @coro-ai/cloud-protocol
 
 Wire protocol shared between the [Coro runner](../runner) and the Coro
 cloud control plane (the private `coro-cloud` server repo).

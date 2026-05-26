@@ -83,7 +83,7 @@ Coro is **not an IDE and not a single chat agent**. Markdown files are the intel
 ├─────────────────────────────────────────────────────────────┤
 │ Tenant overlay      localDir | gitRemote | cloud            │
 ├─────────────────────────────────────────────────────────────┤
-│ Base intelligence   @coro/intelligence-base/layer/          │
+│ Base intelligence   @coro-ai/intelligence-base/layer/          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -105,13 +105,13 @@ The runner is **provider-agnostic**. Anything that varies by Git host, issue tra
 
 | Kind | Role | Examples in this repo |
 | ---- | ---- | --------------------- |
-| **SCM** | Clone repos, open/update PRs, webhooks, merge polling | Built-in GitHub (`packages/runner/src/plugins/builtin/github/`); reference [`@coro/plugin-gitlab`](packages/plugin-gitlab/) |
+| **SCM** | Clone repos, open/update PRs, webhooks, merge polling | Built-in GitHub (`packages/runner/src/plugins/builtin/github/`); reference [`@coro-ai/plugin-gitlab`](packages/plugin-gitlab/) |
 | **Tracker** | Tickets, comments, transitions, job triggers | Built-in Jira (`packages/runner/src/plugins/builtin/jira/`) |
-| **Executor** | Run workflow phases against an LLM (tools, sessions, models) | [`@coro/llm-anthropic`](packages/llm-anthropic/), [`@coro/llm-openai`](packages/llm-openai/) |
+| **Executor** | Run workflow phases against an LLM (tools, sessions, models) | [`@coro-ai/llm-anthropic`](packages/llm-anthropic/), [`@coro-ai/llm-openai`](packages/llm-openai/) |
 
 Workflow YAML can pin a provider per phase (`provider:` / model aliases). Jobs can override defaults with `set_job_params({ scm: 'gitlab', tracker: 'jira' })`.
 
-**Contributing a new integration** — Implement a separate package that depends on [`@coro/plugin-sdk`](packages/plugin-sdk/):
+**Contributing a new integration** — Implement a separate package that depends on [`@coro-ai/plugin-sdk`](packages/plugin-sdk/):
 
 - **SCM / tracker** — extend `ScmPluginBase` or `TrackerPluginBase`; ship `coro-plugin.json`, optional MCP server wiring, and optional `intelligence/` snippets for the overlay.
 - **LLM** — extend `ExecutorPluginBase` and return a `PhaseExecutor` (see the Anthropic/OpenAI packages for the pattern).
@@ -181,8 +181,8 @@ pnpm test && pnpm typecheck
 | Task | Command |
 | ---- | ------- |
 | Run runner from source | `pnpm dev` |
-| Run desktop from source | `pnpm --filter @coro/desktop-electron dev` |
-| Work on a plugin | `pnpm --filter @coro/plugin-gitlab test` (or your package) · [`plugin-sdk` README](packages/plugin-sdk/README.md) |
+| Run desktop from source | `pnpm --filter @coro-ai/desktop-electron dev` |
+| Work on a plugin | `pnpm --filter @coro-ai/plugin-gitlab test` (or your package) · [`plugin-sdk` README](packages/plugin-sdk/README.md) |
 | Package desktop | See [docs/desktop-packaging.md](docs/desktop-packaging.md) |
 
 Full setup, hybrid/cloud, and troubleshooting: **[docs/local-setup.md](docs/local-setup.md)**.

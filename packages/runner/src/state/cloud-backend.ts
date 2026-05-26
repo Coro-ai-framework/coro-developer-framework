@@ -13,8 +13,8 @@ import type {
   PrMapping,
   Proposal,
   ProposalStatus,
-} from '@coro/cloud-protocol'
-import type { ExternalRef } from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
 
 export class CloudStateBackend implements StateBackend {

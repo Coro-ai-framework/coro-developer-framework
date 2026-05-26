@@ -3,7 +3,7 @@ import http from 'http'
 import { WebSocketServer } from 'ws'
 import pino from 'pino'
 import { WebSocketTransport } from '../../src/state/ws-transport'
-import type { RunnerMessage } from '@coro/cloud-protocol'
+import type { RunnerMessage } from '@coro-ai/cloud-protocol'
 
 const logger = pino({ level: 'silent' })
 

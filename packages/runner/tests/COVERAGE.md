@@ -9,7 +9,7 @@
 ## How to reproduce
 
 ```bash
-pnpm -F @coro/runner test:coverage
+pnpm -F @coro-ai/runner test:coverage
 ```
 
 Configuration: `packages/runner/vitest.config.ts` — provider `v8`,
@@ -51,7 +51,7 @@ includes `src/**/*.ts`, reporters `text` + `text-summary`.
 
 For every phase in the multi-provider plan:
 
-1. Run `pnpm -F @coro/runner test:coverage` after the phase's source changes.
+1. Run `pnpm -F @coro-ai/runner test:coverage` after the phase's source changes.
 2. For each file the phase modified, the four metrics (statements / branches /
    functions / lines) **must not drop below the baseline above** by more than
    the rounding-noise tolerance of **0.50 percentage points**.

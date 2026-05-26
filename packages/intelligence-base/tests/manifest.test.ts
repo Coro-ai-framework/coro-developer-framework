@@ -11,9 +11,9 @@ import {
   pathInBaseLayer,
 } from '../src'
 
-describe('@coro/intelligence-base manifest', () => {
+describe('@coro-ai/intelligence-base manifest', () => {
   it('exports a sensible name + semver-ish version', () => {
-    expect(BASE_LAYER_NAME).toBe('@coro/intelligence-base')
+    expect(BASE_LAYER_NAME).toBe('@coro-ai/intelligence-base')
     expect(BASE_LAYER_VERSION).toMatch(/^\d+\.\d+\.\d+/)
   })
 

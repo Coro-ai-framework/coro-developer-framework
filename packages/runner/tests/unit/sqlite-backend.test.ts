@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { SqliteStateBackend } from '../../src/state/sqlite-backend'
-import { JobType, type Job } from '@coro/cloud-protocol'
+import { JobType, type Job } from '@coro-ai/cloud-protocol'
 import { resolveIntelligenceRoot } from '../integration/repo-root'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

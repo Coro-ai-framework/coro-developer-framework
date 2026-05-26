@@ -60,7 +60,7 @@ When JSON is not enough, add a script rule:
 2. Create `~/.coro/guardrails/no-friday-prs.mjs`:
 
 ```javascript
-/** @param {import('@coro/plugin-sdk/guardrails').GuardrailContext} ctx */
+/** @param {import('@coro-ai/plugin-sdk/guardrails').GuardrailContext} ctx */
 export default async function (ctx) {
   if (new Date().getDay() === 5) {
     return { allow: false, reason: 'PRs are blocked on Fridays.' }

@@ -1,4 +1,4 @@
-// ── @coro/plugin-gitlab ─────────────────────────────────────────────────────
+// ── @coro-ai/plugin-gitlab ─────────────────────────────────────────────────────
 //
 // Reference Coro plugin demonstrating the MCP-first pattern. This plugin:
 //
@@ -22,7 +22,7 @@
 
 import { z } from 'zod'
 import path from 'node:path'
-import type { ExternalRef, NormalizedEvent } from '@coro/cloud-protocol'
+import type { ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
 import {
   ScmPluginBase,
   buildExternalRef,
@@ -36,7 +36,7 @@ import {
   type ScmPollSnapshot,
   type ScmPrComment,
   type ScmPrStatus,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 
 // ── Config ──────────────────────────────────────────────────────────────────
 

@@ -1,10 +1,10 @@
 // ── Plugin authoring helpers ────────────────────────────────────────────────
 //
 // Small, dependency-light utilities for plugin authors. The runner does
-// not depend on this file — it only ships in `@coro/plugin-sdk`.
+// not depend on this file — it only ships in `@coro-ai/plugin-sdk`.
 
 import * as crypto from 'node:crypto'
-import type { ExternalRefKind, ExternalRef } from '@coro/cloud-protocol'
+import type { ExternalRefKind, ExternalRef } from '@coro-ai/cloud-protocol'
 import type { PluginMcpServerConfig } from './types'
 
 // ── ExternalRef helpers ─────────────────────────────────────────────────────

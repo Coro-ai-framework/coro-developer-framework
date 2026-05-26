@@ -488,10 +488,10 @@ describe('cross-plugin invariants', () => {
 
 /**
  * Re-runnable conformance harness. External plugin authors import this
- * from `@coro/runner/tests/plugins/conformance` and call it with their
+ * from `@coro-ai/runner/tests/plugins/conformance` and call it with their
  * runtime + a valid+invalid config:
  *
- *   import { runConformance } from '@coro/runner/tests/plugins/conformance'
+ *   import { runConformance } from '@coro-ai/runner/tests/plugins/conformance'
  *   runConformance({
  *     id: '@vendor/coro-scm-gitea',
  *     factory: () => createGiteaPlugin(),
