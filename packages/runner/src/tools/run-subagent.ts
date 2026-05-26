@@ -17,7 +17,7 @@
 
 import { readFileSync } from 'fs'
 import path from 'path'
-import type { HookPolicy, SubagentExecutionRequest } from '@coro/plugin-sdk'
+import type { HookPolicy, SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { ToolContext } from './types'
 import { selectModel } from '../jobs/runner'
 

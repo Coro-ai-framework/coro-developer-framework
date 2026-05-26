@@ -3,16 +3,16 @@
  *
  * After Phase E of the "Anthropic-as-plugin" work, no source under
  * `packages/runner/src/**` may carry a top-level `import` from
- * `@anthropic-ai/claude-agent-sdk` or `@coro/llm-anthropic`. The
+ * `@anthropic-ai/claude-agent-sdk` or `@coro-ai/llm-anthropic`. The
  * Anthropic plugin ships in-box but is loaded through the built-in
- * plugin registry via `await import('@coro/llm-anthropic')`, which
+ * plugin registry via `await import('@coro-ai/llm-anthropic')`, which
  * deliberately evades this regex — the runner core stays a pure
- * shell that talks to executors only through `@coro/plugin-sdk`.
+ * shell that talks to executors only through `@coro-ai/plugin-sdk`.
  *
  * This guards against future regressions where someone reaches for
  * `Query` / `SDKUserMessage` / `PushableInput` instead of the neutral
  * `ExecutorSessionController` / `DeveloperInputChannel` /
- * `ConversationMessage` types from `@coro/plugin-sdk`.
+ * `ConversationMessage` types from `@coro-ai/plugin-sdk`.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -21,7 +21,7 @@ import path from 'node:path'
 
 const FORBIDDEN_IMPORTS = [
   '@anthropic-ai/claude-agent-sdk',
-  '@coro/llm-anthropic',
+  '@coro-ai/llm-anthropic',
 ] as const
 
 const RUNNER_ROOT = path.resolve(__dirname, '../../src')
@@ -57,7 +57,7 @@ describe('runner core provider neutrality', () => {
       }
       expect(
         offenders,
-        `These files still import "${forbidden}". Route through @coro/plugin-sdk instead, or use a dynamic \`await import(...)\` if you genuinely need the plugin module.`,
+        `These files still import "${forbidden}". Route through @coro-ai/plugin-sdk instead, or use a dynamic \`await import(...)\` if you genuinely need the plugin module.`,
       ).toEqual([])
     })
   }

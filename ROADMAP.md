@@ -16,7 +16,7 @@ The runner is built around **SCM**, **tracker**, and **executor (LLM)** plugins 
 | **Tracker** | Linear, GitHub Issues, Azure Boards, and other ticket systems |
 | **Executor (LLM)** | More providers and aggregators (Bedrock, Azure OpenAI, Gemini, local models), with parity for phase execution and tool loops |
 
-New integrations should be separate packages using [`@coro/plugin-sdk`](packages/plugin-sdk/README.md); see [`packages/plugin-gitlab`](packages/plugin-gitlab/) for a full SCM example. Open a [Discussion](https://github.com/Coro-ai-framework/coro-developer-framework/discussions) before a large plugin if you want alignment on scope.
+New integrations should be separate packages using [`@coro-ai/plugin-sdk`](packages/plugin-sdk/README.md); see [`packages/plugin-gitlab`](packages/plugin-gitlab/) for a full SCM example. Open a [Discussion](https://github.com/Coro-ai-framework/coro-developer-framework/discussions) before a large plugin if you want alignment on scope.
 
 ### Test Coro on real projects
 

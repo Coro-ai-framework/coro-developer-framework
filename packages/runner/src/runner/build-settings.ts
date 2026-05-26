@@ -9,7 +9,7 @@
 // index.ts → server.ts).
 
 import type { PluginRegistry } from '../plugins/registry'
-import { getBaseLayerRoot } from '@coro/intelligence-base'
+import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
 import {
   resolveIntelligenceDir,
   resolveProposalsConfig,

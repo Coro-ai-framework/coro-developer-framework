@@ -31,31 +31,31 @@ const intelligenceSourceDir = path.join(workspaceRoot, 'packages', 'intelligence
 // intelligence tree the runner reads at startup).
 const VENDORED_WORKSPACE_PACKAGES = [
   {
-    name: '@coro/cloud-protocol',
+    name: '@coro-ai/cloud-protocol',
     folder: 'cloud-protocol',
     sourceDir: path.join(workspaceRoot, 'packages', 'cloud-protocol'),
     extraFiles: [],
   },
   {
-    name: '@coro/intelligence-base',
+    name: '@coro-ai/intelligence-base',
     folder: 'intelligence-base',
     sourceDir: path.join(workspaceRoot, 'packages', 'intelligence-base'),
     extraFiles: ['layer'],
   },
   {
-    name: '@coro/plugin-sdk',
+    name: '@coro-ai/plugin-sdk',
     folder: 'plugin-sdk',
     sourceDir: path.join(workspaceRoot, 'packages', 'plugin-sdk'),
     extraFiles: [],
   },
   {
-    name: '@coro/llm-anthropic',
+    name: '@coro-ai/llm-anthropic',
     folder: 'llm-anthropic',
     sourceDir: path.join(workspaceRoot, 'packages', 'llm-anthropic'),
     extraFiles: [],
   },
   {
-    name: '@coro/llm-openai',
+    name: '@coro-ai/llm-openai',
     folder: 'llm-openai',
     sourceDir: path.join(workspaceRoot, 'packages', 'llm-openai'),
     extraFiles: [],
@@ -64,13 +64,13 @@ const VENDORED_WORKSPACE_PACKAGES = [
 
 const VENDORED_BY_NAME = new Map(VENDORED_WORKSPACE_PACKAGES.map(pkg => [pkg.name, pkg]))
 
-runPnpm(['--filter', '@coro/cloud-protocol', 'build'])
-runPnpm(['--filter', '@coro/intelligence-base', 'build'])
-runPnpm(['--filter', '@coro/plugin-sdk', 'build'])
-runPnpm(['--filter', '@coro/llm-anthropic', 'build'])
-runPnpm(['--filter', '@coro/llm-openai', 'build'])
-runPnpm(['--filter', '@coro/runner', 'build'])
-runPnpm(['--filter', '@coro/dashboard', 'build'])
+runPnpm(['--filter', '@coro-ai/cloud-protocol', 'build'])
+runPnpm(['--filter', '@coro-ai/intelligence-base', 'build'])
+runPnpm(['--filter', '@coro-ai/plugin-sdk', 'build'])
+runPnpm(['--filter', '@coro-ai/llm-anthropic', 'build'])
+runPnpm(['--filter', '@coro-ai/llm-openai', 'build'])
+runPnpm(['--filter', '@coro-ai/runner', 'build'])
+runPnpm(['--filter', '@coro-ai/dashboard', 'build'])
 
 rmSync(resourcesRoot, { recursive: true, force: true })
 rmSync(stagingRoot, { recursive: true, force: true })

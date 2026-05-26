@@ -64,7 +64,7 @@ export interface Settings {
     coroIntelligenceDir: string
     /**
      * Absolute on-disk path of the base intelligence layer that ships
-     * with the runner (`@coro/intelligence-base/layer`). Always present;
+     * with the runner (`@coro-ai/intelligence-base/layer`). Always present;
      * used as the foundation of the layered intelligence stack
      * (base → tenant → repo).
      */

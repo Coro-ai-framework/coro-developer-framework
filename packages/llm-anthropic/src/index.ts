@@ -1,4 +1,4 @@
-// Public surface of the @coro/llm-anthropic package.
+// Public surface of the @coro-ai/llm-anthropic package.
 //
 // The runner imports the executor + helpers from this barrel so internal
 // file moves inside this package don't ripple into runner imports.

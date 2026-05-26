@@ -1,4 +1,4 @@
-import type { InboundEvent, OutboundEvent } from '@coro/cloud-protocol'
+import type { InboundEvent, OutboundEvent } from '@coro-ai/cloud-protocol'
 
 // ── Event transport interface ─────────────────────────────────────────────────
 //

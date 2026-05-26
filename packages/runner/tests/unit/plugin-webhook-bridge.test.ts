@@ -13,7 +13,7 @@ import type {
   PluginManifest,
   ScmPluginRuntime,
 } from '../../src/plugins/types'
-import type { NormalizedEvent } from '@coro/cloud-protocol'
+import type { NormalizedEvent } from '@coro-ai/cloud-protocol'
 
 const logger = pino({ level: 'silent' })
 

@@ -39,7 +39,7 @@ Coro ships in two deployment shapes:
               └──────────────────┼───────────────────────┘
                                  ▼
                        ┌─────────────────────┐
-                       │   @coro/runner      │  one process per developer
+                       │   @coro-ai/runner      │  one process per developer
                        │   (always running)  │  • REST + dashboard server
                        └────────┬────────────┘  • job runner + MCP tools
                                 │
@@ -83,7 +83,7 @@ Coro composes agent behaviour from three layers, materialised per-job:
 ├─────────────────────────────────────────────────────────────┤
 │ Tenant overlay      localDir | gitRemote | cloudBlob        │
 ├─────────────────────────────────────────────────────────────┤
-│ Base intelligence   @coro/intelligence-base/layer/          │
+│ Base intelligence   @coro-ai/intelligence-base/layer/          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -182,7 +182,7 @@ Agents have access to ~30 domain-specific MCP tools (under the
   dashboard at `http://localhost:3000/dashboard/`, and keeps state in
   `~/.coro/state.db`. PR events are detected by polling.
 - **Team mode (hybrid):** each developer's runner authenticates to a
-  shared cloud control plane (`@coro/runner`'s `src/cloud/`) over an
+  shared cloud control plane (`@coro-ai/runner`'s `src/cloud/`) over an
   authenticated WebSocket. Postgres holds team state; webhooks land on
   the cloud's stable URL and are routed to the right runner.
 

@@ -15,7 +15,7 @@ BUSL-1.1. On **2029-05-19**, that code converts to [Apache License 2.0](https://
 
 - Clone, modify, and contribute to Coro.
 - Run Coro locally or inside your organization for real engineering work.
-- Build plugins and integrations using `@coro/plugin-sdk`.
+- Build plugins and integrations using `@coro-ai/plugin-sdk`.
 
 **What requires a commercial agreement:**
 

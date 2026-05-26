@@ -1,8 +1,8 @@
-# @coro/llm-openai
+# @coro-ai/llm-openai
 
 OpenAI Responses API phase executor for Coro.
 
-This package implements the `PhaseExecutorRuntime` contract from `@coro/plugin-sdk` and is designed to be loaded by the runner as plugin id `openai`.
+This package implements the `PhaseExecutorRuntime` contract from `@coro-ai/plugin-sdk` and is designed to be loaded by the runner as plugin id `openai`.
 
 ## Capabilities
 

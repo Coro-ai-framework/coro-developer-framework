@@ -3,7 +3,7 @@
 // the internal file layout.
 //
 // `ExternalRef` / `NormalizedEvent` *types* now live in
-// `@coro/cloud-protocol`; only the runner-side helpers (e.g.
+// `@coro-ai/cloud-protocol`; only the runner-side helpers (e.g.
 // `repoKeyForStorage`, `resolveJobByExternalRef`) are re-exported
 // from `./refs`.
 

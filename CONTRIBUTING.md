@@ -28,7 +28,7 @@ Run the runner locally:
 ```bash
 pnpm dev:runner
 # or
-pnpm --filter @coro/runner dev
+pnpm --filter @coro-ai/runner dev
 ```
 
 See [docs/local-setup.md](docs/local-setup.md) for credentials, intelligence overlays,

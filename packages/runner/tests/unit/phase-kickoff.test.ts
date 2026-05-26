@@ -5,7 +5,7 @@ import {
   buildCodingPreflightWarning,
   formatRelativeAge,
 } from '../../src/jobs/phase-kickoff'
-import { JobType, type Job } from '@coro/cloud-protocol'
+import { JobType, type Job } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 const NOW = Date.parse('2026-05-21T12:00:00Z')

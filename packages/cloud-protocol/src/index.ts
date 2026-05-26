@@ -1,11 +1,11 @@
-// @coro/cloud-protocol — wire protocol shared between the Coro runner and
+// @coro-ai/cloud-protocol — wire protocol shared between the Coro runner and
 // the Coro cloud control plane.
 //
 // This package is intentionally side-effect-free and runtime-light: pure
 // TypeScript shape types, string-literal unions / enums that appear on the
 // wire, Zod schemas for boundary validation, and protocol-version
 // constants. Runtime helpers (functions that operate on these shapes)
-// belong in the consumer packages (`@coro/runner`, `coro-cloud`), not
+// belong in the consumer packages (`@coro-ai/runner`, `coro-cloud`), not
 // here — that keeps the contract trivially auditable and prevents
 // downstream drift.
 //

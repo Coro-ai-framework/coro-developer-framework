@@ -4,7 +4,7 @@
 // Toolchain-specific build commands live in {language}-conventions skills.
 
 import path from 'path'
-import type { Job } from '@coro/cloud-protocol'
+import type { Job } from '@coro-ai/cloud-protocol'
 
 export interface JobWorkspaceLayout {
   jobWorkingDir: string

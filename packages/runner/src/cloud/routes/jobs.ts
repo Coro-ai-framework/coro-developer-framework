@@ -10,7 +10,7 @@ import {
   JobInput,
   ProposalStatus,
   STATUS_CANCELLED,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import {
   cancelledJobPatch,
   isCancellableStatus,

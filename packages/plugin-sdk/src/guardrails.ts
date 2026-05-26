@@ -1,6 +1,6 @@
 // ── Guardrail types (script authors + dashboard) ────────────────────────────
 //
-// Runtime enforcement lives in `@coro/runner`. This module exposes only the
+// Runtime enforcement lives in `@coro-ai/runner`. This module exposes only the
 // stable contract for custom `~/.coro/guardrails/<name>.mjs` scripts.
 
 /** Product-level events guardrails subscribe to. */

@@ -69,12 +69,12 @@ server reaches feature parity. Two paths exist:
 
 ### Option B — Publish our own
 - **Build**: extract `BitBucketClient` into a standalone
-  `@coro/mcp-server-bitbucket` npm package implementing the MCP
+  `@coro-ai/mcp-server-bitbucket` npm package implementing the MCP
   server protocol against our existing client.
-- **Publish**: under `@coro/`, pinned alongside the runner's release
+- **Publish**: under `@coro-ai/`, pinned alongside the runner's release
   cadence so version drift is impossible.
 - **Migrate**: BitBucket plugin's `mcpServer()` returns
-  `{ command: 'npx', args: ['-y', '@coro/mcp-server-bitbucket'], env: { … } }`.
+  `{ command: 'npx', args: ['-y', '@coro-ai/mcp-server-bitbucket'], env: { … } }`.
 - **Pro**: full control of feature surface, no upstream churn.
 - **Con**: maintenance cost — same surface area we already maintain,
   just exposed as an MCP server.

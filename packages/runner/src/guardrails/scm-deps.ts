@@ -1,4 +1,4 @@
-import type { ExternalRef } from '@coro/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import type { ScmPluginRuntime } from '../plugins/types'
 import type { ToolContext } from '../tools/types'
 import { PluginResolutionError } from '../plugins/registry'

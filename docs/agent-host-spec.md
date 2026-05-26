@@ -1,11 +1,11 @@
 # Coro Runner — Technical Specification
 
-**Audience:** Engineers implementing or maintaining `@coro/runner`
+**Audience:** Engineers implementing or maintaining `@coro-ai/runner`
 **Status:** Implemented (mid-`0.2.x`)
 **Last updated:** 2026-04-26
 
 > **Naming note:** earlier drafts of this document called the runner the
-> "Agent Host". The runtime is now packaged as **`@coro/runner`** in the
+> "Agent Host". The runtime is now packaged as **`@coro-ai/runner`** in the
 > pnpm workspace; the file name is preserved for backwards-compatibility
 > with existing links.
 
@@ -13,7 +13,7 @@
 
 ## 1. Purpose
 
-`@coro/runner` is the always-running process on a developer's machine.
+`@coro-ai/runner` is the always-running process on a developer's machine.
 It is responsible for:
 
 1. Receiving job requests from the `coro` CLI, the bundled dashboard,
@@ -38,8 +38,8 @@ them.
 | Choice                                | Rationale                                                                   |
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | TypeScript / Node.js (>= 20)          | Strong typing for job state; ecosystem for SDKs and MCP tooling             |
-| pnpm workspaces                       | Local linking between `@coro/runner`, `@coro/dashboard`, `@coro/intelligence-base`, `@coro/plugin-sdk`, `@coro/llm-anthropic` |
-| `@coro/plugin-sdk` + `@coro/llm-anthropic` | Plugin contract (`PhaseExecutor`) + the built-in Anthropic executor that wraps `@anthropic-ai/claude-agent-sdk`. The runner core never imports the Anthropic SDK directly. |
+| pnpm workspaces                       | Local linking between `@coro-ai/runner`, `@coro-ai/dashboard`, `@coro-ai/intelligence-base`, `@coro-ai/plugin-sdk`, `@coro-ai/llm-anthropic` |
+| `@coro-ai/plugin-sdk` + `@coro-ai/llm-anthropic` | Plugin contract (`PhaseExecutor`) + the built-in Anthropic executor that wraps `@anthropic-ai/claude-agent-sdk`. The runner core never imports the Anthropic SDK directly. |
 | Express + `ws`                        | Local REST server, plus WebSocket transport (hybrid mode)                   |
 | `better-sqlite3`                      | Local-mode state (`~/.coro/state.db`)                                       |
 | Drizzle ORM + Postgres                | Cloud control plane state (hybrid mode)                                     |
@@ -54,7 +54,7 @@ The runner lives in `packages/runner/`:
 
 ```
 packages/runner/
-├── package.json                ← @coro/runner
+├── package.json                ← @coro-ai/runner
 ├── tsconfig.json
 ├── docker-compose.cloud.yml    ← Cloud control plane stack: Postgres + (optional) Redis
 ├── cli/                        ← The `coro` CLI
@@ -77,7 +77,7 @@ packages/runner/
     ├── plugins/                ← Plugin registry, loaders, builtin executor wiring
     │   ├── registry.ts         ← PluginRegistry: resolveScm/Tracker/Executor + resolvePhaseAssignment
     │   ├── loaders.ts          ← Disk + workspace plugin loading
-    │   └── builtin/index.ts    ← buildBuiltinPluginRegistry (registers @coro/llm-anthropic)
+    │   └── builtin/index.ts    ← buildBuiltinPluginRegistry (registers @coro-ai/llm-anthropic)
     ├── prompt/builder.ts       ← Phase-scoped system prompt assembly
     ├── intelligence/           ← Layered intelligence
     │   ├── tenant-context.ts   ← solo-<host> | team-<teamId>
@@ -103,9 +103,9 @@ packages/runner/
     └── dashboard-dist.ts       ← Resolves built dashboard assets
 ```
 
-The dashboard (`@coro/dashboard`) builds to a static `dist/` and is
+The dashboard (`@coro-ai/dashboard`) builds to a static `dist/` and is
 served by the runner from `dashboard-dist.ts`. The base intelligence
-(`@coro/intelligence-base`) is consumed via `getBaseLayerRoot()` and
+(`@coro-ai/intelligence-base`) is consumed via `getBaseLayerRoot()` and
 mounted as the bottom layer of every per-job overlay.
 
 ---
@@ -181,7 +181,7 @@ not the runner's process-wide intelligence dir.
 
 ## 6. Cloud control plane API (hybrid mode only)
 
-The cloud entrypoint is `src/cloud/index.ts` (`@coro/runner`'s `dev:cloud`
+The cloud entrypoint is `src/cloud/index.ts` (`@coro-ai/runner`'s `dev:cloud`
 script). It is its own Express server, distinct from the per-developer
 runner:
 
@@ -243,7 +243,7 @@ queued
 ### 7.3 Phase loop
 
 Each phase resolves a `PhaseExecutor` plugin (default:
-`@coro/llm-anthropic`) and calls `executor.executePhase()`. The
+`@coro-ai/llm-anthropic`) and calls `executor.executePhase()`. The
 executor owns the underlying LLM SDK call (Claude Agent SDK,
 OpenAI Responses, etc.) and the full tool-use loop. The runner's
 outer loop advances phases based on `PhaseSignals` set by MCP tool
@@ -395,7 +395,7 @@ message without rebuilding the session:
    reads the queued message on the next iteration.
 
 Two interrupt modes (see `ExecutorSessionController` in
-`@coro/plugin-sdk`):
+`@coro-ai/plugin-sdk`):
 
 | Mode | When | Behavior |
 |------|------|----------|
@@ -427,7 +427,7 @@ Triggered at job start and at every phase boundary
 
 ```
 inputs:
-  baseLayerDir        → @coro/intelligence-base/layer/
+  baseLayerDir        → @coro-ai/intelligence-base/layer/
   tenantContext       → solo-<host> | team-<teamId> with optional overlay descriptor
   jobId               → unique job id
   workingRoot         → settings.paths.workingDir
@@ -622,7 +622,7 @@ volumes:
 The cloud entrypoint is started with:
 
 ```bash
-pnpm --filter @coro/runner dev:cloud
+pnpm --filter @coro-ai/runner dev:cloud
 ```
 
 Per-developer runners do **not** require Docker, Postgres, or Redis —

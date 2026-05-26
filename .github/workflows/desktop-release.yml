@@ -217,7 +217,7 @@ jobs:
           esac
 
       - name: Typecheck desktop package
-        run: pnpm --filter @coro/desktop-electron typecheck
+        run: pnpm --filter @coro-ai/desktop-electron typecheck
 
       - name: Prepare Apple signing and notarization inputs
         if: ${{ matrix.platform == 'macos' }}
@@ -304,9 +304,9 @@ jobs:
       - name: Publish desktop release artifacts
         run: |
           if [[ "$RELEASE_PLATFORM" == 'macos' ]]; then
-            pnpm --filter @coro/desktop-electron release:mac
+            pnpm --filter @coro-ai/desktop-electron release:mac
           else
-            pnpm --filter @coro/desktop-electron release:win
+            pnpm --filter @coro-ai/desktop-electron release:win
           fi
 
       - name: Capture public release metadata

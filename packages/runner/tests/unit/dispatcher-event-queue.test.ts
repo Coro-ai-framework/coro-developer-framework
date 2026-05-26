@@ -13,7 +13,7 @@ import {
   STATUS_AWAITING_PR_MERGE,
   STATUS_CODING,
   type Job,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 vi.mock('../../src/jobs/runner', () => ({

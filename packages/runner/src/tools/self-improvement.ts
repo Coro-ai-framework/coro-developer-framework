@@ -14,7 +14,7 @@
 //      backend so the dashboard / future agents can list pending
 //      proposals.
 //
-// The base layer (`@coro/intelligence-base`) is never writable. Agents
+// The base layer (`@coro-ai/intelligence-base`) is never writable. Agents
 // that try to land changes there get a clean 4xx-equivalent error and
 // must redirect to the tenant layer instead.
 //
@@ -41,7 +41,7 @@ import type {
   ProposalStatus,
   ProposalTargetLayer,
   ProposalType,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 
 // ── Public types ─────────────────────────────────────────────────────────────
 

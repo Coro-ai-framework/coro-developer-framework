@@ -15,7 +15,7 @@
 // references this through a callback.
 
 import type { Logger } from 'pino'
-import type { InboundEvent } from '@coro/cloud-protocol'
+import type { InboundEvent } from '@coro-ai/cloud-protocol'
 import type { PluginRegistry } from './registry'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './types'
 

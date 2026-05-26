@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
 import { switchWorkflow } from '../../src/tools/workflow-switch'
-import { CAMPAIGN_WORKFLOW_PATH, type Job } from '@coro/cloud-protocol'
+import { CAMPAIGN_WORKFLOW_PATH, type Job } from '@coro-ai/cloud-protocol'
 import type { PhaseSignals, ToolContext } from '../../src/tools/types'
 import { makeMockToolContext, makeMockJob } from '../mcp/fixtures'
 

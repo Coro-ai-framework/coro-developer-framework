@@ -82,7 +82,7 @@ export default function CustomPluginDrawer({ step, onClose }: CustomPluginDrawer
     setNotice(null)
     const spec = installSpec.trim()
     if (!spec) {
-      setError('Enter an npm package name, e.g. `@coro/plugin-gitlab`.')
+      setError('Enter an npm package name, e.g. `@coro-ai/plugin-gitlab`.')
       return
     }
     setInstalling(true)
@@ -151,7 +151,7 @@ export default function CustomPluginDrawer({ step, onClose }: CustomPluginDrawer
           <Input
             value={installSpec}
             onChange={event => setInstallSpec(event.target.value)}
-            placeholder="@coro/plugin-gitlab  (or any npm spec)"
+            placeholder="@coro-ai/plugin-gitlab  (or any npm spec)"
             autoComplete="off"
             spellCheck={false}
             disabled={installing}

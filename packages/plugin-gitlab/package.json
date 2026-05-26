@@ -1,5 +1,5 @@
 {
-  "name": "@coro/plugin-gitlab",
+  "name": "@coro-ai/plugin-gitlab",
   "version": "0.1.0",
   "description": "GitLab SCM plugin for Coro. MCP-mode plugin that delegates day-to-day SCM operations to the upstream `@modelcontextprotocol/server-gitlab` server while keeping the small set of native responsibilities Coro requires (clone URLs, webhook normalization, polling, self-improvement PR creation).",
   "license": "BUSL-1.1",
@@ -29,14 +29,14 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@coro/plugin-sdk": "workspace:*",
+    "@coro-ai/plugin-sdk": "workspace:*",
     "zod": "^4.0.0"
   },
   "peerDependencies": {
     "pino": "^9.0.0"
   },
   "devDependencies": {
-    "@coro/cloud-protocol": "workspace:*",
+    "@coro-ai/cloud-protocol": "workspace:*",
     "@types/node": "^22.13.14",
     "pino": "^9.7.0",
     "typescript": "^5.8.2",

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { GuardrailScript } from '@coro/plugin-sdk'
+import type { GuardrailScript } from '@coro-ai/plugin-sdk'
 import type { GuardrailCheckFn } from '../types'
 
 const SCRIPT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/

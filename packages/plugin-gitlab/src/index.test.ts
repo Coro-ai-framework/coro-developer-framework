@@ -8,7 +8,7 @@ function makePlugin() {
   return createPlugin({ config: {} })
 }
 
-describe('@coro/plugin-gitlab', () => {
+describe('@coro-ai/plugin-gitlab', () => {
   it('declares the gitlab manifest', () => {
     const plugin = makePlugin()
     expect(plugin.manifest.id).toBe('gitlab')

@@ -15,7 +15,7 @@
 
 import type { Logger } from 'pino'
 import type { StateBackend } from '../state/backend'
-import { STATUS_AWAITING_RATE_LIMIT } from '@coro/cloud-protocol'
+import { STATUS_AWAITING_RATE_LIMIT } from '@coro-ai/cloud-protocol'
 
 /** Anything the scheduler needs from the dispatcher — narrowed for testability. */
 export interface RateLimitResumer {

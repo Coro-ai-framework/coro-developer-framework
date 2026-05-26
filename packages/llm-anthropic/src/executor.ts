@@ -44,9 +44,9 @@ import type {
   PluginManifest,
   PluginMcpServerConfig,
   PluginTestResult,
-} from '@coro/plugin-sdk'
-import { RateLimitExceededError, classifyProviderError } from '@coro/plugin-sdk'
-import type { ClassifyOptions } from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
+import { RateLimitExceededError, classifyProviderError } from '@coro-ai/plugin-sdk'
+import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
 import { testAnthropicCredentials } from './test-connection'
@@ -64,7 +64,7 @@ import {
   shouldClosePushableAfterResult,
 } from './steering-errors'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
-import type { SteeringInterruptMode } from '@coro/plugin-sdk'
+import type { SteeringInterruptMode } from '@coro-ai/plugin-sdk'
 
 /** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
 interface NormalizedTokensMutable {
@@ -110,7 +110,7 @@ const FALLBACK_CLAUDE_CODE_RATE_LIMIT_MS = 5 * 60 * 1000
  *
  * This is Anthropic-SDK-specific shape detection — kept local to this
  * package rather than leaking into the provider-neutral classifier in
- * `@coro/plugin-sdk`.
+ * `@coro-ai/plugin-sdk`.
  */
 function isClaudeCodeRateLimitMessage(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
@@ -122,7 +122,7 @@ function isClaudeCodeRateLimitMessage(err: unknown): boolean {
 /**
  * Anthropic-specific extensions for the shared
  * {@link classifyProviderError} helper. Keeping vendor-specific
- * detection here (rather than in `@coro/plugin-sdk`) is what lets
+ * detection here (rather than in `@coro-ai/plugin-sdk`) is what lets
  * the shared classifier stay provider-neutral.
  */
 const ANTHROPIC_CLASSIFY_OPTIONS: ClassifyOptions = {
@@ -1144,7 +1144,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       //   2. If the SDK throws a plain `Error` whose message embeds the
       //      Claude Code subprocess rate-limit text (no status, no class,
       //      no headers), recognise it here — the generic provider-neutral
-      //      classifier in `@coro/plugin-sdk` deliberately doesn't know
+      //      classifier in `@coro-ai/plugin-sdk` deliberately doesn't know
       //      about subprocess-specific message shapes.
       //   3. Otherwise fall through to the generic classifier (HTTP
       //      status, header parse, SDK class detection).

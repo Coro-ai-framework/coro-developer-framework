@@ -8,19 +8,19 @@ import crypto from 'crypto'
 import os from 'os'
 import { Logger } from 'pino'
 import type { EventTransport } from './transport'
-import type { InboundEvent, OutboundEvent } from '@coro/cloud-protocol'
+import type { InboundEvent, OutboundEvent } from '@coro-ai/cloud-protocol'
 import type {
   RunnerMessage,
   CloudMessage,
   WsRpcResponse,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import {
   HEARTBEAT_INTERVAL_MS,
   PROTOCOL_VERSION,
   RPC_TIMEOUT_MS,
   RPC_MAX_RETRIES,
   LOG_BATCH_INTERVAL_MS,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 
 export interface WsTransportConfig {
   /** Cloud WebSocket URL, e.g. wss://api.corolabs.com/ws/runner */

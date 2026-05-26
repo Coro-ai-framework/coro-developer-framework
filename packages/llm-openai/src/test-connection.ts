@@ -8,7 +8,7 @@
 // We hit `GET <baseURL>/models` (cheap, returns a model list, requires
 // auth) rather than spending real inference tokens to validate the key.
 
-import type { PluginTestResult } from '@coro/plugin-sdk'
+import type { PluginTestResult } from '@coro-ai/plugin-sdk'
 import type { OpenAiAuthConfig } from './types'
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'

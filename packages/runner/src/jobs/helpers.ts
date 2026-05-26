@@ -1,7 +1,7 @@
 // ── Job runtime helpers ──────────────────────────────────────────────────────
 //
 // Pure functions that operate on the wire-level `Job` shape from
-// `@coro/cloud-protocol`. They live runner-side because they bake in
+// `@coro-ai/cloud-protocol`. They live runner-side because they bake in
 // runner-specific lifecycle semantics (parking/cancellation rules,
 // workflow path defaults) that the cloud control plane and plugin SDK
 // should not import.
@@ -25,7 +25,7 @@ import {
   type CampaignChildStatus,
   type Job,
   type TokenUsage,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 
 // ── Convenience accessors ─────────────────────────────────────────────────────
 

@@ -2,7 +2,7 @@
 //
 // The Anthropic Claude Agent SDK ships an in-process MCP server helper
 // (`createSdkMcpServer` + the `tool()` builder) that implements the open
-// MCP protocol. Coro re-exports it through `@coro/plugin-sdk` so the
+// MCP protocol. Coro re-exports it through `@coro-ai/plugin-sdk` so the
 // runner core (and any future executor plugin that wants to host
 // in-process tools) can build MCP servers without taking a direct
 // dependency on `@anthropic-ai/claude-agent-sdk`.

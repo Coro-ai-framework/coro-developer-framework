@@ -13,7 +13,7 @@ import {
   evaluateCompletionGate,
   jobHasWorkItems,
 } from '../../src/jobs/completion-gate'
-import { JobType, type Job } from '@coro/cloud-protocol'
+import { JobType, type Job } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
 function makeJob(overrides: Partial<Job> = {}): Job {

@@ -1,4 +1,4 @@
-// @coro/intelligence-base
+// @coro-ai/intelligence-base
 //
 // Asset package: ships the company-agnostic markdown intelligence (agents,
 // workflows, skills, .claude/CLAUDE.md skeleton, memory templates) that
@@ -21,7 +21,7 @@ import * as path from 'node:path'
  * shape of the layer changes in a way tenants need to know about
  * (e.g. a new agent role, a renamed workflow phase).
  */
-export const BASE_LAYER_NAME = '@coro/intelligence-base'
+export const BASE_LAYER_NAME = '@coro-ai/intelligence-base'
 export const BASE_LAYER_VERSION = '0.1.0'
 
 /**
@@ -49,7 +49,7 @@ export type LayerFileKey = keyof typeof LAYER_FILES
  * 2. The source bundle (`src/`) — used in dev / tests when the package
  *    has not been built; falls back to `<package>/layer/`.
  *
- * We avoid `require.resolve('@coro/intelligence-base/package.json')`
+ * We avoid `require.resolve('@coro-ai/intelligence-base/package.json')`
  * because that flips behaviour based on hoisting under pnpm. Walking
  * up from `__dirname` is deterministic and works the same in dev,
  * test, and production.

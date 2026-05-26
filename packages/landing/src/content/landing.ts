@@ -103,7 +103,7 @@ export const teamIntelligence: Feature[] = [
 export const intelligenceLayers = [
   {
     name: 'Base Intelligence',
-    label: '@coro/intelligence-base',
+    label: '@coro-ai/intelligence-base',
     description: 'Generic agents, workflows, skills, and memory templates shipped with Coro.',
   },
   {

@@ -1,50 +1,60 @@
 # Publishing to npm
 
-Coro publishes a **small set** of `@coro/*` packages. Everything else (dashboard UI, base intelligence, cloud wire types) ships **inside `@coro/runner`**.
+Coro publishes a **small set** of `@coro-ai/*` packages. Everything else (dashboard UI, base intelligence, cloud wire types) ships **inside `@coro-ai/runner`**.
 
 ## What users install
 
 | Package | What it is |
 |---------|------------|
-| **`@coro/runner`** | **`coro` CLI** + local runner + **bundled dashboard** + bundled runtime libraries |
-| **`@coro/llm-anthropic`** | Anthropic / Claude Code executor (optional swap-in; included by runner) |
-| **`@coro/llm-openai`** | OpenAI executor (optional swap-in; included by runner) |
-| **`@coro/plugin-sdk`** | SDK for authoring SCM / tracker / executor plugins |
-| **`@coro/plugin-gitlab`** | Reference GitLab SCM plugin |
+| **`@coro-ai/runner`** | **`coro` CLI** + local runner + **bundled dashboard** + bundled runtime libraries |
+| **`@coro-ai/llm-anthropic`** | Anthropic / Claude Code executor (optional swap-in; included by runner) |
+| **`@coro-ai/llm-openai`** | OpenAI executor (optional swap-in; included by runner) |
+| **`@coro-ai/plugin-sdk`** | SDK for authoring SCM / tracker / executor plugins |
+| **`@coro-ai/plugin-gitlab`** | Reference GitLab SCM plugin |
 
 Primary install path:
 
 ```bash
-npm install -g @coro/runner
+npm install -g @coro-ai/runner
 coro start
 ```
 
-That serves the dashboard at `http://localhost:3000/dashboard/` without a separate `@coro/dashboard` install.
+That serves the dashboard at `http://localhost:3000/dashboard/` without a separate `@coro-ai/dashboard` install.
 
 Optional extras:
 
 ```bash
-coro plugin install @coro/plugin-gitlab
+coro plugin install @coro-ai/plugin-gitlab
 ```
 
 ## Not on npm
 
-These are workspace-only; bundled into `@coro/runner` at publish time:
+These are workspace-only; bundled into `@coro-ai/runner` at publish time:
 
-- `@coro/dashboard` (static `dist/` → `dashboard-dist/` in the runner tarball)
-- `@coro/intelligence-base` (generic agents / workflows / skills)
-- `@coro/cloud-protocol` (runner ↔ cloud types; plugin authors use types via `@coro/plugin-sdk`)
+- `@coro-ai/dashboard` (static `dist/` → `dashboard-dist/` in the runner tarball)
+- `@coro-ai/intelligence-base` (generic agents / workflows / skills)
+- `@coro-ai/cloud-protocol` (runner ↔ cloud types; plugin authors use types via `@coro-ai/plugin-sdk`)
 
-Also not published: `@coro/desktop-electron`, `@coro/landing`, workspace root `coro`.
+Also not published: `@coro-ai/desktop-electron`, `@coro-ai/landing`, workspace root `coro`.
 
 Manifest: [`scripts/publish-packages.json`](../scripts/publish-packages.json).  
 Runner staging: [`scripts/prepare-runner-npm-publish.mjs`](../scripts/prepare-runner-npm-publish.mjs).
 
 ## Prerequisites
 
-1. **npm org** — Create [`@coro`](https://www.npmjs.com/org/create) and grant publish access.
-2. **GitHub secret** — `NPM_TOKEN` (automation token with publish on `@coro/*`).
-3. **Provenance** — Workflows enable npm trusted publishing (`id-token: write`).
+1. **npm org** — Use the [`@coro-ai`](https://www.npmjs.com/settings/coro-ai/packages) organization on npmjs.com. The publish token must belong to a user with **Read and write** on that org.
+2. **GitHub secret** — `NPM_TOKEN` (automation or granular token with publish on `@coro-ai/*`).
+3. **Provenance** — Workflows enable npm trusted publishing (`id-token: write`). Configure trusted publishers for this repo on npm as well.
+
+### Troubleshooting `E404` on publish
+
+npm returns **404** (not 401) when the token cannot create packages under the scope:
+
+```text
+npm error 404 Not Found - PUT https://registry.npmjs.org/@coro-ai%2fplugin-sdk
+```
+
+Ensure the org is **`coro-ai`** (scope `@coro-ai`), not `coro`. A token for `@coro-ai` will not publish packages still named `@coro/*`.
 
 ## CI
 
@@ -71,7 +81,7 @@ git tag npm/v0.1.0
 git push origin npm/v0.1.0
 ```
 
-Publish order: LLM packages → plugin-sdk → plugin-gitlab → staged `@coro/runner`.
+Publish order: LLM packages → plugin-sdk → plugin-gitlab → staged `@coro-ai/runner`.
 
 ### Local check
 
@@ -83,6 +93,6 @@ ls .npm-pack-verify/
 
 ## Notes
 
-- **`@coro/runner`** depends on `@coro/llm-anthropic` and `@coro/llm-openai` as normal npm deps (same version as the release).
+- **`@coro-ai/runner`** depends on `@coro-ai/llm-anthropic` and `@coro-ai/llm-openai` as normal npm deps (same version as the release).
 - **License** — BUSL-1.1 on all published packages.
 - **Native modules** — `better-sqlite3` rebuilds on install.

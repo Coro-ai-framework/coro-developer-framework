@@ -1,4 +1,4 @@
-# @coro/intelligence-base
+# @coro-ai/intelligence-base
 
 The **base intelligence layer** that ships with every Coro install.
 
@@ -33,7 +33,7 @@ import {
   LAYER_FILES,
   getBaseLayerRoot,
   pathInBaseLayer,
-} from '@coro/intelligence-base'
+} from '@coro-ai/intelligence-base'
 
 getBaseLayerRoot()           // → /abs/path/to/packages/intelligence-base/layer
 pathInBaseLayer('claudeMd')  // → /…/layer/.claude/CLAUDE.md
@@ -50,7 +50,7 @@ intelligence resolver stacks tenant + repo overlays on top of these files.
 ├──────────────────────────────────────────────────────────┤
 │ Tenant overlay      tenant remote / cloud blob           │
 ├──────────────────────────────────────────────────────────┤
-│ Base intelligence   @coro/intelligence-base/layer/  ← this package
+│ Base intelligence   @coro-ai/intelligence-base/layer/  ← this package
 └──────────────────────────────────────────────────────────┘
 ```
 

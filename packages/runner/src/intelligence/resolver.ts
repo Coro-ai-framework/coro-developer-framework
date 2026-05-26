@@ -4,7 +4,7 @@
 // the layered intelligence model into a single on-disk overlay that the
 // runner reads from for that job:
 //
-//   1. base    — `@coro/intelligence-base/layer/`         (always present)
+//   1. base    — `@coro-ai/intelligence-base/layer/`         (always present)
 //   2. tenant  — local dir / git remote / cloud blob       (per TenantContext)
 //   3. repo    — `<repoCheckout>/.coro/`                   (per target repo)
 //
@@ -37,7 +37,7 @@ import type { PluginRegistry } from '../plugins/registry'
 
 /** Inputs to {@link resolveJobIntelligence}. */
 export interface ResolveJobIntelligenceArgs {
-  /** Absolute path to `@coro/intelligence-base/layer` for this runner. */
+  /** Absolute path to `@coro-ai/intelligence-base/layer` for this runner. */
   baseLayerDir: string
   /** Tenant the job is being run for. */
   tenantContext: TenantContext

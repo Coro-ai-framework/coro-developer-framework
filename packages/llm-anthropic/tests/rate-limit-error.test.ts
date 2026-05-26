@@ -89,7 +89,7 @@ vi.mock('../src/mcp-reattach', () => ({
 import { tmpdir } from 'os'
 import { join } from 'path'
 import pino from 'pino'
-import { createSdkMcpServer, RateLimitExceededError } from '@coro/plugin-sdk'
+import { createSdkMcpServer, RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import { createAnthropicExecutor } from '../src/executor'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from '../src/types'
 

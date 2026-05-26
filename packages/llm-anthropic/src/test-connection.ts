@@ -22,7 +22,7 @@ import { execFileSync } from 'child_process'
 import { readFileSync } from 'fs'
 import { homedir } from 'os'
 import path from 'path'
-import type { PluginTestCheck, PluginTestResult } from '@coro/plugin-sdk'
+import type { PluginTestCheck, PluginTestResult } from '@coro-ai/plugin-sdk'
 import type { ClaudeAuthConfig } from './types'
 
 /** Beta header the Claude CLI sends on OAuth-backed requests. */

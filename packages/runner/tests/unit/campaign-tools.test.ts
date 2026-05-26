@@ -32,7 +32,7 @@ import {
   STATUS_CANCELLED,
   type Job,
   type CampaignChild,
-} from '@coro/cloud-protocol'
+} from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
 

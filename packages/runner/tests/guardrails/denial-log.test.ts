@@ -5,7 +5,7 @@ import {
 } from '../../src/guardrails/denial-log'
 import { GuardrailEngine, buildGuardrailContext } from '../../src/guardrails'
 import { resolveGuardrails } from '../../src/guardrails/merge'
-import type { Job } from '@coro/cloud-protocol'
+import type { Job } from '@coro-ai/cloud-protocol'
 
 vi.mock('../../src/guardrails/checks/pr-diff-size', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../src/guardrails/checks/pr-diff-size')>()

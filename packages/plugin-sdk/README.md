@@ -1,4 +1,4 @@
-# @coro/plugin-sdk
+# @coro-ai/plugin-sdk
 
 Public SDK for authoring [Coro](https://github.com/coro-ai) plugins.
 
@@ -20,7 +20,7 @@ coro start              # restart the runner; the plugin is detected via coro-pl
 The CLI scaffolds a directory with:
 
 - `coro-plugin.json` — manifest read by the runner's drop-in loader.
-- `package.json` — pre-wired with `@coro/plugin-sdk` as a dependency.
+- `package.json` — pre-wired with `@coro-ai/plugin-sdk` as a dependency.
 - `index.ts` — a stub implementing the four required hooks.
 - `intelligence/` — markdown the runner copies into the per-job intelligence overlay.
 
@@ -69,7 +69,7 @@ plugins) `pollPr`/`matchesRemote` consistency.
 
 ```ts
 // tests/conformance.test.ts in your plugin repo
-import { runConformance } from '@coro/runner/tests/plugins/conformance'
+import { runConformance } from '@coro-ai/runner/tests/plugins/conformance'
 import { createMyPlugin } from '../src'
 
 runConformance({

@@ -4,7 +4,7 @@ import pino from 'pino'
 import { createRunnerServer } from '../../src/runner/server'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { PluginRuntime } from '../../src/plugins/types'
-import type { PluginManifest } from '@coro/plugin-sdk'
+import type { PluginManifest } from '@coro-ai/plugin-sdk'
 
 // The /system/reveal handler reads ~/.coro/config.json on construction-
 // adjacent paths; we don't hit that endpoint here. Other routes also

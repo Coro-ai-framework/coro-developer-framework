@@ -1,5 +1,5 @@
 {
-  "name": "@coro/llm-anthropic",
+  "name": "@coro-ai/llm-anthropic",
   "version": "0.1.0",
   "description": "Anthropic Claude phase executor for Coro — wraps the Claude Agent SDK and exposes it through the PhaseExecutorRuntime contract.",
   "license": "BUSL-1.1",
@@ -37,11 +37,11 @@
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@coro/plugin-sdk": "workspace:*",
+    "@coro-ai/plugin-sdk": "workspace:*",
     "pino": "^9.0.0"
   },
   "devDependencies": {
-    "@coro/plugin-sdk": "workspace:*",
+    "@coro-ai/plugin-sdk": "workspace:*",
     "@types/node": "^22.13.14",
     "pino": "^9.6.0",
     "typescript": "^5.6.3",

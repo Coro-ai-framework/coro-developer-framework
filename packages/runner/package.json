@@ -1,5 +1,5 @@
 {
-  "name": "@coro/runner",
+  "name": "@coro-ai/runner",
   "version": "0.1.0",
   "description": "Coro Runner — local agent runtime, cloud control plane, and CLI (`coro` command).",
   "license": "BUSL-1.1",
@@ -50,11 +50,11 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@coro/cloud-protocol": "workspace:*",
-    "@coro/intelligence-base": "workspace:*",
-    "@coro/llm-anthropic": "workspace:*",
-    "@coro/llm-openai": "workspace:*",
-    "@coro/plugin-sdk": "workspace:*",
+    "@coro-ai/cloud-protocol": "workspace:*",
+    "@coro-ai/intelligence-base": "workspace:*",
+    "@coro-ai/llm-anthropic": "workspace:*",
+    "@coro-ai/llm-openai": "workspace:*",
+    "@coro-ai/plugin-sdk": "workspace:*",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",
     "commander": "^13.1.0",

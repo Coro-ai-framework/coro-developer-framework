@@ -1,5 +1,5 @@
 {
-  "name": "@coro/desktop-electron",
+  "name": "@coro-ai/desktop-electron",
   "private": true,
   "version": "0.1.0",
   "description": "Coro Desktop Shell — Electron wrapper for the Coro runner and dashboard",

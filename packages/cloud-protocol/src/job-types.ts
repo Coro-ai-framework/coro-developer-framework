@@ -526,7 +526,7 @@ export interface JobInput {
 
 // Proposal types map to specific writable file locations in the
 // intelligence stack — see the `self-improvement-guide` skill in
-// `@coro/intelligence-base` for the canonical mapping.
+// `@coro-ai/intelligence-base` for the canonical mapping.
 //
 // `source-change` was removed when the legacy `tools/src/**/*.ts`
 // layout disappeared with the monorepo conversion. Runner source

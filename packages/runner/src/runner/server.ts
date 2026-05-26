@@ -33,7 +33,7 @@ import {
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
-import { type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro/cloud-protocol'
+import { type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { formatSseFrame } from './sse'
@@ -42,7 +42,7 @@ import { discoverWorkflows } from '../workflow-discovery'
 import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
 import { inferKind, validateArtefact } from '../intelligence-validator'
-import { getBaseLayerRoot } from '@coro/intelligence-base'
+import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
 import { resolveGuardrails } from '../guardrails'
 
 export interface RunnerServerOptions {
@@ -818,7 +818,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   //
   // Enumerate every workflow.md the runner can dispatch against,
   // walking the layered intelligence stack (tenant overlay first,
-  // then the base layer that ships with @coro/intelligence-base).
+  // then the base layer that ships with @coro-ai/intelligence-base).
   // The dashboard's new-run page uses this to populate its workflow
   // picker, so dropping a new `workflows/<my-flow>/workflow.md` into
   // the tenant overlay surfaces it without any code change.
@@ -2996,7 +2996,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // the runner core knows nothing about Anthropic / OpenAI / Foundry
   // auth shapes. Each LLM plugin owns its own probe via the optional
   // `PluginRuntime.testConnection(config)` method declared on
-  // `@coro/plugin-sdk`. Plugins that don't implement it fall back to
+  // `@coro-ai/plugin-sdk`. Plugins that don't implement it fall back to
   // the cheaper `healthcheck()` — the right default for "config-only"
   // providers whose only check is "is the required field non-empty".
   //
@@ -3108,7 +3108,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   // ── Dashboard (served under /dashboard/) ───────────────────────────────
   //
-  // The dashboard now lives in a sibling workspace package (`@coro/dashboard`),
+  // The dashboard now lives in a sibling workspace package (`@coro-ai/dashboard`),
   // so we resolve its built `dist/` relative to the runner's package root and
   // tolerate two layouts:
   //   • compiled:  packages/runner/dist/src/runner/server.js  (4 levels up)
@@ -3127,7 +3127,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     app.get('/dashboard/*', (_req: Request, res: Response) => {
       res.status(503).json({
         error: 'Dashboard build not found',
-        hint: 'Run `pnpm --filter @coro/dashboard build` or set CORO_DASHBOARD_DIST.',
+        hint: 'Run `pnpm --filter @coro-ai/dashboard build` or set CORO_DASHBOARD_DIST.',
       })
     })
   }

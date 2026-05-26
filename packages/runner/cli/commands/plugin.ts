@@ -75,7 +75,7 @@ const initCmd = new Command('init')
           private: true,
           main: 'index.js',
           scripts: { build: 'tsc' },
-          dependencies: { '@coro/plugin-sdk': SDK_VERSION, zod: '^4.0.0' },
+          dependencies: { '@coro-ai/plugin-sdk': SDK_VERSION, zod: '^4.0.0' },
           devDependencies: { typescript: '^5.0.0', '@types/node': '^22.0.0' },
         },
         null,
@@ -131,7 +131,7 @@ const initCmd = new Command('init')
 
 const installCmd = new Command('install')
   .description('Install a published Coro plugin into ~/.coro/plugins/')
-  .argument('<spec>', 'npm package spec (e.g. "@coro/plugin-gitlab" or "git+https://…")')
+  .argument('<spec>', 'npm package spec (e.g. "@coro-ai/plugin-gitlab" or "git+https://…")')
   .option('--id <id>', 'Override the plugin id used as the install dir name')
   .action(async (spec: string, opts: { id?: string }) => {
     const id = opts.id ?? deriveIdFromSpec(spec)
@@ -263,7 +263,7 @@ import {
   type PluginManifest,
   type ScmCloneInfo,
   type ScmPollSnapshot,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 
 const configSchema = z.object({
   host: z.string().min(1),
@@ -344,7 +344,7 @@ import {
   mcpStdioDescriptor,
   type PluginDeps,
   type PluginManifest,
-} from '@coro/plugin-sdk'
+} from '@coro-ai/plugin-sdk'
 
 const configSchema = z.object({
   apiKey: z.string().min(1),
@@ -391,7 +391,7 @@ function capitalize(s: string): string {
 
 function deriveIdFromSpec(spec: string): string | undefined {
   // Examples:
-  //   @coro/plugin-gitlab     → gitlab
+  //   @coro-ai/plugin-gitlab     → gitlab
   //   coro-plugin-gitea       → gitea
   //   git+https://…/foo.git   → foo
   const scopedMatch = spec.match(/^@[^/]+\/(?:plugin-)?(.+)$/)

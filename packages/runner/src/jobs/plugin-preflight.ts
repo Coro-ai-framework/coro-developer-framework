@@ -1,4 +1,4 @@
-import type { JobInput, Job } from '@coro/cloud-protocol'
+import type { JobInput, Job } from '@coro-ai/cloud-protocol'
 import { PluginResolutionError, type PluginRegistry } from '../plugins/registry'
 
 type JobPluginParamsSource = Pick<JobInput, 'params'> | Pick<Job, 'params'>

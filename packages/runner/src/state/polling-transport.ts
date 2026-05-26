@@ -25,13 +25,13 @@
 // the wrong provider for cross-platform tenants.
 
 import type { EventTransport } from './transport'
-import type { InboundEvent, OutboundEvent } from '@coro/cloud-protocol'
+import type { InboundEvent, OutboundEvent } from '@coro-ai/cloud-protocol'
 import type { StateBackend } from './backend'
 import type { Logger } from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
-import type { ExternalRef } from '@coro/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import type { ScmPluginRuntime, ScmPollSnapshot } from '../plugins/types'
-import { type Job, type PrMapping } from '@coro/cloud-protocol'
+import { type Job, type PrMapping } from '@coro-ai/cloud-protocol'
 import { isParkingStatus } from '../jobs/helpers'
 
 export interface PollingTransportOptions {

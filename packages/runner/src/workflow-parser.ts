@@ -239,7 +239,7 @@ export async function loadWorkflowConfig(
  *
  * This mirrors the runtime resolver's layering (tenant overrides base):
  * the tenant overlay's local cache is checked first, falling back to
- * the base layer that ships with `@coro/intelligence-base`. Callers
+ * the base layer that ships with `@coro-ai/intelligence-base`. Callers
  * should treat a `null` return as a hard error — there is no legitimate
  * scenario in which a configured workflow is unresolvable.
  *

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Semver to publish for all @coro/* packages
+        description: Semver to publish for all @coro-ai/* packages
         required: true
         type: string
       dry_run:
@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   publish:
-    name: Publish @coro packages
+    name: Publish @coro-ai packages
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -75,13 +75,13 @@ jobs:
 
       - name: Run pre-publish tests
         run: |
-          pnpm --filter @coro/runner test
-          pnpm --filter @coro/plugin-sdk test
+          pnpm --filter @coro-ai/runner test
+          pnpm --filter @coro-ai/plugin-sdk test
 
       - name: Verify npm pack tarballs
         run: pnpm run verify:npm-pack
 
-      - name: Publish to npm
+      - name: Verify npm credentials
         if: github.event_name == 'push' || inputs.dry_run == false
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -91,12 +91,21 @@ jobs:
             echo "::error::Repository secret NPM_TOKEN is required to publish."
             exit 1
           fi
+          echo "npm whoami: $(npm whoami)"
+          npm access list packages @coro-ai || true
+
+      - name: Publish to npm
+        if: github.event_name == 'push' || inputs.dry_run == false
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
           node scripts/prepare-runner-npm-publish.mjs
           pnpm -r publish --access public --no-git-checks --provenance \
-            --filter @coro/llm-anthropic \
-            --filter @coro/llm-openai \
-            --filter @coro/plugin-sdk \
-            --filter @coro/plugin-gitlab
+            --filter @coro-ai/llm-anthropic \
+            --filter @coro-ai/llm-openai \
+            --filter @coro-ai/plugin-sdk \
+            --filter @coro-ai/plugin-gitlab
           npm publish --access public --provenance packages/runner/.npm-publish
 
       - name: Dry run summary
@@ -111,6 +120,6 @@ jobs:
             echo
             echo 'After publish, install with:'
             echo '```bash'
-            echo "npm install -g @coro/runner@${PUBLISH_VERSION}"
+            echo "npm install -g @coro-ai/runner@${PUBLISH_VERSION}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,14 +1,14 @@
 // ── External-reference helpers ──────────────────────────────────────────────
 //
 // The `ExternalRef`, `ExternalRefKind`, and `NormalizedEvent` *types*
-// live in `@coro/cloud-protocol` — the wire-contract package shared by
+// live in `@coro-ai/cloud-protocol` — the wire-contract package shared by
 // runner, cloud, and plugin SDK. This file owns the runner-side
 // runtime helpers that operate on those types: storage-key
 // normalisation, id stringification, and the state-backend lookup
-// adapter. Helpers are *not* re-exported from `@coro/cloud-protocol`;
+// adapter. Helpers are *not* re-exported from `@coro-ai/cloud-protocol`;
 // they're runner-internal concerns.
 
-import type { ExternalRef } from '@coro/cloud-protocol'
+import type { ExternalRef } from '@coro-ai/cloud-protocol'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -55,7 +55,7 @@ export function externalIdString(value: unknown): string {
 // adapter here means the migration in P5 only has to swap the body —
 // every caller already speaks {@link ExternalRef}.
 
-import type { Job } from '@coro/cloud-protocol'
+import type { Job } from '@coro-ai/cloud-protocol'
 import type { StateBackend } from '../state/backend'
 
 /**

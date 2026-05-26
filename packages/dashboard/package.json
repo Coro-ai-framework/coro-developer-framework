@@ -1,7 +1,7 @@
 {
-  "name": "@coro/dashboard",
+  "name": "@coro-ai/dashboard",
   "version": "0.1.0",
-  "description": "Coro Dashboard — web UI for runs, intelligence, and settings (static build served by @coro/runner).",
+  "description": "Coro Dashboard — web UI for runs, intelligence, and settings (static build served by @coro-ai/runner).",
   "license": "BUSL-1.1",
   "private": true,
   "type": "module",
