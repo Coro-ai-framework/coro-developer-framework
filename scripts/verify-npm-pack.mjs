@@ -50,7 +50,9 @@ for (const rel of manifest.packages) {
 console.log(`\nAll ${manifest.packages.length} packages packed to ${outDir}`)
 
 function verifyRunnerTarballRuntimeDeps(outDir, pkg) {
-  const tarball = path.join(outDir, `${pkg.name.replace('/', '-')}-${pkg.version}.tgz`)
+  // npm pack names scoped packages without the leading @:
+  // @coro-ai/runner → coro-ai-runner-1.2.3.tgz (not @coro-ai-runner-…)
+  const tarball = path.join(outDir, npmPackTarballFilename(pkg.name, pkg.version))
   if (!existsSync(tarball)) {
     console.error(`::error::Expected runner pack tarball at ${tarball}`)
     process.exit(1)
@@ -63,4 +65,10 @@ function verifyRunnerTarballRuntimeDeps(outDir, pkg) {
     }
   }
   console.log('runner tarball includes vendored production node_modules (pino, express, …)')
+}
+
+/** Matches `npm pack` / `npm publish` tarball naming for scoped and unscoped packages. */
+function npmPackTarballFilename(name, version) {
+  const base = name.startsWith('@') ? name.slice(1).replace('/', '-') : name
+  return `${base}-${version}.tgz`
 }
