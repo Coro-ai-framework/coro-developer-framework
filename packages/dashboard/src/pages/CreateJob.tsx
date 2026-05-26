@@ -20,7 +20,6 @@ import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
 import { TooltipProvider } from '../components/ui/tooltip'
 import WorkflowDetailsDialog from '../components/workflow/workflow-details-dialog'
-import WorkflowPreviewStrip from '../components/workflow-preview-strip'
 import RunPreviewCard from '../components/run-preview-card'
 import SamplePromptDrawer, { SamplePromptTrigger } from '../components/sample-prompt-drawer'
 import IntakeChat from '../components/intake-chat'
@@ -355,13 +354,6 @@ export default function CreateJob() {
           </div>
         }
       />
-
-      <div className="space-y-2">
-        <WorkflowPreviewStrip workflow={workflow} interactive={interactive} />
-        <p className="text-xs text-fg-muted">
-          A Run is a task Coro takes from idea to merged PR through a workflow.
-        </p>
-      </div>
 
       {showCoachBanner ? <CoachBanner /> : null}
 
@@ -821,26 +813,19 @@ function ManualFields(props: ManualFieldsProps) {
           hint="owner/repo or workspace/repo, depending on your provider."
           tooltip="The repo Coro clones to implement your change. Must match your SCM provider's slug format."
         >
-          {props.recentRepos.length > 0 ? (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {props.recentRepos.map(r => (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => props.setRepo(r)}
-                  className="rounded-full border border-line bg-overlay/50 px-2 py-0.5 text-[11px] text-fg-muted hover:border-accent-500/40"
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
-          ) : null}
           <Input
             value={props.repo}
             onChange={e => props.setRepo(e.target.value)}
             placeholder="my-org/billing-api"
             required
           />
+          {props.recentRepos.length > 0 ? (
+            <SuggestionChips
+              label="Recent"
+              items={props.recentRepos}
+              onPick={props.setRepo}
+            />
+          ) : null}
         </Field>
       </div>
 
@@ -849,10 +834,8 @@ function ManualFields(props: ManualFieldsProps) {
         required
         hint="Be specific. Coro's planner reads this verbatim — include the goal, constraints, and any acceptance criteria."
         tooltip="This becomes the primary input for spec-writing and planning. Mention files, endpoints, and acceptance criteria when you can."
+        action={<SamplePromptTrigger onClick={props.onOpenExamples} />}
       >
-        <div className="mb-2 flex justify-end">
-          <SamplePromptTrigger onClick={props.onOpenExamples} />
-        </div>
         <Textarea
           ref={props.descriptionRef}
           value={props.description}
@@ -872,28 +855,21 @@ function ManualFields(props: ManualFieldsProps) {
         hint="Optional. Comma-separated usernames. They'll be added to the resulting pull request."
         tooltip="Usernames on your git host who should review the PR Coro opens."
       >
-        {props.recentReviewers.length > 0 ? (
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {props.recentReviewers.map(r => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => {
-                  const parts = props.reviewers.split(',').map(s => s.trim()).filter(Boolean)
-                  if (!parts.includes(r)) props.setReviewers([...parts, r].join(', '))
-                }}
-                className="rounded-full border border-line bg-overlay/50 px-2 py-0.5 text-[11px] text-fg-muted hover:border-accent-500/40"
-              >
-                {r}
-              </button>
-            ))}
-          </div>
-        ) : null}
         <Input
           value={props.reviewers}
           onChange={e => props.setReviewers(e.target.value)}
           placeholder="alice, bob"
         />
+        {props.recentReviewers.length > 0 ? (
+          <SuggestionChips
+            label="Recent"
+            items={props.recentReviewers}
+            onPick={r => {
+              const parts = props.reviewers.split(',').map(s => s.trim()).filter(Boolean)
+              if (!parts.includes(r)) props.setReviewers([...parts, r].join(', '))
+            }}
+          />
+        ) : null}
       </Field>
 
       {props.scmPlugins.length > 1 ? (
@@ -957,6 +933,40 @@ interface PluginPickerProps {
   options: PluginManifest[]
   value: string
   onChange: (id: string) => void
+}
+
+/**
+ * Compact "Recent: foo · bar · baz" row that lives BELOW the matching
+ * input so the input itself stays vertically aligned with sibling
+ * fields in a grid (e.g. Service name ↔ Repository). Click a chip to
+ * fill the parent field.
+ */
+function SuggestionChips({
+  label,
+  items,
+  onPick,
+}: {
+  label: string
+  items: string[]
+  onPick: (value: string) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-fg-subtle">
+      <span className="text-fg-subtle/80">{label}:</span>
+      {items.map((item, i) => (
+        <span key={item} className="inline-flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => onPick(item)}
+            className="rounded text-fg-muted underline-offset-2 transition-colors hover:text-accent-200 hover:underline"
+          >
+            {item}
+          </button>
+          {i < items.length - 1 ? <span aria-hidden className="text-fg-subtle/60">·</span> : null}
+        </span>
+      ))}
+    </div>
+  )
 }
 
 function PluginPicker({ options, value, onChange }: PluginPickerProps) {

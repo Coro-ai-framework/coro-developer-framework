@@ -202,12 +202,13 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
               e.preventDefault()
               void sendMessage(input)
             }}
-            className="flex gap-2"
+            className="flex items-end gap-2"
           >
-            <Input
+            <AutoGrowTextarea
               value={input}
-              onChange={e => setInput(e.target.value)}
-              placeholder="Describe what you want Coro to do…"
+              onChange={setInput}
+              onSubmit={() => void sendMessage(input)}
+              placeholder="Describe what you want Coro to do… (Shift+Enter for a new line)"
               disabled={streaming}
             />
             <Button type="submit" disabled={streaming || !input.trim()}>
@@ -352,6 +353,41 @@ function PlanModeModelSelect({
   )
 }
 
+/**
+ * Hide the raw <brief>…</brief> payload from chat — the structured
+ * version already lives in the sidebar editor. If the model wrapped
+ * the entire turn in <brief>, replace with a friendly hand-off line;
+ * if it included prose alongside the brief, keep the prose and drop
+ * only the tagged block.
+ */
+const BRIEF_TAG_REGEX = /<brief>[\s\S]*?<\/brief>/gi
+const BRIEF_READY_MESSAGES = [
+  "Brief's ready — give it a once-over on the right and dispatch when you're happy.",
+  "Drafted a brief for you. Take a look on the right and tweak anything before sending it off.",
+  'Brief is on the right. Edit anything that feels off, then dispatch the run.',
+]
+
+function displayContent(role: 'user' | 'assistant', content: string): string {
+  if (role !== 'assistant') return content
+  if (!BRIEF_TAG_REGEX.test(content)) return content
+  BRIEF_TAG_REGEX.lastIndex = 0
+  const stripped = content.replace(BRIEF_TAG_REGEX, '').trim()
+  if (stripped) return stripped
+  // Stable pick — same message every time for the same content so it
+  // doesn't shuffle on re-render.
+  const idx = Math.abs(hashString(content)) % BRIEF_READY_MESSAGES.length
+  return BRIEF_READY_MESSAGES[idx]
+}
+
+function hashString(input: string): number {
+  let h = 0
+  for (let i = 0; i < input.length; i++) {
+    h = (h << 5) - h + input.charCodeAt(i)
+    h |= 0
+  }
+  return h
+}
+
 function ChatBubble({
   role,
   content,
@@ -361,20 +397,64 @@ function ChatBubble({
   content: string
   streaming?: boolean
 }) {
+  const text = displayContent(role, content)
   return (
     <div className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start')}>
       <div
         className={cn(
-          'max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed',
+          'max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm leading-relaxed',
           role === 'user'
             ? 'bg-accent-500/15 text-fg'
             : 'border border-line bg-canvas/60 text-fg-muted',
           streaming && 'animate-pulse',
         )}
       >
-        {content}
+        {text}
       </div>
     </div>
+  )
+}
+
+interface AutoGrowTextareaProps {
+  value: string
+  onChange: (next: string) => void
+  onSubmit: () => void
+  placeholder?: string
+  disabled?: boolean
+}
+
+/**
+ * Single-control composer for the intake chat: behaves like a normal
+ * messaging input — Enter sends, Shift+Enter inserts a newline, and
+ * the box grows up to ~5 lines before scrolling.
+ */
+function AutoGrowTextarea({ value, onChange, onSubmit, placeholder, disabled }: AutoGrowTextareaProps) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    const maxHeight = 5 * 24 + 24 // ~5 lines @ 24px line-height + padding
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+  }, [value])
+
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      onKeyDown={e => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault()
+          if (!disabled && value.trim()) onSubmit()
+        }
+      }}
+      placeholder={placeholder}
+      disabled={disabled}
+      className="flex-1 resize-none rounded-xl border border-line-strong bg-overlay px-3.5 py-2.5 text-sm leading-6 text-fg shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] placeholder:text-fg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 disabled:cursor-not-allowed disabled:opacity-50"
+    />
   )
 }
 

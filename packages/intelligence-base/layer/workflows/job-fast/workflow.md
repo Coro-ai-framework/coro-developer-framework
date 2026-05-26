@@ -1,6 +1,6 @@
 ---
 display_name: Implementation Job — Fast Lane
-description: Streamlined 3-phase workflow for tiny, low-risk changes (single file, single endpoint, doc fix, dependency bump). Skips deep analysis, runs a single combined review+merge+verify phase.
+description: Use only for tiny, single-touch changes — a doc/comment fix, a dependency bump, a single-file tweak, a one-endpoint change with no design questions. Anything that touches multiple files or needs even a small plan belongs on the default Implementation Job lane. Streamlined 3 phases — skips spec/analysis, runs a single combined review+merge+verify phase.
 kind: job
 
 initial_phase: planning

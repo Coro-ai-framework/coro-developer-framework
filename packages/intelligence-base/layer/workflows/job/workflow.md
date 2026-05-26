@@ -1,6 +1,6 @@
 ---
 display_name: Implementation Job
-description: General-purpose work-item workflow for scoped changes in an existing repository. Coro plans, codes, reviews, and ships a pull request.
+description: The default lane for almost every job — scoped feature work, bug fixes, refactors, reversible schema changes, dependency updates that need a plan. Coro writes a brief spec, plans, codes, reviews, and ships a PR. Pick this unless the work is either *tiny* (one-file/doc tweak → fast lane) or *genuinely high-stakes* (new public API, security/auth, irreversible migration → deep lane).
 kind: job
 
 initial_phase: spec-writing

@@ -10,11 +10,13 @@ interface FieldProps {
   hint?: ReactNode
   /** Extended help shown in a tooltip on the label. */
   tooltip?: ReactNode
+  /** Optional control rendered flush-right on the label row. */
+  action?: ReactNode
   className?: string
   children: ReactNode
 }
 
-export default function Field({ label, htmlFor, required, hint, tooltip, className, children }: FieldProps) {
+export default function Field({ label, htmlFor, required, hint, tooltip, action, className, children }: FieldProps) {
   return (
     <div className={cn('space-y-2', className)}>
       <div className="flex items-center gap-1.5">
@@ -36,6 +38,7 @@ export default function Field({ label, htmlFor, required, hint, tooltip, classNa
             <TooltipContent className="max-w-xs leading-relaxed">{tooltip}</TooltipContent>
           </Tooltip>
         ) : null}
+        {action ? <div className="ml-auto flex items-center">{action}</div> : null}
       </div>
       {children}
       {hint ? <div className="text-xs leading-5 text-fg-subtle">{hint}</div> : null}

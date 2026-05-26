@@ -1,6 +1,6 @@
 ---
 display_name: Implementation Job — Deep Lane
-description: Extended workflow for high-risk or cross-cutting changes (new public API, schema migration, security-sensitive surface, multi-service contract). Adds explicit analysis (architecture decisions) and qa (verification) phases on either side of standard coding/review.
+description: Use only for genuinely high-stakes changes that need an explicit architecture step before coding — brand-new public API surface, security/auth changes, irreversible or downtime-risking data migrations, or contracts that span multiple services. Routine refactors, regular bug fixes, scoped feature work, and standard reversible schema changes belong on the default Implementation Job lane. Adds analysis (architecture decisions) and qa (verification) phases either side of coding/review.
 kind: job
 
 initial_phase: spec-writing
