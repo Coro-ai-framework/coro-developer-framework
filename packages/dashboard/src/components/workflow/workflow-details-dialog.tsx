@@ -1,9 +1,5 @@
 import {
-  ArrowDown,
-  Bot,
-  CircleDot,
   ExternalLink,
-  PauseCircle,
   Workflow as WorkflowIcon,
 } from 'lucide-react'
 import {
@@ -15,7 +11,7 @@ import {
   DialogTitle,
 } from '../ui/dialog'
 import LayerBadge from '../intelligence/layer-badge'
-import { cn } from '../../lib/utils'
+import PhaseTimeline, { PhaseBadge } from './phase-timeline'
 import type { WorkflowOption } from '../../workflows'
 
 // ── Workflow details popup ──────────────────────────────────────────────────
@@ -75,81 +71,7 @@ export default function WorkflowDetailsDialog({
                   {workflow.phases.length} phase{workflow.phases.length === 1 ? '' : 's'}
                 </span>
               </div>
-              <ol className="space-y-1.5">
-                {workflow.phases.map((phase, idx) => {
-                  const isInitial = phase.name === workflow.initialPhase
-                  const isLast = idx === workflow.phases!.length - 1
-                  return (
-                    <li key={phase.name}>
-                      <div
-                        className={cn(
-                          'rounded-xl border px-3 py-3 transition-colors',
-                          isInitial
-                            ? 'border-accent-500/40 bg-accent-500/5'
-                            : 'border-line bg-overlay/30',
-                        )}
-                      >
-                        <div className="flex items-start gap-3">
-                          <span
-                            className={cn(
-                              'mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-mono ring-1',
-                              isInitial
-                                ? 'bg-accent-500/20 ring-accent-500/40 text-accent-200'
-                                : 'bg-overlay/60 ring-line text-fg-muted',
-                            )}
-                          >
-                            {idx + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <span className="text-sm font-medium text-fg">{phase.name}</span>
-                              {isInitial ? (
-                                <Badge tone="accent">
-                                  <CircleDot className="size-2.5" />
-                                  Start
-                                </Badge>
-                              ) : null}
-                              <Badge tone="model">{phase.model}</Badge>
-                              {phase.interactiveCheckpoint ? (
-                                <Badge tone="warning" title="Runner pauses for your approval before advancing">
-                                  <PauseCircle className="size-2.5" />
-                                  Checkpoint
-                                </Badge>
-                              ) : null}
-                            </div>
-                            <div className="mt-1.5 flex items-center gap-1.5 text-xs text-fg-muted">
-                              <Bot className="size-3 shrink-0" />
-                              {phase.agent ? (
-                                <span className="font-mono">{phase.agent}</span>
-                              ) : (
-                                <span className="italic">Runner-managed (no agent)</span>
-                              )}
-                            </div>
-                            {phase.subagents.length > 0 ? (
-                              <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-fg-subtle">
-                                <span>Subagents:</span>
-                                {phase.subagents.map(name => (
-                                  <span
-                                    key={name}
-                                    className="rounded-md bg-overlay/60 px-1.5 py-0.5 font-mono ring-1 ring-line"
-                                  >
-                                    {name}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                      {!isLast ? (
-                        <div className="flex justify-center py-0.5">
-                          <ArrowDown className="size-3 text-fg-subtle" />
-                        </div>
-                      ) : null}
-                    </li>
-                  )
-                })}
-              </ol>
+              <PhaseTimeline workflow={workflow} />
             </div>
           ) : (
             <div className="rounded-xl border border-line bg-overlay/30 p-4 text-sm text-fg-muted">
@@ -173,10 +95,10 @@ export default function WorkflowDetailsDialog({
                 ) : null}
               </div>
               {workflow.kind !== 'job' ? (
-                <Badge tone="muted">
+                <PhaseBadge tone="muted">
                   <ExternalLink className="size-2.5" />
                   {workflow.kind}
-                </Badge>
+                </PhaseBadge>
               ) : null}
             </div>
           ) : null}
@@ -187,32 +109,6 @@ export default function WorkflowDetailsDialog({
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-interface BadgeProps {
-  tone: 'accent' | 'warning' | 'muted' | 'model'
-  children: React.ReactNode
-  title?: string
-}
-
-function Badge({ tone, children, title }: BadgeProps) {
-  const toneClass = {
-    accent: 'bg-accent-500/15 text-accent-200 ring-accent-500/30',
-    warning: 'bg-warning-500/12 text-warning-200 ring-warning-500/30',
-    muted: 'bg-overlay/60 text-fg-muted ring-line',
-    model: 'bg-overlay/60 text-fg-muted ring-line',
-  }[tone]
-  return (
-    <span
-      title={title}
-      className={cn(
-        'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1',
-        toneClass,
-      )}
-    >
-      {children}
-    </span>
-  )
-}
 
 function shortenSource(source: string | undefined): string {
   if (!source) return 'unknown'

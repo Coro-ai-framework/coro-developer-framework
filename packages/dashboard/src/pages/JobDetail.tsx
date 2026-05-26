@@ -57,7 +57,7 @@ import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
-import { isRunningStatus, isTerminalStatus, isWaitingStatus } from '../lib/status'
+import { isPausableStatus, isRunningStatus, isTerminalStatus, isWaitingStatus } from '../lib/status'
 
 type DetailTab = 'activity' | 'insights' | 'diagnostics'
 
@@ -556,6 +556,10 @@ function MessageComposer({
   onChange,
   onSend,
   error,
+  onStepIn,
+  steppedIn = false,
+  placeholder = 'Tell the agent what changed, what to prioritize, or where to look next…',
+  textareaRef,
 }: {
   title?: string
   description?: string
@@ -564,20 +568,39 @@ function MessageComposer({
   onChange: (value: string) => void
   onSend: () => Promise<void>
   error: string | null
+  onStepIn?: () => Promise<void>
+  steppedIn?: boolean
+  placeholder?: string
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null>
 }) {
   return (
     <Card>
       <CardHeader className="gap-1.5 pb-4">
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <CardTitle>{title}</CardTitle>
+            <CardDescription>{description}</CardDescription>
+          </div>
+          {onStepIn ? (
+            <Button type="button" variant="secondary" size="sm" onClick={() => void onStepIn()}>
+              Step in
+            </Button>
+          ) : null}
+        </div>
+        {steppedIn ? (
+          <div className="rounded-lg border border-warning-500/25 bg-warning-500/8 px-3 py-2 text-xs text-warning-200">
+            Paused — your next message will steer the run.
+          </div>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-2.5 pt-0">
         {error ? <ErrorState message={error} /> : null}
         <Textarea
+          ref={textareaRef}
           rows={3}
           value={value}
           onChange={event => onChange(event.target.value)}
-          placeholder="Tell the agent what changed, what to prioritize, or where to look next…"
+          placeholder={placeholder}
           className="min-h-24"
         />
         <div className="flex justify-end">
@@ -723,6 +746,8 @@ export default function JobDetail() {
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [messageText, setMessageText] = useState('')
   const [messageError, setMessageError] = useState<string | null>(null)
+  const [steppedIn, setSteppedIn] = useState(false)
+  const messageRef = useRef<HTMLTextAreaElement>(null)
   const [pendingOutgoingMessages, setPendingOutgoingMessages] = useState<PendingOutgoingMessage[]>([])
   const [refreshing, setRefreshing] = useState(false)
   /** Optimistic override for `job.interactive` while a PATCH is in flight.
@@ -848,6 +873,12 @@ export default function JobDetail() {
     } finally {
       setPausing(false)
     }
+  }
+
+  async function handleStepIn() {
+    await handlePause()
+    setSteppedIn(true)
+    requestAnimationFrame(() => messageRef.current?.focus())
   }
 
   async function handleRefresh() {
@@ -1066,7 +1097,7 @@ export default function JobDetail() {
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
             <div className="space-y-5">
               {job.status === 'awaiting-developer-input' ? (
-                <ApprovalBox job={job} onSend={postMessage} />
+                <ApprovalBox job={job} onSend={postMessage} onCancel={handleCancel} />
               ) : null}
 
               {canReplyToEscalation ? (
@@ -1103,6 +1134,14 @@ export default function JobDetail() {
                   onChange={setMessageText}
                   onSend={handleSendMessage}
                   error={messageError}
+                  onStepIn={isPausableStatus(job.status, job.awaitingEvent) ? handleStepIn : undefined}
+                  steppedIn={steppedIn}
+                  placeholder={
+                    steppedIn
+                      ? 'Tell Coro what to change before continuing…'
+                      : undefined
+                  }
+                  textareaRef={messageRef}
                 />
               ) : null}
             </div>

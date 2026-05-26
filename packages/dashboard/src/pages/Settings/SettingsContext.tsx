@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import type { CoachModeConfig, IntakeConfig } from '../../lib/coach-mode'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 
 // ── Persisted config shapes ─────────────────────────────────────────────────
@@ -132,6 +133,8 @@ export interface ConfigResponse {
      * localStorage flag — when present, the dashboard no longer
      * auto-launches the wizard on a fresh browser. */
     setup?: { completedAt?: string; skipped?: Array<'llm' | 'scm' | 'tracker'> }
+    coachMode?: CoachModeConfig
+    intake?: IntakeConfig
     guardrails?: {
       enabled?: boolean
       rules?: Array<{
@@ -220,6 +223,7 @@ const EMPTY_DRAFT: SettingsDraft = {
 // ── Section identity ────────────────────────────────────────────────────────
 
 export type SettingsSectionId =
+  | 'general'
   | 'llm-provider'
   | 'source-control'
   | 'issue-tracker'
@@ -294,6 +298,8 @@ interface SettingsContextValue {
   firstRunCompleted: boolean
   markFirstRunComplete: (opts?: { skipped?: Array<'llm' | 'scm' | 'tracker'> }) => Promise<void>
   resetFirstRun: () => void
+  /** Server-side coach mode + intake preferences (from GET /config). */
+  preferences: { coachMode?: CoachModeConfig; intake?: IntakeConfig } | null
   /**
    * Commit a single FTUE step's draft into the global config + persist
    * immediately. Used by SetupWizard so that each verified step
@@ -481,6 +487,7 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
   const [draft, setDraftState] = useState<SettingsDraft>(EMPTY_DRAFT)
   const [baseline, setBaseline] = useState<SettingsDraft>(EMPTY_DRAFT)
   const [meta, setMeta] = useState<SettingsMeta | null>(null)
+  const [preferences, setPreferences] = useState<SettingsContextValue['preferences']>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -522,6 +529,10 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
         resolved: data.resolved,
         configError: data.configError,
         rawConfig: data.rawConfig,
+      })
+      setPreferences({
+        coachMode: data.config?.coachMode,
+        intake: data.config?.intake,
       })
 
       // Server-side FTUE completion wins over the browser flag. This is
@@ -975,6 +986,7 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     clearSaveFeedback,
     lastSavedAt,
     meta,
+    preferences,
     pluginsCatalogue,
     pluginsCatalogueError,
     reloadPlugins,

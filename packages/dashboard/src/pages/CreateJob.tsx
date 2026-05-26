@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -18,7 +18,12 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
+import { TooltipProvider } from '../components/ui/tooltip'
 import WorkflowDetailsDialog from '../components/workflow/workflow-details-dialog'
+import WorkflowPreviewStrip from '../components/workflow-preview-strip'
+import RunPreviewCard from '../components/run-preview-card'
+import SamplePromptDrawer, { SamplePromptTrigger } from '../components/sample-prompt-drawer'
+import IntakeChat from '../components/intake-chat'
 import LayerBadge from '../components/intelligence/layer-badge'
 import { jsonRequest, requestJson, ApiError } from '../lib/http'
 import {
@@ -27,6 +32,20 @@ import {
   type WorkflowOption,
 } from '../workflows'
 import { cn } from '../lib/utils'
+import { useJobs } from '../hooks/useJobs'
+import { deriveRunHistoryHints } from '../lib/run-history'
+import {
+  loadAskEachTimeChoice,
+  loadSessionIntakeOverride,
+  resolveIntakeMode,
+  saveAskEachTimeChoice,
+  saveSessionIntakeOverride,
+  shouldShowCoachBanner,
+  type CoachModeConfig,
+  type IntakeMode,
+} from '../lib/coach-mode'
+import { firstPlaceholder, type PromptTemplate } from '../lib/prompt-templates'
+import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,10 +74,17 @@ interface PluginsResponse {
 
 export default function CreateJob() {
   const navigate = useNavigate()
+  const { jobs } = useJobs(30_000)
+  const descriptionRef = useRef<HTMLTextAreaElement>(null)
 
-  // Workflow discovery — populated from the runner. Defaults to the
-  // canonical implementation workflow so the page remains functional
-  // while the request is in flight or if the runner is unreachable.
+  const [workflowsLoading, setWorkflowsLoading] = useState(true)
+  const [coachMode, setCoachMode] = useState<CoachModeConfig | null>(null)
+  const [intakePref, setIntakePref] = useState<IntakeMode | null>(null)
+  const [surfaceOverride, setSurfaceOverride] = useState<'ai' | 'form' | null>(() => {
+    const choice = loadSessionIntakeOverride()
+    return choice === 'ai' || choice === 'form' ? choice : null
+  })
+  const [promptDrawerOpen, setPromptDrawerOpen] = useState(false)
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([FALLBACK_JOB_WORKFLOW])
   const [workflowId, setWorkflowId] = useState<string>(FALLBACK_JOB_WORKFLOW.id)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -66,8 +92,30 @@ export default function CreateJob() {
   const workflow =
     workflows.find(w => w.id === workflowId) ?? workflows[0] ?? FALLBACK_JOB_WORKFLOW
 
-  // Form state — flat fields, only the ones each mode actually needs are
-  // shown. Keeps the form approachable for first-time users.
+  const runHistory = useMemo(() => deriveRunHistoryHints(jobs), [jobs])
+  const showCoachBanner = shouldShowCoachBanner(coachMode ?? undefined)
+  const coachActive = coachMode?.enabled !== false
+
+  useEffect(() => {
+    if (showCoachBanner) setAdvancedOpen(true)
+  }, [showCoachBanner])
+
+  useEffect(() => {
+    void requestJson<ConfigResponse>('/config')
+      .then(data => {
+        setCoachMode(data.config?.coachMode ?? null)
+        setIntakePref(resolveIntakeMode(data.config?.intake, data.config?.coachMode))
+      })
+      .catch(() => setIntakePref('form'))
+  }, [])
+
+  const persistedAskChoice = intakePref === 'ask-each-time' ? loadAskEachTimeChoice() : null
+  const showIntakeChooser = intakePref === 'ask-each-time' && !surfaceOverride && !persistedAskChoice
+  const resolvedIntakeMode: 'ai' | 'form' =
+    surfaceOverride ?? persistedAskChoice ?? (intakePref === 'ai' ? 'ai' : 'form')
+  const useAiIntake = resolvedIntakeMode === 'ai'
+
+  // Form state
   const [mode, setMode] = useState<SourceMode>('manual')
   const [serviceName, setServiceName] = useState('')
   const [repo, setRepo] = useState('')
@@ -75,6 +123,14 @@ export default function CreateJob() {
   const [reviewers, setReviewers] = useState('')
   const [ticketId, setTicketId] = useState('')
   const [interactive, setInteractive] = useState(false)
+  const [interactiveInitialized, setInteractiveInitialized] = useState(false)
+
+  useEffect(() => {
+    if (!interactiveInitialized && coachMode !== null) {
+      setInteractive(coachActive && showCoachBanner)
+      setInteractiveInitialized(true)
+    }
+  }, [coachMode, coachActive, showCoachBanner, interactiveInitialized])
 
   // Plugin discovery — drives the warning banner + the plugin selector
   // (only shown when more than one is active for a kind).
@@ -93,8 +149,6 @@ export default function CreateJob() {
         const list = await fetchLaunchableWorkflows()
         if (list.length > 0) {
           setWorkflows(list)
-          // Prefer the previously-selected id if it's still valid, else
-          // the canonical `job` workflow, else the first entry.
           setWorkflowId(prev => {
             if (list.some(w => w.id === prev)) return prev
             const job = list.find(w => w.id === 'job')
@@ -102,7 +156,9 @@ export default function CreateJob() {
           })
         }
       } catch {
-        // Discovery is non-fatal — the fallback workflow keeps the page usable.
+        // Discovery is non-fatal
+      } finally {
+        setWorkflowsLoading(false)
       }
     })()
   }, [])
@@ -148,8 +204,7 @@ export default function CreateJob() {
     return Boolean(ticketId.trim())
   }, [blocker, mode, serviceName, repo, description, ticketId])
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault()
+  async function handleSubmit(interactiveChoice: boolean) {
     if (!formValid || submitting) return
     setError(null)
     setSubmitting(true)
@@ -164,7 +219,7 @@ export default function CreateJob() {
             type: 'job',
             workflowPath: workflow.workflowPath,
             jiraTicketId: ticketId.trim(),
-            interactive,
+            interactive: interactiveChoice,
             ...(Object.keys(params).length ? { params } : {}),
           }
         : {
@@ -177,7 +232,7 @@ export default function CreateJob() {
               .split(',')
               .map(s => s.trim())
               .filter(Boolean),
-            interactive,
+            interactive: interactiveChoice,
             ...(Object.keys(params).length ? { params } : {}),
           }
 
@@ -190,18 +245,125 @@ export default function CreateJob() {
     }
   }
 
+  function handleTemplateSelect(template: PromptTemplate) {
+    setMode(template.mode)
+    if (template.description) {
+      setDescription(template.description)
+      requestAnimationFrame(() => {
+        const el = descriptionRef.current
+        if (!el) return
+        el.focus()
+        const ph = firstPlaceholder(template.description)
+        if (ph) el.setSelectionRange(ph.start, ph.end)
+      })
+    }
+    if (template.suggestedWorkflow) {
+      const match = workflows.find(w => w.workflowPath === template.suggestedWorkflow)
+      if (match) setWorkflowId(match.id)
+    }
+  }
+
+  const specificityHint = useMemo(() => {
+    if (description.length <= 20) return null
+    const hasSignal = /\/|\.|should|must/i.test(description)
+    return hasSignal ? null : 'Add a file path or acceptance criterion to help Coro plan.'
+  }, [description])
+
+  if (showIntakeChooser && intakePref !== null) {
+    return (
+      <TooltipProvider>
+        <div className="mx-auto w-full max-w-2xl space-y-6 pb-32">
+          <PageHeader
+            title="New run"
+            description="How would you like to describe this run?"
+            actions={
+              <Button variant="outline" onClick={() => navigate('/jobs')}>
+                <ArrowLeft />
+                Back
+              </Button>
+            }
+          />
+          <IntakeModeChooser
+            onChoose={mode => {
+              saveAskEachTimeChoice(mode)
+              setSurfaceOverride(mode)
+            }}
+          />
+        </div>
+      </TooltipProvider>
+    )
+  }
+
+  if (useAiIntake && intakePref !== null) {
+    return (
+      <TooltipProvider>
+        <div className="mx-auto w-full max-w-6xl space-y-6 pb-32">
+          <PageHeader
+            title="New run"
+            description="Describe your goal in conversation — Coro will propose a brief before dispatching."
+            actions={
+              <Button variant="outline" onClick={() => navigate('/jobs')}>
+                <ArrowLeft />
+                Back
+              </Button>
+            }
+          />
+          {showCoachBanner ? (
+            <CoachBanner />
+          ) : null}
+          <IntakeChat
+            workflows={workflows}
+            jobs={jobs}
+            onUseForm={() => {
+              saveSessionIntakeOverride('form')
+              setSurfaceOverride('form')
+            }}
+            onNoLlm={() => {
+              saveSessionIntakeOverride('form')
+              setSurfaceOverride('form')
+            }}
+          />
+        </div>
+      </TooltipProvider>
+    )
+  }
+
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-6 pb-32">
+    <TooltipProvider>
+    <div className="mx-auto w-full max-w-6xl space-y-6 pb-32">
       <PageHeader
         title="New run"
-        description="Describe the work and Coro's agents will plan, code, review, and ship a pull request."
         actions={
-          <Button variant="outline" onClick={() => navigate('/jobs')}>
-            <ArrowLeft />
-            Back
-          </Button>
+          <div className="flex items-center gap-2">
+            {intakePref === 'ai' || coachActive ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  saveSessionIntakeOverride('ai')
+                  setSurfaceOverride('ai')
+                }}
+              >
+                Try AI intake
+              </Button>
+            ) : null}
+            <Button variant="outline" onClick={() => navigate('/jobs')}>
+              <ArrowLeft />
+              Back
+            </Button>
+          </div>
         }
       />
+
+      <div className="space-y-2">
+        <WorkflowPreviewStrip workflow={workflow} interactive={interactive} />
+        <p className="text-xs text-fg-muted">
+          A Run is a task Coro takes from idea to merged PR through a workflow.
+        </p>
+      </div>
+
+      {showCoachBanner ? <CoachBanner /> : null}
 
       {blocker ? (
         <div className="flex items-start gap-3 rounded-2xl border border-warning-500/30 bg-warning-500/8 p-4">
@@ -219,7 +381,14 @@ export default function CreateJob() {
         </div>
       ) : null}
 
-      <form onSubmit={handleSubmit} className="space-y-6">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+        <form
+          onSubmit={e => {
+            e.preventDefault()
+            void handleSubmit(coachActive && showCoachBanner ? true : interactive)
+          }}
+          className="space-y-6"
+        >
         {/* ── How are you defining this run? ── */}
         <section className="space-y-3">
           <header>
@@ -261,6 +430,11 @@ export default function CreateJob() {
               scmPlugins={scmPlugins}
               scmId={scmId}
               setScmId={setScmId}
+              recentRepos={runHistory.recentRepos}
+              recentReviewers={runHistory.recentReviewers}
+              descriptionRef={descriptionRef}
+              specificityHint={specificityHint}
+              onOpenExamples={() => setPromptDrawerOpen(true)}
             />
           ) : (
             <TicketFields
@@ -282,7 +456,7 @@ export default function CreateJob() {
             <div>
               <div className="text-sm font-medium text-fg">Interactive checkpoints</div>
               <p className="mt-0.5 text-xs text-fg-muted">
-                Pause for your approval at major phase boundaries. Off by default.
+                When on, Coro pauses at every workflow checkpoint for your approval.
               </p>
             </div>
             <Switch checked={interactive} onCheckedChange={setInteractive} aria-label="Interactive mode" />
@@ -388,11 +562,45 @@ export default function CreateJob() {
             {error}
           </div>
         ) : null}
-      </form>
+        </form>
+
+        <div className="hidden lg:block">
+          <div className="sticky top-6">
+            <RunPreviewCard
+              workflow={workflow}
+              interactive={interactive}
+              mode={mode}
+              serviceName={serviceName}
+              repo={repo}
+              ticketId={ticketId}
+              formValid={formValid}
+              loading={workflowsLoading}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="lg:hidden">
+        <details className="rounded-2xl border border-line bg-overlay/30 p-4">
+          <summary className="cursor-pointer text-sm font-medium text-fg">What will happen?</summary>
+          <div className="mt-4">
+            <RunPreviewCard
+              workflow={workflow}
+              interactive={interactive}
+              mode={mode}
+              serviceName={serviceName}
+              repo={repo}
+              ticketId={ticketId}
+              formValid={formValid}
+              loading={workflowsLoading}
+            />
+          </div>
+        </details>
+      </div>
 
       {/* ── Sticky dispatch bar ── */}
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-canvas/85 backdrop-blur supports-[backdrop-filter]:bg-canvas/70">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-6 py-3">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-3">
           <div className="min-w-0 text-xs text-fg-muted">
             <div className="flex items-center gap-2">
               <span className="font-medium text-fg">{workflow.name}</span>
@@ -411,13 +619,65 @@ export default function CreateJob() {
                 : ticketId.trim() || 'Enter a tracker ticket to dispatch'}
             </div>
           </div>
-          <Button type="submit" size="lg" disabled={!formValid || submitting} onClick={handleSubmit}>
-            {submitting ? <Loader2 className="animate-spin" /> : null}
-            {submitting ? 'Dispatching…' : 'Dispatch run'}
-            {!submitting ? <ArrowRight /> : null}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {coachActive && showCoachBanner ? (
+              <>
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={!formValid || submitting}
+                  onClick={() => void handleSubmit(true)}
+                >
+                  {submitting ? <Loader2 className="animate-spin" /> : null}
+                  Interactive
+                  {!submitting ? <ArrowRight /> : null}
+                </Button>
+                <Button
+                  type="button"
+                  size="lg"
+                  variant="secondary"
+                  disabled={!formValid || submitting}
+                  onClick={() => void handleSubmit(false)}
+                >
+                  Autonomous
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={!formValid || submitting}
+                  onClick={() => void handleSubmit(true)}
+                  variant="secondary"
+                >
+                  Interactive
+                </Button>
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={!formValid || submitting}
+                  onClick={() => void handleSubmit(false)}
+                >
+                  {submitting ? <Loader2 className="animate-spin" /> : null}
+                  {submitting ? 'Dispatching…' : 'Autonomous'}
+                  {!submitting ? <ArrowRight /> : null}
+                </Button>
+              </>
+            )}
+          </div>
         </div>
+        <p className="mx-auto max-w-6xl px-6 pb-2 text-[10px] text-fg-subtle">
+          Interactive: Coro pauses at every checkpoint for approval. You can switch to Autonomous mid-run.
+        </p>
       </div>
+
+      <SamplePromptDrawer
+        open={promptDrawerOpen}
+        onOpenChange={setPromptDrawerOpen}
+        onSelect={handleTemplateSelect}
+        hasExistingDescription={Boolean(description.trim())}
+      />
 
       <WorkflowDetailsDialog
         workflow={detailsWorkflow}
@@ -426,6 +686,52 @@ export default function CreateJob() {
           if (!open) setDetailsWorkflow(null)
         }}
       />
+    </div>
+    </TooltipProvider>
+  )
+}
+
+function IntakeModeChooser({ onChoose }: { onChoose: (mode: 'ai' | 'form') => void }) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2">
+      <button
+        type="button"
+        onClick={() => onChoose('ai')}
+        className="rounded-2xl border border-border bg-surface p-6 text-left transition hover:border-accent-500/40 hover:bg-accent-500/5"
+      >
+        <div className="text-[15px] font-semibold text-fg">Talk it through</div>
+        <p className="mt-2 text-sm text-fg-muted">
+          Chat with Coro&apos;s intake assistant. It asks clarifying questions and proposes a brief
+          you can edit before dispatching.
+        </p>
+      </button>
+      <button
+        type="button"
+        onClick={() => onChoose('form')}
+        className="rounded-2xl border border-border bg-surface p-6 text-left transition hover:border-accent-500/40 hover:bg-accent-500/5"
+      >
+        <div className="text-[15px] font-semibold text-fg">Use the form</div>
+        <p className="mt-2 text-sm text-fg-muted">
+          Fill in repo, description, and reviewers directly — with previews, examples, and coach-mode
+          guidance.
+        </p>
+      </button>
+    </div>
+  )
+}
+
+function CoachBanner() {
+  return (
+    <div className="flex items-start gap-3 rounded-2xl border border-accent-500/25 bg-accent-500/8 p-4 text-sm text-fg-muted">
+      <Info className="mt-0.5 size-4 shrink-0 text-accent-300" />
+      <p>
+        <span className="font-medium text-fg">Coach mode is on.</span> Coro will pause at every workflow
+        checkpoint so you can review. Turn this off in{' '}
+        <Link to="/settings#general" className="text-accent-300 hover:underline">
+          Settings
+        </Link>{' '}
+        or per-run below.
+      </p>
     </div>
   )
 }
@@ -485,13 +791,23 @@ interface ManualFieldsProps {
   scmPlugins: PluginManifest[]
   scmId: string
   setScmId: (v: string) => void
+  recentRepos: string[]
+  recentReviewers: string[]
+  descriptionRef: React.RefObject<HTMLTextAreaElement | null>
+  specificityHint: string | null
+  onOpenExamples: () => void
 }
 
 function ManualFields(props: ManualFieldsProps) {
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Service name" required hint="Used as a label across runs.">
+        <Field
+          label="Service name"
+          required
+          hint="Used as a label across runs."
+          tooltip="A short human-readable name shown on the Runs list and run detail header."
+        >
           <Input
             value={props.serviceName}
             onChange={e => props.setServiceName(e.target.value)}
@@ -499,7 +815,26 @@ function ManualFields(props: ManualFieldsProps) {
             required
           />
         </Field>
-        <Field label="Repository" required hint="owner/repo or workspace/repo, depending on your provider.">
+        <Field
+          label="Repository"
+          required
+          hint="owner/repo or workspace/repo, depending on your provider."
+          tooltip="The repo Coro clones to implement your change. Must match your SCM provider's slug format."
+        >
+          {props.recentRepos.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {props.recentRepos.map(r => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => props.setRepo(r)}
+                  className="rounded-full border border-line bg-overlay/50 px-2 py-0.5 text-[11px] text-fg-muted hover:border-accent-500/40"
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <Input
             value={props.repo}
             onChange={e => props.setRepo(e.target.value)}
@@ -513,20 +848,47 @@ function ManualFields(props: ManualFieldsProps) {
         label="What should Coro build?"
         required
         hint="Be specific. Coro's planner reads this verbatim — include the goal, constraints, and any acceptance criteria."
+        tooltip="This becomes the primary input for spec-writing and planning. Mention files, endpoints, and acceptance criteria when you can."
       >
+        <div className="mb-2 flex justify-end">
+          <SamplePromptTrigger onClick={props.onOpenExamples} />
+        </div>
         <Textarea
+          ref={props.descriptionRef}
           value={props.description}
           onChange={e => props.setDescription(e.target.value)}
           rows={6}
           placeholder="Add rate limiting to /api/users. Use the existing token bucket utility, and return clear retry-after headers when a caller exceeds the limit."
           required
         />
+        <div className="mt-1 flex justify-between text-[11px] text-fg-subtle">
+          <span>{props.specificityHint ?? '\u00a0'}</span>
+          <span>{props.description.length} chars</span>
+        </div>
       </Field>
 
       <Field
         label="Reviewers"
         hint="Optional. Comma-separated usernames. They'll be added to the resulting pull request."
+        tooltip="Usernames on your git host who should review the PR Coro opens."
       >
+        {props.recentReviewers.length > 0 ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {props.recentReviewers.map(r => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => {
+                  const parts = props.reviewers.split(',').map(s => s.trim()).filter(Boolean)
+                  if (!parts.includes(r)) props.setReviewers([...parts, r].join(', '))
+                }}
+                className="rounded-full border border-line bg-overlay/50 px-2 py-0.5 text-[11px] text-fg-muted hover:border-accent-500/40"
+              >
+                {r}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <Input
           value={props.reviewers}
           onChange={e => props.setReviewers(e.target.value)}

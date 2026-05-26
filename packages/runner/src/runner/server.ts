@@ -33,6 +33,8 @@ import {
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
+import { incrementCoachModeRunCount } from '../config/coach-mode'
+import { runIntakeStream } from '../intake/handler'
 import { type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
 import { resolveDashboardDist } from '../dashboard-dist'
@@ -1148,6 +1150,11 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         assertJobPluginRequirements(input, plugins)
       }
       const job = await dispatcher.dispatch(input)
+      try {
+        incrementCoachModeRunCount()
+      } catch (coachErr) {
+        logger.warn({ err: coachErr }, 'Failed to increment coach mode run count — non-fatal')
+      }
       res.status(201).json({
         jobId: job.id,
         type: job.type,
@@ -1157,6 +1164,73 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     } catch (err) {
       logger.error({ err }, 'Generic job dispatch failed')
       res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
+  app.post('/intake/stream', async (req: Request, res: Response) => {
+    if (!plugins || !runnerCtx) {
+      res.status(503).json({ error: 'Intake unavailable — runner plugins not initialized', reason: 'no-llm' })
+      return
+    }
+
+    const body = req.body as {
+      sessionId?: string
+      messages?: Array<{ role: 'user' | 'assistant'; content: string }>
+      context?: {
+        recentRepos?: string[]
+        recentReviewers?: string[]
+        availableWorkflows?: Array<{ id: string; name: string; workflowPath: string; description: string }>
+        userLocale?: string
+      }
+    }
+
+    if (typeof body?.sessionId !== 'string' || !body.sessionId.trim()) {
+      res.status(400).json({ error: 'sessionId is required' })
+      return
+    }
+    if (!Array.isArray(body.messages)) {
+      res.status(400).json({ error: 'messages array is required' })
+      return
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders?.()
+
+    const abortController = new AbortController()
+    req.on('close', () => abortController.abort())
+
+    try {
+      for await (const event of runIntakeStream({
+        sessionId: body.sessionId.trim(),
+        messages: body.messages,
+        context: {
+          recentRepos: body.context?.recentRepos ?? [],
+          recentReviewers: body.context?.recentReviewers ?? [],
+          availableWorkflows: body.context?.availableWorkflows ?? [],
+          userLocale: body.context?.userLocale,
+        },
+        registry: plugins,
+        settings: runnerCtx.settings,
+        signal: abortController.signal,
+      })) {
+        if (event.type === 'token') {
+          res.write(formatSseFrame(JSON.stringify({ type: 'token', text: event.text }), 'message'))
+        } else if (event.type === 'done') {
+          res.write(formatSseFrame(JSON.stringify({ type: 'done', usage: event.usage }), 'message'))
+        } else if (event.type === 'error') {
+          const payload: Record<string, unknown> = { type: 'error', message: event.message }
+          if ((event as { reason?: string }).reason) payload['reason'] = (event as { reason?: string }).reason
+          res.write(formatSseFrame(JSON.stringify(payload), 'message'))
+        }
+      }
+      res.write(formatSseFrame(JSON.stringify({ type: 'done' }), 'done'))
+    } catch (err) {
+      logger.error({ err }, 'POST /intake/stream failed')
+      res.write(formatSseFrame(JSON.stringify({ type: 'error', message: (err as Error).message }), 'message'))
+    } finally {
+      res.end()
     }
   })
 
@@ -2256,6 +2330,48 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           } else {
             delete (merged as Record<string, unknown>).setup
           }
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'coachMode')) {
+        const incoming = (updates as Record<string, unknown>)['coachMode'] as
+          | NonNullable<LocalConfig['coachMode']>
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).coachMode
+        } else if (incoming && typeof incoming === 'object') {
+          const next: NonNullable<LocalConfig['coachMode']> = {
+            ...(existing.coachMode ?? {}),
+          }
+          if (typeof incoming.enabled === 'boolean') next.enabled = incoming.enabled
+          if (typeof incoming.graduateAfterRuns === 'number' && incoming.graduateAfterRuns >= 1) {
+            next.graduateAfterRuns = incoming.graduateAfterRuns
+          }
+          if (typeof incoming.totalRuns === 'number' && incoming.totalRuns >= 0) {
+            next.totalRuns = incoming.totalRuns
+          }
+          if (typeof incoming.lastRunAt === 'string') next.lastRunAt = incoming.lastRunAt
+          if (typeof incoming.graduatedAt === 'string') next.graduatedAt = incoming.graduatedAt
+          ;(merged as Record<string, unknown>).coachMode = next
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'intake')) {
+        const incoming = (updates as Record<string, unknown>)['intake'] as
+          | NonNullable<LocalConfig['intake']>
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).intake
+        } else if (incoming && typeof incoming === 'object') {
+          const next: NonNullable<LocalConfig['intake']> = {
+            ...(existing.intake ?? {}),
+          }
+          if (incoming.mode === 'ai' || incoming.mode === 'form' || incoming.mode === 'ask-each-time') {
+            next.mode = incoming.mode
+          }
+          ;(merged as Record<string, unknown>).intake = next
         }
       }
 

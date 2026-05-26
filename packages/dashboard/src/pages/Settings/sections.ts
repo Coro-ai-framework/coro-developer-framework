@@ -6,6 +6,7 @@ import {
   Plug,
   Server,
   ShieldCheck,
+  SlidersHorizontal,
   Ticket,
 } from 'lucide-react'
 import type { SettingsSectionId } from './SettingsContext'
@@ -24,6 +25,14 @@ export interface SettingsSectionDescriptor {
 }
 
 export const SETTINGS_SECTIONS: SettingsSectionDescriptor[] = [
+  {
+    id: 'general',
+    group: 'setup',
+    label: 'General',
+    description: 'Coach mode and new-run intake preferences.',
+    icon: SlidersHorizontal,
+    required: false,
+  },
   {
     id: 'llm-provider',
     group: 'setup',
