@@ -30,6 +30,7 @@ import { emptyTokenUsage } from '../../src/jobs/helpers'
 import type { ToolContext } from '../../src/tools/types'
 import * as writerMock from '../../src/intelligence/writer'
 import { PluginRegistry } from '../../src/plugins/registry'
+import * as localConfig from '../../src/config/local-config'
 
 // We mock only `openProposalPr` so the writer can use our local `file://`
 // bare repo without needing a real GitHub host. The rest of the writer
@@ -76,12 +77,25 @@ let root: string
 let bareRemoteDir: string
 let writerCacheRoot: string
 let stateBackend: SqliteStateBackend
+let writerCacheSpy: ReturnType<typeof vi.spyOn>
+
+/** Git identity for every subprocess (writer uses os.homedir(), not process.env.HOME). */
+async function installTestGitIdentity(home: string): Promise<void> {
+  const gitConfigPath = path.join(home, '.gitconfig')
+  await fs.writeFile(
+    gitConfigPath,
+    '[user]\n\tname = Coro Integration\n\temail = integration@coro.test\n',
+    'utf-8',
+  )
+  process.env.GIT_CONFIG_GLOBAL = gitConfigPath
+}
 
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-integ-'))
   bareRemoteDir = path.join(root, 'tenant-remote.git')
   writerCacheRoot = path.join(root, 'cache', 'writers')
-  process.env.HOME = root // so defaultWriterCacheRoot() points inside our temp
+  await installTestGitIdentity(root)
+  writerCacheSpy = vi.spyOn(localConfig, 'defaultWriterCacheRoot').mockReturnValue(writerCacheRoot)
 
   // Initialise a bare git repo to act as the tenant remote.
   await fs.mkdir(bareRemoteDir, { recursive: true })
@@ -106,17 +120,6 @@ beforeEach(async () => {
   await seedGit.raw(['branch', '-M', 'main'])
   await seedGit.push('origin', 'main', ['--set-upstream'])
 
-  // Configure git identity inside the writer's parent dir too — when
-  // `prepareTenantWriter` clones it'll need an identity to commit.
-  // We rely on `core.askpass=` + GIT_TERMINAL_PROMPT=0 to fail fast on
-  // missing creds rather than hanging. Identity is set by the writer
-  // module's clone path picking up our local config; to be safe we set
-  // a global env-level identity for the whole test run.
-  process.env.GIT_AUTHOR_NAME = 'Coro Test'
-  process.env.GIT_AUTHOR_EMAIL = 'test@coro.test'
-  process.env.GIT_COMMITTER_NAME = 'Coro Test'
-  process.env.GIT_COMMITTER_EMAIL = 'test@coro.test'
-
   stateBackend = new SqliteStateBackend(path.join(root, 'state.db'))
   await stateBackend.initialize()
 
@@ -130,12 +133,10 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  writerCacheSpy.mockRestore()
   stateBackend.close?.()
   await fs.rm(root, { recursive: true, force: true })
-  delete process.env.GIT_AUTHOR_NAME
-  delete process.env.GIT_AUTHOR_EMAIL
-  delete process.env.GIT_COMMITTER_NAME
-  delete process.env.GIT_COMMITTER_EMAIL
+  delete process.env.GIT_CONFIG_GLOBAL
   vi.clearAllMocks()
 })
 
@@ -177,11 +178,6 @@ function makeCtx(): ToolContext {
 
 describe('propose_change end-to-end', () => {
   it('clones tenant remote, branches, commits, pushes, opens PR, records proposal', async () => {
-    // sanity: we'll be using the default writer cache root which is
-    // ~/.coro/cache/writers. We override HOME to a temp dir so this
-    // test doesn't touch the developer's real ~/.coro.
-    void writerCacheRoot
-
     const ctx = makeCtx()
 
     const result = await proposeChange(
