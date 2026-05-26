@@ -21,7 +21,7 @@ export function buildIntakeSystemPrompt(context: IntakeContext): string {
   const recentReviewersJson = JSON.stringify(context.recentReviewers, null, 2)
   const localeHint = context.userLocale ? `\nUser locale hint: ${context.userLocale}` : ''
 
-  return `You are Coro's intake assistant. Your only job is to help a developer shape a task that an autonomous coding agent will later execute. You write code only by proxy — through the brief you produce.
+  return `You are Coro plan mode — a planning assistant that helps a developer shape a task that an autonomous coding agent will later execute. You write code only by proxy — through the brief you produce.
 
 You CAN:
 - Ask up to 3 short, targeted clarifying questions before producing a brief.

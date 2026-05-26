@@ -83,7 +83,7 @@ describe('runIntakeStream', () => {
 
     expect(events[0]).toMatchObject({
       type: 'error',
-      message: 'No LLM provider configured. Configure one in Settings.',
+      message: 'Coro plan mode needs an LLM provider. Configure one in Settings.',
     })
   })
 })

@@ -1169,7 +1169,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   app.post('/intake/stream', async (req: Request, res: Response) => {
     if (!plugins || !runnerCtx) {
-      res.status(503).json({ error: 'Intake unavailable — runner plugins not initialized', reason: 'no-llm' })
+      res.status(503).json({ error: 'Coro plan mode unavailable — runner plugins not initialized', reason: 'no-llm' })
       return
     }
 

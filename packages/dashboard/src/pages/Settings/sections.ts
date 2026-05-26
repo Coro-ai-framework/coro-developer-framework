@@ -29,7 +29,7 @@ export const SETTINGS_SECTIONS: SettingsSectionDescriptor[] = [
     id: 'general',
     group: 'setup',
     label: 'General',
-    description: 'Coach mode and new-run intake preferences.',
+    description: 'Coach mode and Coro plan mode preferences.',
     icon: SlidersHorizontal,
     required: false,
   },

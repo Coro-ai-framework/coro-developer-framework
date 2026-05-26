@@ -72,7 +72,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
   } catch (err) {
     const message = (err as Error).message
     if (/executor|provider|llm/i.test(message)) {
-      yield { type: 'error', message: 'No LLM provider configured. Configure one in Settings.', reason: 'no-llm' } as IntakeStreamEvent & { reason?: string }
+      yield { type: 'error', message: 'Coro plan mode needs an LLM provider. Configure one in Settings.', reason: 'no-llm' } as IntakeStreamEvent & { reason?: string }
       return
     }
     yield { type: 'error', message }

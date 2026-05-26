@@ -41,23 +41,23 @@ export default function GeneralSection() {
       </SettingsSection>
 
       <SettingsSection
-        title="New run intake"
-        description="Choose how the New Run page starts — AI conversation or the classic form."
+        title="Coro plan mode"
+        description="Choose how the New Run page starts — plan mode conversation or the classic form."
       >
         <div className="space-y-2">
           <label className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-subtle">
-            Default intake mode
+            Default new-run mode
           </label>
           <Select
             value={intakeMode}
             onChange={e => void patchConfig({ intake: { mode: e.target.value as IntakeMode } })}
           >
-            <option value="ai">AI intake (recommended with coach mode)</option>
+            <option value="ai">Coro plan mode (recommended with coach mode)</option>
             <option value="form">Classic form</option>
             <option value="ask-each-time">Ask each time</option>
           </Select>
           <p className="text-xs text-fg-muted">
-            AI intake uses your configured LLM to help shape a run brief before dispatch.
+            Coro plan mode uses your configured LLM to help shape a run brief before dispatch.
           </p>
         </div>
       </SettingsSection>

@@ -181,7 +181,7 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
   const byId: ReadinessSummary['byId'] = {
     general: {
       status: 'optional',
-      detail: 'Coach mode and intake preferences',
+      detail: 'Coach mode and Coro plan mode preferences',
     },
     'llm-provider': {
       status: llmReady ? 'ok' : 'warn',

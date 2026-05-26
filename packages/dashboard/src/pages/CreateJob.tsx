@@ -300,7 +300,7 @@ export default function CreateJob() {
         <div className="mx-auto w-full max-w-6xl space-y-6 pb-32">
           <PageHeader
             title="New run"
-            description="Describe your goal in conversation — Coro will propose a brief before dispatching."
+            description="Coro plan mode — describe your goal in conversation and review a brief before dispatching."
             actions={
               <Button variant="outline" onClick={() => navigate('/jobs')}>
                 <ArrowLeft />
@@ -345,7 +345,7 @@ export default function CreateJob() {
                   setSurfaceOverride('ai')
                 }}
               >
-                Try AI intake
+                Try Coro plan mode
               </Button>
             ) : null}
             <Button variant="outline" onClick={() => navigate('/jobs')}>
@@ -699,10 +699,10 @@ function IntakeModeChooser({ onChoose }: { onChoose: (mode: 'ai' | 'form') => vo
         onClick={() => onChoose('ai')}
         className="rounded-2xl border border-border bg-surface p-6 text-left transition hover:border-accent-500/40 hover:bg-accent-500/5"
       >
-        <div className="text-[15px] font-semibold text-fg">Talk it through</div>
+        <div className="text-[15px] font-semibold text-fg">Coro plan mode</div>
         <p className="mt-2 text-sm text-fg-muted">
-          Chat with Coro&apos;s intake assistant. It asks clarifying questions and proposes a brief
-          you can edit before dispatching.
+          Talk through your goal with Coro. It asks clarifying questions and proposes a brief you
+          can edit before dispatching.
         </p>
       </button>
       <button

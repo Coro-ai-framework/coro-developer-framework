@@ -133,7 +133,7 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-medium text-fg">
             <Sparkles className="size-4 text-accent-300" />
-            AI intake
+            Coro plan mode
           </div>
           <div className="flex items-center gap-3 text-[11px] text-fg-subtle">
             <span>{turnCount} turns · {totalTokens.toLocaleString()} tokens</span>

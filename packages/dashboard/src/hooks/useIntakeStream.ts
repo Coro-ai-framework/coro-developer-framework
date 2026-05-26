@@ -95,10 +95,10 @@ export function useIntakeStream() {
             setNoLlm(true)
             return { assistantText: '', noLlm: true, error: body.error ?? 'No LLM provider configured' }
           }
-          throw new Error(body.error ?? `Intake failed (${response.status})`)
+          throw new Error(body.error ?? `Plan mode failed (${response.status})`)
         }
 
-        if (!response.body) throw new Error('No response body from intake stream')
+        if (!response.body) throw new Error('No response body from plan mode stream')
 
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
