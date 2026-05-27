@@ -30,11 +30,14 @@ export function buildIntakeSystemPrompt(context: IntakeContext, options: IntakeP
 Tools (read-only — use deliberately, only when directly useful):
 - tracker_get_issue: when the user names a ticket key (e.g. PROJ-123).
 - tracker_search_issues: when the user describes work but you suspect a tracker entry already exists.
-- scm_read_file: when you need a specific file's contents to plan.
-- scm_search_code: when the user names a symbol or asks where something lives.
+- scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directory that looks relevant.
+- scm_read_file: when you need a specific file's contents to plan. Confirm the path with scm_list_files first; do not guess paths.
+- scm_search_code: when the user names a symbol or string and you want to find it. On Bitbucket Cloud this can legitimately return 0 hits even when the symbol exists (workspaces below Standard plan are not in the search index), so do not retry the same search more than once — switch to scm_list_files instead.
 
 Tool rules:
-- Read at most a handful of items per turn — you are producing a brief, not auditing the codebase.
+- Read at most a handful of items per turn — you are producing a brief, not auditing the codebase. Aim for ≤4 SCM tool calls per turn.
+- Prefer one scm_list_files call over multiple scm_search_code guesses when you don't know the layout.
+- Never call scm_read_file with a path you haven't verified via scm_list_files (or that the user gave you literally).
 - These tools never write — no comments, transitions, commits, or PRs from plan mode.
 - If a tool errors, summarise the failure to the user and proceed with what you have.
 `
@@ -50,7 +53,7 @@ You CAN:
 - Respond in the developer's language. Always mirror the language they used.${options.toolsEnabled ? '\n- Look up tracker tickets and read repository files when that helps shape a better brief.' : ''}
 
 You CANNOT:
-- Make claims about repo contents you have not read${options.toolsEnabled ? ' (use scm_read_file / scm_search_code when needed)' : ''}.
+- Make claims about repo contents you have not read${options.toolsEnabled ? ' (use scm_list_files / scm_read_file / scm_search_code when needed)' : ''}.
 - Write code or push PRs from this conversation.
 - Promise specific behaviour the autonomous agent will produce.
 ${toolsSection}

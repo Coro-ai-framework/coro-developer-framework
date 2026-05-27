@@ -27,10 +27,13 @@ function hasTrackerMethod(
 
 function hasScmMethod(
   registry: PluginRegistry,
-  method: keyof Pick<ScmPluginRuntime, 'readFile' | 'searchCode'>,
+  method: keyof Pick<ScmPluginRuntime, 'readFile' | 'searchCode' | 'listFiles'>,
 ): boolean {
   return registry.all().some(p => isScmPlugin(p) && typeof p[method] === 'function')
 }
+
+/** Hard cap on entries returned to the LLM in a single list_files call. */
+export const INTAKE_MAX_LIST_FILES = 200
 
 export function buildIntakeTools(registry: PluginRegistry): ChatTool[] {
   const tools: ChatTool[] = []
@@ -86,7 +89,11 @@ export function buildIntakeTools(registry: PluginRegistry): ChatTool[] {
   if (hasScmMethod(registry, 'searchCode')) {
     tools.push({
       name: 'scm_search_code',
-      description: 'Search code in a repository for a symbol or string. Read-only.',
+      description:
+        'Search code in a repository for a symbol or string. Read-only. ' +
+        'On Bitbucket Cloud this can return 0 hits even for code that exists ' +
+        '(workspaces below Standard plan are not indexed) — if that happens, ' +
+        'switch to scm_list_files to discover the repo structure instead of retrying.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -96,6 +103,30 @@ export function buildIntakeTools(registry: PluginRegistry): ChatTool[] {
           pluginId: PLUGIN_ID_SCHEMA,
         },
         required: ['repo', 'query'],
+      },
+    })
+  }
+
+  if (hasScmMethod(registry, 'listFiles')) {
+    tools.push({
+      name: 'scm_list_files',
+      description:
+        'List entries in a repository directory. Read-only. Use this when ' +
+        'you do not know the layout — call once on the repo root, then ' +
+        'descend into the subdirectories that look relevant. Prefer this ' +
+        'over guessing file paths.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Repository slug or owner/repo.' },
+          path: {
+            type: 'string',
+            description: 'Directory path within the repo. Omit or use "" / "/" for the repo root.',
+          },
+          ref: { type: 'string', description: 'Git ref (branch, tag, commit). Defaults to the default branch.' },
+          pluginId: PLUGIN_ID_SCHEMA,
+        },
+        required: ['repo'],
       },
     })
   }
@@ -153,6 +184,12 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
   if (name === 'scm_search_code') {
     const count = Array.isArray(output) ? output.length : 0
     return `Found ${count} code hit${count === 1 ? '' : 's'}`
+  }
+  if (name === 'scm_list_files') {
+    const count = Array.isArray(output) ? output.length : 0
+    const path = readField(input, 'path') ?? ''
+    const where = path ? ` in ${path}` : ''
+    return `Listed ${count} entr${count === 1 ? 'y' : 'ies'}${where}`
   }
   return 'Done'
 }
@@ -243,6 +280,24 @@ async function dispatchIntakeTool(
       })
       if (!scm.searchCode) throw new Error('No SCM plugin exposes searchCode')
       return scm.searchCode({ repo, query, maxResults: limit })
+    }
+    case 'scm_list_files': {
+      const repo = String(args.repo ?? '').trim()
+      if (!repo) throw new Error('scm_list_files requires repo')
+      const scm = registry.resolveScm({
+        scm: typeof args.pluginId === 'string' ? args.pluginId : undefined,
+      })
+      if (!scm.listFiles) throw new Error('No SCM plugin exposes listFiles')
+      const rawPath = typeof args.path === 'string' ? args.path.trim() : ''
+      const entries = await scm.listFiles({
+        repo,
+        ...(rawPath ? { path: rawPath } : {}),
+        ...(typeof args.ref === 'string' && args.ref.trim() ? { ref: args.ref.trim() } : {}),
+      })
+      // Cap server-side so a huge directory can't blow the per-turn
+      // token budget. The plugin already caps its own paging (BB:
+      // 200), but a single page from GitHub can return up to 1000.
+      return entries.slice(0, INTAKE_MAX_LIST_FILES)
     }
     default:
       throw new Error(`Unknown plan-mode tool: ${name}`)

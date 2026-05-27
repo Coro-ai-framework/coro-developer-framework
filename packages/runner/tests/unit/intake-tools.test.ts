@@ -55,6 +55,22 @@ describe('buildIntakeTools', () => {
     expect(names).toContain('scm_read_file')
     expect(names).not.toContain('tracker_search_issues')
     expect(names).not.toContain('scm_search_code')
+    expect(names).not.toContain('scm_list_files')
+  })
+
+  it('exposes scm_list_files when a plugin implements listFiles', () => {
+    const tools = buildIntakeTools(mockRegistry({
+      scms: [{
+        listFiles: async () => [],
+        cloneInfo: () => ({ url: '', envForGit: {} }),
+        pollPr: async () => ({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] }),
+        matchesRemote: () => false,
+        normalizeInbound: () => null,
+      }],
+    }))
+    const listFiles = tools.find(t => t.name === 'scm_list_files')
+    expect(listFiles).toBeDefined()
+    expect(listFiles!.inputSchema).toMatchObject({ required: ['repo'] })
   })
 })
 
@@ -103,6 +119,45 @@ describe('createIntakeRunTool', () => {
     expect(out.description.endsWith('…[truncated]')).toBe(true)
   })
 
+  it('dispatches scm_list_files to the plugin and forwards path/ref when provided', async () => {
+    const listFiles = vi.fn(async () => [
+      { path: 'src', type: 'dir' as const },
+      { path: 'README.md', type: 'file' as const },
+    ])
+    const registry = mockRegistry({
+      scms: [{
+        listFiles,
+        cloneInfo: () => ({ url: '', envForGit: {} }),
+        pollPr: async () => ({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] }),
+        matchesRemote: () => false,
+        normalizeInbound: () => null,
+      }],
+    })
+    const runTool = createIntakeRunTool(registry, new AbortController().signal)
+    const out = await runTool('scm_list_files', { repo: 'a/b', path: 'src', ref: 'master' })
+    expect(listFiles).toHaveBeenCalledWith({ repo: 'a/b', path: 'src', ref: 'master' })
+    expect(out).toEqual([
+      { path: 'src', type: 'dir' },
+      { path: 'README.md', type: 'file' },
+    ])
+  })
+
+  it('omits path when the caller asks for the repo root', async () => {
+    const listFiles = vi.fn(async () => [])
+    const registry = mockRegistry({
+      scms: [{
+        listFiles,
+        cloneInfo: () => ({ url: '', envForGit: {} }),
+        pollPr: async () => ({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] }),
+        matchesRemote: () => false,
+        normalizeInbound: () => null,
+      }],
+    })
+    const runTool = createIntakeRunTool(registry, new AbortController().signal)
+    await runTool('scm_list_files', { repo: 'a/b', path: '' })
+    expect(listFiles).toHaveBeenCalledWith({ repo: 'a/b' })
+  })
+
   it('clamps every result in a tracker search', async () => {
     const huge = 'y'.repeat(INTAKE_MAX_TRACKER_DESCRIPTION_CHARS + 1_000)
     const registry = mockRegistry({
@@ -141,6 +196,12 @@ describe('summarizeToolCall', () => {
   it('reports code hit counts', () => {
     expect(summarizeToolCall('scm_search_code', { query: 'q' }, [{}, {}])).toBe('Found 2 code hits')
     expect(summarizeToolCall('scm_search_code', { query: 'q' }, [{}])).toBe('Found 1 code hit')
+  })
+
+  it('reports list_files entry counts and includes the path when present', () => {
+    expect(summarizeToolCall('scm_list_files', { repo: 'a/b', path: 'src' }, [{}, {}, {}])).toBe('Listed 3 entries in src')
+    expect(summarizeToolCall('scm_list_files', { repo: 'a/b' }, [{}])).toBe('Listed 1 entry')
+    expect(summarizeToolCall('scm_list_files', { repo: 'a/b' }, [])).toBe('Listed 0 entries')
   })
 
   it('falls back to a generic label for unknown tools', () => {

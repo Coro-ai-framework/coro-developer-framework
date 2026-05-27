@@ -147,19 +147,82 @@ export class BitBucketClient {
     return this.requestText('GET', `/repositories/${this.workspace}/${repoSlug}/src/${revision}/${filePath}`)
   }
 
-  async listFiles(repoSlug: string, dirPath: string, revision = 'HEAD'): Promise<string[]> {
-    const data = await this.request<{ values: { path: string; type: string }[]; next?: string }>(
-      'GET',
-      `/repositories/${this.workspace}/${repoSlug}/src/${revision}/${dirPath}`,
-    )
-    return data.values.map(v => v.path)
+  /**
+   * List entries in a repository directory. Pass an empty `dirPath`
+   * (or '/') for the repository root. `revision` accepts a branch
+   * name, tag, or commit hash; Bitbucket also accepts `HEAD` as an
+   * alias for the default branch.
+   *
+   * Honours Bitbucket's `next` cursor up to `maxEntries`. We don't
+   * paginate forever — plan mode just wants enough breadth to find
+   * the right subdir, not a full tree.
+   */
+  async listFiles(
+    repoSlug: string,
+    dirPath: string,
+    revision = 'HEAD',
+    maxEntries = 200,
+  ): Promise<Array<{ path: string; type: 'file' | 'dir' }>> {
+    // Bitbucket's API treats a trailing slash as "list this directory"
+    // and a bare commit ref as "list root". Normalise both shapes so
+    // callers can pass `''`, `/`, or `src/foo` interchangeably.
+    const trimmedPath = dirPath.replace(/^\/+|\/+$/g, '')
+    const out: Array<{ path: string; type: 'file' | 'dir' }> = []
+    let url: string | null = trimmedPath
+      ? `/repositories/${this.workspace}/${repoSlug}/src/${revision}/${trimmedPath}/`
+      : `/repositories/${this.workspace}/${repoSlug}/src/${revision}/`
+
+    while (url && out.length < maxEntries) {
+      const data: {
+        values: Array<{ path: string; type: string }>
+        next?: string
+      } = await this.request('GET', url)
+      for (const v of data.values) {
+        if (out.length >= maxEntries) break
+        out.push({
+          path: v.path,
+          // Bitbucket types are `commit_file` and `commit_directory`.
+          // Anything else (commit_link, …) is rare and gets treated as
+          // a file so the agent at least sees it.
+          type: v.type === 'commit_directory' ? 'dir' : 'file',
+        })
+      }
+      // `next` is an absolute URL — strip the `baseUrl` prefix so the
+      // shared `request` helper keeps signing it.
+      if (data.next) {
+        url = data.next.startsWith(this.baseUrl) ? data.next.slice(this.baseUrl.length) : data.next
+      } else {
+        url = null
+      }
+    }
+    return out
   }
 
+  /**
+   * Workspace-scoped code search. Bitbucket's response shape is
+   * non-obvious — content matches come back as `content_matches[].lines[]`
+   * where each line is `{ line, segments[] }` and each segment is
+   * `{ text, match? }`. We assemble the segments into a full line of
+   * source so the LLM sees the actual hit context, not an empty
+   * string (which the previous implementation produced because it
+   * mistyped `lines` as a single `{ text }` object).
+   *
+   * Path-only matches (`path_matches` with no `content_matches`) are
+   * also a thing — Bitbucket explicitly documents both. We surface
+   * those as a hit with `pathMatchOnly: true` so the agent can act
+   * on filename matches (e.g. searching for "Buyinbuyout.csproj").
+   *
+   * Caveat: Bitbucket Cloud's code-search index doesn't cover every
+   * workspace. Free-plan / unindexed workspaces routinely return
+   * `200 { values: [] }` even when the same query works in the web
+   * UI. The plan-mode prompt steers the agent toward `listFiles` in
+   * that case rather than retrying search.
+   */
   async searchCode(
     repoSlug: string,
     query: string,
     maxResults = 20,
-  ): Promise<Array<{ path: string; snippets: Array<{ seq: number; content: string }> }>> {
+  ): Promise<Array<{ path: string; snippets: Array<{ seq: number; content: string }>; pathMatchOnly?: boolean }>> {
     const params = new URLSearchParams({
       search_query: `repo:${this.workspace}/${repoSlug} ${query}`,
       pagelen: String(Math.min(maxResults, 20)),
@@ -167,17 +230,38 @@ export class BitBucketClient {
     const data = await this.request<{
       values: Array<{
         file?: { path?: string }
-        content_matches?: Array<{ lines?: { text?: string } }>
+        content_matches?: Array<{
+          lines?: Array<{
+            line?: number
+            segments?: Array<{ text?: string; match?: boolean }>
+          }>
+        }>
+        path_matches?: Array<{ text?: string; match?: boolean }>
       }>
     }>('GET', `/workspaces/${this.workspace}/search/code?${params.toString()}`)
 
-    return (data.values ?? []).slice(0, maxResults).map(item => ({
-      path: item.file?.path ?? 'unknown',
-      snippets: (item.content_matches ?? []).map((match, idx) => ({
-        seq: idx + 1,
-        content: match.lines?.text ?? '',
-      })),
-    }))
+    return (data.values ?? []).slice(0, maxResults).map(item => {
+      const contentMatches = item.content_matches ?? []
+      const snippets: Array<{ seq: number; content: string }> = []
+      let seq = 1
+      for (const match of contentMatches) {
+        for (const line of match.lines ?? []) {
+          const text = (line.segments ?? []).map(s => s.text ?? '').join('')
+          // Skip the empty padding lines Bitbucket includes between
+          // match windows (`{ line, segments: [] }`) — they're just
+          // noise and waste tokens.
+          if (!text.trim()) continue
+          const prefix = typeof line.line === 'number' ? `L${line.line}: ` : ''
+          snippets.push({ seq: seq++, content: `${prefix}${text}` })
+        }
+      }
+      const pathMatchOnly = snippets.length === 0 && (item.path_matches ?? []).some(p => p.match === true)
+      return {
+        path: item.file?.path ?? 'unknown',
+        snippets,
+        ...(pathMatchOnly ? { pathMatchOnly: true } : {}),
+      }
+    })
   }
 
   // ── Pull requests ────────────────────────────────────────────────────────────

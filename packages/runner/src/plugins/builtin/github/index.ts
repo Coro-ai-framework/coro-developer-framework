@@ -37,6 +37,7 @@ import type {
   PluginMcpServerConfig,
   ScmCloneInfo,
   ScmCodeSearchHit,
+  ScmDirectoryEntry,
   ScmCreatePrArgs,
   ScmPluginRuntime,
   ScmPollSnapshot,
@@ -227,6 +228,10 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
 
   async searchCode(args: { repo: string; query: string; maxResults?: number }): Promise<ScmCodeSearchHit[]> {
     return this.client.searchCode(args.repo, args.query, args.maxResults ?? 20)
+  }
+
+  async listFiles(args: { repo: string; path?: string; ref?: string }): Promise<ScmDirectoryEntry[]> {
+    return this.client.listFiles(args.repo, args.path ?? '', args.ref ?? 'HEAD')
   }
 
   /**

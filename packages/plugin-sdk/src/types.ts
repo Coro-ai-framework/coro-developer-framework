@@ -289,8 +289,28 @@ export interface ScmCodeSearchHit {
    * ordering within the hit's snippet array; it is NOT the file line
    * number — provider search APIs (GitHub, Bitbucket) return fragments
    * without absolute line offsets, so we never claim one.
+   *
+   * When the underlying provider matched on the file path only
+   * (Bitbucket's `path_matches` with no `content_matches`), the
+   * snippets array is empty and `pathMatchOnly` is true. The plan-mode
+   * agent uses this to distinguish "filename hit, content unknown"
+   * from "we got nothing".
    */
   snippets: ReadonlyArray<{ seq: number; content: string }>
+  pathMatchOnly?: boolean
+}
+
+/**
+ * One entry returned by `ScmPluginRuntime.listFiles`. We keep the
+ * shape minimal so it works for both Bitbucket (`/src/{ref}/{path}`)
+ * and GitHub (`/repos/{owner}/{repo}/contents/{path}`) without
+ * leaking provider-specific fields.
+ */
+export interface ScmDirectoryEntry {
+  /** Path relative to the repository root, e.g. "src/foo/Bar.cs". */
+  path: string
+  /** Entry kind. `file` = readable via `readFile`, `dir` = traversable. */
+  type: 'file' | 'dir'
 }
 
 export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config> {
@@ -320,6 +340,15 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   readFile?(args: { repo: string; path: string; ref?: string }): Promise<ScmReadFileResult>
   /** Search code in a repository via the SCM provider REST API. */
   searchCode?(args: { repo: string; query: string; maxResults?: number }): Promise<ReadonlyArray<ScmCodeSearchHit>>
+  /**
+   * List entries in a repository directory. Used by plan mode to
+   * discover the repo structure without a working clone — without it
+   * the agent has to guess paths and gets 404s on the first try.
+   *
+   * `path` defaults to the repository root when omitted/empty. `ref`
+   * defaults to the repo's default branch.
+   */
+  listFiles?(args: { repo: string; path?: string; ref?: string }): Promise<ReadonlyArray<ScmDirectoryEntry>>
 
   /**
    * Self-improvement writer escape hatch — runs OUTSIDE `query()` and

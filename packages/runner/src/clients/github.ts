@@ -282,6 +282,36 @@ export class GitHubClient {
     return { content: text, encoding: 'utf-8' }
   }
 
+  /**
+   * List the entries at a directory path in a repository. Empty path
+   * lists the repository root. `ref` accepts a branch, tag, or commit
+   * SHA and defaults to GitHub's `HEAD` alias for the default branch.
+   *
+   * `GET /repos/{owner}/{repo}/contents/{path}` returns an object for
+   * a single file and an array for a directory; we only surface
+   * directory listings here so plan mode can walk the tree.
+   */
+  async listFiles(
+    repoSlug: string,
+    dirPath: string,
+    ref = 'HEAD',
+  ): Promise<Array<{ path: string; type: 'file' | 'dir' }>> {
+    const { owner, repo } = this.parseRepo(repoSlug)
+    const trimmedPath = dirPath.replace(/^\/+|\/+$/g, '')
+    const encoded = trimmedPath ? `/${trimmedPath.split('/').map(encodeURIComponent).join('/')}` : ''
+    const data = await this.request<
+      | Array<{ path: string; type: string }>
+      | { path: string; type: string }
+    >('GET', `/repos/${owner}/${repo}/contents${encoded}?ref=${encodeURIComponent(ref)}`)
+    // Single-file responses come back as an object; treat them as a
+    // one-entry listing so callers don't need a separate code path.
+    const entries = Array.isArray(data) ? data : [data]
+    return entries.map(v => ({
+      path: v.path,
+      type: v.type === 'dir' ? 'dir' : 'file',
+    }))
+  }
+
   async searchCode(
     repoSlug: string,
     query: string,

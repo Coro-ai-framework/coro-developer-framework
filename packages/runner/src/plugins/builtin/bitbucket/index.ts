@@ -46,6 +46,7 @@ import type {
   ScmCloneInfo,
   ScmCodeSearchHit,
   ScmCreatePrArgs,
+  ScmDirectoryEntry,
   ScmCreateRepoArgs,
   ScmMergeOptions,
   ScmPluginRuntime,
@@ -504,6 +505,11 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
   async searchCode(args: { repo: string; query: string; maxResults?: number }): Promise<ScmCodeSearchHit[]> {
     const repoSlug = args.repo.includes('/') ? args.repo.split('/').pop()! : args.repo
     return this.coder.searchCode(repoSlug, args.query, args.maxResults ?? 20)
+  }
+
+  async listFiles(args: { repo: string; path?: string; ref?: string }): Promise<ScmDirectoryEntry[]> {
+    const repoSlug = args.repo.includes('/') ? args.repo.split('/').pop()! : args.repo
+    return this.coder.listFiles(repoSlug, args.path ?? '', args.ref ?? 'HEAD')
   }
 
   // ── Internals ─────────────────────────────────────────────────────────

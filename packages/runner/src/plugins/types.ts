@@ -465,8 +465,26 @@ export interface ScmCodeSearchHit {
    * ordering within the hit's snippet array; it is NOT the file line
    * number — provider search APIs (GitHub, Bitbucket) return fragments
    * without absolute line offsets, so we never claim one.
+   *
+   * When the underlying provider matched on the file path only
+   * (Bitbucket's `path_matches` with no `content_matches`), the
+   * snippets array is empty and `pathMatchOnly` is true.
    */
   snippets: ReadonlyArray<{ seq: number; content: string }>
+  pathMatchOnly?: boolean
+}
+
+/**
+ * One entry returned by `ScmPluginRuntime.listFiles`. Minimal shape
+ * shared by Bitbucket (`/src/{ref}/{path}`) and GitHub
+ * (`/repos/{owner}/{repo}/contents/{path}`) so plan-mode tools don't
+ * have to know which provider rendered the listing.
+ */
+export interface ScmDirectoryEntry {
+  /** Path relative to the repository root, e.g. "src/foo/Bar.cs". */
+  path: string
+  /** Entry kind. `file` = readable via `readFile`, `dir` = traversable. */
+  type: 'file' | 'dir'
 }
 
 export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config> {
@@ -514,6 +532,12 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   readFile?(args: { repo: string; path: string; ref?: string }): Promise<ScmReadFileResult>
   /** Search code in a repository via the SCM provider REST API. */
   searchCode?(args: { repo: string; query: string; maxResults?: number }): Promise<ReadonlyArray<ScmCodeSearchHit>>
+  /**
+   * List entries in a repository directory. Lets the plan-mode agent
+   * discover repo structure without cloning. `path` defaults to the
+   * root, `ref` to the default branch.
+   */
+  listFiles?(args: { repo: string; path?: string; ref?: string }): Promise<ReadonlyArray<ScmDirectoryEntry>>
 
   // ── Self-improvement writer escape hatch ────────────────────────────────
   /**
