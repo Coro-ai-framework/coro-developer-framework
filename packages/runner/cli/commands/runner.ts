@@ -103,8 +103,21 @@ runnerCommand
       console.log(`  Work dir:  ${config.paths.workingDir}`)
     }
 
-    if (config?.git) {
-      console.log(`  Git:       ${config.git.provider} (${config.git.username})`)
+    // Surface the installed SCM plugins (single source of truth for
+    // git credentials post-legacy-removal). The dashboard owns
+    // provider selection — we just echo what's wired up.
+    const SCM_PLUGIN_IDS = new Set(['github', 'bitbucket', 'gitlab'])
+    const installedScm: string[] = []
+    for (const [id, entry] of Object.entries(config?.plugins?.installed ?? {})) {
+      if (entry.enabled === false) continue
+      if (SCM_PLUGIN_IDS.has(id)) installedScm.push(id)
+    }
+    if (installedScm.length > 0) {
+      const defaultScm = config?.plugins?.defaults?.scm
+      const label = defaultScm && installedScm.includes(defaultScm)
+        ? `${defaultScm} (default)`
+        : installedScm.join(', ')
+      console.log(`  SCM:       ${label}`)
     }
 
     console.log()

@@ -31,7 +31,15 @@ describe('local-config', () => {
     cloud: { url: 'https://cloud.corolabs.com', token: 'tok-abc' },
     intelligence: { dir: '/tmp/intel', gitRemote: 'https://example.com/repo.git' },
     paths: { workingDir: '/tmp/work' },
-    git: { provider: 'bitbucket', workspace: 'coro-labs', username: 'user', token: 'git-tok' },
+    plugins: {
+      installed: {
+        bitbucket: {
+          enabled: true,
+          config: { workspace: 'coro-labs', coderUsername: 'user', coderToken: 'git-tok' },
+        },
+      },
+      defaults: { scm: 'bitbucket' },
+    },
   }
 
   describe('saveLocalConfig + loadLocalConfig', () => {
@@ -61,12 +69,19 @@ describe('local-config', () => {
 
   describe('mergeLocalConfig', () => {
     it('merges cloud into existing config', () => {
-      saveLocalConfig({ git: { provider: 'github', username: 'u', token: 't' } }, configPath)
+      saveLocalConfig(
+        {
+          plugins: {
+            installed: { github: { enabled: true, config: { owner: 'u', token: 't' } } },
+          },
+        },
+        configPath,
+      )
       const merged = mergeLocalConfig(
         { cloud: { url: 'https://cloud.example.com', token: 'new-tok' } },
         configPath,
       )
-      expect(merged.git?.username).toBe('u')
+      expect(merged.plugins?.installed?.['github']?.config).toMatchObject({ owner: 'u' })
       expect(merged.cloud?.url).toBe('https://cloud.example.com')
     })
 

@@ -56,10 +56,32 @@ export function seedExecutorDefaultAliases(args: {
  * clients (BitBucket, GitHub, Loki, …) and the job runner. Pure
  * function of `LocalConfig`; legacy disk-based `settings.json`
  * loading was removed along with the Redis monolith.
+ *
+ * SCM credential source-of-truth lives under
+ * `plugins.installed.{bitbucket|github}.config`. The dashboard's FTUE
+ * wizard and Settings page both write that shape; this builder reads
+ * it back so `Settings.bitbucket` / `Settings.github` (still consumed
+ * by the four legacy client factories and the Anthropic executor's
+ * env injection) stay populated end-to-end.
+ *
+ * Env-var overrides remain as a developer escape hatch — useful for
+ * CI runs and `docker run` invocations where the user doesn't want to
+ * mount a real `~/.coro/config.json`.
  */
 export function buildSettingsFromLocal(config: LocalConfig): Settings {
   const intelligenceDir = resolveIntelligenceDir(config)
   const workingDir = resolveLocalWorkingDir(config)
+
+  // Plugin-installed SCM credentials — the single source of truth.
+  // Cast through `Record<string, unknown>` because the runner's
+  // `LocalConfig` types `installed[id].config` as `unknown` (each
+  // plugin owns its own Zod schema and validates at registry init
+  // time); we only read string fields here and tolerate absent
+  // values.
+  const bbInstalled = (config.plugins?.installed?.['bitbucket']?.config ?? {}) as Record<string, unknown>
+  const ghInstalled = (config.plugins?.installed?.['github']?.config ?? {}) as Record<string, unknown>
+  const readString = (rec: Record<string, unknown>, key: string): string =>
+    typeof rec[key] === 'string' ? (rec[key] as string) : ''
 
   return {
     host: {
@@ -68,23 +90,30 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
       logLevel: process.env.LOG_LEVEL ?? 'info',
     },
     bitbucket: {
-      workspace: config.git?.workspace ?? process.env.BITBUCKET_WORKSPACE ?? '',
-      baseUrl: process.env.BITBUCKET_BASE_URL ?? 'https://api.bitbucket.org/2.0',
+      workspace: readString(bbInstalled, 'workspace') || process.env.BITBUCKET_WORKSPACE || '',
+      baseUrl: readString(bbInstalled, 'baseUrl') || process.env.BITBUCKET_BASE_URL || 'https://api.bitbucket.org/2.0',
       coderAccount: {
-        username: config.git?.username ?? '',
-        appPassword: config.git?.token ?? '',
+        username: readString(bbInstalled, 'coderUsername'),
+        appPassword: readString(bbInstalled, 'coderToken'),
       },
       reviewerAccount: {
-        username: process.env.BITBUCKET_REVIEWER_USERNAME ?? config.git?.username ?? '',
-        appPassword: process.env.BITBUCKET_REVIEWER_APP_PASSWORD ?? config.git?.token ?? '',
+        // Reviewer account defaults to the coder account, matching the
+        // previous behaviour. The BitBucket plugin's `init()` applies the
+        // same fallback for its own internal reviewer client.
+        username:
+          process.env.BITBUCKET_REVIEWER_USERNAME ||
+          readString(bbInstalled, 'reviewerUsername') ||
+          readString(bbInstalled, 'coderUsername'),
+        appPassword:
+          process.env.BITBUCKET_REVIEWER_APP_PASSWORD ||
+          readString(bbInstalled, 'reviewerToken') ||
+          readString(bbInstalled, 'coderToken'),
       },
     },
     github: {
-      owner: config.git?.workspace ?? process.env.GITHUB_OWNER ?? '',
-      token: config.git?.provider === 'github'
-        ? (config.git?.token ?? process.env.GITHUB_TOKEN ?? '')
-        : (process.env.GITHUB_TOKEN ?? ''),
-      baseUrl: process.env.GITHUB_API_BASE_URL ?? 'https://api.github.com',
+      owner: readString(ghInstalled, 'owner') || process.env.GITHUB_OWNER || '',
+      token: readString(ghInstalled, 'token') || process.env.GITHUB_TOKEN || '',
+      baseUrl: readString(ghInstalled, 'baseUrl') || process.env.GITHUB_API_BASE_URL || 'https://api.github.com',
     },
     redis: {
       url: '',

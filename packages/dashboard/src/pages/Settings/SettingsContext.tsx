@@ -112,13 +112,6 @@ export interface ConfigResponse {
     llm?: LlmConfigShape
     intelligence?: { dir: string; gitRemote?: string }
     paths?: { workingDir: string }
-    /** Legacy single-slot git block; translated to plugin entries on load. */
-    git?: {
-      provider: 'github' | 'bitbucket' | 'gitlab'
-      username: string
-      token: string
-      workspace?: string
-    }
     cloud?: { url: string; token: string }
     plugins?: PluginsConfigShape
     mcpServers?: Record<string, McpServerEntry>
@@ -317,64 +310,19 @@ export function useSettings(): SettingsContextValue {
 
 // ── Provider ────────────────────────────────────────────────────────────────
 
-/**
- * Translate a legacy single-slot `git` block into a synthetic plugin
- * entry so existing users see their config in the new plugin-shaped UI
- * before the runner has rewritten the file. Mirrors the runner-side
- * `legacyConfigToPlugins` translator (see `local-config.ts`).
- */
-function legacyGitToPlugin(
-  git: NonNullable<NonNullable<ConfigResponse['config']>['git']>,
-): { id: string; entry: PluginInstalledEntry } | null {
-  if (!git.username || !git.token) return null
-  if (git.provider === 'github') {
-    return {
-      id: 'github',
-      entry: {
-        enabled: true,
-        config: { owner: git.workspace ?? git.username, token: git.token },
-      },
-    }
-  }
-  if (git.provider === 'bitbucket') {
-    return {
-      id: 'bitbucket',
-      entry: {
-        enabled: true,
-        config: {
-          workspace: git.workspace ?? '',
-          coderUsername: git.username,
-          coderToken: git.token,
-        },
-      },
-    }
-  }
-  if (git.provider === 'gitlab') {
-    return {
-      id: 'gitlab',
-      entry: {
-        enabled: true,
-        config: { token: git.token, ...(git.workspace ? { workspace: git.workspace } : {}) },
-      },
-    }
-  }
-  return null
-}
-
 function configToDraft(response: ConfigResponse): SettingsDraft {
   const cfg = response.config
   if (!cfg) return EMPTY_DRAFT
   const mcpJson = JSON.stringify(cfg.mcpServers ?? {}, null, 2)
 
-  // Plugin-installed entries are the single source of truth for provider
-  // credentials. The legacy SCM `git.*` block is still surfaced as a
-  // synthetic plugin entry so users mid-migration keep seeing their
-  // creds in the SCM cards; once SCM is fully on plugin-shape, this
-  // fallback goes away too.
+  // Plugin-installed entries are the single source of truth for
+  // every provider credential (LLM, SCM, tracker). The legacy
+  // single-slot `git` / `tracker` blocks were removed in the
+  // single-source-of-truth refactor.
   const installed: Record<string, PluginInstalledEntry> = {}
   let defaultScm = ''
   let defaultTracker = ''
-  if (cfg.plugins?.installed && Object.keys(cfg.plugins.installed).length > 0) {
+  if (cfg.plugins?.installed) {
     for (const [id, entry] of Object.entries(cfg.plugins.installed)) {
       installed[id] = {
         ...(typeof entry.enabled === 'boolean' ? { enabled: entry.enabled } : {}),
@@ -383,9 +331,6 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     }
     defaultScm = cfg.plugins.defaults?.scm ?? ''
     defaultTracker = cfg.plugins.defaults?.tracker ?? ''
-  } else if (cfg.git) {
-    const seeded = legacyGitToPlugin(cfg.git)
-    if (seeded) installed[seeded.id] = seeded.entry
   }
 
   const guardrailRules = (response.resolved?.guardrails?.rules ?? []).map(r => ({

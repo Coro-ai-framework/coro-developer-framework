@@ -2119,25 +2119,15 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           ? candidateExecutorIds[0]
           : undefined
 
-      // Redact sensitive fields for display. The legacy `git.token`
-      // round-trips with a `...`-redaction convention so the dashboard
-      // can show that a secret is set without shipping it to the
-      // browser; PUT /config restores the on-disk value when it sees a
-      // redacted string come back. Plugin-shape credentials (LLM, SCM,
-      // tracker) live under `plugins.installed.<id>.config` and are
-      // redacted further down via `redactPluginConfig` — the runner
-      // core no longer touches them here.
+      // Plugin-shape credentials (LLM, SCM, tracker) live under
+      // `plugins.installed.<id>.config` and are redacted further down
+      // via `redactPluginConfig` — the runner core no longer carries
+      // per-provider redaction here.
       const safeConfig = config ? {
         ...config,
         llm: synthesisedDefaultProvider
           ? { ...(config.llm ?? {}), defaultProvider: synthesisedDefaultProvider }
           : config.llm,
-        git: config.git ? {
-          ...config.git,
-          token: config.git.token
-            ? `${config.git.token.slice(0, 6)}...${config.git.token.slice(-4)}`
-            : '',
-        } : undefined,
         // S9 toggle. Always echo (even when `false`) so the
         // dashboard can render the switch in its actual state.
         inheritClaudeCodeMcps: config.inheritClaudeCodeMcps === true,
@@ -2286,18 +2276,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         } as LocalConfig['paths']
       }
 
-      // Update git
-      if (updates.git) {
-        const cleaned = omitUndefined(updates.git)
-        merged.git = {
-          ...existing.git,
-          ...cleaned,
-          // Don't overwrite token with redacted value
-          token: typeof cleaned.token === 'string' && cleaned.token.includes('...')
-            ? existing.git?.token ?? ''
-            : (cleaned.token as string | undefined) ?? existing.git?.token ?? '',
-        } as LocalConfig['git']
-      }
+      // SCM credentials live under `plugins.installed.{github|bitbucket|
+      // gitlab}.config` and are merged via the generic plugins branch
+      // below — there is no longer a legacy top-level `git` block to
+      // special-case here.
 
       // Respect local mode — strip cloud if not explicitly set
       if (!updates.cloud) {
@@ -2693,14 +2675,17 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   }
 
   /**
-   * Read the saved git.username from local config. We use it as the
-   * alternate-username candidate when the typed username is the
-   * synthetic `x-*-auth` form (we have no other way to guess the
-   * user's email).
+   * Read the saved BitBucket coderUsername from the installed plugin
+   * config. We use it as the alternate-username candidate when the
+   * typed username is the synthetic `x-*-auth` form (we have no other
+   * way to guess the user's email).
    */
   function existingGitUsername(): string | undefined {
     const cfg = loadLocalConfig()
-    return cfg?.git?.username ?? undefined
+    const bb = cfg?.plugins?.installed?.['bitbucket']?.config as
+      | { coderUsername?: string }
+      | undefined
+    return bb?.coderUsername || undefined
   }
 
   /** Apply `deriveGitUsername` semantics here without importing from the plugin. */
@@ -3055,10 +3040,46 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
 
+      // Plugin-installed creds are the single source of truth. The
+      // dashboard may send `...`-redacted secrets on round-trip when
+      // the user only changed non-secret fields; in that case we fill
+      // in from the persisted plugin config.
       const existing = loadLocalConfig()
-      const username = (body.username ?? existing?.git?.username ?? '').trim()
-      const token = resolveSecret(body.token, existing?.git?.token)
-      const workspace = (body.workspace ?? '').trim()
+      const ghInstalled = existing?.plugins?.installed?.['github']?.config as
+        | { owner?: string; token?: string }
+        | undefined
+      const bbInstalled = existing?.plugins?.installed?.['bitbucket']?.config as
+        | {
+            workspace?: string
+            coderUsername?: string
+            coderToken?: string
+            reviewerUsername?: string
+            reviewerToken?: string
+          }
+        | undefined
+      const glInstalled = existing?.plugins?.installed?.['gitlab']?.config as
+        | { token?: string; workspace?: string }
+        | undefined
+
+      // Per-provider fallback for `username` (BitBucket: coderUsername;
+      // GitHub: the owner is sent as `username` from the wizard since
+      // both REST and git basic-auth use a placeholder username on GitHub).
+      const fallbackUsername =
+        provider === 'bitbucket' ? bbInstalled?.coderUsername
+        : provider === 'github' ? ghInstalled?.owner
+        : ''
+      const fallbackToken =
+        provider === 'bitbucket' ? bbInstalled?.coderToken
+        : provider === 'github' ? ghInstalled?.token
+        : glInstalled?.token
+      const fallbackWorkspace =
+        provider === 'bitbucket' ? bbInstalled?.workspace
+        : provider === 'gitlab' ? glInstalled?.workspace
+        : ''
+
+      const username = (body.username ?? fallbackUsername ?? '').trim()
+      const token = resolveSecret(body.token, fallbackToken)
+      const workspace = (body.workspace ?? fallbackWorkspace ?? '').trim()
       if (!token) {
         res.json({ ok: false, message: 'Token is required.', checks: [] })
         return
@@ -3072,8 +3093,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
                 username,
                 token,
                 workspace,
-                reviewerUsername: (body.reviewerUsername ?? '').trim() || undefined,
-                reviewerToken: resolveSecret(body.reviewerToken, undefined) || undefined,
+                reviewerUsername:
+                  ((body.reviewerUsername ?? '').trim() || bbInstalled?.reviewerUsername) || undefined,
+                reviewerToken:
+                  resolveSecret(body.reviewerToken, bbInstalled?.reviewerToken) || undefined,
               })
             : await runGitlabTest({ token, workspace })
 
@@ -3106,6 +3129,9 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         | undefined
       const ghIssuesInstalled = existing?.plugins?.installed?.['github-issues']?.config as
         | { token?: string; defaultOwner?: string }
+        | undefined
+      const ghInstalled = existing?.plugins?.installed?.['github']?.config as
+        | { owner?: string; token?: string }
         | undefined
 
       if (provider === 'jira') {
@@ -3167,14 +3193,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
       if (provider === 'github' || provider === 'github-issues') {
         // GitHub Issues is its own plugin (`github-issues`) carrying
-        // its own token. Older test payloads sometimes route credentials
-        // through the still-legacy `git.*` body shape during the SCM
-        // step of the wizard; we keep that fallback for now but prefer
-        // the plugin-installed creds.
-        const username = (body.git?.username ?? existing?.git?.username ?? '').trim()
+        // its own token. We accept either an inline `token` field or
+        // the catalogue's `git.{ username, token }` envelope, both of
+        // which the dashboard's tracker-test payload may send during
+        // initial wiring. Credentials fall back to the installed
+        // github-issues plugin config, then to the (also-plugin-shape)
+        // github SCM plugin's token as a last resort.
+        const username = (body.git?.username ?? ghInstalled?.owner ?? ghIssuesInstalled?.defaultOwner ?? '').trim()
         const token = resolveSecret(
           body.git?.token ?? (body as { token?: string }).token,
-          ghIssuesInstalled?.token ?? existing?.git?.token,
+          ghIssuesInstalled?.token ?? ghInstalled?.token,
         )
         if (!token) {
           res.json({ ok: false, message: 'GitHub token is required (set it in Source control or under GitHub Issues).' })

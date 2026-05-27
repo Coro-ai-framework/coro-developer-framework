@@ -1,14 +1,12 @@
 // ── PluginsConfig ────────────────────────────────────────────────────────────
 //
-// Uniform shape replacing the per-provider config blocks (`bitbucket`,
-// `github`, `jira`, `linear`, `tracker`) under a single `plugins.installed`
-// map keyed by plugin id. The runner reads this at bootstrap to build
-// the {@link import('../plugins/registry').PluginRegistry}.
-//
-// v1 keeps the legacy keys readable for one release. The translator
-// `legacyConfigToPlugins` (in `local-config.ts`) builds a synthetic
-// PluginsConfig from those keys when `plugins` is absent so existing
-// configs round-trip without manual edits.
+// Uniform shape for every provider plugin (executor, SCM, tracker)
+// under a single `plugins.installed` map keyed by plugin id. The
+// runner reads this at bootstrap to build the
+// {@link import('../plugins/registry').PluginRegistry}. The legacy
+// single-slot `git` / `tracker` / top-level `anthropic` blocks that
+// used to live alongside this one were removed in the single-source-
+// of-truth refactor.
 
 import { z } from 'zod'
 

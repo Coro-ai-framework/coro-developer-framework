@@ -18,7 +18,6 @@ import {
   repoKeyForStorage,
 } from '../../src/plugins'
 import {
-  legacyConfigToPlugins,
   resolvePluginsConfig,
   type LocalConfig,
 } from '../../src/config/local-config'
@@ -226,63 +225,13 @@ describe('PluginRegistry', () => {
   })
 })
 
-// ── Legacy translator ────────────────────────────────────────────────────────
-
-describe('legacyConfigToPlugins', () => {
-  const logger = pino({ level: 'silent' })
-  void logger
-
-  it('returns empty installed map for null config', () => {
-    expect(legacyConfigToPlugins(null)).toEqual({ installed: {} })
-  })
-
-  it('translates legacy bitbucket creds', () => {
-    const cfg: LocalConfig = {
-      git: { provider: 'bitbucket', workspace: 'acme', username: 'user', token: 'tok' },
-    }
-    const plugins = legacyConfigToPlugins(cfg)
-    expect(plugins.installed['bitbucket']).toEqual({
-      enabled: true,
-      config: { workspace: 'acme', coderUsername: 'user', coderToken: 'tok' },
-    })
-    expect(plugins.defaults?.scm).toBe('bitbucket')
-  })
-
-  it('translates legacy github creds', () => {
-    const cfg: LocalConfig = {
-      git: { provider: 'github', workspace: 'acme', username: 'unused', token: 'tok' },
-    }
-    const plugins = legacyConfigToPlugins(cfg)
-    expect(plugins.installed['github']).toEqual({
-      enabled: true,
-      config: { owner: 'acme', token: 'tok' },
-    })
-    expect(plugins.defaults?.scm).toBe('github')
-  })
-
-  // The legacy `tracker.*` config block was removed in the
-  // single-source-of-truth refactor — tracker credentials now live
-  // exclusively under `plugins.installed.{jira|linear|github-issues}`.
-  // The translator no longer has a tracker branch.
-
-  it('does not set defaults when ambiguous', () => {
-    const cfg: LocalConfig = {
-      // No git provider — defaults.scm should not be set even though we
-      // could read partial creds.
-    }
-    const plugins = legacyConfigToPlugins(cfg)
-    expect(plugins.defaults?.scm).toBeUndefined()
-    expect(plugins.defaults?.tracker).toBeUndefined()
-  })
-
-  // ── Anthropic legacy translator (REMOVED) ──
-  // The legacy top-level `anthropic` block was removed in Phase F of the
-  // Anthropic-as-plugin migration. Anthropic credentials now live
-  // exclusively under `plugins.installed.anthropic.config`, so the
-  // translator no longer has an anthropic-specific branch and the
-  // related tests (`translates legacy anthropic apiKey/...`,
-  // `omits anthropic entry when legacy block is absent`) were dropped.
-})
+// ── PluginsConfig resolution ────────────────────────────────────────────────
+//
+// The legacy translator (`legacyConfigToPlugins`) and the corresponding
+// `git.*` / `tracker.*` / top-level `anthropic` config blocks were
+// removed in the single-source-of-truth refactor. All provider
+// credentials now live exclusively under
+// `plugins.installed.<id>.config`.
 
 describe('resolvePluginsConfig', () => {
   it('returns the explicit plugins block when present', () => {
@@ -299,19 +248,13 @@ describe('resolvePluginsConfig', () => {
     expect(got.defaults?.scm).toBe('github')
   })
 
-  it('falls back to the legacy translator', () => {
-    const cfg: LocalConfig = {
-      git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
-    }
-    expect(resolvePluginsConfig(cfg).installed['github']).toBeDefined()
+  it('returns an empty registry when plugins is absent', () => {
+    expect(resolvePluginsConfig({})).toEqual({ installed: {} })
   })
 
-  // ── Anthropic explicit-vs-legacy precedence (REMOVED) ──
-  // Both former tests — "synthesises plugins.installed.anthropic from
-  // legacy anthropic when no explicit entry" and "explicit
-  // plugins.installed.anthropic wins over legacy anthropic block" —
-  // are obsolete now that the legacy field has been removed. The
-  // explicit-only path is exercised by the first test in this block.
+  it('tolerates a null config (used in early bootstrap paths)', () => {
+    expect(resolvePluginsConfig(null)).toEqual({ installed: {} })
+  })
 })
 
 describe('listBuiltinPluginMetadata', () => {

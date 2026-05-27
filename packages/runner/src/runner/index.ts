@@ -149,10 +149,9 @@ export async function startLocalRunner(
   const tempoClient = createTempoClient(settings)
 
   // Build the plugin registry from the resolved PluginsConfig. The
-  // registry is the single source of truth for SCM and tracker
-  // providers — there is no parallel "legacy" tracker plumbing
-  // anymore. Legacy SCM config (`config.git.*`) is still translated
-  // by `legacyConfigToPlugins` for now; see follow-up cleanup.
+  // registry is the single source of truth for every provider (LLM,
+  // SCM, tracker) — every credential lives under
+  // `plugins.installed.<id>.config`.
   const pluginsConfig = resolvePluginsConfig(effectiveConfig)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
   seedExecutorDefaultAliases({ plugins, settings })

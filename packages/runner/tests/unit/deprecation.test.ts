@@ -133,43 +133,29 @@ describe('DeprecatedMcpToolError', () => {
   })
 })
 
-// ── Integration: legacy config-key gate ──────────────────────────────────────
+// ── Integration: resolvePluginsConfig ──────────────────────────────────────
+//
+// The legacy `git` / `tracker` top-level config blocks were removed in
+// the single-source-of-truth refactor. All provider credentials now
+// live exclusively under `plugins.installed.<id>.config`, so the
+// stage-aware legacy-key gate that used to live here is gone with
+// them. `legacyConfigKeysBehaviour()` is still exported (and is still
+// consumed by the MCP-tool deprecation path tested above), but
+// `resolvePluginsConfig` no longer routes through it.
 
-describe('resolvePluginsConfig + legacyConfigKeysBehaviour', () => {
-  it('throws at N+2 when a legacy git block is present without plugins', async () => {
-    setStage('N+2')
-    const { resolvePluginsConfig } = await import('../../src/config/local-config')
-    expect(() =>
-      resolvePluginsConfig({
-        git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
-      }),
-    ).toThrow(/no longer supported/i)
-  })
-
-  it('translates silently at N+1', async () => {
-    setStage('N+1')
-    const { resolvePluginsConfig } = await import('../../src/config/local-config')
-    const got = resolvePluginsConfig({
-      git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
-    })
-    expect(got.installed['github']).toBeDefined()
-  })
-
-  it('translates at N (default)', async () => {
-    setStage('N')
-    const { resolvePluginsConfig } = await import('../../src/config/local-config')
-    const got = resolvePluginsConfig({
-      git: { provider: 'github', workspace: 'me', username: 'u', token: 't' },
-    })
-    expect(got.installed['github']).toBeDefined()
-  })
-
-  it('always honours an explicit plugins block regardless of stage', async () => {
+describe('resolvePluginsConfig', () => {
+  it('honours an explicit plugins block', async () => {
     setStage('N+2')
     const { resolvePluginsConfig } = await import('../../src/config/local-config')
     const got = resolvePluginsConfig({
       plugins: { installed: { 'github': { enabled: true, config: { owner: 'me', token: 't' } } } },
     })
     expect(got.installed['github']).toBeDefined()
+  })
+
+  it('returns an empty registry when plugins is absent', async () => {
+    const { resolvePluginsConfig } = await import('../../src/config/local-config')
+    const got = resolvePluginsConfig({})
+    expect(got).toEqual({ installed: {} })
   })
 })

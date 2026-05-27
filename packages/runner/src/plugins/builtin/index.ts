@@ -1,9 +1,9 @@
 // ── Built-in plugin index ────────────────────────────────────────────────────
 //
-// Aggregates the runtimes that ship with the runner. The legacy-config
-// translator (`local-config.ts → legacyConfigToPlugins`) and the
-// runner bootstrap both pull from this list so adding a new built-in
-// plugin is a one-line change here plus the runtime file.
+// Aggregates the runtimes that ship with the runner. The runner
+// bootstrap and CLI tooling (`coro init`, `coro runner status`) pull
+// from this list so adding a new built-in plugin is a one-line change
+// here plus the runtime file.
 
 import type { Logger } from 'pino'
 import type { PluginsConfig } from '../../config/plugins-config'

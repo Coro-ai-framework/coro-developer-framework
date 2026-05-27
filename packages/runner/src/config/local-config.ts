@@ -11,7 +11,6 @@ import os from 'os'
 import { z } from 'zod'
 import type { TenantOverlaySource } from '../intelligence/tenant-context'
 import { pluginsConfigSchema, type PluginsConfig } from './plugins-config'
-import { legacyConfigKeysBehaviour } from '../plugins/deprecation'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -71,13 +70,6 @@ const tenantConfigSchema = z.object({
 
 const pathsConfigSchema = z.object({
   workingDir: z.string().min(1),
-}).optional()
-
-const gitConfigSchema = z.object({
-  provider: z.enum(['bitbucket', 'github', 'gitlab']),
-  workspace: z.string().optional(),
-  username: z.string().min(1),
-  token: z.string().min(1),
 }).optional()
 
 // ── Proposals ────────────────────────────────────────────────────────────────
@@ -215,14 +207,13 @@ const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   intelligence: intelligenceConfigSchema,
   paths: pathsConfigSchema,
-  git: gitConfigSchema,
   tenant: tenantConfigSchema,
   proposals: proposalsConfigSchema,
   /**
-   * Provider-plugin config — the new uniform shape replacing the
-   * per-provider blocks above. When `plugins` is absent the runner
-   * synthesises one via {@link legacyConfigToPlugins} so existing
-   * configs round-trip without manual edits.
+   * Provider-plugin config — the single source of truth for executor
+   * (LLM), SCM, and tracker credentials. Each entry under
+   * `installed.<id>.config` is validated by the plugin's own Zod
+   * schema at registry init time.
    */
   plugins: pluginsConfigSchema.optional(),
   /**
@@ -442,7 +433,6 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     cloud: patch.cloud !== undefined ? patch.cloud : existing.cloud,
     intelligence: patch.intelligence !== undefined ? patch.intelligence : existing.intelligence,
     paths: patch.paths !== undefined ? patch.paths : existing.paths,
-    git: patch.git !== undefined ? patch.git : existing.git,
     tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
     plugins: patch.plugins !== undefined ? patch.plugins : existing.plugins,
@@ -458,103 +448,20 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
   return merged
 }
 
-// ── Legacy → PluginsConfig translator ────────────────────────────────────────
-//
-// Tracker config is now plugin-shape only (`plugins.installed.{jira|linear|
-// github-issues}.config`) — the legacy `tracker.*` block was removed.
-// This translator still bridges the legacy SCM `git.*` block into
-// `plugins.installed.{bitbucket|github}` for one release so existing
-// tenants don't lose SCM creds on first read. Once SCM is migrated to
-// plugin-shape only, this translator goes away entirely.
-//
-// The translator is purely additive: it never overrides an explicit
-// `plugins` block. Set `installed[<id>].enabled = false` on the
-// generated config to opt out of a legacy provider while keeping its
-// credentials around for round-tripping.
-
 /**
- * Convert legacy SCM config into a {@link PluginsConfig}. Leaves
- * `defaults.scm` undefined when the choice is ambiguous so the
- * registry surfaces a clear error rather than silently picking.
- */
-export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig {
-  if (!config) return { installed: {} }
-
-  const installed: PluginsConfig['installed'] = {}
-
-  // ── SCM ──
-  if (config.git?.provider === 'bitbucket' && config.git?.workspace && config.git?.username && config.git?.token) {
-    installed['bitbucket'] = {
-      enabled: true,
-      config: {
-        workspace: config.git.workspace,
-        coderUsername: config.git.username,
-        coderToken: config.git.token,
-      },
-    }
-  }
-  if (config.git?.provider === 'github' && config.git?.workspace && config.git?.token) {
-    installed['github'] = {
-      enabled: true,
-      config: {
-        owner: config.git.workspace,
-        token: config.git.token,
-      },
-    }
-  }
-
-  // ── Defaults ──
-  // Only set the default when the legacy config makes the choice
-  // unambiguous; otherwise leave it for the registry to fall back to
-  // "single installed plugin wins" or surface an error.
-  const defaults: PluginsConfig['defaults'] = {}
-  if (config.git?.provider === 'bitbucket' && installed['bitbucket']) defaults.scm = 'bitbucket'
-  else if (config.git?.provider === 'github' && installed['github']) defaults.scm = 'github'
-
-  const out: PluginsConfig = { installed }
-  if (defaults.scm) out.defaults = defaults
-  return out
-}
-
-/**
- * Resolve the PluginsConfig for this runner: explicit `plugins` block
- * wins, otherwise synthesised via {@link legacyConfigToPlugins}.
- *
- * Stage-aware behaviour (see `plugins/deprecation.ts`):
- *   - N    → reads both shapes; legacy `git` keys feed the translator.
- *   - N+1  → still parses both shapes (silently); CLI prompts only show the new shape.
- *   - N+2  → throws when a legacy `git` block is encountered without
- *            an explicit `plugins` block — operators must migrate.
+ * Resolve the PluginsConfig for this runner from `config.plugins`.
+ * The legacy top-level `git` / `tracker` / `anthropic` blocks were
+ * removed in the single-source-of-truth refactor — every provider
+ * (SCM, tracker, executor) lives under `plugins.installed.<id>.config`,
+ * written by the dashboard wizard / Settings page and read by the
+ * runner at bootstrap.
  */
 export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
-  // Always synthesise from legacy keys so the result reflects the
-  // legacy SCM block. When the user has hand-authored a `plugins`
-  // block, it wins per-id — explicit entries override the synthesised
-  // ones, but absent ids still fall back to the legacy translation.
-  const synthesised = legacyConfigToPlugins(config)
-  if (config?.plugins) {
-    const stage = legacyConfigKeysBehaviour()
-    if (stage === 'error' && config.git) {
-      throw new Error(
-        `Legacy 'git' top-level config key is no longer supported. ` +
-        `Move it into a 'plugins.installed' block. ` +
-        `Run 'coro init' to regenerate the config in the new shape.`,
-      )
-    }
-    return {
-      defaults: config.plugins.defaults ?? synthesised.defaults,
-      installed: { ...synthesised.installed, ...config.plugins.installed },
-    }
+  if (!config?.plugins) return { installed: {} }
+  return {
+    ...(config.plugins.defaults ? { defaults: config.plugins.defaults } : {}),
+    installed: { ...config.plugins.installed },
   }
-  const stage = legacyConfigKeysBehaviour()
-  if (stage === 'error' && config && config.git) {
-    throw new Error(
-      `Legacy 'git' top-level config key is no longer supported. ` +
-      `Move it into a 'plugins.installed' block. ` +
-      `Run 'coro init' to regenerate the config in the new shape.`,
-    )
-  }
-  return synthesised
 }
 
 /**

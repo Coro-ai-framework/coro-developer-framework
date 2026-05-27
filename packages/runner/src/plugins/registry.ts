@@ -2,8 +2,8 @@
 //
 // Single source of truth for which plugins are loaded and how to
 // resolve one for a given job or remote URL. Built once at runner
-// bootstrap from the resolved `PluginsConfig` (legacy config gets
-// translated through `legacyConfigToPlugins()`); read everywhere else.
+// bootstrap from the resolved `PluginsConfig` (sourced exclusively
+// from `config.plugins.installed`); read everywhere else.
 //
 // Resolution rules (mirrors the megaplan §4.4):
 //   1. `params.scm` / `params.tracker` if set on the job.
