@@ -49,6 +49,7 @@ interface LinearIssueNode {
   identifier: string
   title: string
   url: string
+  description?: string | null
   state?: { name?: string; type?: string }
   parent?: { identifier?: string } | null
 }
@@ -71,6 +72,7 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
     url: node.url,
     summary: node.title,
     status: node.state?.name ?? '',
+    ...(node.description?.trim() ? { description: node.description.trim() } : {}),
     ...(node.parent?.identifier ? { parentKey: node.parent.identifier } : {}),
   }
 }
@@ -173,6 +175,30 @@ export class LinearTrackerClient implements TrackerClient {
     return toTrackerIssue(node)
   }
 
+  async searchIssues(query: string, limit = 10): Promise<TrackerResult<TrackerIssue[]>> {
+    if (!this.available) return this.unavailable()
+    const first = Math.min(Math.max(limit, 1), 20)
+    const data = await this.gql<{
+      issues: { nodes: LinearIssueNode[] }
+    }>(
+      `query($filter: IssueFilter, $first: Int!) {
+        issues(filter: $filter, first: $first) {
+          nodes { id identifier title url description state { name type } parent { identifier } }
+        }
+      }`,
+      {
+        first,
+        filter: {
+          or: [
+            { title: { containsIgnoreCase: query } },
+            { description: { containsIgnoreCase: query } },
+          ],
+        },
+      },
+    )
+    return (data.issues?.nodes ?? []).map(toTrackerIssue)
+  }
+
   async listChildren(parentKey: string): Promise<TrackerResult<TrackerIssue[]>> {
     if (!this.available) return this.unavailable()
     const data = await this.gql<{ issue: { children?: { nodes: LinearIssueNode[] } } }>(
@@ -262,7 +288,7 @@ export class LinearTrackerClient implements TrackerClient {
     const data = await this.gql<{ issue: LinearIssueNode | null }>(
       `query($id: String!) {
         issue(id: $id) {
-          id identifier title url state { name type } parent { identifier }
+          id identifier title url description state { name type } parent { identifier }
         }
       }`,
       { id: key },

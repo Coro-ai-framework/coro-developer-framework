@@ -130,5 +130,8 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
       providers: {},
       aliases: { ...(config.llm?.aliases ?? {}) },
     },
+    intake: {
+      toolsEnabled: config.intake?.toolsEnabled !== false,
+    },
   }
 }

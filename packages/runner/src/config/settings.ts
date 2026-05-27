@@ -160,4 +160,11 @@ export interface Settings {
       reasoningEffort?: 'low' | 'medium' | 'high'
     }>
   }
+  /**
+   * Coro plan mode preferences surfaced through Settings.
+   */
+  intake?: {
+    /** When false, plan mode runs without read-only tracker/SCM tools. Default true. */
+    toolsEnabled?: boolean
+  }
 }

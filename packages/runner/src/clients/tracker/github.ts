@@ -86,6 +86,7 @@ function toTrackerIssue(raw: GithubIssueResponse, projectKey: string): TrackerIs
     url: raw.html_url,
     summary: raw.title,
     status: raw.state === 'closed' ? (raw.state_reason ?? 'closed') : 'open',
+    ...(raw.body?.trim() ? { description: raw.body.trim() } : {}),
     ...(labels.includes(EPIC_LABEL) ? { issueType: 'Epic' } : {}),
   }
 }
@@ -189,6 +190,24 @@ export class GitHubTrackerClient implements TrackerClient {
     }
     const raw = (await res.json()) as GithubIssueResponse
     return toTrackerIssue(raw, projectKey)
+  }
+
+  async searchIssues(query: string, limit = 10): Promise<TrackerResult<TrackerIssue[]>> {
+    if (!this.available) return this.unavailable()
+    const defaults = this.defaults()
+    const repoScope = defaults.repo ? ` repo:${defaults.owner}/${defaults.repo}` : ` user:${defaults.owner}`
+    const q = encodeURIComponent(`${query}${repoScope} is:issue`)
+    const res = await this.fetch(`/search/issues?q=${q}&per_page=${Math.min(Math.max(limit, 1), 20)}`)
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`GitHub searchIssues failed (${res.status}): ${text}`)
+    }
+    const body = (await res.json()) as { items: GithubIssueResponse[] }
+    return (body.items ?? []).map(item => {
+      const match = item.html_url.match(/github\.com\/([^/]+\/[^/]+)\/issues\//)
+      const projectKey = match?.[1] ?? `${defaults.owner}/${defaults.repo ?? 'unknown'}`
+      return toTrackerIssue(item, projectKey)
+    })
   }
 
   async listChildren(parentKey: string): Promise<TrackerResult<TrackerIssue[]>> {

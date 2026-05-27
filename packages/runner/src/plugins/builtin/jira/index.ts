@@ -29,8 +29,11 @@ import type {
   PluginHealth,
   PluginManifest,
   PluginMcpServerConfig,
+  TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
+import { JiraTrackerClient } from '../../../clients/tracker/jira'
+import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -107,6 +110,7 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
   private username!: string
   private apiToken!: string
   private available = false
+  private trackerClient!: JiraTrackerClient
 
   async init(rawConfig: JiraPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
     const cfg = jiraConfigSchema.parse(rawConfig)
@@ -114,6 +118,11 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
     this.username = cfg.username
     this.apiToken = cfg.apiToken
     this.available = Boolean(cfg.baseUrl && cfg.username && cfg.apiToken)
+    this.trackerClient = new JiraTrackerClient({
+      baseUrl: cfg.baseUrl,
+      username: cfg.username,
+      apiToken: cfg.apiToken,
+    })
   }
 
   async healthcheck(): Promise<PluginHealth> {
@@ -155,6 +164,14 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
     }
   }
 
+  async getIssue(key: string): Promise<TrackerIssue> {
+    return unwrapTrackerResult(await this.trackerClient.getIssue(key))
+  }
+
+  async searchIssues(query: string, limit?: number): Promise<TrackerIssue[]> {
+    return unwrapTrackerResult(await this.trackerClient.searchIssues(query, limit))
+  }
+
   // ── Webhook normalisation ───────────────────────────────────────────────
 
   normalizeInbound(req: { headers: Record<string, string | string[] | undefined>; rawBody: Buffer }): NormalizedEvent | null {
@@ -191,6 +208,13 @@ function toGenericTicketEvent(name: string): string {
   if (name.includes('created')) return 'ticket.created'
   if (name.includes('deleted')) return 'ticket.deleted'
   return `ticket.${name}`
+}
+
+function unwrapTrackerResult<T>(result: TrackerResult<T>): T {
+  if (typeof result === 'object' && result !== null && 'available' in result && (result as TrackerNotConfigured).available === false) {
+    throw new Error((result as TrackerNotConfigured).reason)
+  }
+  return result as T
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────

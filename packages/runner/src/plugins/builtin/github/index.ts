@@ -36,11 +36,13 @@ import type {
   PluginManifest,
   PluginMcpServerConfig,
   ScmCloneInfo,
+  ScmCodeSearchHit,
   ScmCreatePrArgs,
   ScmPluginRuntime,
   ScmPollSnapshot,
   ScmPrComment,
   ScmPrStatus,
+  ScmReadFileResult,
 } from '../../types'
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -217,6 +219,14 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
 
   matchesRemote(remoteUrl: string): boolean {
     return /(^|\/\/|@)github\.com[:/]/i.test(remoteUrl)
+  }
+
+  async readFile(args: { repo: string; path: string; ref?: string }): Promise<ScmReadFileResult> {
+    return this.client.getFileContent(args.repo, args.path, args.ref ?? 'HEAD')
+  }
+
+  async searchCode(args: { repo: string; query: string; maxResults?: number }): Promise<ScmCodeSearchHit[]> {
+    return this.client.searchCode(args.repo, args.query, args.maxResults ?? 20)
   }
 
   /**

@@ -20,7 +20,7 @@ import { useProviderModels, type ProviderModelDescriptor } from './llm/useProvid
 import { jsonRequest, requestJson, ApiError } from '../lib/http'
 import { parseBrief, type BriefDraft } from '../lib/intake-brief'
 import { deriveRunHistoryHints, findSimilarRuns } from '../lib/run-history'
-import { useIntakeStream, type IntakeChatMessage } from '../hooks/useIntakeStream'
+import { useIntakeStream, type IntakeChatMessage, type IntakeToolCall } from '../hooks/useIntakeStream'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import type { Job } from '../types'
 import type { WorkflowOption } from '../workflows'
@@ -44,6 +44,7 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
   ])
   const [input, setInput] = useState('')
   const [partial, setPartial] = useState('')
+  const [liveToolCalls, setLiveToolCalls] = useState<IntakeToolCall[]>([])
   const [brief, setBrief] = useState<BriefDraft | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -100,6 +101,7 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
       setMessages(nextMessages)
       setInput('')
       setPartial('')
+      setLiveToolCalls([])
       setBrief(null)
 
       const result = await send(
@@ -112,15 +114,24 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
         },
         token => setPartial(prev => prev + token),
         modelChoice.model ? modelChoice : undefined,
+        setLiveToolCalls,
       )
 
       if (result.noLlm) return
 
       const assistantText = (result.assistantText || partial).trim()
-      if (assistantText) {
-        setMessages(prev => [...prev, { role: 'assistant', content: assistantText }])
+      if (assistantText || result.toolCalls.length > 0) {
+        setMessages(prev => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: assistantText,
+            ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
+          },
+        ])
       }
       setPartial('')
+      setLiveToolCalls([])
 
       const parsed = parseBrief(assistantText, workflowPaths)
       if (parsed) {
@@ -172,10 +183,22 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
 
         <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto p-4">
           {messages.map((m, i) => (
-            <ChatBubble key={i} role={m.role} content={m.content} />
+            <div key={i} className="space-y-1">
+              {m.content ? <ChatBubble role={m.role} content={m.content} /> : null}
+              {m.toolCalls?.length ? (
+                <ToolUseRows calls={m.toolCalls} collapsed={!streaming} />
+              ) : null}
+            </div>
           ))}
-          {partial ? <ChatBubble role="assistant" content={partial} streaming /> : null}
-          {streaming ? (
+          {partial || liveToolCalls.length > 0 ? (
+            <div className="space-y-1">
+              {partial ? <ChatBubble role="assistant" content={partial} streaming={streaming} /> : null}
+              {liveToolCalls.length > 0 ? (
+                <ToolUseRows calls={liveToolCalls} collapsed={false} />
+              ) : null}
+            </div>
+          ) : null}
+          {streaming && !partial && liveToolCalls.length === 0 ? (
             <div className="flex items-center gap-2 text-xs text-fg-subtle">
               <Loader2 className="size-3 animate-spin" />
               Thinking…
@@ -386,6 +409,98 @@ function hashString(input: string): number {
     h |= 0
   }
   return h
+}
+
+function ToolUseRows({ calls, collapsed }: { calls: IntakeToolCall[]; collapsed: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const doneCount = calls.filter(c => c.status === 'done').length
+  const running = calls.find(c => c.status === 'running')
+
+  if (collapsed && !expanded) {
+    const summary = running
+      ? toolRunningLabel(running)
+      : `Read ${doneCount} item${doneCount === 1 ? '' : 's'}`
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="ml-1 text-[11px] text-fg-subtle hover:text-fg-muted"
+      >
+        {summary}
+      </button>
+    )
+  }
+
+  return (
+    <div className="ml-1 space-y-1">
+      {calls.map((call, idx) => (
+        <ToolUseRow key={`${call.name}-${idx}`} call={call} />
+      ))}
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="text-[11px] text-fg-subtle hover:text-fg-muted"
+        >
+          Hide
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+function toolRunningLabel(call: IntakeToolCall): string {
+  const key =
+    call.input && typeof call.input === 'object' && 'key' in call.input
+      ? String((call.input as { key: unknown }).key)
+      : call.input && typeof call.input === 'object' && 'path' in call.input
+        ? String((call.input as { path: unknown }).path)
+        : null
+  switch (call.name) {
+    case 'tracker_get_issue':
+      return key ? `Coro is reading ${key}…` : 'Coro is reading a ticket…'
+    case 'tracker_search_issues':
+      return 'Coro is searching tickets…'
+    case 'scm_read_file':
+      return key ? `Coro is reading ${key}…` : 'Coro is reading a file…'
+    case 'scm_search_code':
+      return 'Coro is searching code…'
+    default:
+      return 'Coro is working…'
+  }
+}
+
+function ToolUseRow({ call }: { call: IntakeToolCall }) {
+  const [open, setOpen] = useState(false)
+  const label =
+    call.status === 'running'
+      ? toolRunningLabel(call)
+      : call.summary ?? call.name
+
+  return (
+    <div className="text-[11px] text-fg-subtle">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5',
+          call.status === 'running'
+            ? 'border-line bg-overlay/40'
+            : call.ok === false
+              ? 'border-danger-500/30 bg-danger-500/10 text-danger-200'
+              : 'border-line bg-overlay/20 hover:bg-overlay/40',
+        )}
+      >
+        {call.status === 'running' ? <Loader2 className="size-3 animate-spin" /> : null}
+        <span>{label}</span>
+      </button>
+      {open ? (
+        <pre className="mt-1 max-h-40 overflow-auto rounded-lg border border-line bg-canvas/80 p-2 text-[10px] text-fg-muted">
+          {JSON.stringify(call.input ?? call.error ?? call.summary, null, 2)}
+        </pre>
+      ) : null}
+    </div>
+  )
 }
 
 function ChatBubble({

@@ -21,8 +21,11 @@ import type {
   PluginHealth,
   PluginManifest,
   PluginMcpServerConfig,
+  TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
+import { LinearTrackerClient } from '../../../clients/tracker/linear'
+import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -82,12 +85,18 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
   private apiKey!: string
   private apiUrl?: string
   private available = false
+  private trackerClient!: LinearTrackerClient
 
   async init(rawConfig: LinearPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
     const cfg = linearConfigSchema.parse(rawConfig)
     this.apiKey = cfg.apiKey
     this.apiUrl = cfg.apiUrl
     this.available = Boolean(cfg.apiKey)
+    this.trackerClient = new LinearTrackerClient({
+      apiKey: cfg.apiKey,
+      ...(cfg.teamKey ? { defaultTeamKey: cfg.teamKey } : {}),
+      ...(cfg.apiUrl ? { apiUrl: cfg.apiUrl } : {}),
+    })
   }
 
   async healthcheck(): Promise<PluginHealth> {
@@ -117,6 +126,21 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
       env,
     }
   }
+
+  async getIssue(key: string): Promise<TrackerIssue> {
+    return unwrapTrackerResult(await this.trackerClient.getIssue(key))
+  }
+
+  async searchIssues(query: string, limit?: number): Promise<TrackerIssue[]> {
+    return unwrapTrackerResult(await this.trackerClient.searchIssues(query, limit))
+  }
+}
+
+function unwrapTrackerResult<T>(result: TrackerResult<T>): T {
+  if (typeof result === 'object' && result !== null && 'available' in result && (result as TrackerNotConfigured).available === false) {
+    throw new Error((result as TrackerNotConfigured).reason)
+  }
+  return result as T
 }
 
 export function createLinearTrackerPlugin(_args: { config: Record<string, unknown>; logger: Logger }): TrackerPluginRuntime {

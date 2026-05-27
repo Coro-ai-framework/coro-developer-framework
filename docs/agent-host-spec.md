@@ -187,13 +187,16 @@ Lightweight intake path for the dashboard **New Run** chat. Implemented in
 - **Transport:** Server-Sent Events (`text/event-stream`).
 - **Auth:** Same local runner surface as other dashboard routes (no separate token).
 - **Executor path:** Prefer `PhaseExecutorRuntime.chat()` when implemented
-  (direct Anthropic `/v1/messages` or OpenAI Responses — no Claude Code
-  subprocess, no MCP tools). Falls back to `runSubagent` / `executePhase`
-  only when `chat` is absent.
+  (direct Anthropic `/v1/messages` or OpenAI Responses). When
+  `settings.intake.toolsEnabled !== false` (default) and installed plugins
+  expose read helpers, `chat()` runs a bounded tool-use loop (max 5 rounds)
+  with a curated read-only set: `tracker_get_issue`, `tracker_search_issues`,
+  `scm_read_file`, `scm_search_code`. No write tools, no MCP subprocess.
+  Falls back to `runSubagent` / `executePhase` only when `chat` is absent.
 - **Model resolution:** Optional per-request `{ model, provider }` from the
   dashboard picker; otherwise `selectModel({ tier: 'planning' }, settings)`.
-- **Session budgets:** 8 turns, 4k output tokens/turn, 30k tokens/session
-  (in-memory map keyed by `sessionId`).
+- **Session budgets:** 8 turns; 30k tokens/session without tools, 60k with
+  tools enabled (in-memory map keyed by `sessionId`).
 - **Abort behaviour:** Plan-mode streams do **not** wire `AbortSignal` to
   `req.on('close')` — Express 4 on Node 20 fires `close` immediately after
   `express.json()` finishes, which previously aborted every LLM call.
@@ -202,7 +205,8 @@ Request body requires `sessionId` (string) and `messages` (user/assistant
 array). Optional `context` carries `recentRepos`, `recentReviewers`,
 `availableWorkflows`, and `userLocale` for prompt grounding.
 
-SSE payload types: `token` (text delta), `done` (optional usage), `error`.
+SSE payload types: `token` (text delta), `tool_start` / `tool_end` (read-only
+lookups while tools are enabled), `done` (optional usage), `error`.
 
 The assistant is instructed to emit a final `<brief>{…json…}</brief>` block
 parsed client-side (`packages/dashboard/src/lib/intake-brief.ts`). Dispatch
@@ -210,8 +214,9 @@ uses the same `POST /jobs` path as the classic form once the operator approves
 the preview card.
 
 Related config keys: `coachMode` (interactive defaults, graduation counter),
-`intake.mode` (`ai` | `form` | `ask-each-time`). See
-`packages/runner/src/config/local-config.ts`.
+`intake.mode` (`ai` | `form` | `ask-each-time`),
+`intake.toolsEnabled` (default `true` — read-only tracker/SCM lookups in plan
+mode). See `packages/runner/src/config/local-config.ts`.
 
 ---
 
@@ -288,7 +293,10 @@ handlers.
 Executors may also implement **`chat()`** — a stateless conversational
 completion used exclusively by Coro plan mode (`POST /intake/stream`).
 It bypasses MCP bridges, hooks, working directories, and subprocess
-agents. See `@coro-ai/plugin-sdk` `ChatRequest` / `ChatResult`.
+agents. When `intake.toolsEnabled` is true, `ChatRequest` may include
+optional read-only tools (`tools`, `runTool`, `maxToolRounds`) and
+returns `ChatResult.toolCalls` for audit/UI. See `@coro-ai/plugin-sdk`
+`ChatRequest` / `ChatResult` / `ChatTool`.
 
 ```ts
 while (!isTerminalStatus(job.status)) {

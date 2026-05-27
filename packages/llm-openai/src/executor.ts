@@ -3,6 +3,8 @@ import type { Logger } from 'pino'
 import type {
   ChatRequest,
   ChatResult,
+  ChatTool,
+  ChatToolCallRecord,
   ConversationMessage,
   ExecutorCapabilities,
   ExecutorModelDescriptor,
@@ -443,18 +445,12 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     }
   }
 
-  /**
-   * Lightweight conversational chat used by surfaces that don't need
-   * the executor's full tool / MCP / hook pipeline (Coro plan mode
-   * intake). Single Responses-API call against the configured OpenAI
-   * client — no MCP bridge, no working-dir wiring, no subagent
-   * orchestration.
-   */
   async chat(req: ChatRequest): Promise<ChatResult> {
     this.logger.debug(
       {
         model: req.model,
         messageCount: req.messages.length,
+        toolCount: req.tools?.length ?? 0,
         signalAbortedAtEntry: req.signal.aborted,
       },
       'openai.chat: invoked',
@@ -464,6 +460,14 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       this.logger.warn({ reason: health.reason }, 'openai.chat: healthcheck failed')
       throw new Error(health.reason ?? 'OpenAI executor is not configured.')
     }
+    const hasTools = (req.tools?.length ?? 0) > 0 && typeof req.runTool === 'function'
+    if (!hasTools) {
+      return this.chatSingleShot(req)
+    }
+    return this.chatWithTools(req, req.tools!)
+  }
+
+  private async chatSingleShot(req: ChatRequest): Promise<ChatResult> {
     const client = this.getClient()
     const input = req.messages.map(m => ({ role: m.role, content: m.content }))
 
@@ -497,7 +501,107 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     return {
       output: extractOutputText(response),
       usage: normalizeUsage(response.usage),
+      toolCalls: [],
     }
+  }
+
+  private async chatWithTools(req: ChatRequest, tools: ReadonlyArray<ChatTool>): Promise<ChatResult> {
+    const client = this.getClient()
+    const runTool = req.runTool!
+    const maxRounds = req.maxToolRounds ?? 5
+    const toolCalls: ChatToolCallRecord[] = []
+    let usage = emptyNormalizedUsage()
+    let output = ''
+
+    const openAiTools = tools.map(t => ({
+      type: 'function' as const,
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema,
+      strict: false,
+    }))
+
+    const inputItems: unknown[] = req.messages.map(m => ({ role: m.role, content: m.content }))
+
+    for (let round = 0; round < maxRounds; round++) {
+      if (req.signal.aborted) break
+
+      const params: Record<string, unknown> = {
+        model: req.model,
+        input: inputItems,
+        tools: openAiTools,
+        parallel_tool_calls: true,
+        store: false,
+      }
+      if (req.systemPrompt) params.instructions = req.systemPrompt
+      if (req.maxOutputTokens) params.max_output_tokens = req.maxOutputTokens
+
+      let response: OpenAiResponseLike
+      try {
+        response = await client.responses.create(params, { signal: req.signal })
+      } catch (err) {
+        if (isAbortError(err) || req.signal.aborted) throw err
+        const info = classifyProviderError(err, OPENAI_CLASSIFY_OPTIONS)
+        if (info) throw new RateLimitExceededError(OPENAI_PLUGIN_ID, info, { cause: err })
+        throw err
+      }
+
+      const outputItems = Array.isArray(response.output) ? response.output : []
+      inputItems.push(...sanitizeOutputItemsForReplay(outputItems))
+
+      const text = extractOutputText(response)
+      if (text.trim()) output = text
+
+      const turnUsage = normalizeUsage(response.usage)
+      usage = {
+        inputTokens: usage.inputTokens + turnUsage.inputTokens,
+        outputTokens: usage.outputTokens + turnUsage.outputTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens + turnUsage.cacheReadInputTokens,
+        cacheCreationInputTokens: usage.cacheCreationInputTokens + turnUsage.cacheCreationInputTokens,
+      }
+
+      const functionCalls = extractFunctionCalls(outputItems)
+      if (functionCalls.length === 0) break
+
+      for (const call of functionCalls) {
+        const input = safeJson(call.argumentsJson)
+        req.onToolStart?.({ name: call.name, input })
+        const startedAt = Date.now()
+        let record: ChatToolCallRecord
+        try {
+          const result = await runTool(call.name, input)
+          record = {
+            name: call.name,
+            input,
+            output: result,
+            durationMs: Date.now() - startedAt,
+          }
+          inputItems.push({
+            type: 'function_call_output',
+            call_id: call.callId,
+            output: stringifyUnknown(result),
+          })
+        } catch (err) {
+          const message = (err as Error).message
+          record = {
+            name: call.name,
+            input,
+            output: { error: message },
+            durationMs: Date.now() - startedAt,
+            error: message,
+          }
+          inputItems.push({
+            type: 'function_call_output',
+            call_id: call.callId,
+            output: JSON.stringify({ error: message }),
+          })
+        }
+        toolCalls.push(record)
+        req.onToolEnd?.(record)
+      }
+    }
+
+    return { output: output.trim(), usage, toolCalls }
   }
 
   private getClient(): OpenAiClientLike {

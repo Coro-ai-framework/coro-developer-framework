@@ -452,6 +452,23 @@ export interface ScmPollSnapshot {
   comments: ReadonlyArray<ScmPrComment>
 }
 
+export interface ScmReadFileResult {
+  content: string
+  encoding: 'utf-8' | 'base64'
+  truncated?: boolean
+}
+
+export interface ScmCodeSearchHit {
+  path: string
+  /**
+   * Match snippets returned by the SCM provider. `seq` is a stable
+   * ordering within the hit's snippet array; it is NOT the file line
+   * number — provider search APIs (GitHub, Bitbucket) return fragments
+   * without absolute line offsets, so we never claim one.
+   */
+  snippets: ReadonlyArray<{ seq: number; content: string }>
+}
+
 export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config> {
   kind: 'scm'
 
@@ -492,6 +509,11 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   replyToComment?(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment>
   approvePr?(ref: ExternalRef): Promise<void>
   mergePr?(ref: ExternalRef, opts?: ScmMergeOptions): Promise<void>
+
+  /** Read a single file via the SCM provider REST API (plan mode). */
+  readFile?(args: { repo: string; path: string; ref?: string }): Promise<ScmReadFileResult>
+  /** Search code in a repository via the SCM provider REST API. */
+  searchCode?(args: { repo: string; query: string; maxResults?: number }): Promise<ReadonlyArray<ScmCodeSearchHit>>
 
   // ── Self-improvement writer escape hatch ────────────────────────────────
   /**
@@ -563,6 +585,8 @@ export interface TrackerIssue {
   summary: string
   /** Provider-native status name (e.g. `'In Progress'`). */
   status: string
+  /** Issue body / description when available. */
+  description?: string
   /** Issuetype name where the provider has one. */
   issueType?: string
   /** Parent issue / epic key. */
@@ -613,6 +637,7 @@ export interface TrackerPluginRuntime<Config = unknown> extends PluginRuntime<Co
   // GitHub Issues via the GitHub MCP) drop these methods and the
   // hybrid `tracker_*` proxy forwards through MCP instead.
   getIssue?(key: string): Promise<TrackerIssue>
+  searchIssues?(query: string, limit?: number): Promise<TrackerIssue[]>
   listChildren?(parentKey: string): Promise<TrackerIssue[]>
 
   // ── Write ───────────────────────────────────────────────────────────────

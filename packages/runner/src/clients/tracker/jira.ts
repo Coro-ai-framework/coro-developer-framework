@@ -37,6 +37,7 @@ interface JiraIssueResponse {
     status?: { name?: string }
     issuetype?: { name?: string }
     parent?: { key?: string }
+    description?: unknown
   }
 }
 
@@ -142,15 +143,42 @@ export class JiraTrackerClient implements TrackerClient {
 
   async getIssue(key: string): Promise<TrackerResult<TrackerIssue>> {
     if (!this.available) return this.unavailable()
-    const res = await fetch(`${this.baseUrl()}/rest/api/3/issue/${encodeURIComponent(key)}`, {
-      headers: this.headers(),
-    })
+    const res = await fetch(
+      `${this.baseUrl()}/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,status,description,issuetype,parent`,
+      { headers: this.headers() },
+    )
     if (!res.ok) {
       const text = await res.text()
       throw new Error(`Jira getIssue failed (${res.status}): ${text}`)
     }
     const raw = (await res.json()) as JiraIssueResponse
-    return toTrackerIssue(raw.self, raw, this.settings.baseUrl)
+    const issue = toTrackerIssue(raw.self, raw, this.settings.baseUrl)
+    const description = extractJiraDescription(raw.fields?.description)
+    return description ? { ...issue, description } : issue
+  }
+
+  async searchIssues(query: string, limit = 10): Promise<TrackerResult<TrackerIssue[]>> {
+    if (!this.available) return this.unavailable()
+    const safe = query.replace(/"/g, '\\"')
+    const jql = `text ~ "${safe}" OR summary ~ "${safe}" ORDER BY updated DESC`
+    const params = new URLSearchParams({
+      jql,
+      maxResults: String(Math.min(Math.max(limit, 1), 20)),
+      fields: 'summary,status,description',
+    })
+    const res = await fetch(`${this.baseUrl()}/rest/api/3/search?${params.toString()}`, {
+      headers: this.headers(),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Jira searchIssues failed (${res.status}): ${text}`)
+    }
+    const body = (await res.json()) as JiraSearchResponse
+    return body.issues.map(i => {
+      const issue = toTrackerIssue(i.self, i, this.settings.baseUrl)
+      const description = extractJiraDescription(i.fields?.description)
+      return description ? { ...issue, description } : issue
+    })
   }
 
   async listChildren(parentKey: string): Promise<TrackerResult<TrackerIssue[]>> {
@@ -299,4 +327,24 @@ export class JiraTrackerClient implements TrackerClient {
       reason: 'Jira tracker is not configured (baseUrl/username/apiToken missing)',
     }
   }
+}
+
+function extractJiraDescription(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.trim() || undefined
+  if (!value || typeof value !== 'object') return undefined
+  const doc = value as { content?: unknown[] }
+  if (!Array.isArray(doc.content)) return undefined
+  const parts: string[] = []
+  for (const block of doc.content) {
+    if (!block || typeof block !== 'object') continue
+    const content = (block as { content?: unknown[] }).content
+    if (!Array.isArray(content)) continue
+    for (const inline of content) {
+      if (inline && typeof inline === 'object' && typeof (inline as { text?: unknown }).text === 'string') {
+        parts.push((inline as { text: string }).text)
+      }
+    }
+  }
+  const joined = parts.join('').trim()
+  return joined || undefined
 }

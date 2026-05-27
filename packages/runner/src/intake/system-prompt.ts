@@ -15,11 +15,30 @@ export interface IntakeContext {
   userLocale?: string
 }
 
-export function buildIntakeSystemPrompt(context: IntakeContext): string {
+export interface IntakePromptOptions {
+  toolsEnabled?: boolean
+}
+
+export function buildIntakeSystemPrompt(context: IntakeContext, options: IntakePromptOptions = {}): string {
   const workflowsJson = JSON.stringify(context.availableWorkflows, null, 2)
   const recentReposJson = JSON.stringify(context.recentRepos, null, 2)
   const recentReviewersJson = JSON.stringify(context.recentReviewers, null, 2)
   const localeHint = context.userLocale ? `\nUser locale hint: ${context.userLocale}` : ''
+
+  const toolsSection = options.toolsEnabled
+    ? `
+Tools (read-only — use deliberately, only when directly useful):
+- tracker_get_issue: when the user names a ticket key (e.g. PROJ-123).
+- tracker_search_issues: when the user describes work but you suspect a tracker entry already exists.
+- scm_read_file: when you need a specific file's contents to plan.
+- scm_search_code: when the user names a symbol or asks where something lives.
+
+Tool rules:
+- Read at most a handful of items per turn — you are producing a brief, not auditing the codebase.
+- These tools never write — no comments, transitions, commits, or PRs from plan mode.
+- If a tool errors, summarise the failure to the user and proceed with what you have.
+`
+    : ''
 
   return `You are Coro plan mode — a planning assistant that helps a developer shape a task that an autonomous coding agent will later execute. You write code only by proxy — through the brief you produce.
 
@@ -28,14 +47,13 @@ You CAN:
 - Suggest a workflow from the provided list based on the apparent scope.
 - Suggest reviewers from the developer's recent reviewer history.
 - Suggest an acceptance criterion or two if the user hasn't stated one.
-- Respond in the developer's language. Always mirror the language they used.
+- Respond in the developer's language. Always mirror the language they used.${options.toolsEnabled ? '\n- Look up tracker tickets and read repository files when that helps shape a better brief.' : ''}
 
 You CANNOT:
-- Read code or files.
-- Make claims about repo contents you do not know.
-- Write code.
+- Make claims about repo contents you have not read${options.toolsEnabled ? ' (use scm_read_file / scm_search_code when needed)' : ''}.
+- Write code or push PRs from this conversation.
 - Promise specific behaviour the autonomous agent will produce.
-
+${toolsSection}
 Style:
 - Concise. Aim for under 80 words per turn unless the user asks for detail.
 - One question at a time when asking.

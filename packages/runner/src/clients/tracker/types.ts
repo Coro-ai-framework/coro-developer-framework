@@ -26,6 +26,8 @@ export interface TrackerIssue {
   summary: string
   /** Provider-native status name, e.g. "To Do", "In Progress", "Done". */
   status: string
+  /** Issue body / description when available. */
+  description?: string
   /** Issuetype name where applicable (Jira: Story/Task/Epic). */
   issueType?: string
   /** Parent issue key, where the provider exposes one (e.g. epic key on Jira). */

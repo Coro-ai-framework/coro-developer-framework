@@ -12,6 +12,7 @@ export interface CoachModeConfig {
 
 export interface IntakeConfig {
   mode?: IntakeMode
+  toolsEnabled?: boolean
 }
 
 export const DEFAULT_COACH_MODE: Required<Pick<CoachModeConfig, 'enabled' | 'graduateAfterRuns'>> = {

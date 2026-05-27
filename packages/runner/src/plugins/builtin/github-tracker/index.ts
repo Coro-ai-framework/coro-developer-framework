@@ -23,8 +23,11 @@ import type {
   PluginHealth,
   PluginManifest,
   PluginMcpServerConfig,
+  TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
+import { GitHubTrackerClient } from '../../../clients/tracker/github'
+import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -87,12 +90,19 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
   private token!: string
   private apiBaseUrl?: string
   private available = false
+  private trackerClient!: GitHubTrackerClient
 
   async init(rawConfig: GitHubTrackerPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
     const cfg = ghTrackerConfigSchema.parse(rawConfig)
     this.token = cfg.token
     this.apiBaseUrl = cfg.apiBaseUrl
     this.available = Boolean(cfg.token && cfg.defaultOwner)
+    this.trackerClient = new GitHubTrackerClient({
+      token: cfg.token,
+      defaultOwner: cfg.defaultOwner,
+      ...(cfg.defaultRepo ? { defaultRepo: cfg.defaultRepo } : {}),
+      ...(cfg.apiBaseUrl ? { apiBaseUrl: cfg.apiBaseUrl } : {}),
+    })
   }
 
   async healthcheck(): Promise<PluginHealth> {
@@ -129,6 +139,14 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
       args: ['-y', '@modelcontextprotocol/server-github'],
       env,
     }
+  }
+
+  async getIssue(key: string): Promise<TrackerIssue> {
+    return unwrapTrackerResult(await this.trackerClient.getIssue(key))
+  }
+
+  async searchIssues(query: string, limit?: number): Promise<TrackerIssue[]> {
+    return unwrapTrackerResult(await this.trackerClient.searchIssues(query, limit))
   }
 
   // ── Webhook normalisation ───────────────────────────────────────────────
@@ -198,6 +216,13 @@ function pickHeader(headers: Record<string, string | string[] | undefined>, name
   const v = headers[name.toLowerCase()] ?? headers[name]
   if (Array.isArray(v)) return v[0]
   return v
+}
+
+function unwrapTrackerResult<T>(result: TrackerResult<T>): T {
+  if (typeof result === 'object' && result !== null && 'available' in result && (result as TrackerNotConfigured).available === false) {
+    throw new Error((result as TrackerNotConfigured).reason)
+  }
+  return result as T
 }
 
 export function createGitHubTrackerPlugin(_args: { config: Record<string, unknown>; logger: Logger }): TrackerPluginRuntime {

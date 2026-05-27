@@ -1,3 +1,4 @@
+import type { ChatRequest, ChatResult } from '@coro-ai/plugin-sdk'
 import { createSdkMcpServer } from '@coro-ai/plugin-sdk'
 import type { PhaseExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { Logger } from 'pino'
@@ -6,6 +7,12 @@ import type { Settings } from '../config/settings'
 import { selectModel } from '../jobs/runner'
 import { resolveIntelligenceDir, resolveWorkingDir } from '../config/local-config'
 import {
+  buildIntakeTools,
+  createIntakeRunTool,
+  INTAKE_MAX_TOOL_ROUNDS,
+  summarizeToolCall,
+} from './tools'
+import {
   buildIntakeSystemPrompt,
   formatIntakeUserPrompt,
   type IntakeContext,
@@ -13,8 +20,8 @@ import {
 } from './system-prompt'
 
 const MAX_TURNS_PER_SESSION = 8
-const MAX_TOKENS_PER_TURN = 4_000
 const MAX_TOKENS_PER_SESSION = 30_000
+const MAX_TOKENS_PER_SESSION_WITH_TOOLS = 60_000
 
 interface SessionBudget {
   turns: number
@@ -24,10 +31,16 @@ interface SessionBudget {
 const sessionBudgets = new Map<string, SessionBudget>()
 
 export interface IntakeStreamEvent {
-  type: 'token' | 'done' | 'error'
+  type: 'token' | 'done' | 'error' | 'tool_start' | 'tool_end'
   text?: string
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
   message?: string
+  name?: string
+  input?: unknown
+  durationMs?: number
+  ok?: boolean
+  summary?: string
+  error?: string
 }
 
 export interface RunIntakeOptions {
@@ -37,7 +50,6 @@ export interface RunIntakeOptions {
   registry: PluginRegistry
   settings: Settings
   signal: AbortSignal
-  /** Optional per-session override from the dashboard model picker. */
   model?: string
   provider?: string
   logger?: Logger
@@ -62,9 +74,83 @@ function getBudget(sessionId: string): SessionBudget {
   return fresh
 }
 
+function intakeToolsEnabled(settings: Settings): boolean {
+  return settings.intake?.toolsEnabled !== false
+}
+
+/**
+ * Wraps `executor.chat()` so the runner can stream `tool_start` /
+ * `tool_end` SSE frames as the model invokes tools. The executor
+ * itself only emits a single final `ChatResult`; we bridge to a
+ * stream by attaching `onToolStart` / `onToolEnd` hooks that push
+ * events into a queue and wake the generator loop via `notify`.
+ *
+ * Invariants:
+ *   - The hooks fire synchronously inside the executor's tool loop,
+ *     so each push happens-before the corresponding `notify?.()`.
+ *   - When the chat task resolves/rejects, the awaited `Promise.race`
+ *     unblocks and we drain any remaining queued events before
+ *     returning the final ChatResult (or throwing).
+ *   - Caller must only invoke this with `chatReq.tools?.length > 0`
+ *     (no-tools is a single awaited call; no streaming needed).
+ */
+async function* streamChatTurn(
+  executor: { chat: (req: ChatRequest) => Promise<ChatResult> },
+  chatReq: ChatRequest,
+): AsyncGenerator<IntakeStreamEvent, ChatResult> {
+  let notify: (() => void) | null = null
+  const queue: IntakeStreamEvent[] = []
+
+  const reqWithHooks: ChatRequest = {
+    ...chatReq,
+    onToolStart: info => {
+      queue.push({ type: 'tool_start', name: info.name, input: info.input })
+      notify?.()
+      notify = null
+    },
+    onToolEnd: record => {
+      queue.push({
+        type: 'tool_end',
+        name: record.name,
+        durationMs: record.durationMs,
+        ok: !record.error,
+        summary: record.error ?? summarizeToolCall(record.name, record.input, record.output),
+        ...(record.error ? { error: record.error } : {}),
+      })
+      notify?.()
+      notify = null
+    },
+  }
+
+  let done: ChatResult | null = null
+  let chatError: unknown = null
+  const chatTask = executor.chat(reqWithHooks)
+    .then(result => { done = result })
+    .catch(err => { chatError = err })
+
+  while (!done && !chatError) {
+    while (queue.length > 0) {
+      yield queue.shift()!
+    }
+    await Promise.race([
+      chatTask,
+      new Promise<void>(resolve => { notify = resolve }),
+    ])
+  }
+
+  while (queue.length > 0) {
+    yield queue.shift()!
+  }
+
+  if (chatError) throw chatError
+  return done!
+}
+
 export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerator<IntakeStreamEvent> {
   const log = options.logger?.child({ component: 'intake-handler', sessionId: options.sessionId })
   const budget = getBudget(options.sessionId)
+  const toolsOn = intakeToolsEnabled(options.settings)
+  const tokenCap = toolsOn ? MAX_TOKENS_PER_SESSION_WITH_TOOLS : MAX_TOKENS_PER_SESSION
 
   log?.debug(
     {
@@ -73,6 +159,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       messageCount: options.messages.length,
       overrideModel: options.model ?? null,
       overrideProvider: options.provider ?? null,
+      toolsOn,
       signalAbortedAtEntry: options.signal.aborted,
     },
     'intake: stream invoked',
@@ -85,7 +172,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     }
     return
   }
-  if (budget.tokens >= MAX_TOKENS_PER_SESSION) {
+  if (budget.tokens >= tokenCap) {
     yield {
       type: 'error',
       message: 'Session token budget exhausted. Please review the brief or switch to the form.',
@@ -118,37 +205,56 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     {
       pluginId: executor.manifest.id,
       assignment,
-      hasChat: typeof (executor as { chat?: unknown }).chat === 'function',
+      hasChat: typeof executor.chat === 'function',
       hasRunSubagent: typeof executor.runSubagent === 'function',
+      toolsOn,
     },
     'intake: executor resolved',
   )
 
-  const systemPrompt = buildIntakeSystemPrompt(options.context)
+  const tools = toolsOn ? buildIntakeTools(options.registry) : []
+  const systemPrompt = buildIntakeSystemPrompt(options.context, { toolsEnabled: tools.length > 0 })
   const cwd = resolveWorkingDir(null)
   const intelligenceDir = resolveIntelligenceDir(null)
   const emptyMcp = createSdkMcpServer({ name: 'coro', tools: [] })
   const model = assignment.model
-
   const hookPolicy = { allowedTools: [] as string[], writeRoots: [] as string[] }
 
   try {
-    // Preferred path: every executor that implements `chat()` serves
-    // the intake conversation via a direct HTTP API call — no Claude
-    // Code subprocess, no MCP bridge, no working-dir scaffolding. This
-    // is the only path that works reliably across providers, since
-    // Anthropic's `executePhase` spawns the Claude Code CLI which
-    // exits with a non-zero code when invoked for a bare chat (no
-    // tools, no agents, no repo).
     if (typeof executor.chat === 'function') {
-      log?.debug({ pluginId: executor.manifest.id, model }, 'intake: invoking executor.chat()')
+      log?.debug({ pluginId: executor.manifest.id, model, toolCount: tools.length }, 'intake: invoking executor.chat()')
       const startedAt = Date.now()
-      const result = await executor.chat({
+
+      const chatReq: ChatRequest = {
         messages: options.messages.map(m => ({ role: m.role, content: m.content })),
         systemPrompt,
         model,
         signal: options.signal,
-      })
+        ...(tools.length > 0
+          ? {
+              tools,
+              maxToolRounds: INTAKE_MAX_TOOL_ROUNDS,
+              runTool: createIntakeRunTool(options.registry, options.signal),
+            }
+          : {}),
+      }
+
+      let result: ChatResult
+      if (tools.length > 0) {
+        const chatGen = streamChatTurn(
+          executor as { chat: (req: ChatRequest) => Promise<ChatResult> },
+          chatReq,
+        )
+        let next = await chatGen.next()
+        while (!next.done) {
+          yield next.value
+          next = await chatGen.next()
+        }
+        result = next.value
+      } else {
+        result = await executor.chat(chatReq)
+      }
+
       log?.debug(
         {
           pluginId: executor.manifest.id,
@@ -156,6 +262,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
           outputChars: result.output.length,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
+          toolCalls: result.toolCalls?.length ?? 0,
         },
         'intake: chat() resolved',
       )
@@ -164,9 +271,6 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       budget.tokens += tokens
 
       const trimmed = result.output.trim()
-      // Empty completions would yield a silent "done" — the chat UI
-      // would dismiss the spinner but render nothing. Surface it as a
-      // recoverable error so the dashboard can prompt a retry.
       if (!trimmed) {
         yield {
           type: 'error',
@@ -209,9 +313,6 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
 
       const tokens = result.usage.inputTokens + result.usage.outputTokens
       budget.tokens += tokens
-      if (tokens > MAX_TOKENS_PER_TURN) {
-        // still deliver — budget is advisory per turn
-      }
 
       const chunks = result.output.match(/.{1,24}/g) ?? [result.output]
       for (const chunk of chunks) {
@@ -243,13 +344,11 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       signal: options.signal,
     }
 
-    let output = ''
     let inputTokens = 0
     let outputTokens = 0
 
     for await (const event of executor.executePhase(req)) {
       if (event.type === 'text' && event.content) {
-        output += event.content
         yield { type: 'token', text: event.content }
       } else if (event.type === 'usage') {
         inputTokens = event.tokens.inputTokens
@@ -278,7 +377,6 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
   }
 }
 
-/** Test helper — reset in-memory session budgets. */
 export function resetIntakeSessionBudgetsForTests(): void {
   sessionBudgets.clear()
 }

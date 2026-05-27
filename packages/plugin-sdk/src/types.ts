@@ -276,6 +276,23 @@ export interface ScmPollSnapshot {
   comments: ReadonlyArray<ScmPrComment>
 }
 
+export interface ScmReadFileResult {
+  content: string
+  encoding: 'utf-8' | 'base64'
+  truncated?: boolean
+}
+
+export interface ScmCodeSearchHit {
+  path: string
+  /**
+   * Match snippets returned by the SCM provider. `seq` is a stable
+   * ordering within the hit's snippet array; it is NOT the file line
+   * number — provider search APIs (GitHub, Bitbucket) return fragments
+   * without absolute line offsets, so we never claim one.
+   */
+  snippets: ReadonlyArray<{ seq: number; content: string }>
+}
+
 export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config> {
   kind: 'scm'
 
@@ -298,6 +315,11 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   replyToComment?(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment>
   approvePr?(ref: ExternalRef): Promise<void>
   mergePr?(ref: ExternalRef, opts?: ScmMergeOptions): Promise<void>
+
+  /** Read a single file via the SCM provider REST API (plan mode, agents). */
+  readFile?(args: { repo: string; path: string; ref?: string }): Promise<ScmReadFileResult>
+  /** Search code in a repository via the SCM provider REST API. */
+  searchCode?(args: { repo: string; query: string; maxResults?: number }): Promise<ReadonlyArray<ScmCodeSearchHit>>
 
   /**
    * Self-improvement writer escape hatch — runs OUTSIDE `query()` and
@@ -346,6 +368,7 @@ export interface TrackerPluginRuntime<Config = unknown> extends PluginRuntime<Co
   // All read/write methods are optional after the MCP-first pivot —
   // MCP-mode plugins delegate to their upstream MCP server.
   getIssue?(key: string): Promise<TrackerIssue>
+  searchIssues?(query: string, limit?: number): Promise<ReadonlyArray<TrackerIssue>>
   commentIssue?(args: TrackerCommentArgs): Promise<void>
   transitionIssue?(args: TrackerTransitionArgs): Promise<void>
 
@@ -800,9 +823,26 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
   chat?(req: ChatRequest): Promise<ChatResult>
 }
 
+/** Provider-agnostic tool definition for {@link PhaseExecutorRuntime.chat}. */
+export interface ChatTool {
+  name: string
+  description: string
+  /** JSON Schema object describing the tool input. */
+  inputSchema: object
+}
+
+/** One executed tool call recorded by {@link PhaseExecutorRuntime.chat}. */
+export interface ChatToolCallRecord {
+  name: string
+  input: unknown
+  output: unknown
+  durationMs: number
+  error?: string
+}
+
 /**
- * Per-call request for {@link PhaseExecutorRuntime.chat}. Strictly
- * stateless — no session, no tools, no recursion.
+ * Per-call request for {@link PhaseExecutorRuntime.chat}. Stateless by
+ * default; optional tools + `runTool` enable a bounded tool-use loop.
  */
 export interface ChatRequest {
   /** Conversation messages (alternating user/assistant). */
@@ -815,6 +855,16 @@ export interface ChatRequest {
   maxOutputTokens?: number
   /** Cancellation signal. */
   signal: AbortSignal
+  /** Optional read-only tools the model may invoke during this turn. */
+  tools?: ReadonlyArray<ChatTool>
+  /** Runner-supplied dispatcher; required when `tools` is non-empty. */
+  runTool?: (name: string, input: unknown) => Promise<unknown>
+  /** Hard ceiling on tool round-trips (default 5). */
+  maxToolRounds?: number
+  /** Fired immediately before each tool invocation (for live UI / SSE). */
+  onToolStart?: (info: { name: string; input: unknown }) => void
+  /** Fired after each tool invocation completes. */
+  onToolEnd?: (record: ChatToolCallRecord) => void
 }
 
 /** Terminal result from a single {@link PhaseExecutorRuntime.chat} call. */
@@ -823,6 +873,8 @@ export interface ChatResult {
   output: string
   /** Normalized token usage; cost is owned by the runner's accounting. */
   usage: NormalizedTokenUsage
+  /** Tool calls executed during this chat turn (empty when no tools). */
+  toolCalls: ReadonlyArray<ChatToolCallRecord>
 }
 
 /**

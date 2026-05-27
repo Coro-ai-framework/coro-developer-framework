@@ -1249,6 +1249,21 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       })) {
         if (event.type === 'token') {
           res.write(formatSseFrame(JSON.stringify({ type: 'token', text: event.text }), 'message'))
+        } else if (event.type === 'tool_start') {
+          res.write(formatSseFrame(JSON.stringify({
+            type: 'tool_start',
+            name: event.name,
+            input: event.input,
+          }), 'message'))
+        } else if (event.type === 'tool_end') {
+          res.write(formatSseFrame(JSON.stringify({
+            type: 'tool_end',
+            name: event.name,
+            durationMs: event.durationMs,
+            ok: event.ok,
+            summary: event.summary,
+            ...(event.error ? { error: event.error } : {}),
+          }), 'message'))
         } else if (event.type === 'done') {
           res.write(formatSseFrame(JSON.stringify({ type: 'done', usage: event.usage }), 'message'))
         } else if (event.type === 'error') {

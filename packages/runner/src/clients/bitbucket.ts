@@ -155,6 +155,31 @@ export class BitBucketClient {
     return data.values.map(v => v.path)
   }
 
+  async searchCode(
+    repoSlug: string,
+    query: string,
+    maxResults = 20,
+  ): Promise<Array<{ path: string; snippets: Array<{ seq: number; content: string }> }>> {
+    const params = new URLSearchParams({
+      search_query: `repo:${this.workspace}/${repoSlug} ${query}`,
+      pagelen: String(Math.min(maxResults, 20)),
+    })
+    const data = await this.request<{
+      values: Array<{
+        file?: { path?: string }
+        content_matches?: Array<{ lines?: { text?: string } }>
+      }>
+    }>('GET', `/workspaces/${this.workspace}/search/code?${params.toString()}`)
+
+    return (data.values ?? []).slice(0, maxResults).map(item => ({
+      path: item.file?.path ?? 'unknown',
+      snippets: (item.content_matches ?? []).map((match, idx) => ({
+        seq: idx + 1,
+        content: match.lines?.text ?? '',
+      })),
+    }))
+  }
+
   // ── Pull requests ────────────────────────────────────────────────────────────
 
   async createPr(opts: CreatePrOptions): Promise<PullRequest> {

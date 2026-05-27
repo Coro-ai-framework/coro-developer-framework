@@ -6,10 +6,11 @@ import {
   runIntakeStream,
 } from '../../src/intake/handler'
 
-const settings = {} as Settings
+const settings = { intake: { toolsEnabled: true } } as Settings
 
 function mockRegistry(output: string, onResolve?: (req: { model?: string; provider?: string }) => void) {
   return {
+    all: () => [],
     resolveExecutor: (req: { model?: string; provider?: string }) => {
       onResolve?.(req)
       return {
@@ -67,6 +68,7 @@ describe('runIntakeStream', () => {
 
   it('returns no-llm error when executor cannot be resolved', async () => {
     const registry = {
+      all: () => [],
       resolveExecutor: () => {
         throw new Error('No LLM executor plugin registered')
       },
@@ -113,10 +115,11 @@ describe('runIntakeStream', () => {
   it('prefers executor.chat() over runSubagent / executePhase', async () => {
     const calls: { chat: number; runSubagent: number } = { chat: 0, runSubagent: 0 }
     const registry = {
+      all: () => [],
       resolveExecutor: () => ({
         chat: async () => {
           calls.chat += 1
-          return { output: 'chat path', usage: { inputTokens: 10, outputTokens: 5 } }
+          return { output: 'chat path', usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }, toolCalls: [] }
         },
         runSubagent: async () => {
           calls.runSubagent += 1
@@ -142,5 +145,63 @@ describe('runIntakeStream', () => {
       type: 'done',
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
     })
+  })
+
+  it('streams tool_start/tool_end with rich summaries when the executor invokes a tool', async () => {
+    const getIssue = async (key: string) => ({ key, url: 'u', summary: 'Hello', status: 'open' })
+    const trackerPlugin = {
+      manifest: { id: 'jira', kind: 'tracker' as const },
+      kind: 'tracker' as const,
+      getIssue,
+    }
+
+    const registry = {
+      all: () => [trackerPlugin],
+      resolveTracker: () => trackerPlugin,
+      resolveScm: () => { throw new Error('no scm') },
+      resolveExecutor: () => ({
+        chat: async (req: {
+          runTool?: (n: string, i: unknown) => Promise<unknown>
+          onToolStart?: (info: { name: string; input: unknown }) => void
+          onToolEnd?: (record: { name: string; input: unknown; output: unknown; durationMs: number; error?: string }) => void
+        }) => {
+          req.onToolStart?.({ name: 'tracker_get_issue', input: { key: 'PROJ-42' } })
+          const output = await req.runTool!('tracker_get_issue', { key: 'PROJ-42' })
+          req.onToolEnd?.({ name: 'tracker_get_issue', input: { key: 'PROJ-42' }, output, durationMs: 7 })
+          return {
+            output: 'Looked it up. Ready to plan.',
+            usage: { inputTokens: 12, outputTokens: 8, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [{ name: 'tracker_get_issue', input: { key: 'PROJ-42' }, output, durationMs: 7 }],
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    const events: Array<Record<string, unknown>> = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-tool',
+      messages: [{ role: 'user', content: 'What is PROJ-42 about?' }],
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+
+    const toolStart = events.find(e => e.type === 'tool_start')
+    const toolEnd = events.find(e => e.type === 'tool_end')
+    expect(toolStart).toMatchObject({
+      type: 'tool_start',
+      name: 'tracker_get_issue',
+      input: { key: 'PROJ-42' },
+    })
+    expect(toolEnd).toMatchObject({
+      type: 'tool_end',
+      name: 'tracker_get_issue',
+      ok: true,
+      summary: 'Read PROJ-42',
+    })
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
   })
 })

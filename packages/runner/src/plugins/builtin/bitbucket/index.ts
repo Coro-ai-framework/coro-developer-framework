@@ -44,6 +44,7 @@ import type {
   PluginHealth,
   PluginManifest,
   ScmCloneInfo,
+  ScmCodeSearchHit,
   ScmCreatePrArgs,
   ScmCreateRepoArgs,
   ScmMergeOptions,
@@ -51,6 +52,7 @@ import type {
   ScmPollSnapshot,
   ScmPrComment,
   ScmPrStatus,
+  ScmReadFileResult,
 } from '../../types'
 
 // ── Config schema ────────────────────────────────────────────────────────────
@@ -487,6 +489,21 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
 
   matchesRemote(remoteUrl: string): boolean {
     return /(^|\/\/|@)bitbucket\.org[:/]/i.test(remoteUrl)
+  }
+
+  async readFile(args: { repo: string; path: string; ref?: string }): Promise<ScmReadFileResult> {
+    const repoSlug = args.repo.includes('/') ? args.repo.split('/').pop()! : args.repo
+    const content = await this.coder.getFile(repoSlug, args.path, args.ref ?? 'HEAD')
+    const maxBytes = 64 * 1024
+    if (content.length > maxBytes) {
+      return { content: content.slice(0, maxBytes), encoding: 'utf-8', truncated: true }
+    }
+    return { content, encoding: 'utf-8' }
+  }
+
+  async searchCode(args: { repo: string; query: string; maxResults?: number }): Promise<ScmCodeSearchHit[]> {
+    const repoSlug = args.repo.includes('/') ? args.repo.split('/').pop()! : args.repo
+    return this.coder.searchCode(repoSlug, args.query, args.maxResults ?? 20)
   }
 
   // ── Internals ─────────────────────────────────────────────────────────

@@ -33,7 +33,10 @@ import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-p
 import type {
   ChatRequest,
   ChatResult,
+  ChatTool,
+  ChatToolCallRecord,
   ConversationMessage,
+  NormalizedTokenUsage,
   ExecutorCapabilities,
   ExecutorModelDescriptor,
   ExecutorSessionController,
@@ -411,12 +414,21 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       {
         model: req.model,
         messageCount: req.messages.length,
+        toolCount: req.tools?.length ?? 0,
         signalAbortedAtEntry: req.signal.aborted,
         authMethod: this.auth.method ?? 'claudeLogin',
       },
       'anthropic.chat: invoked',
     )
     const headers = await this.buildAnthropicRestHeaders()
+    const hasTools = (req.tools?.length ?? 0) > 0 && typeof req.runTool === 'function'
+    if (!hasTools) {
+      return this.chatSingleShot(req, headers)
+    }
+    return this.chatWithTools(req, headers, req.tools!)
+  }
+
+  private async chatSingleShot(req: ChatRequest, headers: Record<string, string>): Promise<ChatResult> {
     const body: Record<string, unknown> = {
       model: req.model,
       max_tokens: req.maxOutputTokens ?? 1024,
@@ -424,6 +436,127 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     }
     if (req.systemPrompt) body.system = req.systemPrompt
 
+    const data = await this.postAnthropicMessages(headers, body, req)
+    const output = extractAnthropicText(data.content ?? [])
+
+    return {
+      output,
+      usage: normalizeAnthropicUsage(data.usage),
+      toolCalls: [],
+    }
+  }
+
+  private async chatWithTools(
+    req: ChatRequest,
+    headers: Record<string, string>,
+    tools: ReadonlyArray<ChatTool>,
+  ): Promise<ChatResult> {
+    const maxRounds = req.maxToolRounds ?? 5
+    const runTool = req.runTool!
+    const toolCalls: ChatToolCallRecord[] = []
+    let usage = emptyNormalizedUsage()
+
+    type AnthropicMessage = { role: 'user' | 'assistant'; content: unknown }
+    const messages: AnthropicMessage[] = req.messages.map(m => ({
+      role: m.role,
+      content: m.content,
+    }))
+
+    const anthropicTools = tools.map(t => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.inputSchema,
+    }))
+
+    let output = ''
+    for (let round = 0; round < maxRounds; round++) {
+      if (req.signal.aborted) break
+
+      const body: Record<string, unknown> = {
+        model: req.model,
+        max_tokens: req.maxOutputTokens ?? 2048,
+        messages,
+        tools: anthropicTools,
+      }
+      if (req.systemPrompt) body.system = req.systemPrompt
+
+      const data = await this.postAnthropicMessages(headers, body, req)
+      usage = addUsage(usage, normalizeAnthropicUsage(data.usage))
+
+      const content = data.content ?? []
+      const stopReason = data.stop_reason ?? 'end_turn'
+      const textParts = extractAnthropicText(content)
+      if (textParts) output = textParts
+
+      const toolUses = content.filter(
+        (block): block is { type: 'tool_use'; id: string; name: string; input: unknown } =>
+          block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string',
+      )
+
+      if (toolUses.length === 0 || stopReason !== 'tool_use') {
+        break
+      }
+
+      messages.push({ role: 'assistant', content })
+
+      const toolResults: Array<{ type: 'tool_result'; tool_use_id: string; content: string }> = []
+      for (const toolUse of toolUses) {
+        req.onToolStart?.({ name: toolUse.name, input: toolUse.input })
+        const startedAt = Date.now()
+        let record: ChatToolCallRecord
+        try {
+          const result = await runTool(toolUse.name, toolUse.input)
+          record = {
+            name: toolUse.name,
+            input: toolUse.input,
+            output: result,
+            durationMs: Date.now() - startedAt,
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: stringifyToolResult(result),
+          })
+        } catch (err) {
+          const message = (err as Error).message
+          record = {
+            name: toolUse.name,
+            input: toolUse.input,
+            output: { error: message },
+            durationMs: Date.now() - startedAt,
+            error: message,
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            content: JSON.stringify({ error: message }),
+            is_error: true,
+          } as { type: 'tool_result'; tool_use_id: string; content: string })
+        }
+        toolCalls.push(record)
+        req.onToolEnd?.(record)
+      }
+
+      messages.push({ role: 'user', content: toolResults })
+    }
+
+    return { output: output.trim(), usage, toolCalls }
+  }
+
+  private async postAnthropicMessages(
+    headers: Record<string, string>,
+    body: Record<string, unknown>,
+    req: ChatRequest,
+  ): Promise<{
+    content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>
+    stop_reason?: string
+    usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      cache_read_input_tokens?: number
+      cache_creation_input_tokens?: number
+    }
+  }> {
     let response: Response
     try {
       this.logger.debug({ model: req.model, signalAborted: req.signal.aborted }, 'anthropic.chat: posting to /v1/messages')
@@ -448,9 +581,6 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     }
 
     if (!response.ok) {
-      // Classify rate-limit / overloaded errors so callers can surface
-      // a recoverable state instead of an opaque crash, matching how
-      // `executePhase` parks the runner on the same conditions.
       const errBody = await response.text().catch(() => '')
       const info = classifyProviderError(
         { status: response.status, message: errBody },
@@ -462,28 +592,15 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       throw new Error(`Anthropic ${response.status}: ${errBody.slice(0, 400)}`)
     }
 
-    const data = (await response.json()) as {
-      content?: Array<{ type: string; text?: string }>
+    return (await response.json()) as {
+      content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown }>
+      stop_reason?: string
       usage?: {
         input_tokens?: number
         output_tokens?: number
         cache_read_input_tokens?: number
         cache_creation_input_tokens?: number
       }
-    }
-    const output = (data.content ?? [])
-      .filter(block => block.type === 'text' && typeof block.text === 'string')
-      .map(block => block.text as string)
-      .join('\n')
-
-    return {
-      output,
-      usage: {
-        inputTokens: Number(data.usage?.input_tokens ?? 0),
-        outputTokens: Number(data.usage?.output_tokens ?? 0),
-        cacheReadInputTokens: Number(data.usage?.cache_read_input_tokens ?? 0),
-        cacheCreationInputTokens: Number(data.usage?.cache_creation_input_tokens ?? 0),
-      },
     }
   }
 
@@ -1390,4 +1507,54 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
  */
 export function createAnthropicExecutor(opts: AnthropicExecutorOptions): AnthropicExecutor {
   return new AnthropicExecutor(opts)
+}
+
+function emptyNormalizedUsage(): NormalizedTokenUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  }
+}
+
+function addUsage(a: NormalizedTokenUsage, b: NormalizedTokenUsage): NormalizedTokenUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+  }
+}
+
+function normalizeAnthropicUsage(usage?: {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}): NormalizedTokenUsage {
+  return {
+    inputTokens: Number(usage?.input_tokens ?? 0),
+    outputTokens: Number(usage?.output_tokens ?? 0),
+    cacheReadInputTokens: Number(usage?.cache_read_input_tokens ?? 0),
+    cacheCreationInputTokens: Number(usage?.cache_creation_input_tokens ?? 0),
+  }
+}
+
+function extractAnthropicText(
+  content: Array<{ type: string; text?: string }>,
+): string {
+  return content
+    .filter(block => block.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text as string)
+    .join('\n')
+}
+
+function stringifyToolResult(value: unknown): string {
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
 }

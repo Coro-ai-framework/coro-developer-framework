@@ -5,6 +5,17 @@ import type { WorkflowOption } from '../workflows'
 export interface IntakeChatMessage {
   role: 'user' | 'assistant'
   content: string
+  toolCalls?: IntakeToolCall[]
+}
+
+export interface IntakeToolCall {
+  name: string
+  input?: unknown
+  durationMs?: number
+  ok?: boolean
+  summary?: string
+  error?: string
+  status: 'running' | 'done'
 }
 
 interface IntakeStreamDone {
@@ -17,13 +28,33 @@ interface IntakeStreamToken {
   text: string
 }
 
+interface IntakeStreamToolStart {
+  type: 'tool_start'
+  name: string
+  input?: unknown
+}
+
+interface IntakeStreamToolEnd {
+  type: 'tool_end'
+  name: string
+  durationMs?: number
+  ok?: boolean
+  summary?: string
+  error?: string
+}
+
 interface IntakeStreamError {
   type: 'error'
   message: string
   reason?: string
 }
 
-type IntakeStreamPayload = IntakeStreamDone | IntakeStreamToken | IntakeStreamError
+type IntakeStreamPayload =
+  | IntakeStreamDone
+  | IntakeStreamToken
+  | IntakeStreamToolStart
+  | IntakeStreamToolEnd
+  | IntakeStreamError
 
 export interface IntakeStreamContext {
   recentRepos: string[]
@@ -41,6 +72,7 @@ export function useIntakeStream() {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [noLlm, setNoLlm] = useState(false)
+  const [activeToolCalls, setActiveToolCalls] = useState<IntakeToolCall[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const sessionIdRef = useRef<string>(
     typeof crypto !== 'undefined' && crypto.randomUUID
@@ -54,6 +86,7 @@ export function useIntakeStream() {
     abortRef.current?.abort()
     abortRef.current = null
     setStreaming(false)
+    setActiveToolCalls([])
   }, [])
 
   const send = useCallback(
@@ -62,22 +95,36 @@ export function useIntakeStream() {
       context: IntakeStreamContext,
       onToken: (text: string) => void,
       modelChoice?: IntakeModelChoice,
-    ): Promise<{ assistantText: string; usage?: IntakeStreamDone['usage']; error?: string; noLlm?: boolean }> => {
+      onToolCalls?: (calls: IntakeToolCall[]) => void,
+    ): Promise<{
+      assistantText: string
+      toolCalls: IntakeToolCall[]
+      usage?: IntakeStreamDone['usage']
+      error?: string
+      noLlm?: boolean
+    }> => {
       setError(null)
       setNoLlm(false)
       setStreaming(true)
+      setActiveToolCalls([])
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
 
       let assistantText = ''
+      const toolCalls: IntakeToolCall[] = []
+
+      const syncTools = () => {
+        setActiveToolCalls([...toolCalls])
+        onToolCalls?.([...toolCalls])
+      }
 
       try {
         const response = await fetch('/intake/stream', {
           ...jsonRequest(
             {
               sessionId: sessionIdRef.current,
-              messages,
+              messages: messages.map(m => ({ role: m.role, content: m.content })),
               ...(modelChoice?.model?.trim()
                 ? {
                     model: modelChoice.model.trim(),
@@ -105,7 +152,7 @@ export function useIntakeStream() {
           const body = (await response.json().catch(() => ({}))) as { error?: string; reason?: string }
           if (response.status === 503 || body.reason === 'no-llm') {
             setNoLlm(true)
-            return { assistantText: '', noLlm: true, error: body.error ?? 'No LLM provider configured' }
+            return { assistantText: '', toolCalls: [], noLlm: true, error: body.error ?? 'No LLM provider configured' }
           }
           throw new Error(body.error ?? `Plan mode failed (${response.status})`)
         }
@@ -138,6 +185,32 @@ export function useIntakeStream() {
               if (payload.type === 'token' && payload.text) {
                 assistantText += payload.text
                 onToken(payload.text)
+              } else if (payload.type === 'tool_start') {
+                toolCalls.push({
+                  name: payload.name,
+                  input: payload.input,
+                  status: 'running',
+                })
+                syncTools()
+              } else if (payload.type === 'tool_end') {
+                // Match the most recent in-flight call with the same
+                // name. The executor fires tool_end in the same order
+                // it queued tool_start, so the last running one is
+                // the one resolving now.
+                const idx = toolCalls.findLastIndex(
+                  t => t.name === payload.name && t.status === 'running',
+                )
+                if (idx >= 0) {
+                  toolCalls[idx] = {
+                    ...toolCalls[idx],
+                    status: 'done',
+                    durationMs: payload.durationMs,
+                    ok: payload.ok,
+                    summary: payload.summary,
+                    error: payload.error,
+                  }
+                  syncTools()
+                }
               } else if (payload.type === 'done') {
                 usage = payload.usage
                 if (payload.usage?.totalTokens) {
@@ -146,7 +219,7 @@ export function useIntakeStream() {
               } else if (payload.type === 'error') {
                 if (payload.reason === 'no-llm') {
                   setNoLlm(true)
-                  return { assistantText, noLlm: true, error: payload.message }
+                  return { assistantText, toolCalls, noLlm: true, error: payload.message }
                 }
                 throw new Error(payload.message)
               }
@@ -155,14 +228,15 @@ export function useIntakeStream() {
         }
 
         setTurnCount(c => c + 1)
-        return { assistantText, usage }
+        setActiveToolCalls([])
+        return { assistantText, toolCalls, usage }
       } catch (err) {
         if ((err as Error).name === 'AbortError') {
-          return { assistantText, error: 'Cancelled' }
+          return { assistantText, toolCalls, error: 'Cancelled' }
         }
         const message = err instanceof Error ? err.message : String(err)
         setError(message)
-        return { assistantText, error: message }
+        return { assistantText, toolCalls, error: message }
       } finally {
         setStreaming(false)
         abortRef.current = null
@@ -177,6 +251,7 @@ export function useIntakeStream() {
     noLlm,
     turnCount,
     totalTokens,
+    activeToolCalls,
     sessionId: sessionIdRef.current,
     send,
     cancel,

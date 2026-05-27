@@ -50,7 +50,7 @@ export default function GeneralSection() {
           </label>
           <Select
             value={intakeMode}
-            onChange={e => void patchConfig({ intake: { mode: e.target.value as IntakeMode } })}
+            onChange={e => void patchConfig({ intake: { ...intake, mode: e.target.value as IntakeMode } })}
           >
             <option value="ai">Coro plan mode (recommended with coach mode)</option>
             <option value="form">Classic form</option>
@@ -60,6 +60,19 @@ export default function GeneralSection() {
             Coro plan mode uses your configured LLM to help shape a run brief before dispatch.
           </p>
         </div>
+        <label className="mt-4 flex items-center justify-between gap-4 rounded-xl border border-line bg-overlay/30 p-4">
+          <div>
+            <div className="text-sm font-medium text-fg">Allow read-only lookups</div>
+            <p className="mt-0.5 text-xs text-fg-muted">
+              Let plan mode read tracker tickets and repository files to shape better briefs. Never writes.
+            </p>
+          </div>
+          <Switch
+            checked={intake?.toolsEnabled !== false}
+            onCheckedChange={checked => void patchConfig({ intake: { ...intake, toolsEnabled: checked } })}
+            aria-label="Plan mode read-only tools"
+          />
+        </label>
       </SettingsSection>
     </div>
   )

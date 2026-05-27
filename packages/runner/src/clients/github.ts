@@ -248,13 +248,92 @@ export class GitHubClient {
     }
   }
 
+  // ── Repository file reads (plan mode) ─────────────────────────────────────
+
+  async getFileContent(
+    repoSlug: string,
+    filePath: string,
+    ref = 'HEAD',
+    maxBytes = 64 * 1024,
+  ): Promise<{ content: string; encoding: 'utf-8' | 'base64'; truncated?: boolean }> {
+    const { owner, repo } = this.parseRepo(repoSlug)
+    const data = await this.request<{
+      content: string
+      encoding: string
+      size?: number
+    }>(
+      'GET',
+      `/repos/${owner}/${repo}/contents/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`,
+    )
+    if (data.encoding === 'base64') {
+      const buf = Buffer.from(data.content.replace(/\n/g, ''), 'base64')
+      const truncated = buf.length > maxBytes
+      const slice = truncated ? buf.subarray(0, maxBytes) : buf
+      return {
+        content: slice.toString('utf-8'),
+        encoding: 'utf-8',
+        ...(truncated ? { truncated: true } : {}),
+      }
+    }
+    const text = data.content ?? ''
+    if (text.length > maxBytes) {
+      return { content: text.slice(0, maxBytes), encoding: 'utf-8', truncated: true }
+    }
+    return { content: text, encoding: 'utf-8' }
+  }
+
+  async searchCode(
+    repoSlug: string,
+    query: string,
+    maxResults = 20,
+  ): Promise<Array<{ path: string; snippets: Array<{ seq: number; content: string }> }>> {
+    const { owner, repo } = this.parseRepo(repoSlug)
+    const q = encodeURIComponent(`${query} repo:${owner}/${repo}`)
+    // The `text-match` preview media type is what makes GitHub return
+    // `text_matches[].fragment`. Without it the response carries paths
+    // only, which makes the snippets array useless.
+    const data = await this.request<{
+      items: Array<{
+        path: string
+        text_matches?: Array<{ fragment?: string }>
+      }>
+    }>(
+      'GET',
+      `/search/code?q=${q}&per_page=${Math.min(maxResults, 100)}`,
+      undefined,
+      { accept: 'application/vnd.github.text-match+json' },
+    )
+
+    return (data.items ?? []).slice(0, maxResults).map(item => ({
+      path: item.path,
+      snippets: (item.text_matches ?? []).map((match, idx) => ({
+        seq: idx + 1,
+        content: match.fragment ?? '',
+      })),
+    }))
+  }
+
+  private parseRepo(repoSlug: string): { owner: string; repo: string } {
+    const trimmed = String(repoSlug ?? '').trim()
+    if (trimmed.includes('/')) {
+      const [owner, ...rest] = trimmed.split('/')
+      return { owner: owner!, repo: rest.join('/') }
+    }
+    return { owner: this.owner, repo: this.slug(trimmed) }
+  }
+
   // ── Internal helpers ────────────────────────────────────────────────────────
 
-  private async request<T = void>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T = void>(
+    method: string,
+    path: string,
+    body?: unknown,
+    opts: { accept?: string } = {},
+  ): Promise<T> {
     const url = `${this.baseUrl}${path}`
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
-      Accept: 'application/vnd.github+json',
+      Accept: opts.accept ?? 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
     }
     if (body !== undefined) {
