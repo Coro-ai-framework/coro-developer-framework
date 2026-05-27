@@ -11,6 +11,12 @@ export const DESKTOP_REQUIRED_ENV = {
   dashboardDist: 'CORO_DASHBOARD_DIST',
 } as const
 
+/** Sidecar health poll budget for unpackaged desktop dev runs. */
+export const DESKTOP_RUNNER_STARTUP_TIMEOUT_MS = 15_000
+
+/** Sidecar health poll budget for packaged desktop installs (cold boot). */
+export const DESKTOP_RUNNER_PACKAGED_STARTUP_TIMEOUT_MS = 45_000
+
 export interface DesktopRunnerLaunchOptions {
   port: number
   dashboardDist: string
@@ -48,6 +54,7 @@ export function buildDesktopRunnerLaunchSpec(
     commandArgs,
     env: {
       ...options.env,
+      NODE_ENV: 'production',
       [DESKTOP_REQUIRED_ENV.noOpen]: '1',
       [DESKTOP_REQUIRED_ENV.dashboardDist]: dashboardDist,
     },

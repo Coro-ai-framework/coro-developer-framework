@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 import { loadLocalConfig, detectMode, defaultConfigPath } from '../../src/config/local-config'
+import { assertValidDesktopPort } from '../../src/desktop/contract'
 import { die } from '../http'
 import { maybeOpenBrowser } from '../browser-open'
 
@@ -7,6 +8,16 @@ interface StartOptions {
   config: string
   port: string
   open?: boolean
+}
+
+function parseStartPort(rawPort: string): number {
+  const port = Number.parseInt(rawPort, 10)
+  try {
+    assertValidDesktopPort(port)
+  } catch {
+    die(`Invalid port "${rawPort}". Port must be an integer between 1 and 65535.`)
+  }
+  return port
 }
 
 /**
@@ -19,7 +30,7 @@ interface StartOptions {
  * browser-open behaviour; see `cli/browser-open.ts`.
  */
 async function startAction(opts: StartOptions): Promise<void> {
-  const port = parseInt(opts.port, 10)
+  const port = parseStartPort(opts.port)
 
   // Dynamic import to avoid loading all runner dependencies at CLI parse time
   const { startRunner } = await import('../../src/runner/index')
@@ -44,7 +55,7 @@ async function startAction(opts: StartOptions): Promise<void> {
 export const startCommand = new Command('start')
   .description('Start the Coro runner and open the dashboard (primary command)')
   .option('--config <path>', 'Path to config file', defaultConfigPath())
-  .option('--port <port>', 'Local HTTP server port', '3000')
+  .option('-p, --port <port>', 'Local HTTP server port', '3000')
   .option('--no-open', 'Do not open the dashboard in a browser')
   .option('--open', 'Force-open the dashboard even in headless environments')
   .action(startAction)
@@ -58,7 +69,7 @@ runnerCommand
   .command('start')
   .description('Start the runner (alias of `coro start`)')
   .option('--config <path>', 'Path to config file', defaultConfigPath())
-  .option('--port <port>', 'Local HTTP server port', '3000')
+  .option('-p, --port <port>', 'Local HTTP server port', '3000')
   .option('--no-open', 'Do not open the dashboard in a browser')
   .option('--open', 'Force-open the dashboard even in headless environments')
   .action(startAction)

@@ -5,6 +5,8 @@ import type { Readable } from 'node:stream'
 import {
   buildDesktopRunnerLaunchSpec,
   chooseDesktopRunnerPort,
+  DESKTOP_RUNNER_PACKAGED_STARTUP_TIMEOUT_MS,
+  DESKTOP_RUNNER_STARTUP_TIMEOUT_MS,
   resolveDesktopResourceLayout,
   validateDesktopResourceLayout,
   type DesktopPortSelection,
@@ -21,29 +23,36 @@ export interface SidecarStartResult {
 export interface RunnerSidecarOptions {
   resourcesRoot: string
   configPath?: string
+  /** Packaged app installs use a longer health-poll budget for cold boot. */
+  packaged?: boolean
   onUnexpectedExit?: (message: string) => void
 }
 
-const STARTUP_TIMEOUT_MS = 15_000
 const SHUTDOWN_TIMEOUT_MS = 5_000
 const HEALTH_POLL_INTERVAL_MS = 200
 const MAX_LOG_LINES = 80
+const MAX_STDERR_LINES = 40
 
 type RunnerChildProcess = ChildProcessByStdio<null, Readable, Readable>
 
 export class RunnerSidecar {
   private readonly resourcesRoot: string
   private readonly configPath?: string
+  private readonly startupTimeoutMs: number
   private readonly onUnexpectedExit?: (message: string) => void
 
   private child: RunnerChildProcess | null = null
   private startup: SidecarStartResult | null = null
   private stopping = false
   private readonly recentLogs: string[] = []
+  private readonly recentStderrLines: string[] = []
 
   constructor(options: RunnerSidecarOptions) {
     this.resourcesRoot = options.resourcesRoot
     this.configPath = options.configPath
+    this.startupTimeoutMs = options.packaged
+      ? DESKTOP_RUNNER_PACKAGED_STARTUP_TIMEOUT_MS
+      : DESKTOP_RUNNER_STARTUP_TIMEOUT_MS
     this.onUnexpectedExit = options.onUnexpectedExit
   }
 
@@ -72,7 +81,7 @@ export class RunnerSidecar {
     this.attachLogStream(child, 'stderr')
     this.attachUnexpectedExitHandler(child)
 
-    await waitForRunnerReady(launchSpec.urls.health, child)
+    await waitForRunnerReady(launchSpec.urls.health, child, this.startupTimeoutMs)
 
     this.startup = { layout, portSelection, launchSpec }
     return this.startup
@@ -112,6 +121,17 @@ export class RunnerSidecar {
     return this.startup?.launchSpec.urls.origin ?? null
   }
 
+  /** Recent runner stderr lines for startup failure dialogs. */
+  recentStderr(): readonly string[] {
+    return this.recentStderrLines
+  }
+
+  formatStartupError(message: string): string {
+    const stderr = this.recentStderrLines.join('\n').trim()
+    if (!stderr) return message
+    return `${message}\n\nRunner stderr:\n${stderr}`
+  }
+
   private attachLogStream(child: RunnerChildProcess, source: 'stdout' | 'stderr'): void {
     const stream = source === 'stdout' ? child.stdout : child.stderr
     stream.setEncoding('utf8')
@@ -120,7 +140,7 @@ export class RunnerSidecar {
       for (const rawLine of text.split('\n')) {
         const line = rawLine.trim()
         if (!line) continue
-        this.pushLog(`[runner:${source}] ${line}`)
+        this.pushLog(`[runner:${source}] ${line}`, source)
         console.log(`[runner:${source}] ${line}`)
       }
     })
@@ -130,12 +150,12 @@ export class RunnerSidecar {
     child.once('exit', (code, signal) => {
       if (this.stopping) return
 
-      const reason = [
+      const reason = this.formatStartupError([
         'The Coro runner sidecar exited unexpectedly.',
         `exitCode=${code ?? 'null'}`,
         `signal=${signal ?? 'null'}`,
         this.recentLogs.length > 0 ? `recentLogs=\n${this.recentLogs.join('\n')}` : 'recentLogs=<none>',
-      ].join(' ')
+      ].join(' '))
 
       this.child = null
       this.startup = null
@@ -143,16 +163,27 @@ export class RunnerSidecar {
     })
   }
 
-  private pushLog(line: string): void {
+  private pushLog(line: string, source: 'stdout' | 'stderr'): void {
     this.recentLogs.push(line)
     if (this.recentLogs.length > MAX_LOG_LINES) {
       this.recentLogs.splice(0, this.recentLogs.length - MAX_LOG_LINES)
     }
+
+    if (source === 'stderr') {
+      this.recentStderrLines.push(line)
+      if (this.recentStderrLines.length > MAX_STDERR_LINES) {
+        this.recentStderrLines.splice(0, this.recentStderrLines.length - MAX_STDERR_LINES)
+      }
+    }
   }
 }
 
-async function waitForRunnerReady(url: string, child: RunnerChildProcess): Promise<void> {
-  const deadline = Date.now() + STARTUP_TIMEOUT_MS
+async function waitForRunnerReady(
+  url: string,
+  child: RunnerChildProcess,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
@@ -169,7 +200,7 @@ async function waitForRunnerReady(url: string, child: RunnerChildProcess): Promi
     await delay(HEALTH_POLL_INTERVAL_MS)
   }
 
-  throw new Error(`Runner sidecar did not report healthy within ${STARTUP_TIMEOUT_MS}ms (${url})`)
+  throw new Error(`Runner sidecar did not report healthy within ${timeoutMs}ms (${url})`)
 }
 
 async function waitForChildExit(

@@ -30,6 +30,7 @@ app.whenReady()
 
     sidecar = new RunnerSidecar({
       resourcesRoot: app.isPackaged ? process.resourcesPath : resolveLocalResourcesRoot(__dirname),
+      packaged: app.isPackaged,
       onUnexpectedExit: (message) => {
         dialog.showErrorBox('Coro runner stopped', message)
         if (!isQuitting) {
@@ -44,7 +45,8 @@ app.whenReady()
     startAutoUpdater()
   })
   .catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err)
+    const baseMessage = err instanceof Error ? err.message : String(err)
+    const message = sidecar?.formatStartupError(baseMessage) ?? baseMessage
     dialog.showErrorBox('Coro desktop failed to start', message)
     void quitApplication()
   })

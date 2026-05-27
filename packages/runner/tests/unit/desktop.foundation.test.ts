@@ -44,6 +44,7 @@ describe('desktop launch contract', () => {
       '/tmp/config.json',
     ])
     expect(spec.env.HOME).toBe('/Users/tester')
+    expect(spec.env.NODE_ENV).toBe('production')
     expect(spec.env[DESKTOP_REQUIRED_ENV.noOpen]).toBe('1')
     expect(spec.env[DESKTOP_REQUIRED_ENV.dashboardDist]).toBe('/tmp/coro-dashboard')
     expect(spec.urls.health).toBe(`http://${DESKTOP_RUNNER_DEFAULT_HOST}:4310${DESKTOP_RUNNER_HEALTH_PATH}`)
