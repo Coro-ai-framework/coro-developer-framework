@@ -1,9 +1,8 @@
 import fs from 'fs/promises'
 import path from 'path'
 import { Logger } from 'pino'
-import type { Settings } from '../config/settings'
-import type { TrackerClient, TrackerProvider } from '../clients/tracker'
 import type { PluginRegistry } from '../plugins/registry'
+import type { TrackerPluginRuntime } from '../plugins/types'
 import { Job } from '@coro-ai/cloud-protocol'
 import { propagableInsights } from '../insights'
 import {
@@ -26,56 +25,59 @@ import { resolveGuardrails } from '../guardrails/merge'
 // tracker branch even when the tenant had wired up GitHub Issues / Jira /
 // Linear. See campaign-planner.md §3 for the agent-side decision rule that
 // keys off this struct.
+//
+// The plugin registry is the single source of truth: if a tracker plugin
+// resolves cleanly, `tracker.available === true` and `tracker.pluginId`
+// carries its manifest id (`jira`, `linear`, `github-issues`, …). Agents
+// branch on `tracker.pluginId` — see `campaign-planner.md` §3 and
+// `campaign-planning/SKILL.md`.
 
 export interface TrackerPromptContext {
-  /**
-   * Effective tracker provider as the user sees it. Mirrors
-   * `settings.tracker.provider` when set explicitly; falls back to
-   * `'none'` when no tracker is wired up so the agent never has to
-   * reason about the JiraTrackerClient stub the factory returns when
-   * everything is empty.
-   */
-  provider: TrackerProvider | 'none'
-  /** True when `trackerClient.isAvailable()` — i.e. tool calls will hit a real backend. */
+  /** True when a tracker plugin resolves; agents key every tracker step off this. */
   available: boolean
   /**
+   * Plugin manifest id of the active tracker, or `'none'` when no
+   * tracker plugin resolves. Agent docs reference this as
+   * `tracker.pluginId` (`'jira'`, `'linear'`, `'github-issues'`, …).
+   */
+  pluginId: string
+  /**
    * Provider-specific defaults the agent can plug straight into tool args.
-   * Keys are intentionally provider-specific (`owner` for GitHub,
-   * `teamKey` for Linear) so the agent prompt can read the value
+   * Sourced from the active plugin's optional `promptDefaults()` —
+   * keys are intentionally provider-specific (`owner` for GitHub Issues,
+   * `teamKey` for Linear) so the agent prompt can reference them
    * unambiguously without per-provider branches in code.
    */
   defaults?: Record<string, string>
 }
 
 /**
- * Build the prompt-side view of the tracker stack from the runtime
- * `Settings` + the constructed `TrackerClient`. Pure — safe to call
- * once per phase without I/O.
+ * Build the prompt-side view of the tracker stack from the
+ * {@link PluginRegistry}. Pure — safe to call once per phase without I/O.
+ *
+ * Resolution rules:
+ *   - One tracker plugin installed → that plugin wins.
+ *   - Multiple installed → `plugins.defaults.tracker` chooses; absent
+ *     defaults surface as a `PluginResolutionError` which we catch and
+ *     report as `available: false` so the agent degrades gracefully
+ *     instead of crashing the prompt build.
+ *   - Zero installed → `available: false`, `pluginId: 'none'`.
  */
-export function computeTrackerPromptContext(
-  settings: Settings,
-  trackerClient: TrackerClient,
-): TrackerPromptContext {
-  const available = trackerClient.isAvailable()
-  // `settings.tracker.provider` is the user's explicit choice from the
-  // dashboard. When unset we trust the client's `provider` field only if
-  // it actually resolved to a usable backend; otherwise we report `'none'`
-  // so the agent doesn't see a misleading `'jira'` from the empty stub.
-  const provider: TrackerProvider | 'none' = settings.tracker?.provider
-    ?? (available ? trackerClient.provider : 'none')
-
-  const defaults: Record<string, string> = {}
-  if (provider === 'github' && settings.github.owner) {
-    defaults['owner'] = settings.github.owner
-  }
-  if (provider === 'linear' && settings.linear?.teamKey) {
-    defaults['teamKey'] = settings.linear.teamKey
+export function computeTrackerPromptContext(plugins: PluginRegistry): TrackerPromptContext {
+  let runtime: TrackerPluginRuntime | undefined
+  try {
+    runtime = plugins.resolveTracker({})
+  } catch {
+    // Either nothing is installed or the choice is ambiguous and no
+    // default is configured. Either way, the agent sees "no tracker".
+    return { available: false, pluginId: 'none' }
   }
 
+  const defaults = runtime.promptDefaults?.()
   return {
-    provider,
-    available,
-    ...(Object.keys(defaults).length > 0 ? { defaults } : {}),
+    available: true,
+    pluginId: runtime.manifest.id,
+    ...(defaults && Object.keys(defaults).length > 0 ? { defaults } : {}),
   }
 }
 

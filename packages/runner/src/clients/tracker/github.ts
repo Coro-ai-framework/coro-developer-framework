@@ -24,7 +24,6 @@ import type {
   CreateEpicArgs,
   CreateIssueArgs,
   LinkIssuesArgs,
-  TrackerClient,
   TrackerIssue,
   TrackerNotConfigured,
   TrackerResult,
@@ -120,7 +119,7 @@ function parseIssueKey(key: string, defaults: { owner: string; repo?: string }):
   return { owner, repo, number, projectKey: `${owner}/${repo}` }
 }
 
-export class GitHubTrackerClient implements TrackerClient {
+export class GitHubTrackerClient {
   readonly provider = 'github' as const
   private readonly available: boolean
   private readonly apiBaseUrl: string

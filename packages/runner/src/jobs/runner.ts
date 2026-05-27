@@ -4,10 +4,8 @@ import path from 'path'
 import { BitBucketClient } from '../clients/bitbucket'
 import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
-import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
-import type { TrackerClient } from '../clients/tracker'
 import { Settings } from '../config/settings'
 import {
   defaultLoaderCacheRoot,
@@ -101,19 +99,11 @@ export interface RunnerContext {
   ghGitClient: GitClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
-  jiraClient: JiraClient
   /**
-   * Active issue-tracker client (Jira today; GitHub Issues / Linear later).
-   * Always present — falls back to a stub that reports `available=false`
-   * from every method when no provider is configured.
-   */
-  trackerClient: TrackerClient
-  /**
-   * Resolved plugin registry. Owns the `scm_*` / `tracker_*` MCP
-   * surface and all webhook normalisation. The legacy `bbCoder` /
-   * `ghClient` / `jiraClient` / `trackerClient` fields stay populated
-   * from the registry's built-in plugins for back-compat — they are
-   * scheduled for removal at N+2 (see plan/§6/Phase 9).
+   * Resolved plugin registry — single source of truth for SCM and
+   * tracker providers. Owns the `scm_*` / `tracker_*` MCP surface,
+   * webhook normalisation, and supplies the prompt builder's
+   * tracker/SCM context.
    */
   plugins: PluginRegistry
   logger: Logger
@@ -332,8 +322,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     ghGitClient: ctx.ghGitClient,
     lokiClient: ctx.lokiClient,
     tempoClient: ctx.tempoClient,
-    jiraClient: ctx.jiraClient,
-    trackerClient: ctx.trackerClient,
     plugins: ctx.plugins,
     logger,
   }
@@ -418,11 +406,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         )
       }
 
-      // Recompute every phase: the tracker client itself is constructed once
-      // at runner bootstrap, but `isAvailable()` reads its captured settings
-      // and we want the prompt to reflect any tenant-overlay config refresh
-      // between phases.
-      const trackerInfo = computeTrackerPromptContext(settings, ctx.trackerClient)
+      // Recompute every phase: the plugin registry is re-resolved each phase
+      // so the prompt reflects any tenant-overlay config refresh that landed
+      // between phases (e.g. a Jira credential rotation via the dashboard).
+      const trackerInfo = computeTrackerPromptContext(ctx.plugins)
       const scmInfo = computeScmPromptContext(liveJob, ctx.plugins)
       // System prompt build is deferred until after the executor is
       // resolved — we need its `capabilities.supportsClaudeMdNativeWalkUp`

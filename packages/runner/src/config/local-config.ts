@@ -103,34 +103,6 @@ const proposalsConfigSchema = z.object({
   }).optional(),
 }).optional()
 
-// ── Issue tracker (campaign workflow) ────────────────────────────────────────
-//
-// The campaign workflow's planner/evaluator agents talk to an external issue
-// tracker via the `TrackerClient` abstraction. The tenant chooses the
-// provider here; when set to `'github'` the runner reuses the credentials
-// from the `git` block (no need to re-enter a token). Jira and Linear get
-// their own credential sub-objects since they are unrelated to the git
-// provider.
-//
-// All inner credential fields are optional so a partially-filled tracker
-// block round-trips cleanly through GET/PUT — useful when the user is
-// switching providers in the dashboard but hasn't filled in the new one
-// yet. The factory in `clients/tracker/index.ts` falls back to the
-// "stub" client when credentials are missing, which is what `provider:
-// 'none'` also produces.
-const trackerConfigSchema = z.object({
-  provider: z.enum(['none', 'jira', 'github', 'linear']).optional(),
-  jira: z.object({
-    baseUrl: z.string().optional(),
-    username: z.string().optional(),
-    apiToken: z.string().optional(),
-  }).optional(),
-  linear: z.object({
-    apiKey: z.string().optional(),
-    teamKey: z.string().optional(),
-  }).optional(),
-}).optional()
-
 // ── BYO (bring-your-own) MCP servers ─────────────────────────────────────────
 //
 // S8 of the MCP-first plugins pivot. Operators can attach any MCP
@@ -246,7 +218,6 @@ const localConfigSchema = z.object({
   git: gitConfigSchema,
   tenant: tenantConfigSchema,
   proposals: proposalsConfigSchema,
-  tracker: trackerConfigSchema,
   /**
    * Provider-plugin config — the new uniform shape replacing the
    * per-provider blocks above. When `plugins` is absent the runner
@@ -474,7 +445,6 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     git: patch.git !== undefined ? patch.git : existing.git,
     tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
-    tracker: patch.tracker !== undefined ? patch.tracker : existing.tracker,
     plugins: patch.plugins !== undefined ? patch.plugins : existing.plugins,
     llm: patch.llm !== undefined ? patch.llm : existing.llm,
     mcpServers: patch.mcpServers !== undefined ? patch.mcpServers : existing.mcpServers,
@@ -490,11 +460,12 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
 
 // ── Legacy → PluginsConfig translator ────────────────────────────────────────
 //
-// v1 keeps the legacy `git`, `github`, `tracker.jira`, `tracker.linear`,
-// and `tracker.provider` blocks readable for one release. This translator
-// builds an equivalent PluginsConfig from those keys when `plugins` is
-// absent, so existing tenants don't have to migrate their config to
-// keep working.
+// Tracker config is now plugin-shape only (`plugins.installed.{jira|linear|
+// github-issues}.config`) — the legacy `tracker.*` block was removed.
+// This translator still bridges the legacy SCM `git.*` block into
+// `plugins.installed.{bitbucket|github}` for one release so existing
+// tenants don't lose SCM creds on first read. Once SCM is migrated to
+// plugin-shape only, this translator goes away entirely.
 //
 // The translator is purely additive: it never overrides an explicit
 // `plugins` block. Set `installed[<id>].enabled = false` on the
@@ -502,10 +473,9 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
 // credentials around for round-tripping.
 
 /**
- * Convert legacy config blocks into a {@link PluginsConfig}. Leaves
- * `defaults.scm` / `defaults.tracker` undefined when the choice is
- * ambiguous so the registry surfaces a clear error rather than
- * silently picking.
+ * Convert legacy SCM config into a {@link PluginsConfig}. Leaves
+ * `defaults.scm` undefined when the choice is ambiguous so the
+ * registry surfaces a clear error rather than silently picking.
  */
 export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig {
   if (!config) return { installed: {} }
@@ -533,37 +503,6 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
     }
   }
 
-  // ── Tracker ──
-  if (config.tracker?.jira?.baseUrl && config.tracker.jira.username && config.tracker.jira.apiToken) {
-    installed['jira'] = {
-      enabled: true,
-      config: {
-        baseUrl: config.tracker.jira.baseUrl,
-        username: config.tracker.jira.username,
-        apiToken: config.tracker.jira.apiToken,
-      },
-    }
-  }
-  if (config.tracker?.linear?.apiKey) {
-    installed['linear'] = {
-      enabled: true,
-      config: {
-        apiKey: config.tracker.linear.apiKey,
-        ...(config.tracker.linear.teamKey ? { teamKey: config.tracker.linear.teamKey } : {}),
-      },
-    }
-  }
-  // Legacy `tracker.provider: 'github'` reuses the git creds for issues.
-  if (config.tracker?.provider === 'github' && config.git?.provider === 'github' && config.git?.token && config.git?.workspace) {
-    installed['github-issues'] = {
-      enabled: true,
-      config: {
-        token: config.git.token,
-        defaultOwner: config.git.workspace,
-      },
-    }
-  }
-
   // ── Defaults ──
   // Only set the default when the legacy config makes the choice
   // unambiguous; otherwise leave it for the registry to fall back to
@@ -572,12 +511,8 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
   if (config.git?.provider === 'bitbucket' && installed['bitbucket']) defaults.scm = 'bitbucket'
   else if (config.git?.provider === 'github' && installed['github']) defaults.scm = 'github'
 
-  if (config.tracker?.provider === 'jira' && installed['jira']) defaults.tracker = 'jira'
-  else if (config.tracker?.provider === 'linear' && installed['linear']) defaults.tracker = 'linear'
-  else if (config.tracker?.provider === 'github' && installed['github-issues']) defaults.tracker = 'github-issues'
-
   const out: PluginsConfig = { installed }
-  if (defaults.scm || defaults.tracker) out.defaults = defaults
+  if (defaults.scm) out.defaults = defaults
   return out
 }
 
@@ -586,26 +521,23 @@ export function legacyConfigToPlugins(config: LocalConfig | null): PluginsConfig
  * wins, otherwise synthesised via {@link legacyConfigToPlugins}.
  *
  * Stage-aware behaviour (see `plugins/deprecation.ts`):
- *   - N    → reads both shapes; legacy `git`/`tracker` keys feed the translator.
+ *   - N    → reads both shapes; legacy `git` keys feed the translator.
  *   - N+1  → still parses both shapes (silently); CLI prompts only show the new shape.
- *   - N+2  → throws when a legacy `git`/`tracker` block is encountered without
+ *   - N+2  → throws when a legacy `git` block is encountered without
  *            an explicit `plugins` block — operators must migrate.
  */
 export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
-  // Always synthesise from legacy keys so the result reflects every
-  // legacy block (anthropic / git / tracker). When the user has
-  // hand-authored a `plugins` block, it wins per-id — explicit
-  // entries override the synthesised ones, but absent ids still
-  // fall back to the legacy translation. Without this merge a
-  // partial `plugins` block (e.g. only `bitbucket`) would silently
-  // drop the legacy `anthropic` entry.
+  // Always synthesise from legacy keys so the result reflects the
+  // legacy SCM block. When the user has hand-authored a `plugins`
+  // block, it wins per-id — explicit entries override the synthesised
+  // ones, but absent ids still fall back to the legacy translation.
   const synthesised = legacyConfigToPlugins(config)
   if (config?.plugins) {
     const stage = legacyConfigKeysBehaviour()
-    if (stage === 'error' && (config.git || config.tracker)) {
+    if (stage === 'error' && config.git) {
       throw new Error(
-        `Legacy 'git'/'tracker' top-level config keys are no longer supported. ` +
-        `Move them into a 'plugins.installed' block. ` +
+        `Legacy 'git' top-level config key is no longer supported. ` +
+        `Move it into a 'plugins.installed' block. ` +
         `Run 'coro init' to regenerate the config in the new shape.`,
       )
     }
@@ -615,10 +547,10 @@ export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig 
     }
   }
   const stage = legacyConfigKeysBehaviour()
-  if (stage === 'error' && config && (config.git || config.tracker)) {
+  if (stage === 'error' && config && config.git) {
     throw new Error(
-      `Legacy 'git'/'tracker' top-level config keys are no longer supported. ` +
-      `Move them into a 'plugins.installed' block. ` +
+      `Legacy 'git' top-level config key is no longer supported. ` +
+      `Move it into a 'plugins.installed' block. ` +
       `Run 'coro init' to regenerate the config in the new shape.`,
     )
   }

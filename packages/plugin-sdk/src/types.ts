@@ -373,6 +373,19 @@ export interface TrackerPluginRuntime<Config = unknown> extends PluginRuntime<Co
   transitionIssue?(args: TrackerTransitionArgs): Promise<void>
 
   /**
+   * Provider-specific defaults the runner injects into the agent's
+   * job-context block as `tracker.defaults`. Agents read these to
+   * fill in arguments the user expects to be pre-known for the
+   * tenant — e.g. GitHub Issues' `owner`, Linear's `teamKey`.
+   *
+   * Keys are provider-specific by design so the agent prompt can
+   * reference them unambiguously (no per-provider branches in code).
+   * Return `undefined` (or omit the method) when there are no
+   * defaults to expose.
+   */
+  promptDefaults?(): Record<string, string> | undefined
+
+  /**
    * Plugin-driven webhook normalisation; same shape as SCM's.
    */
   normalizeInbound?(req: {

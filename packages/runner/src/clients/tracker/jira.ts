@@ -16,7 +16,6 @@ import type {
   CreateEpicArgs,
   CreateIssueArgs,
   LinkIssuesArgs,
-  TrackerClient,
   TrackerIssue,
   TrackerNotConfigured,
   TrackerResult,
@@ -79,7 +78,7 @@ function toTrackerIssue(self: string, raw: JiraIssueResponse, baseUrl: string): 
   }
 }
 
-export class JiraTrackerClient implements TrackerClient {
+export class JiraTrackerClient {
   readonly provider = 'jira' as const
   private readonly authHeader: string
   private readonly available: boolean

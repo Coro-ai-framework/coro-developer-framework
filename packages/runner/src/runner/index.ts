@@ -83,10 +83,8 @@ import type { RunnerContext } from '../jobs/runner'
 import { createBitBucketClients } from '../clients/bitbucket'
 import { createGitClient, createGitHubGitClient } from '../clients/git'
 import { createGitHubClient } from '../clients/github'
-import { createJiraClient } from '../clients/jira'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
-import { createTrackerClient } from '../clients/tracker'
 import { wireCloudJobDispatch } from './hybrid-dispatcher'
 import { createRunnerServer } from './server'
 
@@ -149,13 +147,12 @@ export async function startLocalRunner(
   const ghGitClient = createGitHubGitClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
-  const jiraClient = createJiraClient(settings)
-  const trackerClient = createTrackerClient(settings)
 
-  // Build the plugin registry from the resolved PluginsConfig (legacy
-  // config blocks still supported via `legacyConfigToPlugins`). The
-  // registry is the new home for SCM/Tracker resolution; the legacy
-  // client fields above stay populated for back-compat MCP wrappers.
+  // Build the plugin registry from the resolved PluginsConfig. The
+  // registry is the single source of truth for SCM and tracker
+  // providers — there is no parallel "legacy" tracker plumbing
+  // anymore. Legacy SCM config (`config.git.*`) is still translated
+  // by `legacyConfigToPlugins` for now; see follow-up cleanup.
   const pluginsConfig = resolvePluginsConfig(effectiveConfig)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
   seedExecutorDefaultAliases({ plugins, settings })
@@ -202,8 +199,6 @@ export async function startLocalRunner(
     ghGitClient,
     lokiClient,
     tempoClient,
-    jiraClient,
-    trackerClient,
     plugins,
     logger,
   }
@@ -313,8 +308,6 @@ export async function startHybridRunner(
   const ghGitClient = createGitHubGitClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
-  const jiraClient = createJiraClient(settings)
-  const trackerClient = createTrackerClient(settings)
 
   // Build runner context — `plugins` was created above so the WS
   // transport could capture the webhook normaliser closure before
@@ -330,8 +323,6 @@ export async function startHybridRunner(
     ghGitClient,
     lokiClient,
     tempoClient,
-    jiraClient,
-    trackerClient,
     plugins,
     logger,
   }

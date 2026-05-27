@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import fs from 'fs/promises'
 import { z } from 'zod'
 import { buildSystemPrompt, computeGuardrailsPromptContext, computeScmPromptContext, computeTrackerPromptContext } from '../../src/prompt/builder'
-import type { Settings } from '../../src/config/settings'
-import type { TrackerClient, TrackerProvider } from '../../src/clients/tracker'
 import { PluginRegistry, type ScmPluginRuntime } from '../../src/plugins'
+import type { TrackerPluginRuntime } from '../../src/plugins/types'
 import { JobType, type Job } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 
@@ -583,63 +582,61 @@ describe('computeScmPromptContext', () => {
 
 // ── computeTrackerPromptContext ───────────────────────────────────────────────
 //
-// Pure helper consumed by the runner before each phase. Lives in the prompt
-// builder so the same module owns both halves of the wire contract — the
-// shape produced AND the shape consumed.
+// Pure helper consumed by the runner before each phase. Reads from the
+// {@link PluginRegistry} — the single source of truth for tracker
+// availability — and surfaces the active plugin's id + its own
+// `promptDefaults()` for the agent prompt block.
 
 describe('computeTrackerPromptContext', () => {
-  it('reports available=true for a configured GitHub tracker and exposes the owner default', () => {
-    const settings = makeSettings({
-      tracker: { provider: 'github' },
-      github: { token: 'gh-pat', owner: 'emreertugrul' },
+  it('reports available=true for a single installed tracker plugin and exposes its prompt defaults', () => {
+    const plugins = new PluginRegistry()
+    plugins.register(fakeTrackerPlugin('github-issues', { owner: 'emreertugrul' }))
+
+    const out = computeTrackerPromptContext(plugins)
+    expect(out).toEqual({
+      available: true,
+      pluginId: 'github-issues',
+      defaults: { owner: 'emreertugrul' },
     })
-    const tracker = makeTrackerClient({ provider: 'github', available: true })
-
-    const out = computeTrackerPromptContext(settings, tracker)
-    expect(out).toEqual({ provider: 'github', available: true, defaults: { owner: 'emreertugrul' } })
   })
 
-  it('preserves the user\'s explicit provider choice even when the client is unavailable', () => {
-    // Surfacing the user's intent (rather than hiding it as `none`) lets the
-    // dashboard / agent prompt explain *why* the tracker is unusable.
-    const settings = makeSettings({
-      tracker: { provider: 'github' },
-      github: { token: '', owner: '' },
+  it('reports available=false when no tracker plugin is installed', () => {
+    const plugins = new PluginRegistry()
+    const out = computeTrackerPromptContext(plugins)
+    expect(out).toEqual({ available: false, pluginId: 'none' })
+  })
+
+  it('reports available=false when multiple trackers are installed without a default (resolution is ambiguous)', () => {
+    // PluginRegistry.resolveTracker throws when the choice is ambiguous;
+    // the prompt builder catches that so the agent degrades gracefully
+    // rather than crashing the system-prompt build.
+    const plugins = new PluginRegistry()
+    plugins.register(fakeTrackerPlugin('jira'))
+    plugins.register(fakeTrackerPlugin('linear', { teamKey: 'ENG' }))
+
+    const out = computeTrackerPromptContext(plugins)
+    expect(out).toEqual({ available: false, pluginId: 'none' })
+  })
+
+  it('honours plugins.defaults.tracker when multiple trackers are installed', () => {
+    const plugins = new PluginRegistry({ tracker: 'linear' })
+    plugins.register(fakeTrackerPlugin('jira'))
+    plugins.register(fakeTrackerPlugin('linear', { teamKey: 'ENG' }))
+
+    const out = computeTrackerPromptContext(plugins)
+    expect(out).toEqual({
+      available: true,
+      pluginId: 'linear',
+      defaults: { teamKey: 'ENG' },
     })
-    const tracker = makeTrackerClient({ provider: 'github', available: false })
-
-    const out = computeTrackerPromptContext(settings, tracker)
-    expect(out).toEqual({ provider: 'github', available: false })
   })
 
-  it('reports provider=none when no tracker is configured (avoids the JiraTrackerClient stub leak)', () => {
-    // The factory falls back to an empty JiraTrackerClient when nothing is
-    // wired up; without this normalisation the agent would see `provider:
-    // 'jira'` even though the user never picked Jira.
-    const settings = makeSettings({})
-    const tracker = makeTrackerClient({ provider: 'jira', available: false })
+  it('omits defaults when the active plugin has none to expose', () => {
+    const plugins = new PluginRegistry()
+    plugins.register(fakeTrackerPlugin('jira'))
 
-    const out = computeTrackerPromptContext(settings, tracker)
-    expect(out).toEqual({ provider: 'none', available: false })
-  })
-
-  it('emits the linear teamKey default when configured', () => {
-    const settings = makeSettings({
-      tracker: { provider: 'linear' },
-      linear: { apiKey: 'k', teamKey: 'ENG' },
-    })
-    const tracker = makeTrackerClient({ provider: 'linear', available: true })
-
-    const out = computeTrackerPromptContext(settings, tracker)
-    expect(out).toEqual({ provider: 'linear', available: true, defaults: { teamKey: 'ENG' } })
-  })
-
-  it('omits defaults when no provider-specific data is available', () => {
-    const settings = makeSettings({ tracker: { provider: 'jira' } })
-    const tracker = makeTrackerClient({ provider: 'jira', available: true })
-
-    const out = computeTrackerPromptContext(settings, tracker)
-    expect(out).toEqual({ provider: 'jira', available: true })
+    const out = computeTrackerPromptContext(plugins)
+    expect(out).toEqual({ available: true, pluginId: 'jira' })
   })
 })
 
@@ -651,40 +648,22 @@ function parseJobContext(prompt: string): Record<string, unknown> {
   return JSON.parse(prompt.slice(jsonStart, jsonEnd)) as Record<string, unknown>
 }
 
-interface MakeSettingsArgs {
-  tracker?: { provider?: 'none' | 'jira' | 'github' | 'linear' }
-  github?: { token?: string; owner?: string }
-  linear?: { apiKey?: string; teamKey?: string }
-}
-
-function makeSettings(args: MakeSettingsArgs): Settings {
-  // Cast through unknown — the prompt-builder helper only reads a small
-  // slice of `Settings`, so we don't bother fully populating the shape.
-  // If new fields are added that the helper actually depends on the
-  // related test will fail loudly via undefined access.
+function fakeTrackerPlugin(id: string, defaults?: Record<string, string>): TrackerPluginRuntime {
   return {
-    tracker: args.tracker,
-    github: {
-      token: args.github?.token ?? '',
-      owner: args.github?.owner ?? '',
-      baseUrl: 'https://api.github.com',
+    manifest: {
+      id,
+      kind: 'tracker',
+      version: '0.0.1',
+      displayName: id,
+      hostCompatibility: '*',
+      configSchema: z.object({}),
     },
-    ...(args.linear ? { linear: args.linear } : {}),
-  } as unknown as Settings
-}
-
-function makeTrackerClient(args: { provider: TrackerProvider; available: boolean }): TrackerClient {
-  return {
-    provider: args.provider,
-    isAvailable: () => args.available,
-    createEpic: vi.fn(),
-    createIssue: vi.fn(),
-    linkIssues: vi.fn(),
-    getIssue: vi.fn(),
-    listChildren: vi.fn(),
-    transitionIssue: vi.fn(),
-    commentIssue: vi.fn(),
-  } as unknown as TrackerClient
+    kind: 'tracker',
+    init: async () => {},
+    healthcheck: async () => ({ ok: true }),
+    dispose: async () => {},
+    ...(defaults ? { promptDefaults: () => defaults } : {}),
+  }
 }
 
 function fakeScmPlugin(id: string): ScmPluginRuntime {

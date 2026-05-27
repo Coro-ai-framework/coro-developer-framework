@@ -89,6 +89,7 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
 
   private token!: string
   private apiBaseUrl?: string
+  private defaultOwner?: string
   private available = false
   private trackerClient!: GitHubTrackerClient
 
@@ -96,6 +97,7 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
     const cfg = ghTrackerConfigSchema.parse(rawConfig)
     this.token = cfg.token
     this.apiBaseUrl = cfg.apiBaseUrl
+    this.defaultOwner = cfg.defaultOwner
     this.available = Boolean(cfg.token && cfg.defaultOwner)
     this.trackerClient = new GitHubTrackerClient({
       token: cfg.token,
@@ -103,6 +105,16 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
       ...(cfg.defaultRepo ? { defaultRepo: cfg.defaultRepo } : {}),
       ...(cfg.apiBaseUrl ? { apiBaseUrl: cfg.apiBaseUrl } : {}),
     })
+  }
+
+  /**
+   * GitHub Issues surfaces the configured default owner so the
+   * campaign-planner can fill `owner` on `mcp__github-issues__*` tool
+   * calls without re-deriving it from the spec.
+   */
+  promptDefaults(): Record<string, string> | undefined {
+    if (!this.defaultOwner) return undefined
+    return { owner: this.defaultOwner }
   }
 
   async healthcheck(): Promise<PluginHealth> {

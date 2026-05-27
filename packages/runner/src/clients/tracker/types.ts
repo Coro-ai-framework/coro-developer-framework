@@ -1,19 +1,11 @@
-// ── Tracker abstraction ──────────────────────────────────────────────────────
+// ── Tracker client shared types ──────────────────────────────────────────────
 //
-// Issue trackers (Jira, GitHub Issues, Linear, …) are write-back targets the
-// campaign-planner uses to record the breakdown of a feature into reviewable
-// issues with explicit dependency edges. The runner stays provider-agnostic
-// by talking to this interface only; concrete clients live alongside in
-// `clients/tracker/<provider>.ts`.
-//
-// Why a separate abstraction over the existing `JiraClient`:
-//   - JiraClient today is read-skewed (get / search / comment / transition).
-//     The campaign workflow needs create + link + list-children, which are
-//     write operations; lumping them into JiraClient would muddy the
-//     existing readonly contract used by the spec-writer agent.
-//   - GitHub Issues and Linear use entirely different shapes. A common
-//     interface keeps the campaign-planner agent prompt portable across
-//     tenants without per-provider branches in agent markdown.
+// Argument / result envelopes shared by every concrete tracker REST client
+// (`JiraTrackerClient`, `LinearTrackerClient`, `GitHubTrackerClient`). The
+// clients themselves are owned by their corresponding plugin runtimes and
+// resolved through `PluginRegistry.resolveTracker({})`; the runner core no
+// longer mounts an aggregated `TrackerClient` interface — every tracker
+// path goes through the registry.
 
 export type TrackerProvider = 'jira' | 'github' | 'linear'
 
@@ -90,17 +82,3 @@ export interface TrackerNotConfigured {
 }
 
 export type TrackerResult<T> = T | TrackerNotConfigured
-
-export interface TrackerClient {
-  readonly provider: TrackerProvider
-  /** Always usable as a probe — agents can read this before committing to a tracker round-trip. */
-  isAvailable(): boolean
-
-  createEpic(args: CreateEpicArgs): Promise<TrackerResult<TrackerIssue>>
-  createIssue(args: CreateIssueArgs): Promise<TrackerResult<TrackerIssue>>
-  linkIssues(args: LinkIssuesArgs): Promise<TrackerResult<{ ok: true }>>
-  getIssue(key: string): Promise<TrackerResult<TrackerIssue>>
-  listChildren(parentKey: string): Promise<TrackerResult<TrackerIssue[]>>
-  transitionIssue(args: TransitionIssueArgs): Promise<TrackerResult<{ ok: true }>>
-  commentIssue(args: CommentIssueArgs): Promise<TrackerResult<{ ok: true }>>
-}

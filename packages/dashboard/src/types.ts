@@ -111,7 +111,7 @@ export type CampaignChildStatus =
   | 'cancelled'
 
 export interface TrackerRef {
-  provider: 'jira' | 'github' | 'linear'
+  pluginId: string
   key: string
   url: string
 }

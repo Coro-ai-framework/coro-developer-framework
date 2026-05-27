@@ -3,10 +3,8 @@ import type { HookPolicy, McpServerDescriptor, PhaseExecutorRuntime, PluginMcpSe
 import { BitBucketClient } from '../clients/bitbucket'
 import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
-import { JiraClient } from '../clients/jira'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
-import type { TrackerClient } from '../clients/tracker'
 import { Settings } from '../config/settings'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
@@ -42,19 +40,10 @@ export interface ToolContext {
   ghGitClient: GitClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
-  jiraClient: JiraClient
-  /**
-   * Provider-agnostic issue-tracker client used by the campaign-planner.
-   * Resolved at runner bootstrap from `settings.tracker.provider` (default:
-   * Jira when configured, otherwise a stub that reports `available=false`
-   * from every method).
-   */
-  trackerClient: TrackerClient
   /**
    * Plugin registry shared with the runner. MCP tools dispatch
-   * `scm_*` / `tracker_*` calls through this; legacy `bb_*` /
-   * `gh_*` / `jira_*` wrappers also resolve through here so they
-   * behave identically.
+   * `scm_*` / `tracker_*` calls through this — the registry is the
+   * single source of truth for which SCM / tracker plugin is active.
    */
   plugins: PluginRegistry
   logger: Logger

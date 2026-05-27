@@ -248,11 +248,12 @@ export interface ConversationMessage {
  * Where a campaign child issue lives in the chosen tracker.
  * Optional — children created mid-campaign without a tracker round-trip
  * still execute; the tracker is system-of-record but not on the critical
- * path. `provider` is informational; the runner picks the actual client
- * via `settings.tracker.provider`.
+ * path. `pluginId` is informational and mirrors the active tracker
+ * plugin's manifest id (`'jira'`, `'linear'`, `'github-issues'`, …);
+ * the runner picks the actual client via the plugin registry.
  */
 export interface TrackerRef {
-  provider: 'jira' | 'github' | 'linear'
+  pluginId: string
   key: string
   url: string
 }

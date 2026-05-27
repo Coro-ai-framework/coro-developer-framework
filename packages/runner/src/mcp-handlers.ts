@@ -1101,7 +1101,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     convert_to_campaign: async (args: {
       title: string
       description: string
-      trackerEpicRef?: { provider: 'jira' | 'github' | 'linear'; key: string; url: string }
+      trackerEpicRef?: { pluginId: string; key: string; url: string }
     }) => {
       const { convertToCampaign } = await import('./tools/campaign')
       try {
@@ -1135,7 +1135,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       description: string
       params?: Record<string, unknown>
       dependsOn?: string[]
-      trackerRef?: { provider: 'jira' | 'github' | 'linear'; key: string; url: string }
+      trackerRef?: { pluginId: string; key: string; url: string }
     }) => {
       const { campaignRegisterChild } = await import('./tools/campaign')
       try {

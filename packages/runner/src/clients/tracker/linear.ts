@@ -27,7 +27,6 @@ import type {
   CreateEpicArgs,
   CreateIssueArgs,
   LinkIssuesArgs,
-  TrackerClient,
   TrackerIssue,
   TrackerNotConfigured,
   TrackerResult,
@@ -77,7 +76,7 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
   }
 }
 
-export class LinearTrackerClient implements TrackerClient {
+export class LinearTrackerClient {
   readonly provider = 'linear' as const
   private readonly available: boolean
   private readonly apiUrl: string

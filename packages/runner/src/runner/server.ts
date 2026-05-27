@@ -2119,13 +2119,14 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           ? candidateExecutorIds[0]
           : undefined
 
-      // Redact sensitive fields for display. Git tokens and tracker creds
-      // round-trip with a `...`-redaction convention so the dashboard can
-      // show that a secret is set without ever shipping it to the browser.
-      // PUT /config restores the on-disk value when it sees a redacted
-      // string come back. LLM-provider credentials live under
-      // `plugins.installed.<id>.config` and are redacted by the registry's
-      // own response builder — the runner core no longer touches them here.
+      // Redact sensitive fields for display. The legacy `git.token`
+      // round-trips with a `...`-redaction convention so the dashboard
+      // can show that a secret is set without shipping it to the
+      // browser; PUT /config restores the on-disk value when it sees a
+      // redacted string come back. Plugin-shape credentials (LLM, SCM,
+      // tracker) live under `plugins.installed.<id>.config` and are
+      // redacted further down via `redactPluginConfig` — the runner
+      // core no longer touches them here.
       const safeConfig = config ? {
         ...config,
         llm: synthesisedDefaultProvider
@@ -2136,23 +2137,6 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           token: config.git.token
             ? `${config.git.token.slice(0, 6)}...${config.git.token.slice(-4)}`
             : '',
-        } : undefined,
-        // Tracker creds round-trip with the same `...` redaction
-        // convention as anthropic + git so the dashboard can display a
-        // hint that the secret is set without ever shipping it to the
-        // browser. PUT /config restores the on-disk value when it sees
-        // a `...`-redacted string come back.
-        tracker: config.tracker ? {
-          provider: config.tracker.provider,
-          jira: config.tracker.jira ? {
-            baseUrl: config.tracker.jira.baseUrl,
-            username: config.tracker.jira.username,
-            apiToken: redactSecret(config.tracker.jira.apiToken),
-          } : undefined,
-          linear: config.tracker.linear ? {
-            apiKey: redactSecret(config.tracker.linear.apiKey),
-            teamKey: config.tracker.linear.teamKey,
-          } : undefined,
         } : undefined,
         // S9 toggle. Always echo (even when `false`) so the
         // dashboard can render the switch in its actual state.
@@ -2320,39 +2304,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         delete (merged as Record<string, unknown>).cloud
       }
 
-      // Tracker block. Treat redacted secrets the same way the anthropic
-      // branch does: when the dashboard echoes a `...` value back we
-      // preserve whatever is already on disk. Switching providers wipes
-      // the inactive credential sub-blocks on save (handled by
-      // `pruneEmptyConfigSections` below) so we don't accumulate stale
-      // tokens.
-      if (updates.tracker) {
-        const incoming = updates.tracker as {
-          provider?: 'none' | 'jira' | 'github' | 'linear'
-          jira?: { baseUrl?: string; username?: string; apiToken?: string }
-          linear?: { apiKey?: string; teamKey?: string }
-        }
-        const next: NonNullable<LocalConfig['tracker']> = {}
-        if (incoming.provider) next.provider = incoming.provider
-        if (incoming.jira) {
-          next.jira = {
-            ...(incoming.jira.baseUrl !== undefined ? { baseUrl: incoming.jira.baseUrl } : {}),
-            ...(incoming.jira.username !== undefined ? { username: incoming.jira.username } : {}),
-            apiToken: isRedacted(incoming.jira.apiToken)
-              ? existing.tracker?.jira?.apiToken
-              : incoming.jira.apiToken ?? existing.tracker?.jira?.apiToken,
-          }
-        }
-        if (incoming.linear) {
-          next.linear = {
-            apiKey: isRedacted(incoming.linear.apiKey)
-              ? existing.tracker?.linear?.apiKey
-              : incoming.linear.apiKey ?? existing.tracker?.linear?.apiKey,
-            ...(incoming.linear.teamKey !== undefined ? { teamKey: incoming.linear.teamKey } : {}),
-          }
-        }
-        merged.tracker = next
-      }
+      // Tracker credentials live under `plugins.installed.{jira|linear|
+      // github-issues}.config` and are merged via the generic plugins
+      // branch below — there is no longer a legacy top-level `tracker`
+      // block to special-case here.
 
       // S9: inheritClaudeCodeMcps toggle — discover user-level
       // Claude Code MCP entries and merge them into every job
@@ -3139,11 +3094,24 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       }
       const provider = body.provider
       const existing = loadLocalConfig()
+      // Plugin-installed creds are the single source of truth. The
+      // dashboard may send `...`-redacted secrets on round-trip when
+      // the user only changed non-secret fields; in that case we fill
+      // in from the persisted plugin config.
+      const jiraInstalled = existing?.plugins?.installed?.['jira']?.config as
+        | { baseUrl?: string; username?: string; apiToken?: string }
+        | undefined
+      const linearInstalled = existing?.plugins?.installed?.['linear']?.config as
+        | { apiKey?: string; teamKey?: string }
+        | undefined
+      const ghIssuesInstalled = existing?.plugins?.installed?.['github-issues']?.config as
+        | { token?: string; defaultOwner?: string }
+        | undefined
 
       if (provider === 'jira') {
-        const baseUrl = (body.jira?.baseUrl ?? existing?.tracker?.jira?.baseUrl ?? '').trim()
-        const username = (body.jira?.username ?? existing?.tracker?.jira?.username ?? '').trim()
-        const apiToken = resolveSecret(body.jira?.apiToken, existing?.tracker?.jira?.apiToken)
+        const baseUrl = (body.jira?.baseUrl ?? jiraInstalled?.baseUrl ?? '').trim()
+        const username = (body.jira?.username ?? jiraInstalled?.username ?? '').trim()
+        const apiToken = resolveSecret(body.jira?.apiToken, jiraInstalled?.apiToken)
         if (!baseUrl || !username || !apiToken) {
           res.json({ ok: false, message: 'Jira requires base URL, username, and API token.' })
           return
@@ -3166,7 +3134,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       }
 
       if (provider === 'linear') {
-        const apiKey = resolveSecret(body.linear?.apiKey, existing?.tracker?.linear?.apiKey)
+        const apiKey = resolveSecret(body.linear?.apiKey, linearInstalled?.apiKey)
         if (!apiKey) {
           res.json({ ok: false, message: 'Linear requires an API key.' })
           return
@@ -3197,21 +3165,19 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
 
-      if (provider === 'github') {
-        // GitHub Issues reuses the git credential. Delegate to the same
-        // ping the /test/git endpoint runs.
-        const gitProvider = body.git?.provider ?? existing?.git?.provider
-        if (gitProvider !== 'github') {
-          res.json({
-            ok: false,
-            message: 'GitHub Issues requires the git provider to be GitHub.',
-          })
-          return
-        }
+      if (provider === 'github' || provider === 'github-issues') {
+        // GitHub Issues is its own plugin (`github-issues`) carrying
+        // its own token. Older test payloads sometimes route credentials
+        // through the still-legacy `git.*` body shape during the SCM
+        // step of the wizard; we keep that fallback for now but prefer
+        // the plugin-installed creds.
         const username = (body.git?.username ?? existing?.git?.username ?? '').trim()
-        const token = resolveSecret(body.git?.token, existing?.git?.token)
+        const token = resolveSecret(
+          body.git?.token ?? (body as { token?: string }).token,
+          ghIssuesInstalled?.token ?? existing?.git?.token,
+        )
         if (!token) {
-          res.json({ ok: false, message: 'GitHub token is required (set it in Source control).' })
+          res.json({ ok: false, message: 'GitHub token is required (set it in Source control or under GitHub Issues).' })
           return
         }
         const r = await fetch('https://api.github.com/user', {

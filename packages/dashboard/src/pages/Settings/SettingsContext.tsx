@@ -120,12 +120,6 @@ export interface ConfigResponse {
       workspace?: string
     }
     cloud?: { url: string; token: string }
-    /** Legacy single-slot tracker block; translated to plugin entries on load. */
-    tracker?: {
-      provider?: 'none' | 'jira' | 'github' | 'linear'
-      jira?: { baseUrl?: string; username?: string; apiToken?: string }
-      linear?: { apiKey?: string; teamKey?: string }
-    }
     plugins?: PluginsConfigShape
     mcpServers?: Record<string, McpServerEntry>
     inheritClaudeCodeMcps?: boolean
@@ -367,58 +361,16 @@ function legacyGitToPlugin(
   return null
 }
 
-function legacyTrackerToPlugin(
-  tracker: NonNullable<NonNullable<ConfigResponse['config']>['tracker']>,
-  gitFallback?: NonNullable<ConfigResponse['config']>['git'],
-): { id: string; entry: PluginInstalledEntry } | null {
-  if (tracker.provider === 'jira' && tracker.jira) {
-    return {
-      id: 'jira',
-      entry: {
-        enabled: true,
-        config: {
-          baseUrl: tracker.jira.baseUrl ?? '',
-          username: tracker.jira.username ?? '',
-          apiToken: tracker.jira.apiToken ?? '',
-        },
-      },
-    }
-  }
-  if (tracker.provider === 'linear' && tracker.linear) {
-    return {
-      id: 'linear',
-      entry: {
-        enabled: true,
-        config: {
-          apiKey: tracker.linear.apiKey ?? '',
-          ...(tracker.linear.teamKey ? { teamKey: tracker.linear.teamKey } : {}),
-        },
-      },
-    }
-  }
-  if (tracker.provider === 'github' && gitFallback?.token) {
-    return {
-      id: 'github-issues',
-      entry: {
-        enabled: true,
-        config: {
-          token: gitFallback.token,
-          defaultOwner: gitFallback.workspace ?? gitFallback.username,
-        },
-      },
-    }
-  }
-  return null
-}
-
 function configToDraft(response: ConfigResponse): SettingsDraft {
   const cfg = response.config
   if (!cfg) return EMPTY_DRAFT
   const mcpJson = JSON.stringify(cfg.mcpServers ?? {}, null, 2)
 
-  // Plugins: prefer explicit `plugins.installed`; fall back to legacy
-  // git/tracker translation so users coming from a pre-migration
-  // config still see their credentials in the plugin cards.
+  // Plugin-installed entries are the single source of truth for provider
+  // credentials. The legacy SCM `git.*` block is still surfaced as a
+  // synthetic plugin entry so users mid-migration keep seeing their
+  // creds in the SCM cards; once SCM is fully on plugin-shape, this
+  // fallback goes away too.
   const installed: Record<string, PluginInstalledEntry> = {}
   let defaultScm = ''
   let defaultTracker = ''
@@ -431,15 +383,9 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     }
     defaultScm = cfg.plugins.defaults?.scm ?? ''
     defaultTracker = cfg.plugins.defaults?.tracker ?? ''
-  } else {
-    if (cfg.git) {
-      const seeded = legacyGitToPlugin(cfg.git)
-      if (seeded) installed[seeded.id] = seeded.entry
-    }
-    if (cfg.tracker) {
-      const seeded = legacyTrackerToPlugin(cfg.tracker, cfg.git)
-      if (seeded) installed[seeded.id] = seeded.entry
-    }
+  } else if (cfg.git) {
+    const seeded = legacyGitToPlugin(cfg.git)
+    if (seeded) installed[seeded.id] = seeded.entry
   }
 
   const guardrailRules = (response.resolved?.guardrails?.rules ?? []).map(r => ({

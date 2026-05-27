@@ -103,23 +103,6 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
       baseUrl: process.env.TEMPO_BASE_URL ?? '',
       apiKey: process.env.TEMPO_API_KEY ?? '',
     },
-    jira: {
-      baseUrl: config.tracker?.jira?.baseUrl ?? process.env.JIRA_BASE_URL ?? '',
-      username: config.tracker?.jira?.username ?? process.env.JIRA_USERNAME ?? '',
-      apiToken: config.tracker?.jira?.apiToken ?? process.env.JIRA_API_TOKEN ?? '',
-      pollIntervalSeconds: 60,
-    },
-    ...(config.tracker?.provider
-      ? { tracker: { provider: config.tracker.provider } }
-      : {}),
-    ...(config.tracker?.linear?.apiKey
-      ? {
-          linear: {
-            apiKey: config.tracker.linear.apiKey,
-            ...(config.tracker.linear.teamKey ? { teamKey: config.tracker.linear.teamKey } : {}),
-          },
-        }
-      : {}),
     ngrok: {
       authToken: '',
       staticDomain: '',

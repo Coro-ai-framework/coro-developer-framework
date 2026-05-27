@@ -120,8 +120,6 @@ function makeCtx(opts: MakeCtxOpts = {}): ToolContext {
     ghGitClient: null,
     lokiClient: {} as ToolContext['lokiClient'],
     tempoClient: {} as ToolContext['tempoClient'],
-    jiraClient: {} as ToolContext['jiraClient'],
-    trackerClient: {} as ToolContext['trackerClient'],
     plugins: new PluginRegistry(),
   }
 }

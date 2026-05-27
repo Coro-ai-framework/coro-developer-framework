@@ -211,7 +211,7 @@ For every child in your breakdown, in dependency-aware order (parents before chi
        // any extra hints the child's Planner should see
      },
      trackerRef: {                                     // omit if no tracker
-       provider: "<tracker.pluginId>",                 // e.g. 'jira', 'linear', 'github-issues'
+       pluginId: "<tracker.pluginId>",                 // e.g. 'jira', 'linear', 'github-issues'
        key: "<child issue key returned in step 1>",
        url: "<child issue url>"
      }

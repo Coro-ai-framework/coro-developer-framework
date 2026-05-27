@@ -1296,8 +1296,6 @@ export class Dispatcher {
       ghGitClient: this.ctx.ghGitClient,
       lokiClient: this.ctx.lokiClient,
       tempoClient: this.ctx.tempoClient,
-      jiraClient: this.ctx.jiraClient,
-      trackerClient: this.ctx.trackerClient,
       plugins: this.ctx.plugins,
       logger: this.ctx.logger,
     }

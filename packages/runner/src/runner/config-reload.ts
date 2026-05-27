@@ -53,10 +53,8 @@ import { buildDropinFactoryMap } from '../plugins/loader'
 import { createBitBucketClients } from '../clients/bitbucket'
 import { createGitClient, createGitHubGitClient } from '../clients/git'
 import { createGitHubClient } from '../clients/github'
-import { createJiraClient } from '../clients/jira'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
-import { createTrackerClient } from '../clients/tracker'
 import { buildSettingsFromLocal, seedExecutorDefaultAliases } from './build-settings'
 
 /**
@@ -125,8 +123,6 @@ export async function reloadRunnerState(args: {
     ghGitClient: createGitHubGitClient(newSettings),
     lokiClient: createLokiClient(newSettings),
     tempoClient: createTempoClient(newSettings),
-    jiraClient: createJiraClient(newSettings),
-    trackerClient: createTrackerClient(newSettings),
   }
   Object.assign(ctx, newClients)
 

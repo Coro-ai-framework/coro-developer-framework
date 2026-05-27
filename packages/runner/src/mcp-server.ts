@@ -434,7 +434,7 @@ export function createCoroMcpServer(
           title: z.string().describe('Short epic title — surfaces on the tracker epic and PR copy.'),
           description: z.string().describe('Long-form feature description handed to the campaign-planner agent.'),
           trackerEpicRef: z.object({
-            provider: z.enum(['jira', 'github', 'linear']),
+            pluginId: z.string().describe('Active tracker plugin id (e.g. "jira", "linear", "github-issues").'),
             key: z.string(),
             url: z.string(),
           }).optional().describe('Optional pointer to a pre-existing tracker epic; otherwise the campaign-planner creates one.'),
@@ -463,10 +463,10 @@ export function createCoroMcpServer(
           params: z.record(z.string(), z.unknown()).optional().describe('Seed params for the child job (e.g. repoSlug). The dispatcher injects epicAllowed=false and campaignParentId automatically.'),
           dependsOn: z.array(z.string()).optional().describe('Names of other registered children this one is blocked on.'),
           trackerRef: z.object({
-            provider: z.enum(['jira', 'github', 'linear']),
+            pluginId: z.string().describe('Active tracker plugin id (e.g. "jira", "linear", "github-issues").'),
             key: z.string(),
             url: z.string(),
-          }).optional().describe('Tracker issue created for this child (typically created via tracker_create_issue first).'),
+          }).optional().describe('Tracker issue created for this child (typically created via the active tracker plugin first).'),
         },
         h.campaign_register_child,
       ),

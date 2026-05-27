@@ -84,6 +84,7 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
 
   private apiKey!: string
   private apiUrl?: string
+  private teamKey?: string
   private available = false
   private trackerClient!: LinearTrackerClient
 
@@ -91,12 +92,23 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
     const cfg = linearConfigSchema.parse(rawConfig)
     this.apiKey = cfg.apiKey
     this.apiUrl = cfg.apiUrl
+    this.teamKey = cfg.teamKey
     this.available = Boolean(cfg.apiKey)
     this.trackerClient = new LinearTrackerClient({
       apiKey: cfg.apiKey,
       ...(cfg.teamKey ? { defaultTeamKey: cfg.teamKey } : {}),
       ...(cfg.apiUrl ? { apiUrl: cfg.apiUrl } : {}),
     })
+  }
+
+  /**
+   * Linear surfaces its configured default team key so the campaign-planner
+   * can pass `team: tracker.defaults.teamKey` without re-deriving it from
+   * the spec on every job.
+   */
+  promptDefaults(): Record<string, string> | undefined {
+    if (!this.teamKey) return undefined
+    return { teamKey: this.teamKey }
   }
 
   async healthcheck(): Promise<PluginHealth> {

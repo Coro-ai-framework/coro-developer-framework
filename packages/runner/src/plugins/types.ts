@@ -647,6 +647,16 @@ export interface TrackerPluginRuntime<Config = unknown> extends PluginRuntime<Co
   createEpic?(args: TrackerCreateEpicArgs): Promise<TrackerIssue>
   linkIssues?(args: TrackerLinkIssuesArgs): Promise<void>
 
+  // ── Prompt surface ──────────────────────────────────────────────────────
+  /**
+   * Provider-specific defaults the runner injects into the agent
+   * job-context block as `tracker.defaults`. Keys are intentionally
+   * provider-specific (e.g. `owner` for GitHub Issues, `teamKey` for
+   * Linear) so the agent prompt can reference them unambiguously.
+   * Return `undefined` when no defaults are configured.
+   */
+  promptDefaults?(): Record<string, string> | undefined
+
   // ── Webhook normalisation (optional) ────────────────────────────────────
   /** Trackers without webhook support return `null` from every call. */
   normalizeInbound?(req: { headers: Record<string, string | string[] | undefined>; rawBody: Buffer }): NormalizedEvent | null

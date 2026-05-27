@@ -260,17 +260,10 @@ describe('legacyConfigToPlugins', () => {
     expect(plugins.defaults?.scm).toBe('github')
   })
 
-  it('translates legacy jira tracker creds', () => {
-    const cfg: LocalConfig = {
-      tracker: {
-        provider: 'jira',
-        jira: { baseUrl: 'https://example.atlassian.net', username: 'u', apiToken: 't' },
-      },
-    }
-    const plugins = legacyConfigToPlugins(cfg)
-    expect(plugins.installed['jira']).toBeDefined()
-    expect(plugins.defaults?.tracker).toBe('jira')
-  })
+  // The legacy `tracker.*` config block was removed in the
+  // single-source-of-truth refactor — tracker credentials now live
+  // exclusively under `plugins.installed.{jira|linear|github-issues}`.
+  // The translator no longer has a tracker branch.
 
   it('does not set defaults when ambiguous', () => {
     const cfg: LocalConfig = {
