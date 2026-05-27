@@ -9,7 +9,7 @@ import type { ScmPluginRuntime, TrackerIssue, TrackerPluginRuntime } from '../pl
 export const INTAKE_MAX_FILE_BYTES = 64 * 1024
 export const INTAKE_MAX_SEARCH_RESULTS = 20
 export const INTAKE_TOOL_TIMEOUT_MS = 15_000
-export const INTAKE_MAX_TOOL_ROUNDS = 5
+export const INTAKE_MAX_TOOL_ROUNDS = 8
 /** Hard cap on a single tracker description we hand back to the LLM. */
 export const INTAKE_MAX_TRACKER_DESCRIPTION_CHARS = 8 * 1024
 
