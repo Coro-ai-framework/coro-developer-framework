@@ -381,6 +381,23 @@ function mimeForPath(filePath: string): string {
 }
 
 /**
+ * Whitelist of artefact file extensions a developer may rewrite from the
+ * dashboard. Restricted to text-like formats so we can't accidentally let
+ * the artefact editor stomp on binary assets or scripts the agent shipped.
+ */
+const EDITABLE_ARTIFACT_EXTENSIONS = new Set(['.md', '.txt', '.yml', '.yaml', '.json'])
+
+function isEditableArtifactPath(filePath: string): boolean {
+  return EDITABLE_ARTIFACT_EXTENSIONS.has(path.extname(filePath).toLowerCase())
+}
+
+/**
+ * Hard cap on developer-uploaded artefact bodies. Generous compared to
+ * typical spec / plan markdown (~10–50 KB) but blocks abuse.
+ */
+const MAX_ARTIFACT_EDIT_BYTES = 2 * 1024 * 1024
+
+/**
  * Create and start the runner's local HTTP server.
  * CLI commands (`coro job`, `coro status`, etc.) talk to this.
  */
@@ -1492,6 +1509,98 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       res.status(404).json({ error: `Could not read artifact content: ${msg}` })
+    }
+  })
+
+  // Developer-facing edit endpoint. The dashboard artefact reader uses this
+  // to let humans tweak agent-produced specs / plans / reports before
+  // approving the phase, without needing to drop into a terminal. Editing
+  // is restricted to text-like extensions (see EDITABLE_ARTIFACT_EXTENSIONS)
+  // and the same path-traversal guards as the GET sibling above.
+  app.put('/jobs/:jobId/artifacts/:artifactId/content', async (req: Request, res: Response) => {
+    const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+    const artifactId = Array.isArray(req.params.artifactId) ? req.params.artifactId[0] : req.params.artifactId
+
+    try {
+      const job = await stateBackend.getJob(jobId)
+      if (!job) {
+        res.status(404).json({ error: `Job not found: ${jobId}` })
+        return
+      }
+
+      const artifacts = job.artifacts ?? []
+      const artifactIdx = artifacts.findIndex(a => a.id === artifactId)
+      if (artifactIdx === -1) {
+        res.status(404).json({ error: `Artifact not found: ${artifactId}` })
+        return
+      }
+      const artifact = artifacts[artifactIdx]
+
+      const rawPath = (artifact.data as Record<string, unknown> | undefined)?.['path']
+      if (typeof rawPath !== 'string' || !rawPath.trim()) {
+        res.status(400).json({ error: 'Artifact has no `data.path` to edit' })
+        return
+      }
+      if (!isEditableArtifactPath(rawPath)) {
+        res.status(415).json({
+          error: `Artifact extension is not editable from the dashboard (allowed: ${[...EDITABLE_ARTIFACT_EXTENSIONS].join(', ')})`,
+        })
+        return
+      }
+
+      const body = req.body as { content?: unknown } | undefined
+      const content = body?.content
+      if (typeof content !== 'string') {
+        res.status(400).json({ error: 'Request body must include `content` as a string' })
+        return
+      }
+      if (Buffer.byteLength(content, 'utf-8') > MAX_ARTIFACT_EDIT_BYTES) {
+        res.status(413).json({ error: `Artifact body exceeds ${MAX_ARTIFACT_EDIT_BYTES} bytes` })
+        return
+      }
+
+      const config = loadLocalConfig()
+      const workingDir = resolveLocalWorkingDir(config)
+      const jobWorkingDir = path.resolve(workingDir, jobId)
+      const resolved = path.resolve(jobWorkingDir, rawPath)
+
+      if (!resolved.startsWith(jobWorkingDir + path.sep) && resolved !== jobWorkingDir) {
+        logger.warn({ jobId, artifactId, rawPath, resolved }, 'Artifact edit path escape attempt blocked')
+        res.status(400).json({ error: 'Artifact path is outside the job working directory' })
+        return
+      }
+
+      // Make sure the file the agent registered actually exists before we
+      // accept an edit — refuse to create new files via this endpoint so we
+      // never resurrect a deleted artefact target.
+      try {
+        await fs.promises.stat(resolved)
+      } catch {
+        res.status(404).json({ error: `Artifact file no longer exists: ${rawPath}` })
+        return
+      }
+
+      await fs.promises.mkdir(path.dirname(resolved), { recursive: true })
+      await fs.promises.writeFile(resolved, content, 'utf-8')
+
+      const updatedArtifact = {
+        ...artifact,
+        editedAt: new Date().toISOString(),
+        editedBy: 'developer',
+      }
+      const nextArtifacts = artifacts.slice()
+      nextArtifacts[artifactIdx] = updatedArtifact
+      await stateBackend.updateJob(jobId, { artifacts: nextArtifacts })
+      await stateBackend.appendLog(
+        jobId,
+        `[artifact-edit] ${updatedArtifact.phase}/${updatedArtifact.kind}: developer edited ${rawPath}`,
+      )
+
+      res.json({ artifact: updatedArtifact })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      logger.error({ err, jobId, artifactId }, 'Artifact edit failed')
+      res.status(500).json({ error: `Could not save artifact content: ${msg}` })
     }
   })
 

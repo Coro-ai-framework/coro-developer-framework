@@ -127,6 +127,19 @@ export interface Artifact {
   data: Record<string, unknown>
   createdBy: string
   createdAt: string
+  /**
+   * Set when a developer edits the artefact's file content from the
+   * dashboard via `PUT /jobs/:jobId/artifacts/:artifactId/content`.
+   * The runner only stamps this on artefacts whose `data.path` points
+   * at a text-like file inside the job working directory.
+   */
+  editedAt?: string
+  /**
+   * Free-form identifier of who edited the artefact. Today the runner
+   * always sets this to `'developer'` (dashboard-initiated edits are
+   * the only writer); reserved for future agent / API attribution.
+   */
+  editedBy?: string
 }
 
 // ── Insight tracking ─────────────────────────────────────────────────────────

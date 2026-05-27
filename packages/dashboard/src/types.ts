@@ -83,6 +83,8 @@ export interface Artifact {
   data: Record<string, unknown>
   createdBy: string
   createdAt: string
+  editedAt?: string
+  editedBy?: string
 }
 
 export interface WorkflowPhase {
