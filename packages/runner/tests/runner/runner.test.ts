@@ -1091,6 +1091,51 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
   })
 
+  it('retries with a fresh session when Claude resume fails with stale previous_message_id', async () => {
+    const staleResumeError = new Error(
+      'Claude Code returned an error result: API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"diagnostics.previous_message_id: must be the `id` from a prior /v1/messages response (starts with `msg_`)"}}',
+    )
+    stateBackend = createMockStateBackend(makeJob({
+      phase: 'only',
+      status: 'queued',
+      sessionId: 'stale-sess-abc',
+    }))
+    ctx = makeRunnerContext(stateBackend)
+
+    let attempts = 0
+    const bundle = await runWithStubExecutor(
+      makeJob({ phase: 'only', sessionId: 'stale-sess-abc' }),
+      ctx,
+      async function* (req) {
+        attempts += 1
+        if (attempts === 1) {
+          if (req.sessionState?.sessionId !== 'stale-sess-abc') {
+            throw new Error(`expected resume session, got ${req.sessionState?.sessionId ?? 'none'}`)
+          }
+          throw staleResumeError
+        }
+        if (req.sessionState?.sessionId !== undefined) {
+          throw new Error(`expected fresh session, got ${req.sessionState?.sessionId}`)
+        }
+        yield* yieldEmptyPhase('fresh-sess-xyz')
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
+
+    expect(attempts).toBe(2)
+    expect(bundle.capturedRequests).toHaveLength(2)
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.sessionId).toBe('fresh-sess-xyz')
+    expect(stateBackend.appendLog).toHaveBeenCalledWith(
+      'runner-job-1',
+      '[control] Previous session could not be resumed (provider/session reset). Continuing with a fresh session.',
+    )
+    expect(stateBackend.appendLog).not.toHaveBeenCalledWith(
+      'runner-job-1',
+      expect.stringMatching(/^Runner crashed:/),
+    )
+  })
+
   it('uses phase kickoff prompt (fresh on phase 1, continuation on phase 2)', async () => {
     const prompts: string[] = []
     const resumes: Array<string | undefined> = []

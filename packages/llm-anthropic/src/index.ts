@@ -38,12 +38,14 @@ export {
 export {
   isRecoverableSteeringAbort,
   isSteeringDiagnosticText,
+  isBunSourceFrameLine,
   isMcpTransportErrorText,
   isMcpHealExhaustedError,
   isMcpInputDeadText,
   isMidPhaseStopReason,
   shouldClosePushableAfterResult,
 } from './steering-errors'
+export { isStaleSessionResumeError } from './session-errors'
 export { registerAnthropicHttpRoutes } from './http-routes'
 export { testAnthropicCredentials, readClaudeLocalSession } from './test-connection'
 

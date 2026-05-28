@@ -18,6 +18,20 @@ export function isRecoverableSteeringAbort(err: unknown): boolean {
   return isSteeringDiagnosticText(msg)
 }
 
+/**
+ * True when an stderr line is a Bun source frame.
+ *
+ * With `DEBUG_CLAUDE_AGENT_SDK=1`, Bun prints minified source frames
+ * (e.g. `9158 | ...async sendRequest(...) { ... }`) whenever an
+ * internal throw bubbles through a try/catch. Those frames are noise
+ * — the SDK handles the real control flow — and must not reach the
+ * per-job activity log even though they incidentally contain words
+ * like `control_request` that the surrounding stderr filter looks for.
+ */
+export function isBunSourceFrameLine(text: string): boolean {
+  return /^\d+\s*\|\s/.test(text)
+}
+
 /** True when tool_result text indicates a broken MCP transport. */
 export function isMcpTransportErrorText(text: string): boolean {
   return /stream closed|request aborted|process\s*transport is not ready|mcp(?:\s+|.*)(?:error|closed|disconnected)|connection closed/i.test(

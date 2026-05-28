@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isBunSourceFrameLine,
   isMcpHealExhaustedError,
   isMcpInputDeadText,
   isMcpTransportErrorText,
@@ -8,6 +9,23 @@ import {
   isSteeringDiagnosticText,
   shouldClosePushableAfterResult,
 } from '../src/steering-errors'
+
+describe('isBunSourceFrameLine', () => {
+  it('matches Bun-style minified SDK source frames', () => {
+    expect(
+      isBunSourceFrameLine(
+        '9158 | `)}async sendRequest(H,_,q,K=Pw6.randomUUID()){let O={type:"control_request",request_id:K,request:H};if(this.inputClosed)throw Error("Stream closed");if(q?.aborted)throw Error("Request aborted")',
+      ),
+    ).toBe(true)
+    expect(isBunSourceFrameLine('42 | foo()')).toBe(true)
+  })
+
+  it('rejects ordinary stderr lines', () => {
+    expect(isBunSourceFrameLine('Stream closed')).toBe(false)
+    expect(isBunSourceFrameLine('MCP error: Stream closed')).toBe(false)
+    expect(isBunSourceFrameLine('control_request failed with reason X')).toBe(false)
+  })
+})
 
 describe('isRecoverableSteeringAbort', () => {
   it('matches ede_diagnostic payloads', () => {

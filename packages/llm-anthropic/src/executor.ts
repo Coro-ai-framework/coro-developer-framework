@@ -61,6 +61,7 @@ import { ensureClaudeConfigSymlink } from './intelligence-symlink'
 import { healMcpTransport, isCoroMcpHealthy, MCP_RETRY_NUDGE } from './mcp-heal'
 import { reattachDynamicMcpServers } from './mcp-reattach'
 import {
+  isBunSourceFrameLine,
   isMcpHealExhaustedError,
   isMcpInputDeadText,
   isMcpTransportErrorText,
@@ -822,7 +823,14 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         GH_TOKEN: this.settings.github?.token ?? '',
         CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000',
         ENABLE_TOOL_SEARCH: 'true',
-        DEBUG_CLAUDE_AGENT_SDK: '1',
+        // Verbose SDK tracing is opt-in via CORO_DEBUG_CLAUDE_SDK=1.
+        // Leaving it on by default floods the activity log with Bun
+        // source frames whenever an AbortController fires inside the
+        // SDK's control-request channel (e.g. tool-use aborts on
+        // resume), which are caught internally and not real failures.
+        ...(process.env.CORO_DEBUG_CLAUDE_SDK === '1' || process.env.CORO_DEBUG_CLAUDE_SDK === 'true'
+          ? { DEBUG_CLAUDE_AGENT_SDK: '1' }
+          : {}),
       },
       stderr: (chunk: string) => {
         const text = String(chunk).trim()
@@ -831,6 +839,9 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
           const trimmed = line.trim()
           if (!trimmed) continue
           this.logger.debug({ phase: req.phase }, `[sdk-stderr] ${trimmed}`)
+          // Bun source frames are SDK-internal stack noise; skip them
+          // even when they incidentally match the filter below.
+          if (isBunSourceFrameLine(trimmed)) continue
           // MCP / Transport / control_request lines are surfaced into
           // the job log via a `log` event so the runner can chunk them.
           if (/mcp|Transport|sdkMcp|control_request/i.test(trimmed)) {

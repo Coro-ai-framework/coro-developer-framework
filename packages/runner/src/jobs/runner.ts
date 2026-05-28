@@ -679,23 +679,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // (`executor` is resolved earlier in the loop so its capabilities
       // can drive system-prompt + subagent assembly.)
 
-      // Developer-input channel handed to the executor. It starts as a
-      // no-op pair; the executor reassigns `push`/`close` early in
-      // `executePhase` (synchronously, before any await) so that
-      // dispatcher messages routed via this channel end up in the
-      // executor's live SDK input pushable. The mutation is observed
-      // by every subsequent `.push` because the dispatcher captured the
-      // same object reference via `onPhasePrepare` below.
-      const developerInput: DeveloperInputChannel = {
-        push: () => { /* replaced by executor on session start */ },
-        close: () => { /* replaced by executor on session start */ },
-      }
-
-      // Register BEFORE the executor runs so any developer message that
-      // races with phase startup lands in the executor's input on its
-      // first iteration. Mirrors the legacy `onPhasePrepare` contract.
-      options?.onPhasePrepare?.(liveJob.id, developerInput)
-
       const pluginMcpServers = collectPluginMcpServers({ plugins: ctx.plugins, logger })
       const userMcpServers = collectUserMcpServers({ logger })
       const mergedPluginMcpServers = {
@@ -718,7 +701,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Cheap and usually desirable; opt-out via `CORO_DISABLE_SESSION_RESUME`.
       const resumeDisabled = process.env.CORO_DISABLE_SESSION_RESUME === '1'
         || process.env.CORO_DISABLE_SESSION_RESUME === 'true'
-      const resumeSessionId = !resumeDisabled && liveJob.sessionId ? liveJob.sessionId : undefined
+      let resumeSessionId = !resumeDisabled && liveJob.sessionId ? liveJob.sessionId : undefined
 
       const abortController = new AbortController()
 
@@ -770,7 +753,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           },
           onSessionEnd: () => options?.onSessionEnd?.(liveJob.id),
         },
-        developerInput,
       }
 
       // Phase-local accumulators. The executor reports tokens via
@@ -817,8 +799,29 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           }
         : undefined
 
-      try {
-        for await (const ev of executor.executePhase(req) as AsyncIterable<PhaseExecutorEvent>) {
+      let staleSessionRetried = false
+      phaseExecutorAttempt: while (true) {
+        // Developer-input channel handed to the executor. It starts as a
+        // no-op pair; the executor reassigns `push`/`close` early in
+        // `executePhase` (synchronously, before any await) so that
+        // dispatcher messages routed via this channel end up in the
+        // executor's live SDK input pushable. The mutation is observed
+        // by every subsequent `.push` because the dispatcher captured the
+        // same object reference via `onPhasePrepare` below.
+        const developerInput: DeveloperInputChannel = {
+          push: () => { /* replaced by executor on session start */ },
+          close: () => { /* replaced by executor on session start */ },
+        }
+        req.developerInput = developerInput
+        req.sessionState = { sessionId: resumeSessionId }
+
+        // Register BEFORE the executor runs so any developer message that
+        // races with phase startup lands in the executor's input on its
+        // first iteration. Mirrors the legacy `onPhasePrepare` contract.
+        options?.onPhasePrepare?.(liveJob.id, developerInput)
+
+        try {
+          for await (const ev of executor.executePhase(req) as AsyncIterable<PhaseExecutorEvent>) {
           switch (ev.type) {
             case 'session_start': {
               if (ev.sessionId) sessionId = ev.sessionId
@@ -957,16 +960,41 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             break
           }
         }
-      } finally {
-        // Close the developer-input channel so the executor's internal
-        // SDK iterable can finish cleanly. The executor's
-        // `lifecycle.onSessionEnd` is responsible for calling
-        // `options?.onSessionEnd` itself.
-        try { developerInput.close() } catch { /* best-effort */ }
-        // Drop the per-phase context — any in-flight `run_subagent`
-        // calls have either resolved or aborted with the parent.
-        toolCtx.currentPhase = undefined
+          break phaseExecutorAttempt
+        } catch (phaseErr) {
+          if (
+            !staleSessionRetried
+            && resumeSessionId
+            && await isStaleSessionResumeErrorDynamic(phaseErr)
+          ) {
+            staleSessionRetried = true
+            resumeSessionId = undefined
+            sessionId = undefined
+            liveJob = await syncJob(stateBackend, liveJob, { sessionId: undefined })
+            toolCtx.job = liveJob
+            await stateBackend.appendLog(
+              liveJob.id,
+              '[control] Previous session could not be resumed (provider/session reset). Continuing with a fresh session.',
+            )
+            logger.info(
+              { jobId: liveJob.id, phase: liveJob.phase },
+              'Stale Claude session resume — retrying phase with a fresh session',
+            )
+            continue phaseExecutorAttempt
+          }
+          throw phaseErr
+        } finally {
+          // Close the developer-input channel so the executor's internal
+          // SDK iterable can finish cleanly. The executor's
+          // `lifecycle.onSessionEnd` is responsible for calling
+          // `options?.onSessionEnd` itself.
+          try { developerInput.close() } catch { /* best-effort */ }
+        }
       }
+
+      // Drop the per-phase context — any in-flight `run_subagent` calls
+      // have either resolved or aborted with the parent.
+      toolCtx.currentPhase = undefined
 
       // MCP usage diagnostics. Zero mcp calls while built-ins fired can
       // indicate SDK MCP registration issues and is logged for operators.
@@ -1492,6 +1520,27 @@ async function isRecoverableSteeringAbortDynamic(err: unknown): Promise<boolean>
       isRecoverableSteeringAbort?: (e: unknown) => boolean
     }
     return mod.isRecoverableSteeringAbort?.(err) ?? false
+  } catch {
+    return false
+  }
+}
+
+/** Inline fallback — mirrors `@coro-ai/llm-anthropic` `isStaleSessionResumeError`. */
+function isStaleSessionResumeErrorFallback(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  if (!/claude code returned an error result/i.test(msg) && !/API Error:\s*400/i.test(msg)) {
+    return false
+  }
+  return /previous_message_id|prior \/v1\/messages response|starts with [`']?msg_/i.test(msg)
+}
+
+async function isStaleSessionResumeErrorDynamic(err: unknown): Promise<boolean> {
+  if (isStaleSessionResumeErrorFallback(err)) return true
+  try {
+    const mod = (await import('@coro-ai/llm-anthropic')) as {
+      isStaleSessionResumeError?: (e: unknown) => boolean
+    }
+    return mod.isStaleSessionResumeError?.(err) ?? false
   } catch {
     return false
   }
