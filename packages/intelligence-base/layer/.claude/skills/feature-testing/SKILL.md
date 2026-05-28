@@ -59,6 +59,43 @@ The build must pass cleanly:
 
 If the build fails, stop immediately and report.
 
+### Reading build / test output efficiently
+
+Build and test runs typically produce kilobytes to megabytes of routine
+progress with the actionable bit at the bottom. **Never `Read` the whole
+output file** — pulling the full log into context bloats time-to-first-token,
+which is the single biggest driver of the upstream "stream idle ≈ 5 min"
+reconnects you see as **SYSTEM session started** events mid-phase. Each
+reconnect burns credits without producing progress.
+
+Default pattern: redirect once, then read only what matters via Bash.
+
+```bash
+# Capture full output for the record (cheap, runs once):
+cd "$REPO" && dotnet build VLGambling.sln --no-restore 2>&1 > "$JOB_DIR/build.txt"; echo "build exit: $?"
+
+# Then triage via Bash — never via Read on the whole file:
+tail -n 200 "$JOB_DIR/build.txt"
+grep -nE "(error|warning|FAIL|FAILED|Build succeeded|Tests Passed|Tests Failed)" "$JOB_DIR/build.txt" | tail -n 80
+sed -n '1,30p' "$JOB_DIR/build.txt"   # if the failure is at boot, not the tail
+```
+
+Language-specific cheatsheet:
+
+| Toolchain | First-line triage |
+|---|---|
+| .NET | `grep -nE "(error [A-Z]+[0-9]+|Build FAILED|Build succeeded|Tests Passed|Tests Failed)" build.txt \| tail -n 80` |
+| Go | `grep -nE "(FAIL|--- FAIL|PASS\|ok\s+)" test.txt \| tail -n 80` |
+| Node/npm | `grep -nE "(✖|FAIL|PASS|Tests:\s+|error TS[0-9]+)" test.txt \| tail -n 80` |
+| Python/pytest | `grep -nE "(FAILED\|PASSED\|ERROR\|====+)" pytest.txt \| tail -n 80` |
+| Cargo | `grep -nE "(^error|warning:|test result:)" build.txt \| tail -n 80` |
+
+Only `Read` the whole file when it is genuinely small (under ~5 KB) or
+when you need full context for a debugging step the tail/grep view
+cannot show. If a grep/tail does not surface what you need, narrow the
+matcher or grab a slightly bigger tail — do not fall back to a full
+`Read`.
+
 ## Acceptance criteria verification
 
 For each acceptance criterion in the job spec or implementation plan:
