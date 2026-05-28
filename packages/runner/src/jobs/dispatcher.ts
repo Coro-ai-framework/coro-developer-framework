@@ -222,18 +222,17 @@ export class Dispatcher {
     // `refreshJobForBoundary` plus the post-park error handler will both
     // notice the parked status and exit cleanly regardless.
     if (q) {
+      const inFlightMcp = q.getSteeringState?.()?.inFlightMcpTool
+      const mode = inFlightMcp ? 'safe' as const : 'urgent' as const
       void Promise.resolve()
-        .then(() => q.interrupt({ mode: 'urgent' }))
+        .then(() => q.interrupt({ mode }))
         .catch(err => {
           this.ctx.logger.debug(
-            { jobId, err },
+            { jobId, err, mode, inFlightMcp },
             'interrupt() during pause failed (agent likely between turns) — ignored',
           )
         })
     }
-    // Close the input queue so the SDK's streamInput for-await loop can
-    // exit and the CLI subprocess can shut its stdin cleanly.
-    this.activeInputQueues.get(jobId)?.close()
 
     const reasonSuffix = reason ? `: ${reason}` : ''
     await this.ctx.stateBackend.appendLog(jobId, `[control] Job paused by developer${reasonSuffix}`)
@@ -867,6 +866,10 @@ export class Dispatcher {
       return
     }
 
+    const mergedPrompt = job.pendingPrompt
+      ? `${job.pendingPrompt}\n\n---\n\n${framedPrompt}`
+      : framedPrompt
+
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
       escalationMessage: undefined,
@@ -874,7 +877,7 @@ export class Dispatcher {
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
       approvedAdvanceFromPhase: parked && job.awaitingNextPhase ? job.phase : undefined,
-      pendingPrompt: framedPrompt,
+      pendingPrompt: mergedPrompt,
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)

@@ -74,4 +74,39 @@ describe('Dispatcher.sendMessage', () => {
       }),
     )
   })
+
+  it('preserves earlier pendingPrompt when another parked message arrives', async () => {
+    const job = { ...makeJob(), pendingPrompt: '[DEVELOPER RESPONSE]\nfirst message' }
+    const getJob = vi.fn(async () => job)
+    const updateJob = vi.fn(async (_jobId: string, patch: Partial<Job>) => ({ ...job, ...patch }))
+    const appendLog = vi.fn(async () => undefined)
+
+    const dispatcher = new Dispatcher({
+      stateBackend: {
+        getJob,
+        updateJob,
+        appendLog,
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      },
+    } as never)
+
+    await dispatcher.sendMessage(job.id, 'second message')
+
+    expect(updateJob).toHaveBeenCalledWith(
+      job.id,
+      expect.objectContaining({
+        pendingPrompt: expect.stringContaining('first message'),
+      }),
+    )
+    const patch = updateJob.mock.calls[0]?.[1] as Partial<Job>
+    expect(typeof patch.pendingPrompt).toBe('string')
+    expect(patch.pendingPrompt).toContain('first message')
+    expect(patch.pendingPrompt).toContain('second message')
+    expect(patch.pendingPrompt).toContain('---')
+  })
 })

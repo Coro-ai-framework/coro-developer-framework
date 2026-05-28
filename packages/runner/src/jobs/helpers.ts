@@ -158,7 +158,6 @@ export function pausedJobPatch(): Partial<Job> {
     awaitingPrId: undefined,
     awaitingNextPhase: undefined,
     approvedAdvanceFromPhase: undefined,
-    pendingPrompt: undefined,
     escalationMessage: undefined,
   }
 }

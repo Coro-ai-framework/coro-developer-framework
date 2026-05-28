@@ -25,7 +25,7 @@ export interface JobControlBarProps {
   onCancel: () => Promise<void>
   pausing: boolean
   pauseError: string | null
-  onPause: () => Promise<void>
+  onPause: () => Promise<boolean | void>
   resuming: boolean
   resumeError: string | null
   resumePhase: string

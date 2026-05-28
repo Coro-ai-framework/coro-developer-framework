@@ -57,7 +57,13 @@ import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
-import { isPausableStatus, isRunningStatus, isTerminalStatus, isWaitingStatus } from '../lib/status'
+import {
+  isPausableStatus,
+  isPausedStatus,
+  isRunningStatus,
+  isTerminalStatus,
+  isWaitingStatus,
+} from '../lib/status'
 
 type DetailTab = 'activity' | 'insights' | 'diagnostics'
 
@@ -861,24 +867,28 @@ export default function JobDetail() {
     }
   }
 
-  async function handlePause() {
-    if (!jobId) return
+  async function handlePause(): Promise<boolean> {
+    if (!jobId) return false
     setPausing(true)
     setPauseError(null)
     try {
       await requestJson(`/jobs/${jobId}/pause`, jsonRequest({}, { method: 'POST' }))
       await refetch()
+      return true
     } catch (pauseIssue) {
       setPauseError(pauseIssue instanceof Error ? pauseIssue.message : 'Pause failed')
+      return false
     } finally {
       setPausing(false)
     }
   }
 
   async function handleStepIn() {
-    await handlePause()
-    setSteppedIn(true)
-    requestAnimationFrame(() => messageRef.current?.focus())
+    const paused = await handlePause()
+    if (paused) {
+      setSteppedIn(true)
+      requestAnimationFrame(() => messageRef.current?.focus())
+    }
   }
 
   async function handleRefresh() {
@@ -897,6 +907,15 @@ export default function JobDetail() {
       setInteractiveOverride(undefined)
     }
   }, [job?.interactive, interactiveOverride])
+
+  // Step-in helper copy should only stick while the run is in the
+  // explicit "paused by developer" state.
+  useEffect(() => {
+    if (!job) return
+    if (!isPausedStatus(job.status, job.awaitingEvent)) {
+      setSteppedIn(false)
+    }
+  }, [job?.status, job?.awaitingEvent])
 
   function updatePendingOutgoingMessages(
     updater: (messages: PendingOutgoingMessage[]) => PendingOutgoingMessage[],
@@ -1010,7 +1029,7 @@ export default function JobDetail() {
   // having to wait for a webhook.
   const canSendLiveMessage =
     (isRunningStatus(job.status) && connectionStatus !== 'disconnected')
-    || isWaitingStatus(job.status)
+    || (isWaitingStatus(job.status) && job.status !== 'awaiting-developer-input')
   const canReplyToEscalation = job.status === 'escalated'
 
   return (
