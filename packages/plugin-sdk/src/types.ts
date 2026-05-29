@@ -703,6 +703,20 @@ export type SteeringInterruptMode = 'safe' | 'urgent'
 export interface ExecutorSessionController {
   interrupt(options?: { mode?: SteeringInterruptMode }): Promise<void>
   /**
+   * Hard-stop the current phase. Unlike {@link interrupt} — which only
+   * makes the agent *yield* its turn so a steering message can be read,
+   * keeping the phase alive — `stop` ends the phase outright: it aborts
+   * the phase signal so the executor breaks out of its event loop and
+   * `executePhase` returns. The runner then reaches its post-phase
+   * boundary check and parks cleanly. Used by developer-initiated pause,
+   * where the intent is for the agent to actually stop, not continue.
+   *
+   * Optional so executors that cannot abort mid-phase still satisfy the
+   * interface; the dispatcher falls back to {@link interrupt} when a
+   * controller does not implement it.
+   */
+  stop?(): Promise<void>
+  /**
    * Optional steering snapshot. Anthropic executor reports in-flight MCP
    * tools so the dispatcher can choose safe vs urgent interrupt.
    */

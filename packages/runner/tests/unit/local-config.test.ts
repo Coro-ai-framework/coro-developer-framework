@@ -218,9 +218,13 @@ describe('local-config', () => {
   })
 
   describe('resolveTenantOverlaySource', () => {
-    it('defaults to none when overlay and gitRemote are absent', () => {
-      expect(resolveTenantOverlaySource({})).toEqual({ kind: 'none' })
-      expect(resolveTenantOverlaySource(null)).toEqual({ kind: 'none' })
+    it('defaults to the local intelligence dir when overlay and gitRemote are absent', () => {
+      const expected = { kind: 'localDir' as const, path: resolveIntelligenceDir({}) }
+      expect(resolveTenantOverlaySource({})).toEqual(expected)
+      expect(resolveTenantOverlaySource(null)).toEqual({
+        kind: 'localDir',
+        path: resolveIntelligenceDir(null),
+      })
     })
 
     it('uses intelligence.gitRemote when tenant.overlay is omitted', () => {

@@ -752,7 +752,6 @@ export default function JobDetail() {
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [messageText, setMessageText] = useState('')
   const [messageError, setMessageError] = useState<string | null>(null)
-  const [steppedIn, setSteppedIn] = useState(false)
   const messageRef = useRef<HTMLTextAreaElement>(null)
   const [pendingOutgoingMessages, setPendingOutgoingMessages] = useState<PendingOutgoingMessage[]>([])
   const [refreshing, setRefreshing] = useState(false)
@@ -874,6 +873,12 @@ export default function JobDetail() {
     try {
       await requestJson(`/jobs/${jobId}/pause`, jsonRequest({}, { method: 'POST' }))
       await refetch()
+      // Drop focus into the bottom steering composer. This makes the
+      // control-bar `Pause` button behave the same as the `Step in`
+      // affordance next to the composer — both pause + focus the
+      // steering surface. If the user is on another tab the ref is
+      // null and the focus call is a harmless no-op.
+      requestAnimationFrame(() => messageRef.current?.focus())
       return true
     } catch (pauseIssue) {
       setPauseError(pauseIssue instanceof Error ? pauseIssue.message : 'Pause failed')
@@ -884,11 +889,7 @@ export default function JobDetail() {
   }
 
   async function handleStepIn() {
-    const paused = await handlePause()
-    if (paused) {
-      setSteppedIn(true)
-      requestAnimationFrame(() => messageRef.current?.focus())
-    }
+    await handlePause()
   }
 
   async function handleRefresh() {
@@ -907,15 +908,6 @@ export default function JobDetail() {
       setInteractiveOverride(undefined)
     }
   }, [job?.interactive, interactiveOverride])
-
-  // Step-in helper copy should only stick while the run is in the
-  // explicit "paused by developer" state.
-  useEffect(() => {
-    if (!job) return
-    if (!isPausedStatus(job.status, job.awaitingEvent)) {
-      setSteppedIn(false)
-    }
-  }, [job?.status, job?.awaitingEvent])
 
   function updatePendingOutgoingMessages(
     updater: (messages: PendingOutgoingMessage[]) => PendingOutgoingMessage[],
@@ -1020,16 +1012,25 @@ export default function JobDetail() {
     )
   }
 
+  // Differentiate developer-initiated pause (Pause / Step in) from
+  // agent-initiated `awaiting-developer-input` parks. Both share the
+  // same lifecycle status; only the marker `awaitingEvent` distinguishes
+  // them. The top ApprovalBox is reserved for the *agent-initiated*
+  // case (artifact review, plan approval, mid-phase agent question);
+  // developer-paused runs steer through the bottom composer instead so
+  // the developer never sees two textareas at once.
+  const isDevPaused = isPausedStatus(job.status, job.awaitingEvent)
+
   // The composer accepts messages whenever the agent could plausibly
-  // act on them — while running, AND while parked on any waiting
-  // status (awaiting-pr-merge, awaiting-plan-approval,
-  // awaiting-developer-input, awaiting-children). The dispatcher
-  // routes parked-message sends through the resume path, so a
-  // developer can steer / cancel the wait / add context without
-  // having to wait for a webhook.
+  // act on them — while running, while parked on any non-developer-input
+  // waiting status (awaiting-pr-merge, awaiting-plan-approval,
+  // awaiting-children), and while developer-paused. Agent-initiated
+  // `awaiting-developer-input` is intentionally excluded because the
+  // ApprovalBox owns that interaction.
   const canSendLiveMessage =
     (isRunningStatus(job.status) && connectionStatus !== 'disconnected')
     || (isWaitingStatus(job.status) && job.status !== 'awaiting-developer-input')
+    || isDevPaused
   const canReplyToEscalation = job.status === 'escalated'
 
   return (
@@ -1115,7 +1116,7 @@ export default function JobDetail() {
         <TabsContent value="activity" className="space-y-5">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
             <div className="space-y-5">
-              {job.status === 'awaiting-developer-input' ? (
+              {job.status === 'awaiting-developer-input' && !isDevPaused ? (
                 <ApprovalBox job={job} onSend={postMessage} onCancel={handleCancel} />
               ) : null}
 
@@ -1154,9 +1155,9 @@ export default function JobDetail() {
                   onSend={handleSendMessage}
                   error={messageError}
                   onStepIn={isPausableStatus(job.status, job.awaitingEvent) ? handleStepIn : undefined}
-                  steppedIn={steppedIn}
+                  steppedIn={isDevPaused}
                   placeholder={
-                    steppedIn
+                    isDevPaused
                       ? 'Tell Coro what to change before continuing…'
                       : undefined
                   }

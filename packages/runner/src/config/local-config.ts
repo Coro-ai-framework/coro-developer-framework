@@ -517,7 +517,14 @@ export function resolveTenantOverlaySource(config: LocalConfig | null): TenantOv
     return { kind: 'gitRemote', url }
   }
 
-  return { kind: 'none' }
+  // Default to the local intelligence dir as a localDir overlay. This is the
+  // same directory the runner creates at boot and the dashboard reads/writes
+  // for the tenant layer, so a skill/agent/memory authored there takes effect
+  // on the next job with zero extra config. Tenants that genuinely want
+  // base-only can still set `tenant.overlay: { kind: 'none' }` explicitly
+  // (handled above). localDir overlays can't open `propose_change` PRs — a
+  // team that needs that should set `tenant.overlay` to a gitRemote.
+  return { kind: 'localDir', path: resolveIntelligenceDir(config) }
 }
 
 // ── Claude Code MCP discovery (S9) ───────────────────────────────────────────

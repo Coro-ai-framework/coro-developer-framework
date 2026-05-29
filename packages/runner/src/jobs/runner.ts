@@ -749,7 +749,36 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         phase: liveJob.phase,
         lifecycle: {
           onSessionStart: (controller: ExecutorSessionController) => {
-            options?.onSessionStart?.(liveJob.id, controller)
+            // Augment the executor's controller with a `stop()` that ends
+            // the phase outright. `interrupt()` only makes the agent yield
+            // (so a steering message can be read) and keeps the phase
+            // pushable open — that's wrong for pause, where the developer
+            // wants the agent to actually stop. Tripping the phase abort
+            // signal makes the executor break its event loop (see the
+            // `req.signal?.aborted` guard in the executor), so
+            // `executePhase` returns and the runner reaches its
+            // post-query boundary check, which observes the parked status
+            // the dispatcher persisted and exits cleanly.
+            const augmented: ExecutorSessionController = {
+              interrupt: options => controller.interrupt(options),
+              ...(controller.getSteeringState
+                ? { getSteeringState: () => controller.getSteeringState!() }
+                : {}),
+              stop: async () => {
+                abortController.abort()
+                // Wake the executor's event loop so it observes the
+                // aborted signal immediately instead of waiting for the
+                // next natural SDK event. Best-effort: the loop still
+                // breaks on its next iteration even if this throws (and
+                // we're tearing the phase down, so MCP heal is moot).
+                try {
+                  await controller.interrupt({ mode: 'urgent' })
+                } catch {
+                  /* abort signal is already set — the loop will break */
+                }
+              },
+            }
+            options?.onSessionStart?.(liveJob.id, augmented)
           },
           onSessionEnd: () => options?.onSessionEnd?.(liveJob.id),
         },

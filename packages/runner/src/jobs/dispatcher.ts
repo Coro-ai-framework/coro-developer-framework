@@ -215,23 +215,41 @@ export class Dispatcher {
     // and the events can be re-delivered (or made obsolete) on resume.
     this.eventQueue.delete(jobId)
 
-    // Halt the live agent turn at its next safe boundary. Fire-and-forget:
-    // `interrupt()` waits for an ACK from the Claude Code subprocess and
-    // can take seconds (or longer) when the agent is mid-tool-use. We
-    // must not block the HTTP response on it — the runner loop's outer
+    // End the live agent turn. Fire-and-forget: stopping the phase can
+    // take seconds (or longer) when the agent is mid-tool-use, and we
+    // must not block the HTTP response on it — the runner's post-query
     // `refreshJobForBoundary` plus the post-park error handler will both
     // notice the parked status and exit cleanly regardless.
+    //
+    // Prefer `stop()`: it aborts the phase signal so the executor breaks
+    // its event loop and `executePhase` returns, which is what actually
+    // halts the agent. A bare `interrupt()` only makes the agent *yield*
+    // (the steering primitive) and, in `safe` mode while an MCP tool is
+    // in flight, is a no-op — so the agent would keep working through the
+    // phase. Only fall back to `interrupt()` for executors that don't
+    // implement `stop()`.
     if (q) {
-      const inFlightMcp = q.getSteeringState?.()?.inFlightMcpTool
-      const mode = inFlightMcp ? 'safe' as const : 'urgent' as const
-      void Promise.resolve()
-        .then(() => q.interrupt({ mode }))
-        .catch(err => {
-          this.ctx.logger.debug(
-            { jobId, err, mode, inFlightMcp },
-            'interrupt() during pause failed (agent likely between turns) — ignored',
-          )
-        })
+      if (q.stop) {
+        void Promise.resolve()
+          .then(() => q.stop!())
+          .catch(err => {
+            this.ctx.logger.debug(
+              { jobId, err },
+              'stop() during pause failed (agent likely between turns) — abort signal already set',
+            )
+          })
+      } else {
+        const inFlightMcp = q.getSteeringState?.()?.inFlightMcpTool
+        const mode = inFlightMcp ? 'safe' as const : 'urgent' as const
+        void Promise.resolve()
+          .then(() => q.interrupt({ mode }))
+          .catch(err => {
+            this.ctx.logger.debug(
+              { jobId, err, mode, inFlightMcp },
+              'interrupt() during pause failed (agent likely between turns) — ignored',
+            )
+          })
+      }
     }
 
     const reasonSuffix = reason ? `: ${reason}` : ''
