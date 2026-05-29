@@ -805,6 +805,18 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       hooks,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      // Disable the Claude Code OS sandbox. As of claude-agent-sdk >=0.2.x the
+      // CLI defaults to OS-level Bash sandboxing on macOS, which routes all
+      // outbound traffic through a per-session proxy with a managed domain
+      // allowlist. That allowlist excludes tenant infrastructure (private
+      // NuGet/PyPI/npm registries like Nexus/Artifactory, self-hosted SCM,
+      // observability endpoints), so `dotnet restore` / `pip install` / clones
+      // fail with an opaque `blocked-by-allowlist` 403 that looks like a DNS or
+      // auth error. Coro deliberately runs the agent with no network allowlist
+      // (see base CLAUDE.md "Outbound network is unrestricted") and enforces
+      // filesystem confinement via its own PreToolUse path guard, so the SDK
+      // sandbox is both redundant and actively harmful here.
+      sandbox: { enabled: false },
       maxTurns: req.maxTurns ?? 200,
       thinking: { type: 'adaptive' },
       systemPromptCacheControl: 'ephemeral',
