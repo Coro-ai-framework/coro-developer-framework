@@ -7,7 +7,7 @@
 // `getJobByPr` / `getJobByJiraTicket` until P5) and resumes it.
 
 import { describe, it, expect, vi } from 'vitest'
-import { Dispatcher } from '../../src/jobs/dispatcher'
+import { Dispatcher, eventIndicatesMerge } from '../../src/jobs/dispatcher'
 import type { InboundEvent } from '@coro-ai/cloud-protocol'
 import type { EventTransport } from '../../src/state/transport'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
@@ -65,6 +65,15 @@ function buildDispatcher(opts: BuildOptions) {
     return stored
   })
   const appendLog = vi.fn(async () => undefined)
+  const markPrMerged = vi.fn(async (_id: string, prId: number, mergedAt: string) => {
+    stored = {
+      ...stored,
+      prMappings: stored.prMappings.map(pm =>
+        pm.prId === prId ? { ...pm, mergedAt } : pm,
+      ),
+    }
+    return stored
+  })
 
   const getJobByPr = opts.getJobByPr ?? vi.fn(async () => stored)
   const getJobByJiraTicket = opts.getJobByJiraTicket ?? vi.fn(async () => stored)
@@ -87,7 +96,7 @@ function buildDispatcher(opts: BuildOptions) {
   const dispatcher = new Dispatcher(
     {
       stateBackend: {
-        getJob, updateJob, appendLog, getJobByPr, getJobByJiraTicket,
+        getJob, updateJob, appendLog, markPrMerged, getJobByPr, getJobByJiraTicket,
       },
       logger,
     } as never,
@@ -104,6 +113,7 @@ function buildDispatcher(opts: BuildOptions) {
     deliver,
     updateJob,
     appendLog,
+    markPrMerged,
     getJobByPr,
     getJobByJiraTicket,
     logger,
@@ -335,5 +345,150 @@ describe('Dispatcher plugin webhook events (P4)', () => {
     expect(getJobByExternalRef).toHaveBeenCalledWith(prRef('42', 'github', 'svc'))
     expect(getJobByPr).toHaveBeenCalledWith(42)
     expect(updateJob).toHaveBeenCalled()
+  })
+})
+
+describe('Dispatcher merge reconciliation (stale prMappings guard)', () => {
+  function mappingJob(overrides: Partial<Job> = {}): Job {
+    return makeJob({
+      prMappings: [
+        { prId: 25, workItem: 'initiate-service', repoSlug: 'svc', openedAt: '2026-01-01T00:00:00Z' },
+      ],
+      ...overrides,
+    })
+  }
+
+  it('stamps mergedAt when the poller reports an open mapping as fulfilled', async () => {
+    // Regression: a stacked PR the SCM auto-merged when its base merged
+    // never went through `scm_merge_pr`, so the mapping stayed "open" and
+    // the coding-preflight looped the job. The merge event must reconcile.
+    const job = mappingJob()
+    const { deliver, markPrMerged } = buildDispatcher({ job })
+
+    await deliver({
+      source: 'plugin',
+      pluginId: 'bitbucket',
+      ref: prRef('25', 'bitbucket', 'svc'),
+      eventKey: 'pullrequest:fulfilled',
+      payload: { state: 'MERGED', prId: 25, pullrequest: { id: 25, state: 'MERGED' } },
+      receivedAt: new Date().toISOString(),
+    })
+
+    expect(markPrMerged).toHaveBeenCalledWith(job.id, 25, expect.any(String))
+  })
+
+  it('stamps mergedAt for a GitHub merge webhook (closed + merged:true)', async () => {
+    // GitHub normalises a merge to `pr.declined` (action=closed); only
+    // the raw `pull_request.merged` flag distinguishes it from a plain close.
+    const job = mappingJob({ prMappings: [
+      { prId: 42, workItem: 'wi', repoSlug: 'svc', openedAt: '2026-01-01T00:00:00Z' },
+    ] })
+    const { deliver, markPrMerged } = buildDispatcher({ job })
+
+    await deliver({
+      source: 'plugin',
+      pluginId: 'github',
+      ref: prRef('42', 'github', 'svc'),
+      eventKey: 'pr.declined',
+      payload: { pull_request: { id: 42, state: 'closed', merged: true } },
+      receivedAt: new Date().toISOString(),
+    })
+
+    expect(markPrMerged).toHaveBeenCalledWith(job.id, 42, expect.any(String))
+  })
+
+  it('does NOT stamp mergedAt for a GitHub close-without-merge', async () => {
+    const job = mappingJob({ prMappings: [
+      { prId: 42, workItem: 'wi', repoSlug: 'svc', openedAt: '2026-01-01T00:00:00Z' },
+    ] })
+    const { deliver, markPrMerged } = buildDispatcher({ job })
+
+    await deliver({
+      source: 'plugin',
+      pluginId: 'github',
+      ref: prRef('42', 'github', 'svc'),
+      eventKey: 'pr.declined',
+      payload: { pull_request: { id: 42, state: 'closed', merged: false } },
+      receivedAt: new Date().toISOString(),
+    })
+
+    expect(markPrMerged).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when the mapping is already merged', async () => {
+    const job = mappingJob({ prMappings: [
+      { prId: 25, workItem: 'initiate-service', repoSlug: 'svc', openedAt: '2026-01-01T00:00:00Z', mergedAt: '2026-01-02T00:00:00Z' },
+    ] })
+    const { deliver, markPrMerged } = buildDispatcher({ job })
+
+    await deliver({
+      source: 'plugin',
+      pluginId: 'bitbucket',
+      ref: prRef('25', 'bitbucket', 'svc'),
+      eventKey: 'pr.merged',
+      payload: { state: 'MERGED' },
+      receivedAt: new Date().toISOString(),
+    })
+
+    expect(markPrMerged).not.toHaveBeenCalled()
+  })
+
+  it('reconciles even while the job is actively running (event also queued)', async () => {
+    const job = mappingJob({ status: STATUS_CODING })
+    const { dispatcher, deliver, markPrMerged } = buildDispatcher({ job })
+    ;(dispatcher as unknown as { activeJobs: Set<string> }).activeJobs.add(job.id)
+
+    await deliver({
+      source: 'plugin',
+      pluginId: 'bitbucket',
+      ref: prRef('25', 'bitbucket', 'svc'),
+      eventKey: 'pullrequest:fulfilled',
+      payload: { state: 'MERGED' },
+      receivedAt: new Date().toISOString(),
+    })
+
+    // Stamped immediately, before the event is queued for the running phase.
+    expect(markPrMerged).toHaveBeenCalledWith(job.id, 25, expect.any(String))
+  })
+
+  it('does not throw when markPrMerged fails — the merge already happened', async () => {
+    const job = mappingJob()
+    const built = buildDispatcher({ job })
+    built.markPrMerged.mockRejectedValueOnce(new Error('backend down'))
+
+    await expect(built.deliver({
+      source: 'plugin',
+      pluginId: 'bitbucket',
+      ref: prRef('25', 'bitbucket', 'svc'),
+      eventKey: 'pullrequest:fulfilled',
+      payload: { state: 'MERGED' },
+      receivedAt: new Date().toISOString(),
+    })).resolves.toBeUndefined()
+
+    expect(built.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: job.id, prId: 25 }),
+      expect.stringContaining('Failed to reconcile mergedAt'),
+    )
+  })
+})
+
+describe('eventIndicatesMerge', () => {
+  it('recognises poller and normalised merge event keys', () => {
+    expect(eventIndicatesMerge('pullrequest:fulfilled', {})).toBe(true)
+    expect(eventIndicatesMerge('pr.merged', {})).toBe(true)
+    expect(eventIndicatesMerge('PR.MERGED', {})).toBe(true)
+  })
+
+  it('recognises merged payload state shapes', () => {
+    expect(eventIndicatesMerge('pr.updated', { state: 'MERGED' })).toBe(true)
+    expect(eventIndicatesMerge('pr.updated', { pullrequest: { state: 'merged' } })).toBe(true)
+    expect(eventIndicatesMerge('pr.declined', { pull_request: { state: 'closed', merged: true } })).toBe(true)
+  })
+
+  it('does not treat comments, approvals, or plain closes as merges', () => {
+    expect(eventIndicatesMerge('pr.commented', {})).toBe(false)
+    expect(eventIndicatesMerge('pr.approved', { approvalCount: 1 })).toBe(false)
+    expect(eventIndicatesMerge('pr.declined', { pull_request: { state: 'closed', merged: false } })).toBe(false)
+    expect(eventIndicatesMerge('pr.updated', { state: 'open' })).toBe(false)
   })
 })

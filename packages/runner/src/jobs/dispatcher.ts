@@ -638,6 +638,16 @@ export class Dispatcher {
       return
     }
 
+    // Reconcile `prMappings` the moment we observe a merge, regardless of
+    // whether the job is active or parked. The agent's own `scm_merge_pr`
+    // tool is the usual path that stamps `mergedAt`, but a PR can reach
+    // "merged" without it — a human merging in the SCM UI, or a stacked PR
+    // the SCM auto-merges/closes when its base merges. Without this stamp
+    // the mapping stays "open" forever and the coding-preflight bounces the
+    // job between coding and review indefinitely (the agent confirms the
+    // merge, routes to coding, preflight sees an "open" PR, routes back).
+    await this.reconcileMergedMapping(job, ref, event)
+
     // If the job is actively running, queue the event immediately — don't wait for it to park.
     // The runner's finally() handler will replay queued events once the phase completes.
     // This prevents the race where a webhook arrives just before await_event is called.
@@ -664,6 +674,41 @@ export class Dispatcher {
     // — all are relevant context the agent should see and react to.
     // No rigid event matching.
     await this.resumeWithEvent(job.id, event.eventKey, event.payload)
+  }
+
+  /**
+   * Stamp `mergedAt` on the matching `prMappings` entry when an inbound
+   * event reports the PR as merged. Idempotent and soft-failing: a
+   * mapping that is missing or already merged is a no-op, and a backend
+   * write failure must never block waking the agent (the merge is real
+   * either way). See {@link eventIndicatesMerge} for the shapes we treat
+   * as "merged" across the poller and each provider's webhook.
+   */
+  private async reconcileMergedMapping(
+    job: Job,
+    ref: ExternalRef,
+    event: InboundEvent,
+  ): Promise<void> {
+    if (!eventIndicatesMerge(event.eventKey, event.payload)) return
+
+    const prId = Number(ref.externalId)
+    if (!Number.isFinite(prId)) return
+
+    const mapping = job.prMappings.find(pm => pm.prId === prId)
+    if (!mapping || mapping.mergedAt) return
+
+    try {
+      await this.ctx.stateBackend.markPrMerged(job.id, prId, new Date().toISOString())
+      this.ctx.logger.info(
+        { jobId: job.id, prId, eventKey: event.eventKey },
+        'Stamped mergedAt on prMapping from observed merge event',
+      )
+    } catch (err) {
+      this.ctx.logger.warn(
+        { err, jobId: job.id, prId },
+        'Failed to reconcile mergedAt from merge event — agent may see a stale open mapping',
+      )
+    }
   }
 
   // ── Resume ──────────────────────────────────────────────────────────────────
@@ -1536,6 +1581,50 @@ export function buildEscalationResponseMessage(
   )
 
   return lines.join('\n')
+}
+
+// ── Merge detection ───────────────────────────────────────────────────────────
+
+/**
+ * Does this inbound PR event mean the PR is now merged? A merge reaches
+ * the runner through several shapes and we must recognise all of them so
+ * `prMappings` reconciliation never depends on one provider's quirks:
+ *
+ *   - **Poller** (`PollingTransport`): synthetic eventKey
+ *     `pullrequest:fulfilled` with `payload.state === 'MERGED'`.
+ *   - **Bitbucket / GitLab webhooks** (normalised): eventKey `pr.merged`.
+ *   - **GitHub webhooks** (normalised): eventKey is `pr.declined` because
+ *     GitHub reports a merge as `action: 'closed'`; the only reliable
+ *     signal is the raw payload's `pull_request.merged === true`.
+ *
+ * We deliberately read the raw payload state in addition to the eventKey
+ * so a provider that merges-by-closing can't masquerade as a plain close.
+ */
+export function eventIndicatesMerge(
+  eventKey: string,
+  payload: Record<string, unknown>,
+): boolean {
+  const key = eventKey.toLowerCase()
+  if (key.includes('merged') || key.includes('fulfilled')) return true
+
+  const looksMerged = (value: unknown): boolean =>
+    typeof value === 'string' && value.toLowerCase() === 'merged'
+
+  if (looksMerged(payload['state'])) return true
+
+  const pr = payload['pullrequest']
+  if (pr && typeof pr === 'object' && looksMerged((pr as Record<string, unknown>)['state'])) {
+    return true
+  }
+
+  // GitHub raw shape: state is "closed" on a merge, but `merged: true`
+  // disambiguates a merge from a plain close.
+  const ghPr = payload['pull_request']
+  if (ghPr && typeof ghPr === 'object' && (ghPr as Record<string, unknown>)['merged'] === true) {
+    return true
+  }
+
+  return false
 }
 
 // ── Webhook message builder ───────────────────────────────────────────────────

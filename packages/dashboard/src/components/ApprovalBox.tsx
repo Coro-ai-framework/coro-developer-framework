@@ -34,6 +34,15 @@ export default function ApprovalBox({ job, onSend, onCancel }: ApprovalBoxProps)
   const reason = parseAwaitingReason(job.awaitingEvent)
   const isMidPhase = !job.awaitingNextPhase
 
+  // The artifact approve / request-changes panel is *only* the right
+  // affordance at a phase-boundary approval checkpoint (the runner sets
+  // `awaitingNextPhase` for those). When the agent paused mid-phase to ask
+  // for input or surface a blocker it cannot resolve, "Approve & continue"
+  // is meaningless — the developer needs to send guidance back. Fall
+  // through to the message composer in that case, even if the phase
+  // happens to carry reviewable artifacts (e.g. PR links from coding).
+  const showArtifactReview = hasReviewableArtifacts && !isMidPhase
+
   const handle = async (text: string) => {
     setSending(true)
     setError(null)
@@ -62,7 +71,7 @@ export default function ApprovalBox({ job, onSend, onCancel }: ApprovalBoxProps)
 
   return (
     <div className="space-y-4 rounded-2xl border border-warning-500/25 bg-warning-500/8 p-5">
-      {hasReviewableArtifacts ? (
+      {showArtifactReview ? (
         <ArtifactReviewPanel
           jobId={job.id}
           artifacts={phaseArtifacts}
@@ -153,7 +162,7 @@ export default function ApprovalBox({ job, onSend, onCancel }: ApprovalBoxProps)
         </>
       )}
 
-      {hasReviewableArtifacts && error ? (
+      {showArtifactReview && error ? (
         <div className="text-sm text-danger-400">{error}</div>
       ) : null}
     </div>
