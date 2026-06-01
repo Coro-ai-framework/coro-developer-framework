@@ -4,7 +4,7 @@ import {
   isTrackerPlugin,
   type PluginRegistry,
 } from '../plugins/registry'
-import type { ScmPluginRuntime, TrackerIssue, TrackerPluginRuntime } from '../plugins/types'
+import type { ScmPluginRuntime, TrackerComment, TrackerIssue, TrackerPluginRuntime } from '../plugins/types'
 
 export const INTAKE_MAX_FILE_BYTES = 64 * 1024
 export const INTAKE_MAX_SEARCH_RESULTS = 20
@@ -12,6 +12,10 @@ export const INTAKE_TOOL_TIMEOUT_MS = 15_000
 export const INTAKE_MAX_TOOL_ROUNDS = 10
 /** Hard cap on a single tracker description we hand back to the LLM. */
 export const INTAKE_MAX_TRACKER_DESCRIPTION_CHARS = 8 * 1024
+/** Hard cap on how many comments a single tracker_get_comments call returns. */
+export const INTAKE_MAX_TRACKER_COMMENTS = 50
+/** Hard cap on a single comment body we hand back to the LLM. */
+export const INTAKE_MAX_TRACKER_COMMENT_CHARS = 4 * 1024
 
 const PLUGIN_ID_SCHEMA = {
   type: 'string',
@@ -20,7 +24,7 @@ const PLUGIN_ID_SCHEMA = {
 
 function hasTrackerMethod(
   registry: PluginRegistry,
-  method: keyof Pick<TrackerPluginRuntime, 'getIssue' | 'searchIssues'>,
+  method: keyof Pick<TrackerPluginRuntime, 'getIssue' | 'searchIssues' | 'getComments'>,
 ): boolean {
   return registry.all().some(p => isTrackerPlugin(p) && typeof p[method] === 'function')
 }
@@ -42,6 +46,25 @@ export function buildIntakeTools(registry: PluginRegistry): ChatTool[] {
     tools.push({
       name: 'tracker_get_issue',
       description: 'Fetch a tracker issue by key (e.g. PROJ-123, ENG-42, owner/repo#7). Read-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: { type: 'string', description: 'Issue key or identifier.' },
+          pluginId: PLUGIN_ID_SCHEMA,
+        },
+        required: ['key'],
+      },
+    })
+  }
+
+  if (hasTrackerMethod(registry, 'getComments')) {
+    tools.push({
+      name: 'tracker_get_comments',
+      description:
+        'Read the comment thread on a tracker issue (human guidance, ' +
+        'clarifications, follow-up requests). Comments are NOT included in ' +
+        'tracker_get_issue, so call this when a ticket likely has discussion ' +
+        'that shapes the work. Read-only.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -173,6 +196,12 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
     const key = readField(input, 'key')
     return key ? `Read ${key}` : 'Read ticket'
   }
+  if (name === 'tracker_get_comments') {
+    const key = readField(input, 'key')
+    const count = Array.isArray(output) ? output.length : 0
+    const where = key ? ` on ${key}` : ''
+    return `Read ${count} comment${count === 1 ? '' : 's'}${where}`
+  }
   if (name === 'tracker_search_issues') {
     const count = Array.isArray(output) ? output.length : 0
     return `Found ${count} ticket${count === 1 ? '' : 's'}`
@@ -238,6 +267,16 @@ async function dispatchIntakeTool(
       if (!tracker.getIssue) throw new Error('No tracker plugin exposes getIssue')
       const issue = await tracker.getIssue(key)
       return clampTrackerIssue(issue)
+    }
+    case 'tracker_get_comments': {
+      const key = String(args.key ?? '').trim()
+      if (!key) throw new Error('tracker_get_comments requires key')
+      const tracker = registry.resolveTracker({
+        tracker: typeof args.pluginId === 'string' ? args.pluginId : undefined,
+      })
+      if (!tracker.getComments) throw new Error('No tracker plugin exposes getComments')
+      const comments = await tracker.getComments(key)
+      return comments.slice(0, INTAKE_MAX_TRACKER_COMMENTS).map(clampTrackerComment)
     }
     case 'tracker_search_issues': {
       const query = String(args.query ?? '').trim()
@@ -318,5 +357,21 @@ function clampTrackerIssue(issue: TrackerIssue): TrackerIssue {
   return {
     ...issue,
     description: `${issue.description.slice(0, INTAKE_MAX_TRACKER_DESCRIPTION_CHARS)}\n…[truncated]`,
+  }
+}
+
+/**
+ * Same spirit as {@link clampTrackerIssue}: a single comment body can be
+ * arbitrarily long, and a thread can have many of them. We cap each body
+ * so one verbose comment can't blow the per-turn token budget (the count
+ * itself is capped in the dispatcher via {@link INTAKE_MAX_TRACKER_COMMENTS}).
+ */
+function clampTrackerComment(comment: TrackerComment): TrackerComment {
+  if (!comment.body || comment.body.length <= INTAKE_MAX_TRACKER_COMMENT_CHARS) {
+    return comment
+  }
+  return {
+    ...comment,
+    body: `${comment.body.slice(0, INTAKE_MAX_TRACKER_COMMENT_CHARS)}\n…[truncated]`,
   }
 }

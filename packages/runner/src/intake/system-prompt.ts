@@ -29,6 +29,7 @@ export function buildIntakeSystemPrompt(context: IntakeContext, options: IntakeP
     ? `
 Tools (read-only — use deliberately, only when directly useful):
 - tracker_get_issue: when the user names a ticket key (e.g. PROJ-123).
+- tracker_get_comments: after reading a ticket, when the discussion likely carries decisions or clarifications the description omits. Comments are not part of tracker_get_issue.
 - tracker_search_issues: when the user describes work but you suspect a tracker entry already exists.
 - scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directory that looks relevant.
 - scm_read_file: when you need a specific file's contents to plan. Confirm the path with scm_list_files first; do not guess paths.
