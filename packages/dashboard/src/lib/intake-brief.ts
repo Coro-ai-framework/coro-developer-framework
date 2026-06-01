@@ -2,9 +2,15 @@ export interface BriefDraft {
   repo: string
   serviceName: string
   description: string
-  reviewers: string[]
+  /** Comma-separated reviewer names as typed in the Run brief form. Parsed at dispatch time. */
+  reviewers: string
   workflowPath: string
   interactive: boolean
+}
+
+/** Split a comma-separated reviewers field into trimmed, non-empty names. */
+export function parseReviewersList(text: string): string[] {
+  return text.split(',').map(s => s.trim()).filter(Boolean)
 }
 
 export function parseBrief(assistantMessage: string, knownWorkflowPaths: string[]): BriefDraft | null {
@@ -30,9 +36,13 @@ export function parseBrief(assistantMessage: string, knownWorkflowPaths: string[
   if (!repo || description.length < 20) return null
   if (!knownWorkflowPaths.includes(workflowPath)) return null
 
-  let reviewers: string[] = []
+  let reviewers = ''
   if (Array.isArray(obj.reviewers)) {
-    reviewers = obj.reviewers.filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+    reviewers = obj.reviewers
+      .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+      .join(', ')
+  } else if (typeof obj.reviewers === 'string') {
+    reviewers = obj.reviewers.trim()
   }
 
   return {
@@ -46,7 +56,8 @@ export function parseBrief(assistantMessage: string, knownWorkflowPaths: string[
 }
 
 export function briefToSummary(brief: BriefDraft, workflowName: string): string {
+  const reviewerList = parseReviewersList(brief.reviewers)
   return `Coro will work on \`${brief.repo}\` (${brief.serviceName}), run the ${workflowName} workflow${
     brief.interactive ? ', pause at checkpoints' : ' end-to-end'
-  }${brief.reviewers.length ? `, and open a PR for ${brief.reviewers.join(', ')}` : ''}.`
+  }${reviewerList.length ? `, and open a PR for ${reviewerList.join(', ')}` : ''}.`
 }

@@ -18,7 +18,7 @@ import type { ProviderOption } from './llm/ModelPicker'
 import { useExecutorPlugins } from './llm/useExecutorPlugins'
 import { useProviderModels, type ProviderModelDescriptor } from './llm/useProviderModels'
 import { jsonRequest, requestJson, ApiError } from '../lib/http'
-import { parseBrief, type BriefDraft } from '../lib/intake-brief'
+import { parseBrief, parseReviewersList, type BriefDraft } from '../lib/intake-brief'
 import { deriveRunHistoryHints, findSimilarRuns } from '../lib/run-history'
 import { useIntakeStream, type IntakeChatMessage, type IntakeToolCall } from '../hooks/useIntakeStream'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
@@ -154,7 +154,7 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
         repo: brief.repo.trim(),
         serviceName: brief.serviceName.trim(),
         description: brief.description.trim(),
-        reviewers: brief.reviewers,
+        reviewers: parseReviewersList(brief.reviewers),
         interactive: brief.interactive,
       }
       const data = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
@@ -615,13 +615,9 @@ function BriefEditor({
       </Field>
       <Field label="Reviewers">
         <Input
-          value={brief.reviewers.join(', ')}
-          onChange={e =>
-            onChange({
-              ...brief,
-              reviewers: e.target.value.split(',').map(s => s.trim()).filter(Boolean),
-            })
-          }
+          value={brief.reviewers}
+          onChange={e => onChange({ ...brief, reviewers: e.target.value })}
+          placeholder="alice, bob"
         />
       </Field>
       <Field label="Workflow">

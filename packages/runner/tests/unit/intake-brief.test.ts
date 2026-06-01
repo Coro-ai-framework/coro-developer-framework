@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseBrief } from '../../../dashboard/src/lib/intake-brief'
+import { parseBrief, parseReviewersList } from '../../../dashboard/src/lib/intake-brief'
 
 const KNOWN = ['workflows/job/workflow.md', 'workflows/job-fast/workflow.md']
 
@@ -22,7 +22,7 @@ describe('parseBrief', () => {
       repo: 'org/my-service',
       serviceName: 'My Service',
       description: 'Add rate limiting to the users endpoint with clear acceptance criteria.',
-      reviewers: ['alice', 'bob'],
+      reviewers: 'alice, bob',
       workflowPath: 'workflows/job/workflow.md',
       interactive: true,
     })
@@ -45,5 +45,13 @@ describe('parseBrief', () => {
   it('defaults interactive to true when omitted', () => {
     const message = `<brief>{"repo":"org/x","description":"A long enough description here for the planner.","workflowPath":"workflows/job/workflow.md"}</brief>`
     expect(parseBrief(message, KNOWN)?.interactive).toBe(true)
+  })
+})
+
+describe('parseReviewersList', () => {
+  it('splits comma-separated names and trims whitespace', () => {
+    expect(parseReviewersList('alice, bob')).toEqual(['alice', 'bob'])
+    expect(parseReviewersList('alice,')).toEqual(['alice'])
+    expect(parseReviewersList('')).toEqual([])
   })
 })
