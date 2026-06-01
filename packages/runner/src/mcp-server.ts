@@ -137,6 +137,19 @@ export function createCoroMcpServer(
       ),
 
       tool(
+        'scm_reply_to_comment',
+        'Reply to a specific comment thread on a pull request via the configured SCM plugin. Pass `parentCommentId` (the id from scm_list_pr_comments) to thread the reply under that comment instead of posting a new top-level comment. For MCP-mode plugins that do not implement native threading, returns a redirect to the upstream threaded-reply tool.',
+        {
+          pluginId: z.string().optional(),
+          repo: z.string(),
+          prId: z.union([z.number(), z.string()]),
+          parentCommentId: z.union([z.number(), z.string()]).describe('Id of the comment to reply to (from scm_list_pr_comments).'),
+          body: z.string(),
+        },
+        h.scm_reply_to_comment,
+      ),
+
+      tool(
         'scm_add_pr_reviewers',
         'Add reviewers to an already-open pull request via the configured SCM plugin. Pass usernames or uuids — never display names. Reviewers are merged with the existing list, not replaced. If the active plugin does not support this op, falls back to a clear error so the agent can post a PR comment instead.',
         {
@@ -246,6 +259,17 @@ export function createCoroMcpServer(
           key: z.string(),
         },
         h.tracker_get_issue,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'tracker_get_comments',
+        'List the comments/discussion on a tracker issue via the configured tracker plugin. Returns each comment\'s id, author, body, and timestamps. Use this to read human guidance, clarifications, or follow-up requests left on a ticket — the comments are NOT included in tracker_get_issue.',
+        {
+          pluginId: z.string().optional(),
+          key: z.string(),
+        },
+        h.tracker_get_comments,
         { annotations: { readOnlyHint: true } },
       ),
 

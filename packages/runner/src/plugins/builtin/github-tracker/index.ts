@@ -23,6 +23,7 @@ import type {
   PluginHealth,
   PluginManifest,
   PluginMcpServerConfig,
+  TrackerComment,
   TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
@@ -68,6 +69,7 @@ const MANIFEST: PluginManifest = {
   allowedMcpTools: DEFAULT_ALLOWED_MCP_TOOLS,
   mcpToolMap: {
     tracker_get_issue: 'get_issue',
+    tracker_get_comments: 'get_issue_comments',
     tracker_comment_issue: 'add_issue_comment',
     tracker_transition_issue: 'update_issue',
   },
@@ -159,6 +161,10 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
 
   async searchIssues(query: string, limit?: number): Promise<TrackerIssue[]> {
     return unwrapTrackerResult(await this.trackerClient.searchIssues(query, limit))
+  }
+
+  async getComments(key: string): Promise<TrackerComment[]> {
+    return unwrapTrackerResult(await this.trackerClient.getComments(key))
   }
 
   // ── Webhook normalisation ───────────────────────────────────────────────

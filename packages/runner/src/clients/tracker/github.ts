@@ -24,6 +24,7 @@ import type {
   CreateEpicArgs,
   CreateIssueArgs,
   LinkIssuesArgs,
+  TrackerComment,
   TrackerIssue,
   TrackerNotConfigured,
   TrackerResult,
@@ -248,6 +249,32 @@ export class GitHubTrackerClient {
       throw new Error(`GitHub transitionIssue failed (${res.status}): ${text}`)
     }
     return { ok: true }
+  }
+
+  async getComments(key: string): Promise<TrackerResult<TrackerComment[]>> {
+    if (!this.available) return this.unavailable()
+    const { owner, repo, number } = parseIssueKey(key, this.defaults())
+    const res = await this.fetch(`/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`)
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`GitHub getComments failed (${res.status}): ${text}`)
+    }
+    const raw = (await res.json()) as Array<{
+      id: number
+      body?: string | null
+      user?: { login?: string } | null
+      created_at?: string
+      updated_at?: string
+      html_url?: string
+    }>
+    return (raw ?? []).map(c => ({
+      id: String(c.id),
+      body: c.body ?? '',
+      ...(c.user?.login ? { author: c.user.login } : {}),
+      createdAt: c.created_at ?? '',
+      ...(c.updated_at && c.updated_at !== c.created_at ? { updatedAt: c.updated_at } : {}),
+      ...(c.html_url ? { url: c.html_url } : {}),
+    }))
   }
 
   async commentIssue(args: CommentIssueArgs): Promise<TrackerResult<{ ok: true }>> {

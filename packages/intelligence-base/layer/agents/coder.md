@@ -37,7 +37,8 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | `scm_get_clone_info` | Get the credentialed clone URL + git env for advanced git flows |
 | `scm_create_pr` | Open a PR on the active SCM (registers with job system for webhooks) |
 | `scm_get_pr_comments` | Read PR feedback when responding to review |
-| `scm_post_pr_comment` | Reply to reviewer comments on a PR |
+| `scm_post_pr_comment` | Reply to reviewer comments on a PR (top-level) |
+| `scm_reply_to_comment` | Reply in-thread under a specific reviewer comment (pass its `parentCommentId`) |
 | `post_artifact` | Record the PR link (and any other outputs) as job artefacts |
 | `escalate` | Escalate blockers to human |
 | `add_insight` | Record workarounds, patterns, or failures for future runs |

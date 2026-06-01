@@ -118,6 +118,7 @@ ops below work the same regardless of the active SCM plugin:
 - `scm_get_pr_status` — Get state and approval count of a PR
 - `scm_list_pr_comments` — List comments on a PR
 - `scm_post_pr_comment` — Post a top-level comment on a PR
+- `scm_reply_to_comment` — Reply to a specific comment thread on a PR (pass the `parentCommentId` from `scm_list_pr_comments`); falls back to the active plugin's upstream threaded-reply tool when the plugin has no native threading
 - `scm_add_pr_reviewers` — Add reviewers (usernames or uuids, never display names) to an open PR; merges with the existing list
 - `scm_resolve_user` — Resolve a display name / nickname / uuid / account_id to the SCM-native user identifier. Use before `scm_add_pr_reviewers` when you only have a human-readable name. For an email, look the user up in the tracker first — Atlassian `accountId` is identical to Bitbucket `account_id`.
 - `scm_merge_pr` — Merge a PR (squash, only after approval + all comments resolved)
@@ -132,7 +133,7 @@ The current job context may include an `scm` block describing the resolved SCM s
 
 If `scm.available` is `false` or `scm.resolved === "none"`, do not probe the filesystem for a repo copy and do not search the user's machine. Stop and escalate the configuration problem.
 
-**Everything else** — repo creation, threaded comment replies, PR
+**Everything else** — repo creation, PR
 approvals, PR change-detection polls, branch protection, releases,
 workflows, … — comes from the upstream MCP server attached by the
 active SCM plugin. Call those tools directly using their native names:
@@ -149,7 +150,8 @@ generic tools above are the entire surface — there is no
 
 Generic shim — the same three ops show up in nearly every workflow:
 
-- `tracker_get_issue` — Fetch an issue/ticket by external id (`PROJ-123`, `ENG-7`, `owner/repo#42`, …)
+- `tracker_get_issue` — Fetch an issue/ticket by external id (`PROJ-123`, `ENG-7`, `owner/repo#42`, …). Note: this does **not** include the comment thread.
+- `tracker_get_comments` — Read the comments/discussion on an issue (human guidance, clarifications, follow-up requests). Call this explicitly — comments are not part of `tracker_get_issue`.
 - `tracker_comment_issue` — Post a comment on an issue
 - `tracker_transition_issue` — Move the issue to a new status (transition names are plugin-specific)
 

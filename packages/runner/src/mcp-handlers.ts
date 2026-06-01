@@ -388,6 +388,35 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     return text(comment)
   }
 
+  const scm_reply_to_comment = async (args: {
+    pluginId?: string; repo: string; prId: number | string; parentCommentId: number | string; body: string
+  }) => {
+    const r = resolveScm(ctx, args.pluginId, args.repo)
+    if (!r.ok) return r.error
+    if (!r.scm.replyToComment) {
+      // MCP-mode plugin (e.g. github). Redirect to the upstream
+      // threaded-reply tool. Pass both `comment_id`/`in_reply_to`
+      // shapes so the redirect hint works regardless of which arg
+      // the upstream server names.
+      return mcpRedirect(r.scm.manifest.id, 'scm_reply_to_comment',
+        r.scm.manifest.mcpToolMap?.scm_reply_to_comment,
+        {
+          repo: args.repo,
+          pull_number: Number(args.prId),
+          comment_id: args.parentCommentId,
+          in_reply_to: args.parentCommentId,
+          body: args.body,
+        },
+      )
+    }
+    const comment = await r.scm.replyToComment(
+      prRef(r.scm, args.repo, args.prId),
+      String(args.parentCommentId),
+      args.body,
+    )
+    return text(comment)
+  }
+
   const scm_add_pr_reviewers = async (args: {
     pluginId?: string; repo: string; prId: number | string; reviewers: string[]
   }) => {
@@ -607,6 +636,23 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     try {
       const issue = await r.tracker.getIssue(args.key)
       return text(issue)
+    } catch (err) {
+      return error((err as Error).message)
+    }
+  }
+
+  const tracker_get_comments = async (args: { pluginId?: string; key: string }) => {
+    const r = resolveTracker(ctx, args.pluginId)
+    if (!r.ok) return r.error
+    if (!r.tracker.getComments) {
+      return mcpRedirect(r.tracker.manifest.id, 'tracker_get_comments',
+        r.tracker.manifest.mcpToolMap?.tracker_get_comments,
+        { issue_key: args.key, key: args.key },
+      )
+    }
+    try {
+      const comments = await r.tracker.getComments(args.key)
+      return text(comments)
     } catch (err) {
       return error((err as Error).message)
     }
@@ -856,20 +902,22 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   return {
-    // ── Generic surface (preferred, post-pivot — 9 tools total) ────────
+    // ── Generic surface (preferred, post-pivot) ────────
     //
-    // SCM (7):
+    // SCM:
     scm_create_pr,
     scm_get_pr_status,
     scm_list_pr_comments,
     scm_post_pr_comment,
+    scm_reply_to_comment,
     scm_add_pr_reviewers,
     scm_resolve_user,
     scm_merge_pr,
     scm_get_clone_info,
     scm_clone_repo,
-    // Tracker (3):
+    // Tracker:
     tracker_get_issue,
+    tracker_get_comments,
     tracker_comment_issue,
     tracker_transition_issue,
     // File / skill (Phase 4 — registered only when executor lacks native equivalents):

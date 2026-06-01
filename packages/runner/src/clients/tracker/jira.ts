@@ -16,6 +16,7 @@ import type {
   CreateEpicArgs,
   CreateIssueArgs,
   LinkIssuesArgs,
+  TrackerComment,
   TrackerIssue,
   TrackerNotConfigured,
   TrackerResult,
@@ -52,6 +53,17 @@ interface JiraSearchResponse {
 
 interface JiraTransitionsResponse {
   transitions: Array<{ id: string; name: string; to?: { name?: string } }>
+}
+
+interface JiraCommentsResponse {
+  comments?: Array<{
+    id: string
+    body?: unknown
+    author?: { displayName?: string }
+    created?: string
+    updated?: string
+    self?: string
+  }>
 }
 
 const DEFAULT_TASK_ISSUETYPE = 'Task'
@@ -234,6 +246,28 @@ export class JiraTrackerClient {
       throw new Error(`Jira transitionIssue failed (${res.status}): ${text}`)
     }
     return { ok: true }
+  }
+
+  async getComments(key: string): Promise<TrackerResult<TrackerComment[]>> {
+    if (!this.available) return this.unavailable()
+    const res = await fetch(
+      `${this.baseUrl()}/rest/api/3/issue/${encodeURIComponent(key)}/comment?orderBy=created`,
+      { headers: this.headers() },
+    )
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(`Jira getComments failed (${res.status}): ${text}`)
+    }
+    const body = (await res.json()) as JiraCommentsResponse
+    const browseBase = `${this.settings.baseUrl.replace(/\/$/, '')}/browse/${key}`
+    return (body.comments ?? []).map(c => ({
+      id: String(c.id),
+      body: extractJiraDescription(c.body) ?? '',
+      ...(c.author?.displayName ? { author: c.author.displayName } : {}),
+      createdAt: c.created ?? '',
+      ...(c.updated && c.updated !== c.created ? { updatedAt: c.updated } : {}),
+      url: `${browseBase}?focusedCommentId=${c.id}`,
+    }))
   }
 
   async commentIssue(args: CommentIssueArgs): Promise<TrackerResult<{ ok: true }>> {

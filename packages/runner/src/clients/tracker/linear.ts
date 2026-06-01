@@ -27,6 +27,7 @@ import type {
   CreateEpicArgs,
   CreateIssueArgs,
   LinkIssuesArgs,
+  TrackerComment,
   TrackerIssue,
   TrackerNotConfigured,
   TrackerResult,
@@ -232,6 +233,45 @@ export class LinearTrackerClient {
       { id: node.id, input: { stateId: target.id } },
     )
     return { ok: true }
+  }
+
+  async getComments(key: string): Promise<TrackerResult<TrackerComment[]>> {
+    if (!this.available) return this.unavailable()
+    const data = await this.gql<{
+      issue: {
+        comments?: {
+          nodes: Array<{
+            id: string
+            body: string
+            url?: string
+            createdAt?: string
+            updatedAt?: string
+            user?: { name?: string; displayName?: string } | null
+          }>
+        }
+      } | null
+    }>(
+      `query($id: String!) {
+        issue(id: $id) {
+          comments {
+            nodes { id body url createdAt updatedAt user { name displayName } }
+          }
+        }
+      }`,
+      { id: key },
+    )
+    const nodes = data.issue?.comments?.nodes ?? []
+    return nodes.map(c => {
+      const author = c.user?.displayName ?? c.user?.name
+      return {
+        id: c.id,
+        body: c.body,
+        ...(author ? { author } : {}),
+        createdAt: c.createdAt ?? '',
+        ...(c.updatedAt && c.updatedAt !== c.createdAt ? { updatedAt: c.updatedAt } : {}),
+        ...(c.url ? { url: c.url } : {}),
+      }
+    })
   }
 
   async commentIssue(args: CommentIssueArgs): Promise<TrackerResult<{ ok: true }>> {

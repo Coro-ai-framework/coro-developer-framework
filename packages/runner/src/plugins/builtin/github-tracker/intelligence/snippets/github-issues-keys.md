@@ -14,6 +14,9 @@ on the tracker side, PRs on the SCM side).
 1. **Generic `tracker_*` tools (preferred).** Forwarded through the upstream
    MCP:
    - `tracker_get_issue` → `mcp__github-issues__get_issue`
+   - `tracker_get_comments` → `mcp__github-issues__get_issue_comments`.
+     Comments are **not** included in `tracker_get_issue` — call this
+     explicitly to read discussion left on an issue.
    - `tracker_comment_issue` → `mcp__github-issues__add_issue_comment`
 2. **Native `mcp__github-issues__*` tools (advanced path).** Examples:
    - `mcp__github-issues__create_issue`

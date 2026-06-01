@@ -114,6 +114,7 @@ const MANIFEST: PluginManifest = {
     scm_get_pr_status: 'get_pull_request',
     scm_list_pr_comments: 'get_pull_request_comments',
     scm_post_pr_comment: 'add_issue_comment',
+    scm_reply_to_comment: 'add_pull_request_review_comment',
     scm_merge_pr: 'merge_pull_request',
   },
   webhook: {

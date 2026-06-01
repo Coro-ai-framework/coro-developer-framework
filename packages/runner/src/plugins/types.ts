@@ -641,6 +641,21 @@ export interface TrackerLinkIssuesArgs {
   relation: 'Blocks' | 'Relates' | (string & {})
 }
 
+export interface TrackerComment {
+  /** Provider-native comment id (stable handle for threading / dedup). */
+  id: string
+  /** Comment body as plain text / markdown. */
+  body: string
+  /** Display name or handle of the author, when the provider exposes one. */
+  author?: string
+  /** ISO-8601 creation timestamp. */
+  createdAt: string
+  /** ISO-8601 last-edit timestamp, when distinct from createdAt. */
+  updatedAt?: string
+  /** Deep link to the comment, when the provider exposes one. */
+  url?: string
+}
+
 export interface TrackerCommentArgs {
   key: string
   body: string
@@ -663,6 +678,13 @@ export interface TrackerPluginRuntime<Config = unknown> extends PluginRuntime<Co
   getIssue?(key: string): Promise<TrackerIssue>
   searchIssues?(query: string, limit?: number): Promise<TrackerIssue[]>
   listChildren?(parentKey: string): Promise<TrackerIssue[]>
+  /**
+   * Read the comment thread on an issue. Comments are intentionally NOT
+   * folded into {@link TrackerIssue} so reading them is an explicit,
+   * opt-in call. MCP-mode plugins may omit this and map
+   * `tracker_get_comments` to an upstream tool via `manifest.mcpToolMap`.
+   */
+  getComments?(key: string): Promise<TrackerComment[]>
 
   // ── Write ───────────────────────────────────────────────────────────────
   commentIssue?(args: TrackerCommentArgs): Promise<void>

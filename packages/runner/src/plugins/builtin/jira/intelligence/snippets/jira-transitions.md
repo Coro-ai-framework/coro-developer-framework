@@ -9,6 +9,10 @@ attached to every job session — you'll see its tools as `mcp__jira__*`.
 1. **Generic `tracker_*` tools (preferred).** Provider-neutral. The runner
    forwards the call to the upstream MCP. Use these when you can:
    - `tracker_get_issue` → `mcp__jira__jira_get_issue`
+   - `tracker_get_comments` — reads the comment thread on a ticket
+     (served natively by the runner's Jira client). The comments are
+     **not** included in `tracker_get_issue`, so call this explicitly
+     when you need to read human guidance/clarifications left on a ticket.
    - `tracker_comment_issue` → `mcp__jira__jira_add_comment`
    - `tracker_transition_issue` → `mcp__jira__jira_transition_issue`
 2. **Native `mcp__jira__*` tools (advanced path).** Anything beyond the

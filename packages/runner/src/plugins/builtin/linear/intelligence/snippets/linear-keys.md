@@ -9,6 +9,10 @@ job session — you'll see its tools as `mcp__linear__*`.
 1. **Generic `tracker_*` tools (preferred).** The runner forwards through
    the upstream MCP:
    - `tracker_get_issue` → `mcp__linear__get_issue`
+   - `tracker_get_comments` — reads the comment thread on an issue
+     (served natively by the runner's Linear client). Comments are
+     **not** included in `tracker_get_issue` — call this explicitly to
+     read discussion left on an issue.
    - `tracker_comment_issue` → `mcp__linear__create_comment`
    - `tracker_transition_issue` → `mcp__linear__update_issue` (state field)
 2. **Native `mcp__linear__*` tools (advanced path).** Examples:

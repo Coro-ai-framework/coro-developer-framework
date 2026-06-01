@@ -71,6 +71,7 @@ Generic Coro tools (provider-neutral, always available):
 | `scm_get_pr_status` | Check PR state, approval count, and CI status |
 | `scm_list_pr_comments` | Read all comments on the PR |
 | `scm_post_pr_comment` | Post a top-level comment on the PR |
+| `scm_reply_to_comment` | Reply in-thread to a specific comment (pass the `parentCommentId` from `scm_list_pr_comments`) |
 | `scm_add_pr_reviewers` | Add reviewers to the open PR (merges with the existing list; pass usernames or uuids — never display names) |
 | `scm_resolve_user` | Resolve a display name / nickname / uuid / account_id to the SCM-native identifier. Use this when the developer hands you a name and you need a uuid before calling `scm_add_pr_reviewers`. Email is NOT searchable here — for an email, look the user up in the tracker first (see below). |
 | `scm_merge_pr` | Merge the PR after approval (runner also stamps `mergedAt` on `job.prMappings` for you) |
@@ -132,7 +133,7 @@ For the PR you are gating right now, look up its `ExternalRef` (artefacts and `j
 
 For each new human comment:
 - **Change request (blocking):** post a brief acknowledgement and call `mcp__coro__goto_phase("coding")`. The runner will wake the Coder; on the next push, the `pr:updated` webhook resumes you here.
-- **Question:** answer it directly with `scm_post_pr_comment` (or, when you need to thread the reply, `mcp__github__add_pull_request_review_comment` with the parent comment id) if you can; otherwise `goto_phase("coding")` so the Coder can answer.
+- **Question:** answer it directly with `scm_post_pr_comment` (or, when you need to thread the reply under a specific comment, `scm_reply_to_comment` with the parent comment id) if you can; otherwise `goto_phase("coding")` so the Coder can answer.
 - **Suggestion (non-blocking):** acknowledge and proceed; do not gate the merge on it.
 - **Approval:** record the reviewer and timestamp.
 

@@ -70,6 +70,22 @@ export interface CommentIssueArgs {
   body: string
 }
 
+/** One comment on a tracker issue. Mirrors the plugin contract's `TrackerComment`. */
+export interface TrackerComment {
+  /** Provider-native comment id. */
+  id: string
+  /** Comment body as plain text / markdown. */
+  body: string
+  /** Author display name / handle, when available. */
+  author?: string
+  /** ISO-8601 creation timestamp. */
+  createdAt: string
+  /** ISO-8601 last-edit timestamp, when distinct from createdAt. */
+  updatedAt?: string
+  /** Deep link to the comment, when available. */
+  url?: string
+}
+
 /**
  * Common error envelope returned by every tracker method. We do NOT throw on
  * "tracker not configured" — agents should be able to detect missing config
