@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -32,7 +32,17 @@ import {
 } from '../workflows'
 import { cn } from '../lib/utils'
 import { useJobs } from '../hooks/useJobs'
+import { useLocalStorage } from '../hooks/use-local-storage'
 import { deriveRunHistoryHints } from '../lib/run-history'
+import {
+  EMPTY_NEW_RUN_DRAFT,
+  hasNewRunProgress,
+  clearNewRunDraftStorage,
+  NEW_RUN_DRAFT_KEY,
+  type NewRunDraft,
+  type NewRunPlanDraft,
+} from '../lib/new-run-draft'
+import { useRegisterWorkspaceTab, useWorkspaceTabs } from '../providers/workspace-tabs'
 import {
   loadAskEachTimeChoice,
   loadSessionIntakeOverride,
@@ -47,8 +57,6 @@ import { firstPlaceholder, type PromptTemplate } from '../lib/prompt-templates'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 
 // ── Types ────────────────────────────────────────────────────────────────────
-
-type SourceMode = 'manual' | 'ticket'
 
 interface PluginManifest {
   id: string
@@ -74,7 +82,49 @@ interface PluginsResponse {
 export default function CreateJob() {
   const navigate = useNavigate()
   const { jobs } = useJobs(30_000)
+  const { closeTab } = useWorkspaceTabs()
   const descriptionRef = useRef<HTMLTextAreaElement>(null)
+  const [draft, setDraft] = useLocalStorage<NewRunDraft>(NEW_RUN_DRAFT_KEY, EMPTY_NEW_RUN_DRAFT)
+
+  const patchDraft = useCallback((patch: Partial<NewRunDraft>) => {
+    setDraft(previous => ({ ...previous, ...patch }))
+  }, [setDraft])
+
+  const clearNewRunDraft = useCallback(() => {
+    clearNewRunDraftStorage()
+    setDraft(EMPTY_NEW_RUN_DRAFT)
+    closeTab('/jobs/new')
+  }, [setDraft, closeTab])
+
+  const {
+    mode,
+    serviceName,
+    repo,
+    description,
+    reviewers,
+    ticketId,
+    interactive,
+    workflowId,
+    scmId,
+    trackerId,
+  } = draft
+
+  const hasProgress = useMemo(() => hasNewRunProgress(draft), [draft])
+
+  useRegisterWorkspaceTab(
+    hasProgress
+      ? {
+          id: 'new-run',
+          kind: 'run',
+          path: '/jobs/new',
+          title: 'New run',
+          subtitle:
+            mode === 'ticket'
+              ? ticketId.trim() || 'Ticket'
+              : serviceName.trim() || repo.trim() || 'Draft',
+        }
+      : null,
+  )
 
   const [workflowsLoading, setWorkflowsLoading] = useState(true)
   const [coachMode, setCoachMode] = useState<CoachModeConfig | null>(null)
@@ -85,7 +135,6 @@ export default function CreateJob() {
   })
   const [promptDrawerOpen, setPromptDrawerOpen] = useState(false)
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([FALLBACK_JOB_WORKFLOW])
-  const [workflowId, setWorkflowId] = useState<string>(FALLBACK_JOB_WORKFLOW.id)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [detailsWorkflow, setDetailsWorkflow] = useState<WorkflowOption | null>(null)
   const workflow =
@@ -114,29 +163,19 @@ export default function CreateJob() {
     surfaceOverride ?? persistedAskChoice ?? (intakePref === 'ai' ? 'ai' : 'form')
   const useAiIntake = resolvedIntakeMode === 'ai'
 
-  // Form state
-  const [mode, setMode] = useState<SourceMode>('manual')
-  const [serviceName, setServiceName] = useState('')
-  const [repo, setRepo] = useState('')
-  const [description, setDescription] = useState('')
-  const [reviewers, setReviewers] = useState('')
-  const [ticketId, setTicketId] = useState('')
-  const [interactive, setInteractive] = useState(false)
   const [interactiveInitialized, setInteractiveInitialized] = useState(false)
 
   useEffect(() => {
     if (!interactiveInitialized && coachMode !== null) {
-      setInteractive(coachActive && showCoachBanner)
+      patchDraft({ interactive: coachActive && showCoachBanner })
       setInteractiveInitialized(true)
     }
-  }, [coachMode, coachActive, showCoachBanner, interactiveInitialized])
+  }, [coachMode, coachActive, showCoachBanner, interactiveInitialized, patchDraft])
 
   // Plugin discovery — drives the warning banner + the plugin selector
   // (only shown when more than one is active for a kind).
   const [scmPlugins, setScmPlugins] = useState<PluginManifest[]>([])
   const [trackerPlugins, setTrackerPlugins] = useState<PluginManifest[]>([])
-  const [scmId, setScmId] = useState('')
-  const [trackerId, setTrackerId] = useState('')
   const [pluginsLoaded, setPluginsLoaded] = useState(false)
 
   const [submitting, setSubmitting] = useState(false)
@@ -148,10 +187,10 @@ export default function CreateJob() {
         const list = await fetchLaunchableWorkflows()
         if (list.length > 0) {
           setWorkflows(list)
-          setWorkflowId(prev => {
-            if (list.some(w => w.id === prev)) return prev
+          setDraft(previous => {
+            if (list.some(w => w.id === previous.workflowId)) return previous
             const job = list.find(w => w.id === 'job')
-            return (job ?? list[0]).id
+            return { ...previous, workflowId: (job ?? list[0]).id }
           })
         }
       } catch {
@@ -173,8 +212,17 @@ export default function CreateJob() {
           .map(p => p.manifest)
         setScmPlugins(scms)
         setTrackerPlugins(trackers)
-        setScmId(data.defaults.scm || (scms.length === 1 ? scms[0].id : ''))
-        setTrackerId(data.defaults.tracker || (trackers.length === 1 ? trackers[0].id : ''))
+        setDraft(previous => ({
+          ...previous,
+          scmId:
+            previous.scmId ||
+            data.defaults.scm ||
+            (scms.length === 1 ? scms[0].id : ''),
+          trackerId:
+            previous.trackerId ||
+            data.defaults.tracker ||
+            (trackers.length === 1 ? trackers[0].id : ''),
+        }))
       } catch {
         // Plugin discovery is non-fatal — the form still submits and the
         // runner resolves at dispatch time.
@@ -237,6 +285,7 @@ export default function CreateJob() {
 
     try {
       const data = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
+      clearNewRunDraft()
       navigate(`/jobs/${data.jobId}`)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : (err as Error).message)
@@ -245,9 +294,9 @@ export default function CreateJob() {
   }
 
   function handleTemplateSelect(template: PromptTemplate) {
-    setMode(template.mode)
+    patchDraft({ mode: template.mode })
     if (template.description) {
-      setDescription(template.description)
+      patchDraft({ description: template.description })
       requestAnimationFrame(() => {
         const el = descriptionRef.current
         if (!el) return
@@ -258,9 +307,13 @@ export default function CreateJob() {
     }
     if (template.suggestedWorkflow) {
       const match = workflows.find(w => w.workflowPath === template.suggestedWorkflow)
-      if (match) setWorkflowId(match.id)
+      if (match) patchDraft({ workflowId: match.id })
     }
   }
+
+  const handlePlanChange = useCallback((plan: NewRunPlanDraft) => {
+    setDraft(previous => ({ ...previous, plan }))
+  }, [setDraft])
 
   const specificityHint = useMemo(() => {
     if (description.length <= 20) return null
@@ -313,6 +366,9 @@ export default function CreateJob() {
           <IntakeChat
             workflows={workflows}
             jobs={jobs}
+            initialPlan={draft.plan}
+            onPlanChange={handlePlanChange}
+            onDispatched={clearNewRunDraft}
             onUseForm={() => {
               saveSessionIntakeOverride('form')
               setSurfaceOverride('form')
@@ -393,14 +449,14 @@ export default function CreateJob() {
               title="Describe what to build"
               description="Free-form prompt. Best for ad-hoc work or quick experiments."
               selected={mode === 'manual'}
-              onSelect={() => setMode('manual')}
+              onSelect={() => patchDraft({ mode: 'manual' })}
             />
             <ModeCard
               icon={Ticket}
               title="From a tracker ticket"
               description="Coro pulls the title, description, and acceptance criteria from your tracker."
               selected={mode === 'ticket'}
-              onSelect={() => setMode('ticket')}
+              onSelect={() => patchDraft({ mode: 'ticket' })}
               disabled={trackerPlugins.length === 0}
               disabledHint="Connect a tracker in Settings to use this mode."
             />
@@ -412,16 +468,16 @@ export default function CreateJob() {
           {mode === 'manual' ? (
             <ManualFields
               repo={repo}
-              setRepo={setRepo}
+              setRepo={v => patchDraft({ repo: v })}
               serviceName={serviceName}
-              setServiceName={setServiceName}
+              setServiceName={v => patchDraft({ serviceName: v })}
               description={description}
-              setDescription={setDescription}
+              setDescription={v => patchDraft({ description: v })}
               reviewers={reviewers}
-              setReviewers={setReviewers}
+              setReviewers={v => patchDraft({ reviewers: v })}
               scmPlugins={scmPlugins}
               scmId={scmId}
-              setScmId={setScmId}
+              setScmId={v => patchDraft({ scmId: v })}
               recentRepos={runHistory.recentRepos}
               recentReviewers={runHistory.recentReviewers}
               descriptionRef={descriptionRef}
@@ -431,10 +487,10 @@ export default function CreateJob() {
           ) : (
             <TicketFields
               ticketId={ticketId}
-              setTicketId={setTicketId}
+              setTicketId={v => patchDraft({ ticketId: v })}
               trackerPlugins={trackerPlugins}
               trackerId={trackerId}
-              setTrackerId={setTrackerId}
+              setTrackerId={v => patchDraft({ trackerId: v })}
             />
           )}
         </section>
@@ -451,7 +507,11 @@ export default function CreateJob() {
                 When on, Coro pauses at every workflow checkpoint for your approval.
               </p>
             </div>
-            <Switch checked={interactive} onCheckedChange={setInteractive} aria-label="Interactive mode" />
+            <Switch
+              checked={interactive}
+              onCheckedChange={v => patchDraft({ interactive: v })}
+              aria-label="Interactive mode"
+            />
           </label>
         </section>
 
@@ -497,7 +557,7 @@ export default function CreateJob() {
                       >
                         <button
                           type="button"
-                          onClick={() => setWorkflowId(option.id)}
+                          onClick={() => patchDraft({ workflowId: option.id })}
                           className="flex flex-1 items-start gap-3 text-left"
                         >
                           <span

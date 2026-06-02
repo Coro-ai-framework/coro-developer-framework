@@ -1,5 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { MoreHorizontal, PanelTopClose, X } from 'lucide-react'
+import { clearNewRunDraftStorage } from '../../lib/new-run-draft'
 import { useWorkspaceTabs } from '../../providers/workspace-tabs'
 import { Button } from '../ui/button'
 import { ScrollArea } from '../ui/scroll-area'
@@ -59,6 +60,7 @@ export default function WorkspaceTabsBar() {
                     type="button"
                     onClick={() => {
                       const wasActive = activePath === tab.path
+                      if (tab.path === '/jobs/new') clearNewRunDraftStorage()
                       closeTab(tab.path)
                       if (wasActive) navigate(fallbackRoute())
                     }}
@@ -88,6 +90,7 @@ export default function WorkspaceTabsBar() {
             <DropdownMenuContent align="end">
               <DropdownMenuItem
                 onClick={() => {
+                  clearNewRunDraftStorage()
                   clearTabs()
                   navigate('/jobs')
                 }}

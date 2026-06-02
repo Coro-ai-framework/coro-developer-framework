@@ -19,6 +19,7 @@ import { useExecutorPlugins } from './llm/useExecutorPlugins'
 import { useProviderModels, type ProviderModelDescriptor } from './llm/useProviderModels'
 import { jsonRequest, requestJson, ApiError } from '../lib/http'
 import { parseBrief, parseReviewersList, type BriefDraft } from '../lib/intake-brief'
+import type { NewRunPlanDraft } from '../lib/new-run-draft'
 import { deriveRunHistoryHints, findSimilarRuns } from '../lib/run-history'
 import { useIntakeStream, type IntakeChatMessage, type IntakeToolCall } from '../hooks/useIntakeStream'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
@@ -33,27 +34,46 @@ const GREETING =
 interface IntakeChatProps {
   workflows: WorkflowOption[]
   jobs: Job[]
+  initialPlan?: NewRunPlanDraft
+  onPlanChange?: (plan: NewRunPlanDraft) => void
+  onDispatched?: () => void
   onUseForm: () => void
   onNoLlm: () => void
 }
 
-export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: IntakeChatProps) {
+export default function IntakeChat({
+  workflows,
+  jobs,
+  initialPlan,
+  onPlanChange,
+  onDispatched,
+  onUseForm,
+  onNoLlm,
+}: IntakeChatProps) {
   const navigate = useNavigate()
-  const [messages, setMessages] = useState<IntakeChatMessage[]>([
-    { role: 'assistant', content: GREETING },
-  ])
+  const [messages, setMessages] = useState<IntakeChatMessage[]>(() =>
+    initialPlan?.messages?.length
+      ? initialPlan.messages
+      : [{ role: 'assistant', content: GREETING }],
+  )
   const [input, setInput] = useState('')
   const [partial, setPartial] = useState('')
   const [liveToolCalls, setLiveToolCalls] = useState<IntakeToolCall[]>([])
-  const [brief, setBrief] = useState<BriefDraft | null>(null)
+  const [brief, setBrief] = useState<BriefDraft | null>(() => initialPlan?.brief ?? null)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [modelChoice, setModelChoice] = useState({ provider: '', model: '' })
+  const [modelChoice, setModelChoice] = useState(
+    () => initialPlan?.modelChoice ?? { provider: '', model: '' },
+  )
   const listRef = useRef<HTMLDivElement>(null)
   const userTurns = useMemo(() => messages.filter(m => m.role === 'user').length, [messages])
 
   const { providers } = useExecutorPlugins()
   const { modelsByProvider, loadModels } = useProviderModels()
+
+  useEffect(() => {
+    onPlanChange?.({ messages, brief, modelChoice })
+  }, [messages, brief, modelChoice, onPlanChange])
 
   useEffect(() => {
     void requestJson<ConfigResponse>('/config').then(data => {
@@ -158,6 +178,7 @@ export default function IntakeChat({ workflows, jobs, onUseForm, onNoLlm }: Inta
         interactive: brief.interactive,
       }
       const data = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
+      onDispatched?.()
       navigate(`/jobs/${data.jobId}`)
     } catch (err) {
       setSubmitError(err instanceof ApiError ? err.message : (err as Error).message)
