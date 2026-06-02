@@ -145,5 +145,12 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
     intake: {
       toolsEnabled: config.intake?.toolsEnabled !== false,
     },
+    jobs: config.jobs
+      ? {
+          ...(config.jobs.idleWatchdog
+            ? { idleWatchdog: { ...config.jobs.idleWatchdog } }
+            : {}),
+        }
+      : undefined,
   }
 }

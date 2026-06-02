@@ -72,6 +72,10 @@ import {
 import { buildPhaseKickoffMessage } from './phase-kickoff'
 import { assertJobPluginRequirements } from './plugin-preflight'
 import {
+  createPhaseIdleWatchdog,
+  resolveIdleWatchdogConfig,
+} from './idle-watchdog'
+import {
   RateLimitExceededError,
   nextBackoffMs,
 } from '@coro-ai/plugin-sdk'
@@ -704,6 +708,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       let resumeSessionId = !resumeDisabled && liveJob.sessionId ? liveJob.sessionId : undefined
 
       const abortController = new AbortController()
+      const phaseSession: { controller?: ExecutorSessionController } = {}
 
       const guardrailEngine = createGuardrailEngine(localConfig, {
         scm: createGuardrailScmDeps(toolCtx),
@@ -778,9 +783,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
                 }
               },
             }
+            phaseSession.controller = augmented
             options?.onSessionStart?.(liveJob.id, augmented)
           },
-          onSessionEnd: () => options?.onSessionEnd?.(liveJob.id),
+          onSessionEnd: () => {
+            phaseSession.controller = undefined
+            options?.onSessionEnd?.(liveJob.id)
+          },
         },
       }
 
@@ -849,8 +858,33 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         // first iteration. Mirrors the legacy `onPhasePrepare` contract.
         options?.onPhasePrepare?.(liveJob.id, developerInput)
 
+        const idleWatchdogConfig = resolveIdleWatchdogConfig(ctx.settings)
+        let lastActivityAt = Date.now()
+        let idleNudgeCount = 0
+        let idleWatchdogActed = false
+        const expectedPhaseStatus = phaseConf?.status ?? liveJob.status
+
+        const idleWatchdog = createPhaseIdleWatchdog({
+          config: idleWatchdogConfig,
+          stateBackend,
+          logger,
+          getJob: () => liveJob,
+          getExpectedStatus: () => expectedPhaseStatus,
+          getDeveloperInput: () => developerInput,
+          getController: () => phaseSession.controller,
+          getLastActivityAt: () => lastActivityAt,
+          setLastActivityAt: (ms) => { lastActivityAt = ms },
+          getNudgeCount: () => idleNudgeCount,
+          setNudgeCount: (n) => { idleNudgeCount = n },
+          isActed: () => idleWatchdogActed,
+          setActed: () => { idleWatchdogActed = true },
+        })
+
+        idleWatchdog.start()
+
         try {
           for await (const ev of executor.executePhase(req) as AsyncIterable<PhaseExecutorEvent>) {
+          lastActivityAt = Date.now()
           switch (ev.type) {
             case 'session_start': {
               if (ev.sessionId) sessionId = ev.sessionId
@@ -858,15 +892,18 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             }
             case 'text': {
               if (ev.content.trim()) {
+                idleNudgeCount = 0
                 await stateBackend.appendLog(liveJob.id, ev.content)
               }
               break
             }
             case 'thinking': {
+              idleNudgeCount = 0
               await appendChunkedLog(stateBackend, liveJob.id, '[thinking] ', ev.content)
               break
             }
             case 'tool_call': {
+              idleNudgeCount = 0
               if (ev.input !== undefined && ev.input !== null) {
                 await appendChunkedLog(
                   stateBackend,
@@ -1013,6 +1050,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           }
           throw phaseErr
         } finally {
+          idleWatchdog.stop()
           // Close the developer-input channel so the executor's internal
           // SDK iterable can finish cleanly. The executor's
           // `lifecycle.onSessionEnd` is responsible for calling

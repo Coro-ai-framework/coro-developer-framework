@@ -57,6 +57,7 @@ import { registerAnthropicHttpRoutes } from './http-routes'
 import { readClaudeLocalSession, testAnthropicCredentials } from './test-connection'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
+import { linkAbortController } from './abort-link'
 import { ensureClaudeConfigSymlink } from './intelligence-symlink'
 import { healMcpTransport, isCoroMcpHealthy, MCP_RETRY_NUDGE } from './mcp-heal'
 import { reattachDynamicMcpServers } from './mcp-reattach'
@@ -866,6 +867,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
 
     if (agents) {
       queryOptions.agents = agents
+    }
+
+    const sdkAbortController = linkAbortController(req.signal)
+    if (sdkAbortController) {
+      queryOptions.abortController = sdkAbortController
     }
 
     // Cumulative phase totals. Anthropic emits per-turn assistant.usage

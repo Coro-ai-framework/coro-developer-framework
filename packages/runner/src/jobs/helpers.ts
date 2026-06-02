@@ -162,6 +162,22 @@ export function pausedJobPatch(): Partial<Job> {
   }
 }
 
+/**
+ * Canonical state mutation when the idle watchdog parks a wedged phase.
+ * Uses a `developer-input: stalled:` awaitingEvent so the existing
+ * send-message-to-resume pipeline works unchanged.
+ */
+export function stalledJobPatch(reason: string): Partial<Job> {
+  return {
+    status: STATUS_AWAITING_DEVELOPER_INPUT,
+    awaitingEvent: `developer-input: stalled: ${reason}`,
+    awaitingPrId: undefined,
+    awaitingNextPhase: undefined,
+    approvedAdvanceFromPhase: undefined,
+    escalationMessage: reason,
+  }
+}
+
 // ── Workflow paths ────────────────────────────────────────────────────────────
 
 export function defaultWorkflowPath(type: JobType): string {

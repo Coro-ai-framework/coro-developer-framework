@@ -158,4 +158,22 @@ describe('buildSettingsFromLocal', () => {
     expect(settings.bitbucket.baseUrl).toBe('https://api.bitbucket.org/2.0')
     expect(settings.github.baseUrl).toBe('https://api.github.com')
   })
+
+  it('maps jobs.idleWatchdog from LocalConfig into Settings', () => {
+    const config: LocalConfig = {
+      jobs: {
+        idleWatchdog: {
+          idleThresholdMs: 120_000,
+          maxNudges: 1,
+          checkIntervalMs: 10_000,
+        },
+      },
+    }
+    const settings = buildSettingsFromLocal(config)
+    expect(settings.jobs?.idleWatchdog).toEqual({
+      idleThresholdMs: 120_000,
+      maxNudges: 1,
+      checkIntervalMs: 10_000,
+    })
+  })
 })

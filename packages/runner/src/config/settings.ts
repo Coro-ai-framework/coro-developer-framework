@@ -141,4 +141,21 @@ export interface Settings {
     /** When false, plan mode runs without read-only tracker/SCM tools. Default true. */
     toolsEnabled?: boolean
   }
+  /**
+   * Job harness tuning — idle watchdog, etc.
+   */
+  jobs?: {
+    idleWatchdog?: {
+      /** When false, disables per-phase idle nudge/park. Default true. */
+      enabled?: boolean
+      /** Ms without executor events before nudge or park. Default 5m. */
+      idleThresholdMs?: number
+      /** Nudges before parking as stalled. Default 2. */
+      maxNudges?: number
+      /** How often the watchdog timer checks idle. Default 30s. */
+      checkIntervalMs?: number
+      /** Ms to wait after stop() before marking failed if phase still runs. Default 30s. */
+      stopGraceMs?: number
+    }
+  }
 }

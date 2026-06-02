@@ -203,6 +203,18 @@ const intakeConfigSchema = z.object({
   toolsEnabled: z.boolean().optional(),
 }).optional()
 
+const idleWatchdogConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  idleThresholdMs: z.number().int().positive().optional(),
+  maxNudges: z.number().int().min(0).optional(),
+  checkIntervalMs: z.number().int().positive().optional(),
+  stopGraceMs: z.number().int().positive().optional(),
+}).optional()
+
+const jobsConfigSchema = z.object({
+  idleWatchdog: idleWatchdogConfigSchema,
+}).optional()
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   intelligence: intelligenceConfigSchema,
@@ -261,6 +273,7 @@ const localConfigSchema = z.object({
   setup: setupConfigSchema,
   coachMode: coachModeConfigSchema,
   intake: intakeConfigSchema,
+  jobs: jobsConfigSchema,
   guardrails: z.object({
     enabled: z.boolean().optional(),
     rules: z.array(z.object({
