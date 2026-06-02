@@ -136,11 +136,11 @@ describe('Dispatcher.rerunPhase', () => {
     const job = baseJob({ status: STATUS_AWAITING_DEVELOPER_INPUT, phase: 'review' })
     const { dispatcher, updateJob, appendLog } = buildDispatcherCtx(job)
 
-    await dispatcher.rerunPhase(job.id, 'planning', { model: 'claude-opus-4-6' })
+    await dispatcher.rerunPhase(job.id, 'planning', { model: 'claude-opus-4-8' })
 
     // First updateJob: setPhaseOverride.
     expect(updateJob).toHaveBeenNthCalledWith(1, job.id, {
-      phaseModelOverrides: { planning: { model: 'claude-opus-4-6' } },
+      phaseModelOverrides: { planning: { model: 'claude-opus-4-8' } },
     })
     // Second updateJob: resumeJob's status flip + phase reset.
     const secondCall = updateJob.mock.calls[1]

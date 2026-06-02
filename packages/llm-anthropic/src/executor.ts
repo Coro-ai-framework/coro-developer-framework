@@ -184,15 +184,15 @@ const ANTHROPIC_CLASSIFY_OPTIONS: ClassifyOptions = {
  * percent is fine for preview, never for invoicing.
  */
 const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
-  // Current generation (4.6/4.7) — dateless IDs are pinned snapshots,
-  // not evergreen pointers. Source: platform.claude.com/docs models overview.
+  // Current generation — dateless IDs are pinned snapshots, not evergreen
+  // pointers. Source: platform.claude.com/docs models overview.
   {
-    id: 'claude-opus-4-7',
-    displayName: 'Claude Opus 4.7',
+    id: 'claude-opus-4-8',
+    displayName: 'Claude Opus 4.8',
     contextTokens: 1_000_000,
     tier: 'planning',
     supportsThinking: true,
-    pricing: { inputPerMTokens: 15, outputPerMTokens: 75, cacheReadPerMTokens: 1.5 },
+    pricing: { inputPerMTokens: 5, outputPerMTokens: 25, cacheReadPerMTokens: 0.5 },
   },
   {
     id: 'claude-sonnet-4-6',
@@ -221,9 +221,9 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
   },
   {
-    id: 'claude-opus-4-6',
-    displayName: 'Claude Opus 4.6',
-    contextTokens: 200_000,
+    id: 'claude-opus-4-7',
+    displayName: 'Claude Opus 4.7',
+    contextTokens: 1_000_000,
     tier: 'planning',
     supportsThinking: true,
     pricing: { inputPerMTokens: 15, outputPerMTokens: 75, cacheReadPerMTokens: 1.5 },
@@ -679,7 +679,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     // The legacy `planning` / `coding` keys are kept so existing
     // tenant configs and any custom workflow files still using
     // `model: planning` keep working unchanged.
-    const opus    = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-opus-4-6'   }
+    const opus    = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-opus-4-8'   }
     const sonnet  = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-sonnet-4-6' }
     const haiku   = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-haiku-4-5'  }
     return {
