@@ -88,7 +88,7 @@ Work-item state is tracked on the Job object via `workItems[]`. The Planner call
 
 The runner enforces a **completion gate** on this contract: it refuses to mark the job `STATUS_COMPLETE` while any work item is still `pending` or `in-progress`. If an agent ends the final phase prematurely, the runner re-runs the current phase with a `[completion-gate]` corrective prompt naming the unfinished work items and the still-open PRs. A repeated-block retry cap converts a stuck loop into an explicit failure rather than burning tokens. See `docs/agent-host-spec.md` for the harness contract.
 
-**Coder over-run:** If the Coder opens PRs for multiple work items before review runs, the merge gatekeeper is designed to **absorb** the backlog in one `review` phase (group by work item, merge in order) rather than requiring a strict coding→review handoff per item. The Coder should still end its turn after each WI's PRs (`[coding-preflight]` warns when that did not happen).
+**Coder over-run:** If the Coder prepares multiple work items (branches + PR previews) before review runs, the merge gatekeeper is designed to **absorb** the backlog in one `review` phase (open each PR, group by work item, merge in order) rather than requiring a strict coding→review handoff per item. The Coder should still end its turn after each WI (`[coding-preflight]` warns when that did not happen).
 
 **SCM events:** While parked, webhook and poll events for **any** open PR on the job are queued and delivered as one batched `[WEBHOOK EVENTS: …]` prompt on wake. Every phase kickoff also includes an **"Open PRs on this job"** table from `prMappings`.
 
@@ -100,11 +100,13 @@ The job pipeline is intentionally tight: each phase has a distinct decision to m
 |---|---|---|
 | `spec-writing` | spec-writer | Translate the ticket (or CLI/plan-mode brief) into a concrete, testable spec the Planner can act on |
 | `planning` | planner | Decide scope, sequence, language; produce work items |
-| `coding` | coder + `code-reviewer` subagent | Implement, build, test locally, self-review the diff against conventions/plan, open the PR |
-| `review` | pr-reviewer (merge gatekeeper) | Coordinate with humans, route fix requests back to coder, merge when approved |
+| `coding` | coder + `code-reviewer` subagent | Implement, build, test locally, self-review the diff against conventions/plan, push the branch and post a PR preview (does **not** open the PR) |
+| `review` | pr-reviewer (PR opener + merge gatekeeper) | Open the PR(s) for the work item, coordinate with humans, route fix requests back to coder, merge when approved |
 | `evaluation` | evaluator | Verify the merged result against acceptance criteria, manage the work-item loop, capture memory and self-improvement proposals |
 
-The convention/plan/test-coverage review happens **once**, inside the coding phase, via the `code-reviewer` subagent. The standalone `review` phase does **not** re-review the diff — it focuses on the human-coordination and merge actions that the coder must not perform on its own work. Acceptance-criteria verification, build/test re-run on the merged commit, and Loki/Tempo error scans live in `evaluation`.
+The convention/plan/test-coverage review happens **once**, inside the coding phase, via the `code-reviewer` subagent. The standalone `review` phase does **not** re-review the diff — it **opens** the PR and focuses on the human-coordination and merge actions that the coder must not perform on its own work. Acceptance-criteria verification, build/test re-run on the merged commit, and Loki/Tempo error scans live in `evaluation`.
+
+**PR preview gate.** The coder does not open the PR — it pushes the branch and posts a `pr-preview` artefact, then hands off to `review`, which opens the PR via `scm_create_pr`. Because PR creation moves to `review`, the interactive checkpoint at the **coding** boundary is a genuine *pre-PR* gate: when the job is interactive the developer previews the diff (dashboard "Changes" tab) and the proposed PR before anything is created on the SCM. Autonomous jobs skip the pause but still surface the same preview + live diff while running.
 
 ## Phases
 
@@ -149,8 +151,8 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 5. Implement the changes following the injected conventions
 6. Write tests
 7. Build, run the test suite, and fix any failures locally
-8. Invoke the `code-reviewer` subagent on the staged diff. Address any blocking findings before pushing. Carry the subagent's verdict into the PR description so human reviewers can see it.
-9. Open the PR with a detailed description that includes the subagent's review summary
+8. Invoke the `code-reviewer` subagent on the staged diff. Address any blocking findings before pushing. Carry the subagent's verdict into the PR preview description so human reviewers can see it.
+9. Push the work-item branch and post a `pr-preview` artefact (proposed title + detailed description, including the subagent's review summary). Do **not** open the PR — hand off to `review`, which opens it after the developer's optional pre-PR preview.
 
 ---
 
@@ -158,8 +160,9 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 **Agent:** PR Reviewer (`agents/pr-reviewer.md`)
 
-This phase does **not** re-review the diff — that already happened in coding via the `code-reviewer` subagent. The agent here is a thin merge gatekeeper that:
+This phase does **not** re-review the diff — that already happened in coding via the `code-reviewer` subagent. The agent here opens the PR and acts as a merge gatekeeper:
 
+0. **Opens the PR(s)** for the current work item from the coder's pushed branch + `pr-preview` artefact(s) via `scm_create_pr` (idempotent), and posts the `pr-link` artefact. This runs after the coding interactive checkpoint, so it is the first thing that creates anything on the SCM.
 1. Identifies every open PR for the **current work item** via `job.prMappings` and `pr-link` artefacts.
 2. When multiple PRs exist for the work item (e.g. guardrail-forced splits or staged change), infers a safe **merge order** from branch dependencies (`targetBranch` → `sourceBranch` stacks), PR title suffixes (`-1a` / `-1b`, `-core` / `-tests`), and `openedAt` as the tiebreaker.
 3. For each PR in order: triages comments, routes blocking change requests back to the coder via `goto_phase("coding")`, waits for human approval (`await_event` on `pr:approved`), and merges via `scm_merge_pr` (the runner stamps `mergedAt` on the matching mapping automatically).

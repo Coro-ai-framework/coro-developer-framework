@@ -5,6 +5,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileDiff,
   FileJson2,
   FileText,
   GitPullRequest,
@@ -44,6 +45,8 @@ export interface ArtifactReviewPanelProps {
   onApprove: () => void
   onRequestChanges: (msg: string) => void
   onCancel: () => void
+  /** Jump to the Changes tab. Shown when a PR preview is part of this review. */
+  onViewChanges?: () => void
   sending?: boolean
 }
 
@@ -63,8 +66,10 @@ export default function ArtifactReviewPanel({
   onApprove,
   onRequestChanges,
   onCancel,
+  onViewChanges,
   sending = false,
 }: ArtifactReviewPanelProps) {
+  const hasPrPreview = artifacts.some(a => a.kind === 'pr-preview')
   const [activeId, setActiveId] = useState(artifacts[0]?.id ?? '')
   const [showChanges, setShowChanges] = useState(false)
   const [changeText, setChangeText] = useState('')
@@ -141,6 +146,18 @@ export default function ArtifactReviewPanel({
                 <TooltipContent>Save or cancel your edit first.</TooltipContent>
               ) : null}
             </Tooltip>
+            {hasPrPreview && onViewChanges ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={sending}
+                onClick={onViewChanges}
+              >
+                <FileDiff />
+                Review code changes
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="secondary"
@@ -321,6 +338,10 @@ function ArtifactMetadataRow({ artifact }: { artifact: Artifact }) {
 }
 
 function ArtifactNonFileBody({ artifact }: { artifact: Artifact }) {
+  if (artifact.kind === 'pr-preview') {
+    return <PrPreviewBody data={artifact.data} />
+  }
+
   const url = typeof artifact.data['url'] === 'string' ? (artifact.data['url'] as string) : null
   if ((artifact.kind === 'pr-link' || artifact.kind === 'url') && url) {
     return (
@@ -348,6 +369,43 @@ function ArtifactNonFileBody({ artifact }: { artifact: Artifact }) {
         {JSON.stringify(artifact.data, null, 2)}
       </pre>
     </ScrollArea>
+  )
+}
+
+function PrPreviewBody({ data }: { data: Record<string, unknown> }) {
+  const str = (k: string) => (typeof data[k] === 'string' ? (data[k] as string) : undefined)
+  const description = str('description')
+  const base = str('base')
+  const sourceBranch = str('sourceBranch')
+  const workItem = str('workItem')
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-fg-muted">
+        This is the pull request Coro will open once you approve. Use “Review code changes” to see the diff.
+      </p>
+      {sourceBranch || workItem ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          {sourceBranch ? (
+            <Badge variant="neutral" className="font-mono">
+              {sourceBranch}
+              {base ? <span className="text-fg-subtle"> → {base}</span> : null}
+            </Badge>
+          ) : null}
+          {workItem ? <Badge variant="neutral">{workItem}</Badge> : null}
+        </div>
+      ) : null}
+      {description ? (
+        <ScrollArea className="h-[min(40vh,360px)] rounded-xl border border-line bg-canvas/40">
+          <div
+            className="prose-coro space-y-2 p-4 text-sm leading-6 text-fg"
+            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(description) }}
+          />
+        </ScrollArea>
+      ) : (
+        <p className="text-sm text-fg-subtle">No PR description was provided.</p>
+      )}
+    </div>
   )
 }
 
@@ -698,6 +756,7 @@ function tryFormatJson(text: string): string {
 }
 
 function ArtifactKindIcon({ kind }: { kind: string }) {
+  if (kind === 'pr-preview') return <FileDiff className="size-3.5" />
   if (kind === 'pr-link') return <GitPullRequest className="size-3.5" />
   if (kind === 'url') return <Link2 className="size-3.5" />
   if (kind.endsWith('-md') || kind === 'analysis-contract') return <FileText className="size-3.5" />

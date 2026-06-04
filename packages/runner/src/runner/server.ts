@@ -32,6 +32,8 @@ import {
 } from '../config/local-config'
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
+import { resolveJobWorkspaceLayout } from '../jobs/workspace-layout'
+import { computeJobDiff, emptyJobDiff, defaultBaseBranch } from '../jobs/job-diff'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { runIntakeStream } from '../intake/handler'
@@ -1524,6 +1526,53 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       res.status(404).json({ error: `Could not read artifact content: ${msg}` })
+    }
+  })
+
+  // ── Job code diff (PR preview) ──────────────────────────────────────────
+  // Returns the changes the agent has made in the cloned target repo,
+  // relative to the base branch. Powers the dashboard "Changes" tab and the
+  // pre-PR preview gate so developers can see exactly what is being built
+  // before any PR is opened on the SCM.
+  //
+  // Read-only: it never mutates the checkout. The repo dir is resolved from
+  // the job's workspace layout and confined to `{workingDir}/{jobId}/`.
+  app.get('/jobs/:jobId/diff', async (req: Request, res: Response) => {
+    const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+
+    try {
+      const job = await stateBackend.getJob(jobId)
+      if (!job) {
+        res.status(404).json({ error: `Job not found: ${jobId}` })
+        return
+      }
+
+      const config = loadLocalConfig()
+      const workingDir = resolveLocalWorkingDir(config)
+      const jobWorkingDir = path.resolve(workingDir, jobId)
+      const layout = resolveJobWorkspaceLayout(job, jobWorkingDir)
+
+      // No repo checkout registered yet (job hasn't reached coding). Report
+      // an empty-but-available diff so the dashboard shows a clean state.
+      if (!layout.repoCheckoutAbsDir) {
+        res.json(emptyJobDiff(typeof req.query.base === 'string' ? req.query.base : undefined))
+        return
+      }
+
+      const repoDir = path.resolve(layout.repoCheckoutAbsDir)
+      if (!repoDir.startsWith(jobWorkingDir + path.sep) && repoDir !== jobWorkingDir) {
+        logger.warn({ jobId, repoDir }, 'Job diff repo path escape attempt blocked')
+        res.status(400).json({ error: 'Repo checkout is outside the job working directory' })
+        return
+      }
+
+      const baseParam = typeof req.query.base === 'string' && req.query.base.trim() ? req.query.base : undefined
+      const diff = await computeJobDiff({ repoDir, base: baseParam ?? defaultBaseBranch(job) })
+      res.json(diff)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      logger.error({ err, jobId }, 'Job diff computation failed')
+      res.status(500).json({ error: `Could not compute job diff: ${msg}` })
     }
   })
 

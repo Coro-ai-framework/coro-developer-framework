@@ -203,7 +203,7 @@ the generic `scm_*` / `tracker_*` surface above.
 After you produce output that is useful to a developer (plan, PR, report, test results, contract file), call `post_artifact` with a `kind` and the minimum data needed for the dashboard to render it. Artefacts are free-form JSON objects — the dashboard decides how to display each `kind`.
 
 Rules:
-- **Post artefacts as you create them**, not at the end of the phase. If you open a PR mid-phase, post the `pr-link` artefact immediately so developers can see it.
+- **Post artefacts as you create them**, not at the end of the phase. When the Coder finishes a work item, post the `pr-preview` artefact immediately; when the PR Reviewer opens the PR, post the `pr-link` artefact immediately so developers can see it.
 - **Paths must be relative to the working directory** (`working/{job-id}/...`). Never post absolute paths — they won't be readable by the dashboard.
 - **One artefact per output**. If you produce a plan file AND a contract file, post two separate artefacts.
 - **Pick an existing `kind` when one fits**. Only invent a new kind if nothing below matches — the dashboard falls back to a JSON viewer for unknown kinds.
@@ -215,7 +215,8 @@ Common kinds:
 | `plan-md` | Planner writes a workflow plan | `{ path: "…/implementation-plan.md" }` |
 | `implementation-plan-md` | Planner writes an implementation plan for a job or work item | `{ path: "…/implementation-plan.md" }` |
 | `analysis-contract` | Analyzer writes the service contract JSON | `{ path: "…/service-contract.json" }` |
-| `pr-link` | Coder opens a PR | `{ url, prId, repoSlug, title, pluginId? }` |
+| `pr-preview` | Coder prepares a PR (before the review phase opens it) | `{ title, description, base, sourceBranch, workItem }` |
+| `pr-link` | PR Reviewer opens a PR | `{ url, prId, repoSlug, title, pluginId? }` |
 | `review-summary` | PR Reviewer posts a review summary | `{ prId, repoSlug, verdict, summary }` |
 | `test-results` | Evaluator records build/test/acceptance verification on the merged commit | `{ path, passed, failed, skipped }` |
 | `evaluation-md` | Evaluator writes an evaluation report | `{ path: "…/evaluation.md" }` |
@@ -439,15 +440,20 @@ Rules:
 
 ### PR review process
 
+The PR is **not** opened on the SCM until after the coding phase ends. This gives the developer a chance to preview the change (the diff and the proposed PR) before anything lands on the provider — see "PR preview gate" below.
+
 1. Coder builds, runs tests locally, and invokes the `code-reviewer` subagent on the diff. Address every blocking finding before pushing.
-2. Coder opens PR, tags human reviewers, and includes `[PR-REVIEWER-AGENT]` plus the subagent's review verdict in the description.
-3. The merge gatekeeper (`pr-reviewer.md`) coordinates with humans:
-   - It does **not** re-review the diff against conventions/plan/tests — that already happened in step 1.
-   - Human reviewers comment, approve, or request changes.
-   - Blocking change requests are routed back to the Coder via `goto_phase("coding")`.
-4. At least one human approval is required before merge.
-5. The merge gatekeeper triggers the merge after human approval and CI is green.
-6. The Evaluator runs the build/test suite and acceptance criteria on the merged commit and decides whether to loop back or finish.
+2. Coder commits, pushes the work-item branch, and posts a `pr-preview` artefact (proposed PR title + description, including `[PR-REVIEWER-AGENT]` and the subagent's verdict). The Coder does **not** call `scm_create_pr`.
+3. The runner parks for developer approval at the coding checkpoint (when the job is interactive). The developer reviews the diff in the dashboard "Changes" tab and approves or requests changes.
+4. The merge gatekeeper (`pr-reviewer.md`) opens the PR for the work item via `scm_create_pr` (using the `pr-preview` title/description), tags human reviewers, and posts the `pr-link` artefact. It does **not** re-review the diff against conventions/plan/tests — that already happened in step 1.
+5. Human reviewers comment, approve, or request changes. Blocking change requests are routed back to the Coder via `goto_phase("coding")`.
+6. At least one human approval is required before merge.
+7. The merge gatekeeper triggers the merge after human approval and CI is green.
+8. The Evaluator runs the build/test suite and acceptance criteria on the merged commit and decides whether to loop back or finish.
+
+### PR preview gate
+
+Because the PR is opened in the review phase rather than at the end of coding, the interactive checkpoint at the **coding** boundary is a genuine *pre-PR* gate: the developer sees exactly what will be proposed (live diff + proposed title/description) before any PR exists on the SCM. For autonomous (non-interactive) jobs there is no gate, but the same `pr-preview` artefact and live diff are still available in the dashboard while the job runs.
 
 ### Merge strategy
 

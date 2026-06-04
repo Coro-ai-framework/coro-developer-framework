@@ -71,7 +71,7 @@ inspectable in O(1) reads.
       "plan": "implementation-plan.md#work-item-1",
       "files": ["src/handlers/limits.go", "src/handlers/limits_test.go"],
       "tests": ["TestLimitsHandler_HappyPath", "TestLimitsHandler_RateLimited"],
-      "pr": "<pr-url-once-opened>"
+      "pr": "<branch name; PR url filled by review phase>"
     }
   ],
   "rollout": {
@@ -116,7 +116,8 @@ Each time you finish a work item:
 
 - Append to the matching `traceability[]` row: replace the planned `files`
   with the **actually-touched** list, fill in `tests` with the test names you
-  added/touched, and set `pr` to the PR URL after `scm_create_pr`.
+  added/touched, and set `pr` to the pushed work-item branch name (the review
+  phase opens the PR and fills in the final PR URL).
 - If you made a non-trivial implementation choice that diverges from the
   plan, append a `decisions[]` entry. The bar: would the next agent / a future
   reader regret not knowing this? If yes, write it.

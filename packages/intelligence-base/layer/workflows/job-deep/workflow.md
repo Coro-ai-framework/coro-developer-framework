@@ -145,15 +145,19 @@ of analysis.
 **Subagent:** `code-reviewer` (full lens set L1-L4)
 
 Standard coding flow. The reviewer subagent reads `params.lane === "deep"` and
-applies all four lenses, including the `cross-cutting-review` skill.
+applies all four lenses, including the `cross-cutting-review` skill. As in the
+standard lane, the coder pushes the branch and posts a `pr-preview` artefact —
+it does **not** open the PR; the `review` phase opens it after the coding
+interactive checkpoint (the pre-PR preview gate).
 
 ### Phase 4: Review (merge gatekeeper, per work item)
 
 **Agent:** PR Reviewer (`agents/pr-reviewer.md`)
 
-Identical to the standard job workflow's `review` phase: thin gatekeeper
-that routes change requests back to coding, waits for approval, merges,
-and **drives the per-work-item loop**. After every PR for the current
+Identical to the standard job workflow's `review` phase: it **opens the PR**
+for the work item (from the coder's branch + `pr-preview`), then acts as a thin
+gatekeeper that routes change requests back to coding, waits for approval,
+merges, and **drives the per-work-item loop**. After every PR for the current
 work item is merged, the gatekeeper closes the work item and either:
 - Calls `request_new_session` + `goto_phase("coding")` for the next
   pending work item, OR

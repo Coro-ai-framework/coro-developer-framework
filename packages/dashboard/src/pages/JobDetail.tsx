@@ -16,6 +16,7 @@ import ArtifactLink from '../components/ArtifactLink'
 import CampaignView from '../components/CampaignView'
 import ConnectionIndicator from '../components/ConnectionIndicator'
 import InsightsPanel from '../components/InsightsPanel'
+import JobChangesPanel from '../components/job-changes-panel'
 import JobControlBar from '../components/JobControlBar'
 import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
@@ -65,7 +66,7 @@ import {
   isWaitingStatus,
 } from '../lib/status'
 
-type DetailTab = 'activity' | 'insights' | 'diagnostics'
+type DetailTab = 'activity' | 'changes' | 'insights' | 'diagnostics'
 
 /**
  * Compact, tonally-aware count chip used inside tab triggers to
@@ -1085,6 +1086,16 @@ export default function JobDetail() {
               />
             ) : null}
           </TabsTrigger>
+          <TabsTrigger value="changes">
+            <GitPullRequest className="size-3.5 shrink-0" aria-hidden="true" />
+            Changes
+            {(job.artifacts ?? []).some(a => a.kind === 'pr-preview') ? (
+              <span
+                title="A pull request is proposed for your review"
+                className="ml-1 inline-flex size-1.5 rounded-full bg-accent-400"
+              />
+            ) : null}
+          </TabsTrigger>
           <TabsTrigger value="insights">
             <Lightbulb className="size-3.5 shrink-0" aria-hidden="true" />
             Insights
@@ -1117,7 +1128,12 @@ export default function JobDetail() {
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
             <div className="space-y-5">
               {job.status === 'awaiting-developer-input' && !isDevPaused ? (
-                <ApprovalBox job={job} onSend={postMessage} onCancel={handleCancel} />
+                <ApprovalBox
+                  job={job}
+                  onSend={postMessage}
+                  onCancel={handleCancel}
+                  onViewChanges={() => setActiveTab('changes')}
+                />
               ) : null}
 
               {canReplyToEscalation ? (
@@ -1170,6 +1186,10 @@ export default function JobDetail() {
               <ContextPanel job={job} />
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="changes" className="space-y-5">
+          <JobChangesPanel job={job} live={!isTerminalStatus(job.status)} />
         </TabsContent>
 
         <TabsContent value="insights" className="space-y-5">

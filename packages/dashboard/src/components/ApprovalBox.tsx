@@ -9,6 +9,8 @@ interface ApprovalBoxProps {
   job: Job
   onSend: (message: string) => Promise<void>
   onCancel?: () => Promise<void>
+  /** Jump to the Changes tab so the developer can review the diff before approving. */
+  onViewChanges?: () => void
 }
 
 const APPROVE_MESSAGE = 'Approved. Please continue to the next phase.'
@@ -17,7 +19,7 @@ const APPROVE_MESSAGE = 'Approved. Please continue to the next phase.'
  * Developer-facing approval + rework UI shown only when a job is parked
  * awaiting developer input.
  */
-export default function ApprovalBox({ job, onSend, onCancel }: ApprovalBoxProps) {
+export default function ApprovalBox({ job, onSend, onCancel, onViewChanges }: ApprovalBoxProps) {
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -80,6 +82,7 @@ export default function ApprovalBox({ job, onSend, onCancel }: ApprovalBoxProps)
           onApprove={() => void handle(APPROVE_MESSAGE)}
           onRequestChanges={text => void handle(text)}
           onCancel={() => void handleCancel()}
+          onViewChanges={onViewChanges}
         />
       ) : (
         <>

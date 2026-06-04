@@ -93,7 +93,10 @@ Standard coding flow with a leaner reviewer pass. The coder:
 2. Builds + runs tests locally.
 3. Invokes `code-reviewer` (which honours `params.lane === "fast"` and runs
    only conventions/plan/tests + scope/traceability lenses).
-4. Opens the PR with the subagent's verdict in the description.
+4. Pushes the branch and posts a `pr-preview` artefact (proposed title +
+   description incl. the subagent's verdict). It does **not** open the PR —
+   the `review-and-verify` phase opens it after the coding interactive
+   checkpoint, so the developer can preview the change first.
 
 ### Phase 3: Review-and-Verify (combined gatekeeper + verifier)
 
@@ -103,6 +106,8 @@ This phase combines the work that STANDARD splits across `review` and
 `evaluation`, because for a tiny change the cost of two phases is not paid back
 by the extra checks. The agent:
 
+0. **Opens the PR** for the work item from the coder's pushed branch +
+   `pr-preview` artefact via `scm_create_pr`, and posts the `pr-link` artefact.
 1. Reads PR state and human comments.
 2. Routes blocking change requests back to coding via `goto_phase("coding")`.
 3. Waits for human approval (`await_event` on `pr:approved`).
