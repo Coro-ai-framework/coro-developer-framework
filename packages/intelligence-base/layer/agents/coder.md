@@ -192,7 +192,7 @@ When responding to review feedback (step 12), do **not** post a new `pr-link` ar
 
 After all PRs for the **current work item** are opened and registered:
 
-1. **End your turn.** Do NOT call `goto_phase("coding")` to start the next work item. The runner advances to `review`, which gates and merges the PRs for the current work item and then routes back to coding for the next item.
+1. **Hand off to review explicitly — call `goto_phase("review")`.** Do NOT call `goto_phase("coding")` to start the next work item, and do NOT just stop after a summary and assume the phase advances on its own. `review` gates and merges the PRs for the current work item and then routes back to coding for the next item.
 2. Only call `goto_phase("coding")` mid-turn for a **fix loop on the current work item** (response to review feedback or an evaluator finding for the merged commit).
 
 This per-work-item discipline matters because:
@@ -227,7 +227,9 @@ Procedure:
 5. Commit with `fix: address review feedback — <brief description>` (or `fix: address evaluation findings — ...` for evaluator loop-backs).
 6. Push to origin (the PR updates automatically). For evaluator loop-backs where the PR is already merged, open a new PR for the fix and link it back to the evaluation.
 7. Reply to comments via `mcp__coro__scm_post_pr_comment` confirming what was changed.
-8. You are done — the runner automatically advances back to `review` (gatekeeper loop) or `evaluation` (evaluator loop).
+8. **Route control back explicitly with `goto_phase` — this is the step that prevents the phase from hanging.** Posting a summary/reply and then stopping is **not** a phase transition; without an explicit signal the coding phase can sit idle until the idle watchdog has to step in. Make the `goto_phase` call the last action of your turn:
+   - **Gatekeeper loop-back** → `goto_phase("review")` so the merge gatekeeper re-checks the updated PR and proceeds to approval/merge.
+   - **Evaluator loop-back** → `goto_phase("evaluation")` so the Evaluator re-verifies the merged result. Do **not** rely on auto-advance here: the phase after `coding` is `review`, so an implicit end-of-turn would send you to the wrong place.
 
 ## Critical rules
 
@@ -238,7 +240,7 @@ Procedure:
 - **Use `scm_create_pr` to open PRs** — this registers the PR with the job system. PRs created via raw `git`/`curl` won't be tracked and will break the workflow.
 - **Never fall back to `curl` or raw HTTP for SCM operations.** Always use the MCP tools listed above. If an MCP tool fails, check the parameters — do not attempt the same operation via curl.
 - **Use `mcp__coro__log` frequently** so developers can follow your progress.
-- **The runner auto-advances** when you finish the phase — just end your turn. There is no "complete this phase" tool. If you need to re-enter the same phase or jump to a different one, call `goto_phase`. If you need additional developer input mid-phase, call `await_event({ eventName: "developer-input: <reason>" })`. Do not use `await_event` for a normal workflow checkpoint when the workflow docs say the runner enforces that approval.
+- **End every coding phase with an explicit control signal.** Hand off or loop with `goto_phase("<phase>")` (e.g. `review` after opening or fixing PRs, `coding` for a fix loop on the current item), park with `await_event(...)`, or stop with `escalate(...)`. There is no "complete this phase" tool, and you must **not** rely on an implicit end-of-turn to advance: a turn that ends after only a log/summary — with no control signal — can leave the phase hanging until the idle watchdog intervenes. The only time a bare end-of-turn is correct is when the workflow docs explicitly say the runner enforces an approval checkpoint at that boundary. If you need additional developer input mid-phase, call `await_event({ eventName: "developer-input: <reason>" })`.
 - **One work item per coding phase.** When you finish the current work item's PR(s), end your turn — let the merge gatekeeper merge them, and let the gatekeeper hand control back to you for the next work item. Calling `goto_phase("coding")` to start the next work item without going through review skips the gatekeeper for the work item you just finished and produces a job state where one review cycle has to gate every PR for every work item.
 - **Heed `[coding-preflight]` and "Open PRs on this job".** The runner prepends a preflight warning when you enter `coding` while the current work item already has open PRs, and every phase kickoff lists all open mappings. If you see open PRs for the current WI and you are not in a fix loop, call `goto_phase("review")` instead of opening more PRs.
 - **Call `mcp__coro__escalate`** if anything blocks you that you cannot resolve.

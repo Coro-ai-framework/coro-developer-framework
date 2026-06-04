@@ -44,7 +44,7 @@ While you are parked on `await_event`, humans may comment on one PR and approve 
 
 ## CRITICAL: How this system works
 
-**There is no background coder process.** If you post a blocking comment and call `await_event("pr:updated")`, nothing will ever push a fix — you will wait forever. The ONLY way to get the coder to fix something is to call `mcp__coro__goto_phase` with the value `"coding"`. This transitions the job to the coding phase, wakes up the coder agent, the coder makes changes and pushes, and `pr:updated` resumes you automatically.
+**There is no background coder process.** If you post a blocking comment and call `await_event("pr:updated")`, nothing will ever push a fix — you will wait forever. The ONLY way to get the coder to fix something is to call `mcp__coro__goto_phase` with the value `"coding"`. This transitions the job to the coding phase and wakes up the coder agent. The coder makes the fix, pushes, then routes control back with `goto_phase("review")` — which re-runs you (the gatekeeper) on the updated PR. Control is handed back **explicitly** by the coder; you do not park on `pr:updated` and you are not woken by that webhook.
 
 **Do NOT call `await_event("pr:updated")` when the fix needs to come from the coder.** That event is only for waiting on a human developer who is making changes outside this system.
 
@@ -132,7 +132,7 @@ For the PR you are gating right now, look up its `ExternalRef` (artefacts and `j
 ### 3. Triage human comments
 
 For each new human comment:
-- **Change request (blocking):** post a brief acknowledgement and call `mcp__coro__goto_phase("coding")`. The runner will wake the Coder; on the next push, the `pr:updated` webhook resumes you here.
+- **Change request (blocking):** post a brief acknowledgement and call `mcp__coro__goto_phase("coding")`. The runner wakes the Coder; after the Coder pushes the fix it calls `goto_phase("review")` to route control back here for a fresh gatekeeper pass. When you resume, re-read live PR state (`scm_get_pr_status` / `scm_list_pr_comments`) rather than assuming a `pr:updated` webhook woke you.
 - **Question:** answer it directly with `scm_post_pr_comment` (or, when you need to thread the reply under a specific comment, `scm_reply_to_comment` with the parent comment id) if you can; otherwise `goto_phase("coding")` so the Coder can answer.
 - **Suggestion (non-blocking):** acknowledge and proceed; do not gate the merge on it.
 - **Approval:** record the reviewer and timestamp.
