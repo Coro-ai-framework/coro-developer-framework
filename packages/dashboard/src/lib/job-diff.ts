@@ -23,9 +23,18 @@ export interface JobDiff {
   truncated: boolean
 }
 
-export async function fetchJobDiff(jobId: string, base?: string): Promise<JobDiff> {
-  const qs = base ? `?base=${encodeURIComponent(base)}` : ''
-  return requestJson<JobDiff>(`/jobs/${jobId}/diff${qs}`)
+export interface FetchJobDiffOptions {
+  base?: string
+  /** Work-item branch to scope the diff to (defaults to the working tree). */
+  head?: string
+}
+
+export async function fetchJobDiff(jobId: string, opts: FetchJobDiffOptions = {}): Promise<JobDiff> {
+  const params = new URLSearchParams()
+  if (opts.base) params.set('base', opts.base)
+  if (opts.head) params.set('head', opts.head)
+  const qs = params.toString()
+  return requestJson<JobDiff>(`/jobs/${jobId}/diff${qs ? `?${qs}` : ''}`)
 }
 
 // ── Parsed representation ────────────────────────────────────────────────────

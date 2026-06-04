@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { simpleGit } from 'simple-git'
 
-import { computeJobDiff, emptyJobDiff, defaultBaseBranch } from '../../src/jobs/job-diff'
+import { computeJobDiff, emptyJobDiff, defaultBaseBranch, resolveDiffBase } from '../../src/jobs/job-diff'
 import type { Job } from '@coro-ai/cloud-protocol'
 
 let tmp: string
@@ -83,6 +83,81 @@ describe('computeJobDiff', () => {
     expect(diff.files).toEqual([])
   })
 
+  it('excludes an already-merged work item by preferring origin/<base> (multi-work-item)', async () => {
+    // Reproduces the sequential multi-work-item flow:
+    //   WI1: branch from main, commit, PR merged *server-side* (origin/main advances).
+    //   WI2: branch from the updated origin/main, commit.
+    //   Local `main` stays stale at the original base (the runner never pulls it).
+    // The Changes tab must show only WI2's file, not WI1's already-merged work.
+    const repo = path.join(tmp, 'multi')
+    const git = await initRepo(repo)
+
+    // Base commit (M0) on local main.
+    await fs.writeFile(path.join(repo, 'base.txt'), 'base\n')
+    await git.add('.')
+    await git.commit('M0 base')
+
+    // WI1 branch + commit (c1). This is what gets merged on the remote.
+    await git.checkoutLocalBranch('coro/wi1')
+    await fs.writeFile(path.join(repo, 'wi1.txt'), 'work item one\n')
+    await git.add('.')
+    await git.commit('c1: work item 1')
+    const wi1Tip = (await git.revparse(['HEAD'])).trim()
+
+    // Simulate the server-side PR merge: origin/main now contains c1, while the
+    // local `main` branch is left untouched (stale at M0).
+    await git.raw(['update-ref', 'refs/remotes/origin/main', wi1Tip])
+
+    // WI2 branch from the merged remote tip + commit (c2).
+    await git.checkout(['-b', 'coro/wi2', 'origin/main'])
+    await fs.writeFile(path.join(repo, 'wi2.txt'), 'work item two\n')
+    await git.add('.')
+    await git.commit('c2: work item 2')
+
+    const diff = await computeJobDiff({ repoDir: repo, base: 'main' })
+
+    expect(diff.available).toBe(true)
+    expect(diff.base).toBe('origin/main') // remote-tracking ref preferred over stale local main
+    const paths = diff.files.map(f => f.path)
+    expect(paths).toEqual(['wi2.txt'])
+    expect(paths).not.toContain('wi1.txt')
+  })
+
+  it('scopes the diff to a specific work-item branch via head (commit-to-commit)', async () => {
+    // Two pushed work-item branches off the same base. Asking for one must show
+    // only that branch's file, not the other's — and must ignore uncommitted
+    // edits in the working tree (they belong to whatever branch is checked out).
+    const repo = path.join(tmp, 'heads')
+    const git = await initRepo(repo)
+    await fs.writeFile(path.join(repo, 'base.txt'), 'base\n')
+    await git.add('.')
+    await git.commit('base')
+
+    await git.checkoutLocalBranch('coro/wi-a')
+    await fs.writeFile(path.join(repo, 'a.txt'), 'a\n')
+    await git.add('.')
+    await git.commit('a')
+
+    await git.checkout(['main'])
+    await git.checkoutLocalBranch('coro/wi-b')
+    await fs.writeFile(path.join(repo, 'b.txt'), 'b\n')
+    await git.add('.')
+    await git.commit('b')
+
+    // Uncommitted edit to a *tracked* file on the checked-out branch (wi-b).
+    await fs.writeFile(path.join(repo, 'base.txt'), 'base changed\n')
+
+    // Diff of wi-a (not checked out) -> only a.txt; the wi-b working-tree edit
+    // to base.txt must NOT leak in, since we diff wi-a commit-to-commit.
+    const a = await computeJobDiff({ repoDir: repo, base: 'main', head: 'coro/wi-a' })
+    expect(a.files.map(f => f.path)).toEqual(['a.txt'])
+    expect(a.head).toBe('coro/wi-a')
+
+    // Diff of wi-b (checked out) -> committed b.txt AND the uncommitted base.txt edit.
+    const b = await computeJobDiff({ repoDir: repo, base: 'main', head: 'coro/wi-b' })
+    expect(b.files.map(f => f.path).sort()).toEqual(['b.txt', 'base.txt'].sort())
+  })
+
   it('truncates an oversized patch but keeps the file summary complete', async () => {
     const repo = path.join(tmp, 'repo3')
     const git = await initRepo(repo)
@@ -113,6 +188,32 @@ describe('defaultBaseBranch', () => {
   it('prefers params.targetBranch', () => {
     const job = { params: { targetBranch: 'develop' } } as unknown as Job
     expect(defaultBaseBranch(job)).toBe('develop')
+  })
+})
+
+describe('resolveDiffBase', () => {
+  it('honours an explicit override first', () => {
+    const job = { params: { targetBranch: 'develop' }, artifacts: [] } as unknown as Job
+    expect(resolveDiffBase(job, 'release/1.0')).toBe('release/1.0')
+  })
+
+  it('uses the latest pr-preview base when present', () => {
+    const job = {
+      params: { targetBranch: 'main' },
+      artifacts: [
+        { id: 'a', kind: 'pr-preview', data: { base: 'main' } },
+        { id: 'b', kind: 'pr-preview', data: { base: 'coro/wi1' } }, // stacked PR targets prior WI branch
+      ],
+    } as unknown as Job
+    expect(resolveDiffBase(job)).toBe('coro/wi1')
+  })
+
+  it('falls back to job params when no preview carries a base', () => {
+    const job = {
+      params: { targetBranch: 'develop' },
+      artifacts: [{ id: 'a', kind: 'plan-md', data: {} }],
+    } as unknown as Job
+    expect(resolveDiffBase(job)).toBe('develop')
   })
 })
 

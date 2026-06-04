@@ -1,5 +1,13 @@
-import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, FilePlus2, FileMinus2, FileDiff, FileSymlink } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  ChevronRight,
+  FilePlus2,
+  FileMinus2,
+  FileDiff,
+  FileSymlink,
+  ListTree,
+} from 'lucide-react'
 import type { ParsedDiffFile, ParsedDiffHunk, DiffFileStatus } from '../lib/job-diff'
 import { cn } from '../lib/utils'
 
@@ -12,19 +20,71 @@ const AUTO_EXPAND_MAX_LINES = 800
 export interface DiffViewProps {
   files: ParsedDiffFile[]
   truncated?: boolean
+  /** Force every file to start collapsed, overriding the size-based heuristic. */
+  defaultCollapsed?: boolean
+  /** Show the changed-files overview map above the diffs (default: true). */
+  showFileMap?: boolean
 }
 
-export default function DiffView({ files, truncated }: DiffViewProps) {
+export default function DiffView({ files, truncated, defaultCollapsed, showFileMap = true }: DiffViewProps) {
   const autoExpand = useMemo(() => {
+    if (defaultCollapsed) return false
     const totalLines = files.reduce((n, f) => n + f.additions + f.deletions, 0)
     return files.length <= AUTO_EXPAND_MAX_FILES && totalLines <= AUTO_EXPAND_MAX_LINES
-  }, [files])
+  }, [files, defaultCollapsed])
+
+  // Per-file open state, keyed by index. Reset when the file set changes (a new
+  // diff arrived) or the default flips. `files` is referentially stable across
+  // polls when the patch text is unchanged, so manual toggles survive polling.
+  const [open, setOpen] = useState<boolean[]>(() => files.map(() => autoExpand))
+  useEffect(() => {
+    setOpen(files.map(() => autoExpand))
+  }, [files, autoExpand])
+
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([])
+
+  const setAll = useCallback((v: boolean) => setOpen(files.map(() => v)), [files])
+  const toggle = useCallback(
+    (i: number) => setOpen(prev => prev.map((o, idx) => (idx === i ? !o : o))),
+    [],
+  )
+  const jumpTo = useCallback((i: number) => {
+    setOpen(prev => prev.map((o, idx) => (idx === i ? true : o)))
+    requestAnimationFrame(() =>
+      cardRefs.current[i]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+    )
+  }, [])
+
+  if (files.length === 0) return null
+
+  const allOpen = open.length > 0 && open.every(Boolean)
+  const allClosed = open.every(o => !o)
 
   return (
     <div className="space-y-3">
-      {files.map(file => (
-        <DiffFileCard key={`${file.oldPath}->${file.newPath}`} file={file} defaultOpen={autoExpand} />
+      {showFileMap && files.length > 1 ? (
+        <FileMap
+          files={files}
+          onJump={jumpTo}
+          onExpandAll={() => setAll(true)}
+          onCollapseAll={() => setAll(false)}
+          allOpen={allOpen}
+          allClosed={allClosed}
+        />
+      ) : null}
+
+      {files.map((file, i) => (
+        <DiffFileCard
+          key={i}
+          file={file}
+          open={open[i] ?? false}
+          onToggle={() => toggle(i)}
+          cardRef={el => {
+            cardRefs.current[i] = el
+          }}
+        />
       ))}
+
       {truncated ? (
         <p className="rounded-lg border border-warning-500/20 bg-warning-500/5 px-3 py-2 text-xs text-warning-300">
           This diff is very large and was truncated. Open the full PR on the SCM to review every line.
@@ -34,14 +94,91 @@ export default function DiffView({ files, truncated }: DiffViewProps) {
   )
 }
 
-function DiffFileCard({ file, defaultOpen }: { file: ParsedDiffFile; defaultOpen: boolean }) {
-  const [open, setOpen] = useState(defaultOpen)
-
+/** Compact overview of every changed file. Clicking a row expands + scrolls to it. */
+function FileMap({
+  files,
+  onJump,
+  onExpandAll,
+  onCollapseAll,
+  allOpen,
+  allClosed,
+}: {
+  files: ParsedDiffFile[]
+  onJump: (i: number) => void
+  onExpandAll: () => void
+  onCollapseAll: () => void
+  allOpen: boolean
+  allClosed: boolean
+}) {
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-canvas/40">
+      <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+        <div className="flex items-center gap-2 text-xs font-medium text-fg-muted">
+          <ListTree className="size-3.5 text-fg-subtle" />
+          {files.length} files changed
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={onExpandAll}
+            disabled={allOpen}
+            className="text-fg-subtle transition-colors hover:text-fg disabled:opacity-40"
+          >
+            Expand all
+          </button>
+          <span className="text-line">·</span>
+          <button
+            type="button"
+            onClick={onCollapseAll}
+            disabled={allClosed}
+            className="text-fg-subtle transition-colors hover:text-fg disabled:opacity-40"
+          >
+            Collapse all
+          </button>
+        </div>
+      </div>
+      <ul className="max-h-56 overflow-y-auto py-1">
+        {files.map((f, i) => (
+          <li key={i}>
+            <button
+              type="button"
+              onClick={() => onJump(i)}
+              className="flex w-full items-center gap-2 px-3 py-1 text-left transition-colors hover:bg-overlay/40"
+            >
+              <StatusIcon status={f.status} />
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
+                {f.status === 'renamed' && f.oldPath !== f.newPath ? `${f.oldPath} → ${f.newPath}` : f.path}
+              </span>
+              {f.additions > 0 ? (
+                <span className="font-mono text-xs text-success-400">+{f.additions}</span>
+              ) : null}
+              {f.deletions > 0 ? (
+                <span className="font-mono text-xs text-danger-400">−{f.deletions}</span>
+              ) : null}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function DiffFileCard({
+  file,
+  open,
+  onToggle,
+  cardRef,
+}: {
+  file: ParsedDiffFile
+  open: boolean
+  onToggle: () => void
+  cardRef: (el: HTMLDivElement | null) => void
+}) {
+  return (
+    <div ref={cardRef} className="scroll-mt-4 overflow-hidden rounded-xl border border-line bg-canvas/40">
       <button
         type="button"
-        onClick={() => setOpen(v => !v)}
+        onClick={onToggle}
         className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-overlay/40"
       >
         {open ? (

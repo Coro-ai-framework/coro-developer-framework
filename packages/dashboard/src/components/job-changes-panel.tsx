@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GitPullRequest, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronRight, GitPullRequest, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
 import { fetchJobDiff, parseUnifiedDiff, type JobDiff } from '../lib/job-diff'
 import DiffView from './diff-view'
@@ -26,35 +26,47 @@ interface PrPreview {
   workItem?: string
 }
 
-function readPrPreview(job: Job): PrPreview | null {
-  // Prefer the most recent pr-preview artifact (one per work item / PR).
-  const previews = (job.artifacts ?? []).filter(a => a.kind === 'pr-preview')
-  const latest = previews[previews.length - 1]
-  if (!latest) return null
-  const d = latest.data as Record<string, unknown>
-  const str = (k: string) => (typeof d[k] === 'string' ? (d[k] as string) : undefined)
-  return {
-    title: str('title'),
-    description: str('description'),
-    base: str('base'),
-    sourceBranch: str('sourceBranch'),
-    workItem: str('workItem'),
+/**
+ * Collect the job's `pr-preview` artifacts, one per intended PR / work item.
+ * Deduped by source branch (latest re-post wins, original position preserved)
+ * so re-running the coder for a work item updates rather than duplicates it.
+ */
+function readPrPreviews(job: Job): PrPreview[] {
+  const out: PrPreview[] = []
+  const byBranch = new Map<string, number>()
+  for (const a of job.artifacts ?? []) {
+    if (a.kind !== 'pr-preview') continue
+    const d = a.data as Record<string, unknown>
+    const str = (k: string) => (typeof d[k] === 'string' ? (d[k] as string) : undefined)
+    const preview: PrPreview = {
+      title: str('title'),
+      description: str('description'),
+      base: str('base'),
+      sourceBranch: str('sourceBranch'),
+      workItem: str('workItem'),
+    }
+    const key = preview.sourceBranch
+    if (key && byBranch.has(key)) {
+      out[byBranch.get(key)!] = preview
+    } else {
+      if (key) byBranch.set(key, out.length)
+      out.push(preview)
+    }
   }
+  return out
 }
 
-/**
- * The "Changes" surface for a run: the proposed PR (title + description) and
- * the live code diff the agent has produced in the cloned repo — visible
- * before any PR is opened on the SCM.
- */
-export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
+/** Shared diff fetch + poll. Only fetches while `enabled` (lets collapsed sections stay idle). */
+function useJobDiff(
+  jobId: string,
+  opts: { base?: string; head?: string; live: boolean; enabled?: boolean },
+) {
+  const { base, head, live, enabled = true } = opts
   const [diff, setDiff] = useState<JobDiff | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const inFlight = useRef(false)
-
-  const preview = useMemo(() => readPrPreview(job), [job])
 
   const load = useCallback(
     async (manual: boolean) => {
@@ -62,7 +74,7 @@ export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
       inFlight.current = true
       if (manual) setRefreshing(true)
       try {
-        const data = await fetchJobDiff(job.id)
+        const data = await fetchJobDiff(jobId, { base, head })
         setDiff(data)
         setError(null)
       } catch (err) {
@@ -73,55 +85,165 @@ export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
         if (manual) setRefreshing(false)
       }
     },
-    [job.id],
+    [jobId, base, head],
   )
 
   useEffect(() => {
+    if (!enabled) return
     void load(false)
     if (!live) return
     const id = window.setInterval(() => void load(false), POLL_INTERVAL_MS)
     return () => window.clearInterval(id)
-  }, [load, live])
+  }, [load, live, enabled])
 
-  const files = useMemo(() => parseUnifiedDiff(diff?.patch ?? ''), [diff?.patch])
+  return { diff, loading, error, refresh: () => load(true), refreshing }
+}
+
+/**
+ * The "Changes" surface for a run: the proposed PR(s) and the live code diff the
+ * agent has produced in the cloned repo — visible before any PR is opened on the
+ * SCM. With multiple in-flight previews (coder over-run) it groups changes per
+ * work item; otherwise it shows the single live working-tree diff.
+ */
+export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
+  const previews = useMemo(() => readPrPreviews(job), [job])
+  const grouped = previews.length >= 2
+
+  if (grouped) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-fg-subtle">
+          This run prepared <span className="font-medium text-fg">{previews.length}</span> pull requests. Each
+          work item is shown separately below — expand one to review its changes.
+        </p>
+        {previews.map((preview, i) => (
+          <WorkItemChanges
+            key={preview.sourceBranch ?? `wi-${i}`}
+            jobId={job.id}
+            live={live}
+            preview={preview}
+            index={i}
+          />
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-5">
-      {preview ? <PrPreviewCard preview={preview} /> : null}
+      {previews[0] ? <PrPreviewCard preview={previews[0]} /> : null}
+      <ChangesCard jobId={job.id} live={live} />
+    </div>
+  )
+}
 
-      <Card>
-        <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <CardTitle>Changes</CardTitle>
-            <CardDescription>
-              {diff && diff.files.length > 0 ? (
-                <>
-                  <span className="font-mono">{diff.stats.files}</span> file{diff.stats.files === 1 ? '' : 's'} changed
-                  {diff.stats.insertions > 0 ? (
-                    <span className="ml-2 text-success-400">+{diff.stats.insertions}</span>
-                  ) : null}
-                  {diff.stats.deletions > 0 ? (
-                    <span className="ml-2 text-danger-400">−{diff.stats.deletions}</span>
-                  ) : null}
-                  <span className="ml-2 text-fg-subtle">vs {diff.base}</span>
-                </>
-              ) : (
-                'Code the agent has written in the cloned repo, before any PR is opened.'
-              )}
-            </CardDescription>
+/** Single live diff (working tree) — the common single-work-item view. */
+function ChangesCard({ jobId, live }: { jobId: string; live: boolean }) {
+  const { diff, loading, error, refresh, refreshing } = useJobDiff(jobId, { live })
+  const files = useMemo(() => parseUnifiedDiff(diff?.patch ?? ''), [diff?.patch])
+
+  return (
+    <Card>
+      <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <CardTitle>Changes</CardTitle>
+          <CardDescription>
+            <DiffSummaryLine diff={diff} />
+          </CardDescription>
+        </div>
+        <Button type="button" variant="ghost" size="sm" onClick={refresh} disabled={refreshing}>
+          <RefreshCw className={cn(refreshing && 'animate-spin')} />
+          Refresh
+        </Button>
+      </CardHeader>
+      <CardContent className="pt-5">
+        {loading && !diff ? (
+          <div className="animate-pulse text-sm text-fg-subtle">Loading changes…</div>
+        ) : error ? (
+          <ErrorState title="Could not load changes" message={error} />
+        ) : !diff || files.length === 0 ? (
+          <EmptyChanges available={diff?.available ?? false} />
+        ) : (
+          <DiffView files={files} truncated={diff.truncated} />
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * A collapsible per-work-item section. The diff is fetched lazily (only once the
+ * section is expanded) and scoped to the work item's pushed branch, so an
+ * already-opened preview never bleeds into another's changes.
+ */
+function WorkItemChanges({
+  jobId,
+  live,
+  preview,
+  index,
+}: {
+  jobId: string
+  live: boolean
+  preview: PrPreview
+  index: number
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const { diff, loading, error, refresh, refreshing } = useJobDiff(jobId, {
+    base: preview.base,
+    head: preview.sourceBranch,
+    live,
+    enabled: expanded,
+  })
+  const files = useMemo(() => parseUnifiedDiff(diff?.patch ?? ''), [diff?.patch])
+
+  return (
+    <Card className="border-accent-500/20">
+      <CardHeader className="gap-2 pb-3">
+        <button
+          type="button"
+          onClick={() => setExpanded(v => !v)}
+          className="flex w-full items-start gap-2 text-left"
+        >
+          {expanded ? (
+            <ChevronDown className="mt-1 size-4 shrink-0 text-fg-subtle" />
+          ) : (
+            <ChevronRight className="mt-1 size-4 shrink-0 text-fg-subtle" />
+          )}
+          <GitPullRequest className="mt-0.5 size-4 shrink-0 text-accent-300" />
+          <div className="min-w-0 flex-1">
+            <CardTitle className="truncate text-sm">
+              <span className="mr-2 text-fg-subtle">PR {index + 1}.</span>
+              {preview.title || preview.workItem || 'Proposed pull request'}
+            </CardTitle>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+              {preview.sourceBranch ? (
+                <Badge variant="neutral" className="font-mono">
+                  {preview.sourceBranch}
+                  {preview.base ? <span className="text-fg-subtle"> → {preview.base}</span> : null}
+                </Badge>
+              ) : null}
+              {preview.workItem && preview.workItem !== preview.title ? (
+                <Badge variant="neutral">{preview.workItem}</Badge>
+              ) : null}
+              {expanded ? <DiffSummaryLine diff={diff} compact /> : null}
+            </div>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => void load(true)}
-            disabled={refreshing}
-          >
-            <RefreshCw className={cn(refreshing && 'animate-spin')} />
-            Refresh
-          </Button>
-        </CardHeader>
-        <CardContent className="pt-5">
+        </button>
+      </CardHeader>
+      {expanded ? (
+        <CardContent className="space-y-4 border-t border-line pt-4">
+          {preview.description ? (
+            <div
+              className="prose-coro space-y-2 text-sm leading-6 text-fg"
+              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(preview.description) }}
+            />
+          ) : null}
+          <div className="flex justify-end">
+            <Button type="button" variant="ghost" size="sm" onClick={refresh} disabled={refreshing}>
+              <RefreshCw className={cn(refreshing && 'animate-spin')} />
+              Refresh
+            </Button>
+          </div>
           {loading && !diff ? (
             <div className="animate-pulse text-sm text-fg-subtle">Loading changes…</div>
           ) : error ? (
@@ -129,11 +251,26 @@ export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
           ) : !diff || files.length === 0 ? (
             <EmptyChanges available={diff?.available ?? false} />
           ) : (
-            <DiffView files={files} truncated={diff.truncated} />
+            <DiffView files={files} truncated={diff.truncated} defaultCollapsed />
           )}
         </CardContent>
-      </Card>
-    </div>
+      ) : null}
+    </Card>
+  )
+}
+
+function DiffSummaryLine({ diff, compact }: { diff: JobDiff | null; compact?: boolean }) {
+  if (!diff || diff.files.length === 0) {
+    if (compact) return null
+    return <>Code the agent has written in the cloned repo, before any PR is opened.</>
+  }
+  return (
+    <span className={cn(compact && 'text-fg-subtle')}>
+      <span className="font-mono">{diff.stats.files}</span> file{diff.stats.files === 1 ? '' : 's'} changed
+      {diff.stats.insertions > 0 ? <span className="ml-2 text-success-400">+{diff.stats.insertions}</span> : null}
+      {diff.stats.deletions > 0 ? <span className="ml-2 text-danger-400">−{diff.stats.deletions}</span> : null}
+      <span className="ml-2 text-fg-subtle">vs {diff.base}</span>
+    </span>
   )
 }
 

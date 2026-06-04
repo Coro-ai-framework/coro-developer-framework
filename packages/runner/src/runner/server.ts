@@ -33,7 +33,7 @@ import {
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { resolveJobWorkspaceLayout } from '../jobs/workspace-layout'
-import { computeJobDiff, emptyJobDiff, defaultBaseBranch } from '../jobs/job-diff'
+import { computeJobDiff, emptyJobDiff, resolveDiffBase } from '../jobs/job-diff'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { runIntakeStream } from '../intake/handler'
@@ -1566,8 +1566,18 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
 
-      const baseParam = typeof req.query.base === 'string' && req.query.base.trim() ? req.query.base : undefined
-      const diff = await computeJobDiff({ repoDir, base: baseParam ?? defaultBaseBranch(job) })
+      // Allow conservative ref characters only; git refs never contain spaces,
+      // `~^:?*[` or `..`. This keeps the value tame even though simple-git passes
+      // args as an array (no shell), and rejects obvious garbage early.
+      const safeRef = (v: unknown): string | undefined => {
+        if (typeof v !== 'string') return undefined
+        const t = v.trim()
+        if (!t || t.length > 255 || t.includes('..') || /[\s~^:?*[\\]/.test(t)) return undefined
+        return t
+      }
+      const baseParam = safeRef(req.query.base)
+      const headParam = safeRef(req.query.head)
+      const diff = await computeJobDiff({ repoDir, base: resolveDiffBase(job, baseParam), head: headParam })
       res.json(diff)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
