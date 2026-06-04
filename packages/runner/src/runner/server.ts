@@ -34,6 +34,7 @@ import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { resolveJobWorkspaceLayout } from '../jobs/workspace-layout'
 import { computeJobDiff, emptyJobDiff, resolveDiffBase } from '../jobs/job-diff'
+import { detectEditors, openInEditor, revealFolder } from './open-editor'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { runIntakeStream } from '../intake/handler'
@@ -1583,6 +1584,82 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const msg = err instanceof Error ? err.message : String(err)
       logger.error({ err, jobId }, 'Job diff computation failed')
       res.status(500).json({ error: `Could not compute job diff: ${msg}` })
+    }
+  })
+
+  // GET /system/editors — which local editors the runner can launch. Empty in
+  // hybrid mode (the runner host is not the developer's desktop), so the
+  // dashboard hides the "Open in editor" affordance entirely.
+  app.get('/system/editors', async (_req: Request, res: Response) => {
+    if (mode !== 'local') {
+      res.json({ mode, editors: [] })
+      return
+    }
+    try {
+      const editors = await detectEditors()
+      res.json({ mode, editors: editors.map(e => ({ id: e.id, name: e.name })) })
+    } catch (err) {
+      logger.error({ err }, 'Editor detection failed')
+      res.status(500).json({ error: 'Could not detect editors' })
+    }
+  })
+
+  // POST /jobs/:jobId/open — launch the developer's editor (or file manager)
+  // against the job's repo checkout. Local mode only; the directory is resolved
+  // server-side from the jobId (never trusting a client path), and only the
+  // editor id is client-supplied (validated against the detected allowlist).
+  app.post('/jobs/:jobId/open', async (req: Request, res: Response) => {
+    if (mode !== 'local') {
+      res.status(403).json({ error: 'Opening a local editor is only available in local mode' })
+      return
+    }
+    const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+    const body = (req.body ?? {}) as { target?: unknown; editor?: unknown }
+    const target = body.target === 'folder' ? 'folder' : 'editor'
+    const editorId = typeof body.editor === 'string' && body.editor.trim() ? body.editor.trim() : undefined
+
+    try {
+      const job = await stateBackend.getJob(jobId)
+      if (!job) {
+        res.status(404).json({ error: `Job not found: ${jobId}` })
+        return
+      }
+
+      const config = loadLocalConfig()
+      const workingDir = resolveLocalWorkingDir(config)
+      const jobWorkingDir = path.resolve(workingDir, jobId)
+      const layout = resolveJobWorkspaceLayout(job, jobWorkingDir)
+      if (!layout.repoCheckoutAbsDir) {
+        res.status(409).json({ error: 'No repository checkout yet — the agent has not cloned the repo.' })
+        return
+      }
+
+      const repoDir = path.resolve(layout.repoCheckoutAbsDir)
+      if (!repoDir.startsWith(jobWorkingDir + path.sep) && repoDir !== jobWorkingDir) {
+        logger.warn({ jobId, repoDir }, 'Job open repo path escape attempt blocked')
+        res.status(400).json({ error: 'Repo checkout is outside the job working directory' })
+        return
+      }
+      try {
+        const stat = await fs.promises.stat(repoDir)
+        if (!stat.isDirectory()) throw new Error('not a directory')
+      } catch {
+        res.status(409).json({ error: 'Repository checkout directory does not exist yet.' })
+        return
+      }
+
+      if (target === 'folder') {
+        revealFolder(repoDir)
+        res.json({ ok: true, target, path: repoDir })
+        return
+      }
+
+      const editor = await openInEditor(editorId, repoDir)
+      res.json({ ok: true, target, editor: { id: editor.id, name: editor.name }, path: repoDir })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      logger.error({ err, jobId }, 'Open editor failed')
+      res.status(500).json({ error: msg })
     }
   })
 

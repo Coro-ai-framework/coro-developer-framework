@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, GitPullRequest, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, GitPullRequest, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
 import { fetchJobDiff, parseUnifiedDiff, type JobDiff } from '../lib/job-diff'
+import { fetchEditors, openJobWorkspace, type EditorInfo } from '../lib/open-workspace'
+import { EditorIcon } from './editor-icon'
 import DiffView from './diff-view'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
@@ -109,30 +111,114 @@ export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
   const previews = useMemo(() => readPrPreviews(job), [job])
   const grouped = previews.length >= 2
 
-  if (grouped) {
-    return (
-      <div className="space-y-4">
-        <p className="text-sm text-fg-subtle">
-          This run prepared <span className="font-medium text-fg">{previews.length}</span> pull requests. Each
-          work item is shown separately below — expand one to review its changes.
-        </p>
-        {previews.map((preview, i) => (
-          <WorkItemChanges
-            key={preview.sourceBranch ?? `wi-${i}`}
-            jobId={job.id}
-            live={live}
-            preview={preview}
-            index={i}
-          />
-        ))}
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-5">
-      {previews[0] ? <PrPreviewCard preview={previews[0]} /> : null}
-      <ChangesCard jobId={job.id} live={live} />
+      <OpenWorkspaceBar jobId={job.id} />
+      {grouped ? (
+        <div className="space-y-4">
+          <p className="text-sm text-fg-subtle">
+            This run prepared <span className="font-medium text-fg">{previews.length}</span> pull requests. Each
+            work item is shown separately below — expand one to review its changes.
+          </p>
+          {previews.map((preview, i) => (
+            <WorkItemChanges
+              key={preview.sourceBranch ?? `wi-${i}`}
+              jobId={job.id}
+              live={live}
+              preview={preview}
+              index={i}
+            />
+          ))}
+        </div>
+      ) : (
+        <>
+          {previews[0] ? <PrPreviewCard preview={previews[0]} /> : null}
+          <ChangesCard jobId={job.id} live={live} />
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * "Open in VS Code / Cursor" + "Reveal folder" bar. Local-mode only — the
+ * runner reports which editors it can actually launch (empty in hybrid mode,
+ * where the runner host is not the developer's desktop), and we hide the whole
+ * bar when there is nothing we can open.
+ */
+function OpenWorkspaceBar({ jobId }: { jobId: string }) {
+  const [editors, setEditors] = useState<EditorInfo[] | null>(null)
+  const [isLocal, setIsLocal] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    fetchEditors()
+      .then(r => {
+        if (!active) return
+        setIsLocal(r.mode === 'local')
+        setEditors(r.editors)
+      })
+      .catch(() => {
+        if (active) setEditors([])
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const open = useCallback(
+    async (target: 'editor' | 'folder', editor?: string) => {
+      const key = editor ?? target
+      setBusy(key)
+      setError(null)
+      try {
+        await openJobWorkspace(jobId, { target, editor })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not open')
+      } finally {
+        setBusy(null)
+      }
+    },
+    [jobId],
+  )
+
+  if (!isLocal) return null
+
+  const hasEditors = (editors ?? []).length > 0
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {hasEditors ? <span className="text-xs text-fg-subtle">Open in</span> : null}
+      {(editors ?? []).map(e => (
+        <Button
+          key={e.id}
+          type="button"
+          variant="secondary"
+          size="icon"
+          className="size-8"
+          onClick={() => open('editor', e.id)}
+          disabled={busy !== null}
+          title={`Open in ${e.name}`}
+          aria-label={`Open in ${e.name}`}
+        >
+          <EditorIcon id={e.id} />
+        </Button>
+      ))}
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-8"
+        onClick={() => open('folder')}
+        disabled={busy !== null}
+        title="Reveal folder in file manager"
+        aria-label="Reveal folder in file manager"
+      >
+        <FolderOpen />
+      </Button>
+      {error ? <span className="text-xs text-danger-400">{error}</span> : null}
     </div>
   )
 }
