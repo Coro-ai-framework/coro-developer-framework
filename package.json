@@ -25,6 +25,6 @@
     "clean": "pnpm -r exec rm -rf dist node_modules .turbo"
   },
   "devDependencies": {
-    "typescript": "^5.8.2"
+    "typescript": "^6.0.3"
   }
 }
