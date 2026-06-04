@@ -16,7 +16,7 @@ import ArtifactLink from '../components/ArtifactLink'
 import CampaignView from '../components/CampaignView'
 import ConnectionIndicator from '../components/ConnectionIndicator'
 import InsightsPanel from '../components/InsightsPanel'
-import JobChangesPanel from '../components/job-changes-panel'
+import JobChangesPanel, { hasActionablePrPreview } from '../components/job-changes-panel'
 import JobControlBar from '../components/JobControlBar'
 import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
@@ -1089,9 +1089,9 @@ export default function JobDetail() {
           <TabsTrigger value="changes">
             <GitPullRequest className="size-3.5 shrink-0" aria-hidden="true" />
             Changes
-            {(job.artifacts ?? []).some(a => a.kind === 'pr-preview') ? (
+            {hasActionablePrPreview(job) ? (
               <span
-                title="A pull request is proposed for your review"
+                title="A pull request is ready for your review"
                 className="ml-1 inline-flex size-1.5 rounded-full bg-accent-400"
               />
             ) : null}

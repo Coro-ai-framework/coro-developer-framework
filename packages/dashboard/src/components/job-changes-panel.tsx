@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, FolderOpen, GitPullRequest, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronRight, ExternalLink, FolderOpen, GitPullRequest, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
 import { fetchJobDiff, parseUnifiedDiff, type JobDiff } from '../lib/job-diff'
 import { fetchEditors, openJobWorkspace, type EditorInfo } from '../lib/open-workspace'
@@ -7,7 +7,8 @@ import { EditorIcon } from './editor-icon'
 import DiffView from './diff-view'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
-import { Badge } from './ui/badge'
+import { Badge, type badgeVariants } from './ui/badge'
+import type { VariantProps } from 'class-variance-authority'
 import ErrorState from './common/error-state'
 import { renderInlineMarkdown } from './intelligence/markdown-mini'
 import { cn } from '../lib/utils'
@@ -28,11 +29,14 @@ interface PrPreview {
   workItem?: string
 }
 
-/**
- * Collect the job's `pr-preview` artifacts, one per intended PR / work item.
- * Deduped by source branch (latest re-post wins, original position preserved)
- * so re-running the coder for a work item updates rather than duplicates it.
- */
+type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>
+
+interface PrStatus {
+  label: string
+  variant: BadgeVariant
+  prUrl?: string
+}
+
 function readPrPreviews(job: Job): PrPreview[] {
   const out: PrPreview[] = []
   const byBranch = new Map<string, number>()
@@ -58,7 +62,49 @@ function readPrPreviews(job: Job): PrPreview[] {
   return out
 }
 
-/** Shared diff fetch + poll. Only fetches while `enabled` (lets collapsed sections stay idle). */
+function findPrUrl(job: Job, preview: PrPreview): string | undefined {
+  if (!preview.title) return undefined
+  for (const a of job.artifacts ?? []) {
+    if (a.kind !== 'pr-link') continue
+    const url = a.data?.url
+    const title = a.data?.title
+    if (typeof url === 'string' && url && title === preview.title) return url
+  }
+  return undefined
+}
+
+function derivePrStatus(preview: PrPreview, job: Job): PrStatus {
+  const wi = preview.workItem
+  const workItem = wi ? job.workItems?.find(w => w.name === wi) : undefined
+  const mappings = wi ? (job.prMappings ?? []).filter(m => m.workItem === wi) : []
+  const prUrl = findPrUrl(job, preview)
+
+  if (workItem?.status === 'escalated') {
+    return { label: 'Escalated', variant: 'danger', prUrl }
+  }
+  if (
+    workItem?.status === 'complete' ||
+    (mappings.length > 0 && mappings.every(m => m.mergedAt))
+  ) {
+    return { label: 'Merged', variant: 'success', prUrl }
+  }
+  if (mappings.some(m => !m.mergedAt)) {
+    return { label: 'PR open', variant: 'accent', prUrl }
+  }
+  if (wi && wi === job.currentWorkItem) {
+    return { label: 'In progress', variant: 'warning', prUrl }
+  }
+  return { label: 'Awaiting review', variant: 'neutral', prUrl }
+}
+
+/** True when a preview still needs developer attention (not merged/escalated). */
+export function hasActionablePrPreview(job: Job): boolean {
+  return readPrPreviews(job).some(p => {
+    const { label } = derivePrStatus(p, job)
+    return label !== 'Merged' && label !== 'Escalated'
+  })
+}
+
 function useJobDiff(
   jobId: string,
   opts: { base?: string; head?: string; live: boolean; enabled?: boolean },
@@ -101,51 +147,40 @@ function useJobDiff(
   return { diff, loading, error, refresh: () => load(true), refreshing }
 }
 
-/**
- * The "Changes" surface for a run: the proposed PR(s) and the live code diff the
- * agent has produced in the cloned repo — visible before any PR is opened on the
- * SCM. With multiple in-flight previews (coder over-run) it groups changes per
- * work item; otherwise it shows the single live working-tree diff.
- */
 export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
   const previews = useMemo(() => readPrPreviews(job), [job])
-  const grouped = previews.length >= 2
+  const currentWi = job.currentWorkItem
+  const currentPreview = useMemo(
+    () => previews.find(p => p.workItem && p.workItem === currentWi),
+    [previews, currentWi],
+  )
+  const otherPreviews = useMemo(
+    () => previews.filter(p => p !== currentPreview),
+    [previews, currentPreview],
+  )
+
+  const showWorkingNow = live || previews.length === 0 || !!currentPreview
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <OpenWorkspaceBar jobId={job.id} />
-      {grouped ? (
-        <div className="space-y-4">
-          <p className="text-sm text-fg-subtle">
-            This run prepared <span className="font-medium text-fg">{previews.length}</span> pull requests. Each
-            work item is shown separately below — expand one to review its changes.
-          </p>
-          {previews.map((preview, i) => (
-            <WorkItemChanges
-              key={preview.sourceBranch ?? `wi-${i}`}
-              jobId={job.id}
-              live={live}
-              preview={preview}
-              index={i}
-            />
-          ))}
-        </div>
-      ) : (
-        <>
-          {previews[0] ? <PrPreviewCard preview={previews[0]} /> : null}
-          <ChangesCard jobId={job.id} live={live} />
-        </>
-      )}
+
+      {showWorkingNow ? (
+        <CurrentWorkSection
+          jobId={job.id}
+          live={live}
+          workItem={currentWi}
+          preview={currentPreview}
+        />
+      ) : null}
+
+      {otherPreviews.length > 0 ? (
+        <PullRequestsSection jobId={job.id} job={job} live={live} previews={otherPreviews} />
+      ) : null}
     </div>
   )
 }
 
-/**
- * "Open in VS Code / Cursor" + "Reveal folder" bar. Local-mode only — the
- * runner reports which editors it can actually launch (empty in hybrid mode,
- * where the runner host is not the developer's desktop), and we hide the whole
- * bar when there is nothing we can open.
- */
 function OpenWorkspaceBar({ jobId }: { jobId: string }) {
   const [editors, setEditors] = useState<EditorInfo[] | null>(null)
   const [isLocal, setIsLocal] = useState(false)
@@ -223,55 +258,130 @@ function OpenWorkspaceBar({ jobId }: { jobId: string }) {
   )
 }
 
-/** Single live diff (working tree) — the common single-work-item view. */
-function ChangesCard({ jobId, live }: { jobId: string; live: boolean }) {
+/** Live working-tree diff for whatever the agent is building right now. */
+function CurrentWorkSection({
+  jobId,
+  live,
+  workItem,
+  preview,
+}: {
+  jobId: string
+  live: boolean
+  workItem: string | null
+  preview: PrPreview | undefined
+}) {
   const { diff, loading, error, refresh, refreshing } = useJobDiff(jobId, { live })
   const files = useMemo(() => parseUnifiedDiff(diff?.patch ?? ''), [diff?.patch])
+  const gateCopy = preview && live
 
   return (
-    <Card>
-      <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <CardTitle>Changes</CardTitle>
-          <CardDescription>
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-sm font-medium text-fg">Working now</h3>
+        {workItem ? (
+          <p className="mt-0.5 text-xs text-fg-subtle">
+            Work item: <span className="font-medium text-fg-muted">{workItem}</span>
+          </p>
+        ) : (
+          <p className="mt-0.5 text-xs text-fg-subtle">Live changes in the cloned repository.</p>
+        )}
+      </div>
+
+      {preview ? (
+        <div className="rounded-xl border border-accent-500/25 bg-accent-500/5 px-4 py-3">
+          <p className="text-sm font-medium text-fg">{preview.title || 'Proposed pull request'}</p>
+          {gateCopy ? (
+            <p className="mt-1 text-xs text-fg-subtle">
+              This is what Coro will open as a PR once you approve the coding phase.
+            </p>
+          ) : null}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {preview.sourceBranch ? (
+              <Badge variant="neutral" className="font-mono normal-case tracking-normal">
+                {preview.sourceBranch}
+                {preview.base ? <span className="text-fg-subtle"> → {preview.base}</span> : null}
+              </Badge>
+            ) : null}
+          </div>
+          {preview.description ? (
+            <div
+              className="prose-coro mt-3 space-y-2 border-t border-accent-500/15 pt-3 text-sm leading-6 text-fg"
+              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(preview.description) }}
+            />
+          ) : null}
+        </div>
+      ) : null}
+
+      <Card>
+        <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
+          <CardDescription className="m-0">
             <DiffSummaryLine diff={diff} />
           </CardDescription>
-        </div>
-        <Button type="button" variant="ghost" size="sm" onClick={refresh} disabled={refreshing}>
-          <RefreshCw className={cn(refreshing && 'animate-spin')} />
-          Refresh
-        </Button>
-      </CardHeader>
-      <CardContent className="pt-5">
-        {loading && !diff ? (
-          <div className="animate-pulse text-sm text-fg-subtle">Loading changes…</div>
-        ) : error ? (
-          <ErrorState title="Could not load changes" message={error} />
-        ) : !diff || files.length === 0 ? (
-          <EmptyChanges available={diff?.available ?? false} />
-        ) : (
-          <DiffView files={files} truncated={diff.truncated} />
-        )}
-      </CardContent>
-    </Card>
+          <Button type="button" variant="ghost" size="sm" onClick={refresh} disabled={refreshing}>
+            <RefreshCw className={cn(refreshing && 'animate-spin')} />
+            Refresh
+          </Button>
+        </CardHeader>
+        <CardContent className="pt-5">
+          {loading && !diff ? (
+            <div className="animate-pulse text-sm text-fg-subtle">Loading changes…</div>
+          ) : error ? (
+            <ErrorState title="Could not load changes" message={error} />
+          ) : !diff || files.length === 0 ? (
+            <EmptyChanges available={diff?.available ?? false} />
+          ) : (
+            <DiffView files={files} truncated={diff.truncated} />
+          )}
+        </CardContent>
+      </Card>
+    </section>
   )
 }
 
-/**
- * A collapsible per-work-item section. The diff is fetched lazily (only once the
- * section is expanded) and scoped to the work item's pushed branch, so an
- * already-opened preview never bleeds into another's changes.
- */
+function PullRequestsSection({
+  jobId,
+  job,
+  live,
+  previews,
+}: {
+  jobId: string
+  job: Job
+  live: boolean
+  previews: PrPreview[]
+}) {
+  return (
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-sm font-medium text-fg">Pull requests</h3>
+        <p className="mt-0.5 text-xs text-fg-subtle">
+          {previews.length} prepared — expand to review each work item&apos;s changes.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {previews.map((preview, i) => (
+          <WorkItemChanges
+            key={preview.sourceBranch ?? `wi-${i}`}
+            jobId={jobId}
+            live={live}
+            preview={preview}
+            status={derivePrStatus(preview, job)}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function WorkItemChanges({
   jobId,
   live,
   preview,
-  index,
+  status,
 }: {
   jobId: string
   live: boolean
   preview: PrPreview
-  index: number
+  status: PrStatus
 }) {
   const [expanded, setExpanded] = useState(false)
   const { diff, loading, error, refresh, refreshing } = useJobDiff(jobId, {
@@ -283,7 +393,7 @@ function WorkItemChanges({
   const files = useMemo(() => parseUnifiedDiff(diff?.patch ?? ''), [diff?.patch])
 
   return (
-    <Card className="border-accent-500/20">
+    <Card className="border-line">
       <CardHeader className="gap-2 pb-3">
         <button
           type="button"
@@ -295,21 +405,33 @@ function WorkItemChanges({
           ) : (
             <ChevronRight className="mt-1 size-4 shrink-0 text-fg-subtle" />
           )}
-          <GitPullRequest className="mt-0.5 size-4 shrink-0 text-accent-300" />
+          <GitPullRequest className="mt-0.5 size-4 shrink-0 text-fg-muted" />
           <div className="min-w-0 flex-1">
-            <CardTitle className="truncate text-sm">
-              <span className="mr-2 text-fg-subtle">PR {index + 1}.</span>
-              {preview.title || preview.workItem || 'Proposed pull request'}
-            </CardTitle>
+            <div className="flex flex-wrap items-center gap-2">
+              <CardTitle className="truncate text-sm">
+                {preview.title || preview.workItem || 'Pull request'}
+              </CardTitle>
+              <PrStatusBadge status={status} />
+            </div>
             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+              {preview.workItem ? <Badge variant="neutral">{preview.workItem}</Badge> : null}
               {preview.sourceBranch ? (
-                <Badge variant="neutral" className="font-mono">
+                <Badge variant="neutral" className="font-mono normal-case tracking-normal">
                   {preview.sourceBranch}
                   {preview.base ? <span className="text-fg-subtle"> → {preview.base}</span> : null}
                 </Badge>
               ) : null}
-              {preview.workItem && preview.workItem !== preview.title ? (
-                <Badge variant="neutral">{preview.workItem}</Badge>
+              {status.prUrl ? (
+                <a
+                  href={status.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={e => e.stopPropagation()}
+                  className="inline-flex items-center gap-1 text-accent-300 hover:text-accent-200"
+                >
+                  View PR
+                  <ExternalLink className="size-3" />
+                </a>
               ) : null}
               {expanded ? <DiffSummaryLine diff={diff} compact /> : null}
             </div>
@@ -324,6 +446,12 @@ function WorkItemChanges({
               dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(preview.description) }}
             />
           ) : null}
+          {status.label === 'Merged' && (!diff || files.length === 0) ? (
+            <p className="text-xs text-fg-subtle">
+              This work item was merged. Expand showed no local diff — open the PR on the SCM for the final
+              changes.
+            </p>
+          ) : null}
           <div className="flex justify-end">
             <Button type="button" variant="ghost" size="sm" onClick={refresh} disabled={refreshing}>
               <RefreshCw className={cn(refreshing && 'animate-spin')} />
@@ -335,7 +463,7 @@ function WorkItemChanges({
           ) : error ? (
             <ErrorState title="Could not load changes" message={error} />
           ) : !diff || files.length === 0 ? (
-            <EmptyChanges available={diff?.available ?? false} />
+            status.label !== 'Merged' ? <EmptyChanges available={diff?.available ?? false} /> : null
           ) : (
             <DiffView files={files} truncated={diff.truncated} defaultCollapsed />
           )}
@@ -343,6 +471,10 @@ function WorkItemChanges({
       ) : null}
     </Card>
   )
+}
+
+function PrStatusBadge({ status }: { status: PrStatus }) {
+  return <Badge variant={status.variant}>{status.label}</Badge>
 }
 
 function DiffSummaryLine({ diff, compact }: { diff: JobDiff | null; compact?: boolean }) {
@@ -357,41 +489,6 @@ function DiffSummaryLine({ diff, compact }: { diff: JobDiff | null; compact?: bo
       {diff.stats.deletions > 0 ? <span className="ml-2 text-danger-400">−{diff.stats.deletions}</span> : null}
       <span className="ml-2 text-fg-subtle">vs {diff.base}</span>
     </span>
-  )
-}
-
-function PrPreviewCard({ preview }: { preview: PrPreview }) {
-  return (
-    <Card className="border-accent-500/25 bg-accent-500/5">
-      <CardHeader className="gap-2 border-b border-accent-500/15 pb-4">
-        <div className="flex items-center gap-2">
-          <div className="flex size-8 items-center justify-center rounded-lg border border-accent-500/25 bg-accent-500/10 text-accent-300">
-            <GitPullRequest className="size-4" />
-          </div>
-          <div className="min-w-0">
-            <CardTitle className="truncate">{preview.title || 'Proposed pull request'}</CardTitle>
-            <CardDescription>This is what Coro will open as a PR once you approve.</CardDescription>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          {preview.sourceBranch ? (
-            <Badge variant="neutral" className="font-mono">
-              {preview.sourceBranch}
-              {preview.base ? <span className="text-fg-subtle"> → {preview.base}</span> : null}
-            </Badge>
-          ) : null}
-          {preview.workItem ? <Badge variant="neutral">{preview.workItem}</Badge> : null}
-        </div>
-      </CardHeader>
-      {preview.description ? (
-        <CardContent className="pt-4">
-          <div
-            className="prose-coro space-y-2 text-sm leading-6 text-fg"
-            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(preview.description) }}
-          />
-        </CardContent>
-      ) : null}
-    </Card>
   )
 }
 
