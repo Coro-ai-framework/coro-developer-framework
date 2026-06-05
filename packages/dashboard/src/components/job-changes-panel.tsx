@@ -62,34 +62,41 @@ function readPrPreviews(job: Job): PrPreview[] {
   return out
 }
 
-function findPrUrl(job: Job, preview: PrPreview): string | undefined {
+function findPrLink(job: Job, preview: PrPreview): { url?: string; prId?: number } | undefined {
   if (!preview.title) return undefined
   for (const a of job.artifacts ?? []) {
     if (a.kind !== 'pr-link') continue
-    const url = a.data?.url
-    const title = a.data?.title
-    if (typeof url === 'string' && url && title === preview.title) return url
+    const d = a.data as Record<string, unknown>
+    if (d.title !== preview.title) continue
+    const url = typeof d.url === 'string' ? d.url : undefined
+    const rawId = d.prId
+    const prId =
+      typeof rawId === 'number' ? rawId : typeof rawId === 'string' && rawId.trim() ? Number(rawId) : undefined
+    return { url, prId: Number.isFinite(prId) ? prId : undefined }
   }
   return undefined
 }
 
+/** Per-preview status (supports multiple stacked PRs on one work item). */
 function derivePrStatus(preview: PrPreview, job: Job): PrStatus {
   const wi = preview.workItem
   const workItem = wi ? job.workItems?.find(w => w.name === wi) : undefined
-  const mappings = wi ? (job.prMappings ?? []).filter(m => m.workItem === wi) : []
-  const prUrl = findPrUrl(job, preview)
+  const link = findPrLink(job, preview)
+  const prUrl = link?.url
+  const mapping =
+    link?.prId != null ? job.prMappings?.find(m => m.prId === link.prId) : undefined
 
   if (workItem?.status === 'escalated') {
     return { label: 'Escalated', variant: 'danger', prUrl }
   }
-  if (
-    workItem?.status === 'complete' ||
-    (mappings.length > 0 && mappings.every(m => m.mergedAt))
-  ) {
+  if (mapping?.mergedAt) {
     return { label: 'Merged', variant: 'success', prUrl }
   }
-  if (mappings.some(m => !m.mergedAt)) {
+  if (mapping && !mapping.mergedAt) {
     return { label: 'PR open', variant: 'accent', prUrl }
+  }
+  if (workItem?.status === 'complete') {
+    return { label: 'Merged', variant: 'success', prUrl }
   }
   if (wi && wi === job.currentWorkItem) {
     return { label: 'In progress', variant: 'warning', prUrl }
@@ -149,33 +156,18 @@ function useJobDiff(
 
 export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
   const previews = useMemo(() => readPrPreviews(job), [job])
-  const currentWi = job.currentWorkItem
-  const currentPreview = useMemo(
-    () => previews.find(p => p.workItem && p.workItem === currentWi),
-    [previews, currentWi],
-  )
-  const otherPreviews = useMemo(
-    () => previews.filter(p => p !== currentPreview),
-    [previews, currentPreview],
-  )
-
-  const showWorkingNow = live || previews.length === 0 || !!currentPreview
+  const showWorkingNow = live || previews.length === 0
 
   return (
     <div className="space-y-6">
       <OpenWorkspaceBar jobId={job.id} />
 
       {showWorkingNow ? (
-        <CurrentWorkSection
-          jobId={job.id}
-          live={live}
-          workItem={currentWi}
-          preview={currentPreview}
-        />
+        <CurrentWorkSection jobId={job.id} live={live} workItem={job.currentWorkItem} />
       ) : null}
 
-      {otherPreviews.length > 0 ? (
-        <PullRequestsSection jobId={job.id} job={job} live={live} previews={otherPreviews} />
+      {previews.length > 0 ? (
+        <PullRequestsSection jobId={job.id} job={job} live={live} previews={previews} />
       ) : null}
     </div>
   )
@@ -263,16 +255,13 @@ function CurrentWorkSection({
   jobId,
   live,
   workItem,
-  preview,
 }: {
   jobId: string
   live: boolean
   workItem: string | null
-  preview: PrPreview | undefined
 }) {
   const { diff, loading, error, refresh, refreshing } = useJobDiff(jobId, { live })
   const files = useMemo(() => parseUnifiedDiff(diff?.patch ?? ''), [diff?.patch])
-  const gateCopy = preview && live
 
   return (
     <section className="space-y-3">
@@ -281,36 +270,12 @@ function CurrentWorkSection({
         {workItem ? (
           <p className="mt-0.5 text-xs text-fg-subtle">
             Work item: <span className="font-medium text-fg-muted">{workItem}</span>
+            {' — '}live diff from the repo checkout (each PR below has its own branch diff).
           </p>
         ) : (
           <p className="mt-0.5 text-xs text-fg-subtle">Live changes in the cloned repository.</p>
         )}
       </div>
-
-      {preview ? (
-        <div className="rounded-xl border border-accent-500/25 bg-accent-500/5 px-4 py-3">
-          <p className="text-sm font-medium text-fg">{preview.title || 'Proposed pull request'}</p>
-          {gateCopy ? (
-            <p className="mt-1 text-xs text-fg-subtle">
-              This is what Coro will open as a PR once you approve the coding phase.
-            </p>
-          ) : null}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            {preview.sourceBranch ? (
-              <Badge variant="neutral" className="font-mono normal-case tracking-normal">
-                {preview.sourceBranch}
-                {preview.base ? <span className="text-fg-subtle"> → {preview.base}</span> : null}
-              </Badge>
-            ) : null}
-          </div>
-          {preview.description ? (
-            <div
-              className="prose-coro mt-3 space-y-2 border-t border-accent-500/15 pt-3 text-sm leading-6 text-fg"
-              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(preview.description) }}
-            />
-          ) : null}
-        </div>
-      ) : null}
 
       <Card>
         <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
@@ -354,7 +319,8 @@ function PullRequestsSection({
       <div>
         <h3 className="text-sm font-medium text-fg">Pull requests</h3>
         <p className="mt-0.5 text-xs text-fg-subtle">
-          {previews.length} prepared — expand to review each work item&apos;s changes.
+          {previews.length} pull request{previews.length === 1 ? '' : 's'} — expand to review each
+          branch&apos;s changes (including stacked PRs).
         </p>
       </div>
       <div className="space-y-3">
