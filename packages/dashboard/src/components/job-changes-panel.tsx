@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, ExternalLink, FolderOpen, GitPullRequest, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
-import { fetchJobDiff, parseUnifiedDiff, type JobDiff } from '../lib/job-diff'
+import {
+  fetchJobDiff,
+  parseUnifiedDiff,
+  type FetchJobDiffOptions,
+  type JobDiff,
+} from '../lib/job-diff'
 import { fetchEditors, openJobWorkspace, type EditorInfo } from '../lib/open-workspace'
 import { EditorIcon } from './editor-icon'
 import DiffView from './diff-view'
@@ -104,6 +109,63 @@ function derivePrStatus(preview: PrPreview, job: Job): PrStatus {
   return { label: 'Awaiting review', variant: 'neutral', prUrl }
 }
 
+function jobDefaultBase(job: Job): string {
+  const params = job.params as Record<string, unknown>
+  for (const key of ['targetBranch', 'baseBranch', 'defaultBranch']) {
+    const v = params[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return 'main'
+}
+
+/**
+ * For stacked PRs, find the stack root base and tip branch so the live diff
+ * covers the whole stack (e.g. wi2-core→main + wi2→wi2-core → diff main..wi2).
+ */
+function resolveStackEndpoints(previews: PrPreview[]): { base: string; head?: string } {
+  if (previews.length === 0) return { base: 'main' }
+
+  const sources = new Set(previews.map(p => p.sourceBranch).filter(Boolean))
+  const bases = previews.map(p => p.base).filter((b): b is string => !!b)
+
+  let base = previews[0].base ?? 'main'
+  for (const p of previews) {
+    if (p.base && !sources.has(p.base)) {
+      base = p.base
+      break
+    }
+  }
+
+  // Tip = source branch not used as another preview's base (last wins for ordering).
+  let head: string | undefined
+  for (const p of previews) {
+    if (p.sourceBranch && !bases.includes(p.sourceBranch)) {
+      head = p.sourceBranch
+    }
+  }
+
+  return { base, head }
+}
+
+/** Diff scope for "Working now": cumulative stack for the current work item. */
+function resolveWorkingNowDiffOpts(job: Job, previews: PrPreview[]): FetchJobDiffOptions {
+  const wi = job.currentWorkItem
+  const forWi = wi ? previews.filter(p => p.workItem === wi) : previews
+
+  const active = forWi.filter(p => {
+    const { label } = derivePrStatus(p, job)
+    return label === 'PR open' || label === 'In progress' || label === 'Awaiting review'
+  })
+
+  const stack = active.length > 0 ? active : forWi
+  if (stack.length === 0) {
+    return { base: jobDefaultBase(job) }
+  }
+
+  const { base, head } = resolveStackEndpoints(stack)
+  return { base: base || jobDefaultBase(job), head }
+}
+
 /** True when a preview still needs developer attention (not merged/escalated). */
 export function hasActionablePrPreview(job: Job): boolean {
   return readPrPreviews(job).some(p => {
@@ -156,6 +218,7 @@ function useJobDiff(
 
 export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
   const previews = useMemo(() => readPrPreviews(job), [job])
+  const workingNowDiffOpts = useMemo(() => resolveWorkingNowDiffOpts(job, previews), [job, previews])
   const showWorkingNow = live || previews.length === 0
 
   return (
@@ -163,7 +226,19 @@ export default function JobChangesPanel({ job, live }: JobChangesPanelProps) {
       <OpenWorkspaceBar jobId={job.id} />
 
       {showWorkingNow ? (
-        <CurrentWorkSection jobId={job.id} live={live} workItem={job.currentWorkItem} />
+        <CurrentWorkSection
+          jobId={job.id}
+          live={live}
+          workItem={job.currentWorkItem}
+          diffOpts={workingNowDiffOpts}
+          stackedPrCount={
+            previews.filter(
+              p =>
+                p.workItem === job.currentWorkItem &&
+                derivePrStatus(p, job).label === 'PR open',
+            ).length
+          }
+        />
       ) : null}
 
       {previews.length > 0 ? (
@@ -250,17 +325,21 @@ function OpenWorkspaceBar({ jobId }: { jobId: string }) {
   )
 }
 
-/** Live working-tree diff for whatever the agent is building right now. */
+/** Live diff for the current work item (cumulative when PRs are stacked). */
 function CurrentWorkSection({
   jobId,
   live,
   workItem,
+  diffOpts,
+  stackedPrCount,
 }: {
   jobId: string
   live: boolean
   workItem: string | null
+  diffOpts: FetchJobDiffOptions
+  stackedPrCount: number
 }) {
-  const { diff, loading, error, refresh, refreshing } = useJobDiff(jobId, { live })
+  const { diff, loading, error, refresh, refreshing } = useJobDiff(jobId, { live, ...diffOpts })
   const files = useMemo(() => parseUnifiedDiff(diff?.patch ?? ''), [diff?.patch])
 
   return (
@@ -270,7 +349,11 @@ function CurrentWorkSection({
         {workItem ? (
           <p className="mt-0.5 text-xs text-fg-subtle">
             Work item: <span className="font-medium text-fg-muted">{workItem}</span>
-            {' — '}live diff from the repo checkout (each PR below has its own branch diff).
+            {stackedPrCount > 1
+              ? ` — cumulative diff across ${stackedPrCount} open PRs (stack tip vs ${diffOpts.base ?? 'main'}).`
+              : diffOpts.head
+                ? ` — changes on ${diffOpts.head} vs ${diffOpts.base ?? 'main'}.`
+                : ' — live changes in the repo checkout.'}
           </p>
         ) : (
           <p className="mt-0.5 text-xs text-fg-subtle">Live changes in the cloned repository.</p>
