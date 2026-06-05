@@ -99,6 +99,32 @@ Deeper tour: [docs/architecture-overview.md](docs/architecture-overview.md) · M
 
 ---
 
+## What makes Coro different
+
+**Coro runs your delivery lifecycle, not a chat thread.** Most AI coding today lives in a chat window. Coro is built around the feature instead. Each unit of work — a ticket, a spec, a bug — moves through the real software delivery lifecycle (spec → plan → code → review → evaluate → merge) as a durable, resumable job. It parks and resumes across PRs and webhooks, asks for humans only at the decisions that matter, and commits what it learned back to git. The session is the feature — and it follows the same delivery pipeline your team already trusts.
+
+| Capability | What Coro does | Why it's distinctive |
+| ---------- | ---------------- | -------------------- |
+| **Harness, not an IDE or chat** | Orchestrates a full delivery pipeline alongside your coding agent — it does not replace your editor or a single chat session | Composes with Claude Code and other executors instead of competing as another IDE or prompt box |
+| **Feature-scoped runs across the SDLC** | Each job is a durable, multi-phase run tied to a feature or ticket that walks spec → plan → code → review → evaluate → merge and parks/resumes across days and PRs | The unit of work is the feature and its delivery pipeline — not an ephemeral chat thread you babysit prompt-by-prompt |
+| **Whole delivery pipeline, not just codegen** | One run produces a spec, a plan, a reviewed PR, and post-merge evaluation — SDLC artifacts, not a pile of unreviewed edits in your working tree | Covers planning, review, merge coordination, and verification — not only the moment code is generated |
+| **Fixed multi-agent roles** | Separate planner, coder, in-phase code reviewer, PR gatekeeper, and evaluator agents with distinct responsibilities | Role separation and checkpoints replace a single agent improvising every step in one session |
+| **Workflow lanes** | FAST, STANDARD, and DEEP lanes route work by scope and risk; switch lanes in place mid-run | Lightweight fixes skip deep review; migrations and new APIs get analysis and QA — without one-size-fits-all prompting |
+| **Markdown intelligence** | Agents, workflows, skills, and memory live as git-tracked markdown — behavior is authored, not hardcoded in the runner | Teams own and review how agents behave; the runner is dumb plumbing that follows the contract |
+| **Layered intelligence** | Base, tenant, and repo overlays materialise per job with append/last-wins merge rules | Versioned, reviewable team knowledge — not ephemeral chat memory or a single rules file |
+| **Review-gated self-improvement** | Agents propose memory, skill, and agent-instruction updates via `propose_change` PRs — nothing silently rewrites canonical behaviour | Institutional learning accumulates in git with human review; other tools rarely gate knowledge changes behind PRs |
+| **Campaign orchestration** | One initiative fans out to dependency-aware child jobs with integration and aggregation phases | Multi-repo or multi-issue delivery with explicit coordination — beyond parallel background agents on unrelated tasks |
+| **Event-driven parking** | Jobs park on PR review, webhooks, and human approval; zero LLM cost while waiting (polling in solo, webhooks in hybrid) | Long-running delivery fits real review cycles instead of burning tokens in an active chat session |
+| **Automatic rate-limit handling** | On provider rate limits, jobs enter `awaiting-rate-limit` and auto-resume when the window clears | Runs survive transient API limits instead of failing mid-pipeline |
+| **PR preview gate** | Humans review the diff before a PR is opened; merge requires explicit human approval | Humans gate the decisions that matter — spec, plan, PR preview, merge — not every keystroke |
+| **Runner-enforced guardrails** | PR size limits, required descriptions, merge approval, markdown-only proposals, and bash/path sandboxing enforced by the harness | Policy lives in the runner, not only in the model's prompt |
+| **Provider-agnostic plugins** | SCM, tracker, and LLM-executor plugins (GitHub, Bitbucket, GitLab; Jira, Linear, GitHub Issues; Anthropic, OpenAI) with per-phase model selection | Swap git hosts, issue trackers, and models without forking the harness |
+| **Language-agnostic skills** | Language conventions ship as on-demand skill files — add a language by adding a skill, not changing runner code | Same harness works across Go, .NET, TypeScript, Python, and more |
+| **Per-run cost tracking** | Token usage and cost surfaced per run and per phase in the dashboard | Teams see the economics of agentic delivery by feature, not opaque session totals |
+| **Self-hostable open core** | Local runner, dashboard, and SQLite state on your machine; BUSL-1.1 (Apache-2.0 in 2029) | Run on your infrastructure with intelligence in your git repos — not a closed cloud-only agent VM |
+
+---
+
 ## Plugin architecture
 
 The runner is **provider-agnostic**. Anything that varies by Git host, issue tracker, or LLM is implemented as a **plugin** loaded at startup from `~/.coro/config.json` (and installable via `coro plugin install`).
