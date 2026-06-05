@@ -97,6 +97,19 @@ export default function InsightsPanel({ jobId, insights: seedInsights, onChanged
     return insights.filter((i) => statusOf(i) === filter)
   }, [insights, filter])
 
+  // Same numbering agents see in prompts (`### 1.`, `### 2.`, …): 1-based
+  // index among non-rejected insights, in API list order.
+  const insightNumbers = useMemo(() => {
+    const map = new Map<string, number>()
+    let n = 0
+    for (const i of insights) {
+      if (statusOf(i) === 'rejected') continue
+      n++
+      map.set(i.id ?? `${i.phase}:${i.summary}`, n)
+    }
+    return map
+  }, [insights])
+
   async function patch(insightId: string, body: Record<string, unknown>) {
     setBusyId(insightId)
     setError(null)
@@ -208,6 +221,7 @@ export default function InsightsPanel({ jobId, insights: seedInsights, onChanged
           const displaySummary = insight.editedSummary ?? insight.summary
           const displayDetail = insight.editedDetail ?? insight.detail
           const displaySuggestion = insight.editedSuggestion ?? insight.suggestion
+          const insightNum = insightNumbers.get(id)
 
           return (
             <div
@@ -230,6 +244,15 @@ export default function InsightsPanel({ jobId, insights: seedInsights, onChanged
 
                 <div className="min-w-0 flex-1 space-y-1.5">
                   <div className="flex flex-wrap items-center gap-2">
+                    {insightNum != null ? (
+                      <Badge
+                        variant="neutral"
+                        className="font-mono normal-case tracking-normal"
+                        title={insight.id ? `Insight ${insight.id}` : undefined}
+                      >
+                        #{insightNum}
+                      </Badge>
+                    ) : null}
                     <Badge variant={statusBadgeVariant(status)} className="capitalize">{status}</Badge>
                     <Badge variant="neutral" className="font-mono">{insight.phase}</Badge>
                     <Badge variant="accent">{insight.category}</Badge>
