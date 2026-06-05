@@ -32,7 +32,7 @@ import {
 } from '../config/local-config'
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
-import { resolveJobWorkspaceLayout } from '../jobs/workspace-layout'
+import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
 import { computeJobDiff, emptyJobDiff, resolveDiffBase } from '../jobs/job-diff'
 import { detectEditors, openInEditor, revealFolder } from './open-editor'
 import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
@@ -1551,7 +1551,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const config = loadLocalConfig()
       const workingDir = resolveLocalWorkingDir(config)
       const jobWorkingDir = path.resolve(workingDir, jobId)
-      const layout = resolveJobWorkspaceLayout(job, jobWorkingDir)
+      const layout = await resolvePrimaryRepoCheckout(job, jobWorkingDir)
 
       // No repo checkout registered yet (job hasn't reached coding). Report
       // an empty-but-available diff so the dashboard shows a clean state.
@@ -1628,7 +1628,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       const config = loadLocalConfig()
       const workingDir = resolveLocalWorkingDir(config)
       const jobWorkingDir = path.resolve(workingDir, jobId)
-      const layout = resolveJobWorkspaceLayout(job, jobWorkingDir)
+      const layout = await resolvePrimaryRepoCheckout(job, jobWorkingDir)
       if (!layout.repoCheckoutAbsDir) {
         res.status(409).json({ error: 'No repository checkout yet — the agent has not cloned the repo.' })
         return
