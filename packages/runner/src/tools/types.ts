@@ -47,6 +47,8 @@ export interface ToolContext {
    */
   plugins: PluginRegistry
   logger: Logger
+  /** Phase names from the active workflow; used to validate goto_phase targets. */
+  declaredPhases?: string[]
   /**
    * Live phase context — set by the runner at every phase boundary,
    * before the in-process MCP server is created. Used by the
@@ -78,8 +80,6 @@ export interface CurrentPhaseContext {
   mcpServer: McpServerDescriptor
   /** Plugin MCP servers attached to this phase. */
   pluginMcpServers: Record<string, PluginMcpServerConfig>
-  /** Phase names from the active workflow; used to validate goto_phase targets. */
-  declaredPhases?: string[]
 }
 
 // ── Job-control signal types ──────────────────────────────────────────────────
