@@ -1,4 +1,5 @@
-import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -182,6 +183,26 @@ function prepareRunnerBundle(runnerRoot) {
   rmSync(path.join(runnerRoot, 'package-lock.json'), { recursive: true, force: true })
 
   assertClaudeSdkPlatformBinary(runnerRoot)
+  assertBetterSqlite3Binding(runnerRoot)
+}
+
+function assertBetterSqlite3Binding(runnerRoot) {
+  try {
+    const localRequire = createRequire(path.join(runnerRoot, 'package.json'))
+    const Database = localRequire('better-sqlite3')
+    const db = new Database(':memory:')
+    db.prepare('select 1 as ok').get()
+    db.close()
+  } catch (err) {
+    console.error(
+      `::error::Desktop runner bundle cannot open better-sqlite3 :memory: on ${process.platform}/${process.arch}. ` +
+        `${err instanceof Error ? err.message : String(err)}. ` +
+        'Rebuild the runner bundle on a native host for this platform.',
+    )
+    process.exit(1)
+  }
+
+  console.log(`desktop-electron: verified better-sqlite3 native binding in runner bundle`)
 }
 
 function assertClaudeSdkPlatformBinary(runnerRoot) {

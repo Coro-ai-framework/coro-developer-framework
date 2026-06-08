@@ -89,8 +89,35 @@ try {
   }
 
   process.stdout.write(verify.stdout ?? '')
+
+  const sqliteVerify = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      `
+        const Database = require('better-sqlite3');
+        const db = new Database(':memory:');
+        const row = db.prepare('select 1 as ok').get();
+        db.close();
+        if (!row || row.ok !== 1) {
+          console.error('better-sqlite3 :memory: probe failed');
+          process.exit(1);
+        }
+        console.log('better-sqlite3 OK');
+      `,
+    ],
+    { encoding: 'utf8', cwd: runnerDir },
+  )
+
+  if (sqliteVerify.status !== 0) {
+    process.stderr.write(sqliteVerify.stderr ?? '')
+    console.error('::error::better-sqlite3 verification failed after global install')
+    process.exit(sqliteVerify.status ?? 1)
+  }
+
+  process.stdout.write(sqliteVerify.stdout ?? '')
   console.log(
-    `Global install CLI path verification passed on ${process.platform}/${process.arch}`,
+    `Global install native deps verification passed on ${process.platform}/${process.arch}`,
   )
 } finally {
   rmSync(packDir, { recursive: true, force: true })

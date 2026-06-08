@@ -76,8 +76,14 @@ function verifyRunnerTarballRuntimeDeps(outDir, pkg) {
     )
     process.exit(1)
   }
-  if (!listing.includes('package/scripts/install-claude-sdk-platform.mjs')) {
-    console.error('::error::Runner tarball missing postinstall platform CLI script')
+  if (!listing.includes('package/scripts/install-platform-native-deps.mjs')) {
+    console.error('::error::Runner tarball missing postinstall native deps script')
+    process.exit(1)
+  }
+  if (listing.includes('package/node_modules/better-sqlite3/build/')) {
+    console.error(
+      '::error::Runner tarball must not bundle better-sqlite3/build — native binding is rebuilt at install time',
+    )
     process.exit(1)
   }
   const tarballPkg = JSON.parse(
@@ -91,7 +97,8 @@ function verifyRunnerTarballRuntimeDeps(outDir, pkg) {
   }
   console.log('runner tarball includes vendored production node_modules (pino, express, …)')
   console.log(
-    `runner tarball bundles @anthropic-ai/claude-agent-sdk@${tarballPkg.dependencies['@anthropic-ai/claude-agent-sdk']} JS; postinstall fetches the platform claude binary`,
+    `runner tarball bundles @anthropic-ai/claude-agent-sdk@${tarballPkg.dependencies['@anthropic-ai/claude-agent-sdk']} JS; ` +
+      'postinstall rebuilds native deps (claude binary + better-sqlite3)',
   )
 }
 

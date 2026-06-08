@@ -22,6 +22,8 @@ const bundled = manifest.runnerBundle
 const bundledByName = new Map(bundled.map(entry => [entry.name, entry]))
 /** Resolved at install time on the consumer's OS — must not be bundled (platform-specific optional deps). */
 const CLAUDE_SDK_PKG = '@anthropic-ai/claude-agent-sdk'
+/** Native addons rebuilt by postinstall on the consumer host (tarball strips build/ artifacts). */
+const NATIVE_REBUILD_PACKAGES = ['better-sqlite3']
 
 rmSync(stagingRoot, { recursive: true, force: true })
 mkdirSync(stagingRoot, { recursive: true })
@@ -175,11 +177,12 @@ const stagedPkg = JSON.parse(readFileSync(stagedPkgPath, 'utf8'))
 
 const claudeSdkVersion = readResolvedClaudeSdkVersion(stagingRoot)
 removeClaudeSdkPlatformPackages(path.join(stagingRoot, 'node_modules'))
+stripNativeBuildArtifacts(path.join(stagingRoot, 'node_modules'))
 
 mkdirSync(path.join(stagingRoot, 'scripts'), { recursive: true })
 copyFileSync(
-  path.join(root, 'scripts', 'install-claude-sdk-platform.mjs'),
-  path.join(stagingRoot, 'scripts', 'install-claude-sdk-platform.mjs'),
+  path.join(root, 'scripts', 'install-platform-native-deps.mjs'),
+  path.join(stagingRoot, 'scripts', 'install-platform-native-deps.mjs'),
 )
 
 for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
@@ -190,7 +193,7 @@ for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
 stagedPkg.dependencies[CLAUDE_SDK_PKG] = claudeSdkVersion
 stagedPkg.scripts = {
   ...(stagedPkg.scripts ?? {}),
-  postinstall: 'node scripts/install-claude-sdk-platform.mjs',
+  postinstall: 'node scripts/install-platform-native-deps.mjs',
 }
 stagedPkg.files = ['dist', 'dashboard-dist', 'README.md', 'scripts', 'node_modules']
 stagedPkg.bundleDependencies = enumerateBundledDependencies(stagingRoot)
@@ -300,6 +303,44 @@ function enumerateBundledDependencies(stagingRoot) {
   return names.sort()
 }
 
+/** Remove compiled native artifacts so postinstall rebuilds for the consumer OS. */
+function stripNativeBuildArtifacts(nodeModulesRoot) {
+  if (!existsSync(nodeModulesRoot)) return
+
+  for (const pkgName of NATIVE_REBUILD_PACKAGES) {
+    const pkgDir = path.join(nodeModulesRoot, ...pkgName.split('/'))
+    const buildDir = path.join(pkgDir, 'build')
+    if (existsSync(buildDir)) {
+      rmSync(buildDir, { recursive: true, force: true })
+    }
+  }
+
+  for (const entry of readdirSync(nodeModulesRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === '.bin') continue
+
+    if (entry.name.startsWith('@')) {
+      const scopePath = path.join(nodeModulesRoot, entry.name)
+      for (const pkg of readdirSync(scopePath, { withFileTypes: true })) {
+        if (!pkg.isDirectory()) continue
+        const nested = path.join(scopePath, pkg.name, 'node_modules')
+        if (existsSync(nested)) stripNativeBuildArtifacts(nested)
+      }
+      continue
+    }
+
+    const nested = path.join(nodeModulesRoot, entry.name, 'node_modules')
+    if (existsSync(nested)) stripNativeBuildArtifacts(nested)
+  }
+}
+
+function nativeBuildArtifactsPresent(stagingRoot) {
+  for (const pkgName of NATIVE_REBUILD_PACKAGES) {
+    const buildDir = path.join(stagingRoot, 'node_modules', ...pkgName.split('/'), 'build')
+    if (existsSync(buildDir)) return pkgName
+  }
+  return null
+}
+
 function claudeSdkPlatformPackagesPresent(stagingRoot) {
   const anthropicScope = path.join(stagingRoot, 'node_modules', '@anthropic-ai')
   if (!existsSync(anthropicScope)) return false
@@ -345,9 +386,17 @@ function assertProductionNodeModules(stagingRoot, stagedPkg) {
     process.exit(1)
   }
 
-  const postinstallScript = path.join(stagingRoot, 'scripts', 'install-claude-sdk-platform.mjs')
+  const leftoverNative = nativeBuildArtifactsPresent(stagingRoot)
+  if (leftoverNative) {
+    console.error(
+      `::error::${leftoverNative}/build must be absent from staged node_modules (postinstall rebuilds native addons)`,
+    )
+    process.exit(1)
+  }
+
+  const postinstallScript = path.join(stagingRoot, 'scripts', 'install-platform-native-deps.mjs')
   if (!existsSync(postinstallScript)) {
-    console.error('::error::Missing scripts/install-claude-sdk-platform.mjs in staging tree')
+    console.error('::error::Missing scripts/install-platform-native-deps.mjs in staging tree')
     process.exit(1)
   }
 }
