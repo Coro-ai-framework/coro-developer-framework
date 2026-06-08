@@ -124,6 +124,21 @@ The Windows packaging baseline now includes:
 5. Windows validation and release jobs in GitHub Actions.
 6. A post-bundle assertion that the platform-specific Claude Agent SDK binary
    (`claude` / `claude.exe`) is present in the runner resource tree.
+7. A `prebuild-install` step in `prepare-resources.mjs` that fetches the
+   `better-sqlite3` binary matching the packaged Electron version, plus a probe
+   that loads `:memory:` under `ELECTRON_RUN_AS_NODE` — not the build-host Node
+   used by `npm install`.
+
+**Native modules:** The runner sidecar does not run under system Node. It uses
+Electron's embedded Node via `ELECTRON_RUN_AS_NODE=1`. Only `better-sqlite3`
+needs an Electron-targeted binary; the Claude SDK ships as a standalone
+executable. Desktop currently pins **Electron 41.7.1** (ABI 145) because
+`better-sqlite3` prebuilds for Electron 42 (ABI 146) were rolled back upstream
+([WiseLibs/better-sqlite3#1470](https://github.com/WiseLibs/better-sqlite3/pull/1470));
+revisit Electron 42 once upstream ships v146 prebuilds or a compile fix lands.
+
+Global `npm install -g @coro-ai/runner` is separate — its postinstall rebuilds
+for the consumer's system Node, not Electron.
 
 The remaining code-level validation work is behavioral rather than structural:
 

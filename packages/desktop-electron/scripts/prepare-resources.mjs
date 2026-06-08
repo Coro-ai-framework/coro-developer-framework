@@ -187,26 +187,67 @@ function prepareRunnerBundle(runnerRoot) {
   rmSync(path.join(runnerRoot, 'vendor'), { recursive: true, force: true })
   rmSync(path.join(runnerRoot, 'package-lock.json'), { recursive: true, force: true })
 
+  // Runner sidecar uses ELECTRON_RUN_AS_NODE (Electron's embedded Node, not the
+  // build host Node). Rebuild native addons for the packaged Electron version.
+  rebuildBetterSqlite3ForElectron(runnerRoot)
+
   assertClaudeSdkPlatformBinary(runnerRoot)
 }
 
+function resolveElectronVersion() {
+  const electronPkgJson = createRequire(import.meta.url).resolve('electron/package.json')
+  return JSON.parse(readFileSync(electronPkgJson, 'utf8')).version
+}
+
+function resolveElectronExecutable() {
+  return createRequire(import.meta.url)('electron')
+}
+
+function rebuildBetterSqlite3ForElectron(runnerRoot) {
+  const electronVersion = resolveElectronVersion()
+  const betterSqlite3Dir = path.join(runnerRoot, 'node_modules', 'better-sqlite3')
+
+  // npm install compiles/downloads for the build-host Node (ABI 115 on Node 20).
+  // Desktop sidecar runs under Electron's embedded Node — fetch the matching
+  // better-sqlite3 prebuild (Electron 41 / ABI 145 today; Electron 42 / ABI 146
+  // prebuilds are not published yet — see WiseLibs/better-sqlite3#1470).
+  safeRmSync(path.join(betterSqlite3Dir, 'build'))
+
+  console.log(
+    `desktop-electron: installing better-sqlite3 prebuild for Electron ${electronVersion} on ${process.platform}/${process.arch}`,
+  )
+
+  runCommand('npx', ['--yes', 'prebuild-install', '--runtime', 'electron', '--target', electronVersion], {
+    cwd: betterSqlite3Dir,
+  })
+}
+
 function assertBetterSqlite3Binding(runnerRoot) {
-  try {
-    const localRequire = createRequire(path.join(runnerRoot, 'package.json'))
-    const Database = localRequire('better-sqlite3')
-    const db = new Database(':memory:')
-    db.prepare('select 1 as ok').get()
-    db.close()
-  } catch (err) {
+  const electronExe = resolveElectronExecutable()
+  const probeScript = path.join(__dirname, 'probe-better-sqlite3.mjs')
+  const result = spawnSync(electronExe, [probeScript, runnerRoot], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+    },
+    encoding: 'utf8',
+    shell: false,
+  })
+
+  if (result.status !== 0) {
+    const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
     console.error(
-      `::error::Desktop runner bundle cannot open better-sqlite3 :memory: on ${process.platform}/${process.arch}. ` +
-        `${err instanceof Error ? err.message : String(err)}. ` +
-        'Rebuild the runner bundle on a native host for this platform.',
+      `::error::Desktop runner bundle cannot open better-sqlite3 under Electron on ${process.platform}/${process.arch}. ` +
+        `${detail || 'probe exited with status ' + result.status}. ` +
+        'Ensure @electron/rebuild succeeded during prepare-resources.',
     )
     process.exit(1)
   }
 
-  console.log(`desktop-electron: verified better-sqlite3 native binding in runner bundle`)
+  console.log(
+    `desktop-electron: verified better-sqlite3 native binding under Electron ${resolveElectronVersion()}`,
+  )
 }
 
 function assertClaudeSdkPlatformBinary(runnerRoot) {

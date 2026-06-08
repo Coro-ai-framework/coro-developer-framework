@@ -266,6 +266,18 @@ function buildStartupRemediation(message: string, stderr: string): string | null
   }
 
   if (
+    combined.includes('node_module_version') ||
+    combined.includes('compiled against a different node.js version')
+  ) {
+    return [
+      'What to try:',
+      '- This build has a native module mismatch (better-sqlite3 vs Electron).',
+      '- Reinstall from the latest signed release built after the Electron rebuild fix.',
+      '- If you built locally, rerun `pnpm --filter @coro-ai/desktop-electron dist:mac` (or `dist:win`) so prepare-resources rebuilds better-sqlite3 for Electron.',
+    ].join('\n')
+  }
+
+  if (
     combined.includes('could not locate the claude agent sdk') ||
     combined.includes('claude-agent-sdk') ||
     combined.includes('claude_code_cli_path')
