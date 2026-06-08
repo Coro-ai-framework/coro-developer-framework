@@ -66,6 +66,8 @@ The runner **auto-advances** to the next workflow phase when you finish — but 
 
 ## MCP tools for this agent
 
+Call `scm_get_pr_status`, `await_event`, `log`, and other Coro tools **as MCP tools** — never via `Bash` (shell commands like `mcp__coro__scm_get_pr_status` are not valid).
+
 Generic Coro tools (provider-neutral, always available):
 
 | Tool | Purpose |

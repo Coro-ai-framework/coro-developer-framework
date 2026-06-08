@@ -240,7 +240,7 @@ function assertBetterSqlite3Binding(runnerRoot) {
     console.error(
       `::error::Desktop runner bundle cannot open better-sqlite3 under Electron on ${process.platform}/${process.arch}. ` +
         `${detail || 'probe exited with status ' + result.status}. ` +
-        'Ensure @electron/rebuild succeeded during prepare-resources.',
+        'Ensure prebuild-install succeeded during prepare-resources.',
     )
     process.exit(1)
   }

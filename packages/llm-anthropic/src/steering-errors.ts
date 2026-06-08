@@ -6,10 +6,16 @@
 
 const EDE_DIAGNOSTIC_RE = /\[ede_diagnostic\]/i
 const REQUEST_ABORTED_RE = /request was aborted/i
+/** SDK cancels sibling tool calls when one parallel invocation fails. */
+const PARALLEL_TOOL_CANCEL_RE = /Cancelled:\s*parallel tool call/i
 
 /** True for SDK steering/interrupt payloads (result errors or thrown messages). */
 export function isSteeringDiagnosticText(text: string): boolean {
-  return EDE_DIAGNOSTIC_RE.test(text) || REQUEST_ABORTED_RE.test(text)
+  return (
+    EDE_DIAGNOSTIC_RE.test(text) ||
+    REQUEST_ABORTED_RE.test(text) ||
+    PARALLEL_TOOL_CANCEL_RE.test(text)
+  )
 }
 
 /** True when `err` looks like an SDK interrupt / aborted-tool diagnostic. */
@@ -34,8 +40,14 @@ export function isBunSourceFrameLine(text: string): boolean {
 
 /** True when tool_result text indicates a broken MCP transport. */
 export function isMcpTransportErrorText(text: string): boolean {
-  return /stream closed|request aborted|process\s*transport is not ready|mcp(?:\s+|.*)(?:error|closed|disconnected)|connection closed/i.test(
-    text,
+  // Parallel Bash cancellations often mention mcp__coro__* and "errored". The
+  // old `mcp.*error` subpattern false-matched those and triggered MCP heal.
+  if (PARALLEL_TOOL_CANCEL_RE.test(text)) return false
+
+  return (
+    /stream closed|request aborted|process\s*transport is not ready|connection closed/i.test(
+      text,
+    ) || /\bMCP\s+error\b/i.test(text)
   )
 }
 

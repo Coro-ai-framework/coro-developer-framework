@@ -67,6 +67,20 @@ describe('isMcpTransportErrorText', () => {
   it('rejects benign tool errors', () => {
     expect(isMcpTransportErrorText('file not found')).toBe(false)
   })
+
+  it('rejects parallel Bash cancellation that mentions mcp__coro__ in the command', () => {
+    expect(
+      isMcpTransportErrorText(
+        '<tool_use_error>Cancelled: parallel tool call Bash(mcp__coro__log "Checking PR") errored</tool_use_error>',
+      ),
+    ).toBe(false)
+  })
+
+  it('still detects real MCP transport failures inside tool_use_error wrappers', () => {
+    expect(isMcpTransportErrorText('<tool_use_error>MCP error: Stream closed</tool_use_error>')).toBe(
+      true,
+    )
+  })
 })
 
 describe('shouldClosePushableAfterResult', () => {
