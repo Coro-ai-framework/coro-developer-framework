@@ -40,6 +40,10 @@ Also not published: `@coro-ai/desktop-electron`, workspace root `coro`.
 Manifest: [`scripts/publish-packages.json`](../scripts/publish-packages.json).  
 Runner staging: [`scripts/prepare-runner-npm-publish.mjs`](../scripts/prepare-runner-npm-publish.mjs).
 
+CI copies the staged tree to `artifacts/runner-npm-staging/` before `upload-artifact`
+because `upload-artifact@v4` does not upload paths ignored by `.gitignore`
+(`packages/runner/.npm-publish/`).
+
 ## Prerequisites
 
 1. **npm org** — Use the [`@coro-ai`](https://www.npmjs.com/settings/coro-ai/packages) organization on npmjs.com. The publish token must belong to a user with **Read and write** on that org.

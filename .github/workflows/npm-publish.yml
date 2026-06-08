@@ -86,12 +86,29 @@ jobs:
       - name: Stage runner for npm publish
         run: node scripts/prepare-runner-npm-publish.mjs
 
+      - name: Verify staged runner tree
+        run: |
+          set -euo pipefail
+          test -f packages/runner/.npm-publish/package.json
+          test -d packages/runner/.npm-publish/node_modules
+          test -f packages/runner/.npm-publish/scripts/install-platform-native-deps.mjs
+
+      # upload-artifact@v4 skips .gitignore'd paths (packages/runner/.npm-publish/).
+      # Copy to a non-ignored directory before upload.
+      - name: Copy staged runner for artifact upload
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/runner-npm-staging
+          mkdir -p artifacts
+          cp -a packages/runner/.npm-publish artifacts/runner-npm-staging
+
       - name: Upload staged runner artifact
         uses: actions/upload-artifact@v4
         with:
           name: runner-npm-publish-${{ steps.resolve_version.outputs.publish_version }}
           retention-days: 7
-          path: packages/runner/.npm-publish/
+          path: artifacts/runner-npm-staging/
+          if-no-files-found: error
 
   verify-global-install:
     name: Verify global install (${{ matrix.os }})
@@ -113,7 +130,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: runner-npm-publish-${{ needs.prepare.outputs.publish_version }}
-          path: packages/runner/.npm-publish
+          path: artifacts/runner-npm-staging
+
+      - name: Install staged runner into verify path
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf packages/runner/.npm-publish
+          mkdir -p packages/runner
+          cp -a artifacts/runner-npm-staging packages/runner/.npm-publish
+          test -f packages/runner/.npm-publish/package.json
 
       - name: Verify Claude CLI resolves after global install
         run: node scripts/verify-runner-global-install.mjs
@@ -154,7 +180,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: runner-npm-publish-${{ needs.prepare.outputs.publish_version }}
-          path: packages/runner/.npm-publish
+          path: artifacts/runner-npm-staging
+
+      - name: Install staged runner into publish path
+        run: |
+          set -euo pipefail
+          rm -rf packages/runner/.npm-publish
+          mkdir -p packages/runner
+          cp -a artifacts/runner-npm-staging packages/runner/.npm-publish
+          test -f packages/runner/.npm-publish/package.json
 
       - name: Verify npm credentials
         if: github.event_name == 'push' || inputs.dry_run == false
