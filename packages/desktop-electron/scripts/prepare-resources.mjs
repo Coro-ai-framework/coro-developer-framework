@@ -71,15 +71,20 @@ runPnpm(['--filter', '@coro-ai/llm-openai', 'build'])
 runPnpm(['--filter', '@coro-ai/runner', 'build'])
 runPnpm(['--filter', '@coro-ai/dashboard', 'build'])
 
-rmSync(resourcesRoot, { recursive: true, force: true })
-rmSync(stagingRoot, { recursive: true, force: true })
+safeRmSync(resourcesRoot)
+safeRmSync(stagingRoot)
 mkdirSync(resourcesRoot, { recursive: true })
 
 prepareRunnerBundle(runnerDeployDir)
 cpSync(runnerDeployDir, runnerTargetDir, { recursive: true })
 cpSync(dashboardSourceDir, dashboardTargetDir, { recursive: true })
 
-rmSync(stagingRoot, { recursive: true, force: true })
+// Load native modules only after copying out of the staging tree. On Windows,
+// requiring better-sqlite3 locks better_sqlite3.node and staging cleanup fails
+// with EPERM if we assert while files still live under os.tmpdir().
+assertBetterSqlite3Binding(runnerTargetDir)
+
+safeRmSync(stagingRoot)
 
 console.log(`desktop-electron: prepared packaged resources under ${resourcesRoot}`)
 
@@ -183,7 +188,6 @@ function prepareRunnerBundle(runnerRoot) {
   rmSync(path.join(runnerRoot, 'package-lock.json'), { recursive: true, force: true })
 
   assertClaudeSdkPlatformBinary(runnerRoot)
-  assertBetterSqlite3Binding(runnerRoot)
 }
 
 function assertBetterSqlite3Binding(runnerRoot) {
@@ -264,9 +268,43 @@ function runNpmInstall(cwd) {
 }
 
 function materializeLocalDependency(sourceDir, installedDir) {
-  rmSync(installedDir, { recursive: true, force: true })
+  safeRmSync(installedDir)
   mkdirSync(path.dirname(installedDir), { recursive: true })
   cpSync(sourceDir, installedDir, { recursive: true })
+}
+
+function safeRmSync(target) {
+  const options = { recursive: true, force: true }
+  const maxAttempts = process.platform === 'win32' ? 5 : 1
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      rmSync(target, options)
+      return
+    } catch (err) {
+      const retryable = err && (err.code === 'EPERM' || err.code === 'EBUSY')
+      if (!retryable || attempt === maxAttempts) {
+        if (retryable) {
+          console.warn(
+            `desktop-electron: could not remove ${target} (${err.code}); leaving path behind`,
+          )
+          return
+        }
+        throw err
+      }
+      sleepSync(200 * attempt)
+    }
+  }
+}
+
+function sleepSync(ms) {
+  if (process.platform === 'win32') {
+    spawnSync('powershell', ['-NoProfile', '-Command', `Start-Sleep -Milliseconds ${ms}`], {
+      stdio: 'ignore',
+    })
+    return
+  }
+  spawnSync('sleep', [String(Math.max(1, Math.ceil(ms / 1000)))], { stdio: 'ignore' })
 }
 
 function runCommand(command, args, options = {}) {
