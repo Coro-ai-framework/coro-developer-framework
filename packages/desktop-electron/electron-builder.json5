@@ -49,9 +49,8 @@
   },
   win: {
     icon: 'dist/icon.ico',
-    // CSC_LINK / CSC_KEY_PASSWORD from CI sign the NSIS installer and app
-    // binaries when WINDOWS_SIGNING_CERT_B64 secrets are configured.
-    signingHashAlgorithms: ['sha256'],
+    // CSC_LINK / CSC_KEY_PASSWORD from CI sign the NSIS installer when
+    // WINDOWS_SIGNING_CERT_B64 secrets are configured (electron-builder default).
     target: [
       {
         target: 'nsis',
