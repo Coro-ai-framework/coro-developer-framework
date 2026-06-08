@@ -76,6 +76,30 @@ describe('createMcpToolHandlers — job control & signals', () => {
     await h.log({ message: 'Step done' })
     expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith('job-mcp-test', 'Step done')
   })
+
+  it('goto_phase accepts a declared phase', async () => {
+    ctx.declaredPhases = ['planning', 'coding', 'review-and-verify']
+    const h = createMcpToolHandlers(ctx, signals)
+    const out = parseJson(await h.goto_phase({ phase: 'review-and-verify' })) as Record<string, unknown>
+    expect(signals.nextPhase).toBe('review-and-verify')
+    expect(out['goingToPhase']).toBe('review-and-verify')
+  })
+
+  it('goto_phase rejects an undeclared phase without setting nextPhase', async () => {
+    ctx.declaredPhases = ['planning', 'coding', 'review-and-verify']
+    const h = createMcpToolHandlers(ctx, signals)
+    const out = await h.goto_phase({ phase: 'review' })
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toContain('review')
+    expect(out.content[0].text).toContain('review-and-verify')
+    expect(signals.nextPhase).toBeUndefined()
+  })
+
+  it('goto_phase is permissive when declaredPhases is unset', async () => {
+    const h = createMcpToolHandlers(ctx, signals)
+    await h.goto_phase({ phase: 'custom-phase' })
+    expect(signals.nextPhase).toBe('custom-phase')
+  })
 })
 
 // ── Legacy bb_*/gh_*/jira_* shims removed in S6 ─────────────────────────────

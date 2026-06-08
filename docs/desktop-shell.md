@@ -15,10 +15,11 @@ packaged runtime boundaries before we add the Electron package itself.
 
 ## Runner Launch Contract
 
-The desktop shell launches the packaged runner through a bundled Node runtime.
+The desktop shell launches the packaged runner through the signed Electron
+binary in Node mode (`ELECTRON_RUN_AS_NODE=1`).
 
 - Working directory: the packaged runner root under `resources/coro/runner/`
-- Command: `node dist/cli/index.js start --port <port> --no-open`
+- Command: `<electron-exec> dist/cli/index.js start --port <port> --no-open`
 - Optional config override: `--config <path>`
 - Required env:
   - `CORO_NO_OPEN=1`
@@ -36,8 +37,6 @@ Phase 1 locks the packaged resources directory to this tree:
 ```text
 <resources>/
 └── coro/
-    ├── bin/
-    │   └── node
     ├── dashboard/
     │   └── dist/
     └── runner/

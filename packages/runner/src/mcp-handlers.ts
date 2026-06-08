@@ -989,6 +989,13 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
     // Job control
     goto_phase: async ({ phase }: { phase: string }) => {
+      const declared = ctx.declaredPhases
+      if (declared?.length && !declared.includes(phase)) {
+        return mcpError(
+          `goto_phase: '${phase}' is not declared in this workflow. ` +
+            `Valid phases: ${declared.join(', ')}`,
+        )
+      }
       signals.nextPhase = phase
       return text({ goingToPhase: phase })
     },

@@ -16,8 +16,6 @@ const stagingRoot = path.join(os.tmpdir(), `coro-desktop-staging-${process.pid}`
 const runnerDeployDir = path.join(stagingRoot, 'runner')
 const runnerTargetDir = path.join(appResourcesRoot, 'runner')
 const dashboardTargetDir = path.join(appResourcesRoot, 'dashboard', 'dist')
-const nodeTargetDir = path.join(appResourcesRoot, 'bin')
-const nodeTargetPath = path.join(nodeTargetDir, process.platform === 'win32' ? 'node.exe' : 'node')
 const runnerSourceDir = path.join(workspaceRoot, 'packages', 'runner')
 const dashboardSourceDir = path.join(workspaceRoot, 'packages', 'dashboard', 'dist')
 const intelligenceSourceDir = path.join(workspaceRoot, 'packages', 'intelligence-base')
@@ -79,10 +77,6 @@ mkdirSync(resourcesRoot, { recursive: true })
 prepareRunnerBundle(runnerDeployDir)
 cpSync(runnerDeployDir, runnerTargetDir, { recursive: true })
 cpSync(dashboardSourceDir, dashboardTargetDir, { recursive: true })
-
-mkdirSync(nodeTargetDir, { recursive: true })
-copyFileSync(process.execPath, nodeTargetPath)
-chmodSync(nodeTargetPath, 0o755)
 
 rmSync(stagingRoot, { recursive: true, force: true })
 
@@ -186,6 +180,44 @@ function prepareRunnerBundle(runnerRoot) {
   rmSync(path.join(runnerRoot, 'node_modules', '.bin'), { recursive: true, force: true })
   rmSync(path.join(runnerRoot, 'vendor'), { recursive: true, force: true })
   rmSync(path.join(runnerRoot, 'package-lock.json'), { recursive: true, force: true })
+
+  assertClaudeSdkPlatformBinary(runnerRoot)
+}
+
+function assertClaudeSdkPlatformBinary(runnerRoot) {
+  const platform = process.platform
+  const arch = process.arch
+  if (
+    (platform !== 'darwin' && platform !== 'linux' && platform !== 'win32') ||
+    (arch !== 'x64' && arch !== 'arm64')
+  ) {
+    console.warn(
+      `desktop-electron: skipping Claude SDK platform binary check on unsupported host ${platform}/${arch}`,
+    )
+    return
+  }
+
+  const platformFolder = `claude-agent-sdk-${platform}-${arch}`
+  const binaryName = platform === 'win32' ? 'claude.exe' : 'claude'
+  const binaryPath = path.join(
+    runnerRoot,
+    'node_modules',
+    '@anthropic-ai',
+    platformFolder,
+    binaryName,
+  )
+
+  try {
+    readFileSync(binaryPath)
+  } catch {
+    console.error(
+      `::error::Desktop runner bundle is missing Claude Agent SDK binary for ${platform}/${arch}. ` +
+        `Expected: ${binaryPath}. Re-run prepare-resources on a native ${platform} build host.`,
+    )
+    process.exit(1)
+  }
+
+  console.log(`desktop-electron: verified Claude SDK platform binary at ${binaryPath}`)
 }
 
 /**

@@ -28,9 +28,14 @@
       publishAutoUpdate: true,
     },
   ],
+  afterSign: 'scripts/verify-mac-signing.mjs',
   mac: {
     category: 'public.app-category.developer-tools',
     icon: 'dist/icon.icns',
+    hardenedRuntime: true,
+    gatekeeperAssess: false,
+    entitlements: 'build/entitlements.mac.plist',
+    entitlementsInherit: 'build/entitlements.mac.plist',
     target: [
       {
         target: 'dmg',
@@ -44,6 +49,9 @@
   },
   win: {
     icon: 'dist/icon.ico',
+    // CSC_LINK / CSC_KEY_PASSWORD from CI sign the NSIS installer and app
+    // binaries when WINDOWS_SIGNING_CERT_B64 secrets are configured.
+    signingHashAlgorithms: ['sha256'],
     target: [
       {
         target: 'nsis',

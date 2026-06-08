@@ -328,6 +328,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     tempoClient: ctx.tempoClient,
     plugins: ctx.plugins,
     logger,
+    declaredPhases: workflowConfig?.phases.map(p => p.name),
   }
 
   const signals: PhaseSignals = {}
@@ -435,6 +436,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         if (reloaded) {
           workflowConfig = reloaded.config
           workflowConfigPath = liveJob.workflowPath
+          toolCtx.declaredPhases = workflowConfig.phases.map(p => p.name)
           logger.info(
             {
               jobId: liveJob.id,
@@ -495,7 +497,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // that verbatim instead — it carries the event payload the agent
       // needs to react to.
       const jobWorkingDir = path.join(settings.paths.workingDir, liveJob.id)
-      const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(liveJob, jobWorkingDir)
+      const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(
+        liveJob,
+        jobWorkingDir,
+        Date.now(),
+        workflowConfig?.phases.map(p => p.name),
+      )
 
       // Clear pendingPrompt immediately so it isn't replayed on the next turn.
       if (liveJob.pendingPrompt) {

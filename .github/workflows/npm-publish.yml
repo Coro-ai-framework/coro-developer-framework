@@ -25,16 +25,17 @@ permissions:
   id-token: write
 
 jobs:
-  publish:
-    name: Publish @coro-ai packages
+  prepare:
+    name: Build and stage runner tarball
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      NPM_CONFIG_PROVENANCE: "true"
+    outputs:
+      publish_version: ${{ steps.resolve_version.outputs.publish_version }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve release version
+        id: resolve_version
         run: |
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
@@ -53,6 +54,7 @@ jobs:
           console.log(`Resolved publish version: ${version}`)
           NODE
           echo "PUBLISH_VERSION=$version" >> "$GITHUB_ENV"
+          echo "publish_version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -81,6 +83,79 @@ jobs:
       - name: Verify npm pack tarballs
         run: pnpm run verify:npm-pack
 
+      - name: Stage runner for npm publish
+        run: node scripts/prepare-runner-npm-publish.mjs
+
+      - name: Upload staged runner artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-npm-publish-${{ steps.resolve_version.outputs.publish_version }}
+          retention-days: 7
+          path: packages/runner/.npm-publish/
+
+  verify-global-install:
+    name: Verify global install (${{ matrix.os }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Download staged runner artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runner-npm-publish-${{ needs.prepare.outputs.publish_version }}
+          path: packages/runner/.npm-publish
+
+      - name: Verify Claude CLI resolves after global install
+        run: node scripts/verify-runner-global-install.mjs
+
+  publish:
+    name: Publish @coro-ai packages
+    needs: [prepare, verify-global-install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NPM_CONFIG_PROVENANCE: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        run: echo "PUBLISH_VERSION=${{ needs.prepare.outputs.publish_version }}" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply publish version to workspace packages
+        run: node scripts/set-publish-versions.mjs "$PUBLISH_VERSION"
+
+      - name: Build publishable packages
+        run: pnpm run build:publishable
+
+      - name: Download staged runner artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runner-npm-publish-${{ needs.prepare.outputs.publish_version }}
+          path: packages/runner/.npm-publish
+
       - name: Verify npm credentials
         if: github.event_name == 'push' || inputs.dry_run == false
         env:
@@ -100,7 +175,6 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          node scripts/prepare-runner-npm-publish.mjs
           pnpm -r publish --access public --no-git-checks --provenance \
             --filter @coro-ai/llm-anthropic \
             --filter @coro-ai/llm-openai \
@@ -116,6 +190,7 @@ jobs:
             echo
             echo "- Version: \`${PUBLISH_VERSION}\`"
             echo "- Built and packed all packages in \`scripts/publish-packages.json\`"
+            echo "- Verified global install on Windows and macOS"
             echo "- Re-run with **dry_run: false** or push tag \`npm/v${PUBLISH_VERSION}\` to publish"
             echo
             echo 'After publish, install with:'

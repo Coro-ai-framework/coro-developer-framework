@@ -71,9 +71,12 @@ export class RunnerSidecar {
       env: process.env,
     })
 
-    const child = spawn(layout.nodeExecutable, launchSpec.commandArgs, {
+    const child = spawn(process.execPath, launchSpec.commandArgs, {
       cwd: layout.runnerDir,
-      env: launchSpec.env,
+      env: {
+        ...launchSpec.env,
+        ELECTRON_RUN_AS_NODE: '1',
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     this.child = child
@@ -127,9 +130,18 @@ export class RunnerSidecar {
   }
 
   formatStartupError(message: string): string {
+    const parts = [message]
+    const remediation = buildStartupRemediation(message, this.recentStderrLines.join('\n'))
+    if (remediation) {
+      parts.push('', remediation)
+    }
+
     const stderr = this.recentStderrLines.join('\n').trim()
-    if (!stderr) return message
-    return `${message}\n\nRunner stderr:\n${stderr}`
+    if (stderr) {
+      parts.push('', 'Runner stderr:', stderr)
+    }
+
+    return parts.join('\n')
   }
 
   private attachLogStream(child: RunnerChildProcess, source: 'stdout' | 'stderr'): void {
@@ -237,4 +249,53 @@ function delay(ms: number): Promise<void> {
 
 export function resolveLocalResourcesRoot(currentDir: string): string {
   return path.join(currentDir, 'resources')
+}
+
+function buildStartupRemediation(message: string, stderr: string): string | null {
+  const combined = `${message}\n${stderr}`.toLowerCase()
+
+  if (combined.includes('desktop resource layout is incomplete') || combined.includes('missing paths:')) {
+    const missingMatch = /missing paths?: ([^\n]+)/i.exec(`${message}\n${stderr}`)
+    const missingDetail = missingMatch?.[1]?.trim()
+    return [
+      'What to try:',
+      missingDetail ? `- Missing file(s): ${missingDetail}` : '- Bundled runner resources are incomplete.',
+      '- Quit Coro and reinstall from the latest release.',
+      '- If the problem persists, delete the app and install again (do not copy partial folders).',
+    ].join('\n')
+  }
+
+  if (
+    combined.includes('could not locate the claude agent sdk') ||
+    combined.includes('claude-agent-sdk') ||
+    combined.includes('claude_code_cli_path')
+  ) {
+    return [
+      'What to try:',
+      '- Reinstall Coro from the latest signed release.',
+      process.platform === 'win32'
+        ? '- If Windows Defender quarantined claude.exe, add an exclusion for your Coro install folder (typically %LOCALAPPDATA%\\Programs\\Coro\\) or restore the file from quarantine.'
+        : '- If macOS blocked the Claude binary, allow it in System Settings → Privacy & Security.',
+      '- Advanced: set environment variable CLAUDE_CODE_CLI_PATH to a working claude binary before launching Coro.',
+    ].join('\n')
+  }
+
+  if (combined.includes('did not report healthy')) {
+    return [
+      'What to try:',
+      '- Wait a moment and relaunch — first boot can take up to a minute.',
+      '- Check that no other app is blocking port 3000 on 127.0.0.1.',
+      '- Reinstall if the runner never becomes healthy.',
+    ].join('\n')
+  }
+
+  if (combined.includes('eacces') || combined.includes('eperm') || combined.includes('operation not permitted')) {
+    return [
+      'What to try:',
+      '- Your security software may be blocking Coro from starting a helper process.',
+      '- Add Coro to your antivirus/Defender allow list and relaunch.',
+    ].join('\n')
+  }
+
+  return null
 }

@@ -119,9 +119,11 @@ The Windows packaging baseline now includes:
 2. Windows packaging scripts in `packages/desktop-electron/package.json`.
 3. Cross-platform icon generation that emits a Windows `.ico` asset as part of
   the desktop build.
-4. A packaged sidecar resource layout that resolves the bundled Node binary
-   correctly on Windows, where the executable will be `node.exe`.
+4. A packaged sidecar that runs the runner via the signed Electron binary in
+   Node mode (`ELECTRON_RUN_AS_NODE=1`) — no separate unsigned `node.exe` copy.
 5. Windows validation and release jobs in GitHub Actions.
+6. A post-bundle assertion that the platform-specific Claude Agent SDK binary
+   (`claude` / `claude.exe`) is present in the runner resource tree.
 
 The remaining code-level validation work is behavioral rather than structural:
 
@@ -131,16 +133,47 @@ The remaining code-level validation work is behavioral rather than structural:
 
 ### Required Release Infrastructure
 
-Windows production releases will also need signing before they should be treated
-as first-class downloadable builds.
+Windows production releases need code signing before they should be treated as
+first-class downloadable builds. Unsigned installers trigger Windows SmartScreen
+("Windows protected your PC") and Microsoft Defender may quarantine the bundled
+`claude.exe` native binary on first run.
 
-That implies:
+The runner binds **loopback only** (`127.0.0.1`) — Windows Firewall does not
+prompt for loopback listeners and should not be the primary install blocker.
 
-- a code-signing certificate suitable for Windows executables
-- CI secret material for the certificate and password
-- runner support for secure certificate import during the release job
-- post-build validation that SmartScreen reputation and signature verification
-  are acceptable for distribution
+#### Signed path (recommended)
+
+When signing secrets are configured, `.github/workflows/desktop-release.yml`
+exports `CSC_LINK` and `CSC_KEY_PASSWORD` for electron-builder, which signs the
+NSIS installer and application binaries.
+
+Certificate options:
+
+1. **Azure Trusted Signing** (recommended for new setups) — cloud-hosted
+   Authenticode signing without a physical USB token. Configure the signing
+   account in Azure, export credentials for CI, and wire them into the
+   workflow's `CSC_*` environment (same slots electron-builder already reads).
+2. **OV/EV `.pfx` certificate** — use the existing repository secrets:
+   - `WINDOWS_SIGNING_CERT_B64` (base64-encoded `.pfx`)
+   - `WINDOWS_SIGNING_CERT_PASSWORD`
+
+After the first signed releases accumulate download reputation, SmartScreen
+warnings diminish for most users.
+
+#### Unsigned path (fallback / development)
+
+When signing secrets are absent, the workflow publishes unsigned artifacts
+(`WINDOWS_SIGNING_ENABLED=false`). Operators and early testers should:
+
+1. On SmartScreen, choose **More info → Run anyway** for the installer.
+2. If Defender quarantines `claude.exe` after install, add a Defender exclusion
+   for the install directory (typically `%LOCALAPPDATA%\Programs\Coro\`) or
+   restore the file from quarantine and re-run the installer.
+3. As a last resort, set `CLAUDE_CODE_CLI_PATH` to a working `claude.exe` on
+   the machine before starting Coro.
+
+Unsigned builds are suitable for internal CI validation only — not public
+distribution.
 
 ### Validation Checklist For Windows
 
@@ -165,12 +198,24 @@ Before calling Windows packaging complete, we should verify:
   immediately because updater metadata and artifact coverage must be confirmed for
   both targets.
 
+## macOS Hardened Runtime
+
+Production mac builds use `build/entitlements.mac.plist` with hardened runtime
+enabled. The sidecar runs via `ELECTRON_RUN_AS_NODE=1` and spawns the bundled
+`claude` binary from `extraResources` — both require entitlements that disable
+library validation for helper binaries.
+
+`scripts/verify-mac-signing.mjs` runs as an `afterSign` hook when `CSC_LINK` is
+set, verifying codesign on the app bundle and the bundled Claude binary.
+
+**Note:** macOS releases target **arm64 only** today. Intel Macs are not
+supported by the current build matrix.
+
 ## Suggested Implementation Order
 
-1. Use the new Windows validation job to confirm unsigned `x64` packaging stays
-  healthy on repository changes.
-2. Add Windows signing secrets and confirm signed publish behavior in
-  `.github/workflows/desktop-release.yml`.
+1. Use the Windows validation job to confirm `x64` packaging stays healthy.
+2. Add Windows signing (Azure Trusted Signing or `.pfx` secrets) and confirm
+  signed publish behavior in `.github/workflows/desktop-release.yml`.
 3. Verify updater behavior across two real Windows releases.
 4. Evaluate whether Windows `arm64` is worth adding.
 

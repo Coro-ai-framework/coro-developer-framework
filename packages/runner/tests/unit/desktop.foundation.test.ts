@@ -73,7 +73,6 @@ describe('desktop resource layout', () => {
     tempDirs.push(root)
 
     const required = [
-      path.join(root, DESKTOP_RESOURCE_SEGMENTS.nodeBinDir),
       path.join(root, DESKTOP_RESOURCE_SEGMENTS.runnerDir, 'dist', 'cli'),
       path.join(root, DESKTOP_RESOURCE_SEGMENTS.dashboardDistDir),
     ]
@@ -81,8 +80,6 @@ describe('desktop resource layout', () => {
       fs.mkdirSync(dir, { recursive: true })
     }
 
-    const nodeExecutable = process.platform === 'win32' ? 'node.exe' : 'node'
-    fs.writeFileSync(path.join(root, DESKTOP_RESOURCE_SEGMENTS.nodeBinDir, nodeExecutable), '')
     fs.writeFileSync(path.join(root, DESKTOP_RESOURCE_SEGMENTS.runnerDir, 'package.json'), '{}')
     fs.writeFileSync(path.join(root, DESKTOP_RESOURCE_SEGMENTS.runnerDir, 'dist', 'cli', 'index.js'), '')
     fs.writeFileSync(path.join(root, DESKTOP_RESOURCE_SEGMENTS.dashboardDistDir, 'index.html'), '<html></html>')

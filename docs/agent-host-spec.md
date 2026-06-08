@@ -99,7 +99,7 @@ packages/runner/
     ├── mcp-handlers.ts         ← Tool handler implementations
     ├── workflow-parser.ts      ← YAML front-matter + phase config
     ├── config/                 ← Settings type + LocalConfig schema
-    ├── claude-code-path.ts     ← Resolves bundled Claude Code CLI
+    ├── @coro-ai/llm-anthropic  ← resolveClaudeCodeCliPath() in packages/llm-anthropic/src/cli-path.ts
     └── dashboard-dist.ts       ← Resolves built dashboard assets
 ```
 

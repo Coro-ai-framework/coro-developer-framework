@@ -109,9 +109,10 @@ export function buildJobCompletionBlockPrompt(
   )
   lines.push(
     '  3. Use `goto_phase` to re-enter the phase that owns the remaining work ' +
-      '(e.g. `coding` if implementation is incomplete, `review` if PRs are open ' +
-      'and awaiting merge). Do NOT end your turn expecting the job to finish ' +
-      'while work items are still pending or in-progress.',
+      '(e.g. `coding` if implementation is incomplete, or the review/gatekeeper ' +
+      'phase for your workflow if PRs are open and awaiting merge). Do NOT end ' +
+      'your turn expecting the job to finish while work items are still pending ' +
+      'or in-progress.',
   )
   lines.push(
     `  4. If you genuinely cannot make progress, call \`escalate\` with a clear ` +

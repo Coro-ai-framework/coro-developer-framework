@@ -66,7 +66,19 @@ export function buildOpenPrsKickoffBlock(job: Job, nowMs = Date.now()): string {
   return lines.join('\n')
 }
 
-export function buildCodingPreflightWarning(job: Job): string {
+export function resolveNextDeclaredPhase(
+  currentPhase: string,
+  declaredPhases: string[],
+): string | null {
+  const idx = declaredPhases.indexOf(currentPhase)
+  if (idx === -1 || idx === declaredPhases.length - 1) return null
+  return declaredPhases[idx + 1] ?? null
+}
+
+export function buildCodingPreflightWarning(
+  job: Job,
+  declaredPhases?: string[],
+): string {
   if (job.phase !== 'coding' || !job.currentWorkItem) return ''
 
   const openForWi = openPrMappings(job).filter(
@@ -75,11 +87,18 @@ export function buildCodingPreflightWarning(job: Job): string {
   if (openForWi.length === 0) return ''
 
   const prList = openForWi.map(pm => `#${pm.prId}`).join(', ')
+  const reviewPhase = declaredPhases?.length
+    ? resolveNextDeclaredPhase('coding', declaredPhases)
+    : null
+  const handoffHint = reviewPhase
+    ? `end your turn to advance to \`${reviewPhase}\` (the review/gatekeeper phase for this workflow)`
+    : 'end your turn to advance to the review/gatekeeper phase for this workflow'
+
   return [
     '[coding-preflight] Heads up: work item "' + job.currentWorkItem + '" already has ' +
       `${openForWi.length} open PR(s): ${prList}.`,
-    'Unless you are responding to review feedback on these exact PRs, hand off to review via ' +
-      '`goto_phase("review")` so the merge gatekeeper can drive this work item to completion.',
+    `Unless you are responding to review feedback on these exact PRs, ${handoffHint} ` +
+      'so the merge gatekeeper can drive this work item to completion.',
     'Opening new PRs while these are unmerged compounds the review backlog.',
     '',
   ].join('\n')
@@ -89,8 +108,9 @@ export function buildPhaseKickoffMessage(
   job: Job,
   jobWorkingDir: string,
   nowMs = Date.now(),
+  declaredPhases?: string[],
 ): string {
-  const preflight = buildCodingPreflightWarning(job)
+  const preflight = buildCodingPreflightWarning(job, declaredPhases)
   const workspace = buildWorkspaceLayoutKickoffBlock(
     resolveJobWorkspaceLayout(job, jobWorkingDir),
   )

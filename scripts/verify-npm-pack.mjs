@@ -64,7 +64,35 @@ function verifyRunnerTarballRuntimeDeps(outDir, pkg) {
       process.exit(1)
     }
   }
+  if (!listing.includes('package/node_modules/@anthropic-ai/claude-agent-sdk/package.json')) {
+    console.error(
+      '::error::Runner tarball must bundle @anthropic-ai/claude-agent-sdk JS package',
+    )
+    process.exit(1)
+  }
+  if (listing.includes('package/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/')) {
+    console.error(
+      '::error::Runner tarball must not bundle platform-specific claude-agent-sdk-* packages',
+    )
+    process.exit(1)
+  }
+  if (!listing.includes('package/scripts/install-claude-sdk-platform.mjs')) {
+    console.error('::error::Runner tarball missing postinstall platform CLI script')
+    process.exit(1)
+  }
+  const tarballPkg = JSON.parse(
+    execFileSync('tar', ['-xOf', tarball, 'package/package.json'], { encoding: 'utf8' }),
+  )
+  if (!tarballPkg.dependencies?.['@anthropic-ai/claude-agent-sdk']) {
+    console.error(
+      '::error::Runner package.json must declare @anthropic-ai/claude-agent-sdk as a dependency',
+    )
+    process.exit(1)
+  }
   console.log('runner tarball includes vendored production node_modules (pino, express, …)')
+  console.log(
+    `runner tarball bundles @anthropic-ai/claude-agent-sdk@${tarballPkg.dependencies['@anthropic-ai/claude-agent-sdk']} JS; postinstall fetches the platform claude binary`,
+  )
 }
 
 /** Matches `npm pack` / `npm publish` tarball naming for scoped and unscoped packages. */

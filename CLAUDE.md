@@ -290,7 +290,7 @@ coro/                                    ← workspace root
     │   │   └── commands/                ← start, job, login, init, runner, logs, status, …
     │   └── src/
     │       ├── dashboard-dist.ts        ← Resolves built dashboard assets (shared helper)
-    │       ├── claude-code-path.ts      ← Resolves bundled Claude Code CLI
+    │       ├── (llm-anthropic cli-path) ← Claude Agent SDK CLI resolved by @coro-ai/llm-anthropic
     │       ├── mcp-server.ts            ← In-process MCP server (Coro domain tools)
     │       ├── mcp-handlers.ts
     │       ├── workflow-parser.ts

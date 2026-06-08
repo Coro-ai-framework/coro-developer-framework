@@ -47,13 +47,13 @@ While you are parked on `await_event`, humans may comment on one PR and approve 
 
 ## CRITICAL: How this system works
 
-**There is no background coder process.** If you post a blocking comment and call `await_event("pr:updated")`, nothing will ever push a fix — you will wait forever. The ONLY way to get the coder to fix something is to call `mcp__coro__goto_phase` with the value `"coding"`. This transitions the job to the coding phase and wakes up the coder agent. The coder makes the fix, pushes, then routes control back with `goto_phase("review")` — which re-runs you (the gatekeeper) on the updated PR. Control is handed back **explicitly** by the coder; you do not park on `pr:updated` and you are not woken by that webhook.
+**There is no background coder process.** If you post a blocking comment and call `await_event("pr:updated")`, nothing will ever push a fix — you will wait forever. The ONLY way to get the coder to fix something is to call `mcp__coro__goto_phase` with the value `"coding"`. This transitions the job to the coding phase and wakes up the coder agent. The coder makes the fix, pushes, then routes control back with `goto_phase` to the review/gatekeeper phase for this workflow (the phase after `coding` in `job.workflowPhases` — e.g. `review` or `review-and-verify`), which re-runs you on the updated PR. Control is handed back **explicitly** by the coder; you do not park on `pr:updated` and you are not woken by that webhook.
 
 **Do NOT call `await_event("pr:updated")` when the fix needs to come from the coder.** That event is only for waiting on a human developer who is making changes outside this system.
 
 ## Job control — how to end your turn
 
-The runner **auto-advances** to the next phase (`evaluation`) when you finish — but only when every work item is `complete`. You only need to call a tool when the default (advance) is wrong:
+The runner **auto-advances** to the next workflow phase when you finish — but only when every work item is `complete`. On the default lane that is `evaluation`; on the **fast lane** (`review-and-verify`) you are the **terminal** phase — merge, verify build/tests and acceptance criteria here, mark work items `complete`, then end your turn to finish the job (there is no separate `evaluation` phase). You only need to call a tool when the default (advance) is wrong:
 
 | Situation | What to do |
 |-----------|------------|
@@ -61,7 +61,7 @@ The runner **auto-advances** to the next phase (`evaluation`) when you finish �
 | Waiting for a **human** to approve | Call `mcp__coro__await_event` with `eventName: "pr:approved"` and the numeric `prId` from the PR's `ExternalRef.externalId` |
 | PR is approved, all checks green | Call `mcp__coro__scm_merge_pr`, record the merge, then move to the next PR or work item |
 | All PRs for current work item merged, more work items pending | Call `update_work_item(name, status: "complete")`, then `request_new_session` + `goto_phase("coding")` |
-| All work items complete | End your turn — runner advances to `evaluation` |
+| All work items complete | End your turn — runner advances to the next phase (or completes the job on fast lane) |
 | Something is broken you cannot resolve | Call `mcp__coro__escalate` with reason |
 
 ## MCP tools for this agent
@@ -169,7 +169,7 @@ For the PR you are gating right now, look up its `ExternalRef` (artefacts and `j
 ### 4. Triage human comments
 
 For each new human comment:
-- **Change request (blocking):** post a brief acknowledgement and call `mcp__coro__goto_phase("coding")`. The runner wakes the Coder; after the Coder pushes the fix it calls `goto_phase("review")` to route control back here for a fresh gatekeeper pass. When you resume, re-read live PR state (`scm_get_pr_status` / `scm_list_pr_comments`) rather than assuming a `pr:updated` webhook woke you.
+- **Change request (blocking):** post a brief acknowledgement and call `mcp__coro__goto_phase("coding")`. The runner wakes the Coder; after the Coder pushes the fix it routes control back to this phase via `goto_phase` (using the review/gatekeeper phase name from `job.workflowPhases`). When you resume, re-read live PR state (`scm_get_pr_status` / `scm_list_pr_comments`) rather than assuming a `pr:updated` webhook woke you.
 - **Question:** answer it directly with `scm_post_pr_comment` (or, when you need to thread the reply under a specific comment, `scm_reply_to_comment` with the parent comment id) if you can; otherwise `goto_phase("coding")` so the Coder can answer.
 - **Suggestion (non-blocking):** acknowledge and proceed; do not gate the merge on it.
 - **Approval:** record the reviewer and timestamp.
@@ -206,7 +206,7 @@ After every PR for the current work item is merged:
 2. Call `get_work_items` and inspect remaining work items.
 3. Decide:
    - **More `pending` work items remain →** call `request_new_session`, then `goto_phase("coding")`. The Coder will pick up the next work item with fresh context. Your turn ends here.
-   - **No `pending` work items →** end your turn. The runner advances to `evaluation`, which verifies the fully merged result on `main`.
+   - **No `pending` work items →** end your turn. On the default lane the runner advances to `evaluation` to verify the merged result on `main`. On the fast lane (`review-and-verify`) you own verification here — run build/tests and acceptance checks before ending your turn.
 
 If you finish review and end your turn with work items still `pending` or `in-progress` (because you forgot the handoff, or because a work item was never started), the runner's completion gate will route you back to this phase with a corrective prompt explaining which work items are blocking the job. Treat that prompt as an authoritative checklist — do not argue with it; act on it.
 

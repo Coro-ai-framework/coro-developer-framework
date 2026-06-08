@@ -77,7 +77,20 @@ describe('buildCodingPreflightWarning', () => {
     expect(warn).toContain('wi-1')
     expect(warn).toContain('#7')
     expect(warn).not.toContain('#9')
-    expect(warn).toContain('goto_phase("review")')
+    expect(warn).toContain('end your turn')
+    expect(warn).toContain('review/gatekeeper')
+  })
+
+  it('names the workflow-specific review phase when declaredPhases is provided', () => {
+    const warn = buildCodingPreflightWarning(makeJob({
+      phase: 'coding',
+      currentWorkItem: 'wi-1',
+      prMappings: [
+        { prId: 7, workItem: 'wi-1', repoSlug: 'r', openedAt: '2026-01-01' },
+      ],
+    }), ['planning', 'coding', 'review-and-verify'])
+    expect(warn).toContain('`review-and-verify`')
+    expect(warn).not.toContain('goto_phase("review")')
   })
 
   it('is absent outside coding or without currentWorkItem', () => {

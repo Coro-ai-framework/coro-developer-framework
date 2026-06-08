@@ -78,6 +78,8 @@ export interface CurrentPhaseContext {
   mcpServer: McpServerDescriptor
   /** Plugin MCP servers attached to this phase. */
   pluginMcpServers: Record<string, PluginMcpServerConfig>
+  /** Phase names from the active workflow; used to validate goto_phase targets. */
+  declaredPhases?: string[]
 }
 
 // ── Job-control signal types ──────────────────────────────────────────────────

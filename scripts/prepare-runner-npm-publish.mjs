@@ -6,7 +6,7 @@
  * Output: packages/runner/.npm-publish/  (safe to delete and regenerate)
  */
 
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +20,8 @@ const stagingRoot = path.join(runnerSource, '.npm-publish')
 
 const bundled = manifest.runnerBundle
 const bundledByName = new Map(bundled.map(entry => [entry.name, entry]))
+/** Resolved at install time on the consumer's OS — must not be bundled (platform-specific optional deps). */
+const CLAUDE_SDK_PKG = '@anthropic-ai/claude-agent-sdk'
 
 rmSync(stagingRoot, { recursive: true, force: true })
 mkdirSync(stagingRoot, { recursive: true })
@@ -165,18 +167,36 @@ try {
 // npm ignores `node_modules` in `files` unless dependencies are bundled.
 // A partial `bundledDependencies` list only packs those packages and their
 // transitive tree — direct deps like pino/express are omitted. Bundle all
-// production dependencies instead.
+// production dependencies EXCEPT the Claude Agent SDK, which ships a
+// platform-specific optional binary that must be resolved on the consumer's
+// host OS (npm cannot cross-install win32/darwin/linux variants in one tarball).
 const stagedPkgPath = path.join(stagingRoot, 'package.json')
 const stagedPkg = JSON.parse(readFileSync(stagedPkgPath, 'utf8'))
+
+const claudeSdkVersion = readResolvedClaudeSdkVersion(stagingRoot)
+removeClaudeSdkPlatformPackages(path.join(stagingRoot, 'node_modules'))
+
+mkdirSync(path.join(stagingRoot, 'scripts'), { recursive: true })
+copyFileSync(
+  path.join(root, 'scripts', 'install-claude-sdk-platform.mjs'),
+  path.join(stagingRoot, 'scripts', 'install-claude-sdk-platform.mjs'),
+)
+
 for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
   if (name.startsWith('@coro-ai/')) {
     stagedPkg.dependencies[name] = version
   }
 }
-stagedPkg.bundleDependencies = true
+stagedPkg.dependencies[CLAUDE_SDK_PKG] = claudeSdkVersion
+stagedPkg.scripts = {
+  ...(stagedPkg.scripts ?? {}),
+  postinstall: 'node scripts/install-claude-sdk-platform.mjs',
+}
+stagedPkg.files = ['dist', 'dashboard-dist', 'README.md', 'scripts', 'node_modules']
+stagedPkg.bundleDependencies = enumerateBundledDependencies(stagingRoot)
 writeFileSync(stagedPkgPath, `${JSON.stringify(stagedPkg, null, 2)}\n`)
 
-assertProductionNodeModules(stagingRoot)
+assertProductionNodeModules(stagingRoot, stagedPkg)
 
 console.log(`Prepared npm publish staging at ${stagingRoot}`)
 
@@ -209,8 +229,87 @@ function materializeLocalDependency(sourceDir, installedDir) {
   cpSync(sourceDir, installedDir, { recursive: true })
 }
 
+function readResolvedClaudeSdkVersion(stagingRoot) {
+  const pkgJsonPath = path.join(
+    stagingRoot,
+    'node_modules',
+    '@anthropic-ai',
+    'claude-agent-sdk',
+    'package.json',
+  )
+  try {
+    return JSON.parse(readFileSync(pkgJsonPath, 'utf8')).version
+  } catch {
+    console.error(
+      `::error::Could not read resolved ${CLAUDE_SDK_PKG} version from staging node_modules. ` +
+        'Ensure @coro-ai/llm-anthropic is built and npm install succeeded.',
+    )
+    process.exit(1)
+  }
+}
+
+/** Remove platform-specific optional SDK packages; keep the main JS SDK package. */
+function removeClaudeSdkPlatformPackages(nodeModulesRoot) {
+  if (!existsSync(nodeModulesRoot)) return
+
+  const anthropicScope = path.join(nodeModulesRoot, '@anthropic-ai')
+  if (existsSync(anthropicScope)) {
+    for (const entry of readdirSync(anthropicScope, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.startsWith('claude-agent-sdk-')) {
+        rmSync(path.join(anthropicScope, entry.name), { recursive: true, force: true })
+      }
+    }
+  }
+
+  for (const entry of readdirSync(nodeModulesRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === '.bin' || entry.name === '@anthropic-ai') continue
+
+    if (entry.name.startsWith('@')) {
+      const scopePath = path.join(nodeModulesRoot, entry.name)
+      for (const pkg of readdirSync(scopePath, { withFileTypes: true })) {
+        if (!pkg.isDirectory()) continue
+        const nested = path.join(scopePath, pkg.name, 'node_modules')
+        if (existsSync(nested)) removeClaudeSdkPlatformPackages(nested)
+      }
+      continue
+    }
+
+    const nested = path.join(nodeModulesRoot, entry.name, 'node_modules')
+    if (existsSync(nested)) removeClaudeSdkPlatformPackages(nested)
+  }
+}
+
+/** Top-level node_modules package names to ship in the tarball (SDK excluded). */
+function enumerateBundledDependencies(stagingRoot) {
+  const nodeModules = path.join(stagingRoot, 'node_modules')
+  const names = []
+  for (const entry of readdirSync(nodeModules, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === '.bin') continue
+    if (entry.name.startsWith('@')) {
+      const scopePath = path.join(nodeModules, entry.name)
+      for (const pkg of readdirSync(scopePath, { withFileTypes: true })) {
+        if (pkg.isDirectory()) {
+          const fullName = `${entry.name}/${pkg.name}`
+          if (fullName !== CLAUDE_SDK_PKG) names.push(fullName)
+        }
+      }
+      continue
+    }
+    names.push(entry.name)
+  }
+  return names.sort()
+}
+
+function claudeSdkPlatformPackagesPresent(stagingRoot) {
+  const anthropicScope = path.join(stagingRoot, 'node_modules', '@anthropic-ai')
+  if (!existsSync(anthropicScope)) return false
+  return readdirSync(anthropicScope, { withFileTypes: true }).some(
+    entry => entry.isDirectory() && entry.name.startsWith('claude-agent-sdk-'),
+  )
+}
+
 /** Fail fast if the staging tree is missing runtime deps we know global installs omit. */
-function assertProductionNodeModules(stagingRoot) {
+function assertProductionNodeModules(stagingRoot, stagedPkg) {
   const required = ['pino', 'express', 'commander', '@coro-ai/llm-anthropic']
   const missing = []
   for (const name of required) {
@@ -223,6 +322,32 @@ function assertProductionNodeModules(stagingRoot) {
   }
   if (missing.length) {
     console.error(`::error::Staging node_modules is missing: ${missing.join(', ')}`)
+    process.exit(1)
+  }
+
+  if (!stagedPkg.dependencies?.[CLAUDE_SDK_PKG]) {
+    console.error(`::error::${CLAUDE_SDK_PKG} must be listed in staged dependencies for consumer install`)
+    process.exit(1)
+  }
+
+  const sdkMainDir = path.join(stagingRoot, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
+  try {
+    readFileSync(path.join(sdkMainDir, 'package.json'))
+  } catch {
+    console.error(`::error::${CLAUDE_SDK_PKG} main JS package must remain in staged node_modules`)
+    process.exit(1)
+  }
+
+  if (claudeSdkPlatformPackagesPresent(stagingRoot)) {
+    console.error(
+      `::error::Platform-specific claude-agent-sdk-* packages must be absent from staged node_modules (postinstall fetches them)`,
+    )
+    process.exit(1)
+  }
+
+  const postinstallScript = path.join(stagingRoot, 'scripts', 'install-claude-sdk-platform.mjs')
+  if (!existsSync(postinstallScript)) {
+    console.error('::error::Missing scripts/install-claude-sdk-platform.mjs in staging tree')
     process.exit(1)
   }
 }
