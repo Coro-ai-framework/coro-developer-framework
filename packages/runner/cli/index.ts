@@ -43,4 +43,6 @@ program.addCommand(runnerCommand)
 program.addCommand(campaignCommand)
 program.addCommand(pluginCommand)
 
-program.parse()
+// Desktop shell spawns the runner via ELECTRON_RUN_AS_NODE (argv[0] is the Electron
+// binary, not "node"). Tell Commander to always strip the executable + script path.
+program.parse(process.argv, { from: 'node' })

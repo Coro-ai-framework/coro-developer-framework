@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { Command } from 'commander'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -57,6 +58,23 @@ describe('desktop launch contract', () => {
         port: 0,
         dashboardDist: '/tmp/coro-dashboard',
       })).toThrow(/Desktop runner port/)
+  })
+
+  it('parses electron-as-node argv shape (desktop sidecar launch)', () => {
+    const program = new Command()
+    let invoked = false
+    program.command('start').action(() => {
+      invoked = true
+    })
+
+    const electronArgv = [
+      '/Applications/Coro.app/Contents/MacOS/Coro',
+      '/Applications/Coro.app/Contents/Resources/coro/runner/dist/cli/index.js',
+      'start',
+    ]
+
+    program.parse(electronArgv, { from: 'node' })
+    expect(invoked).toBe(true)
   })
 })
 
