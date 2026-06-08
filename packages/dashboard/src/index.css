@@ -195,3 +195,48 @@ select {
 .animate-pulse-slow {
   animation: pulse-slow 2.7s ease-in-out infinite;
 }
+
+@property --coro-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes border-travel {
+  to {
+    --coro-angle: 360deg;
+  }
+}
+
+.animate-border-travel::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--coro-angle),
+    transparent 0deg,
+    transparent 250deg,
+    var(--color-accent-400) 320deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: border-travel 2.4s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-border-travel::after {
+    display: none;
+  }
+
+  .animate-border-travel {
+    border-color: color-mix(in srgb, var(--color-accent-500) 30%, transparent);
+  }
+}

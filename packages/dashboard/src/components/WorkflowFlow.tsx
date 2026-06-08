@@ -1,21 +1,10 @@
 import type React from 'react'
 import { AlertTriangle, Check, ChevronRight, Hand, Hourglass, RotateCw } from 'lucide-react'
 import type { Artifact, Job, PhaseUsage, WorkflowPhase, WorkItem } from '../types'
+import { isRunningStatus, isWaitingStatus } from '../lib/status'
 import { cn } from '../lib/utils'
 
 export type PhaseState = 'complete' | 'in-progress' | 'awaiting-input' | 'pending'
-
-const TERMINAL_JOB_STATUSES = new Set([
-  'complete',
-  'failed',
-  'escalated',
-  'cancelled',
-  'canceled',
-])
-
-function isJobRunning(job: Job): boolean {
-  return !TERMINAL_JOB_STATUSES.has(job.status)
-}
 
 interface WorkflowFlowProps {
   job: Job
@@ -52,8 +41,8 @@ export function computePhaseState(
   if (thisIdx === -1) return 'pending'
 
   if (thisIdx === currentIdx) {
-    if (job.status === 'awaiting-developer-input') return 'awaiting-input'
     if (job.status === 'complete') return 'complete'
+    if (isWaitingStatus(job.status)) return 'awaiting-input'
     return 'in-progress'
   }
 
@@ -71,7 +60,11 @@ function nodeClasses(state: PhaseState, selected: boolean): string {
     case 'complete':
       return cn(base, ring, 'border-success-500/25 bg-success-500/8 hover:border-success-500/40')
     case 'in-progress':
-      return cn(base, ring, 'border-accent-500/30 bg-accent-500/10 hover:border-accent-500/45')
+      return cn(
+        base,
+        ring,
+        'border-transparent bg-accent-500/10 hover:bg-accent-500/15 animate-border-travel',
+      )
     case 'awaiting-input':
       return cn(base, ring, 'border-warning-500/30 bg-warning-500/10 hover:border-warning-500/45 animate-pulse-slow')
     case 'pending':
@@ -132,8 +125,8 @@ export default function WorkflowFlow({ job, phases, selectedPhase, onSelectPhase
   }
 
   return (
-    <div className="w-full overflow-x-auto">
-      <div className="flex min-w-max items-stretch gap-2 pb-1">
+    <div className="w-full overflow-x-auto py-1.5">
+      <div className="flex min-w-max items-stretch gap-2">
         {phases.map((phase, i) => {
           const state = computePhaseState(phase.name, phases, job)
           const selected = selectedPhase === phase.name
@@ -318,7 +311,6 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
 
   const rows = buildWorkItemRows(job)
   const knownPhaseNames = new Set(phases.map(p => p.name))
-  const jobRunning = isJobRunning(job)
 
   // Detect the "bundled delivery" pattern: at least one work item has
   // executions stamped to it, and one or more sibling items are also
@@ -385,7 +377,7 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
               {hasStarted ? (
                 <div className="flex flex-1 flex-wrap items-center gap-1.5">
                   {phaseExecCounts.map(({ name, count }) => {
-                    const isActivePhase = isCurrent && job.phase === name && jobRunning
+                    const isActivePhase = isCurrent && job.phase === name && isRunningStatus(job.status)
                     const isKnown = knownPhaseNames.has(name)
                     const state: 'complete' | 'in-progress' | 'pending' = isActivePhase
                       ? 'in-progress'
@@ -400,7 +392,7 @@ export function WorkItemsBreakdown({ job, phases, onSelectPhase }: WorkItemsBrea
                       />
                     )
                   })}
-                  {isCurrent && jobRunning && job.phase && !distinctPhases.includes(job.phase) ? (
+                  {isCurrent && isRunningStatus(job.status) && job.phase && !distinctPhases.includes(job.phase) ? (
                     <PhaseChip
                       phaseName={job.phase}
                       count={1}

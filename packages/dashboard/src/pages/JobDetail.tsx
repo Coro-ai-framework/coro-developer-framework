@@ -31,12 +31,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
 import { Badge } from '../components/ui/badge'
 import { cn } from '../lib/utils'
-import { formatDateTime, formatDuration, formatPreciseCurrency, formatRelativeTime, formatTokens } from '../lib/format'
+import { formatDuration, formatPreciseCurrency, formatRelativeTime, formatTokens } from '../lib/format'
 import {
   deriveJobDescription,
   deriveJobTitle,
   deriveWorkflowLabel,
-  getCurrentWorkItem,
   getRepoSlug,
   getReviewers,
   getRunDetailPath,
@@ -217,47 +216,6 @@ function ExpandableDescription({ description }: { description: string }) {
           <ChevronDown className={cn('size-4 transition-transform', expanded && 'rotate-180')} />
         </button>
       </div>
-    </div>
-  )
-}
-
-function HeaderMetricStrip({ job }: { job: Job }) {
-  return (
-    <div className="grid gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-2 xl:grid-cols-4">
-      <HeaderMetric label="Workflow" value={deriveWorkflowLabel(job.workflowPath)} detail={job.workflowPath} mono />
-      <HeaderMetric label="Phase" value={job.phase} detail={`Started ${formatDateTime(job.createdAt)}`} />
-      <HeaderMetric
-        label="Working on"
-        value={getCurrentWorkItem(job)}
-        detail={job.awaitingEvent ?? 'Live execution'}
-      />
-      <HeaderMetric
-        label="Spend"
-        value={formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
-        detail={`${job.prMappings?.length ?? 0} PR mappings`}
-      />
-    </div>
-  )
-}
-
-function HeaderMetric({
-  label,
-  value,
-  detail,
-  mono = false,
-}: {
-  label: string
-  value: string
-  detail?: string
-  mono?: boolean
-}) {
-  return (
-    <div className="bg-panel p-4">
-      <div className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">{label}</div>
-      <div className={cn('mt-1 line-clamp-2 text-sm text-fg', mono ? 'font-mono' : 'font-medium')}>
-        {value}
-      </div>
-      {detail ? <div className="mt-1 line-clamp-2 text-[11px] text-fg-subtle">{detail}</div> : null}
     </div>
   )
 }
@@ -490,9 +448,9 @@ function WorkflowSnapshotCard({
             <CardDescription>{phases.length} phases · click any to inspect</CardDescription>
           </div>
           <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-            <span>current</span>
-            <Badge variant="neutral" className="border-line bg-overlay text-fg">
-              {job.phase}
+            <span>spend</span>
+            <Badge variant="neutral" className="border-line bg-overlay text-fg tabular-nums">
+              {formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
             </Badge>
           </div>
         </div>
@@ -1061,8 +1019,6 @@ export default function JobDetail() {
         interactiveOverride={interactiveOverride}
         onInteractiveChange={setInteractiveOverride}
       />
-
-      <HeaderMetricStrip job={job} />
 
       <WorkflowSnapshotCard
         job={job}
