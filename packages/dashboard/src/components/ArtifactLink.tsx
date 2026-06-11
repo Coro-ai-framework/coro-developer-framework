@@ -37,6 +37,8 @@ import { cn } from '../lib/utils'
 interface ArtifactLinkProps {
   jobId: string
   artifact: Artifact
+  /** Dense single-row layout for lists (e.g. phase artifacts panel). */
+  variant?: 'default' | 'compact'
 }
 
 /**
@@ -52,8 +54,9 @@ interface ArtifactLinkProps {
  * Unknown kinds still render (fallback JSON), so agents posting a new kind
  * never silently break the dashboard.
  */
-export default function ArtifactLink({ jobId, artifact }: ArtifactLinkProps) {
+export default function ArtifactLink({ jobId, artifact, variant = 'default' }: ArtifactLinkProps) {
   const { kind, title, data } = artifact
+  const compact = variant === 'compact'
 
   if (kind === 'pr-link' || kind === 'url') {
     const url = data['url'] as string | undefined
@@ -63,35 +66,58 @@ export default function ArtifactLink({ jobId, artifact }: ArtifactLinkProps) {
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          className="group flex items-start gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3 transition-colors hover:border-accent-500/30 hover:bg-overlay/60"
+          className={cn(
+            'group flex items-center gap-2.5 text-left transition-colors',
+            compact
+              ? 'px-3 py-2 hover:bg-overlay/50'
+              : 'items-start gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3 hover:border-accent-500/30 hover:bg-overlay/60',
+          )}
         >
-          <ArtifactIcon kind={kind} />
+          <ArtifactIcon kind={kind} compact={compact} />
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <div className="truncate text-sm font-medium text-fg">{title}</div>
-              <Badge variant="neutral">{kind}</Badge>
+              <Badge variant="neutral" className={compact ? 'shrink-0 text-[10px]' : undefined}>
+                {kind}
+              </Badge>
             </div>
-            <div className="mt-1 truncate text-sm text-fg-muted">{url}</div>
-            <div className="mt-1.5 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-              Posted {formatDateTime(artifact.createdAt)}
-            </div>
+            {!compact ? (
+              <>
+                <div className="mt-1 truncate text-sm text-fg-muted">{url}</div>
+                <div className="mt-1.5 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+                  Posted {formatDateTime(artifact.createdAt)}
+                </div>
+              </>
+            ) : (
+              <div className="truncate font-mono text-[11px] text-fg-subtle">{url}</div>
+            )}
           </div>
-          <ExternalLink className="mt-1 size-4 shrink-0 text-fg-subtle group-hover:text-accent-300" />
+          <ExternalLink
+            className={cn(
+              'size-4 shrink-0 text-fg-subtle group-hover:text-accent-300',
+              !compact && 'mt-1',
+            )}
+          />
         </a>
       )
     }
   }
 
   if (typeof data['path'] === 'string' && (data['path'] as string).trim()) {
-    return <FileArtefactButton jobId={jobId} artifact={artifact} />
+    return <FileArtefactButton jobId={jobId} artifact={artifact} compact={compact} />
   }
 
-  return <JsonArtefactView artifact={artifact} />
+  return <JsonArtefactView artifact={artifact} compact={compact} />
 }
 
-function ArtifactIcon({ kind }: { kind: string }) {
+function ArtifactIcon({ kind, compact = false }: { kind: string; compact?: boolean }) {
   return (
-    <div className="rounded-lg border border-line bg-overlay p-2 text-fg-muted">
+    <div
+      className={cn(
+        'shrink-0 rounded-md border border-line bg-overlay text-fg-muted',
+        compact ? 'p-1.5 [&_svg]:size-3.5' : 'rounded-lg p-2',
+      )}
+    >
       {kindIcon(kind)}
     </div>
   )
@@ -105,7 +131,15 @@ function kindIcon(kind: string) {
   return <FileJson2 className="size-4" />
 }
 
-function FileArtefactButton({ jobId, artifact }: { jobId: string; artifact: Artifact }) {
+function FileArtefactButton({
+  jobId,
+  artifact,
+  compact = false,
+}: {
+  jobId: string
+  artifact: Artifact
+  compact?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const path = artifact.data['path'] as string
 
@@ -114,26 +148,44 @@ function FileArtefactButton({ jobId, artifact }: { jobId: string; artifact: Arti
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="group flex w-full items-start gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3 text-left transition-colors hover:border-accent-500/30 hover:bg-overlay/60"
+        className={cn(
+          'group flex w-full items-center gap-2.5 text-left transition-colors',
+          compact
+            ? 'px-3 py-2 hover:bg-overlay/50'
+            : 'items-start gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3 hover:border-accent-500/30 hover:bg-overlay/60',
+        )}
       >
-        <ArtifactIcon kind={artifact.kind} />
+        <ArtifactIcon kind={artifact.kind} compact={compact} />
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <div className="truncate text-sm font-medium text-fg">{artifact.title}</div>
-            <Badge variant="neutral">{artifact.kind}</Badge>
+            <Badge variant="neutral" className={compact ? 'shrink-0 text-[10px]' : undefined}>
+              {artifact.kind}
+            </Badge>
             {artifact.editedAt ? (
-              <span className="rounded-full bg-warning-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-warning-300">
+              <span className="shrink-0 rounded-full bg-warning-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-warning-300">
                 Edited
               </span>
             ) : null}
           </div>
-          <div className="mt-1 truncate font-mono text-xs text-fg-subtle">{path}</div>
-          <div className="mt-1.5 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-            Posted {formatDateTime(artifact.createdAt)}
-            {artifact.editedAt ? ` · Edited ${formatDateTime(artifact.editedAt)}` : ''}
-          </div>
+          {!compact ? (
+            <>
+              <div className="mt-1 truncate font-mono text-xs text-fg-subtle">{path}</div>
+              <div className="mt-1.5 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+                Posted {formatDateTime(artifact.createdAt)}
+                {artifact.editedAt ? ` · Edited ${formatDateTime(artifact.editedAt)}` : ''}
+              </div>
+            </>
+          ) : (
+            <div className="truncate font-mono text-[11px] text-fg-subtle">{path}</div>
+          )}
         </div>
-        <Eye className="mt-1 size-4 shrink-0 text-fg-subtle group-hover:text-accent-300" />
+        <Eye
+          className={cn(
+            'size-4 shrink-0 text-fg-subtle group-hover:text-accent-300',
+            !compact && 'mt-1',
+          )}
+        />
       </button>
 
       {open ? <ArtefactModal jobId={jobId} artifact={artifact} onClose={() => setOpen(false)} /> : null}
@@ -399,18 +451,26 @@ function ModalIconButton({
   )
 }
 
-function JsonArtefactView({ artifact }: { artifact: Artifact }) {
+function JsonArtefactView({ artifact, compact = false }: { artifact: Artifact; compact?: boolean }) {
   const [open, setOpen] = useState(false)
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-overlay/40">
+    <div
+      className={cn(
+        'overflow-hidden',
+        compact ? 'bg-transparent' : 'rounded-2xl border border-line bg-overlay/40',
+      )}
+    >
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-overlay/60"
+        className={cn(
+          'flex w-full items-center justify-between gap-3 text-left transition-colors',
+          compact ? 'px-3 py-2 hover:bg-overlay/50' : 'px-4 py-3 hover:bg-overlay/60',
+        )}
       >
-        <div className="flex min-w-0 items-center gap-3">
-          <ArtifactIcon kind={artifact.kind} />
+        <div className="flex min-w-0 items-center gap-2.5">
+          <ArtifactIcon kind={artifact.kind} compact={compact} />
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-fg">{artifact.title}</div>
             <div className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{artifact.kind}</div>
@@ -419,7 +479,12 @@ function JsonArtefactView({ artifact }: { artifact: Artifact }) {
         <ChevronDown className={cn('size-4 shrink-0 text-fg-subtle transition-transform', open && 'rotate-180')} />
       </button>
       {open ? (
-        <pre className="max-h-80 overflow-auto border-t border-line bg-canvas/60 p-4 font-mono text-xs text-fg whitespace-pre-wrap break-words">
+        <pre
+          className={cn(
+            'overflow-auto border-t border-line bg-canvas/60 font-mono text-xs text-fg whitespace-pre-wrap break-words',
+            compact ? 'max-h-48 px-3 py-2' : 'max-h-80 p-4',
+          )}
+        >
           {JSON.stringify(artifact.data, null, 2)}
         </pre>
       ) : null}

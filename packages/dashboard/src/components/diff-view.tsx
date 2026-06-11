@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
@@ -11,35 +11,21 @@ import {
 import type { ParsedDiffFile, ParsedDiffHunk, DiffFileStatus } from '../lib/job-diff'
 import { cn } from '../lib/utils'
 
-// Above these thresholds we collapse files by default so we never mount tens
-// of thousands of DOM nodes at once on an accidental huge diff. Small diffs
-// (the common case, bounded by the pr-diff-size guardrail) open expanded.
-const AUTO_EXPAND_MAX_FILES = 10
-const AUTO_EXPAND_MAX_LINES = 800
-
 export interface DiffViewProps {
   files: ParsedDiffFile[]
   truncated?: boolean
-  /** Force every file to start collapsed, overriding the size-based heuristic. */
-  defaultCollapsed?: boolean
   /** Show the changed-files overview map above the diffs (default: true). */
   showFileMap?: boolean
 }
 
-export default function DiffView({ files, truncated, defaultCollapsed, showFileMap = true }: DiffViewProps) {
-  const autoExpand = useMemo(() => {
-    if (defaultCollapsed) return false
-    const totalLines = files.reduce((n, f) => n + f.additions + f.deletions, 0)
-    return files.length <= AUTO_EXPAND_MAX_FILES && totalLines <= AUTO_EXPAND_MAX_LINES
-  }, [files, defaultCollapsed])
-
+export default function DiffView({ files, truncated, showFileMap = true }: DiffViewProps) {
   // Per-file open state, keyed by index. Reset when the file set changes (a new
-  // diff arrived) or the default flips. `files` is referentially stable across
-  // polls when the patch text is unchanged, so manual toggles survive polling.
-  const [open, setOpen] = useState<boolean[]>(() => files.map(() => autoExpand))
+  // diff arrived). `files` is referentially stable across polls when the patch
+  // text is unchanged, so manual toggles survive polling.
+  const [open, setOpen] = useState<boolean[]>(() => files.map(() => false))
   useEffect(() => {
-    setOpen(files.map(() => autoExpand))
-  }, [files, autoExpand])
+    setOpen(files.map(() => false))
+  }, [files])
 
   const cardRefs = useRef<(HTMLDivElement | null)[]>([])
 

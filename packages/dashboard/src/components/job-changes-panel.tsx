@@ -32,6 +32,7 @@ interface PrPreview {
   base?: string
   sourceBranch?: string
   workItem?: string
+  createdAt: string
 }
 
 type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>
@@ -55,6 +56,7 @@ function readPrPreviews(job: Job): PrPreview[] {
       base: str('base'),
       sourceBranch: str('sourceBranch'),
       workItem: str('workItem'),
+      createdAt: a.createdAt,
     }
     const key = preview.sourceBranch
     if (key && byBranch.has(key)) {
@@ -64,7 +66,7 @@ function readPrPreviews(job: Job): PrPreview[] {
       out.push(preview)
     }
   }
-  return out
+  return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
 function findPrLink(job: Job, preview: PrPreview): { url?: string; prId?: number } | undefined {
@@ -514,7 +516,7 @@ function WorkItemChanges({
           ) : !diff || files.length === 0 ? (
             status.label !== 'Merged' ? <EmptyChanges available={diff?.available ?? false} /> : null
           ) : (
-            <DiffView files={files} truncated={diff.truncated} defaultCollapsed />
+            <DiffView files={files} truncated={diff.truncated} />
           )}
         </CardContent>
       ) : null}

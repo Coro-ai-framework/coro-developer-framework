@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import ApprovalBox from '../components/ApprovalBox'
-import ArtifactLink from '../components/ArtifactLink'
+import PhaseArtifactsPanel from '../components/jobs/PhaseArtifactsPanel'
 import CampaignView from '../components/CampaignView'
 import ConnectionIndicator from '../components/ConnectionIndicator'
 import InsightsPanel from '../components/InsightsPanel'
@@ -463,12 +463,6 @@ function WorkflowSnapshotCard({
           onSelectPhase={onSelectPhase}
         />
 
-        <WorkItemsBreakdown
-          job={job}
-          phases={phases}
-          onSelectPhase={onSelectPhase}
-        />
-
         <div className="rounded-2xl border border-line bg-overlay/30 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="space-y-0.5">
@@ -488,26 +482,23 @@ function WorkflowSnapshotCard({
           </div>
 
           <div className="mt-3">
-            <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-              Phase artifacts
-            </div>
-            {selectedPhaseArtifacts.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-line px-4 py-3 text-[13px] text-fg-subtle">
-                No artifacts have been posted for this phase yet.
-              </div>
-            ) : (
-              <div className="grid gap-2 xl:grid-cols-2">
-                {selectedPhaseArtifacts.map(artifact => (
-                  <ArtifactLink key={artifact.id} jobId={job.id} artifact={artifact} />
-                ))}
-              </div>
-            )}
+            <PhaseArtifactsPanel
+              jobId={job.id}
+              artifacts={selectedPhaseArtifacts}
+              phaseName={selectedPhaseName}
+            />
           </div>
 
           <div className="mt-4">
             <PhaseModelPanel job={job} phase={selectedPhaseName} onMutated={onMutated} />
           </div>
         </div>
+
+        <WorkItemsBreakdown
+          job={job}
+          phases={phases}
+          onSelectPhase={onSelectPhase}
+        />
       </CardContent>
     </Card>
   )
