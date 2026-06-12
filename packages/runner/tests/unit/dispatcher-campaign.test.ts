@@ -344,6 +344,26 @@ describe('Dispatcher.coordinateCampaign — dispatch sweep', () => {
     await dispatcher.coordinateCampaign(parent.id)
     expect(backend.updateJob).not.toHaveBeenCalled()
   })
+
+  it('promotes and dispatches a pending remediation child whose deps are already terminal', async () => {
+    // Remediation re-entry into coordinating: original children completed in
+    // an earlier round; a new fix child depends on one of them. No child-stop
+    // event will ever fire for the completed dep, so the sweep itself must
+    // reconcile the ready set before dispatching.
+    const parent = makeCampaignJob([
+      makeChild({ name: 'a', status: 'complete' }),
+      makeChild({ name: 'fix-r1-drift', status: 'pending', dependsOn: ['a'] }),
+    ])
+    const backend = makeBackend([parent])
+    const dispatcher = makeDispatcher(backend)
+
+    await dispatcher.coordinateCampaign(parent.id)
+
+    const stored = backend.jobs.get(parent.id)!
+    const fix = stored.campaignChildren!.find(c => c.name === 'fix-r1-drift')!
+    expect(fix.status).toBe('dispatched')
+    expect(backend.createJob).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ── Sibling insight propagation ────────────────────────────────────────────────

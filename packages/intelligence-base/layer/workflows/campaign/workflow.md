@@ -93,14 +93,23 @@ cannot recursively become campaigns.
    integration, the campaign-level happy path runs, and the rollout
    plan from `campaign-architecture.md` is applicable. Outputs
    `integration-report.md` and decides pass / fix-needed /
-   inconclusive. fix-needed escalates so a human (or the
-   campaign-evaluator) decides between rerun, skip, or rollback.
+   inconclusive. **fix-needed loops, it does not stop the campaign**:
+   the integrator records the defects as insights, bumps
+   `params.integrationRemediationRound`, and calls
+   `goto_phase(campaign-planning)` — the planner cuts fix children
+   under the same epic, the dispatcher runs them, and integration
+   re-verifies. The loop is capped at 3 remediation rounds; after that
+   (or on inconclusive) the integrator escalates. With interactive
+   mode on, the runner parks at the checkpoint before each loop hop so
+   the human can steer (approve, rerun/skip a child, or cancel).
 5. **`aggregation`** — the campaign-evaluator agent reads
    `campaign_status`, the integration report, and per-child insights;
    summarises outcomes; updates the tracker epic; and optionally
    proposes memory updates capturing cross-child insights via
-   `propose_change`. The interactive checkpoint lets a human review
-   before the campaign closes.
+   `propose_change`. If it finds the campaign still unsatisfied it
+   takes the same remediation loop back to `campaign-planning`
+   (same round cap) instead of closing. The interactive checkpoint
+   lets a human review before the campaign closes.
 
 ## Trigger
 
@@ -111,14 +120,24 @@ workflow path explicitly (advanced operators).
 
 ## Failure handling
 
-The dispatcher's coordinator stops dispatching new children as soon as
-one child reaches `failed` or `escalated` (default `halt-on-failure`
-policy). The campaign job parks at `awaiting-developer-input`. A human
-or the campaign-evaluator can then call `campaign_skip_child`,
-`campaign_rerun_child`, or `campaign_cancel_child` and resume the
-campaign. The policy is configurable via
-`settings.coordination.failurePolicy` in the future; today the default
-is the only mode.
+Two distinct recovery loops:
+
+- **Per-child failures during coordination** — the dispatcher's
+  coordinator stops dispatching new children as soon as one child
+  reaches `failed` or `escalated` (default `halt-on-failure` policy).
+  The campaign job parks at `awaiting-developer-input`. A human or the
+  campaign-evaluator can then call `campaign_skip_child`,
+  `campaign_rerun_child`, or `campaign_cancel_child` and resume the
+  campaign. The policy is configurable via
+  `settings.coordination.failurePolicy` in the future; today the
+  default is the only mode.
+- **Campaign-level defects found at integration/aggregation** — the
+  default path is the remediation loop described above:
+  `campaign-planning` → `coordinating` → `campaign-integration`
+  repeats with surgical fix children until the integration verdict is
+  `pass`, capped at 3 rounds (`params.integrationRemediationRound`).
+  Escalation is reserved for inconclusive verification or an exhausted
+  round budget.
 
 ## Recursion guard
 

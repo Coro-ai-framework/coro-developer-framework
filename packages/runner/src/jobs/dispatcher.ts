@@ -1014,8 +1014,21 @@ export class Dispatcher {
       return
     }
 
-    const children = parent.campaignChildren ?? []
+    let children = parent.campaignChildren ?? []
     if (children.length === 0) return
+
+    // Defensive ready-promotion: a pending child whose dependencies are all
+    // satisfied (complete/skipped) must become `ready` even if no child-stop
+    // event will ever fire for its deps — e.g. remediation children
+    // registered in a later planning round against already-terminal
+    // children. `reconcileReady` is pure; persist only on change.
+    const reconciledChildren = reconcileReady(children)
+    if (reconciledChildren.some((c, i) => c.status !== children[i].status)) {
+      await this.ctx.stateBackend.updateJob(parent.id, {
+        campaignChildren: reconciledChildren,
+      })
+      children = reconciledChildren
+    }
 
     const halted = children.filter(c => c.status === 'failed' || c.status === 'escalated')
     if (halted.length > 0) {

@@ -34,7 +34,9 @@ You do not re-run failed children. The campaign workflow's live-control tools (`
 | `propose_change` | Ship memory updates as a tenant PR |
 | `post_artifact` | Save the report markdown for the dashboard |
 | `add_insight` | Record evaluation findings for future campaigns |
-| `escalate` | Flag a campaign you cannot reasonably close |
+| `set_job_params` | Bump `integrationRemediationRound` before routing back to planning |
+| `goto_phase` | Route unresolved campaign defects back to `campaign-planning` |
+| `escalate` | Flag a campaign you cannot reasonably close or remediate |
 
 ## Step-by-step procedure
 
@@ -65,6 +67,18 @@ For each child in `campaign_status().children`:
 - `failed` / `escalated` — describe the failure mode in one sentence and whether it was a Coro bug, an environment issue, or genuine code/spec ambiguity.
 
 Cross-reference `working/{job-id}/integration-report.md`. If the Campaign Integrator's verdict was `fix-needed`, record which child the integrator named and what the cross-child failure was.
+
+### 3.0 Unresolved defects — default remediation path
+
+Normally a `fix-needed` integration verdict loops back to `campaign-planning` before you ever run, so by aggregation time the latest integration verdict should be `pass`. If you nonetheless find the campaign **not satisfied** — the latest integration report says `fix-needed`, or your own review uncovers a defect the integrator missed — the default path is the same remediation loop, not escalation:
+
+1. Read `params.integrationRemediationRound` (unset means `0`). If it is already **3**, `escalate({ reason })` instead — the loop is not converging and a human must decide.
+2. Record each defect via `add_insight({ category: "campaign-integration-failure", … })` with evidence and suggested fix scope.
+3. Post your campaign report (step 6) with a `## Remediation required` section listing the defects.
+4. `set_job_params({ integrationRemediationRound: <round + 1> })`
+5. `goto_phase({ phase: "campaign-planning" })` and end the turn. The Campaign Planner cuts fix children under the same epic; the loop re-runs coordination → integration → aggregation. If the developer has interactive mode enabled, the runner parks at the checkpoint first so they can steer.
+
+Do NOT transition the epic or close out the campaign (steps 5–7 below) when taking this path — the campaign is not done.
 
 ### 3.1 Halt-on-failure remediation (when applicable)
 
@@ -167,4 +181,4 @@ Splitting produces multiple PRs — review the `self-improvement-guide` skill if
 
 ### 8. End the turn
 
-The runner finishes the campaign on phase end. The interactive checkpoint on the `aggregation` phase parks the job for human approval before the campaign closes; that is the dashboard's "campaign ready to close" surface, not your responsibility.
+The runner finishes the campaign on phase end. The interactive checkpoint on the `aggregation` phase parks the job for human approval before the campaign closes; that is the dashboard's "campaign ready to close" surface, not your responsibility. (If you took the §3.0 remediation path, the `goto_phase` call already routed the job — just end the turn.)

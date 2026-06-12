@@ -19,6 +19,7 @@ import {
   campaignCancelChild,
   campaignAbandonChild,
   campaignResumeChild,
+  campaignFinalize,
   reconcileReady,
   detectCycle,
   jobStatusToChildStatus,
@@ -103,6 +104,59 @@ function makeCtx(parentJob: Job, backend: BackendStub): ToolContext {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as never,
   } as unknown as ToolContext
 }
+
+// ── campaignFinalize ─────────────────────────────────────────────────────────
+
+describe('campaignFinalize', () => {
+  function finalizeCtx(children: CampaignChild[]) {
+    const parent = makeCampaignJob(children)
+    const backend = makeBackend([parent])
+    const ctx = makeCtx(parent, backend)
+    const signals = {} as { nextPhase?: string }
+    return { backend, ctx, signals }
+  }
+
+  it('promotes dep-less roots to ready and advances to coordinating', async () => {
+    const { backend, ctx, signals } = finalizeCtx([
+      makeChild({ name: 'a' }),
+      makeChild({ name: 'b', dependsOn: ['a'] }),
+    ])
+
+    const out = await campaignFinalize(ctx, signals as never)
+
+    expect(out).toEqual({ ok: true, childCount: 2, readyCount: 1 })
+    const stored = backend.jobs.get('campaign-1')!
+    expect(stored.campaignChildren!.map(c => c.status)).toEqual(['ready', 'pending'])
+    expect(signals.nextPhase).toBe('coordinating')
+  })
+
+  it('promotes remediation children whose deps are already-complete children from earlier rounds', async () => {
+    // Remediation round: original children are terminal; the planner
+    // registered a fix child depending on one of them. No child-stop event
+    // will ever fire for the completed dep — finalize must promote it.
+    const { backend, ctx, signals } = finalizeCtx([
+      makeChild({ name: 'a', status: 'complete' }),
+      makeChild({ name: 'b', status: 'complete' }),
+      makeChild({ name: 'fix-r1-contract', dependsOn: ['a'] }),
+    ])
+
+    const out = await campaignFinalize(ctx, signals as never)
+
+    expect(out.readyCount).toBe(1)
+    const stored = backend.jobs.get('campaign-1')!
+    expect(stored.campaignChildren!.find(c => c.name === 'fix-r1-contract')!.status).toBe('ready')
+    expect(signals.nextPhase).toBe('coordinating')
+  })
+
+  it('refuses when no child is dispatchable (all pending deps unsatisfied)', async () => {
+    const { ctx, signals } = finalizeCtx([
+      makeChild({ name: 'a', status: 'failed' }),
+      makeChild({ name: 'b', dependsOn: ['a'] }),
+    ])
+
+    await expect(campaignFinalize(ctx, signals as never)).rejects.toThrow(/no child is dispatchable/)
+  })
+})
 
 // ── reconcileReady ───────────────────────────────────────────────────────────
 

@@ -252,15 +252,25 @@ export async function campaignFinalize(
     )
   }
 
-  // Mark roots (no dependencies) as `ready` so the dispatcher's first sweep
-  // has something to pick. Non-roots stay pending; the dispatcher promotes
-  // them as their parents complete.
-  const promoted = children.map(c =>
-    c.dependsOn.length === 0 && c.status === 'pending'
-      ? { ...c, status: 'ready' as CampaignChildStatus }
-      : c,
-  )
+  // Promote children whose dependencies are already satisfied so the
+  // dispatcher's first sweep has something to pick. On the first finalize
+  // this promotes the dep-less roots; on a **remediation round** (the
+  // integrator/evaluator looped back to campaign-planning and the planner
+  // registered fix children) it also promotes new children whose
+  // `dependsOn` reference already-completed children from earlier rounds —
+  // no further child-stop event will ever fire for those, so finalize is
+  // the only chance to mark the fixes dispatchable.
+  const promoted = reconcileReady(children)
   const readyCount = promoted.filter(c => c.status === 'ready').length
+
+  if (readyCount === 0) {
+    throw new Error(
+      'campaign_finalize refused: no child is dispatchable. Either every ' +
+        'pending child has unsatisfied dependencies (check the dependsOn ' +
+        'graph) or no new children were registered this round — register ' +
+        'at least one dispatchable child before finalizing.',
+    )
+  }
 
   await ctx.stateBackend.updateJob(ctx.job.id, { campaignChildren: promoted })
   ctx.job = (await ctx.stateBackend.getJob(ctx.job.id)) as Job

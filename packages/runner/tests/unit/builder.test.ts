@@ -313,6 +313,56 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(prompt).not.toContain('User said no.')
     })
 
+    // Campaign parents accumulate child insights on
+    // `campaignAggregatedInsights`. The integrator/evaluator phases run on
+    // the PARENT job, so those entries must surface in the parent's own
+    // prompt — not only get seeded into future children.
+    it('merges campaignAggregatedInsights into the parent prompt with sibling provenance', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [],
+          campaignAggregatedInsights: [{
+            phase: 'coding',
+            category: 'sandbox-quirk',
+            summary: 'go test needs GOFLAGS=-mod=vendor',
+            detail: 'Module proxy is blocked in the sandbox.',
+            sourceChildName: 'rate-limiter',
+          }],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      expect(prompt).toContain('Insights from Upstream Agents')
+      expect(prompt).toContain('[campaign sibling: rate-limiter · coding] sandbox-quirk')
+      expect(prompt).toContain('GOFLAGS=-mod=vendor')
+    })
+
+    it('dedupes an insight present on both insights and campaignAggregatedInsights', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const shared = {
+        id: 'ins-1',
+        phase: 'coding',
+        category: 'workaround',
+        summary: 'Duplicated entry',
+        detail: 'Appears on both lists.',
+        sourceChildName: 'child-a',
+      }
+      const prompt = await buildSystemPrompt(
+        makeJob({
+          insights: [shared],
+          campaignAggregatedInsights: [shared],
+        }),
+        INTELLIGENCE_DIR,
+        noopLogger,
+      )
+
+      expect(prompt.match(/Duplicated entry/g)).toHaveLength(1)
+    })
+
     it('uses the standard lead when own-job and sibling insights are mixed (sibling provenance still wins line-by-line)', async () => {
       setupFs({ [WORKFLOW_PATH]: '' })
 

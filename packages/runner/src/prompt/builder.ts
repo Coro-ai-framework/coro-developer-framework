@@ -4,6 +4,7 @@ import { Logger } from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
 import type { TrackerPluginRuntime } from '../plugins/types'
 import { Job } from '@coro-ai/cloud-protocol'
+import type { Insight } from '@coro-ai/cloud-protocol'
 import { propagableInsights } from '../insights'
 import {
   buildWorkspaceLayoutPromptBlock,
@@ -328,7 +329,28 @@ function buildJobContext(
     '\n```',
   ]
 
-  const insightsForPrompt = propagableInsights(job.insights)
+  // Campaign parents accumulate their children's insights on
+  // `campaignAggregatedInsights` — the dispatcher seeds those into each
+  // *future* child via `initialInsights`, but the parent's own
+  // post-coordination phases (campaign-integration, aggregation) read this
+  // prompt too. Merge them in so the integrator/evaluator benefits from
+  // every quirk the children already documented instead of re-discovering
+  // them. Dedup defensively: an insight may exist on both lists when an
+  // earlier phase already copied it onto the parent.
+  const ownInsights = job.insights ?? []
+  const aggregatedInsights = job.campaignAggregatedInsights ?? []
+  const insightKey = (i: Insight): string =>
+    i.id ?? `${i.sourceChildName ?? ''}|${i.phase}|${i.summary}`
+  const seenInsightKeys = new Set(ownInsights.map(insightKey))
+  const mergedInsights = [...ownInsights]
+  for (const ins of aggregatedInsights) {
+    const key = insightKey(ins)
+    if (seenInsightKeys.has(key)) continue
+    seenInsightKeys.add(key)
+    mergedInsights.push(ins)
+  }
+
+  const insightsForPrompt = propagableInsights(mergedInsights)
   if (insightsForPrompt.length > 0) {
     // Surface sibling provenance prominently so the agent can tell
     // sibling-inherited insights apart from this job's own. Sibling
