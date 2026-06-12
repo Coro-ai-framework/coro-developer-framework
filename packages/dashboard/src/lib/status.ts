@@ -39,8 +39,10 @@ const STATUS_MAP: Record<string, StatusMeta> = {
   'repo-setup': { label: 'Repo Setup', category: 'running', tone: 'accent', pulse: true },
   reporting: { label: 'Reporting', category: 'running', tone: 'accent', pulse: true },
   'spec-writing': { label: 'Spec Writing', category: 'running', tone: 'accent', pulse: true },
+  'campaign-architecture': { label: 'Campaign Architecture', category: 'running', tone: 'accent', pulse: true },
   'campaign-planning': { label: 'Campaign Planning', category: 'running', tone: 'accent', pulse: true },
   coordinating: { label: 'Coordinating', category: 'running', tone: 'accent', pulse: true },
+  integrating: { label: 'Integrating', category: 'running', tone: 'accent', pulse: true },
   aggregating: { label: 'Aggregating', category: 'running', tone: 'accent', pulse: true },
   'awaiting-plan-approval': { label: 'Awaiting Plan Approval', category: 'waiting', tone: 'warning' },
   'awaiting-pr-merge': { label: 'Awaiting PR Merge', category: 'waiting', tone: 'warning' },
@@ -62,14 +64,24 @@ const CONNECTION_MAP: Record<ConnectionStatus, StatusMeta> = {
 }
 
 export function getStatusMeta(status: string): StatusMeta {
-  return STATUS_MAP[status] ?? {
-    label: status
-      .split('-')
-      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' '),
-    category: 'idle',
-    tone: 'neutral',
+  const known = STATUS_MAP[status]
+  if (known) return known
+
+  const label = status
+    .split('-')
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+
+  // Workflow markdown declares arbitrary per-phase `status:` strings, so
+  // unknown statuses are almost certainly active phases from a custom
+  // workflow. The waiting/terminal sets are closed (cloud-protocol
+  // STATUS_* constants); the only open-ended namespace is running phases.
+  // Treating unknowns as 'idle' silently disabled run controls (steering
+  // composer, Pause) for custom-workflow phases.
+  if (status.startsWith('awaiting-')) {
+    return { label, category: 'waiting', tone: 'warning' }
   }
+  return { label, category: 'running', tone: 'accent', pulse: true }
 }
 
 export function getConnectionMeta(status: ConnectionStatus): StatusMeta {
