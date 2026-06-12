@@ -835,7 +835,21 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         GH_OWNER: this.settings.github?.owner ?? '',
         GH_TOKEN: this.settings.github?.token ?? '',
         CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '600000',
-        ENABLE_TOOL_SEARCH: 'true',
+        // Tool search (deferred tool loading) is opt-in via
+        // CORO_ENABLE_TOOL_SEARCH=1. When enabled, the Claude Code CLI
+        // defers the mcp__coro__* tool schemas out of the model's tool
+        // list and requires a ToolSearch round-trip to activate them.
+        // In production this has caused phases to run with ZERO MCP
+        // tool calls: the model loads schemas via ToolSearch but the
+        // deferred tools never become invocable (observed on
+        // haiku-tier campaign phases — the agent could not even call
+        // `escalate` and burned the whole phase writing workaround
+        // files). Coro's MCP tools are the agent's only channel for
+        // state updates, artifacts, and escalation, so they must be
+        // unconditionally present in the tool list by default.
+        ...(process.env.CORO_ENABLE_TOOL_SEARCH === '1' || process.env.CORO_ENABLE_TOOL_SEARCH === 'true'
+          ? { ENABLE_TOOL_SEARCH: 'true' }
+          : {}),
         // Verbose SDK tracing is opt-in via CORO_DEBUG_CLAUDE_SDK=1.
         // Leaving it on by default floods the activity log with Bun
         // source frames whenever an AbortController fires inside the

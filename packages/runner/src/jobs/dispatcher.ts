@@ -13,6 +13,7 @@ import {
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_CANCELLED,
   STATUS_CODING,
+  STATUS_COMPLETE,
   STATUS_ESCALATED,
   STATUS_FAILED,
   PAUSED_AWAITING_EVENT,
@@ -455,9 +456,23 @@ export class Dispatcher {
     const job = await this.ctx.stateBackend.getJob(jobId)
     if (!job) throw new Error(`Unknown job: ${jobId}`)
 
-    if (!isParkingStatus(job.status)) {
+    if (!isParkingStatus(job.status) && job.status !== STATUS_COMPLETE) {
       throw new Error(
         `Cannot re-run phase on a ${job.status} job — pause it (or wait for it to park) first.`,
+      )
+    }
+
+    if (job.status === STATUS_COMPLETE) {
+      // Reopen the completed job so `resumeJob`'s terminal-status guard
+      // passes. A re-run of an earlier phase on a finished job is an
+      // explicit human decision (e.g. a campaign whose integration /
+      // aggregation phase ran incorrectly) — cancelled jobs stay terminal.
+      await this.ctx.stateBackend.updateJob(jobId, {
+        status: STATUS_AWAITING_DEVELOPER_INPUT,
+      })
+      await this.ctx.stateBackend.appendLog(
+        jobId,
+        `[control] Reopening completed job to re-run phase "${phase}"`,
       )
     }
 
@@ -956,10 +971,27 @@ export class Dispatcher {
   //
   // Campaign jobs park in the `coordinating` phase. The dispatcher is the
   // only component that spawns child Jobs, persists `campaignChildren[]`
-  // status changes, and resumes the parent into `aggregation` once every
-  // child has reached a terminal state. Keeping spawn responsibility in one
-  // place is the only way the dependency-aware ready-set computation stays
-  // race-free.
+  // status changes, and resumes the parent into the phase that follows
+  // `coordinating` in the campaign workflow (campaign-integration in the
+  // base layer) once every child has reached a terminal state. Keeping
+  // spawn responsibility in one place is the only way the dependency-aware
+  // ready-set computation stays race-free.
+
+  /**
+   * Phase the parent resumes into when all children are terminal: the
+   * phase that follows `coordinating` in the job's persisted
+   * `workflowPhases` snapshot. Falls back to `aggregation` for legacy
+   * jobs persisted before `workflowPhases` existed (or tenant overlays
+   * that removed the integration phase).
+   */
+  private campaignPostCoordinationPhase(parent: Job): string {
+    const phases = parent.workflowPhases ?? []
+    const coordIdx = phases.findIndex(p => p.name === CAMPAIGN_COORDINATING_PHASE)
+    if (coordIdx >= 0 && coordIdx + 1 < phases.length) {
+      return phases[coordIdx + 1].name
+    }
+    return CAMPAIGN_AGGREGATION_PHASE
+  }
 
   /**
    * Run one coordination sweep on a campaign job:
@@ -967,7 +999,8 @@ export class Dispatcher {
    *      `halt-on-failure` (today, the only mode), park the parent at
    *      `awaiting-developer-input`.
    *   2. If every child is in a terminal status, resume the parent into
-   *      the `aggregation` phase.
+   *      the next workflow phase after `coordinating`
+   *      (campaign-integration → aggregation in the base workflow).
    *   3. Otherwise dispatch up to `maxParallelChildren` ready children.
    *
    * Public so HTTP / CLI live-control endpoints (skip / rerun / cancel)
@@ -1026,15 +1059,19 @@ export class Dispatcher {
 
     const allTerminal = children.every(c => isTerminalChildStatus(c.status))
     if (allTerminal) {
-      if (parent.phase !== CAMPAIGN_AGGREGATION_PHASE) {
+      // Only the parked-at-coordinating parent gets resumed. If the parent
+      // already advanced past coordinating (integration / aggregation in
+      // flight), a late child event must not yank it into another phase.
+      if (parent.phase === CAMPAIGN_COORDINATING_PHASE) {
+        const nextPhase = this.campaignPostCoordinationPhase(parent)
         await this.ctx.stateBackend.appendLog(
           parent.id,
-          `[campaign] All ${children.length} children terminal — advancing to ${CAMPAIGN_AGGREGATION_PHASE}`,
+          `[campaign] All ${children.length} children terminal — advancing to ${nextPhase}`,
         )
-        // Force a fresh session so the campaign-evaluator starts with a
+        // Force a fresh session so the next phase's agent starts with a
         // clean prompt: the campaign-planner's transcript is irrelevant
-        // (and large) by aggregation time.
-        await this.resumeJob(parent.id, CAMPAIGN_AGGREGATION_PHASE, /* clearSession */ true)
+        // (and large) by integration/aggregation time.
+        await this.resumeJob(parent.id, nextPhase, /* clearSession */ true)
       }
       return
     }

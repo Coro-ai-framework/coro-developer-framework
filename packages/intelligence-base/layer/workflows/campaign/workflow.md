@@ -21,6 +21,8 @@ phases:
 
   - name: coordinating
     agent: null
+    # Agentless phase — the dispatcher parks the job here and no model is
+    # ever invoked, so the tier is informational only.
     tier: mini
     status: awaiting-children
 
@@ -32,7 +34,11 @@ phases:
 
   - name: aggregation
     agent: agents/campaign-evaluator.md
-    tier: mini
+    # Aggregation synthesises the whole campaign: campaign_status over N
+    # children, the integration report, per-child insights, tracker epic
+    # updates, and multi-file memory proposals. On large campaigns this
+    # demands top-tier judgment — `mini` (haiku) proved not up to it.
+    tier: planning
     status: aggregating
     interactive_checkpoint: true
 ---

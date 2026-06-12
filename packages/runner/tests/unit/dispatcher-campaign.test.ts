@@ -50,7 +50,7 @@ function makeCampaignJob(
     params: { repoSlug: 'svc' },
     triggerSource: 'cli',
     status: STATUS_QUEUED,
-    phase: 'coordination',
+    phase: 'coordinating',
     currentWorkItem: null,
     workItems: [],
     workItemLoopCount: 0,
@@ -226,15 +226,26 @@ describe('Dispatcher.coordinateCampaign — un-park after halt resolution', () =
   })
 })
 
-// ── Coordinator: all-terminal → aggregation ──────────────────────────────────
+// ── Coordinator: all-terminal → post-coordination phase ─────────────────────
 
-describe('Dispatcher.coordinateCampaign — advance to aggregation', () => {
-  it('resumes the parent into the aggregation phase when every child is terminal', async () => {
-    const parent = makeCampaignJob([
-      makeChild({ name: 'a', status: 'complete' }),
-      makeChild({ name: 'b', status: 'skipped' }),
-      makeChild({ name: 'c', status: 'cancelled' }),
-    ])
+describe('Dispatcher.coordinateCampaign — advance past coordinating', () => {
+  it('resumes the parent into the phase AFTER coordinating per workflowPhases (campaign-integration)', async () => {
+    const parent = makeCampaignJob(
+      [
+        makeChild({ name: 'a', status: 'complete' }),
+        makeChild({ name: 'b', status: 'skipped' }),
+        makeChild({ name: 'c', status: 'cancelled' }),
+      ],
+      {
+        workflowPhases: [
+          { name: 'campaign-architecture', status: 'campaign-architecture' },
+          { name: 'campaign-planning', status: 'campaign-planning' },
+          { name: 'coordinating', status: 'awaiting-children', agent: null },
+          { name: 'campaign-integration', status: 'integrating' },
+          { name: 'aggregation', status: 'aggregating' },
+        ],
+      },
+    )
     const backend = makeBackend([parent])
     const dispatcher = makeDispatcher(backend)
 
@@ -246,17 +257,51 @@ describe('Dispatcher.coordinateCampaign — advance to aggregation', () => {
 
     await dispatcher.coordinateCampaign(parent.id)
 
-    expect(resumeSpy).toHaveBeenCalledWith(parent.id, 'aggregation', true)
+    expect(resumeSpy).toHaveBeenCalledWith(parent.id, 'campaign-integration', true)
     expect(backend.appendLog).toHaveBeenCalledWith(
       parent.id,
       expect.stringContaining('All 3 children terminal'),
     )
   })
 
-  it('does NOT re-resume if the parent is already in the aggregation phase', async () => {
+  it('falls back to aggregation for legacy jobs without a workflowPhases snapshot', async () => {
+    const parent = makeCampaignJob([
+      makeChild({ name: 'a', status: 'complete' }),
+      makeChild({ name: 'b', status: 'skipped' }),
+      makeChild({ name: 'c', status: 'cancelled' }),
+    ])
+    const backend = makeBackend([parent])
+    const dispatcher = makeDispatcher(backend)
+
+    const resumeSpy = (vi.spyOn(dispatcher, 'resumeJob') as unknown as {
+      mockImplementation(fn: (...args: unknown[]) => unknown): unknown
+    }).mockImplementation(async () => undefined) as unknown as ReturnType<typeof vi.fn>
+
+    await dispatcher.coordinateCampaign(parent.id)
+
+    expect(resumeSpy).toHaveBeenCalledWith(parent.id, 'aggregation', true)
+  })
+
+  it('does NOT re-resume if the parent has already advanced past coordinating', async () => {
     const parent = makeCampaignJob(
       [makeChild({ name: 'a', status: 'complete' })],
       { phase: 'aggregation' },
+    )
+    const backend = makeBackend([parent])
+    const dispatcher = makeDispatcher(backend)
+    const resumeSpy = (vi.spyOn(dispatcher, 'resumeJob') as unknown as {
+      mockImplementation(fn: (...args: unknown[]) => unknown): unknown
+    }).mockImplementation(async () => undefined) as unknown as ReturnType<typeof vi.fn>
+
+    await dispatcher.coordinateCampaign(parent.id)
+
+    expect(resumeSpy).not.toHaveBeenCalled()
+  })
+
+  it('does NOT re-resume if the parent is mid-integration (late child event)', async () => {
+    const parent = makeCampaignJob(
+      [makeChild({ name: 'a', status: 'complete' })],
+      { phase: 'campaign-integration' },
     )
     const backend = makeBackend([parent])
     const dispatcher = makeDispatcher(backend)

@@ -175,8 +175,30 @@ describe('Dispatcher.rerunPhase', () => {
     expect(updateJob).not.toHaveBeenCalled()
   })
 
-  it('refuses to re-run a fully complete job', async () => {
-    const job = baseJob({ status: STATUS_COMPLETE })
+  it('reopens a fully complete job and re-runs the requested phase', async () => {
+    const job = baseJob({ status: STATUS_COMPLETE, phase: 'aggregation' })
+    const { dispatcher, updateJob, appendLog, getStored } = buildDispatcherCtx(job)
+
+    await dispatcher.rerunPhase(job.id, 'campaign-integration')
+
+    // First updateJob reopens the terminal job so resumeJob's guard passes.
+    expect(updateJob).toHaveBeenNthCalledWith(1, job.id, {
+      status: STATUS_AWAITING_DEVELOPER_INPUT,
+    })
+    expect(appendLog).toHaveBeenCalledWith(
+      job.id,
+      expect.stringContaining('Reopening completed job'),
+    )
+    // Final state: resumed into the requested phase with a fresh session.
+    expect(getStored()).toMatchObject({
+      status: STATUS_CODING,
+      phase: 'campaign-integration',
+      sessionId: undefined,
+    })
+  })
+
+  it('still refuses to re-run a cancelled job', async () => {
+    const job = baseJob({ status: 'cancelled' })
     const { dispatcher, updateJob } = buildDispatcherCtx(job)
 
     await expect(dispatcher.rerunPhase(job.id, 'planning', { model: 'x' }))
