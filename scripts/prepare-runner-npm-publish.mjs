@@ -313,6 +313,13 @@ function stripNativeBuildArtifacts(nodeModulesRoot) {
     if (existsSync(buildDir)) {
       rmSync(buildDir, { recursive: true, force: true })
     }
+    // Also remove prebuilt binaries compiled on the build host (e.g. Linux CI).
+    // prebuild-install will download or compile the correct binary for the
+    // consumer OS instead of attempting to load an incompatible pre-built artifact.
+    const prebuildsDir = path.join(pkgDir, 'prebuilds')
+    if (existsSync(prebuildsDir)) {
+      rmSync(prebuildsDir, { recursive: true, force: true })
+    }
   }
 
   for (const entry of readdirSync(nodeModulesRoot, { withFileTypes: true })) {
@@ -335,8 +342,9 @@ function stripNativeBuildArtifacts(nodeModulesRoot) {
 
 function nativeBuildArtifactsPresent(stagingRoot) {
   for (const pkgName of NATIVE_REBUILD_PACKAGES) {
-    const buildDir = path.join(stagingRoot, 'node_modules', ...pkgName.split('/'), 'build')
-    if (existsSync(buildDir)) return pkgName
+    const pkgNodeModules = path.join(stagingRoot, 'node_modules', ...pkgName.split('/'))
+    if (existsSync(path.join(pkgNodeModules, 'build'))) return `${pkgName}/build`
+    if (existsSync(path.join(pkgNodeModules, 'prebuilds'))) return `${pkgName}/prebuilds`
   }
   return null
 }
@@ -389,7 +397,7 @@ function assertProductionNodeModules(stagingRoot, stagedPkg) {
   const leftoverNative = nativeBuildArtifactsPresent(stagingRoot)
   if (leftoverNative) {
     console.error(
-      `::error::${leftoverNative}/build must be absent from staged node_modules (postinstall rebuilds native addons)`,
+      `::error::${leftoverNative} must be absent from staged node_modules (postinstall rebuilds native addons)`,
     )
     process.exit(1)
   }
