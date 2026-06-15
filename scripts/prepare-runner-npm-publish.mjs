@@ -341,6 +341,8 @@ function stripNativeBuildArtifacts(nodeModulesRoot) {
 }
 
 function nativeBuildArtifactsPresent(stagingRoot) {
+  // Returns the first offending path found (used as a fail-fast assertion:
+  // we only need to know whether any artifact is present, not enumerate them all).
   for (const pkgName of NATIVE_REBUILD_PACKAGES) {
     const pkgNodeModules = path.join(stagingRoot, 'node_modules', ...pkgName.split('/'))
     if (existsSync(path.join(pkgNodeModules, 'build'))) return `${pkgName}/build`
