@@ -354,10 +354,23 @@ export default function CreateJob() {
             title="New run"
             description="Coro plan mode — describe your goal in conversation and review a brief before dispatching."
             actions={
-              <Button variant="outline" onClick={() => navigate('/jobs')}>
-                <ArrowLeft />
-                Back
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    saveSessionIntakeOverride('form')
+                    setSurfaceOverride('form')
+                  }}
+                >
+                  Use the form instead
+                </Button>
+                <Button variant="outline" onClick={() => navigate('/jobs')}>
+                  <ArrowLeft />
+                  Back
+                </Button>
+              </div>
             }
           />
           {showCoachBanner ? (

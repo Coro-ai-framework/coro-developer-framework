@@ -25,6 +25,7 @@ import { useIntakeStream, type IntakeChatMessage, type IntakeToolCall } from '..
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import type { Job } from '../types'
 import type { WorkflowOption } from '../workflows'
+import RunPreviewCard from './run-preview-card'
 import { cn } from '../lib/utils'
 
 const MAX_TURNS_WITHOUT_BRIEF = 8
@@ -187,18 +188,15 @@ export default function IntakeChat({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-      <div className="flex min-h-[480px] flex-col rounded-2xl border border-line bg-overlay/30">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start">
+      <div className="flex min-h-[480px] w-full flex-col rounded-2xl border border-line bg-overlay/30 lg:self-start">
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-medium text-fg">
             <Sparkles className="size-4 text-accent-300" />
             Coro plan mode
           </div>
-          <div className="flex items-center gap-3 text-[11px] text-fg-subtle">
-            <span>{turnCount} turns · {totalTokens.toLocaleString()} tokens</span>
-            <button type="button" className="text-accent-300 hover:underline" onClick={onUseForm}>
-              Use the form instead
-            </button>
+          <div className="text-[11px] text-fg-subtle">
+            {turnCount} turns · {totalTokens.toLocaleString()} tokens
           </div>
         </div>
 
@@ -288,7 +286,7 @@ export default function IntakeChat({
         </div>
       </div>
 
-      <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
+      <div className="space-y-4 lg:sticky lg:top-6 lg:max-h-[calc(100vh-5rem)] lg:w-full lg:self-start lg:overflow-y-auto">
         {similar.length > 0 ? (
           <div className="rounded-2xl border border-line bg-overlay/30 p-4">
             <div className="text-xs font-semibold uppercase tracking-wider text-fg-subtle">
@@ -314,14 +312,28 @@ export default function IntakeChat({
         ) : null}
 
         {brief ? (
-          <BriefEditor
-            brief={brief}
-            workflows={workflows}
-            onChange={setBrief}
-            onSubmit={() => void dispatchBrief()}
-            submitting={submitting}
-            error={submitError}
-          />
+          <>
+            <BriefEditor
+              brief={brief}
+              workflows={workflows}
+              onChange={setBrief}
+              onSubmit={() => void dispatchBrief()}
+              submitting={submitting}
+              error={submitError}
+            />
+            <RunPreviewCard
+              workflow={workflows.find(w => w.workflowPath === brief.workflowPath) ?? null}
+              interactive={brief.interactive}
+              mode="manual"
+              serviceName={brief.serviceName}
+              repo={brief.repo}
+              formValid={
+                Boolean(
+                  brief.repo.trim() && brief.serviceName.trim() && brief.description.trim(),
+                )
+              }
+            />
+          </>
         ) : (
           <div className="rounded-2xl border border-dashed border-line bg-overlay/20 p-5 text-sm text-fg-muted">
             Your brief will appear here once we have the basics.
@@ -369,7 +381,7 @@ function PlanModeModelSelect({
           Model: <span className="font-mono text-fg-muted">{label}</span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+      <DropdownMenuContent align="start" side="top" className="max-h-72 overflow-y-auto">
         {providers.map((p, index) => {
           const models = modelsByProvider[p.id]
           if (!models?.length) return null
@@ -609,8 +621,6 @@ function BriefEditor({
   submitting: boolean
   error: string | null
 }) {
-  const wf = workflows.find(w => w.workflowPath === brief.workflowPath)
-
   return (
     <div className="space-y-4 rounded-2xl border border-accent-500/30 bg-accent-500/5 p-5">
       <div>
@@ -669,9 +679,6 @@ function BriefEditor({
         {submitting ? <Loader2 className="animate-spin" /> : null}
         {submitting ? 'Starting run…' : 'Start this run'}
       </Button>
-      {wf ? (
-        <p className="text-[11px] text-fg-subtle">{wf.description}</p>
-      ) : null}
     </div>
   )
 }
