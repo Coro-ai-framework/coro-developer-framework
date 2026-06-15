@@ -1501,13 +1501,27 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    * Subagents pinned to a non-Anthropic provider are skipped here — the
    * runner exposes them via the `mcp__coro__run_subagent` MCP tool
    * instead so they reach the right executor.
+   *
+   * MCP access is granted by *referencing* the parent session's
+   * already-registered servers by name. The SDK's
+   * `AgentDefinition.mcpServers` is an ARRAY of server names (or inline
+   * records) — passing a bare `Record<name, config>` object map there
+   * silently invalidates the whole agent definition, so the CLI drops
+   * the agent and the model gets `Agent type '<name>' not found`. We
+   * reference `coro` (so the subagent can call the `mcp__coro__*` tools
+   * it declares) plus every plugin MCP server; the top-level
+   * `mcpServers` option registers all of them under the same keys, so
+   * the name references resolve.
    */
   private buildSdkAgentsFromRequest(
     req: PhaseExecutionRequest,
-  ): Record<string, { description: string; prompt: string; tools?: string[]; model?: string; mcpServers?: Record<string, McpServerConfig> }> | undefined {
+  ): Record<string, { description: string; prompt: string; tools?: string[]; model?: string; mcpServers?: string[] }> | undefined {
     if (!req.subagents || req.subagents.length === 0) return undefined
-    const subagentMcpServers = req.pluginMcpServers as unknown as Record<string, McpServerConfig>
-    const out: Record<string, { description: string; prompt: string; tools?: string[]; model?: string; mcpServers?: Record<string, McpServerConfig> }> = {}
+    const pluginServerNames = Object.keys(
+      (req.pluginMcpServers as unknown as Record<string, McpServerConfig> | undefined) ?? {},
+    )
+    const mcpServerNames = ['coro', ...pluginServerNames]
+    const out: Record<string, { description: string; prompt: string; tools?: string[]; model?: string; mcpServers?: string[] }> = {}
     for (const sa of req.subagents) {
       if (sa.provider && sa.provider !== ANTHROPIC_PLUGIN_ID) continue
       out[sa.name] = {
@@ -1515,7 +1529,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         prompt: sa.systemPrompt,
         ...(sa.allowedTools ? { tools: [...sa.allowedTools] } : {}),
         ...(sa.model ? { model: sa.model } : {}),
-        ...(Object.keys(subagentMcpServers).length > 0 ? { mcpServers: subagentMcpServers } : {}),
+        mcpServers: mcpServerNames,
       }
     }
     return Object.keys(out).length > 0 ? out : undefined

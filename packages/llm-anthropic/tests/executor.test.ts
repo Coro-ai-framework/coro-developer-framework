@@ -150,6 +150,60 @@ describe('AnthropicExecutor — supports()', () => {
   })
 })
 
+describe('AnthropicExecutor — buildSdkAgentsFromRequest', () => {
+  // Regression guard: the SDK's `AgentDefinition.mcpServers` is an ARRAY
+  // of server names (or inline records), NOT a `Record<name, config>`
+  // object map. Passing the bare object map silently invalidates the
+  // whole agent definition, so the CLI drops the subagent and the model
+  // gets `Agent type '<name>' not found`. This only triggered once a
+  // plugin MCP server (e.g. jira) was installed and `pluginMcpServers`
+  // became non-empty.
+  function buildAgents(req: unknown) {
+    const ex = createAnthropicExecutor({
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
+      logger: silentLogger,
+    })
+    return (ex as unknown as {
+      buildSdkAgentsFromRequest: (r: unknown) => Record<string, { mcpServers?: unknown }> | undefined
+    }).buildSdkAgentsFromRequest(req)
+  }
+
+  it('emits mcpServers as a string array referencing coro + plugin servers', () => {
+    const agents = buildAgents({
+      subagents: [{ name: 'code-reviewer', systemPrompt: 'review the diff' }],
+      pluginMcpServers: { jira: { type: 'sdk' }, github: { type: 'sdk' } },
+    })
+    expect(agents).toBeDefined()
+    const def = agents!['code-reviewer']
+    expect(Array.isArray(def.mcpServers)).toBe(true)
+    expect(def.mcpServers).toEqual(['coro', 'jira', 'github'])
+  })
+
+  it('still references coro when no plugin MCP servers are present', () => {
+    const agents = buildAgents({
+      subagents: [{ name: 'code-reviewer', systemPrompt: 'review the diff' }],
+      pluginMcpServers: {},
+    })
+    expect(agents!['code-reviewer'].mcpServers).toEqual(['coro'])
+  })
+
+  it('returns undefined when no subagents are declared', () => {
+    expect(buildAgents({ subagents: [], pluginMcpServers: { jira: {} } })).toBeUndefined()
+    expect(buildAgents({ pluginMcpServers: { jira: {} } })).toBeUndefined()
+  })
+
+  it('skips subagents pinned to a non-Anthropic provider', () => {
+    const agents = buildAgents({
+      subagents: [
+        { name: 'code-reviewer', systemPrompt: 'x' },
+        { name: 'gpt-helper', systemPrompt: 'y', provider: 'openai' },
+      ],
+      pluginMcpServers: {},
+    })
+    expect(Object.keys(agents!)).toEqual(['code-reviewer'])
+  })
+})
+
 describe('AnthropicExecutor — healthcheck', () => {
   it('reports ok=true when auth.method=apiKey and apiKey is present', async () => {
     const ex = createAnthropicExecutor({
