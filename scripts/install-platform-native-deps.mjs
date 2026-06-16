@@ -19,6 +19,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const packageRoot = path.resolve(__dirname, '..')
 const pkg = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
 
+// Apply before any native-addon install/rebuild subprocess (better-sqlite3 install
+// can run before this postinstall on global installs). .npmrc in the published
+// package also sets msvs_version=2022; this covers environments that skip it.
+if (process.platform === 'win32' && !process.env.npm_config_msvs_version) {
+  process.env.npm_config_msvs_version = '2022'
+}
+
 installClaudeSdkPlatformBinary(pkg)
 rebuildBetterSqlite3(pkg)
 

@@ -116,7 +116,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-14]
+        # Match desktop-release / desktop-validation: windows-latest ships VS 2026
+        # (node-gyp 10 cannot detect it), which breaks better-sqlite3 compile fallback.
+        os: [windows-2022, macos-14]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:

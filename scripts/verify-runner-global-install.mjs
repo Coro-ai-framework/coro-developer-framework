@@ -44,10 +44,17 @@ try {
     process.exit(1)
   }
 
+  const installEnv = { ...process.env }
+  if (process.platform === 'win32' && !installEnv.npm_config_msvs_version) {
+    // node-gyp on newer Windows runners may fail to auto-detect Visual Studio.
+    // Target VS 2022 explicitly (same approach as install-platform-native-deps.mjs).
+    installEnv.npm_config_msvs_version = '2022'
+  }
+
   const install = spawnSync(
     'npm',
     ['install', '-g', path.join(packDir, tarball), '--prefix', prefix, '--no-audit', '--no-fund'],
-    { stdio: 'inherit', shell: process.platform === 'win32' },
+    { stdio: 'inherit', shell: process.platform === 'win32', env: installEnv },
   )
   if (install.status !== 0) {
     console.error('::error::npm install -g failed')

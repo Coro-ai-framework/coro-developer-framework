@@ -80,6 +80,10 @@ function verifyRunnerTarballRuntimeDeps(outDir, pkg) {
     console.error('::error::Runner tarball missing postinstall native deps script')
     process.exit(1)
   }
+  if (!listing.includes('package/scripts/preinstall-windows-native-env.mjs')) {
+    console.error('::error::Runner tarball missing preinstall Windows native env script')
+    process.exit(1)
+  }
   if (listing.includes('package/node_modules/better-sqlite3/build/')) {
     console.error(
       '::error::Runner tarball must not bundle better-sqlite3/build — native binding is rebuilt at install time',

@@ -184,6 +184,10 @@ copyFileSync(
   path.join(root, 'scripts', 'install-platform-native-deps.mjs'),
   path.join(stagingRoot, 'scripts', 'install-platform-native-deps.mjs'),
 )
+copyFileSync(
+  path.join(root, 'scripts', 'preinstall-windows-native-env.mjs'),
+  path.join(stagingRoot, 'scripts', 'preinstall-windows-native-env.mjs'),
+)
 
 for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
   if (name.startsWith('@coro-ai/')) {
@@ -193,6 +197,7 @@ for (const name of Object.keys(stagedPkg.dependencies ?? {})) {
 stagedPkg.dependencies[CLAUDE_SDK_PKG] = claudeSdkVersion
 stagedPkg.scripts = {
   ...(stagedPkg.scripts ?? {}),
+  preinstall: 'node scripts/preinstall-windows-native-env.mjs',
   postinstall: 'node scripts/install-platform-native-deps.mjs',
 }
 stagedPkg.files = ['dist', 'dashboard-dist', 'README.md', 'scripts', 'node_modules']
@@ -407,6 +412,12 @@ function assertProductionNodeModules(stagingRoot, stagedPkg) {
   const postinstallScript = path.join(stagingRoot, 'scripts', 'install-platform-native-deps.mjs')
   if (!existsSync(postinstallScript)) {
     console.error('::error::Missing scripts/install-platform-native-deps.mjs in staging tree')
+    process.exit(1)
+  }
+
+  const preinstallScript = path.join(stagingRoot, 'scripts', 'preinstall-windows-native-env.mjs')
+  if (!existsSync(preinstallScript)) {
+    console.error('::error::Missing scripts/preinstall-windows-native-env.mjs in staging tree')
     process.exit(1)
   }
 }
