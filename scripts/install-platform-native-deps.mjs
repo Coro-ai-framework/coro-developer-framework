@@ -115,10 +115,18 @@ function rebuildBetterSqlite3(pkg) {
       '(publish tarball strips cross-platform native artifacts)',
   )
 
+  const rebuildEnv = { ...process.env }
+  if (process.platform === 'win32' && !rebuildEnv.npm_config_msvs_version) {
+    // node-gyp on Windows may fail to auto-detect Visual Studio via PowerShell.
+    // Explicitly targeting VS 2022 bypasses the detection and lets compilation succeed.
+    // An existing npm_config_msvs_version is respected so users can override if needed.
+    rebuildEnv.npm_config_msvs_version = '2022'
+  }
+
   const result = spawnSync('npm', ['rebuild', 'better-sqlite3', '--no-audit', '--no-fund'], {
     cwd: packageRoot,
     stdio: 'inherit',
-    env: process.env,
+    env: rebuildEnv,
     shell: process.platform === 'win32',
   })
 
