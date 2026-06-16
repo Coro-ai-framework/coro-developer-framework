@@ -37,7 +37,7 @@
   },
   "devDependencies": {
     "@coro-ai/cloud-protocol": "workspace:*",
-    "@types/node": "^22.13.14",
+    "@types/node": "^25.9.3",
     "pino": "^9.7.0",
     "typescript": "^5.8.2",
     "vitest": "^3.2.4"
