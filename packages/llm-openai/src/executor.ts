@@ -38,6 +38,11 @@ import {
   calculateOpenAiCostUsd,
   supportsOpenAiModel,
 } from './models'
+import {
+  appendDeveloperMessagesToOpenAiTurn,
+  DeveloperInputBuffer,
+  wireDeveloperInputChannel,
+} from './steering-input'
 import { openAiConfigSchema, type OpenAiAuthConfig, type OpenAiClientOptions } from './types'
 
 interface OpenAiResponseUsageDetails {
@@ -224,11 +229,18 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       return
     }
 
-    const abortController = new AbortController()
-    const controller: ExecutorSessionController = {
-      interrupt: async () => abortController.abort(),
+    const turnAbortRef: { current: AbortController | null } = { current: null }
+    const developerBuffer = new DeveloperInputBuffer(turnAbortRef)
+    wireDeveloperInputChannel(req.developerInput, developerBuffer, () => {
+      turnAbortRef.current?.abort()
+    })
+
+    const sessionController: ExecutorSessionController = {
+      interrupt: async () => {
+        turnAbortRef.current?.abort()
+      },
     }
-    req.lifecycle?.onSessionStart?.(controller)
+    req.lifecycle?.onSessionStart?.(sessionController)
 
     const bridge = new McpFunctionBridge({
       coroServer: req.mcpServer,
@@ -236,7 +248,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       hookPolicy: req.hookPolicy,
       cwd: req.cwd,
       phase: req.phase,
-      signal: abortController.signal,
+      signal: req.signal,
       externalPool: this.externalMcpPool,
       externalScopeKey: req.cwd,
     })
@@ -265,30 +277,56 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
 
     try {
       while (turns < req.maxTurns) {
-        if (req.signal.aborted || abortController.signal.aborted) {
+        if (req.signal.aborted) {
           stopReason = 'aborted'
           break
         }
+
+        const drainedBeforeTurn = appendDeveloperMessagesToOpenAiTurn(
+          developerBuffer.drain(),
+          inputItems,
+          history,
+        )
+        if (drainedBeforeTurn > 0) {
+          yield {
+            type: 'log',
+            level: 'info',
+            message: `[control] Applied ${drainedBeforeTurn} developer steering message${drainedBeforeTurn === 1 ? '' : 's'} to the OpenAI turn input`,
+          }
+        }
+
         turns++
+        const turnAbort = new AbortController()
+        turnAbortRef.current = turnAbort
+        const requestSignal = anySignal([req.signal, turnAbort.signal])
+
         let response: OpenAiResponseLike
         try {
           response = await client.responses.create(
             this.buildCreateParams(req, inputItems, tools),
-            { signal: anySignal([req.signal, abortController.signal]) },
+            { signal: requestSignal },
           )
         } catch (err) {
-          // Interrupting the executor (e.g. when a developer-input
-          // message is injected mid-flight, or the runner cancels)
-          // aborts the in-flight Responses request, which throws an
-          // AbortError. Treat that as a clean stop instead of crashing
-          // the job — the runner will resume on the new context.
-          if (isAbortError(err) || req.signal.aborted || abortController.signal.aborted) {
+          if (req.signal.aborted) {
             stopReason = 'aborted'
             break
           }
-          // Classify provider rate-limit / overloaded errors so the
-          // runner can park into STATUS_AWAITING_RATE_LIMIT and
-          // auto-resume rather than treating it as a crash.
+          if (turnAbort.signal.aborted || isAbortError(err)) {
+            const drained = appendDeveloperMessagesToOpenAiTurn(
+              developerBuffer.drain(),
+              inputItems,
+              history,
+            )
+            yield {
+              type: 'log',
+              level: 'info',
+              message:
+                `[control] Recoverable steering interrupt — continuing phase` +
+                (drained > 0 ? ` (${drained} developer message${drained === 1 ? '' : 's'} queued)` : ''),
+            }
+            turns--
+            continue
+          }
           const info = classifyProviderError(err, OPENAI_CLASSIFY_OPTIONS)
           if (info) {
             this.logger.warn(
@@ -298,14 +336,13 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
             throw new RateLimitExceededError(OPENAI_PLUGIN_ID, info, { cause: err })
           }
           throw err
+        } finally {
+          if (turnAbortRef.current === turnAbort) {
+            turnAbortRef.current = null
+          }
         }
+
         const outputItems = Array.isArray(response.output) ? response.output : []
-        // With `store: false` the Responses API does NOT persist returned
-        // items, so their server-generated IDs (e.g. `rs_*` reasoning
-        // items, `msg_*` messages) cannot be referenced on subsequent
-        // turns — replaying them as-is triggers `404 Item ... not
-        // found`. Strip ephemeral IDs and drop `reasoning` items, which
-        // OpenAI explicitly recommends removing in stateless mode.
         const replayItems = sanitizeOutputItemsForReplay(outputItems)
         inputItems.push(...replayItems)
 
@@ -323,8 +360,6 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           } : {}),
           meta: {
             openaiResponseId: response.id,
-            // Persist the sanitized items so session resume replay
-            // never carries ephemeral server IDs back to the API.
             openaiItems: replayItems,
           },
         }
@@ -338,12 +373,6 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           cacheReadInputTokens: usage.cacheReadInputTokens + turnUsage.cacheReadInputTokens,
           cacheCreationInputTokens: usage.cacheCreationInputTokens + turnUsage.cacheCreationInputTokens,
         }
-        // Compute cumulative cost from our local pricing table. OpenAI's
-        // Responses API does not return a dollar figure on the usage
-        // payload (unlike Anthropic's `total_cost_usd` on the result
-        // frame), so without this the runner sees `totalCostUsd=undefined`
-        // on every usage event, `derivePhaseCostUsd` falls back to 0,
-        // and every gpt-* phase shows $0.0000 in the dashboard.
         const totalCostUsd = calculateOpenAiCostUsd(req.model, usage)
         yield { type: 'usage', tokens: { ...usage, totalCostUsd } }
 
@@ -386,6 +415,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
         },
       }
     } finally {
+      turnAbortRef.current = null
       await bridge.dispose()
       req.lifecycle?.onSessionEnd?.()
     }

@@ -216,6 +216,107 @@ describe('OpenAiExecutor — executePhase', () => {
     }))
   })
 
+  it('continues the phase after a steering interrupt instead of ending early', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    let sessionController: { interrupt: () => Promise<void> } | undefined
+    let firstCreateEntered!: () => void
+    const firstCreatePromise = new Promise<void>(resolve => {
+      firstCreateEntered = resolve
+    })
+    const developerInput = {
+      push: (_message: unknown) => { /* wired by executor */ },
+      close: () => { /* wired by executor */ },
+    }
+
+    let apiAttempt = 0
+    const client = {
+      responses: {
+        create: async (params: Record<string, unknown>, opts?: { signal?: AbortSignal }) => {
+          apiAttempt++
+          if (apiAttempt === 1) {
+            firstCreateEntered()
+            await new Promise<void>((_, reject) => {
+              const signal = opts?.signal
+              if (!signal) {
+                reject(new Error('missing signal'))
+                return
+              }
+              if (signal.aborted) {
+                reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+                return
+              }
+              signal.addEventListener('abort', () => {
+                reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+              }, { once: true })
+            })
+          }
+          calls.push(params)
+          return {
+            id: 'resp-after-steer',
+            output_text: 'continued',
+            status: 'completed',
+            usage: { input_tokens: 3, output_tokens: 2 },
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'continued' }] }],
+          }
+        },
+      },
+    }
+
+    const coroServer = createSdkMcpServer({ name: 'coro', tools: [] })
+    const ex = createOpenAiExecutor({
+      auth: { apiKey: 'sk-test' },
+      logger: silentLogger,
+      client,
+    })
+
+    const events: unknown[] = []
+    const run = (async () => {
+      for await (const event of ex.executePhase({
+        systemPrompt: 'system',
+        userPrompt: 'start work',
+        model: 'gpt-5.4',
+        cwd: process.cwd(),
+        intelligenceDir: process.cwd(),
+        mcpServer: { kind: 'sdk-instance', id: 'coro', instance: coroServer },
+        pluginMcpServers: {},
+        hookPolicy: { allowedTools: null, writeRoots: [process.cwd()] },
+        sessionState: {},
+        maxTurns: 5,
+        signal: new AbortController().signal,
+        developerInput,
+        lifecycle: {
+          onSessionStart: (controller) => {
+            sessionController = controller
+          },
+        },
+      })) {
+        events.push(event)
+      }
+    })()
+
+    await firstCreatePromise
+    expect(sessionController).toBeDefined()
+
+    developerInput.push({
+      role: 'user',
+      content: '[DEVELOPER MESSAGE]\n"Adjust the plan"',
+    })
+    await sessionController!.interrupt()
+
+    await run
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: expect.stringContaining('Adjust the plan') }),
+    ]))
+    const doneEvents = events.filter(
+      e => typeof e === 'object' && e !== null && (e as { type?: string }).type === 'done',
+    )
+    expect(doneEvents).toHaveLength(1)
+    expect(doneEvents[0]).toMatchObject({ stopReason: 'completed' })
+    expect(events).toContainEqual(expect.objectContaining({ type: 'text', content: 'continued' }))
+  })
+
   it('emits cumulative totalCostUsd on each usage event so the runner can book per-phase cost', async () => {
     const client = {
       responses: {
