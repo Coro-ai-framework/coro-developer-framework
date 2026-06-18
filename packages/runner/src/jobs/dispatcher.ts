@@ -1,3 +1,5 @@
+import path from 'node:path'
+import fs from 'node:fs/promises'
 import type {
   ConversationMessage,
   DeveloperInputChannel,
@@ -40,6 +42,11 @@ import type { EventTransport } from '../state/transport'
 import type { InboundEvent, InboundEventSource } from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { resolveJobByExternalRef } from '../plugins/refs'
+import {
+  materializeCampaignContext,
+  prepareCampaignChildParams,
+  syncCampaignContextToParent,
+} from './campaign-context'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
 const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
@@ -1186,6 +1193,26 @@ export class Dispatcher {
         `re-running coordinator sweep`,
     )
 
+    const workingRoot = this.ctx.settings.paths.workingDir
+    try {
+      const { synced } = await syncCampaignContextToParent({
+        childWorkingDir: path.join(workingRoot, child.id),
+        parentWorkingDir: path.join(workingRoot, parent.id),
+      })
+      if (synced.length > 0) {
+        await this.ctx.stateBackend.appendLog(
+          parent.id,
+          `[campaign] Synced ${synced.length} campaign context file${synced.length === 1 ? '' : 's'} ` +
+            `from child "${settledChildName}" (${synced.join(', ')})`,
+        )
+      }
+    } catch (err) {
+      this.ctx.logger.warn(
+        { err, childId: child.id, parentId: parent.id },
+        'Failed to sync campaign context from child to parent',
+      )
+    }
+
     await this.coordinateCampaign(parent.id)
   }
 
@@ -1209,23 +1236,52 @@ export class Dispatcher {
     // insights apart from the child's own findings.
     const siblingInsights = propagableInsights(parent.campaignAggregatedInsights)
 
+    const workingRoot = this.ctx.settings.paths.workingDir
+    const parentWorkingDir = path.join(workingRoot, parent.id)
+
+    const mergedParams: Record<string, unknown> = {
+      ...inherited,
+      ...spec.params,
+      description: spec.description,
+      epicAllowed: false,
+      campaignParentId: parent.id,
+      campaignChildName: spec.name,
+      ...(spec.trackerRef ? { trackerRef: spec.trackerRef } : {}),
+    }
+
     const childInput: JobInput = {
       type: 'job',
       workflowPath: CHILD_WORKFLOW_PATH,
       triggerSource: 'internal',
-      params: {
-        ...inherited,
-        ...spec.params,
-        description: spec.description,
-        epicAllowed: false,
-        campaignParentId: parent.id,
-        campaignChildName: spec.name,
-        ...(spec.trackerRef ? { trackerRef: spec.trackerRef } : {}),
-      },
+      params: mergedParams,
       ...(siblingInsights.length > 0 ? { initialInsights: siblingInsights } : {}),
     }
 
     const child = await this.ctx.stateBackend.createJob(childInput)
+
+    const childWorkingDir = path.join(workingRoot, child.id)
+    try {
+      await fs.mkdir(childWorkingDir, { recursive: true })
+      const { copied } = await materializeCampaignContext({
+        parentJob: parent,
+        parentWorkingDir,
+        childWorkingDir,
+      })
+      const childParams = await prepareCampaignChildParams({
+        params: mergedParams,
+        parentWorkingDir,
+        parentJobId: parent.id,
+        copiedRelativePaths: copied,
+      })
+      await this.ctx.stateBackend.updateJob(child.id, { params: childParams })
+    } catch (err) {
+      this.ctx.logger.error(
+        { err, parentId: parent.id, childId: child.id, childName: spec.name },
+        'Failed to materialize campaign context for child',
+      )
+      await this.markChildFailed(parent.id, spec.name, `campaign context materialization failed: ${String(err)}`)
+      return
+    }
 
     const refreshed = (await this.ctx.stateBackend.getJob(parent.id)) ?? parent
     const list = refreshed.campaignChildren ?? []

@@ -58,9 +58,10 @@ Before doing **any other planning work**, decide whether this job is a single **
 
 **Read the campaign architecture if you are a campaign child.** When `params.epicAllowed === false`:
 
-- `params.campaignDecisionsRef` typically points at `working/{parent-job-id}/campaign-architecture.md`. Read it. Treat its ADRs as load-bearing — your decomposition must respect them.
-- `params.campaignContracts` lists the contract ids this child **produces**. For each id, read `working/{parent-job-id}/contracts/_index.json` to get the design-time shape. Invoke the `campaign-contracts` skill for the producer-side workflow.
-- `params.campaignConsumesContracts` lists the contract ids this child **consumes**, each with the producer child name. For each, read `working/{parent-job-id}/contracts/{producer-name}.json` (the producer has already merged — `dependsOn` guaranteed it). Invoke the `campaign-contracts` skill for the consumer-side workflow. If the producer's contract file is missing, escalate.
+- `params.campaignContextDir` points at the folder (under your job root) where the runner copied the parent campaign's markdown/json files at dispatch. All parent campaign inputs live here.
+- `params.campaignDecisionsRef`, when set, is already rewritten to a path under `params.campaignContextDir` — read it. Treat its ADRs as load-bearing — your decomposition must respect them.
+- `params.campaignContracts` lists the contract ids this child **produces**. For each id, read the design-time shape from the contracts index under `params.campaignContextDir` (the path is in your params or the `campaign-contracts` skill for this tenant). Invoke the `campaign-contracts` skill for the producer-side workflow.
+- `params.campaignConsumesContracts` lists the contract ids this child **consumes**, each with the producer child name. For each, read the producer's contract file under `params.campaignContextDir` (the producer has already merged — `dependsOn` guaranteed it). Invoke the `campaign-contracts` skill for the consumer-side workflow. If the producer's contract file is missing, escalate.
 
 Both sets of contracts feed the work-item plan: the producer must write the contract test in step 1; the consumer must reference the producer's recorded shape verbatim.
 

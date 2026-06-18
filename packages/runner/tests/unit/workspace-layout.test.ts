@@ -51,6 +51,16 @@ describe('resolveJobWorkspaceLayout', () => {
     expect(layout.repoCheckoutDir).toBe('my-repo')
     expect(layout.repoCheckoutAbsDir).toBe('/work/ws-job/my-repo')
   })
+
+  it('surfaces campaignContextDir when set on campaign children', () => {
+    const layout = resolveJobWorkspaceLayout(
+      makeJob({ params: { repoSlug: 'svc', campaignContextDir: 'campaign' } }),
+      '/work/ws-job',
+    )
+    expect(layout.campaignContextDir).toBe('campaign')
+    const block = buildWorkspaceLayoutPromptBlock(layout)
+    expect(block).toContain('Campaign context: `campaign/`')
+  })
 })
 
 describe('buildPrimaryRepoCandidates', () => {

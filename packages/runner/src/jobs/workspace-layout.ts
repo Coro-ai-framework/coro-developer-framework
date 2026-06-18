@@ -11,6 +11,8 @@ export interface JobWorkspaceLayout {
   jobWorkingDir: string
   repoCheckoutDir?: string
   repoCheckoutAbsDir?: string
+  /** Present on campaign child jobs — relative path to copied parent context. */
+  campaignContextDir?: string
 }
 
 export function resolveJobWorkspaceLayout(job: Job, jobWorkingDir: string): JobWorkspaceLayout {
@@ -25,7 +27,9 @@ export function resolveJobWorkspaceLayout(job: Job, jobWorkingDir: string): JobW
     typeof params['repoCheckoutAbsDir'] === 'string' ? params['repoCheckoutAbsDir']
     : rel ? path.join(jobWorkingDir, rel) : undefined
 
-  return { jobWorkingDir, repoCheckoutDir: rel, repoCheckoutAbsDir: abs }
+  const campaignContextDir = paramString(params, 'campaignContextDir')
+
+  return { jobWorkingDir, repoCheckoutDir: rel, repoCheckoutAbsDir: abs, campaignContextDir }
 }
 
 function paramString(params: Record<string, unknown>, key: string): string | undefined {
@@ -108,6 +112,15 @@ export function buildWorkspaceLayoutPromptBlock(layout: JobWorkspaceLayout): str
     lines.push(
       '',
       'No target repo checkout is registered yet. Call `scm_clone_repo` first; paths will appear here after clone.',
+    )
+  }
+
+  if (layout.campaignContextDir) {
+    lines.push(
+      '',
+      `Campaign context: \`${layout.campaignContextDir}/\` under the job root — markdown/json copied from the parent campaign at dispatch. ` +
+        'Read parent campaign inputs here; write campaign outputs here (the runner syncs this folder back to the parent when you finish). ' +
+        'Path refs in `params` (e.g. `campaignDecisionsRef`) are already rewritten to this directory.',
     )
   }
 

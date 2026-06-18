@@ -6,7 +6,10 @@
 // reaches a terminal state. The test seam stubs the runner module so the
 // dispatcher only manipulates state (no real Anthropic calls).
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
 vi.mock('../../src/jobs/runner', () => ({
   // Resolve immediately so dispatchCampaignChild() returns successfully
@@ -118,11 +121,11 @@ function makeBackend(jobs: Job[]): StubBackend {
   }
 }
 
-function makeDispatcher(backend: StubBackend) {
+function makeDispatcher(backend: StubBackend, workingDir: string) {
   const ctx = {
     stateBackend: backend,
     settings: {
-      paths: { coroIntelligenceDir: '/intel', workingDir: '/working', baseLayerDir: '/base' },
+      paths: { coroIntelligenceDir: '/intel', workingDir, baseLayerDir: '/base' },
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     tenantContext: { tenantId: 'solo', kind: 'solo' as const },
@@ -131,8 +134,16 @@ function makeDispatcher(backend: StubBackend) {
   return new Dispatcher(ctx as never)
 }
 
-beforeEach(() => {
+let testWorkingDir: string
+
+beforeEach(async () => {
   vi.clearAllMocks()
+  testWorkingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-dispatch-'))
+  await fs.mkdir(path.join(testWorkingDir, 'campaign-1'), { recursive: true })
+})
+
+afterEach(async () => {
+  await fs.rm(testWorkingDir, { recursive: true, force: true })
 })
 
 // ── Coordinator: halt-on-failure ─────────────────────────────────────────────
@@ -144,7 +155,7 @@ describe('Dispatcher.coordinateCampaign — halt on failure', () => {
       makeChild({ name: 'b', status: 'pending', dependsOn: ['a'] }),
     ])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
 
@@ -164,7 +175,7 @@ describe('Dispatcher.coordinateCampaign — halt on failure', () => {
       { status: STATUS_AWAITING_DEVELOPER_INPUT },
     )
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
 
@@ -174,7 +185,7 @@ describe('Dispatcher.coordinateCampaign — halt on failure', () => {
   it('also halts on escalated children (not just failed)', async () => {
     const parent = makeCampaignJob([makeChild({ name: 'a', status: 'escalated' })])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
 
@@ -201,7 +212,7 @@ describe('Dispatcher.coordinateCampaign — un-park after halt resolution', () =
       { status: STATUS_AWAITING_DEVELOPER_INPUT, escalationMessage: 'previously halted' },
     )
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
 
@@ -217,7 +228,7 @@ describe('Dispatcher.coordinateCampaign — un-park after halt resolution', () =
       makeChild({ name: 'b', status: 'pending' }),
     ])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
 
@@ -247,7 +258,7 @@ describe('Dispatcher.coordinateCampaign — advance past coordinating', () => {
       },
     )
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     // Spy on resumeJob to confirm coordinator delegates rather than mutating
     // the phase directly. (Production resumeJob does the actual phase swap.)
@@ -271,7 +282,7 @@ describe('Dispatcher.coordinateCampaign — advance past coordinating', () => {
       makeChild({ name: 'c', status: 'cancelled' }),
     ])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     const resumeSpy = (vi.spyOn(dispatcher, 'resumeJob') as unknown as {
       mockImplementation(fn: (...args: unknown[]) => unknown): unknown
@@ -288,7 +299,7 @@ describe('Dispatcher.coordinateCampaign — advance past coordinating', () => {
       { phase: 'aggregation' },
     )
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
     const resumeSpy = (vi.spyOn(dispatcher, 'resumeJob') as unknown as {
       mockImplementation(fn: (...args: unknown[]) => unknown): unknown
     }).mockImplementation(async () => undefined) as unknown as ReturnType<typeof vi.fn>
@@ -304,7 +315,7 @@ describe('Dispatcher.coordinateCampaign — advance past coordinating', () => {
       { phase: 'campaign-integration' },
     )
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
     const resumeSpy = (vi.spyOn(dispatcher, 'resumeJob') as unknown as {
       mockImplementation(fn: (...args: unknown[]) => unknown): unknown
     }).mockImplementation(async () => undefined) as unknown as ReturnType<typeof vi.fn>
@@ -322,7 +333,7 @@ describe('Dispatcher.coordinateCampaign — dispatch sweep', () => {
     const parent = makeCampaignJob([])
     delete parent.campaignChildren
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
     expect(backend.updateJob).not.toHaveBeenCalled()
@@ -330,7 +341,7 @@ describe('Dispatcher.coordinateCampaign — dispatch sweep', () => {
 
   it('does nothing for a missing job', async () => {
     const backend = makeBackend([])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await expect(dispatcher.coordinateCampaign('does-not-exist')).resolves.toBeUndefined()
     expect(backend.updateJob).not.toHaveBeenCalled()
@@ -339,7 +350,7 @@ describe('Dispatcher.coordinateCampaign — dispatch sweep', () => {
   it('does nothing for an empty campaign', async () => {
     const parent = makeCampaignJob([])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
     expect(backend.updateJob).not.toHaveBeenCalled()
@@ -355,7 +366,7 @@ describe('Dispatcher.coordinateCampaign — dispatch sweep', () => {
       makeChild({ name: 'fix-r1-drift', status: 'pending', dependsOn: ['a'] }),
     ])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
 
@@ -363,6 +374,38 @@ describe('Dispatcher.coordinateCampaign — dispatch sweep', () => {
     const fix = stored.campaignChildren!.find(c => c.name === 'fix-r1-drift')!
     expect(fix.status).toBe('dispatched')
     expect(backend.createJob).toHaveBeenCalledTimes(1)
+  })
+
+  it('materialises parent markdown/json into child campaign/ and rewrites path params', async () => {
+    const parentDir = path.join(testWorkingDir, 'campaign-1')
+    await fs.writeFile(path.join(parentDir, 'tenant-arch.md'), '# arch', 'utf8')
+
+    const parent = makeCampaignJob([
+      makeChild({
+        name: 'a',
+        status: 'ready',
+        params: {
+          campaignDecisionsRef: 'working/campaign-1/tenant-arch.md',
+        },
+      }),
+    ])
+    const backend = makeBackend([parent])
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
+
+    await dispatcher.coordinateCampaign(parent.id)
+
+    expect(backend.createJob).toHaveBeenCalledTimes(1)
+    const childId = [...backend.jobs.keys()].find(id => id.startsWith('child-'))!
+    const childJob = backend.jobs.get(childId)!
+
+    expect(childJob.params.campaignContextDir).toBe('campaign')
+    expect(childJob.params.campaignDecisionsRef).toBe('campaign/tenant-arch.md')
+
+    const childCtx = await fs.readFile(
+      path.join(testWorkingDir, childId, 'campaign', 'tenant-arch.md'),
+      'utf8',
+    )
+    expect(childCtx).toBe('# arch')
   })
 })
 
@@ -393,7 +436,7 @@ describe('Campaign sibling insights — rejected filtering', () => {
       ],
     })
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await dispatcher.coordinateCampaign(parent.id)
 
@@ -435,7 +478,7 @@ describe('Campaign sibling insights — rejected filtering', () => {
       ],
     }
     const backend = makeBackend([parent, childJob])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
 
     await (dispatcher as unknown as { onChildJobStopped: (j: Job) => Promise<void> })
       .onChildJobStopped(childJob)
@@ -456,7 +499,7 @@ describe('Dispatcher.campaign{Skip,Cancel,Rerun}Child', () => {
       makeChild({ name: 'b', status: 'pending', dependsOn: ['a'] }),
     ])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
     const coordSpy = vi.spyOn(dispatcher, 'coordinateCampaign')
 
     await dispatcher.campaignSkipChild(parent.id, 'a', 'redundant')
@@ -472,7 +515,7 @@ describe('Dispatcher.campaign{Skip,Cancel,Rerun}Child', () => {
   it('campaignCancelChild marks the child cancelled and re-runs the coordinator', async () => {
     const parent = makeCampaignJob([makeChild({ name: 'a', status: 'pending' })])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
     const coordSpy = vi.spyOn(dispatcher, 'coordinateCampaign')
 
     await dispatcher.campaignCancelChild(parent.id, 'a')
@@ -491,7 +534,7 @@ describe('Dispatcher.campaign{Skip,Cancel,Rerun}Child', () => {
       }),
     ])
     const backend = makeBackend([parent])
-    const dispatcher = makeDispatcher(backend)
+    const dispatcher = makeDispatcher(backend, testWorkingDir)
     const coordSpy = vi.spyOn(dispatcher, 'coordinateCampaign')
 
     await dispatcher.campaignRerunChild(parent.id, 'a', 'fixed')

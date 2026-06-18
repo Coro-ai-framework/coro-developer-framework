@@ -19,17 +19,28 @@ to root-cause: each PR looked fine in isolation; the integration is
 broken at runtime.
 
 This skill defines the **file-based contract pattern** used across the
-campaign workflow. It is intentionally simple: plain JSON files in the
-parent campaign's working directory.
+campaign workflow. It is intentionally simple: plain JSON files alongside
+other campaign markdown/json artefacts.
 
-## File layout
+## File layout (parent campaign job)
+
+Tenants choose directory and file names. A common layout:
 
 ```
-working/{parent-job-id}/contracts/
+contracts/
   _index.json                  ← seeded by Campaign Architect
   {producer-child-name}.json   ← written by the producer child's Coder
-  {producer-child-name}.json   ← one per producer child
 ```
+
+## Campaign child jobs — `params.campaignContextDir`
+
+When the runner dispatches a campaign child, it copies the parent
+campaign's markdown/json files into `{child-job-root}/{campaignContextDir}/`
+(preserving relative paths) and rewrites path refs in `params` to point
+there. Children **read and write campaign artefacts only under
+`params.campaignContextDir`** — never under the parent job id path.
+When the child finishes, the runner syncs that folder back to the
+parent campaign working directory.
 
 ## `_index.json` shape (Campaign Architect writes this)
 
@@ -62,21 +73,23 @@ working/{parent-job-id}/contracts/
 
 ## Producer child contract file (one per producer child)
 
-The Campaign Planner injects two params into the producer child:
+The Campaign Planner injects params into the producer child (paths
+are rewritten under `params.campaignContextDir` at dispatch):
 
 ```
-params.campaignDecisionsRef = "working/{parent-job-id}/campaign-architecture.md"
+params.campaignDecisionsRef = "<path under campaignContextDir>"
 params.campaignContracts = ["order-created-event"]   // ids the producer owns
 ```
 
 The producer child's Coder, in step 1 of `agents/coder.md`:
 
-1. Read `_index.json` for each id in `params.campaignContracts`.
+1. Read the contracts index under `params.campaignContextDir` for each id in `params.campaignContracts`.
 2. Treat the recorded shape as the canonical contract — the
    implementation must match it exactly.
 3. Write the contract test (see `feature-testing-contract`).
-4. After the implementation lands, write
-   `working/{parent-job-id}/contracts/{this-child-name}.json`:
+4. After the implementation lands, write the producer contract JSON under
+   `params.campaignContextDir` (see your tenant layout — typically
+   `contracts/{params.campaignChildName}.json`):
 
 ```json
 {
@@ -103,10 +116,10 @@ diverge.
 
 ## Consumer child reads the producer contract
 
-The Campaign Planner injects:
+The Campaign Planner injects (paths rewritten under `campaignContextDir` at dispatch):
 
 ```
-params.campaignDecisionsRef = "working/{parent-job-id}/campaign-architecture.md"
+params.campaignDecisionsRef = "<path under campaignContextDir>"
 params.campaignConsumesContracts = [
   { "id": "order-created-event", "producer": "events-publisher" }
 ]
@@ -118,14 +131,13 @@ The consumer child's Planner / Coder, when planning the work item:
    child dispatches. This is encoded as `dependsOn: ["events-publisher"]`
    on the consumer child at registration time. The Campaign Planner
    sets this; the dispatcher honours it.
-2. Read `working/{parent-job-id}/contracts/{producer-child-name}.json`.
+2. Read the producer's contract JSON under `params.campaignContextDir`.
 3. Treat the as-shipped shape as canonical for the consumer side.
 4. Write the consumer-side contract test (`feature-testing-contract`).
 
 If the producer's contract file is missing when the consumer is
-dispatched, the dispatcher should not have allowed the consumer to
-start — escalate. If the producer's recorded shape differs from
-`_index.json` and the consumer's plan was based on `_index.json`, treat
+dispatched, the parent copy was not synced yet — escalate. If the producer's recorded shape differs from
+the index and the consumer's plan was based on the index, treat
 the producer as the source of truth and re-plan; flag the drift via
 `add_insight`.
 
@@ -153,12 +165,11 @@ above is the minimum viable contract surface.
 
 ## Why this is file-based, not a tool
 
-The campaign workflow already passes the parent's working dir into each
-child as part of the dispatch context. File-based contracts:
+File-based contracts under `params.campaignContextDir`:
 
 - Need no new MCP tool.
-- Survive runner restarts and cross-host hand-off (cloud control plane).
-- Are auditable in the parent's working dir alongside every other
+- Survive runner restarts (parent canonical copy + per-child snapshot at dispatch).
+- Are auditable in the parent campaign working dir alongside every other
   campaign artefact.
 - Compose with the existing `register.json` per child (each child still
   records its `contracts[]` rows locally; the campaign-level contracts
