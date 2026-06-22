@@ -70,6 +70,7 @@ import {
   isSteeringDiagnosticText,
   shouldClosePushableAfterResult,
 } from './steering-errors'
+import { chatViaAgentSdk, shouldChatViaAgentSdk } from './chat-via-sdk'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
 import type { SteeringInterruptMode } from '@coro-ai/plugin-sdk'
 
@@ -401,27 +402,33 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   }
 
   /**
-   * Lightweight conversational chat used by surfaces that don't need
-   * the full Claude Agent SDK stack (Coro plan mode intake).
+   * Conversational chat used by Coro plan mode (`POST /intake/stream`).
    *
-   * Talks to Anthropic's `/v1/messages` REST endpoint directly so we
-   * skip the Claude Code CLI subprocess, the MCP bridge, hook
-   * enforcement, and the working-dir / intelligence-dir setup
-   * `executePhase` needs. Auth follows the same priority ladder as
-   * {@link testAnthropicCredentials}: explicit `apiKey`, explicit
-   * `oauth`, or the persisted Claude CLI session.
+   * Routing:
+   *   - `claudeLogin` / `oauth` → {@link chatViaAgentSdk} so subscription
+   *     auth follows the same Claude Code subprocess path as job phases.
+   *     Direct `/v1/messages` REST with an OAuth bearer token hits a
+   *     different Anthropic gate and can spuriously 429 on Opus even when
+   *     the account is not API rate-limited.
+   *   - `apiKey` → direct `/v1/messages` REST (no subprocess startup).
    */
   async chat(req: ChatRequest): Promise<ChatResult> {
+    const authMethod = this.auth.method ?? 'claudeLogin'
     this.logger.debug(
       {
         model: req.model,
         messageCount: req.messages.length,
         toolCount: req.tools?.length ?? 0,
         signalAbortedAtEntry: req.signal.aborted,
-        authMethod: this.auth.method ?? 'claudeLogin',
+        authMethod,
+        viaAgentSdk: shouldChatViaAgentSdk(this.auth),
       },
       'anthropic.chat: invoked',
     )
+    if (shouldChatViaAgentSdk(this.auth)) {
+      return chatViaAgentSdk(this, req)
+    }
+
     const headers = await this.buildAnthropicRestHeaders()
     const hasTools = (req.tools?.length ?? 0) > 0 && typeof req.runTool === 'function'
     if (!hasTools) {
