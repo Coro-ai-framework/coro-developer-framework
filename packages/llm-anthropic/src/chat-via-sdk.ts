@@ -13,15 +13,20 @@
 // auth so behaviour is consistent end-to-end.
 //
 // API-key billing (`method: apiKey`) keeps the lightweight REST
-// implementation in {@link AnthropicExecutor.chat} — there is no
-// subscription channel mismatch and the subprocess startup cost is
-// unnecessary for a short conversational turn.
+// implementation in {@link AnthropicExecutor.chat} — unless BYO plan-mode
+// MCP servers are attached, which require the subprocess MCP bridge.
 
 import { mkdtempSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { z } from 'zod'
-import { createSdkMcpServer, tool } from '@coro-ai/plugin-sdk'
+import {
+  buildChatToolAllowPolicy,
+  chatPluginMcpServerIds,
+  computeChatMaxTurns,
+  createSdkMcpServer,
+  tool,
+} from '@coro-ai/plugin-sdk'
 import type {
   ChatRequest,
   ChatResult,
@@ -36,12 +41,14 @@ export interface AnthropicChatHost {
   executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent>
 }
 
-/** Sentinel allowlist entry — blocks every SDK tool when plan mode has no tools. */
-const CHAT_NO_TOOLS_ALLOWLIST = '__coro_chat_no_tools__'
-
 export function shouldChatViaAgentSdk(auth: ClaudeAuthConfig): boolean {
   const method = auth.method ?? 'claudeLogin'
   return method === 'claudeLogin' || method === 'oauth'
+}
+
+/** Use the SDK subprocess path when subscription auth or BYO MCP requires it. */
+export function shouldRouteChatViaAgentSdk(auth: ClaudeAuthConfig, req: ChatRequest): boolean {
+  return shouldChatViaAgentSdk(auth) || chatPluginMcpServerIds(req).length > 0
 }
 
 function formatChatUserPrompt(messages: ChatRequest['messages']): string {
@@ -54,14 +61,6 @@ function formatChatUserPrompt(messages: ChatRequest['messages']): string {
     .join('\n\n')
 }
 
-function computeChatMaxTurns(req: ChatRequest): number {
-  const toolRounds = req.maxToolRounds ?? 5
-  const hasTools = (req.tools?.length ?? 0) > 0 && typeof req.runTool === 'function'
-  if (!hasTools) return 3
-  // Each tool round is at least one model turn + one tool-result turn.
-  return Math.max(toolRounds * 3, 15)
-}
-
 function mcpText(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] }
 }
@@ -70,13 +69,6 @@ function mcpError(msg: string) {
   return { content: [{ type: 'text' as const, text: msg }], isError: true as const }
 }
 
-/**
- * Plan-mode {@link ChatTool} definitions carry JSON Schema (for the
- * Messages API path). The Claude Agent SDK MCP `tool()` helper only
- * accepts Zod, so we derive a loose Zod object from the declared
- * property types. Argument validation still happens in the runner's
- * `runTool` dispatcher.
- */
 function chatToolZodShape(inputSchema: object): Record<string, z.ZodTypeAny> {
   if (inputSchema && typeof inputSchema === 'object' && 'properties' in inputSchema) {
     const props = (inputSchema as { properties?: Record<string, { type?: string }> }).properties ?? {}
@@ -138,12 +130,6 @@ function buildChatMcpServer(
   return createSdkMcpServer({ name: 'coro', tools: mcpTools })
 }
 
-function chatAllowedTools(req: ChatRequest): string[] {
-  const tools = req.tools ?? []
-  if (tools.length === 0) return [CHAT_NO_TOOLS_ALLOWLIST]
-  return tools.map(t => `mcp__coro__${t.name}`)
-}
-
 export async function chatViaAgentSdk(
   executor: AnthropicChatHost,
   req: ChatRequest,
@@ -154,8 +140,8 @@ export async function chatViaAgentSdk(
 
   const toolCalls: ChatToolCallRecord[] = []
   const mcpInstance = buildChatMcpServer(req, toolCalls)
-  const allowedTools = chatAllowedTools(req)
-  const allowedSet = new Set(allowedTools)
+  const { allowedTools, checkToolAllowed } = buildChatToolAllowPolicy(req)
+  const pluginMcpServers = req.pluginMcpServers ?? {}
 
   const phaseReq: PhaseExecutionRequest = {
     systemPrompt: req.systemPrompt ?? '',
@@ -164,25 +150,11 @@ export async function chatViaAgentSdk(
     cwd: workRoot,
     intelligenceDir,
     mcpServer: { kind: 'sdk-instance', id: 'coro', instance: mcpInstance },
-    pluginMcpServers: {},
+    pluginMcpServers,
     hookPolicy: {
       allowedTools,
       writeRoots: [workRoot],
-      onPreToolUse: (toolName) => {
-        if (allowedSet.has(CHAT_NO_TOOLS_ALLOWLIST)) {
-          return {
-            allow: false,
-            reason: 'Plan mode chat does not use tools for this turn.',
-          }
-        }
-        if (!allowedSet.has(toolName)) {
-          return {
-            allow: false,
-            reason: `Blocked ${toolName}: only plan-mode lookup tools are available.`,
-          }
-        }
-        return { allow: true }
-      },
+      onPreToolUse: (toolName) => checkToolAllowed(toolName),
     },
     sessionState: {},
     maxTurns: computeChatMaxTurns(req),
@@ -203,6 +175,16 @@ export async function chatViaAgentSdk(
       textParts.push(event.content)
     } else if (event.type === 'usage') {
       usage = event.tokens
+    } else if (event.type === 'tool_call') {
+      req.onToolStart?.({ name: event.toolName, input: event.input })
+    } else if (event.type === 'tool_result') {
+      req.onToolEnd?.({
+        name: event.toolName,
+        input: {},
+        output: event.output,
+        durationMs: 0,
+        ...(event.isError ? { error: String(event.output) } : {}),
+      })
     }
   }
 

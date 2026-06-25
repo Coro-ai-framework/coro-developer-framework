@@ -49,6 +49,13 @@ const PROBE_MODEL = 'claude-haiku-4-5'
  *
  * Never throws — every failure path returns `{ ok: false, message, … }`.
  */
+/** Turn a failed {@link testAnthropicCredentials} result into a user-facing error. */
+export function formatAnthropicAuthFailure(result: PluginTestResult): string {
+  const parts = [result.message]
+  if (result.hint) parts.push(result.hint)
+  return parts.filter(Boolean).join(' ')
+}
+
 export async function testAnthropicCredentials(
   auth: ClaudeAuthConfig,
 ): Promise<PluginTestResult> {

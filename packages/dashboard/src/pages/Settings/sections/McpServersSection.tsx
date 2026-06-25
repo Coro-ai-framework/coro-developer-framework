@@ -16,6 +16,12 @@ const EXAMPLE_BLOCK = `{
     "env": { "SLACK_BOT_TOKEN": "xoxb-…" },
     "allowedTools": ["list_channels", "search_messages"]
   },
+  "a5-be-catalog": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["/abs/path/mcp-server/dist/index.js", "--catalog-path", "/abs/path/catalog"],
+    "planMode": true
+  },
   "sentry": {
     "type": "http",
     "url": "https://mcp.sentry.io",
@@ -73,6 +79,7 @@ export default function McpServersSection() {
         footer={
           <span>
             Reserved id <code>coro</code> is rejected. Use <code>"enabled": false</code> to keep an entry without attaching it.
+            <code> planMode: true</code> also attaches the server during New Run (Coro plan mode) chat.
             <code> allowedTools</code> / <code>disallowedTools</code> become per-server tool policy. Changes save with the rest of the page.
           </span>
         }

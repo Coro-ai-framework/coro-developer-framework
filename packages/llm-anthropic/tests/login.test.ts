@@ -100,6 +100,38 @@ describe('ClaudeLoginManager', () => {
     expect(dispose).toHaveBeenCalledTimes(1)
   })
 
+  it('starts a fresh auth flow when forceReauth is requested even if Claude already has a session', async () => {
+    const dispose = vi.fn()
+    const session = {
+      query: {
+        initializationResult: vi.fn().mockResolvedValue({}),
+        accountInfo: vi.fn().mockResolvedValue({
+          email: 'dev@corolabs.com',
+          organization: 'Coro Labs',
+          apiProvider: 'firstParty',
+        }),
+        claudeAuthenticate: vi.fn().mockResolvedValue({
+          manualUrl: 'https://claude.ai/oauth/manual',
+          automaticUrl: 'http://127.0.0.1:43110/oauth/start',
+        }),
+        claudeOAuthWaitForCompletion: vi.fn().mockReturnValue(new Promise(() => {})),
+        claudeOAuthCallback: vi.fn(),
+      },
+      dispose,
+    }
+
+    const manager = new ClaudeLoginManager({
+      logger: makeLogger() as never,
+      createSession: () => session as never,
+    })
+
+    const state = await manager.start({ forceReauth: true })
+
+    expect(state.status).toBe('authorizing')
+    expect(session.query.claudeAuthenticate).toHaveBeenCalledWith(true)
+    expect(dispose).not.toHaveBeenCalled()
+  })
+
   it('accepts a manual callback and completes the flow', async () => {
     const dispose = vi.fn()
     const session = {

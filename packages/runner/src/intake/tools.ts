@@ -1,4 +1,5 @@
 import type { ChatTool } from '@coro-ai/plugin-sdk'
+import { parseMcpToolName } from '@coro-ai/plugin-sdk'
 import {
   isScmPlugin,
   isTrackerPlugin,
@@ -219,6 +220,10 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
     const path = readField(input, 'path') ?? ''
     const where = path ? ` in ${path}` : ''
     return `Listed ${count} entr${count === 1 ? 'y' : 'ies'}${where}`
+  }
+  const mcp = parseMcpToolName(name)
+  if (mcp) {
+    return `${mcp.serverId}: ${mcp.toolName}`
   }
   return 'Done'
 }

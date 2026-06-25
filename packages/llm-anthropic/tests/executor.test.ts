@@ -3,13 +3,14 @@
 // healthcheck variants. Does NOT exercise `executePhase()` (that
 // throws by design in Phase 2; Phase 2c will wire it).
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import pino from 'pino'
 import {
   AnthropicExecutor,
   createAnthropicExecutor,
 } from '../src/executor'
 import type { AnthropicExecutorSettings as Settings, ClaudeAuthConfig } from '../src/types'
+import * as testConnection from '../src/test-connection'
 
 function makeSettings(): Settings {
   return {
@@ -242,12 +243,30 @@ describe('AnthropicExecutor — healthcheck', () => {
     expect(h.reason).toMatch(/oauthToken/)
   })
 
-  it('reports ok=true for claudeLogin (defers to Claude Code persisted session)', async () => {
+  it('reports ok=true for claudeLogin when the local session is present and unexpired', async () => {
+    vi.spyOn(testConnection, 'readClaudeLocalSession').mockReturnValue({
+      accessToken: 'sk-ant-oat01-test',
+      expiresAt: Date.now() + 60_000,
+    })
     const ex = createAnthropicExecutor({
       settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
     })
     await expect(ex.healthcheck()).resolves.toEqual({ ok: true })
+  })
+
+  it('reports ok=false for claudeLogin when the local session is expired', async () => {
+    vi.spyOn(testConnection, 'readClaudeLocalSession').mockReturnValue({
+      accessToken: 'sk-ant-oat01-test',
+      expiresAt: Date.now() - 60_000,
+    })
+    const ex = createAnthropicExecutor({
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
+      logger: silentLogger,
+    })
+    const h = await ex.healthcheck()
+    expect(h.ok).toBe(false)
+    expect(h.reason).toMatch(/expired/i)
   })
 })
 

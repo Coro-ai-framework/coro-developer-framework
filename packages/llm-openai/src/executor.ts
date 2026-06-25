@@ -26,6 +26,9 @@ import {
   mergeConversationHistory,
   RateLimitExceededError,
   classifyProviderError,
+  buildChatToolAllowPolicy,
+  chatHasTools,
+  createSdkMcpServer,
 } from '@coro-ai/plugin-sdk'
 import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { hasOpenAiApiKey, resolveOpenAiClientOptions } from './auth'
@@ -490,11 +493,11 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       this.logger.warn({ reason: health.reason }, 'openai.chat: healthcheck failed')
       throw new Error(health.reason ?? 'OpenAI executor is not configured.')
     }
-    const hasTools = (req.tools?.length ?? 0) > 0 && typeof req.runTool === 'function'
+    const hasTools = chatHasTools(req)
     if (!hasTools) {
       return this.chatSingleShot(req)
     }
-    return this.chatWithTools(req, req.tools!)
+    return this.chatWithTools(req, req.tools ?? [])
   }
 
   private async chatSingleShot(req: ChatRequest): Promise<ChatResult> {
@@ -537,101 +540,142 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
 
   private async chatWithTools(req: ChatRequest, tools: ReadonlyArray<ChatTool>): Promise<ChatResult> {
     const client = this.getClient()
-    const runTool = req.runTool!
+    const runTool = req.runTool
+    const pluginServers = req.pluginMcpServers ?? {}
     const maxRounds = req.maxToolRounds ?? 5
     const toolCalls: ChatToolCallRecord[] = []
     let usage = emptyNormalizedUsage()
     let output = ''
 
-    const openAiTools = tools.map(t => ({
-      type: 'function' as const,
-      name: t.name,
-      description: t.description,
-      parameters: t.inputSchema,
-      strict: false,
-    }))
+    let bridge: McpFunctionBridge | null = null
+    if (Object.keys(pluginServers).length > 0) {
+      const emptyCoro = createSdkMcpServer({ name: 'coro', tools: [] })
+      const { checkToolAllowed } = buildChatToolAllowPolicy(req)
+      bridge = new McpFunctionBridge({
+        coroServer: { kind: 'sdk-instance', id: 'coro', instance: emptyCoro },
+        pluginServers,
+        hookPolicy: {
+          allowedTools: null,
+          writeRoots: [],
+          onPreToolUse: (toolName) => checkToolAllowed(toolName),
+        },
+        cwd: process.cwd(),
+        phase: 'chat',
+        signal: req.signal,
+        externalPool: this.externalMcpPool,
+        externalScopeKey: `intake-chat-${Date.now()}`,
+      })
+      await bridge.init()
+    }
+
+    const openAiTools = [
+      ...tools.map(t => ({
+        type: 'function' as const,
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+        strict: false,
+      })),
+      ...(bridge?.listTools() ?? []),
+    ]
 
     const inputItems: unknown[] = req.messages.map(m => ({ role: m.role, content: m.content }))
 
-    for (let round = 0; round < maxRounds; round++) {
-      if (req.signal.aborted) break
+    try {
+      for (let round = 0; round < maxRounds; round++) {
+        if (req.signal.aborted) break
 
-      const params: Record<string, unknown> = {
-        model: req.model,
-        input: inputItems,
-        tools: openAiTools,
-        parallel_tool_calls: true,
-        store: false,
-      }
-      if (req.systemPrompt) params.instructions = req.systemPrompt
-      if (req.maxOutputTokens) params.max_output_tokens = req.maxOutputTokens
-
-      let response: OpenAiResponseLike
-      try {
-        response = await client.responses.create(params, { signal: req.signal })
-      } catch (err) {
-        if (isAbortError(err) || req.signal.aborted) throw err
-        const info = classifyProviderError(err, OPENAI_CLASSIFY_OPTIONS)
-        if (info) throw new RateLimitExceededError(OPENAI_PLUGIN_ID, info, { cause: err })
-        throw err
-      }
-
-      const outputItems = Array.isArray(response.output) ? response.output : []
-      inputItems.push(...sanitizeOutputItemsForReplay(outputItems))
-
-      const text = extractOutputText(response)
-      if (text.trim()) output = text
-
-      const turnUsage = normalizeUsage(response.usage)
-      usage = {
-        inputTokens: usage.inputTokens + turnUsage.inputTokens,
-        outputTokens: usage.outputTokens + turnUsage.outputTokens,
-        cacheReadInputTokens: usage.cacheReadInputTokens + turnUsage.cacheReadInputTokens,
-        cacheCreationInputTokens: usage.cacheCreationInputTokens + turnUsage.cacheCreationInputTokens,
-      }
-
-      const functionCalls = extractFunctionCalls(outputItems)
-      if (functionCalls.length === 0) break
-
-      for (const call of functionCalls) {
-        const input = safeJson(call.argumentsJson)
-        req.onToolStart?.({ name: call.name, input })
-        const startedAt = Date.now()
-        let record: ChatToolCallRecord
-        try {
-          const result = await runTool(call.name, input)
-          record = {
-            name: call.name,
-            input,
-            output: result,
-            durationMs: Date.now() - startedAt,
-          }
-          inputItems.push({
-            type: 'function_call_output',
-            call_id: call.callId,
-            output: stringifyUnknown(result),
-          })
-        } catch (err) {
-          const message = (err as Error).message
-          record = {
-            name: call.name,
-            input,
-            output: { error: message },
-            durationMs: Date.now() - startedAt,
-            error: message,
-          }
-          inputItems.push({
-            type: 'function_call_output',
-            call_id: call.callId,
-            output: JSON.stringify({ error: message }),
-          })
+        const params: Record<string, unknown> = {
+          model: req.model,
+          input: inputItems,
+          tools: openAiTools,
+          parallel_tool_calls: true,
+          store: false,
         }
-        toolCalls.push(record)
-        req.onToolEnd?.(record)
-      }
-    }
+        if (req.systemPrompt) params.instructions = req.systemPrompt
+        if (req.maxOutputTokens) params.max_output_tokens = req.maxOutputTokens
 
-    return { output: output.trim(), usage, toolCalls }
+        let response: OpenAiResponseLike
+        try {
+          response = await client.responses.create(params, { signal: req.signal })
+        } catch (err) {
+          if (isAbortError(err) || req.signal.aborted) throw err
+          const info = classifyProviderError(err, OPENAI_CLASSIFY_OPTIONS)
+          if (info) throw new RateLimitExceededError(OPENAI_PLUGIN_ID, info, { cause: err })
+          throw err
+        }
+
+        const outputItems = Array.isArray(response.output) ? response.output : []
+        inputItems.push(...sanitizeOutputItemsForReplay(outputItems))
+
+        const text = extractOutputText(response)
+        if (text.trim()) output = text
+
+        const turnUsage = normalizeUsage(response.usage)
+        usage = {
+          inputTokens: usage.inputTokens + turnUsage.inputTokens,
+          outputTokens: usage.outputTokens + turnUsage.outputTokens,
+          cacheReadInputTokens: usage.cacheReadInputTokens + turnUsage.cacheReadInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens + turnUsage.cacheCreationInputTokens,
+        }
+
+        const functionCalls = extractFunctionCalls(outputItems)
+        if (functionCalls.length === 0) break
+
+        for (const call of functionCalls) {
+          const input = safeJson(call.argumentsJson)
+          req.onToolStart?.({ name: call.name, input })
+          const startedAt = Date.now()
+          let record: ChatToolCallRecord
+          try {
+            let result: unknown
+            if (bridge?.hasTool(call.name)) {
+              const bridged = await bridge.call(call)
+              inputItems.push(bridged.item)
+              result = safeJson(bridged.item.output)
+            } else {
+              if (!runTool) {
+                throw new Error(`Plan-mode tool ${call.name} is not available.`)
+              }
+              result = await runTool(call.name, input)
+              inputItems.push({
+                type: 'function_call_output',
+                call_id: call.callId,
+                output: stringifyUnknown(result),
+              })
+            }
+            record = {
+              name: call.name,
+              input,
+              output: result,
+              durationMs: Date.now() - startedAt,
+            }
+          } catch (err) {
+            const message = (err as Error).message
+            record = {
+              name: call.name,
+              input,
+              output: { error: message },
+              durationMs: Date.now() - startedAt,
+              error: message,
+            }
+            if (!bridge?.hasTool(call.name)) {
+              inputItems.push({
+                type: 'function_call_output',
+                call_id: call.callId,
+                output: JSON.stringify({ error: message }),
+              })
+            }
+          }
+          toolCalls.push(record)
+          req.onToolEnd?.(record)
+        }
+      }
+
+      return { output: output.trim(), usage, toolCalls }
+    } finally {
+      await bridge?.dispose()
+    }
   }
 
   private getClient(): OpenAiClientLike {

@@ -151,13 +151,16 @@ function AnthropicAuth({
     setError(null)
   }
 
-  async function startClaudeLogin() {
+  async function startClaudeLogin(forceReauth = false) {
     setConnecting(true)
     setError(null)
     try {
-      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/start', {
-        method: 'POST',
-      })
+      const data = await requestJson<ClaudeLoginState>(
+        '/config/anthropic/claude-login/start',
+        forceReauth
+          ? jsonRequest({ force: true }, { method: 'POST' })
+          : { method: 'POST' },
+      )
       setClaudeLogin(data)
       dispatch({ type: 'setField', step: 'llm', key: 'method', value: 'claudeLogin' })
       if (data.account) dispatch({ type: 'setField', step: 'llm', key: 'account', value: data.account })
@@ -265,7 +268,7 @@ function AnthropicAuth({
                 </span>
               ) : null}
             </div>
-            <Button type="button" size="sm" onClick={() => void startClaudeLogin()} disabled={connecting}>
+            <Button type="button" size="sm" onClick={() => void startClaudeLogin(claudeReady)} disabled={connecting}>
               {connecting ? 'Starting…' : claudeReady ? 'Reconnect' : 'Connect Claude'}
             </Button>
           </div>

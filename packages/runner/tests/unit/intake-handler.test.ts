@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import os from 'os'
+import path from 'path'
+import fs from 'fs'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { Settings } from '../../src/config/settings'
 import {
@@ -7,6 +10,29 @@ import {
 } from '../../src/intake/handler'
 
 const settings = { intake: { toolsEnabled: true } } as Settings
+
+let tmpHome: string
+let savedHome: string | undefined
+
+beforeEach(() => {
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'coro-intake-mcp-'))
+  fs.mkdirSync(path.join(tmpHome, '.coro'), { recursive: true })
+  savedHome = process.env['HOME']
+  process.env['HOME'] = tmpHome
+  resetIntakeSessionBudgetsForTests()
+})
+
+afterEach(() => {
+  if (savedHome !== undefined) process.env['HOME'] = savedHome
+  fs.rmSync(tmpHome, { recursive: true, force: true })
+})
+
+function writeMcpConfig(mcpServers: Record<string, unknown>): void {
+  fs.writeFileSync(
+    path.join(tmpHome, '.coro', 'config.json'),
+    JSON.stringify({ mcpServers }, null, 2),
+  )
+}
 
 function mockRegistry(output: string, onResolve?: (req: { model?: string; provider?: string }) => void) {
   return {
@@ -39,10 +65,6 @@ async function collectEvents(sessionId: string, messages: Parameters<typeof runI
 }
 
 describe('runIntakeStream', () => {
-  beforeEach(() => {
-    resetIntakeSessionBudgetsForTests()
-  })
-
   it('streams tokens and completes with usage', async () => {
     const events = await collectEvents('session-a', [{ role: 'user', content: 'Add logging' }])
     expect(events.some(e => e.type === 'token')).toBe(true)
@@ -201,6 +223,49 @@ describe('runIntakeStream', () => {
       name: 'tracker_get_issue',
       ok: true,
       summary: 'Read PROJ-42',
+    })
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+  })
+
+  it('passes planMode BYO MCP servers to executor.chat() even without built-in tools', async () => {
+    writeMcpConfig({
+      catalog: {
+        type: 'stdio',
+        command: 'node',
+        args: ['server.js'],
+        planMode: true,
+      },
+    })
+
+    let captured: { pluginMcpServers?: Record<string, unknown> } = {}
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        chat: async (req: { pluginMcpServers?: Record<string, unknown> }) => {
+          captured = req
+          return {
+            output: 'Brief ready.',
+            usage: { inputTokens: 5, outputTokens: 3, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [],
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    const events = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-plan-mcp',
+      messages: [{ role: 'user', content: 'Who calls world?' }],
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+
+    expect(captured.pluginMcpServers).toMatchObject({
+      catalog: { type: 'stdio', command: 'node', args: ['server.js'] },
     })
     expect(events.at(-1)).toMatchObject({ type: 'done' })
   })

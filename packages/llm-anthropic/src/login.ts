@@ -98,7 +98,7 @@ export class ClaudeLoginManager {
     return toState(this.flow)
   }
 
-  async start(): Promise<ClaudeLoginState> {
+  async start(options?: { forceReauth?: boolean }): Promise<ClaudeLoginState> {
     if (this.flow.status === 'authorizing') {
       return this.getState()
     }
@@ -110,7 +110,7 @@ export class ClaudeLoginManager {
       await session.query.initializationResult()
 
       const existingAccount = normalizeAccount(await session.query.accountInfo())
-      if (existingAccount) {
+      if (existingAccount && !options?.forceReauth) {
         session.dispose()
         this.flow = {
           status: 'connected',
@@ -120,6 +120,13 @@ export class ClaudeLoginManager {
         }
         this.logger.info({ account: existingAccount.email ?? null }, 'Claude login already active')
         return this.getState()
+      }
+
+      if (existingAccount && options?.forceReauth) {
+        this.logger.info(
+          { account: existingAccount.email ?? null },
+          'Claude login force re-auth requested — starting fresh OAuth flow',
+        )
       }
 
       const urls = await session.query.claudeAuthenticate(true)

@@ -17,6 +17,7 @@ export interface IntakeContext {
 
 export interface IntakePromptOptions {
   toolsEnabled?: boolean
+  planModeMcpServerIds?: string[]
 }
 
 export function buildIntakeSystemPrompt(context: IntakeContext, options: IntakePromptOptions = {}): string {
@@ -24,6 +25,14 @@ export function buildIntakeSystemPrompt(context: IntakeContext, options: IntakeP
   const recentReposJson = JSON.stringify(context.recentRepos, null, 2)
   const recentReviewersJson = JSON.stringify(context.recentReviewers, null, 2)
   const localeHint = context.userLocale ? `\nUser locale hint: ${context.userLocale}` : ''
+  const planModeMcpIds = options.planModeMcpServerIds ?? []
+
+  const planModeMcpSection = planModeMcpIds.length > 0
+    ? `
+Bring-your-own MCP servers (read-only lookups — tools appear as mcp__<id>__*):
+${planModeMcpIds.map(id => `- ${id}: use when the user asks about service ownership, callers, blast radius, dependencies, or incident triage context this catalog covers.`).join('\n')}
+`
+    : ''
 
   const toolsSection = options.toolsEnabled
     ? `
@@ -34,7 +43,7 @@ Tools (read-only — use deliberately, only when directly useful):
 - scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directory that looks relevant.
 - scm_read_file: when you need a specific file's contents to plan. Confirm the path with scm_list_files first; do not guess paths.
 - scm_search_code: when the user names a symbol or string and you want to find it. On Bitbucket Cloud this can legitimately return 0 hits even when the symbol exists (workspaces below Standard plan are not in the search index), so do not retry the same search more than once — switch to scm_list_files instead.
-
+${planModeMcpSection}
 Tool rules:
 - Read at most a handful of items per turn — you are producing a brief, not auditing the codebase. Aim for ≤4 SCM tool calls per turn.
 - Prefer one scm_list_files call over multiple scm_search_code guesses when you don't know the layout.

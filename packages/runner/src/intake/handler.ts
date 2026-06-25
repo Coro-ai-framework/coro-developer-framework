@@ -1,10 +1,12 @@
 import type { ChatRequest, ChatResult } from '@coro-ai/plugin-sdk'
+import { chatHasTools } from '@coro-ai/plugin-sdk'
 import { createSdkMcpServer } from '@coro-ai/plugin-sdk'
 import type { PhaseExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { Logger } from 'pino'
+import pino from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
 import type { Settings } from '../config/settings'
-import { selectModel } from '../jobs/runner'
+import { selectModel, collectPlanModeMcpServers } from '../jobs/runner'
 import { resolveIntelligenceDir, resolveWorkingDir } from '../config/local-config'
 import {
   buildIntakeTools,
@@ -147,7 +149,8 @@ async function* streamChatTurn(
 }
 
 export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerator<IntakeStreamEvent> {
-  const log = options.logger?.child({ component: 'intake-handler', sessionId: options.sessionId })
+  const baseLogger = options.logger ?? pino({ level: 'silent' })
+  const log = baseLogger.child({ component: 'intake-handler', sessionId: options.sessionId })
   const budget = getBudget(options.sessionId)
   const toolsOn = intakeToolsEnabled(options.settings)
   const tokenCap = toolsOn ? MAX_TOKENS_PER_SESSION_WITH_TOOLS : MAX_TOKENS_PER_SESSION
@@ -203,7 +206,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
 
   log?.debug(
     {
-      pluginId: executor.manifest.id,
+      pluginId: executor.manifest?.id,
       assignment,
       hasChat: typeof executor.chat === 'function',
       hasRunSubagent: typeof executor.runSubagent === 'function',
@@ -213,7 +216,13 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
   )
 
   const tools = toolsOn ? buildIntakeTools(options.registry) : []
-  const systemPrompt = buildIntakeSystemPrompt(options.context, { toolsEnabled: tools.length > 0 })
+  const planModeMcpServers = toolsOn ? collectPlanModeMcpServers({ logger: baseLogger }) : {}
+  const planModeMcpServerIds = Object.keys(planModeMcpServers)
+  const hasTools = tools.length > 0 || planModeMcpServerIds.length > 0
+  const systemPrompt = buildIntakeSystemPrompt(options.context, {
+    toolsEnabled: hasTools,
+    planModeMcpServerIds,
+  })
   const cwd = resolveWorkingDir(null)
   const intelligenceDir = resolveIntelligenceDir(null)
   const emptyMcp = createSdkMcpServer({ name: 'coro', tools: [] })
@@ -222,7 +231,15 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
 
   try {
     if (typeof executor.chat === 'function') {
-      log?.debug({ pluginId: executor.manifest.id, model, toolCount: tools.length }, 'intake: invoking executor.chat()')
+      log?.debug(
+        {
+          pluginId: executor.manifest?.id,
+          model,
+          toolCount: tools.length,
+          planModeMcpCount: planModeMcpServerIds.length,
+        },
+        'intake: invoking executor.chat()',
+      )
       const startedAt = Date.now()
 
       const chatReq: ChatRequest = {
@@ -230,6 +247,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         systemPrompt,
         model,
         signal: options.signal,
+        ...(Object.keys(planModeMcpServers).length > 0 ? { pluginMcpServers: planModeMcpServers } : {}),
         ...(tools.length > 0
           ? {
               tools,
@@ -240,7 +258,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       }
 
       let result: ChatResult
-      if (tools.length > 0) {
+      if (chatHasTools(chatReq)) {
         const chatGen = streamChatTurn(
           executor as { chat: (req: ChatRequest) => Promise<ChatResult> },
           chatReq,
@@ -257,7 +275,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
 
       log?.debug(
         {
-          pluginId: executor.manifest.id,
+          pluginId: executor.manifest?.id,
           elapsedMs: Date.now() - startedAt,
           outputChars: result.output.length,
           inputTokens: result.usage.inputTokens,
@@ -304,7 +322,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         cwd,
         intelligenceDir,
         mcpServer: { kind: 'sdk-instance', id: 'coro', instance: emptyMcp },
-        pluginMcpServers: {},
+        pluginMcpServers: planModeMcpServers,
         hookPolicy,
         allowedTools: [],
         maxTurns: 1,
@@ -336,7 +354,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       cwd,
       intelligenceDir,
       mcpServer: { kind: 'sdk-instance', id: 'coro', instance: emptyMcp },
-      pluginMcpServers: {},
+      pluginMcpServers: planModeMcpServers,
       hookPolicy,
       sessionState: { conversationHistory: [] },
       maxTurns: 1,

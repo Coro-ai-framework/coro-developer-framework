@@ -1855,7 +1855,11 @@ export function collectPluginMcpServers(args: {
  * developer mis-edited the config. The SDK reports unreachable MCP
  * servers in its `init` message anyway.
  */
-export function collectUserMcpServers(args: { logger: Logger }): Record<string, PluginMcpServerConfig> {
+export function collectUserMcpServers(args: {
+  logger: Logger
+  /** When true, only entries with `planMode: true` are returned. */
+  planModeOnly?: boolean
+}): Record<string, PluginMcpServerConfig> {
   const result: Record<string, PluginMcpServerConfig> = {}
   let config: ReturnType<typeof loadLocalConfig>
   try {
@@ -1899,6 +1903,7 @@ export function collectUserMcpServers(args: { logger: Logger }): Record<string, 
 
   for (const [id, raw] of Object.entries(userServers)) {
     if (raw.enabled === false) continue
+    if (args.planModeOnly && raw.planMode !== true) continue
     if (reservedIds.has(id)) {
       args.logger.warn(
         { mcpServerId: id },
@@ -1930,6 +1935,11 @@ export function collectUserMcpServers(args: { logger: Logger }): Record<string, 
   }
 
   return result
+}
+
+/** BYO MCP servers opted into Coro plan mode via `planMode: true`. */
+export function collectPlanModeMcpServers(args: { logger: Logger }): Record<string, PluginMcpServerConfig> {
+  return collectUserMcpServers({ ...args, planModeOnly: true })
 }
 
 function buildPluginMcpToolPolicy(

@@ -56,9 +56,10 @@ export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void 
     }
   }) as any)
 
-  app.post('/config/anthropic/claude-login/start', (async (_req: unknown, res: any) => {
+  app.post('/config/anthropic/claude-login/start', (async (req: any, res: any) => {
     try {
-      const state = await claudeLoginManager.start()
+      const forceReauth = req.body?.force === true
+      const state = await claudeLoginManager.start({ forceReauth })
       if (state.status === 'connected') {
         saveClaudeLoginConfig(state.account)
       }

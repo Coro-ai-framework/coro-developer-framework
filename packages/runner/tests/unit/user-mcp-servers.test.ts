@@ -11,7 +11,7 @@ import os from 'os'
 import path from 'path'
 import fs from 'fs'
 import pino from 'pino'
-import { collectUserMcpServers } from '../../src/jobs/runner'
+import { collectUserMcpServers, collectPlanModeMcpServers } from '../../src/jobs/runner'
 
 const logger = pino({ level: 'silent' })
 
@@ -275,5 +275,56 @@ describe('collectUserMcpServers', () => {
 
     const servers = collectUserMcpServers({ logger })
     expect(servers['shape-shift']).toMatchObject({ type: 'stdio', command: 'npx' })
+  })
+
+  it('collectPlanModeMcpServers returns only entries with planMode: true', () => {
+    writeConfig({
+      anthropic: { method: 'apiKey', apiKey: 'sk-test' },
+      mcpServers: {
+        catalog: {
+          type: 'stdio',
+          command: 'node',
+          args: ['server.js'],
+          planMode: true,
+        },
+        slack: {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-slack'],
+        },
+        disabled: {
+          type: 'stdio',
+          command: 'node',
+          args: ['off.js'],
+          planMode: true,
+          enabled: false,
+        },
+      },
+    })
+
+    const servers = collectPlanModeMcpServers({ logger })
+    expect(Object.keys(servers)).toEqual(['catalog'])
+    expect(servers.catalog).toMatchObject({ type: 'stdio', command: 'node' })
+  })
+
+  it('planModeOnly filter still applies when inheriting Claude Code servers', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.claude.json'),
+      JSON.stringify({
+        mcpServers: {
+          inherited: { type: 'stdio', command: 'node', args: ['inherited.js'] },
+        },
+      }),
+    )
+    writeConfig({
+      anthropic: { method: 'apiKey', apiKey: 'sk-test' },
+      inheritClaudeCodeMcps: true,
+      mcpServers: {
+        inherited: { type: 'stdio', command: 'node', args: ['inherited.js'], planMode: true },
+      },
+    })
+
+    expect(Object.keys(collectUserMcpServers({ logger }))).toEqual(['inherited'])
+    expect(Object.keys(collectPlanModeMcpServers({ logger }))).toEqual(['inherited'])
   })
 })

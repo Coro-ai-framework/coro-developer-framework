@@ -54,7 +54,11 @@ import { RateLimitExceededError, classifyProviderError } from '@coro-ai/plugin-s
 import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
-import { readClaudeLocalSession, testAnthropicCredentials } from './test-connection'
+import {
+  formatAnthropicAuthFailure,
+  readClaudeLocalSession,
+  testAnthropicCredentials,
+} from './test-connection'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { linkAbortController } from './abort-link'
@@ -70,7 +74,7 @@ import {
   isSteeringDiagnosticText,
   shouldClosePushableAfterResult,
 } from './steering-errors'
-import { chatViaAgentSdk, shouldChatViaAgentSdk } from './chat-via-sdk'
+import { chatViaAgentSdk, shouldChatViaAgentSdk, shouldRouteChatViaAgentSdk } from './chat-via-sdk'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
 import type { SteeringInterruptMode } from '@coro-ai/plugin-sdk'
 
@@ -108,6 +112,9 @@ const ANTHROPIC_PLUGIN_ID = 'anthropic' as const
  * gracefully — we don't pretend to know the real deadline here.
  */
 const FALLBACK_CLAUDE_CODE_RATE_LIMIT_MS = 5 * 60 * 1000
+
+/** How long a successful live auth probe is reused before re-checking. */
+const AUTH_PROBE_TTL_MS = 5 * 60 * 1000
 
 /**
  * Match the plain-text error message that the Claude Code subprocess
@@ -314,6 +321,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   private readonly settings: AnthropicExecutorSettings
   private auth: ClaudeAuthConfig
   private readonly logger: Logger
+  private authProbeCache: { at: number; ok: boolean; message?: string; hint?: string } | null = null
 
   constructor(opts: AnthropicExecutorOptions) {
     this.settings = opts.settings
@@ -344,6 +352,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         ...(cfg.oauthToken ? { oauthToken: cfg.oauthToken } : {}),
         ...(cfg.account ? { account: cfg.account } : {}),
       }
+      this.authProbeCache = null
     }
   }
 
@@ -361,8 +370,25 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     if (auth.method === 'oauth' && !auth.oauthToken) {
       return { ok: false, reason: 'Anthropic auth method is "oauth" but no oauthToken is configured.' }
     }
-    // `claudeLogin` defers to Claude Code's persisted session — nothing
-    // to verify in-process; it either works on first call or doesn't.
+    if ((auth.method ?? 'claudeLogin') === 'claudeLogin') {
+      try {
+        const session = readClaudeLocalSession()
+        if (!session.accessToken) {
+          return {
+            ok: false,
+            reason: 'Claude is not signed in on this machine.',
+          }
+        }
+        if (session.expiresAt && session.expiresAt < Date.now()) {
+          return {
+            ok: false,
+            reason: 'Your Claude session has expired. Click Reconnect in Settings.',
+          }
+        }
+      } catch (err) {
+        return { ok: false, reason: (err as Error).message }
+      }
+    }
     return { ok: true }
   }
 
@@ -414,6 +440,9 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    */
   async chat(req: ChatRequest): Promise<ChatResult> {
     const authMethod = this.auth.method ?? 'claudeLogin'
+    if (shouldRouteChatViaAgentSdk(this.auth, req)) {
+      await this.assertAuthReadyForSdk()
+    }
     this.logger.debug(
       {
         model: req.model,
@@ -425,7 +454,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       },
       'anthropic.chat: invoked',
     )
-    if (shouldChatViaAgentSdk(this.auth)) {
+    if (shouldRouteChatViaAgentSdk(this.auth, req)) {
       return chatViaAgentSdk(this, req)
     }
 
@@ -651,6 +680,36 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   }
 
   /**
+   * Verify Anthropic credentials before spawning Claude Code. Surfaces
+   * the same messages as Settings → Test connection instead of an opaque
+   * SDK 401 mid-stream.
+   */
+  private async assertAuthReadyForSdk(): Promise<void> {
+    const now = Date.now()
+    if (this.authProbeCache && now - this.authProbeCache.at < AUTH_PROBE_TTL_MS) {
+      if (!this.authProbeCache.ok) {
+        throw new Error(formatAnthropicAuthFailure({
+          ok: false,
+          message: this.authProbeCache.message ?? 'Anthropic authentication failed.',
+          hint: this.authProbeCache.hint,
+        }))
+      }
+      return
+    }
+
+    const result = await testAnthropicCredentials(this.auth)
+    this.authProbeCache = {
+      at: now,
+      ok: result.ok,
+      message: result.message,
+      hint: result.hint,
+    }
+    if (!result.ok) {
+      throw new Error(formatAnthropicAuthFailure(result))
+    }
+  }
+
+  /**
    * Register the Anthropic-specific HTTP endpoints (Claude OAuth login
    * flow + `claude setup-token` shell-out) against the runner's
    * Express app. The runner invokes this via the generic
@@ -733,6 +792,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    *   - StateBackend writes — the runner is the only writer.
    */
   async *executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent> {
+    await this.assertAuthReadyForSdk()
     const claudeCodeCliPath = resolveClaudeCodeCliPath()
     ensureClaudeCodeCliExecutable(claudeCodeCliPath, this.logger)
 

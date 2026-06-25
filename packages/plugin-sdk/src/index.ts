@@ -11,6 +11,7 @@ export * from './executor-helpers'
 export * from './mcp'
 export * from './rate-limit'
 export * from './guardrails'
+export * from './chat-mcp'
 
 /**
  * The plugin-API host version this SDK release was built against.

@@ -27,6 +27,7 @@ export interface McpServerEntry {
   url?: string
   headers?: Record<string, string>
   enabled?: boolean
+  planMode?: boolean
   allowedTools?: string[]
   disallowedTools?: string[]
 }

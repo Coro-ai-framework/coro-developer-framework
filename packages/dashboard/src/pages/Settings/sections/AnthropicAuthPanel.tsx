@@ -149,13 +149,16 @@ export default function AnthropicAuthPanel({ pluginId, onConnected }: AnthropicA
     setOauthAuthUrl(null)
   }
 
-  async function startClaudeLogin() {
+  async function startClaudeLogin(forceReauth = false) {
     setConnecting(true)
     setError(null)
     try {
-      const data = await requestJson<ClaudeLoginState>('/config/anthropic/claude-login/start', {
-        method: 'POST',
-      })
+      const data = await requestJson<ClaudeLoginState>(
+        '/config/anthropic/claude-login/start',
+        forceReauth
+          ? jsonRequest({ force: true }, { method: 'POST' })
+          : { method: 'POST' },
+      )
       setClaudeLogin(data)
       setPluginField(pluginId, 'method', 'claudeLogin')
       if (data.account) setPluginField(pluginId, 'account', data.account)
@@ -289,7 +292,12 @@ export default function AnthropicAuthPanel({ pluginId, onConnected }: AnthropicA
                 <span className="text-sm text-fg-muted">{effectiveAccount.email}</span>
               ) : null}
             </div>
-            <Button type="button" size="sm" onClick={() => void startClaudeLogin()} disabled={connecting}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void startClaudeLogin(claudeLoginReady)}
+              disabled={connecting}
+            >
               {connecting ? 'Starting…' : claudeLoginReady ? 'Reconnect' : 'Connect Claude'}
             </Button>
           </div>

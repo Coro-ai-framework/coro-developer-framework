@@ -86,6 +86,14 @@ vi.mock('../src/mcp-reattach', () => ({
   }),
 }))
 
+vi.mock('../src/test-connection', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/test-connection')>()
+  return {
+    ...actual,
+    testAnthropicCredentials: vi.fn(async () => ({ ok: true, message: 'Anthropic API accepted the credential.' })),
+  }
+})
+
 import { tmpdir } from 'os'
 import { join } from 'path'
 import pino from 'pino'

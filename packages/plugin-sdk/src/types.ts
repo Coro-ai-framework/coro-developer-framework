@@ -944,6 +944,12 @@ export interface ChatRequest {
   onToolStart?: (info: { name: string; input: unknown }) => void
   /** Fired after each tool invocation completes. */
   onToolEnd?: (record: ChatToolCallRecord) => void
+  /**
+   * BYO MCP servers enabled for plan mode (`planMode: true` in config).
+   * Attached alongside built-in intake tools; agents call them as
+   * `mcp__<id>__*`.
+   */
+  pluginMcpServers?: Record<string, PluginMcpServerConfig>
 }
 
 /** Terminal result from a single {@link PhaseExecutorRuntime.chat} call. */

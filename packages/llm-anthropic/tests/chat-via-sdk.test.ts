@@ -40,6 +40,14 @@ vi.mock('../src/intelligence-symlink', () => ({
   ensureClaudeConfigSymlink: () => {},
 }))
 
+vi.mock('../src/test-connection', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/test-connection')>()
+  return {
+    ...actual,
+    testAnthropicCredentials: vi.fn(async () => ({ ok: true, message: 'Anthropic API accepted the credential.' })),
+  }
+})
+
 vi.mock('../src/mcp-reattach', () => ({
   reattachDynamicMcpServers: async () => ({
     setResult: { added: [], removed: [], errors: {} },
