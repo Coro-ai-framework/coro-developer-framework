@@ -39,6 +39,26 @@ describe('chat-mcp helpers', () => {
     expect(policy.checkToolAllowed('mcp__coro__tracker_get_issue').allow).toBe(true)
     expect(policy.checkToolAllowed('mcp__catalog__search').allow).toBe(true)
     expect(policy.checkToolAllowed('mcp__slack__post').allow).toBe(false)
+    expect(policy.checkToolAllowed('ToolSearch').allow).toBe(true)
+    expect(policy.hookAllowedTools).toBe(null)
+  })
+
+  it('allows BYO MCP when built-in intake tools are also present', () => {
+    const req: ChatRequest = {
+      messages: [],
+      model: 'm',
+      signal: new AbortController().signal,
+      tools: [
+        { name: 'tracker_get_issue', description: '', inputSchema: {} },
+        { name: 'scm_list_files', description: '', inputSchema: {} },
+      ],
+      runTool: async () => ({}),
+      pluginMcpServers: { 'a5-be-catalog': { type: 'stdio', command: 'node' } },
+    }
+    const policy = buildChatToolAllowPolicy(req)
+    expect(policy.checkToolAllowed('mcp__a5-be-catalog__find_callers').allow).toBe(true)
+    expect(policy.checkToolAllowed('mcp__coro__scm_list_files').allow).toBe(true)
+    expect(policy.checkToolAllowed('Bash').allow).toBe(false)
   })
 
   it('parseMcpToolName splits server and tool', () => {

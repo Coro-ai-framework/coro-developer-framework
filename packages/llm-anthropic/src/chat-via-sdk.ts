@@ -140,7 +140,7 @@ export async function chatViaAgentSdk(
 
   const toolCalls: ChatToolCallRecord[] = []
   const mcpInstance = buildChatMcpServer(req, toolCalls)
-  const { allowedTools, checkToolAllowed } = buildChatToolAllowPolicy(req)
+  const { hookAllowedTools, checkToolAllowed } = buildChatToolAllowPolicy(req)
   const pluginMcpServers = req.pluginMcpServers ?? {}
 
   const phaseReq: PhaseExecutionRequest = {
@@ -152,7 +152,7 @@ export async function chatViaAgentSdk(
     mcpServer: { kind: 'sdk-instance', id: 'coro', instance: mcpInstance },
     pluginMcpServers,
     hookPolicy: {
-      allowedTools,
+      allowedTools: hookAllowedTools,
       writeRoots: [workRoot],
       onPreToolUse: (toolName) => checkToolAllowed(toolName),
     },

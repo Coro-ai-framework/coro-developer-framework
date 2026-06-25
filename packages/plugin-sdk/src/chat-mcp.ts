@@ -32,7 +32,12 @@ export function isPlanModeMcpToolName(toolName: string, serverIds: ReadonlyArray
 }
 
 export interface ChatToolAllowPolicy {
-  allowedTools: string[]
+  /**
+   * Value for `hookPolicy.allowedTools`. Always `null` for plan-mode chat
+   * so {@link hooks.ts} does not run its exact-name Set gate before
+   * `onPreToolUse` — that gate cannot express BYO MCP prefix allowlists.
+   */
+  hookAllowedTools: null
   checkToolAllowed: (toolName: string) => { allow: boolean; reason?: string }
 }
 
@@ -44,7 +49,7 @@ export function buildChatToolAllowPolicy(req: ChatRequest): ChatToolAllowPolicy 
 
   if (!hasAny) {
     return {
-      allowedTools: [CHAT_NO_TOOLS_ALLOWLIST],
+      hookAllowedTools: null,
       checkToolAllowed: () => ({
         allow: false,
         reason: 'Plan mode chat does not use tools for this turn.',
@@ -54,8 +59,10 @@ export function buildChatToolAllowPolicy(req: ChatRequest): ChatToolAllowPolicy 
 
   const allowedSet = new Set(builtinNames)
   return {
-    allowedTools: builtinNames,
+    hookAllowedTools: null,
     checkToolAllowed: (toolName: string) => {
+      // Claude Code may invoke ToolSearch when many MCP tools are attached.
+      if (toolName === 'ToolSearch') return { allow: true }
       if (allowedSet.has(toolName)) return { allow: true }
       if (isPlanModeMcpToolName(toolName, serverIds)) return { allow: true }
       return {
