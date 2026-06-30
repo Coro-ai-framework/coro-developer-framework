@@ -34,8 +34,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "openai": "^6.37.0",
-    "zod": "^4.3.6"
+    "openai": "^6.45.0",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@coro-ai/plugin-sdk": "workspace:*",
@@ -44,8 +44,8 @@
   "devDependencies": {
     "@coro-ai/plugin-sdk": "workspace:*",
     "@types/node": "^22.13.14",
-    "pino": "^9.6.0",
-    "typescript": "^5.8.2",
-    "vitest": "^4.1.2"
+    "pino": "^10.3.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }

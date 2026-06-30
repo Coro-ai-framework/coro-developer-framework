@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@coro-ai/plugin-sdk": "workspace:*",
-    "zod": "^4.0.0"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "pino": "^9.0.0"
@@ -38,8 +38,8 @@
   "devDependencies": {
     "@coro-ai/cloud-protocol": "workspace:*",
     "@types/node": "^22.13.14",
-    "pino": "^9.7.0",
-    "typescript": "^5.8.2",
-    "vitest": "^3.2.4"
+    "pino": "^10.3.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }
