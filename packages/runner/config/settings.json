@@ -7,7 +7,7 @@
   "claude": {
     "apiKey": "",
     "planningModel": "claude-opus-4-8",
-    "codingModel": "claude-sonnet-4-6"
+    "codingModel": "claude-sonnet-5"
   },
   "bitbucket": {
     "workspace": "",

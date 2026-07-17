@@ -195,6 +195,14 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
   // Current generation — dateless IDs are pinned snapshots, not evergreen
   // pointers. Source: platform.claude.com/docs models overview.
   {
+    id: 'claude-fable-5',
+    displayName: 'Claude Fable 5',
+    contextTokens: 1_000_000,
+    tier: 'planning',
+    supportsThinking: true,
+    pricing: { inputPerMTokens: 10, outputPerMTokens: 50, cacheReadPerMTokens: 1 },
+  },
+  {
     id: 'claude-opus-4-8',
     displayName: 'Claude Opus 4.8',
     contextTokens: 1_000_000,
@@ -203,8 +211,8 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     pricing: { inputPerMTokens: 5, outputPerMTokens: 25, cacheReadPerMTokens: 0.5 },
   },
   {
-    id: 'claude-sonnet-4-6',
-    displayName: 'Claude Sonnet 4.6',
+    id: 'claude-sonnet-5',
+    displayName: 'Claude Sonnet 5',
     contextTokens: 1_000_000,
     tier: 'coding',
     supportsThinking: true,
@@ -220,6 +228,14 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
   },
   // Previous generation — kept available for cost/latency tuning and
   // for tenants that have pinned older IDs in their workflow front matter.
+  {
+    id: 'claude-sonnet-4-6',
+    displayName: 'Claude Sonnet 4.6',
+    contextTokens: 1_000_000,
+    tier: 'coding',
+    supportsThinking: true,
+    pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
+  },
   {
     id: 'claude-sonnet-4-5',
     displayName: 'Claude Sonnet 4.5',
@@ -746,7 +762,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     // tenant configs and any custom workflow files still using
     // `model: planning` keep working unchanged.
     const opus    = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-opus-4-8'   }
-    const sonnet  = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-sonnet-4-6' }
+    const sonnet  = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-sonnet-5'   }
     const haiku   = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-haiku-4-5'  }
     return {
       // Tier defaults — the only vocabulary the plugin owns.

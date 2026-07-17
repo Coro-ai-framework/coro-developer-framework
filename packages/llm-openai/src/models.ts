@@ -4,6 +4,30 @@ export const OPENAI_PLUGIN_ID = 'openai' as const
 
 export const OPENAI_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
   {
+    id: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6 Sol',
+    contextTokens: 1_050_000,
+    tier: 'planning',
+    supportsThinking: true,
+    pricing: { inputPerMTokens: 5, cacheReadPerMTokens: 0.5, outputPerMTokens: 30 },
+  },
+  {
+    id: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6 Terra',
+    contextTokens: 1_050_000,
+    tier: 'coding',
+    supportsThinking: true,
+    pricing: { inputPerMTokens: 2.5, cacheReadPerMTokens: 0.25, outputPerMTokens: 15 },
+  },
+  {
+    id: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6 Luna',
+    contextTokens: 1_050_000,
+    tier: 'mini',
+    supportsThinking: true,
+    pricing: { inputPerMTokens: 1, cacheReadPerMTokens: 0.1, outputPerMTokens: 6 },
+  },
+  {
     id: 'gpt-5.5',
     displayName: 'GPT-5.5',
     contextTokens: 400_000,

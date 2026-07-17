@@ -48,6 +48,9 @@ describe('OpenAiExecutor — capabilities', () => {
 describe('OpenAiExecutor — models', () => {
   it('returns a curated Responses API model catalogue', () => {
     const ids = makeExecutor().listModels().map(m => m.id)
+    expect(ids).toContain('gpt-5.6-sol')
+    expect(ids).toContain('gpt-5.6-terra')
+    expect(ids).toContain('gpt-5.6-luna')
     expect(ids).toContain('gpt-5.5')
     expect(ids).toContain('gpt-5.3-codex')
     expect(ids).toContain('gpt-5.4-mini')

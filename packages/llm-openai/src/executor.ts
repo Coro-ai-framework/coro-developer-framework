@@ -205,9 +205,9 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     // The provider-prefixed `openai*` keys are kept for back-compat
     // and for users who want to pin a phase to OpenAI without changing
     // the global tier binding.
-    const planning = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.5'        }
-    const coding   = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.3-codex'  }
-    const mini     = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.4-mini'   }
+    const planning = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.6-sol'   }
+    const coding   = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.6-terra' }
+    const mini     = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.6-luna'  }
     return {
       'tier:planning': planning,
       'tier:coding':   coding,
@@ -691,7 +691,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     tools: ReturnType<McpFunctionBridge['listTools']>,
   ): Record<string, unknown> {
     const params: Record<string, unknown> = {
-      model: req.model || this.auth.defaultModel || 'gpt-5.4',
+      model: req.model || this.auth.defaultModel || 'gpt-5.6-terra',
       instructions: req.systemPrompt,
       input,
       parallel_tool_calls: true,
