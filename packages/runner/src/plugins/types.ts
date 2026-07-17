@@ -654,11 +654,23 @@ export interface TrackerComment {
   updatedAt?: string
   /** Deep link to the comment, when the provider exposes one. */
   url?: string
+  /**
+   * Id of the comment this one replies to, on providers with a threaded
+   * comment model (Jira Software/Business, Linear). Absent on top-level
+   * comments and flat providers (GitHub Issues).
+   */
+  parentId?: string
 }
 
 export interface TrackerCommentArgs {
   key: string
   body: string
+  /**
+   * When set, post as a threaded reply to this comment id. Supported by
+   * Jira (Software/Business) and Linear; ignored by flat providers
+   * (GitHub Issues).
+   */
+  parentId?: string
 }
 
 export interface TrackerTransitionArgs {

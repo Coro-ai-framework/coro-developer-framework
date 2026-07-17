@@ -13,7 +13,12 @@ attached to every job session — you'll see its tools as `mcp__jira__*`.
      (served natively by the runner's Jira client). The comments are
      **not** included in `tracker_get_issue`, so call this explicitly
      when you need to read human guidance/clarifications left on a ticket.
-   - `tracker_comment_issue` → `mcp__jira__jira_add_comment`
+     Each comment carries `id`, and replies also carry `parentId` (the id
+     of the comment they answer) so you can reconstruct the thread.
+   - `tracker_comment_issue` — posts a comment (served natively by the
+     runner's Jira client). Pass `parentId` (a comment id from
+     `tracker_get_comments`) to post a **threaded reply** nested under
+     that comment; omit it for a top-level comment.
    - `tracker_transition_issue` → `mcp__jira__jira_transition_issue`
 2. **Native `mcp__jira__*` tools (advanced path).** Anything beyond the
    three generic ops calls the upstream tool directly. Examples:

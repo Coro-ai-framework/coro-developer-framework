@@ -63,6 +63,10 @@ interface JiraCommentsResponse {
     created?: string
     updated?: string
     self?: string
+    // Present only on replies. Undocumented by Atlassian but returned by
+    // Jira Cloud (Software/Business) since the April 2025 threaded-comments
+    // rollout — the numeric id of the comment this one replies to.
+    parentId?: string
   }>
 }
 
@@ -267,11 +271,16 @@ export class JiraTrackerClient {
       createdAt: c.created ?? '',
       ...(c.updated && c.updated !== c.created ? { updatedAt: c.updated } : {}),
       url: `${browseBase}?focusedCommentId=${c.id}`,
+      ...(c.parentId != null ? { parentId: String(c.parentId) } : {}),
     }))
   }
 
   async commentIssue(args: CommentIssueArgs): Promise<TrackerResult<{ ok: true }>> {
     if (!this.available) return this.unavailable()
+    // `parentId` is a top-level sibling of `body` in the POST payload.
+    // Undocumented by Atlassian but the supported mechanism for posting a
+    // threaded reply on Jira Cloud (Software/Business) — passing it nests
+    // the new comment under the referenced comment and notifies its author.
     const res = await fetch(`${this.baseUrl()}/rest/api/3/issue/${encodeURIComponent(args.key)}/comment`, {
       method: 'POST',
       headers: { ...this.headers(), 'Content-Type': 'application/json' },
@@ -281,6 +290,7 @@ export class JiraTrackerClient {
           version: 1,
           content: [{ type: 'paragraph', content: [{ type: 'text', text: args.body }] }],
         },
+        ...(args.parentId ? { parentId: args.parentId } : {}),
       }),
     })
     if (!res.ok) {

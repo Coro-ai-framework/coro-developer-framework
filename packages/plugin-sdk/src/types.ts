@@ -393,11 +393,25 @@ export interface TrackerComment {
   updatedAt?: string
   /** Deep link to the comment, when the provider exposes one. */
   url?: string
+  /**
+   * Id of the comment this one replies to, when the provider exposes a
+   * threaded/nested comment model (Jira Software/Business, Linear).
+   * Absent on top-level comments and on providers with a flat comment
+   * model (GitHub Issues).
+   */
+  parentId?: string
 }
 
 export interface TrackerCommentArgs {
   key: string
   body: string
+  /**
+   * When set, post this comment as a threaded reply to the comment with
+   * this id. Providers that support native threading (Jira, Linear)
+   * nest the reply; flat providers (GitHub Issues) ignore it and post a
+   * top-level comment.
+   */
+  parentId?: string
 }
 
 export interface TrackerTransitionArgs {

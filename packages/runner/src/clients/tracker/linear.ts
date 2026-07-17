@@ -247,6 +247,7 @@ export class LinearTrackerClient {
             createdAt?: string
             updatedAt?: string
             user?: { name?: string; displayName?: string } | null
+            parent?: { id?: string } | null
           }>
         }
       } | null
@@ -254,7 +255,7 @@ export class LinearTrackerClient {
       `query($id: String!) {
         issue(id: $id) {
           comments {
-            nodes { id body url createdAt updatedAt user { name displayName } }
+            nodes { id body url createdAt updatedAt user { name displayName } parent { id } }
           }
         }
       }`,
@@ -270,6 +271,7 @@ export class LinearTrackerClient {
         createdAt: c.createdAt ?? '',
         ...(c.updatedAt && c.updatedAt !== c.createdAt ? { updatedAt: c.updatedAt } : {}),
         ...(c.url ? { url: c.url } : {}),
+        ...(c.parent?.id ? { parentId: c.parent.id } : {}),
       }
     })
   }
@@ -281,7 +283,9 @@ export class LinearTrackerClient {
       `mutation($input: CommentCreateInput!) {
         commentCreate(input: $input) { success }
       }`,
-      { input: { issueId: node.id, body: args.body } },
+      // Linear threads replies natively: `parentId` is the parent
+      // comment's UUID (the same id surfaced by getComments).
+      { input: { issueId: node.id, body: args.body, ...(args.parentId ? { parentId: args.parentId } : {}) } },
     )
     return { ok: true }
   }

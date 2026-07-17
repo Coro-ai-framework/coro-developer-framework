@@ -658,18 +658,22 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
   }
 
-  const tracker_comment_issue = async (args: { pluginId?: string; key: string; body: string }) => {
+  const tracker_comment_issue = async (args: { pluginId?: string; key: string; body: string; parentId?: string }) => {
     const r = resolveTracker(ctx, args.pluginId)
     if (!r.ok) return r.error
     if (!r.tracker.commentIssue) {
+      // Flat MCP-mode providers can't thread; forward the body only.
+      // parentId is deliberately dropped here (the upstream tool has no
+      // reply field). Providers that support threading (Jira, Linear)
+      // implement commentIssue natively and are handled below.
       return mcpRedirect(r.tracker.manifest.id, 'tracker_comment_issue',
         r.tracker.manifest.mcpToolMap?.tracker_comment_issue,
         { issue_key: args.key, key: args.key, body: args.body },
       )
     }
     try {
-      await r.tracker.commentIssue({ key: args.key, body: args.body })
-      return text({ commented: true, key: args.key })
+      await r.tracker.commentIssue({ key: args.key, body: args.body, ...(args.parentId ? { parentId: args.parentId } : {}) })
+      return text({ commented: true, key: args.key, ...(args.parentId ? { parentId: args.parentId } : {}) })
     } catch (err) {
       return error((err as Error).message)
     }

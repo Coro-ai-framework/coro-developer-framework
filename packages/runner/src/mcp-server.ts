@@ -286,11 +286,16 @@ export function createCoroMcpServer(
 
       tool(
         'tracker_comment_issue',
-        'Post a plain-text comment on a tracker issue via the configured tracker plugin.',
+        'Post a plain-text comment on a tracker issue via the configured tracker plugin. ' +
+          'To reply to an existing comment as a threaded/nested reply, pass parentId with ' +
+          'the id of the comment being replied to (from tracker_get_comments). Threading is ' +
+          'supported by Jira and Linear; flat providers (GitHub Issues) ignore parentId and ' +
+          'post a top-level comment.',
         {
           pluginId: z.string().optional(),
           key: z.string(),
           body: z.string(),
+          parentId: z.string().optional(),
         },
         h.tracker_comment_issue,
       ),

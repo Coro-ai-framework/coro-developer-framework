@@ -22,6 +22,7 @@ import type {
   PluginManifest,
   PluginMcpServerConfig,
   TrackerComment,
+  TrackerCommentArgs,
   TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
@@ -150,6 +151,19 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
 
   async getComments(key: string): Promise<TrackerComment[]> {
     return unwrapTrackerResult(await this.trackerClient.getComments(key))
+  }
+
+  /**
+   * Post a comment natively via the Linear GraphQL client (not the
+   * upstream MCP `create_comment` tool) so `parentId` reaches
+   * `commentCreate` and the reply threads under its parent.
+   */
+  async commentIssue(args: TrackerCommentArgs): Promise<void> {
+    unwrapTrackerResult(await this.trackerClient.commentIssue({
+      key: args.key,
+      body: args.body,
+      ...(args.parentId ? { parentId: args.parentId } : {}),
+    }))
   }
 }
 

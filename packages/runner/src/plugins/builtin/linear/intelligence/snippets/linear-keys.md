@@ -12,8 +12,12 @@ job session — you'll see its tools as `mcp__linear__*`.
    - `tracker_get_comments` — reads the comment thread on an issue
      (served natively by the runner's Linear client). Comments are
      **not** included in `tracker_get_issue` — call this explicitly to
-     read discussion left on an issue.
-   - `tracker_comment_issue` → `mcp__linear__create_comment`
+     read discussion left on an issue. Replies carry `parentId` (the id
+     of the comment they answer) so you can reconstruct the thread.
+   - `tracker_comment_issue` — posts a comment (served natively by the
+     runner's Linear client). Pass `parentId` (a comment id from
+     `tracker_get_comments`) to post a **threaded reply** nested under
+     that comment; omit it for a top-level comment.
    - `tracker_transition_issue` → `mcp__linear__update_issue` (state field)
 2. **Native `mcp__linear__*` tools (advanced path).** Examples:
    - `mcp__linear__list_issues`

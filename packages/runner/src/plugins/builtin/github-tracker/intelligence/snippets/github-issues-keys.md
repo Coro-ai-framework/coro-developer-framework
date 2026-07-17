@@ -17,7 +17,10 @@ on the tracker side, PRs on the SCM side).
    - `tracker_get_comments` → `mcp__github-issues__get_issue_comments`.
      Comments are **not** included in `tracker_get_issue` — call this
      explicitly to read discussion left on an issue.
-   - `tracker_comment_issue` → `mcp__github-issues__add_issue_comment`
+   - `tracker_comment_issue` → `mcp__github-issues__add_issue_comment`.
+     GitHub issue comments are **flat** — there is no threading, so a
+     `parentId` passed to `tracker_comment_issue` is ignored and the
+     comment posts at the top level.
 2. **Native `mcp__github-issues__*` tools (advanced path).** Examples:
    - `mcp__github-issues__create_issue`
    - `mcp__github-issues__list_issues`

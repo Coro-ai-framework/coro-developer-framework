@@ -68,6 +68,11 @@ export interface TransitionIssueArgs {
 export interface CommentIssueArgs {
   key: string
   body: string
+  /**
+   * When set, post as a threaded reply to this comment id. Supported by
+   * Jira (Software/Business) and Linear; ignored by flat providers.
+   */
+  parentId?: string
 }
 
 /** One comment on a tracker issue. Mirrors the plugin contract's `TrackerComment`. */
@@ -84,6 +89,12 @@ export interface TrackerComment {
   updatedAt?: string
   /** Deep link to the comment, when available. */
   url?: string
+  /**
+   * Id of the comment this one replies to, on providers with a threaded
+   * comment model (Jira Software/Business, Linear). Absent on top-level
+   * comments and flat providers (GitHub Issues).
+   */
+  parentId?: string
 }
 
 /**

@@ -30,6 +30,7 @@ import type {
   PluginManifest,
   PluginMcpServerConfig,
   TrackerComment,
+  TrackerCommentArgs,
   TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
@@ -175,6 +176,19 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
 
   async getComments(key: string): Promise<TrackerComment[]> {
     return unwrapTrackerResult(await this.trackerClient.getComments(key))
+  }
+
+  /**
+   * Post a comment natively via the Jira REST client (not the upstream
+   * MCP `jira_add_comment` tool) so we can pass `parentId` for threaded
+   * replies — the MCP server does not expose that field.
+   */
+  async commentIssue(args: TrackerCommentArgs): Promise<void> {
+    unwrapTrackerResult(await this.trackerClient.commentIssue({
+      key: args.key,
+      body: args.body,
+      ...(args.parentId ? { parentId: args.parentId } : {}),
+    }))
   }
 
   // ── Webhook normalisation ───────────────────────────────────────────────
