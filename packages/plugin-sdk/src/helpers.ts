@@ -5,7 +5,7 @@
 
 import * as crypto from 'node:crypto'
 import type { ExternalRefKind, ExternalRef } from '@coro-ai/cloud-protocol'
-import type { PluginMcpServerConfig } from './types'
+import type { ExecutorModelDescriptor, PluginMcpServerConfig } from './types'
 
 // ── ExternalRef helpers ─────────────────────────────────────────────────────
 
@@ -137,4 +137,57 @@ export function mcpStdioDescriptor(args: {
     ...(args.args ? { args: [...args.args] } : {}),
     ...(args.env ? { env: { ...args.env } } : {}),
   }
+}
+
+// ── Executor model-catalogue helpers ─────────────────────────────────────────
+//
+// The single source of truth for a provider's models is its
+// `listModels()` catalogue. These helpers derive tier defaults from
+// that catalogue so an executor never has to restate model ids: adding,
+// retiring, or re-flagging a model in the catalogue updates every
+// default automatically. Consumed by `defaultAliases()` and per-tier
+// fallbacks in the built-in executors, and available to drop-in plugin
+// authors for the same purpose.
+
+/** The three capability tiers every executor publishes defaults for. */
+export const MODEL_TIERS = ['planning', 'coding', 'mini'] as const
+export type ModelTier = (typeof MODEL_TIERS)[number]
+
+/**
+ * Resolve the canonical default model id for a tier from a catalogue.
+ * Prefers the model explicitly flagged {@link ExecutorModelDescriptor.isDefault},
+ * then falls back to the first catalogued model of that tier. Returns
+ * `undefined` when the catalogue has no model for the tier.
+ */
+export function defaultModelForTier(
+  models: ReadonlyArray<ExecutorModelDescriptor>,
+  tier: ModelTier,
+): string | undefined {
+  const flagged = models.find(m => m.tier === tier && m.isDefault)
+  if (flagged) return flagged.id
+  return models.find(m => m.tier === tier)?.id
+}
+
+/**
+ * Derive the canonical `tier:*` default aliases for a provider straight
+ * from its model catalogue. Only tiers that have at least one catalogued
+ * model produce an entry, so a provider that ships (say) no `mini`
+ * model simply omits `tier:mini`.
+ *
+ * ```ts
+ * defaultAliases() {
+ *   return tierDefaultAliases(MY_MODELS, MY_PLUGIN_ID)
+ * }
+ * ```
+ */
+export function tierDefaultAliases(
+  models: ReadonlyArray<ExecutorModelDescriptor>,
+  provider: string,
+): Record<string, { provider: string; model: string }> {
+  const out: Record<string, { provider: string; model: string }> = {}
+  for (const tier of MODEL_TIERS) {
+    const model = defaultModelForTier(models, tier)
+    if (model) out[`tier:${tier}`] = { provider, model }
+  }
+  return out
 }

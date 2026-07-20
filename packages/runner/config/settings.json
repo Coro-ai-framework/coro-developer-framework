@@ -5,9 +5,7 @@
     "logLevel": "info"
   },
   "claude": {
-    "apiKey": "",
-    "planningModel": "claude-opus-4-8",
-    "codingModel": "claude-sonnet-5"
+    "apiKey": ""
   },
   "bitbucket": {
     "workspace": "",

@@ -19,7 +19,7 @@ import { readFileSync } from 'fs'
 import path from 'path'
 import type { HookPolicy, SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { ToolContext } from './types'
-import { selectModel } from '../jobs/runner'
+import { resolveModelAlias } from '../jobs/phase-assignment'
 
 /**
  * Tool whitelist applied when a workflow YAML omits `subagents[].tools`.
@@ -154,10 +154,17 @@ export async function runSubagent(
 
   // Resolve model: subagent's own model/tier wins, falling through to
   // the executor's tier defaults via the same alias machinery as
-  // regular phases.
-  const model = (decl.model || decl.tier)
-    ? selectModel({ model: decl.model, tier: decl.tier }, ctx.settings)
-    : selectModel({ tier: 'mini' }, ctx.settings)
+  // regular phases. The alias's reasoning-effort hint travels with it so
+  // per-tier `reasoningEffort` applies to subagents too (default tier
+  // for an undeclared subagent is `mini`).
+  const subagentAlias = resolveModelAlias(
+    (decl.model || decl.tier) ? { model: decl.model, tier: decl.tier } : { tier: 'mini' },
+    ctx.settings.llm?.aliases ?? {},
+  )
+  const model = subagentAlias.model
+  const modelHints = subagentAlias.reasoningEffort
+    ? { reasoningEffort: subagentAlias.reasoningEffort }
+    : undefined
 
   // Tool whitelist: workflow declaration > parent phase whitelist >
   // safe defaults.
@@ -189,6 +196,7 @@ export async function runSubagent(
     systemPrompt,
     task: input.task,
     model,
+    ...(modelHints ? { modelHints } : {}),
     cwd: phase.workingDir,
     intelligenceDir: phase.jobIntelligenceDir,
     mcpServer: phase.mcpServer,

@@ -40,6 +40,69 @@ export interface ResolvedPhaseAssignment {
   capabilities: ExecutorCapabilities
 }
 
+/** Reasoning-effort hint carried on an alias entry. */
+export type ReasoningEffort = 'low' | 'medium' | 'high'
+
+/** A single alias-map entry (`settings.llm.aliases[key]`). */
+export type AliasEntry = { provider: string; model: string; reasoningEffort?: ReasoningEffort }
+
+/**
+ * Outcome of resolving a phase/subagent's `{ model?, tier? }` against
+ * the alias map. This is the single, shared resolution primitive — both
+ * {@link selectModel} (string-only callers) and
+ * {@link resolvePhaseAssignment} (executor + hints) are built on it so
+ * the candidate order can never drift between the two.
+ */
+export interface ResolvedAlias {
+  /** Concrete model id to run (alias target, literal pass-through, or bare tier). */
+  model: string
+  /** Provider from the matched alias entry, when the hit came from an alias. */
+  provider?: string
+  /** Reasoning-effort hint from the matched alias entry, if any. */
+  reasoningEffort?: ReasoningEffort
+  /** True when a candidate matched a key in the alias map. */
+  resolvedFromAlias: boolean
+  /** The alias key that matched (for logging/telemetry). */
+  aliasKey?: string
+}
+
+/**
+ * Resolve a `{ model?, tier? }` phase/subagent config against the alias
+ * map. Resolution order (the canonical one — everything else delegates
+ * here):
+ *   1. `phaseConf.model` present → alias-map hit, else literal pass-through.
+ *   2. else `tier:<tier>` (tier defaults to `planning`).
+ *   3. else legacy bare `<tier>` shorthand.
+ *   4. else the bare tier string as a literal model id (so the registry
+ *      surfaces a clear "unknown model" error rather than silently
+ *      picking a default).
+ */
+export function resolveModelAlias(
+  phaseConf: { model?: string; tier?: string } | null | undefined,
+  aliases: Record<string, AliasEntry>,
+): ResolvedAlias {
+  const fromEntry = (key: string, entry: AliasEntry): ResolvedAlias => ({
+    model: entry.model,
+    provider: entry.provider,
+    ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
+    resolvedFromAlias: true,
+    aliasKey: key,
+  })
+
+  if (phaseConf?.model) {
+    const hit = aliases[phaseConf.model]
+    if (hit) return fromEntry(phaseConf.model, hit)
+    return { model: phaseConf.model, resolvedFromAlias: false }
+  }
+
+  const tier = phaseConf?.tier || 'planning'
+  const tierHit = aliases[`tier:${tier}`]
+  if (tierHit) return fromEntry(`tier:${tier}`, tierHit)
+  const legacyHit = aliases[tier]
+  if (legacyHit) return fromEntry(tier, legacyHit)
+  return { model: tier, resolvedFromAlias: false }
+}
+
 /**
  * Resolve a workflow phase / subagent's model assignment to a concrete
  * executor runtime + model id. Pure function — no side effects, no I/O.
@@ -61,51 +124,19 @@ export function resolvePhaseAssignment(
   const explicitProvider = phaseConf.provider
   const aliases = settings.llm?.aliases ?? {}
 
-  // Walk the resolution priority list. Each candidate is an alias key
-  // we should try in `settings.llm.aliases`; the first hit wins.
-  const candidates: string[] = []
-  if (phaseConf.model) candidates.push(phaseConf.model)
-  if (phaseConf.tier) {
-    candidates.push(`tier:${phaseConf.tier}`)
-    candidates.push(phaseConf.tier) // legacy shorthand fallback
-  }
+  const alias = resolveModelAlias(phaseConf, aliases)
 
-  let aliasEntry: { provider: string; model: string; reasoningEffort?: 'low' | 'medium' | 'high' } | undefined
-  let aliasHitKey: string | undefined
-  for (const key of candidates) {
-    const hit = aliases[key]
-    if (hit) {
-      aliasEntry = hit
-      aliasHitKey = key
-      break
-    }
-  }
-
-  let provider: string | undefined
-  let model: string
-  let modelHints: ResolvedPhaseAssignment['modelHints'] | undefined
-  let resolvedFromAlias = false
-
-  if (aliasEntry) {
-    resolvedFromAlias = true
-    // Workflow `provider` overrides alias `provider`. The workflow
-    // author wrote it more recently and more specifically.
-    provider = explicitProvider ?? aliasEntry.provider
-    model = aliasEntry.model
-    if (aliasEntry.reasoningEffort) {
-      modelHints = { reasoningEffort: aliasEntry.reasoningEffort }
-    }
-  } else {
-    provider = explicitProvider
-    // No alias hit. If the workflow pinned a literal `model:`, pass it
-    // through to the registry; otherwise leave empty so the registry
-    // routes purely on `provider` (or the tenant default).
-    model = phaseConf.model ?? ''
-  }
-  void aliasHitKey // reserved for future telemetry / debug logging
+  // Workflow `provider` overrides alias `provider` — the workflow author
+  // wrote it more recently and more specifically. When the model came
+  // through as a bare/literal (no alias hit) with no explicit provider,
+  // leave `model` empty so the registry can route purely on provider /
+  // tenant default rather than passing a bare tier name as a model id.
+  const provider = explicitProvider ?? alias.provider
+  const model = alias.resolvedFromAlias || phaseConf.model ? alias.model : ''
+  const modelHints = alias.reasoningEffort ? { reasoningEffort: alias.reasoningEffort } : undefined
 
   const runtime = registry.resolveExecutor({
-    provider,
+    ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
   })
 
@@ -114,7 +145,7 @@ export function resolvePhaseAssignment(
     model,
     provider: runtime.manifest.id,
     ...(modelHints ? { modelHints } : {}),
-    resolvedFromAlias,
+    resolvedFromAlias: alias.resolvedFromAlias,
     capabilities: runtime.capabilities,
   }
 }

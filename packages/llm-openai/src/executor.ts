@@ -29,6 +29,8 @@ import {
   buildChatToolAllowPolicy,
   chatHasTools,
   createSdkMcpServer,
+  defaultModelForTier,
+  tierDefaultAliases,
 } from '@coro-ai/plugin-sdk'
 import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { hasOpenAiApiKey, resolveOpenAiClientOptions } from './auth'
@@ -205,16 +207,19 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     // The provider-prefixed `openai*` keys are kept for back-compat
     // and for users who want to pin a phase to OpenAI without changing
     // the global tier binding.
-    const planning = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.6-sol'   }
-    const coding   = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.6-terra' }
-    const mini     = { provider: OPENAI_PLUGIN_ID, model: 'gpt-5.6-luna'  }
+    //
+    // Derived straight from {@link OPENAI_MODELS} (via the `isDefault`
+    // tags) so the catalogue is the single source of truth — adding or
+    // retiring a model updates every default automatically.
+    const tiers = tierDefaultAliases(OPENAI_MODELS, OPENAI_PLUGIN_ID)
+    const planning = tiers['tier:planning']
+    const coding = tiers['tier:coding']
+    const mini = tiers['tier:mini']
     return {
-      'tier:planning': planning,
-      'tier:coding':   coding,
-      'tier:mini':     mini,
-      openaiPlanning:  planning,
-      openaiCoding:    coding,
-      openaiMini:      mini,
+      ...tiers,
+      ...(planning ? { openaiPlanning: planning } : {}),
+      ...(coding ? { openaiCoding: coding } : {}),
+      ...(mini ? { openaiMini: mini } : {}),
     }
   }
 
@@ -691,7 +696,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     tools: ReturnType<McpFunctionBridge['listTools']>,
   ): Record<string, unknown> {
     const params: Record<string, unknown> = {
-      model: req.model || this.auth.defaultModel || 'gpt-5.6-terra',
+      model: req.model || this.auth.defaultModel || defaultModelForTier(OPENAI_MODELS, 'coding') || 'gpt-5.6-terra',
       instructions: req.systemPrompt,
       input,
       parallel_tool_calls: true,

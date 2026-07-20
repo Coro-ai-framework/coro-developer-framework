@@ -35,6 +35,7 @@ import {
   computeTrackerPromptContext,
 } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
+import { resolveModelAlias } from './phase-assignment'
 import { ToolContext, PhaseSignals } from '../tools/types'
 import {
   loadWorkflowConfigFromRoots,
@@ -522,7 +523,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         ? { ...phaseConf, model: override.model, provider: override.provider ?? phaseConf?.provider }
         : phaseConf
 
-      const model = selectModel(effectivePhaseConf, settings)
+      // Single resolution pass: model + alias-provider + reasoning-effort
+      // hint all come from the same alias lookup. `modelHints` used to be
+      // dropped here (only `selectModel`'s bare model string survived),
+      // so a tenant's per-tier `reasoningEffort` never reached the
+      // executor. We now thread it through to the phase request below.
+      const aliasResolution = resolveModelAlias(effectivePhaseConf, settings.llm?.aliases ?? {})
+      const model = aliasResolution.model
+      const phaseModelHints = aliasResolution.reasoningEffort
+        ? { reasoningEffort: aliasResolution.reasoningEffort }
+        : undefined
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
       /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as "cli.js not found". */
       mkdirSync(workingDir, { recursive: true })
@@ -530,10 +540,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Resolve the executor early so its `capabilities` can drive
       // prompt/subagent assembly (CLAUDE.md injection, etc.). Test
       // injection still wins via `options.executorImpl`.
+      // Provider precedence: explicit workflow/override `provider:` wins,
+      // else the provider bound to the resolved alias entry, else let the
+      // registry infer from the model id.
+      const resolvedProvider = effectivePhaseConf?.provider ?? aliasResolution.provider
       const executor: PhaseExecutorRuntime =
         options?.executorImpl ?? ctx.plugins.resolveExecutor({
           model,
-          provider: effectivePhaseConf?.provider,
+          ...(resolvedProvider ? { provider: resolvedProvider } : {}),
         })
 
       // Surface the resolved provider/model in the activity log so
@@ -542,14 +556,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // longer obvious from the workflow file alone (alias indirection,
       // tenant defaults, sole-installed fallback).
       {
-        const aliasKey =
-          effectivePhaseConf?.model && settings.llm?.aliases?.[effectivePhaseConf.model]
-            ? effectivePhaseConf.model
-            : undefined
-        const aliasEntry = aliasKey ? settings.llm?.aliases?.[aliasKey] : undefined
         const parts = [`provider=${executor.manifest.id}`, `model=${model || '<default>'}`]
-        if (aliasKey) parts.push(`alias=${aliasKey}`)
-        if (aliasEntry?.reasoningEffort) parts.push(`effort=${aliasEntry.reasoningEffort}`)
+        if (aliasResolution.aliasKey) parts.push(`alias=${aliasResolution.aliasKey}`)
+        if (phaseModelHints?.reasoningEffort) parts.push(`effort=${phaseModelHints.reasoningEffort}`)
         if (override) parts.push('override=developer')
         await stateBackend.appendLog(liveJob.id, `Model: ${parts.join(' ')}`)
       }
@@ -741,6 +750,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         systemPrompt,
         userPrompt: promptText,
         model,
+        ...(phaseModelHints ? { modelHints: phaseModelHints } : {}),
         cwd: workingDir,
         intelligenceDir: jobIntelligenceDir,
         mcpServer: { kind: 'sdk-instance', id: 'coro', instance: phaseMcpServer },
@@ -1741,23 +1751,10 @@ export function selectModel(
   phaseConf: { model?: string; tier?: string } | null | undefined,
   settings: Settings,
 ): string {
-  const aliases = settings.llm?.aliases ?? {}
-  // 1. Explicit model wins (alias key OR literal model id pass-through).
-  if (phaseConf?.model) {
-    const alias = aliases[phaseConf.model]
-    return alias ? alias.model : phaseConf.model
-  }
-  // 2. Tier fallback — declarative "this phase needs <tier>".
-  const tier = phaseConf?.tier || 'planning'
-  const tierAlias = aliases[`tier:${tier}`]
-  if (tierAlias) return tierAlias.model
-  // 3. Last-resort: legacy `planning`/`coding` shorthand for tenants
-  //    that pre-date `tier:*` defaults. When even that misses, return
-  //    the bare tier name as a literal model id — the registry's
-  //    executor lookup will surface a clear "unknown model" error.
-  const legacy = aliases[tier]
-  if (legacy) return legacy.model
-  return tier
+  // Thin wrapper over the shared {@link resolveModelAlias} core so
+  // string-only callers keep working while the candidate/priority logic
+  // lives in exactly one place (see `jobs/phase-assignment.ts`).
+  return resolveModelAlias(phaseConf, settings.llm?.aliases ?? {}).model
 }
 
 /**
@@ -2014,15 +2011,20 @@ export function buildExecutorSubagentSpecs(
     // Resolve the model alias-first, literal-passthrough. The executor
     // applies any provider-specific coercion (Anthropic's SDK accepts a
     // tier shorthand like `'opus'/'sonnet'`; OpenAI / others want a
-    // literal model id).
-    const resolvedModel = sa.model || sa.tier
-      ? selectModel({ model: sa.model, tier: sa.tier }, settings)
+    // literal model id). Carry the alias's reasoning-effort hint too so
+    // per-tier `reasoningEffort` reaches non-native subagent executors.
+    const saAlias = sa.model || sa.tier
+      ? resolveModelAlias({ model: sa.model, tier: sa.tier }, settings.llm?.aliases ?? {})
+      : undefined
+    const saModelHints = saAlias?.reasoningEffort
+      ? { reasoningEffort: saAlias.reasoningEffort }
       : undefined
 
     out.push({
       name: sa.name,
       systemPrompt: agentPrompt,
-      ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(saAlias?.model ? { model: saAlias.model } : {}),
+      ...(saModelHints ? { modelHints: saModelHints } : {}),
       ...(sa.provider ? { provider: sa.provider } : {}),
       ...(sa.tools && sa.tools.length > 0 ? { allowedTools: [...sa.tools] } : {}),
     })

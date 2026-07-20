@@ -546,6 +546,15 @@ export interface ExecutorModelDescriptor {
   contextTokens: number
   /** Suggested role — runner uses this for default alias seeding only. */
   tier?: 'planning' | 'coding' | 'mini'
+  /**
+   * Marks this model as the canonical default for its {@link tier}. The
+   * tier-default helpers (`tierDefaultAliases`, `defaultModelForTier`)
+   * prefer a flagged model over catalogue order, so a catalogue can list
+   * a newer/experimental model ahead of the current default without
+   * silently promoting it. Exactly one model per tier should set this;
+   * if none do, the first model of the tier wins.
+   */
+  isDefault?: boolean
   /** True when the model supports `modelHints.reasoningEffort`. */
   supportsThinking?: boolean
   /** Static pricing snapshot in USD per 1M tokens; aggregators may omit. */
@@ -625,6 +634,8 @@ export interface ExecutorSubagentSpec {
   systemPrompt: string
   /** Optional per-subagent model override (literal — not an alias). */
   model?: string
+  /** Optional per-invocation knobs (e.g. reasoning effort) resolved from the alias. */
+  modelHints?: { reasoningEffort?: 'low' | 'medium' | 'high' }
   /** Optional per-subagent provider override; required when crossing executors. */
   provider?: string
   /** Tool whitelist for this subagent (subset of the parent phase's). */
@@ -878,10 +889,14 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    * Optional default alias seed. The runner consults this once at
    * bootstrap when `settings.llm.aliases` is empty so workflows can
    * reference `model: 'planning'` / `model: 'coding'` without
-   * tenant-side config. Anthropic returns
-   * `{ planning: { provider: 'anthropic', model: 'claude-opus-4-8' },
-   *   coding:   { provider: 'anthropic', model: 'claude-sonnet-4-6' } }`.
-   * Future providers ship their own tier-appropriate defaults.
+   * tenant-side config.
+   *
+   * The recommended implementation derives these from `listModels()`
+   * via {@link tierDefaultAliases} so the model catalogue stays the
+   * single source of truth — the tier defaults fall out of each
+   * descriptor's `tier` + `isDefault` tags. Anthropic returns
+   * `{ 'tier:planning': { provider: 'anthropic', model: 'claude-opus-4-8' },
+   *    'tier:coding':   { provider: 'anthropic', model: 'claude-sonnet-5' }, … }`.
    *
    * The runner never writes these defaults back to disk — they only
    * influence in-memory `Settings.llm.aliases` resolution.

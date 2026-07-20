@@ -50,7 +50,7 @@ import type {
   PluginMcpServerConfig,
   PluginTestResult,
 } from '@coro-ai/plugin-sdk'
-import { RateLimitExceededError, classifyProviderError } from '@coro-ai/plugin-sdk'
+import { RateLimitExceededError, classifyProviderError, tierDefaultAliases } from '@coro-ai/plugin-sdk'
 import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
@@ -207,6 +207,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     displayName: 'Claude Opus 4.8',
     contextTokens: 1_000_000,
     tier: 'planning',
+    isDefault: true,
     supportsThinking: true,
     pricing: { inputPerMTokens: 5, outputPerMTokens: 25, cacheReadPerMTokens: 0.5 },
   },
@@ -215,6 +216,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     displayName: 'Claude Sonnet 5',
     contextTokens: 1_000_000,
     tier: 'coding',
+    isDefault: true,
     supportsThinking: true,
     pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
   },
@@ -223,6 +225,7 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     displayName: 'Claude Haiku 4.5',
     contextTokens: 200_000,
     tier: 'mini',
+    isDefault: true,
     supportsThinking: true,
     pricing: { inputPerMTokens: 0.8, outputPerMTokens: 4, cacheReadPerMTokens: 0.08 },
   },
@@ -750,28 +753,23 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    * is a no-op for tenants on the built-in Anthropic plugin.
    */
   defaultAliases(): Record<string, { provider: string; model: string }> {
-    // The plugin only owns its own catalogue. We publish a default
-    // model for each capability tier we expose via
-    // {@link ANTHROPIC_MODELS}; workflow phases declare which tier
-    // they want via `tier: planning|coding|mini` and the runner
-    // resolves through these aliases. Tenants can rebind any tier
+    // Derived straight from {@link ANTHROPIC_MODELS} — the catalogue is
+    // the single source of truth. Each tier default is the model tagged
+    // `isDefault` for that tier (falling back to the first model of the
+    // tier), so adding or retiring a catalogue entry updates these
+    // aliases automatically. Workflow phases declare which tier they
+    // want via `tier: planning|coding|mini`; tenants can rebind any tier
     // (`tier:planning`, etc.) from the dashboard without touching
     // workflow files.
-    //
-    // The legacy `planning` / `coding` keys are kept so existing
-    // tenant configs and any custom workflow files still using
-    // `model: planning` keep working unchanged.
-    const opus    = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-opus-4-8'   }
-    const sonnet  = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-sonnet-5'   }
-    const haiku   = { provider: ANTHROPIC_PLUGIN_ID, model: 'claude-haiku-4-5'  }
+    const tiers = tierDefaultAliases(ANTHROPIC_MODELS, ANTHROPIC_PLUGIN_ID)
+    // Legacy two-tier shorthands (back-compat) so existing tenant
+    // configs and custom workflows using `model: planning` keep working.
+    const planning = tiers['tier:planning']
+    const coding = tiers['tier:coding']
     return {
-      // Tier defaults — the only vocabulary the plugin owns.
-      'tier:planning': opus,
-      'tier:coding':   sonnet,
-      'tier:mini':     haiku,
-      // Legacy two-tier shorthands (back-compat).
-      planning: opus,
-      coding:   sonnet,
+      ...tiers,
+      ...(planning ? { planning } : {}),
+      ...(coding ? { coding } : {}),
     }
   }
 

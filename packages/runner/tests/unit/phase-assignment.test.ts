@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { PluginRegistry } from '../../src/plugins'
-import { resolvePhaseAssignment } from '../../src/jobs/phase-assignment'
+import { resolvePhaseAssignment, resolveModelAlias } from '../../src/jobs/phase-assignment'
 import type { Settings } from '../../src/config/settings'
 import type {
   ExecutorCapabilities,
@@ -144,5 +144,41 @@ describe('resolvePhaseAssignment', () => {
 
     expect(r.capabilities).toBe(r.runtime.capabilities)
     expect(r.capabilities.supportsNativeSubagents).toBe(false)
+  })
+})
+
+describe('resolveModelAlias (shared resolution core)', () => {
+  const aliases = {
+    'tier:planning': { provider: 'anthropic', model: 'claude-opus-4-8' },
+    'tier:coding': { provider: 'openai', model: 'gpt-5.6-terra', reasoningEffort: 'high' as const },
+    coding: { provider: 'anthropic', model: 'legacy-coding' },
+  }
+
+  it('resolves tier:* first and carries provider + reasoningEffort', () => {
+    const r = resolveModelAlias({ tier: 'coding' }, aliases)
+    expect(r).toMatchObject({
+      model: 'gpt-5.6-terra',
+      provider: 'openai',
+      reasoningEffort: 'high',
+      resolvedFromAlias: true,
+      aliasKey: 'tier:coding',
+    })
+  })
+
+  it('defaults an undeclared phase to the planning tier', () => {
+    expect(resolveModelAlias({}, aliases).model).toBe('claude-opus-4-8')
+    expect(resolveModelAlias(null, aliases).aliasKey).toBe('tier:planning')
+  })
+
+  it('treats an explicit model as an alias key first, then a literal', () => {
+    expect(resolveModelAlias({ model: 'coding' }, aliases).aliasKey).toBe('coding')
+    const literal = resolveModelAlias({ model: 'claude-haiku-4-5' }, aliases)
+    expect(literal).toMatchObject({ model: 'claude-haiku-4-5', resolvedFromAlias: false })
+    expect(literal.reasoningEffort).toBeUndefined()
+  })
+
+  it('falls back to the bare tier as a literal when nothing matches', () => {
+    const r = resolveModelAlias({ tier: 'mini' }, aliases)
+    expect(r).toMatchObject({ model: 'mini', resolvedFromAlias: false })
   })
 })

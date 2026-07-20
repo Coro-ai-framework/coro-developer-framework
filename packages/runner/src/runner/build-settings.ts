@@ -45,10 +45,24 @@ export function seedExecutorDefaultAliases(args: {
       if (!aliases[k]) aliases[k] = v
     }
   }
+  // Env overrides trump everything (back-compat escape hatch for CI /
+  // `docker run`). Model resolution consults `tier:<tier>` *before* the
+  // legacy bare `planning`/`coding` keys, so we must overwrite the
+  // `tier:*` alias — writing only the legacy key would be silently
+  // shadowed by the plugin-seeded `tier:planning` default. We set both
+  // so callers that reference either key resolve consistently.
   const planEnv = process.env['CLAUDE_PLANNING_MODEL']
-  if (planEnv) aliases['planning'] = { provider: 'anthropic', model: planEnv }
+  if (planEnv) {
+    const entry = { provider: 'anthropic', model: planEnv }
+    aliases['tier:planning'] = entry
+    aliases['planning'] = entry
+  }
   const codeEnv = process.env['CLAUDE_CODING_MODEL']
-  if (codeEnv) aliases['coding'] = { provider: 'anthropic', model: codeEnv }
+  if (codeEnv) {
+    const entry = { provider: 'anthropic', model: codeEnv }
+    aliases['tier:coding'] = entry
+    aliases['coding'] = entry
+  }
 }
 
 /**

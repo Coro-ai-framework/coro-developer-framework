@@ -14,6 +14,7 @@ interface PluginsResponse {
     manifest: { id: string; kind: string; displayName: string }
     installed?: boolean
     active?: boolean
+    source?: 'builtin' | 'dropin'
   }>
 }
 
@@ -42,11 +43,23 @@ export function useExecutorPlugins(): {
         const data = await requestJson<PluginsResponse>('/plugins')
         if (cancelled) return
         const next = data.plugins
-          // Only LLM executors back the model dropdown. We surface
-          // installed plugins regardless of `active` so a misconfigured
-          // provider still shows up — matches Settings semantics where
-          // the user can pick a provider and *then* configure it.
-          .filter(p => p.manifest.kind === 'executor' && p.installed !== false)
+          // Only LLM executors back the model dropdown. Surface every
+          // executor that is *available* to the runner, not just those
+          // with an enabled config slot: built-in executors (Anthropic,
+          // OpenAI) are auto-loaded (`active: true`) even before the
+          // user configures credentials, and a configured-but-broken
+          // provider (`installed: true`) should stay visible too. This
+          // matches the Settings LLM editor, which treats every
+          // discovered executor as selectable so the user can pick a
+          // provider and *then* configure it. Without this, a provider
+          // like OpenAI — and every model in its catalogue — silently
+          // disappears from Coro plan mode and per-phase pickers until
+          // it happens to have an enabled slot on disk.
+          .filter(
+            p =>
+              p.manifest.kind === 'executor' &&
+              (p.active !== false || p.installed !== false || p.source === 'builtin'),
+          )
           .map(p => ({ id: p.manifest.id, displayName: p.manifest.displayName }))
           .sort((a, b) => a.displayName.localeCompare(b.displayName))
         setProviders(next)
