@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
-    "typescript": "^5.8.2",
-    "vitest": "^3.2.4"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }
