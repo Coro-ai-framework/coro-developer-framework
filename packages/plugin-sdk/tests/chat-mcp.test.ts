@@ -61,6 +61,20 @@ describe('chat-mcp helpers', () => {
     expect(policy.checkToolAllowed('Bash').allow).toBe(false)
   })
 
+  it('allows claude.ai connector tools attached by the Claude Code subprocess', () => {
+    const req: ChatRequest = {
+      messages: [],
+      model: 'm',
+      signal: new AbortController().signal,
+      tools: [{ name: 'tracker_get_issue', description: '', inputSchema: {} }],
+      runTool: async () => ({}),
+    }
+    const policy = buildChatToolAllowPolicy(req)
+    expect(policy.checkToolAllowed('mcp__claude_ai_Atlassian__getJiraIssue').allow).toBe(true)
+    expect(policy.checkToolAllowed('mcp__claude_ai_Linear__list_issues').allow).toBe(true)
+    expect(policy.checkToolAllowed('mcp__slack__post').allow).toBe(false)
+  })
+
   it('parseMcpToolName splits server and tool', () => {
     expect(parseMcpToolName('mcp__catalog__find_callers')).toEqual({
       serverId: 'catalog',

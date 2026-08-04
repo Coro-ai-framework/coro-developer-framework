@@ -31,6 +31,19 @@ export function isPlanModeMcpToolName(toolName: string, serverIds: ReadonlyArray
   return false
 }
 
+/**
+ * Tool-name prefix for claude.ai account connectors (Atlassian, Linear,
+ * Slack, …). The Claude Code subprocess fetches these from the signed-in
+ * Anthropic account and attaches them itself, so they never appear in
+ * `req.pluginMcpServers` and cannot be matched by
+ * {@link isPlanModeMcpToolName}.
+ */
+export const CLAUDE_AI_CONNECTOR_TOOL_PREFIX = 'mcp__claude_ai_'
+
+export function isClaudeAiConnectorToolName(toolName: string): boolean {
+  return toolName.startsWith(CLAUDE_AI_CONNECTOR_TOOL_PREFIX)
+}
+
 export interface ChatToolAllowPolicy {
   /**
    * Value for `hookPolicy.allowedTools`. Always `null` for plan-mode chat
@@ -41,7 +54,7 @@ export interface ChatToolAllowPolicy {
   checkToolAllowed: (toolName: string) => { allow: boolean; reason?: string }
 }
 
-/** Build hook allowlist + checker for plan-mode chat (built-in + BYO MCP). */
+/** Build hook allowlist + checker for plan-mode chat (built-in + BYO MCP + claude.ai connectors). */
 export function buildChatToolAllowPolicy(req: ChatRequest): ChatToolAllowPolicy {
   const serverIds = chatPluginMcpServerIds(req)
   const builtinNames = chatBuiltinToolAllowlist(req)
@@ -65,6 +78,7 @@ export function buildChatToolAllowPolicy(req: ChatRequest): ChatToolAllowPolicy 
       if (toolName === 'ToolSearch') return { allow: true }
       if (allowedSet.has(toolName)) return { allow: true }
       if (isPlanModeMcpToolName(toolName, serverIds)) return { allow: true }
+      if (isClaudeAiConnectorToolName(toolName)) return { allow: true }
       return {
         allow: false,
         reason: `Blocked ${toolName}: only plan-mode lookup tools are available.`,
