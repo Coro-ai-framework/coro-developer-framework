@@ -160,6 +160,21 @@ describe('PluginRegistry', () => {
     expect(r.default('scm')?.manifest.id).toBe('bitbucket')
   })
 
+  it('default(kind) falls back to the sole installed plugin when the configured default was disabled', () => {
+    const r = new PluginRegistry({ scm: 'bitbucket' })
+    r.register(fakeScm('github'))
+    expect(r.default('scm')?.manifest.id).toBe('github')
+    expect(r.resolveScm().manifest.id).toBe('github')
+  })
+
+  it('default(kind) stays ambiguous when a disabled default leaves two candidates', () => {
+    const r = new PluginRegistry({ scm: 'bitbucket' })
+    r.register(fakeScm('github'))
+    r.register(fakeScm('gitlab'))
+    expect(r.default('scm')).toBeUndefined()
+    expect(() => r.resolveScm()).toThrowError(PluginResolutionError)
+  })
+
   it('resolveScm uses params override', () => {
     const r = new PluginRegistry()
     r.register(fakeScm('github'))

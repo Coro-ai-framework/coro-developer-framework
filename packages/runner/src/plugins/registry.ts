@@ -167,6 +167,12 @@ export class PluginRegistry {
    * installed plugin of that kind when there's exactly one — that's
    * the common case for solo deployments and lets the user skip
    * `defaults.scm` config.
+   *
+   * A configured default that is no longer installed (the operator
+   * disabled it in Settings without also rewriting `defaults.scm`) is
+   * treated as absent rather than fatal, so the sole-installed
+   * fallback still applies. With two or more installed the choice is
+   * genuinely ambiguous and resolution still fails loudly.
    */
   default(kind: PluginKind): PluginRuntime | undefined {
     const explicit =
@@ -174,7 +180,10 @@ export class PluginRegistry {
       : kind === 'tracker' ? this.defaults.tracker
       : kind === 'executor' ? this.defaults.executor
       : undefined
-    if (explicit) return this.byIdMap.get(explicit)?.runtime
+    if (explicit) {
+      const pinned = this.byIdMap.get(explicit)?.runtime
+      if (pinned) return pinned
+    }
     const installed = this.byKindMap.get(kind) ?? []
     return installed.length === 1 ? installed[0].runtime : undefined
   }
