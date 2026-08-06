@@ -252,7 +252,7 @@ Procedure:
 - **Call `mcp__coro__add_insight` aggressively — every wasted turn is a future-run tax.** Do NOT wait until you finish to look back; record the insight in the SAME turn the workaround clicks. Trigger ANY of these and you must record:
   - You retried the same operation **3 or more times** before it worked (different flags, different paths, different env vars — all count as the "same op" if the goal is identical).
   - You spent **more than 5 minutes of wall-clock** on a single operation (read the timestamps in your tool results).
-  - You discovered a **sandbox / toolchain quirk** the prompt didn't tell you about — anything Bash-path-guard, package-cache, design-time-host, build-graph, or git-config related. Note: the runner does **not** restrict outbound network; if a fetch fails it is auth, DNS, or a Bash-path-guard denial on a referenced path.
+  - You discovered a **sandbox / toolchain quirk** the prompt didn't tell you about — anything Bash-path-guard, package-cache, blocked-registry-host, design-time-host, build-graph, or git-config related. Coro imposes no network allowlist of its own, but the host may; if a build or fetch fails for an environment reason rather than a code reason, invoke the `sandbox-recovery` skill before you retry or escalate.
   - You used a **workaround that bypasses the documented happy path** (e.g. inline-URL `git push` instead of `git remote add`, raw curl/python after an MCP tool failed, custom NuGet/pip/npm config to escape the global one).
   - You hit a **failure that left you guessing** for >2 turns about whether it was a Coro bug, a sandbox restriction, or your own mistake.
 

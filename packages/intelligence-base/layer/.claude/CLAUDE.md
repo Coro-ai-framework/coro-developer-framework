@@ -23,7 +23,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 6. **Record insights aggressively — every wasted turn is a future-run tax.** Call `add_insight` *in the same turn* the workaround clicks; do not batch. You MUST record when ANY of these triggers fire:
    - You retried the same operation **3+ times** before it worked.
    - You spent **>5 minutes wall-clock** on a single op.
-   - You discovered a **sandbox / toolchain quirk** the prompt didn't mention (Bash path guard, package-cache write block, host-factory, git-config). Note: the runner does **not** restrict outbound network — if a fetch fails it is almost certainly auth, DNS, or a path-guard denial, not an allowlist.
+   - You discovered a **sandbox / toolchain quirk** the prompt didn't mention (Bash path guard, package-cache write block, blocked registry host, host-factory, git-config). Coro itself imposes no network allowlist, but the host may — so record the reachable/blocked hosts you actually observed rather than asserting the cause.
    - You used a **workaround that bypasses the documented happy path** (inline-URL git push, raw curl/python after an MCP tool failed, custom NuGet/pip/npm config).
    - A failure left you **guessing for >2 turns** about whose fault it was.
 
@@ -302,20 +302,23 @@ The Coro Runner sets your current working directory (`cwd`) to `working/{job-id}
 
 This is enforced at runtime: a `PreToolUse` hook denies any `Write` or `Edit` that resolves outside your working directory. Any other path will be denied with a clear error message — use `propose_change` for changes to the intelligence layers (it ships them as a PR rather than a local write).
 
-### Bash path guard — what is and isn't blocked
+### Two independent gates on `Bash`
 
-The same `PreToolUse` hook scans every `Bash` command **string** (not syscalls) and denies anything that references:
+Two *separate* things can stop a shell command. They have different symptoms and different fixes, so identify which one you hit before theorising.
+
+**Gate 1 — Coro's Bash path guard (always present).** The same `PreToolUse` hook scans every `Bash` command **string** (not syscalls) and denies anything that references:
 
 - `~/...`, `$HOME/...`, `${HOME}/...`, `$OLDPWD/...`
 - parent traversal (`../`) **that escapes the working dir after resolution**. A `../` is fine when the resolved target still lands inside `$PWD/**` — see below.
 - absolute paths outside the allow-list (`/tmp`, `/usr`, `/bin`, `/opt`, `/etc`, `/Library`, `/System`, `/Applications`, `/var/folders`, `/private/tmp`, …)
 
-**Explicitly allowed under `$HOME`** (language package caches — these MUST work):
-`~/go/**` (Go modules), `~/.nuget/**`, `~/.npm/**`, `~/.yarn/**`, `~/.pnpm-store/**`, `~/.cache/**` (pip, generic XDG), `~/.m2/**`, `~/.gradle/**`, `~/.cargo/**`, `~/.rustup/**`, `~/.pub-cache/**`, `~/.ivy2/**`, `~/.sbt/**`, `~/.gem/**`, `~/.bundle/**`, `~/.pyenv/**`, `~/.nvm/**`, `~/.rbenv/**`, `~/.sdkman/**`, `~/.dotnet/**`, `~/.local/share/**`, `~/.local/state/**`, `~/.terraform.d/**`.
+Exempt under `$HOME` so package managers can name their caches: `~/go/**`, `~/.nuget/**`, `~/.npm/**`, `~/.yarn/**`, `~/.pnpm-store/**`, `~/.cache/**`, `~/.m2/**`, `~/.gradle/**`, `~/.cargo/**`, `~/.rustup/**`, `~/.pub-cache/**`, `~/.ivy2/**`, `~/.sbt/**`, `~/.gem/**`, `~/.bundle/**`, `~/.pyenv/**`, `~/.nvm/**`, `~/.rbenv/**`, `~/.sdkman/**`, `~/.dotnet/**`, `~/.local/share/**`, `~/.local/state/**`, `~/.terraform.d/**`.
 
-So `go get ...`, `dotnet restore`, `npm install`, `cargo build`, etc. work normally — they write to these cache directories at the OS layer with no further restriction.
+A gate-1 denial is unmistakable: the tool result starts with `Blocked Bash:` and the command never ran. Note that the exemptions above only mean the guard will not stop you from *naming* those paths — they are **not** a promise that the OS will let you write there.
 
-**Outbound network is unrestricted.** There is no host allowlist. If a fetch fails, the cause is auth, DNS, the remote being down, or the Bash path guard denying a path you referenced in the command — never an allowlist.
+**Gate 2 — the host sandbox (Coro does not control it).** The runner asks the executor to disable OS-level sandboxing, but the machine or the organisation running it may enforce one anyway through policy Coro cannot see or override. A typical one allows reads almost everywhere, allows writes only inside `$PWD`, and restricts outbound network to a host allowlist. You are looking at gate 2 when the command **ran** and *it* reported `operation not permitted` / `EPERM`, when a fetch fails against a host that clearly resolves, or when Bash asks for an interactive permission nobody can answer.
+
+Neither gate is a reason to declare the environment broken or to change a pinned dependency. On any gate-2 symptom, invoke the **`sandbox-recovery`** skill — writes redirect into the job directory, and a cache you cannot write to is still readable.
 
 
 Rules:

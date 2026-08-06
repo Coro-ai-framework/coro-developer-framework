@@ -105,6 +105,7 @@ describe('@coro-ai/intelligence-base manifest', () => {
         'register-convention',
         'ruby-conventions',
         'rust-conventions',
+        'sandbox-recovery',
         'self-improvement-guide',
         'spec-quality',
         'typescript-conventions',

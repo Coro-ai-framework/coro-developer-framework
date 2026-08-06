@@ -23,6 +23,16 @@ cd "$REL" && dotnet build
 
 Use the solution or project path from the implementation plan. Prefer the system NuGet cache (`~/.nuget`) — do not invent alternate package directories unless tenant memory says so.
 
+If `dotnet restore` fails with `operation not permitted` writing under
+`~/.nuget`, the host sandbox is denying the write (see the `sandbox-recovery`
+skill). The existing cache is still readable, so restore into a job-local
+package directory while keeping the warm cache as a source:
+
+```bash
+cd "$REL" && NUGET_PACKAGES="$JOB/.cache/nuget" \
+  dotnet restore --source "$HOME/.nuget/packages" --source https://api.nuget.org/v3/index.json
+```
+
 ## Test verification (Coro runner)
 
 ```bash

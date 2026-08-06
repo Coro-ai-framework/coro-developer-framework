@@ -94,6 +94,7 @@ export type {
   PhaseExecutorEvent,
   PhaseExecutorMetrics,
   ExecutorCapabilities,
+  ExecutorSandboxReport,
   ExecutorLifecycleHooks,
   ExecutorSessionController,
   DeveloperInputChannel,

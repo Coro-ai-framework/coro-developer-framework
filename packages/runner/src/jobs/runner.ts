@@ -595,6 +595,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         guardrailsInfo,
         executor.capabilities,
         jobWorkingDir,
+        executor.describeSandbox?.() ?? null,
       )
       const promptSizeKb = (Buffer.byteLength(systemPrompt, 'utf-8') / 1024).toFixed(1)
       logger.info(

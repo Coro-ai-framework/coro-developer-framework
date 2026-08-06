@@ -28,9 +28,28 @@ cd "$REL" && mkdir -p "$JOB/.cache/go-build" && \
   GOCACHE="$JOB/.cache/go-build" go build -buildvcs=false ./...
 ```
 
-- Use **`GOCACHE` under the job root** (writable). Inherit **`GOMODCACHE`** and **`GOPROXY`** from the environment.
-- **Forbidden:** custom isolated caches under `$TMPDIR/*-gomod` unless tenant memory documents an exception.
+- Use **`GOCACHE` under the job root** (always writable). Inherit **`GOMODCACHE`** and **`GOPROXY`** from the environment on the happy path — the shared module cache is warm and saves a lot of downloading.
+- **Never place a cache under `$TMPDIR`.** If you need a job-local cache, put it under the job root so it is inside `$PWD` and gets cleaned up with the job.
 - Scope packages per the implementation plan (e.g. `./internal/persistence/...` only when the plan says so).
+
+### When the shared module cache is not writable
+
+If `go build` / `go mod download` fails with `operation not permitted` writing
+under `$HOME/go/pkg/mod`, the host sandbox is denying the write (see the
+`sandbox-recovery` skill). The shared cache is still **readable**, so use it as
+a local proxy and write into the job root:
+
+```bash
+cd "$REL" && GOFLAGS=-mod=mod \
+  GOCACHE="$JOB/.cache/go-build" GOMODCACHE="$JOB/.cache/gomod" \
+  GOPROXY="file://$HOME/go/pkg/mod/cache/download,direct" \
+  go build -buildvcs=false ./...
+```
+
+Only modules missing from the warm cache fall through to `direct`. If the
+missing module is private and hosted on your SCM, add
+`GOPRIVATE='<scm-host>/<org>/*'` so Go fetches it straight from there instead of
+`proxy.golang.org` / `sum.golang.org`, which a host allowlist may not permit.
 
 ## Test verification (Coro runner)
 
@@ -42,7 +61,13 @@ For long runs, redirect to a file under the job root: `go test ./... > test-outp
 
 ## Failure policy
 
-After two failed build attempts with the same goal: `add_insight` + `escalate`. Do not spiral on `GOPROXY=file://…` or merged module caches.
+After two failed build attempts with the same goal: `add_insight` + `escalate`.
+
+The one exception is a **sandbox write denial** (`operation not permitted` under
+`$HOME/go`). That has a known single-shot fix — the `GOPROXY=file://…` recipe
+above — so apply it once before you count attempts. If it also fails, escalate
+with both errors. Never bump or unpin a dependency to get around a cache or
+network restriction.
 
 ## Project Layout
 

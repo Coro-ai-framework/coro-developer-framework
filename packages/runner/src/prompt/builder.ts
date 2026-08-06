@@ -2,7 +2,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { Logger } from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
-import type { TrackerPluginRuntime } from '../plugins/types'
+import type { ExecutorSandboxReport, TrackerPluginRuntime } from '../plugins/types'
 import { Job } from '@coro-ai/cloud-protocol'
 import type { Insight } from '@coro-ai/cloud-protocol'
 import { propagableInsights } from '../insights'
@@ -210,6 +210,7 @@ export async function buildSystemPrompt(
   guardrailsInfo?: GuardrailsPromptContext,
   executorCapabilities?: { supportsClaudeMdNativeWalkUp: boolean },
   jobWorkingDir?: string,
+  sandbox?: ExecutorSandboxReport | null,
 ): Promise<string> {
   const sections: string[] = []
 
@@ -259,9 +260,75 @@ export async function buildSystemPrompt(
     )
   }
 
+  if (sandbox) {
+    sections.push(buildSandboxPromptBlock(sandbox))
+  }
+
   sections.push(buildJobContext(job, trackerInfo, scmInfo, guardrailsInfo, jobWorkingDir))
 
   return sections.join('\n\n---\n\n')
+}
+
+// ── Host sandbox ──────────────────────────────────────────────────────────────
+
+/**
+ * Tells the agent, up front, that shell commands run under a sandbox Coro
+ * asked to disable and could not.
+ *
+ * Without this the failure mode is expensive: the agent reads the base
+ * `CLAUDE.md`, which describes Coro's own path guard, then hits a kernel
+ * `EPERM` that guard would never produce, and spends turns deciding
+ * whether it broke something or the environment is misconfigured. Stating
+ * the constraint costs a few hundred tokens once per phase.
+ */
+function buildSandboxPromptBlock(sandbox: ExecutorSandboxReport): string {
+  const lines: string[] = [
+    banner('Host Sandbox (detected this phase)', sandbox.sources.join(', ')).trimEnd(),
+    '',
+    'Shell commands run inside a sandbox enforced by host policy. Coro asked the',
+    'executor to disable it and was overridden, so this is not something the runner',
+    'can change and not a sign that anything is broken.',
+    '',
+  ]
+
+  if (sandbox.restrictsWritesOutsideWorkingDir) {
+    lines.push(
+      '- **Writes outside your working directory will fail** with `operation not',
+      '  permitted` — including language package caches under `$HOME`. Reads',
+      '  generally still succeed, so a cache you cannot write to is still usable',
+      '  as a read-only source.',
+    )
+  }
+  if (sandbox.allowWritePaths?.length) {
+    lines.push(`- Also writable: ${sandbox.allowWritePaths.join(', ')}`)
+  }
+  if (sandbox.allowedDomains?.length) {
+    lines.push(
+      `- **Outbound network is limited to an allowlist**: ${sandbox.allowedDomains.join(', ')}.`,
+      '  A fetch to any other host fails regardless of credentials.',
+    )
+  }
+  if (sandbox.excludedCommands?.length) {
+    lines.push(
+      `- Exempt from the sandbox: ${sandbox.excludedCommands.join(', ')}. The exemption`,
+      '  matches the command as written, so chaining (`cd x && git …`) can lose it —',
+      '  prefer the un-chained form with the tool\'s own directory flag.',
+    )
+  }
+  if (sandbox.blocksUnsandboxedCommands) {
+    lines.push(
+      '- The per-command "run unsandboxed" escape hatch is disabled. If a Bash call',
+      '  asks for interactive permission, nobody can answer it — do not retry.',
+    )
+  }
+
+  lines.push(
+    '',
+    'Invoke the `sandbox-recovery` skill before retrying or escalating any command',
+    'that fails for one of these reasons. Never change a pinned dependency to work',
+    'around a sandbox limit.',
+  )
+  return lines.join('\n')
 }
 
 // ── Job context ───────────────────────────────────────────────────────────────

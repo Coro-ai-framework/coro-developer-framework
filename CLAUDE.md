@@ -201,8 +201,12 @@ packages/intelligence-base/layer/.claude/skills/
   feature-testing/SKILL.md          — Generic implementation testing guidance
   golang-conventions/SKILL.md       — Go coding standards
   dotnet-conventions/SKILL.md       — .NET/C# coding standards
+  sandbox-recovery/SKILL.md         — Recovery playbook for host-sandbox denials
   self-improvement-guide/SKILL.md   — Proposal types and file structure guide
 ```
+
+(Abridged — the directory holds the full set; the entries above are the ones
+referenced most often in this document.)
 
 Skills are invoked on-demand by agents, reducing per-phase token costs compared to always-injected knowledge modules.
 

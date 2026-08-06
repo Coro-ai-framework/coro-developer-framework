@@ -76,7 +76,8 @@ import {
 } from './steering-errors'
 import { chatViaAgentSdk, shouldChatViaAgentSdk, shouldRouteChatViaAgentSdk } from './chat-via-sdk'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
-import type { SteeringInterruptMode } from '@coro-ai/plugin-sdk'
+import type { ExecutorSandboxReport, SteeringInterruptMode } from '@coro-ai/plugin-sdk'
+import { probeHostSandbox } from './sandbox-probe'
 
 /** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
 interface NormalizedTokensMutable {
@@ -341,6 +342,8 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   private auth: ClaudeAuthConfig
   private readonly logger: Logger
   private authProbeCache: { at: number; ok: boolean; message?: string; hint?: string } | null = null
+  /** `undefined` = not probed yet; `null` = probed, no host sandbox. */
+  private sandboxProbe: ExecutorSandboxReport | null | undefined = undefined
 
   constructor(opts: AnthropicExecutorOptions) {
     this.settings = opts.settings
@@ -785,6 +788,31 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   }
 
   /**
+   * Report a host sandbox that overrides our `sandbox: { enabled: false }`
+   * request (see the note on that option in `executePhase`). Memoised: the
+   * policy is read by the CLI at process start, so it cannot change
+   * between phases of a running job, and this is called once per phase.
+   */
+  describeSandbox(): ExecutorSandboxReport | null {
+    if (this.sandboxProbe === undefined) {
+      this.sandboxProbe = probeHostSandbox()
+      if (this.sandboxProbe) {
+        this.logger.warn(
+          {
+            sources: this.sandboxProbe.sources,
+            allowedDomains: this.sandboxProbe.allowedDomains?.length ?? null,
+            excludedCommands: this.sandboxProbe.excludedCommands ?? [],
+          },
+          'Host policy enforces the Claude Code sandbox — Coro cannot disable it. ' +
+            'Agent shell commands will be denied writes outside the job working directory. ' +
+            'Amend the managed settings to relax this.',
+        )
+      }
+    }
+    return this.sandboxProbe
+  }
+
+  /**
    * Run a single workflow phase against the Claude Agent SDK.
    *
    * Owns:
@@ -894,10 +922,17 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       // NuGet/PyPI/npm registries like Nexus/Artifactory, self-hosted SCM,
       // observability endpoints), so `dotnet restore` / `pip install` / clones
       // fail with an opaque `blocked-by-allowlist` 403 that looks like a DNS or
-      // auth error. Coro deliberately runs the agent with no network allowlist
-      // (see base CLAUDE.md "Outbound network is unrestricted") and enforces
+      // auth error. Coro imposes no network allowlist of its own and enforces
       // filesystem confinement via its own PreToolUse path guard, so the SDK
       // sandbox is both redundant and actively harmful here.
+      //
+      // Caveat: the SDK forwards this as `--settings`, which lands in the
+      // user-controlled *flag* settings layer. Enterprise-managed settings
+      // (MDM, managed-settings.json, or org policy fetched from the server)
+      // sit in the higher-priority *policy* layer and cannot be widened from
+      // here, so on a managed host the sandbox may stay on regardless. Agents
+      // recover via the `sandbox-recovery` skill; see base CLAUDE.md
+      // "Two independent gates on Bash".
       sandbox: { enabled: false },
       maxTurns: req.maxTurns ?? 200,
       thinking: { type: 'adaptive' },

@@ -104,6 +104,40 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(prompt).toContain('Your Role This Phase')
     })
 
+    it('omits the host-sandbox block when the executor reports none', async () => {
+      setupFs({ [WORKFLOW_PATH]: '# Workflow' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(), INTELLIGENCE_DIR, noopLogger,
+        undefined, undefined, undefined, undefined, undefined, null,
+      )
+      expect(prompt).not.toContain('Host Sandbox')
+    })
+
+    it('states the host-sandbox constraints when the executor reports one', async () => {
+      setupFs({ [WORKFLOW_PATH]: '# Workflow' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(), INTELLIGENCE_DIR, noopLogger,
+        undefined, undefined, undefined, undefined, undefined,
+        {
+          sources: ['/Library/Application Support/ClaudeCode/managed-settings.json'],
+          restrictsWritesOutsideWorkingDir: true,
+          allowedDomains: ['bitbucket.org', 'github.com'],
+          excludedCommands: ['git'],
+          blocksUnsandboxedCommands: true,
+        },
+      )
+
+      expect(prompt).toContain('Host Sandbox')
+      expect(prompt).toContain('managed-settings.json')
+      expect(prompt).toContain('operation not')
+      expect(prompt).toContain('bitbucket.org, github.com')
+      expect(prompt).toContain('Exempt from the sandbox: git')
+      expect(prompt).toContain('do not retry')
+      expect(prompt).toContain('sandbox-recovery')
+    })
+
     it('does not inject memory (now on-demand via the read_memory MCP tool)', async () => {
       setupFs({
         [WORKFLOW_PATH]: '',

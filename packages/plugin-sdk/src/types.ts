@@ -724,6 +724,39 @@ export interface PhaseExecutionRequest {
 }
 
 /**
+ * A shell sandbox imposed by the host — machine policy, MDM, or an
+ * organisation policy fetched by the provider CLI — that the executor
+ * has asked to disable but cannot actually override.
+ *
+ * This is deliberately separate from {@link HookPolicy}, which is Coro's
+ * *own* confinement and always applies. A `HookPolicy` denial rejects the
+ * tool call before it runs; a host sandbox lets the command run and then
+ * fails it at the syscall or socket, which reads very differently to the
+ * agent and needs a different recovery.
+ */
+export interface ExecutorSandboxReport {
+  /** Absolute paths of the settings sources that pin the sandbox on. */
+  sources: ReadonlyArray<string>
+  /**
+   * Writes outside the working directory are expected to fail. Reads are
+   * usually still permitted, which is what makes warm caches salvageable.
+   */
+  restrictsWritesOutsideWorkingDir: boolean
+  /** Outbound hosts the policy permits, when it defines an allowlist. */
+  allowedDomains?: ReadonlyArray<string>
+  /** Commands the policy exempts from the sandbox entirely (e.g. `git`). */
+  excludedCommands?: ReadonlyArray<string>
+  /** Paths outside the working directory the policy still allows writing. */
+  allowWritePaths?: ReadonlyArray<string>
+  /**
+   * True when the per-command "run this unsandboxed" escape hatch is off.
+   * Matters because that hatch surfaces as an interactive prompt no
+   * headless agent can answer — retrying is guaranteed to fail.
+   */
+  blocksUnsandboxedCommands?: boolean
+}
+
+/**
  * Per-phase metrics surfaced on the terminal `done` event. All fields
  * are optional because non-Anthropic providers may not report them.
  */
@@ -873,6 +906,19 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
 
   /** Cheap predicate the registry uses for model → executor routing. */
   supports(model: string): boolean
+
+  /**
+   * Report a host-enforced sandbox the executor knows about but cannot
+   * switch off. Optional — executors that never run shell commands in a
+   * confined environment, or that have no way to inspect one, return
+   * `null` or omit the method entirely.
+   *
+   * The runner folds a non-null report into the system prompt so the
+   * agent learns the real constraints up front instead of rediscovering
+   * them through an opaque `EPERM` mid-build. Called once per phase;
+   * implementations should be cheap and must not throw.
+   */
+  describeSandbox?(): ExecutorSandboxReport | null
 
   /** The single per-phase entry point. */
   executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent>
