@@ -73,35 +73,26 @@ export class GitHubClient {
   }
 
   /**
-   * Coerce any of these input shapes into a bare repo slug:
-   *   - `repo`
-   *   - `owner/repo`
-   *   - `https://github.com/owner/repo`
-   *   - `https://github.com/owner/repo.git`
-   *   - `git@github.com:owner/repo.git`
+   * Build the `<owner>/<repo>` segment of an API path from whatever shape
+   * the caller had on hand.
    *
-   * Agents (and historic prMappings) sometimes hand us a URL or `owner/repo`
-   * pair instead of just `repo`. Without this, the API path becomes
-   * `/repos/<configuredOwner>/<the-whole-url>/pulls/<id>` which 404s.
+   * Every method that addresses a repository MUST go through this. Jobs are
+   * routinely started with `--repo owner/repo`, and that string is stored
+   * verbatim as the external ref's `repoKey`. Interpolating it raw after the
+   * configured owner yields `/repos/<owner>/<owner>/<repo>/…`, which 404s —
+   * and because the poller reads those 404s as "the PR is gone", a job can
+   * be failed over a purely cosmetic difference in how the repo was named.
    */
-  private slug(repoSlug: string): string {
-    let s = String(repoSlug ?? '').trim()
-    // Strip protocol + host (https://, git@github.com:)
-    s = s.replace(/^https?:\/\/[^/]+\//, '')
-    s = s.replace(/^git@[^:]+:/, '')
-    // Strip a leading owner/ prefix
-    const lastSlash = s.lastIndexOf('/')
-    if (lastSlash >= 0) s = s.slice(lastSlash + 1)
-    // Strip trailing .git or trailing slash
-    s = s.replace(/\.git$/, '').replace(/\/$/, '')
-    return s
+  private repoPath(repoSlug: string): string {
+    const { owner, repo } = this.parseRepo(repoSlug)
+    return `${owner}/${repo}`
   }
 
   // ── Repositories ────────────────────────────────────────────────────────────
 
   async createRepo(opts: CreateRepoOptions): Promise<{ full_name: string }> {
     const body = {
-      name: opts.repoSlug,
+      name: this.parseRepo(opts.repoSlug).repo,
       private: opts.isPrivate ?? true,
       description: opts.description ?? '',
       auto_init: false,
@@ -120,9 +111,10 @@ export class GitHubClient {
       base: opts.targetBranch ?? 'main',
     }
 
+    const repo = this.repoPath(opts.repoSlug)
     const ghPr = await this.request<GhPullRequest>(
       'POST',
-      `/repos/${this.owner}/${opts.repoSlug}/pulls`,
+      `/repos/${repo}/pulls`,
       body,
     )
 
@@ -131,7 +123,7 @@ export class GitHubClient {
       try {
         await this.request(
           'POST',
-          `/repos/${this.owner}/${opts.repoSlug}/pulls/${ghPr.number}/requested_reviewers`,
+          `/repos/${repo}/pulls/${ghPr.number}/requested_reviewers`,
           { reviewers: opts.reviewerUsernames },
         )
       } catch {
@@ -145,19 +137,20 @@ export class GitHubClient {
   async getPr(repoSlug: string, prId: number): Promise<PullRequest> {
     const ghPr = await this.request<GhPullRequest>(
       'GET',
-      `/repos/${this.owner}/${repoSlug}/pulls/${prId}`,
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}`,
     )
     return normalizeGhPr(ghPr)
   }
 
   async getPrStatus(repoSlug: string, prId: number): Promise<{ state: string; approvalCount: number }> {
+    const repo = this.repoPath(repoSlug)
     const ghPr = await this.request<GhPullRequest>(
       'GET',
-      `/repos/${this.owner}/${repoSlug}/pulls/${prId}`,
+      `/repos/${repo}/pulls/${prId}`,
     )
     const reviews = await this.request<GhReview[]>(
       'GET',
-      `/repos/${this.owner}/${repoSlug}/pulls/${prId}/reviews`,
+      `/repos/${repo}/pulls/${prId}/reviews`,
     )
     const approvalCount = reviews.filter(r => r.state === 'APPROVED').length
     return {
@@ -169,7 +162,7 @@ export class GitHubClient {
   async approvePr(repoSlug: string, prId: number): Promise<void> {
     await this.request(
       'POST',
-      `/repos/${this.owner}/${repoSlug}/pulls/${prId}/reviews`,
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/reviews`,
       { event: 'APPROVE' },
     )
   }
@@ -177,7 +170,7 @@ export class GitHubClient {
   async mergePr(repoSlug: string, prId: number, message?: string): Promise<PullRequest> {
     await this.request(
       'PUT',
-      `/repos/${this.owner}/${repoSlug}/pulls/${prId}/merge`,
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/merge`,
       {
         commit_title: message ?? 'Merged via A5 Agent',
         merge_method: 'squash',
@@ -189,10 +182,11 @@ export class GitHubClient {
   // ── Comments ────────────────────────────────────────────────────────────────
 
   async getComments(repoSlug: string, prId: number): Promise<PrComment[]> {
+    const repo = this.repoPath(repoSlug)
     // GitHub has two comment APIs: issue comments (top-level) and review comments (inline)
     const [issueComments, reviewComments] = await Promise.all([
-      this.listAll<GhIssueComment>(`/repos/${this.owner}/${repoSlug}/issues/${prId}/comments`),
-      this.listAll<GhReviewComment>(`/repos/${this.owner}/${repoSlug}/pulls/${prId}/comments`),
+      this.listAll<GhIssueComment>(`/repos/${repo}/issues/${prId}/comments`),
+      this.listAll<GhReviewComment>(`/repos/${repo}/pulls/${prId}/comments`),
     ])
 
     const mapped: PrComment[] = [
@@ -216,11 +210,10 @@ export class GitHubClient {
   }
 
   async postComment(repoSlug: string, prId: number, content: string): Promise<PrComment> {
-    const repo = this.slug(repoSlug)
     // Top-level comments go through the Issues API
     const c = await this.request<GhIssueComment>(
       'POST',
-      `/repos/${this.owner}/${repo}/issues/${prId}/comments`,
+      `/repos/${this.repoPath(repoSlug)}/issues/${prId}/comments`,
       { body: content },
     )
     return {
@@ -232,11 +225,10 @@ export class GitHubClient {
   }
 
   async replyToComment(repoSlug: string, prId: number, parentId: number, content: string): Promise<PrComment> {
-    const repo = this.slug(repoSlug)
     // Reply to a review comment
     const c = await this.request<GhReviewComment>(
       'POST',
-      `/repos/${this.owner}/${repo}/pulls/${prId}/comments/${parentId}/replies`,
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/comments/${parentId}/replies`,
       { body: content },
     )
     return {
@@ -343,13 +335,30 @@ export class GitHubClient {
     }))
   }
 
+  /**
+   * Coerce any of these input shapes into an `{ owner, repo }` pair:
+   *   - `repo`                              → configured owner
+   *   - `owner/repo`                        → that owner (may differ from config)
+   *   - `https://github.com/owner/repo`     → that owner
+   *   - `https://github.com/owner/repo.git` → that owner
+   *   - `git@github.com:owner/repo.git`     → that owner
+   *
+   * An explicit owner always wins over the configured one so cross-org
+   * repositories address correctly instead of being silently rewritten to
+   * the configured org.
+   */
   private parseRepo(repoSlug: string): { owner: string; repo: string } {
-    const trimmed = String(repoSlug ?? '').trim()
-    if (trimmed.includes('/')) {
-      const [owner, ...rest] = trimmed.split('/')
-      return { owner: owner!, repo: rest.join('/') }
+    let s = String(repoSlug ?? '').trim()
+    // Strip protocol + host (https://…, git@github.com:).
+    s = s.replace(/^https?:\/\/[^/]+\//, '')
+    s = s.replace(/^git@[^:]+:/, '')
+    const parts = s.split('/').filter(Boolean)
+    if (parts.length >= 2) {
+      // First two segments, so trailing path noise on a copied browser URL
+      // (…/owner/repo/pull/5) resolves to the repo rather than to `pull/5`.
+      return { owner: parts[0]!, repo: parts[1]!.replace(/\.git$/, '') }
     }
-    return { owner: this.owner, repo: this.slug(trimmed) }
+    return { owner: this.owner, repo: (parts[0] ?? '').replace(/\.git$/, '') }
   }
 
   // ── Internal helpers ────────────────────────────────────────────────────────

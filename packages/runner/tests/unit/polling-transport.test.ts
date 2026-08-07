@@ -537,4 +537,114 @@ describe('PollingTransport', () => {
       expect(ghSpy).toHaveBeenCalledTimes(1)
     })
   })
+
+  // An unreachable PR is an infrastructure problem, not a review decision.
+  // Reporting it as `pullrequest:rejected` told the agent a human had
+  // declined the PR, and when the job was awaiting something else the event
+  // matched nothing — leaving the job parked while the failure counter reset
+  // and marched to the threshold again, forever.
+  describe('unreachable PR handling', () => {
+    function makeFailingPlugin(err: Error): MockScmPluginHandle {
+      const handle = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      handle.plugin = {
+        ...handle.plugin,
+        pollPr: async () => { throw err },
+      } as ScmPluginRuntime
+      return handle
+    }
+
+    function notFound(): Error {
+      return Object.assign(new Error('GitHub 404: Not Found'), { statusCode: 404 })
+    }
+
+    it('escalates the job after the failure threshold instead of faking a rejection', async () => {
+      const job = makeJob({ awaitingEvent: 'pr:approved' })
+      const backend = makeMockBackend([job])
+      const { plugin } = makeFailingPlugin(notFound())
+      const events: InboundEvent[] = []
+
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(plugin), logger })
+      transport.onEvent(async e => { events.push(e) })
+
+      for (let i = 0; i < 5; i++) await transport.poll()
+
+      expect(events).toEqual([])
+      expect(backend.updateJob).toHaveBeenCalledWith(
+        job.id,
+        expect.objectContaining({ status: 'escalated' }),
+      )
+      const patch = vi.mocked(backend.updateJob).mock.calls[0][1] as { escalationMessage: string }
+      expect(patch.escalationMessage).toMatch(/Cannot reach pull request/)
+      expect(patch.escalationMessage).toMatch(/HTTP 404/)
+    })
+
+    it('does not escalate before the threshold is reached', async () => {
+      const job = makeJob()
+      const backend = makeMockBackend([job])
+      const { plugin } = makeFailingPlugin(notFound())
+
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(plugin), logger })
+      for (let i = 0; i < 4; i++) await transport.poll()
+
+      expect(backend.updateJob).not.toHaveBeenCalled()
+    })
+
+    it('stops polling a ref once the job is escalated', async () => {
+      const job = makeJob()
+      const backend = makeMockBackend([job])
+      const { plugin } = makeFailingPlugin(notFound())
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
+
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(plugin), logger })
+      for (let i = 0; i < 5; i++) await transport.poll()
+      expect(pollSpy).toHaveBeenCalledTimes(5)
+
+      // The escalation lands on the job record the backend hands back.
+      job.status = 'escalated'
+      for (let i = 0; i < 3; i++) await transport.poll()
+
+      expect(pollSpy).toHaveBeenCalledTimes(5)
+      expect(backend.updateJob).toHaveBeenCalledTimes(1)
+    })
+
+    it('resumes polling once a human moves the job out of escalated', async () => {
+      const job = makeJob()
+      const backend = makeMockBackend([job])
+      const { plugin } = makeFailingPlugin(notFound())
+      const pollSpy = vi.spyOn(plugin, 'pollPr')
+
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(plugin), logger })
+      for (let i = 0; i < 5; i++) await transport.poll()
+      job.status = 'escalated'
+      await transport.poll()
+      expect(pollSpy).toHaveBeenCalledTimes(5)
+
+      job.status = 'awaiting-pr-merge'
+      await transport.poll()
+      expect(pollSpy).toHaveBeenCalledTimes(6)
+    })
+
+    it('clears the failure streak when a poll succeeds again', async () => {
+      const job = makeJob()
+      const backend = makeMockBackend([job])
+      const handle = makeMockScmPlugin({ state: 'open', approvalCount: 0, commentCount: 0, comments: [] })
+      let failing = true
+      handle.plugin = {
+        ...handle.plugin,
+        pollPr: async () => {
+          if (failing) throw notFound()
+          return { state: 'open', approvalCount: 0, commentCount: 0, comments: [] } as ScmPollSnapshot
+        },
+      } as ScmPluginRuntime
+
+      transport = new PollingTransport({ stateBackend: backend, plugins: makeRegistry(handle.plugin), logger })
+      for (let i = 0; i < 4; i++) await transport.poll()
+      failing = false
+      await transport.poll()
+      failing = true
+      for (let i = 0; i < 4; i++) await transport.poll()
+
+      expect(backend.updateJob).not.toHaveBeenCalled()
+    })
+  })
 })

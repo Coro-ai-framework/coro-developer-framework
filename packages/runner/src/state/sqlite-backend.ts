@@ -307,25 +307,31 @@ export class SqliteStateBackend implements StateBackend {
   }
 
   async getJobByPr(prId: number): Promise<Job | null> {
-    // Prefer the new table — query for any pull_request mapping
-    // whose externalId matches across plugins. PR ids are namespaced
-    // by `(plugin_id, repo_key)` so two repos with the same PR id
-    // don't collide here, but a single numeric `prId` arriving via
-    // the legacy path may match more than one row; the dispatcher's
-    // legacy callers don't carry that disambiguation, so we resolve
-    // to the most-recently-mapped job (highest rowid).
+    // Legacy table first. It is keyed by `pr_id` alone, so it answers a
+    // numeric-only question exactly — whereas the plugin-aware table can
+    // only be searched here by `external_id`, ignoring the `plugin_id`
+    // and `repo_key` that give a PR id its meaning. Querying that table
+    // first meant a stale row for some other repo's PR #5 (on some other
+    // provider, even) shadowed the correct legacy row and the event was
+    // delivered to an unrelated job.
+    //
+    // Callers holding a full `ExternalRef` never reach this method: they
+    // go through `resolveJobByExternalRef`, whose exact lookup runs first
+    // and which discards a by-number answer that names the wrong repo.
+    const row = this.db.prepare('SELECT job_id FROM pr_mappings WHERE pr_id = ?')
+      .get(prId) as { job_id: string } | undefined
+    if (row) return this.getJob(row.job_id)
+
+    // Last resort, for PRs registered only through `mapExternalRef`.
+    // Still ambiguous across repos; resolve to the most recent row.
     const newRow = this.db.prepare(`
       SELECT job_id FROM external_ref_mappings
        WHERE kind = 'pull_request' AND external_id = ?
        ORDER BY rowid DESC
        LIMIT 1
     `).get(String(prId)) as { job_id: string } | undefined
-    if (newRow) return this.getJob(newRow.job_id)
-
-    const row = this.db.prepare('SELECT job_id FROM pr_mappings WHERE pr_id = ?')
-      .get(prId) as { job_id: string } | undefined
-    if (!row) return null
-    return this.getJob(row.job_id)
+    if (!newRow) return null
+    return this.getJob(newRow.job_id)
   }
 
   async addPrMapping(jobId: string, mapping: PrMapping): Promise<Job> {

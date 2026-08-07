@@ -361,10 +361,28 @@ export class PostgresStateBackend implements StateBackend {
   }
 
   async getJobByPr(prId: number): Promise<Job | null> {
-    // New table first. PR ids are namespaced by `(plugin, repo_key)`
-    // there, but the legacy lookup carries only `prId`; resolve to the
-    // most-recently-mapped job within this team when more than one
-    // row matches (vanishingly rare in practice).
+    // Legacy table first. It is keyed by `prId` alone, so it answers a
+    // numeric-only question exactly — whereas the plugin-aware table can
+    // only be searched here by `externalId`, ignoring the plugin and
+    // `repoKey` that give a PR id its meaning. Querying that table first
+    // let another repo's PR #5 shadow the correct legacy row, delivering
+    // the event to an unrelated job.
+    //
+    // Callers holding a full `ExternalRef` never reach this method: they
+    // go through `resolveJobByExternalRef`, whose exact lookup runs first
+    // and which discards a by-number answer that names the wrong repo.
+    const rows = await this.db
+      .select({ jobId: schema.prMappings.jobId })
+      .from(schema.prMappings)
+      .where(and(
+        eq(schema.prMappings.teamId, this.teamId),
+        eq(schema.prMappings.prId, prId),
+      ))
+      .limit(1)
+    if (rows[0]) return this.getJob(rows[0].jobId)
+
+    // Last resort, for PRs registered only through `mapExternalRef`.
+    // Still ambiguous across repos; resolve to the most recent row.
     const newRows = await this.db
       .select({ jobId: schema.externalRefMappings.jobId })
       .from(schema.externalRefMappings)
@@ -375,19 +393,9 @@ export class PostgresStateBackend implements StateBackend {
       ))
       .orderBy(desc(schema.externalRefMappings.externalId))
       .limit(1)
-    if (newRows[0]) return this.getJob(newRows[0].jobId)
 
-    const rows = await this.db
-      .select({ jobId: schema.prMappings.jobId })
-      .from(schema.prMappings)
-      .where(and(
-        eq(schema.prMappings.teamId, this.teamId),
-        eq(schema.prMappings.prId, prId),
-      ))
-      .limit(1)
-
-    if (!rows[0]) return null
-    return this.getJob(rows[0].jobId)
+    if (!newRows[0]) return null
+    return this.getJob(newRows[0].jobId)
   }
 
   async addPrMapping(jobId: string, mapping: PrMapping): Promise<Job> {

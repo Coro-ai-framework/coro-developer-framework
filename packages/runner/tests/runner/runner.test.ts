@@ -131,6 +131,7 @@ function createMockStateBackend(initial: Job) {
     },
     getJob: vi.fn(async () => current),
     mapPrToJob: vi.fn().mockResolvedValue(undefined),
+    mapExternalRef: vi.fn().mockResolvedValue(undefined),
     updateJob: vi.fn(async (_id: string, patch: Partial<Job>) => {
       current = {
         ...current,
@@ -580,6 +581,45 @@ describe('runJob (mocked Agent SDK query)', () => {
 
     expect(stateBackend.current.status).toBe(STATUS_AWAITING_PR_MERGE)
     expect(stateBackend.current.awaitingEvent).toBe('pr:merged')
+    expect(stateBackend.current.awaitingPrId).toBe(99)
+  })
+
+  // Without this row, resolution of the eventual PR event falls back to a
+  // by-number search that cannot tell two repos' PR #99 apart — the bug that
+  // sent a GitHub approval to an unrelated Bitbucket job.
+  it('registers a plugin-aware ref mapping when parking on a PR', async () => {
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.awaitingEvent = 'pr:merged'
+        h.signals.awaitingPrId = 99
+        yield* yieldEmptyPhase('s1')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
+
+    expect(stateBackend.mapExternalRef).toHaveBeenCalledWith(
+      { kind: 'pull_request', pluginId: 'github', repoKey: 'svc', externalId: '99' },
+      'runner-job-1',
+    )
+  })
+
+  it('parks even when the plugin-aware ref mapping cannot be written', async () => {
+    stateBackend.mapExternalRef.mockRejectedValueOnce(new Error('backend down'))
+
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.awaitingEvent = 'pr:merged'
+        h.signals.awaitingPrId = 99
+        yield* yieldEmptyPhase('s1')
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
+
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_PR_MERGE)
     expect(stateBackend.current.awaitingPrId).toBe(99)
   })
 

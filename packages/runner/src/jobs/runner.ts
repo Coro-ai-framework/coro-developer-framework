@@ -19,6 +19,7 @@ import {
 } from '../intelligence/resolver'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
+import { buildPrExternalRef } from '../plugins/refs'
 import type {
   DeveloperInputChannel,
   ExecutorSessionController,
@@ -1214,6 +1215,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
         if (signals.awaitingPrId) {
           await stateBackend.mapPrToJob(signals.awaitingPrId, liveJob.id)
+          await registerParkedPrRef(
+            stateBackend,
+            ctx.plugins,
+            liveJob,
+            signals.awaitingPrId,
+            logger,
+          )
         }
 
         logger.info(
@@ -1669,6 +1677,41 @@ async function refreshJobForBoundary(
   }
 
   return { job, shouldStop: false }
+}
+
+/**
+ * Register the plugin-aware lookup row for the PR a job is parking on.
+ *
+ * `mapPrToJob` alone only fills the legacy by-number table, which cannot
+ * distinguish two repositories' PR #5. That is fine when the agent opened
+ * the PR through `scm_create_pr` (which writes both tables), but a PR
+ * opened through the provider's own MCP server never gets a plugin-aware
+ * row — so the approval event later resolves by number and can land on an
+ * unrelated job. Writing the row here covers that path.
+ *
+ * Best-effort by design: failing to register a lookup must never stop a
+ * job from parking. The by-number fallback still applies.
+ */
+async function registerParkedPrRef(
+  stateBackend: StateBackend,
+  plugins: PluginRegistry,
+  job: Job,
+  prId: number,
+  logger: Logger,
+): Promise<void> {
+  const ref = buildPrExternalRef(job, prId, plugins)
+  if (!ref) {
+    logger.debug(
+      { jobId: job.id, prId },
+      'Parked on a PR but the job names no repo — skipping plugin-aware ref mapping',
+    )
+    return
+  }
+  try {
+    await stateBackend.mapExternalRef(ref, job.id)
+  } catch (err) {
+    logger.warn({ err, jobId: job.id, prId, ref }, 'Could not register plugin-aware PR ref mapping')
+  }
 }
 
 function resetSignals(s: PhaseSignals): void {

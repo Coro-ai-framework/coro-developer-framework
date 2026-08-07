@@ -31,8 +31,21 @@ import type { Logger } from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import type { ScmPluginRuntime, ScmPollSnapshot } from '../plugins/types'
-import { type Job, type PrMapping } from '@coro-ai/cloud-protocol'
+import { STATUS_ESCALATED, STATUS_FAILED, type Job, type PrMapping } from '@coro-ai/cloud-protocol'
 import { isParkingStatus } from '../jobs/helpers'
+import { buildPrExternalRef } from '../plugins/refs'
+
+/**
+ * The job already stopped and carries a reason a human needs to read.
+ *
+ * `isParkingStatus` deliberately treats these as pollable (a webhook may
+ * still carry the context needed to continue), but for our purposes they
+ * mean "waiting on a human" — so we neither overwrite their existing
+ * escalation nor keep hammering a PR we already gave up on.
+ */
+function isStoppedWithReason(status: string): boolean {
+  return status === STATUS_ESCALATED || status === STATUS_FAILED
+}
 
 export interface PollingTransportOptions {
   stateBackend: StateBackend
@@ -71,7 +84,14 @@ export class PollingTransport implements EventTransport {
    */
   private readonly pollFailures = new Map<string, number>()
 
-  /** Threshold of consecutive failures before we unpark the job. */
+  /**
+   * Refs we have given up on and escalated. Polling one of these again
+   * would just re-escalate on the next five cycles forever, so we skip
+   * them until a human moves the job out of `escalated`.
+   */
+  private readonly unreachableRefs = new Set<string>()
+
+  /** Threshold of consecutive failures before we escalate the job. */
   private static readonly FAILURE_THRESHOLD = 5
 
   constructor(opts: PollingTransportOptions) {
@@ -104,6 +124,7 @@ export class PollingTransport implements EventTransport {
     this.connected = false
     this.snapshots.clear()
     this.pollFailures.clear()
+    this.unreachableRefs.clear()
     this.logger.info('Polling transport stopped')
   }
 
@@ -160,10 +181,20 @@ export class PollingTransport implements EventTransport {
             continue
           }
 
+          // A ref we already escalated stays skipped while the job sits in
+          // `escalated`. Once a human resumes it (which moves the job back
+          // to a real parking state) we retry — the underlying cause is
+          // usually a config fix, not something we can detect from here.
+          const refKey = snapshotKey(ref)
+          if (this.unreachableRefs.has(refKey)) {
+            if (isStoppedWithReason(job.status)) continue
+            this.unreachableRefs.delete(refKey)
+          }
+
           try {
             await this.checkPr(job.id, scm, ref)
           } catch (err) {
-            await this.handlePollError(job.id, ref, err)
+            await this.handlePollError(job, ref, err)
           }
         }
       }
@@ -307,20 +338,29 @@ export class PollingTransport implements EventTransport {
 
   /**
    * Handle a poll cycle error. Increments the per-ref consecutive failure
-   * counter; once it crosses the threshold we deliver a synthetic
-   * `pullrequest:rejected` event with `state: 'NOT_FOUND'` so the parked
-   * job unparks instead of looping forever. The agent receives the
-   * payload, sees the PR is unreachable, and decides what to do
-   * (re-open, escalate, or move on).
+   * counter; once it crosses the threshold we escalate the job to a human
+   * and stop polling that ref.
    *
-   * We deliberately apply the **same threshold to 404s and other errors**.
-   * A single-cycle 404 can be caused by a transient infrastructure issue,
-   * a malformed slug stored on a prMapping, or a configured-owner mismatch
-   * — none of which mean the PR is actually rejected. Requiring N
-   * consecutive failures eliminates that false-positive class while still
-   * unparking promptly when the upstream really is gone.
+   * Escalation — not a synthetic `pullrequest:rejected`. An unreachable PR
+   * and a rejected PR are different facts, and conflating them was actively
+   * harmful in two ways. It told the agent a human had declined the PR when
+   * nobody had, and when the job happened to be awaiting something else
+   * (`pr:approved`, say) the event matched nothing, the job stayed parked,
+   * and the reset failure counter started the same five-cycle march again —
+   * forever, with no escalation and no way out.
+   *
+   * The failure causes we actually see here are infrastructural: a deleted
+   * PR, a token that lost access, or a repo key stored in a shape the
+   * provider client does not address correctly. None of them are decisions
+   * an agent can act on, and all of them need a human. So we record the
+   * diagnosis on the job and stop.
+   *
+   * We deliberately apply the **same threshold to 404s and other errors**:
+   * a single-cycle 404 can be transient, and requiring N consecutive
+   * failures removes that false-positive class.
    */
-  private async handlePollError(jobId: string, ref: ExternalRef, err: unknown): Promise<void> {
+  private async handlePollError(job: Job, ref: ExternalRef, err: unknown): Promise<void> {
+    const jobId = job.id
     const key = snapshotKey(ref)
     const prevFailures = this.pollFailures.get(key) ?? 0
     const failures = prevFailures + 1
@@ -332,17 +372,12 @@ export class PollingTransport implements EventTransport {
     if (reachedThreshold) {
       this.logger.warn(
         { jobId, ref, prId: Number(ref.externalId), statusCode, failures, err },
-        'PR poll failed too many times in a row — unparking job with NOT_FOUND.',
+        'PR poll failed too many times in a row — escalating job and giving up on this PR.',
       )
       this.snapshots.delete(key)
       this.pollFailures.delete(key)
-      await this.deliver(jobId, ref, 'pullrequest:rejected', {
-        state: 'NOT_FOUND',
-        reason: statusCode === 404
-          ? `GitHub returned 404 for this PR on ${failures} consecutive cycles. The PR or repository may be unreachable to the configured token, the stored repoSlug may be malformed, or the PR may have been deleted.`
-          : `PR poll failed ${failures} consecutive cycles.`,
-        statusCode,
-      })
+      this.unreachableRefs.add(key)
+      await this.escalateUnreachablePr(job, ref, failures, statusCode)
       return
     }
 
@@ -355,34 +390,55 @@ export class PollingTransport implements EventTransport {
     }
   }
 
+  /**
+   * Record an unreachable PR on the job and stop it, so the developer sees
+   * one actionable escalation instead of a silent retry loop.
+   *
+   * Leaves an already-stopped job alone: whatever escalation is on it now
+   * is at least as informative as ours, and overwriting it would bury the
+   * original reason the job stopped.
+   */
+  private async escalateUnreachablePr(
+    job: Job,
+    ref: ExternalRef,
+    failures: number,
+    statusCode?: number,
+  ): Promise<void> {
+    if (isStoppedWithReason(job.status)) return
+
+    const prId = Number(ref.externalId)
+    const where = ref.repoKey ? `${ref.repoKey} #${prId}` : `PR #${prId}`
+    const message =
+      `Cannot reach pull request ${where} — ${failures} consecutive poll failures` +
+      `${statusCode ? ` (last response: HTTP ${statusCode})` : ''}. ` +
+      `Coro has stopped polling it. Common causes: the PR or repository was deleted, ` +
+      `the configured ${ref.pluginId} token lost access, or the repository is recorded in a ` +
+      `form the ${ref.pluginId} client does not address correctly. ` +
+      `Fix the cause, then send this job a message to resume it.`
+
+    try {
+      await this.stateBackend.appendLog(job.id, `[poll] ${message}`)
+      await this.stateBackend.updateJob(job.id, {
+        status: STATUS_ESCALATED,
+        escalationMessage: message,
+      })
+    } catch (err) {
+      // The job stays parked and the ref stays skipped; a runner restart
+      // retries from scratch.
+      this.logger.error({ err, jobId: job.id, ref }, 'Could not escalate job for unreachable PR')
+    }
+  }
+
   // ── Resolution helpers ─────────────────────────────────────────────────────
 
+  /**
+   * Shared with the park path (`registerParkedPrRef`) so the ref we
+   * deliver events with is identical to the one registered for lookup.
+   * If these two drifted, the exact `external_ref_mappings` match would
+   * miss and resolution would fall back to an ambiguous by-number search.
+   */
   private resolveRef(job: Job, prId: number): ExternalRef | null {
-    // Prefer the prMappings entry whose prId matches the parked PR — for
-    // multi-PR (and especially multi-repo) jobs the first mapping is
-    // often a different PR/repo than the one we're currently polling.
-    // Falling back to `pickRepoKey` keeps the legacy behavior when no
-    // mapping carries `prId` (older persisted jobs, edge cases).
-    const matchedMapping = job.prMappings.find(
-      pm => pm.prId === prId && pm.repoSlug,
-    )
-    const repoKey = matchedMapping?.repoSlug ?? pickRepoKey(job)
-    if (!repoKey) return null
-
-    // Prefer the SCM plugin whose `matchesRemote(repoKey)` claims the
-    // URL — that's the only safe way to disambiguate when more than
-    // one SCM plugin is installed (e.g. github + bitbucket). Falling
-    // back to `default('scm')` would silently route a github PR to
-    // the bitbucket poller, which 404s on every cycle.
-    const matched = this.plugins.resolveByRemote(repoKey)
-    const defaultScm = this.plugins.default('scm')
-    const pluginId = matched?.manifest.id ?? defaultScm?.manifest.id ?? 'unknown'
-    return {
-      kind: 'pull_request',
-      pluginId,
-      repoKey,
-      externalId: String(prId),
-    }
+    return buildPrExternalRef(job, prId, this.plugins)
   }
 
   private resolveScm(job: Job, ref: ExternalRef): ScmPluginRuntime | undefined {
@@ -436,15 +492,6 @@ function prIdsToPoll(job: { awaitingPrId?: number; prMappings: PrMapping[] }): n
   if (open.length > 0) return open.map(pm => pm.prId)
   if (job.awaitingPrId != null) return [job.awaitingPrId]
   return []
-}
-
-function pickRepoKey(job: { params: Record<string, unknown>; prMappings: PrMapping[] }): string {
-  for (const pm of job.prMappings) {
-    if (pm.repoSlug) return pm.repoSlug
-  }
-  if (typeof job.params['repoSlug'] === 'string') return job.params['repoSlug'] as string
-  if (typeof job.params['repo'] === 'string') return job.params['repo'] as string
-  return ''
 }
 
 /**
