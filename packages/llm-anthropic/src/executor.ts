@@ -54,11 +54,8 @@ import { RateLimitExceededError, classifyProviderError, tierDefaultAliases } fro
 import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
-import {
-  formatAnthropicAuthFailure,
-  readClaudeLocalSession,
-  testAnthropicCredentials,
-} from './test-connection'
+import { formatAnthropicAuthFailure, testAnthropicCredentials } from './test-connection'
+import { isSessionExpired, loadClaudeLocalSession } from './credential-store'
 import { buildPhaseHooks } from './hooks'
 import { createPushableInput } from './pushable'
 import { linkAbortController } from './abort-link'
@@ -341,7 +338,8 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   private readonly settings: AnthropicExecutorSettings
   private auth: ClaudeAuthConfig
   private readonly logger: Logger
-  private authProbeCache: { at: number; ok: boolean; message?: string; hint?: string } | null = null
+  /** Timestamp of the last *successful* live auth probe; see {@link AUTH_PROBE_TTL_MS}. */
+  private authProbeOkAt: number | null = null
   /** `undefined` = not probed yet; `null` = probed, no host sandbox. */
   private sandboxProbe: ExecutorSandboxReport | null | undefined = undefined
 
@@ -374,7 +372,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         ...(cfg.oauthToken ? { oauthToken: cfg.oauthToken } : {}),
         ...(cfg.account ? { account: cfg.account } : {}),
       }
-      this.authProbeCache = null
+      this.authProbeOkAt = null
     }
   }
 
@@ -394,17 +392,17 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     }
     if ((auth.method ?? 'claudeLogin') === 'claudeLogin') {
       try {
-        const session = readClaudeLocalSession()
+        const session = await loadClaudeLocalSession(this.logger)
         if (!session.accessToken) {
           return {
             ok: false,
             reason: 'Claude is not signed in on this machine.',
           }
         }
-        if (session.expiresAt && session.expiresAt < Date.now()) {
+        if (isSessionExpired(session.expiresAt)) {
           return {
             ok: false,
-            reason: 'Your Claude session has expired. Click Reconnect in Settings.',
+            reason: 'Your Claude session has expired and could not be renewed. Click Reconnect in Settings.',
           }
         }
       } catch (err) {
@@ -689,12 +687,12 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       headers['anthropic-beta'] = 'oauth-2025-04-20'
       return headers
     }
-    const session = readClaudeLocalSession()
+    const session = await loadClaudeLocalSession(this.logger)
     if (!session.accessToken) {
       throw new Error('Claude session is not signed in on this machine. Connect Claude in Settings or switch to API key auth.')
     }
-    if (session.expiresAt && session.expiresAt < Date.now()) {
-      throw new Error('Your Claude session has expired. Reconnect Claude in Settings.')
+    if (isSessionExpired(session.expiresAt)) {
+      throw new Error('Your Claude session has expired and could not be renewed. Reconnect Claude in Settings.')
     }
     headers['Authorization'] = `Bearer ${session.accessToken}`
     headers['anthropic-beta'] = 'oauth-2025-04-20'
@@ -708,27 +706,18 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    */
   private async assertAuthReadyForSdk(): Promise<void> {
     const now = Date.now()
-    if (this.authProbeCache && now - this.authProbeCache.at < AUTH_PROBE_TTL_MS) {
-      if (!this.authProbeCache.ok) {
-        throw new Error(formatAnthropicAuthFailure({
-          ok: false,
-          message: this.authProbeCache.message ?? 'Anthropic authentication failed.',
-          hint: this.authProbeCache.hint,
-        }))
-      }
-      return
-    }
+    if (this.authProbeOkAt !== null && now - this.authProbeOkAt < AUTH_PROBE_TTL_MS) return
 
     const result = await testAnthropicCredentials(this.auth)
-    this.authProbeCache = {
-      at: now,
-      ok: result.ok,
-      message: result.message,
-      hint: result.hint,
-    }
+    // Only successes are cached. A failed probe may have been transient (a
+    // rotated token, a blip reaching Anthropic) and the probe itself renews
+    // an aged-out session, so caching the failure would keep every retry
+    // blocked for the whole TTL instead of letting the next one recover.
     if (!result.ok) {
+      this.authProbeOkAt = null
       throw new Error(formatAnthropicAuthFailure(result))
     }
+    this.authProbeOkAt = now
   }
 
   /**

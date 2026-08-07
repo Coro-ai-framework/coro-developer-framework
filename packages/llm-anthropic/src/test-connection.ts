@@ -17,12 +17,23 @@
 // store and round-trips it against `/v1/messages` with `max_tokens: 1`
 // so a stale-but-cached token surfaces as a clear failure here rather
 // than as a 401 on the user's first real job.
+//
+// Because that probe gates job execution (via
+// `AnthropicExecutor.assertAuthReadyForSdk`), it must renew an expired
+// session rather than fail on it. Anthropic's claude.ai access tokens last
+// 8 hours, so a runner that idles overnight will always find an expired
+// token — treating that as fatal is what used to demand a manual
+// "Reconnect" every morning. Both the expiry check and a 401 now trigger a
+// refresh and one retry; only a session that cannot be renewed is a failure.
 
-import { execFileSync } from 'child_process'
-import { readFileSync } from 'fs'
-import { homedir } from 'os'
-import path from 'path'
 import type { PluginTestCheck, PluginTestResult } from '@coro-ai/plugin-sdk'
+import {
+  isSessionExpired,
+  loadClaudeLocalSession,
+  readClaudeLocalSession,
+  refreshClaudeLocalSession,
+  type ClaudeLocalSession,
+} from './credential-store'
 import type { ClaudeAuthConfig } from './types'
 
 /** Beta header the Claude CLI sends on OAuth-backed requests. */
@@ -77,10 +88,11 @@ export async function testAnthropicCredentials(
     return probeMessagesEndpoint({ headers: { Authorization: `Bearer ${token}` } })
   }
 
-  // claudeLogin — read the persisted session and probe with it.
+  // claudeLogin — read the persisted session, renewing it if it has aged
+  // out, and probe with the result.
   let session: ClaudeLocalSession
   try {
-    session = readClaudeLocalSession()
+    session = await loadClaudeLocalSession()
   } catch (err) {
     return {
       ok: false,
@@ -99,20 +111,42 @@ export async function testAnthropicCredentials(
     }
   }
 
-  if (session.expiresAt && session.expiresAt < Date.now()) {
+  if (isSessionExpired(session.expiresAt)) {
+    // `loadClaudeLocalSession` already tried to renew this, so the refresh
+    // token is missing, rejected, or expired too. That needs a real login.
     return {
       ok: false,
-      message: 'Your Claude session has expired.',
-      hint: 'Click Reconnect to refresh — the bundled Claude CLI does not auto-refresh in background.',
+      message: 'Your Claude session has expired and could not be renewed.',
+      hint: 'Click Reconnect to sign in again.',
     }
   }
 
-  const apiResult = await probeMessagesEndpoint({
+  let apiResult = await probeMessagesEndpoint({
     headers: {
       Authorization: `Bearer ${session.accessToken}`,
       'anthropic-beta': OAUTH_BETA_HEADER,
     },
   })
+
+  // A rejected but unexpired token means the stored copy went stale — most
+  // often because a concurrent Claude Code process refreshed the session and
+  // rotated this access token out from under us. Renew once and retry before
+  // calling it a failure.
+  if (!apiResult.ok && (await refreshClaudeLocalSession())) {
+    try {
+      session = readClaudeLocalSession()
+    } catch {
+      // Keep the session we already have and report the original failure.
+    }
+    if (session.accessToken) {
+      apiResult = await probeMessagesEndpoint({
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+          'anthropic-beta': OAUTH_BETA_HEADER,
+        },
+      })
+    }
+  }
 
   if (apiResult.ok) {
     const account = formatAccount(session)
@@ -122,10 +156,6 @@ export async function testAnthropicCredentials(
     }
   }
 
-  // 401 against a freshly-minted-looking token is the bug pattern we
-  // fixed for: the Claude CLI's `auth status` lies because the local
-  // record is stale. Surface it explicitly so the user clicks Reconnect
-  // instead of staring at a generic "auth failed".
   const checks: PluginTestCheck[] = [
     {
       name: 'Local session present',
@@ -145,9 +175,9 @@ export async function testAnthropicCredentials(
   return {
     ok: false,
     message:
-      'Your Claude login looks active locally but Anthropic rejected the token.',
+      'Your Claude login looks active locally but Anthropic rejected the token, and renewing it did not help.',
     hint:
-      'This usually means a newer Claude session was created elsewhere and revoked this one. Click Reconnect to sign in again.',
+      'This usually means the session was revoked — for example by signing in elsewhere. Click Reconnect to sign in again.',
     checks,
   }
 }
@@ -217,115 +247,6 @@ async function describeFailure(response: Response): Promise<string> {
       : null
   const msg = errorObj?.message ?? text.slice(0, 200) ?? 'Unknown error'
   return `HTTP ${status} — ${msg}`
-}
-
-// ── Local Claude session reader ─────────────────────────────────────────────
-
-interface ClaudeLocalSession {
-  accessToken: string | null
-  refreshToken?: string | null
-  expiresAt?: number
-  scopes?: ReadonlyArray<string>
-  accountEmail?: string
-  organizationName?: string
-}
-
-/**
- * Read the persisted Claude CLI OAuth session from the platform's
- * credential store.
- *
- *   - **macOS** — `security find-generic-password -s "Claude Code-credentials" -w`
- *     returns a JSON blob `{ claudeAiOauth: { accessToken, refreshToken,
- *     expiresAt, scopes, subscriptionType } }`.
- *   - **Linux** — the same JSON blob lives at `~/.claude/.credentials.json`.
- *   - **Windows** — Claude Code stores via DPAPI; we have no public path
- *     to read it without spawning the CLI itself, so we degrade to a
- *     "couldn't read" error and ask the user to use an API key.
- *
- * The accompanying account metadata (email / organization) lives in
- * `~/.claude.json` — we read it best-effort so the success message can
- * include the account name.
- */
-export function readClaudeLocalSession(): ClaudeLocalSession {
-  const raw = readRawCredentialBlob()
-  const blob = parseCredentialBlob(raw)
-  const account = readClaudeAccountInfo()
-  return {
-    accessToken: blob.accessToken,
-    refreshToken: blob.refreshToken,
-    expiresAt: blob.expiresAt,
-    scopes: blob.scopes,
-    accountEmail: account.email,
-    organizationName: account.organizationName,
-  }
-}
-
-function readRawCredentialBlob(): string {
-  if (process.platform === 'darwin') {
-    try {
-      // `-w` prints the password value to stdout; service name matches
-      // what the Claude CLI uses for its persisted OAuth blob.
-      return execFileSync(
-        'security',
-        ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-      ).trim()
-    } catch {
-      throw new Error('No Claude Code keychain entry found.')
-    }
-  }
-  if (process.platform === 'linux') {
-    const filePath = path.join(homedir(), '.claude', '.credentials.json')
-    try {
-      return readFileSync(filePath, 'utf-8')
-    } catch {
-      throw new Error(`No Claude credentials file at ${filePath}.`)
-    }
-  }
-  throw new Error(
-    `Reading the local Claude session is not supported on ${process.platform}. Use an Anthropic API key for now.`,
-  )
-}
-
-function parseCredentialBlob(text: string): {
-  accessToken: string | null
-  refreshToken: string | null
-  expiresAt?: number
-  scopes?: ReadonlyArray<string>
-} {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text) as unknown
-  } catch {
-    throw new Error('Local Claude credential store is not valid JSON.')
-  }
-  const oauth =
-    parsed && typeof parsed === 'object' && 'claudeAiOauth' in parsed
-      ? ((parsed as { claudeAiOauth: unknown }).claudeAiOauth as Record<string, unknown>)
-      : (parsed as Record<string, unknown>)
-  return {
-    accessToken: typeof oauth['accessToken'] === 'string' ? (oauth['accessToken'] as string) : null,
-    refreshToken: typeof oauth['refreshToken'] === 'string' ? (oauth['refreshToken'] as string) : null,
-    expiresAt: typeof oauth['expiresAt'] === 'number' ? (oauth['expiresAt'] as number) : undefined,
-    scopes: Array.isArray(oauth['scopes']) ? (oauth['scopes'] as string[]) : undefined,
-  }
-}
-
-function readClaudeAccountInfo(): { email?: string; organizationName?: string } {
-  try {
-    const filePath = path.join(homedir(), '.claude.json')
-    const raw = readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const account = parsed['oauthAccount'] as Record<string, unknown> | undefined
-    if (!account) return {}
-    return {
-      email: typeof account['emailAddress'] === 'string' ? (account['emailAddress'] as string) : undefined,
-      organizationName:
-        typeof account['organizationName'] === 'string' ? (account['organizationName'] as string) : undefined,
-    }
-  } catch {
-    return {}
-  }
 }
 
 function formatAccount(session: ClaudeLocalSession): string | null {

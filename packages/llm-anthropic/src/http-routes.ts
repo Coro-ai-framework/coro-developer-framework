@@ -14,6 +14,7 @@ import fs from 'fs'
 import type { PluginHttpRoutesContext } from '@coro-ai/plugin-sdk'
 import { ClaudeLoginManager } from './login'
 import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-path'
+import { resetRefreshCooldown } from './credential-store'
 
 /**
  * Register the Anthropic-specific HTTP routes against the runner's
@@ -32,6 +33,9 @@ export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void 
     apiKeySource?: string
     apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'mantle'
   }) {
+    // A fresh login means any earlier refresh failure is stale — drop the
+    // cooldown so the next probe uses the new session immediately.
+    resetRefreshCooldown()
     // Persist into the modern plugin slot so the runner's resolver
     // picks up the credentials at job start. The legacy top-level
     // `anthropic` block was removed in Phase F of the

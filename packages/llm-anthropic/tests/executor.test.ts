@@ -10,7 +10,7 @@ import {
   createAnthropicExecutor,
 } from '../src/executor'
 import type { AnthropicExecutorSettings as Settings, ClaudeAuthConfig } from '../src/types'
-import * as testConnection from '../src/test-connection'
+import * as credentialStore from '../src/credential-store'
 
 function makeSettings(): Settings {
   return {
@@ -249,9 +249,9 @@ describe('AnthropicExecutor — healthcheck', () => {
   })
 
   it('reports ok=true for claudeLogin when the local session is present and unexpired', async () => {
-    vi.spyOn(testConnection, 'readClaudeLocalSession').mockReturnValue({
+    vi.spyOn(credentialStore, 'loadClaudeLocalSession').mockResolvedValue({
       accessToken: 'sk-ant-oat01-test',
-      expiresAt: Date.now() + 60_000,
+      expiresAt: Date.now() + 3_600_000,
     })
     const ex = createAnthropicExecutor({
       settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
@@ -260,8 +260,11 @@ describe('AnthropicExecutor — healthcheck', () => {
     await expect(ex.healthcheck()).resolves.toEqual({ ok: true })
   })
 
-  it('reports ok=false for claudeLogin when the local session is expired', async () => {
-    vi.spyOn(testConnection, 'readClaudeLocalSession').mockReturnValue({
+  // An expired-but-renewable session is handled inside
+  // `loadClaudeLocalSession`, so reaching healthcheck still expired means the
+  // refresh token is gone or rejected — the only case that needs a re-login.
+  it('reports ok=false for claudeLogin when the session is expired and could not be renewed', async () => {
+    vi.spyOn(credentialStore, 'loadClaudeLocalSession').mockResolvedValue({
       accessToken: 'sk-ant-oat01-test',
       expiresAt: Date.now() - 60_000,
     })

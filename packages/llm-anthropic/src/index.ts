@@ -47,7 +47,13 @@ export {
 } from './steering-errors'
 export { isStaleSessionResumeError } from './session-errors'
 export { registerAnthropicHttpRoutes } from './http-routes'
-export { testAnthropicCredentials, readClaudeLocalSession, formatAnthropicAuthFailure } from './test-connection'
+export { testAnthropicCredentials, formatAnthropicAuthFailure } from './test-connection'
+export {
+  isSessionExpired,
+  loadClaudeLocalSession,
+  readClaudeLocalSession,
+  refreshClaudeLocalSession,
+} from './credential-store'
 
 export type {
   AnthropicExecutorSettings,
