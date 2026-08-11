@@ -72,11 +72,11 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
+    "@types/bcryptjs": "^3.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.1",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.13.14",
+    "@types/node": "^26.2.0",
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.2",
