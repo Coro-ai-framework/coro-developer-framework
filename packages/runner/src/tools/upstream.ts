@@ -27,6 +27,7 @@
 // problem converge on the same issue.
 
 import { createHash } from 'node:crypto'
+import * as path from 'node:path'
 
 import { GitHubClient, type IssueSearchHit, type RepoInfo } from '../clients/github'
 import { defaultWriterCacheRoot } from '../config/local-config'
@@ -36,6 +37,7 @@ import { buildOssContributionJobInput } from '../jobs/oss-contribution'
 import { retrospectiveTiers, type RetrospectiveTiers } from '../jobs/retrospective'
 import { assertRetrospectiveJob } from './retrospective'
 import { buildSanitizer } from './sanitize'
+import { materialiseUpstreamSource, type UpstreamSourceSnapshot } from './upstream-source'
 import type { ToolContext } from './types'
 
 /** Marker written into issue bodies so a later run can find its own report. */
@@ -121,16 +123,20 @@ interface UpstreamRuntime {
 async function resolveUpstreamRuntime(
   ctx: ToolContext,
   toolName: string,
-  tier: keyof RetrospectiveTiers = 'upstreamIntelligence',
+  tier: keyof RetrospectiveTiers | ReadonlyArray<keyof RetrospectiveTiers> = 'upstreamIntelligence',
 ): Promise<UpstreamRuntime> {
   assertRetrospectiveJob(ctx, toolName)
 
+  // Several tiers means "any of these" — used by tools that support both
+  // contribution paths rather than belonging to one of them.
+  const wanted: ReadonlyArray<keyof RetrospectiveTiers> = typeof tier === 'string' ? [tier] : tier
   const tiers = retrospectiveTiers(ctx.job)
-  if (!tiers[tier]) {
+  if (!wanted.some(name => tiers[name])) {
+    const named = wanted.map(name => `"${name}"`).join(' or ')
     throw new Error(
-      `${toolName} is not permitted for this run: the developer launched it with the "${tier}" ` +
+      `${toolName} is not permitted for this run: the developer launched it with the ${named} ` +
       'destination disabled. Record the finding as not-shipped with reason ' +
-      `"${tier} destination not enabled for this run".`,
+      `"${wanted[0]} destination not enabled for this run".`,
     )
   }
 
@@ -242,6 +248,59 @@ async function consumeBudget(
     params: { ...job.params, [param]: next },
   })
   return next
+}
+
+// ── upstream_checkout ────────────────────────────────────────────────────────
+
+/** Either contribution path is a reason to want the code in front of you. */
+const CONTRIBUTION_TIERS: ReadonlyArray<keyof RetrospectiveTiers> = [
+  'upstreamIntelligence',
+  'upstreamCode',
+]
+
+export interface UpstreamCheckoutResult extends UpstreamSourceSnapshot {
+  /** Web URL of the snapshotted revision, for citing it in an issue. */
+  commitUrl: string
+}
+
+/**
+ * Put a read-only snapshot of the upstream repository in the job's working
+ * directory so a finding can be checked against the code before it is filed.
+ *
+ * This exists because the analyst's evidence and its remedy come from
+ * different places: the evidence is job metrics, which it has, and the
+ * remedy names files and behaviour, which until now it could only infer. An
+ * inferred remedy that is wrong does not merely waste a maintainer's time —
+ * it makes the next report from any install easier to dismiss.
+ *
+ * Gated on a contribution tier because a run that cannot publish has nothing
+ * to verify for publication, and cloning a repository it will not use is
+ * pure cost.
+ */
+export async function upstreamCheckout(
+  _args: unknown,
+  ctx: ToolContext,
+): Promise<UpstreamCheckoutResult> {
+  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_checkout', CONTRIBUTION_TIERS)
+
+  const upstreamRepo = await runtime.client.getRepo(runtime.upstreamSlug)
+  const snapshot = await materialiseUpstreamSource({
+    cloneUrl: upstreamRepo.clone_url,
+    repo: upstreamRepo.full_name,
+    ref: upstreamRepo.default_branch,
+    jobWorkingDir: path.join(ctx.settings.paths.workingDir, ctx.job.id),
+    logger: ctx.logger,
+  })
+
+  if (snapshot.cloned) {
+    await ctx.stateBackend.appendLog(
+      ctx.job.id,
+      `[upstream] Snapshotted ${snapshot.repo}@${snapshot.ref} (${snapshot.commit.slice(0, 8)}) ` +
+      `into ${snapshot.dir}/ for finding verification`,
+    )
+  }
+
+  return { ...snapshot, commitUrl: `${upstreamRepo.html_url}/tree/${snapshot.commit}` }
 }
 
 // ── upstream_search ──────────────────────────────────────────────────────────
@@ -541,21 +600,21 @@ export function normalizeUpstreamFiles(files: ReadonlyArray<UpstreamPrFile> | un
   }
 
   return files.map(file => {
-    const path = file.path?.replace(/^\.\//, '').trim() ?? ''
-    if (!path.startsWith(UPSTREAM_INTELLIGENCE_PREFIX)) {
+    const filePath = file.path?.replace(/^\.\//, '').trim() ?? ''
+    if (!filePath.startsWith(UPSTREAM_INTELLIGENCE_PREFIX)) {
       throw new Error(
         `Upstream path "${file.path}" is not contributable. This tool ships base-intelligence ` +
         `markdown only, so every path must start with "${UPSTREAM_INTELLIGENCE_PREFIX}". ` +
         'Code changes go through an implementation run instead.',
       )
     }
-    if (!path.toLowerCase().endsWith('.md')) {
+    if (!filePath.toLowerCase().endsWith('.md')) {
       throw new Error(`Upstream path "${file.path}" must end with .md.`)
     }
     if (!file.content?.trim()) {
       throw new Error(`Upstream file "${file.path}" has empty content.`)
     }
-    return { path, content: file.content }
+    return { path: filePath, content: file.content }
   })
 }
 

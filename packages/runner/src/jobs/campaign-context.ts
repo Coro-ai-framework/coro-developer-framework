@@ -13,6 +13,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Job } from '@coro-ai/cloud-protocol'
 import { isPathInside } from '@coro-ai/plugin-sdk'
+import { UPSTREAM_SOURCE_SUBDIR } from '../tools/upstream-source'
 import { buildPrimaryRepoCandidates } from './workspace-layout'
 
 /** Subdirectory under each campaign child job root for copied parent context. */
@@ -20,8 +21,17 @@ export const CAMPAIGN_CONTEXT_DIR = 'campaign'
 
 const CONTEXT_EXTENSIONS = new Set(['.md', '.json'])
 
-/** Runtime top-level dirs under a job working root — never campaign context. */
-const RUNTIME_TOP_LEVEL_DIRS = new Set(['_intelligence', '.claude', CAMPAIGN_CONTEXT_DIR])
+/**
+ * Runtime top-level dirs under a job working root — never campaign context.
+ * `_upstream` holds a snapshot of a whole repository; sweeping its markdown
+ * into every child job would drown the actual parent artefacts.
+ */
+const RUNTIME_TOP_LEVEL_DIRS = new Set([
+  '_intelligence',
+  '.claude',
+  UPSTREAM_SOURCE_SUBDIR,
+  CAMPAIGN_CONTEXT_DIR,
+])
 
 export function buildCampaignContextSkipDirs(job: Job): Set<string> {
   const skip = new Set(RUNTIME_TOP_LEVEL_DIRS)

@@ -54,6 +54,14 @@ and `get_job_log_excerpts`, applies the thresholds in the
 `retrospective-analysis` skill, and posts a `retrospective-report`
 artefact containing the findings.
 
+Before writing that report it verifies each candidate against the files
+it names: `_intelligence/` for the intelligence layer, and — for anything
+bound upstream — a read-only snapshot of the upstream default branch that
+`upstream_checkout` puts in `_upstream/`. The evidence still comes from
+job metrics; the code is only how a remedy stops being a guess. Reading
+it also reveals the finding that upstream has already fixed, which is a
+finding to drop rather than file.
+
 This phase carries `interactive_checkpoint: true`, so the runner parks
 the job in `awaiting-developer-input` **after** analysis completes and
 before `shipping` starts. That park is the load-bearing safety property
@@ -102,7 +110,9 @@ works on a fork and opens its pull request upstream.
   instead of guessing. An approval that names no finding ids is still an
   approval — of the whole report; a missing one is not.
 - **Evidence or it does not ship.** A finding with fewer than two
-  citing jobs is an anecdote; anecdotes stay in the report.
+  citing jobs is an anecdote; anecdotes stay in the report. Access to the
+  source does not change this: something noticed by reading code, with no
+  run behind it, is a code review and belongs to a different workflow.
 - **Search upstream before filing.** Other installs run this same
   workflow against the same Coro version. A second issue for a known
   problem is worse than no issue at all — add evidence to the existing

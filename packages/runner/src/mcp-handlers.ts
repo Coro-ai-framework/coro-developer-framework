@@ -1129,6 +1129,15 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     // Upstream contribution (retrospective jobs only). Implementations live
     // in `tools/upstream.ts`, which owns the tier gate, the sanitisation
     // gate, and the per-run publication caps.
+    upstream_checkout: async () => {
+      const { upstreamCheckout } = await import('./tools/upstream')
+      try {
+        return text(await upstreamCheckout({}, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
     upstream_search: async (args: UpstreamSearchArgs) => {
       const { upstreamSearch } = await import('./tools/upstream')
       try {

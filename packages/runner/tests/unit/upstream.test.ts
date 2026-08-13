@@ -43,6 +43,18 @@ vi.mock('../../src/intelligence/writer', async importOriginal => {
   }
 })
 
+// Cloning is exercised against a real filesystem in upstream-source.test.ts;
+// here only the tool's own decisions matter.
+const materialiseUpstreamSource = vi.fn()
+
+vi.mock('../../src/tools/upstream-source', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/tools/upstream-source')>()
+  return {
+    ...actual,
+    materialiseUpstreamSource: (...a: unknown[]) => materialiseUpstreamSource(...a),
+  }
+})
+
 /** Stands in for `Dispatcher.dispatch`, wired through `ToolContext`. */
 const dispatchJob = vi.fn()
 
@@ -50,6 +62,7 @@ const {
   dispatchImprovementJob,
   fingerprintFinding,
   normalizeUpstreamFiles,
+  upstreamCheckout,
   upstreamCommentIssue,
   upstreamCreateIssue,
   upstreamOpenIntelligencePr,
@@ -131,7 +144,16 @@ beforeEach(() => {
   gh.getRepo.mockResolvedValue({
     full_name: 'coro-ai-framework/coro', default_branch: 'main',
     clone_url: 'https://github.com/coro-ai-framework/coro.git',
-    html_url: '', fork: false,
+    html_url: 'https://github.com/coro-ai-framework/coro', fork: false,
+  })
+  materialiseUpstreamSource.mockResolvedValue({
+    dir: '_upstream',
+    absDir: '/tmp/work/retro-1/_upstream',
+    repo: 'coro-ai-framework/coro',
+    ref: 'main',
+    commit: 'abc123def456',
+    at: '2026-08-13T12:00:00.000Z',
+    cloned: true,
   })
   gh.ensureFork.mockResolvedValue({
     full_name: 'contributor/coro', default_branch: 'main',
@@ -198,6 +220,66 @@ describe('the upstream gates', () => {
     const ctx = makeCtx({ upstream: { ...UPSTREAM_SETTINGS, token: undefined } })
     ;(ctx.settings as { github: { token?: string } }).github.token = undefined
     await expect(upstreamSearch({ finding: FINDING }, ctx)).rejects.toThrow(/GitHub token/)
+  })
+})
+
+describe('upstreamCheckout', () => {
+  it('snapshots the upstream default branch into the job working directory', async () => {
+    const ctx = makeCtx()
+    const result = await upstreamCheckout({}, ctx)
+
+    expect(materialiseUpstreamSource).toHaveBeenCalledWith(expect.objectContaining({
+      cloneUrl: 'https://github.com/coro-ai-framework/coro.git',
+      repo: 'coro-ai-framework/coro',
+      // Upstream's branch, not the version that produced the job history —
+      // otherwise the analyst re-reports defects already fixed upstream.
+      ref: 'main',
+      jobWorkingDir: '/tmp/work/retro-1',
+    }))
+    expect(result).toMatchObject({
+      dir: '_upstream',
+      commit: 'abc123def456',
+      commitUrl: 'https://github.com/coro-ai-framework/coro/tree/abc123def456',
+    })
+  })
+
+  it('logs the revision once, so a reused snapshot is not announced twice', async () => {
+    const ctx = makeCtx()
+    await upstreamCheckout({}, ctx)
+    expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith('retro-1', expect.stringContaining('abc123de'))
+
+    vi.mocked(ctx.stateBackend.appendLog).mockClear()
+    materialiseUpstreamSource.mockResolvedValueOnce({
+      dir: '_upstream',
+      absDir: '/tmp/work/retro-1/_upstream',
+      repo: 'coro-ai-framework/coro',
+      ref: 'main',
+      commit: 'abc123def456',
+      at: '2026-08-13T12:00:00.000Z',
+      cloned: false,
+    })
+    await upstreamCheckout({}, ctx)
+    expect(ctx.stateBackend.appendLog).not.toHaveBeenCalled()
+  })
+
+  it('is available to a run enabling either contribution destination', async () => {
+    const intelligenceOnly = makeCtx({
+      job: { params: { tiers: { tenant: true, upstreamIntelligence: true, upstreamCode: false } } },
+    })
+    await expect(upstreamCheckout({}, intelligenceOnly)).resolves.toBeTruthy()
+
+    const codeOnly = makeCtx({
+      job: { params: { tiers: { tenant: true, upstreamIntelligence: false, upstreamCode: true } } },
+    })
+    await expect(upstreamCheckout({}, codeOnly)).resolves.toBeTruthy()
+  })
+
+  it('refuses a tenant-only run, which has nothing to verify for publication', async () => {
+    const ctx = makeCtx({
+      job: { params: { tiers: { tenant: true, upstreamIntelligence: false, upstreamCode: false } } },
+    })
+    await expect(upstreamCheckout({}, ctx)).rejects.toThrow(/destination disabled/)
+    expect(materialiseUpstreamSource).not.toHaveBeenCalled()
   })
 })
 

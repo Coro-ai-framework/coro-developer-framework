@@ -285,6 +285,31 @@ checkpoints), never recorded, so it is deliberately tuned to undercount:
 `reworkRuns` is a floor, and a finding built on it is a candidate rather
 than a proof.
 
+**A finding's evidence and its remedy come from different places**, and
+only the first one is metrics. "The coder loops on Go test scaffolding" is
+supported by job reports; "…because `job-history.ts` does not persist
+per-run cost" is a claim about a codebase the analyst has never read, and
+it was wrong the first time it was made — the field was already there.
+`upstream_checkout` (`tools/upstream-source.ts`) closes that gap by
+putting a read-only snapshot of the upstream default branch in the job's
+own working directory, so the claim can be checked before it reaches a
+public issue. Three details carry weight:
+
+- **Upstream's `main`, not the installed version.** The finding is going
+  upstream, so what matters is whether the defect is still there — this is
+  the only way the analyst notices something maintainers already fixed.
+- **A snapshot, not a checkout.** `.git` is removed once the revision is
+  recorded, so nothing can be branched or pushed from it and the
+  workspace/diff machinery cannot mistake it for the job's target repo.
+  Code fixes still go out through `dispatch_improvement_job`; a finding
+  still needs its two citing jobs, because a problem noticed by reading
+  code with no run behind it is a code review, not a retrospective finding.
+- **It also fixes a leak hazard on the prose path.**
+  `upstream_open_intelligence_pr` replaces whole files, and the analyst
+  used to read them from `_intelligence/` — the *merged* tree, where a
+  tenant overlay may have appended to or wholly replaced the base file.
+  Target files are now read from the snapshot instead.
+
 Three properties make this safe to ship:
 
 1. **Type-gated tools.** The history tools reject any job whose type is
@@ -327,11 +352,12 @@ Findings are categorised by which layer owns the fix:
 and `runner-code` belong to the open-source repository.
 
 **Upstream contribution** (`tools/upstream.ts`) is how the latter two
-leave the machine: `upstream_search` → `upstream_create_issue` or
-`upstream_comment_issue` → `upstream_open_intelligence_pr` (prose) or
-`dispatch_improvement_job` (code). It is off unless the install sets
-`upstream.repoUrl` — via **Settings → Coro contribution**, `~/.coro/config.json`,
-or `CORO_UPSTREAM_REPO_URL` — and four constraints bound it:
+leave the machine: `upstream_checkout` (verify) → `upstream_search` →
+`upstream_create_issue` or `upstream_comment_issue` →
+`upstream_open_intelligence_pr` (prose) or `dispatch_improvement_job`
+(code). It is off unless the install sets `upstream.repoUrl` — via
+**Settings → Coro contribution**, `~/.coro/config.json`, or
+`CORO_UPSTREAM_REPO_URL` — and four constraints bound it:
 
 - **Fingerprint dedup.** `fingerprintFinding()` hashes the finding's
   category, target paths, and normalised title, and the hash is embedded
@@ -340,7 +366,9 @@ or `CORO_UPSTREAM_REPO_URL` — and four constraints bound it:
   converge on one issue instead of filing near-duplicates.
 - **Tier gate.** The developer picks at launch how far findings may
   travel (`params.tiers`); the tools re-read that from the job, so an
-  analyst cannot widen its own scope mid-run.
+  analyst cannot widen its own scope mid-run. `upstream_checkout` passes
+  when *either* contribution tier is on — a run that cannot publish has
+  nothing to verify for publication, and cloning for it is pure cost.
 - **Fail-closed sanitisation.** Every title, body, and file body is run
   through `Sanitizer.findLeaks()` before the request goes out. A leak
   cannot be un-published, so the check refuses rather than scrubs.

@@ -38,6 +38,7 @@ context to know which procedure below applies.
 | `read_memory` | Check whether a finding is already documented. |
 | `post_artifact` | Record the findings report and the outcome report. |
 | `propose_change` | Ship approved findings to a writable intelligence layer. |
+| `upstream_checkout` | Snapshot the upstream Coro source into `_upstream/` so you can check a finding against the code. |
 | `upstream_search` | Check whether the upstream Coro repo already has this report. |
 | `upstream_create_issue` | File a new upstream issue with the sanitised evidence. |
 | `upstream_comment_issue` | Add your evidence to an existing upstream report. |
@@ -93,16 +94,45 @@ Apply the skill's thresholds. For each candidate, write down:
 - **Category**: `tenant-intelligence` | `base-intelligence` | `runner-code`.
 - **Severity**: `high` | `medium` | `low`, with the cost that justifies it.
 - **Proposed remedy**: which files change, and roughly how. **Every** file
-  that states the thing you are changing — search `_intelligence/` for the
-  phrase rather than naming the first file that comes to mind. The skill's
-  §4 has the procedure and the module map for `runner-code` findings.
+  that states the thing you are changing — search rather than naming the
+  first file that comes to mind.
 
-If nothing clears the thresholds, say so. A retrospective that reports
-"no systemic patterns in the last 25 jobs, here is what I checked" is a
-successful retrospective. Manufacturing findings to look useful poisons
-the signal for every future run.
+### 4. Verify each candidate against the code
 
-### 4. Write the report
+You now have claims about files. Check them before they become a report.
+
+- **Intelligence claims** — grep the merged tree in your working
+  directory: `grep -rn "<the phrase>" _intelligence/`. One instruction is
+  usually written in three or four places, and fixing one of them leaves
+  the defect live.
+- **Claims about the runner, and anything you intend to send upstream** —
+  call `upstream_checkout` and read the code in `_upstream/`. It is
+  upstream's default branch, so this is also how you find out that a
+  defect is already fixed and the finding should be dropped. Work
+  narrowly: grep for the symbol, read the function around it. You are
+  checking a specific claim, not learning the codebase.
+
+Then correct what you find: drop candidates the code disproves, rewrite
+remedies that were aimed at the wrong file, and widen `targetPaths` to
+every file you actually found. Cite the commit sha the tool returned.
+
+Two rules for reading code, both about staying in your lane:
+
+- **Do not go looking for findings in there.** A problem you spotted in a
+  file but cannot tie to ≥ 2 jobs in your window is not a finding — it is
+  a code review, which is not what this run is for.
+- **Do not write the fix.** Even a one-line change: you have no build and
+  no test loop. Code goes to an implementation job in `shipping`.
+
+The skill's §4 has the mapping rules and, if `upstream_checkout` is
+unavailable, the module map to fall back on.
+
+If nothing survives this — either the thresholds or the code — say so. A
+retrospective that reports "no systemic patterns in the last 25 jobs,
+here is what I checked" is a successful retrospective. Manufacturing
+findings to look useful poisons the signal for every future run.
+
+### 5. Write the report
 
 Write `working/{job-id}/retrospective-report.md`:
 
@@ -113,6 +143,7 @@ Write `working/{job-id}/retrospective-report.md`:
 **Median cost / job:** ${x}
 **Jobs escalated:** {n}
 **Findings:** {n}
+**Verified against:** {repo}@{sha} _(omit if you could not snapshot the source)_
 
 ## Finding 1 — {title}
 
@@ -167,7 +198,7 @@ Keep `id` values stable and sequential (`finding-1`, `finding-2`) — the
 developer's approval names them by id, and `shipping` matches on them
 verbatim.
 
-### 5. End the turn
+### 6. End the turn
 
 `log` a one-line summary and stop. Do **not** call `propose_change` in
 this phase, and do not try to advance yourself. The runner parks for
@@ -254,16 +285,28 @@ issue filed by a different install for the same problem matches.
 **2. Report.** `upstream_create_issue({ title, body, finding })`. The
 body is read by someone with no access to your logs, so it must stand
 alone: the behaviour, how many runs showed it, the numbers, the files
-you believe are responsible, and the fix you would make. Use the aliases
+responsible plus the revision you checked them at, and the fix you would
+make. Say plainly which parts you verified against the code and which
+remain hypotheses — a maintainer can act on a hypothesis that is labelled
+and cannot trust a report that turned out to contain one. Use the aliases
 from the sanitised reports (`repo-A`, `ticket-ref-1`) — the tool refuses
 text containing real identifiers, and that refusal is not something to
 work around by paraphrasing the identifier.
 
 **3. Fix, when the fix is prose.** For `base-intelligence` findings,
-`upstream_open_intelligence_pr({ issueNumber, ... })`. Read each target
-file first (it lives under `_intelligence/`, and the same content is in
-the repo) and supply the **complete** new content — you are replacing
-the file, not patching it. One call ships one PR; bundle every file.
+`upstream_open_intelligence_pr({ issueNumber, ... })`. You supply the
+**complete** new content of each file — you are replacing it, not patching
+it — so start from the current upstream file:
+
+Call `upstream_checkout` (it reuses the snapshot from `analysis`) and read
+each target file from `_upstream/packages/intelligence-base/layer/…`.
+**Not** from `_intelligence/`: that tree is base merged with this
+install's tenant and repo overlays, so its version of the file may carry
+company-specific text — or be an overlay's replacement of the file
+outright. Shipping that as the upstream file would publish tenant content
+and revert whatever upstream changed since your install last pulled.
+
+One call ships one PR; bundle every file.
 
 **4. Fix, when the fix is code.** For `runner-code` findings, call
 `dispatch_improvement_job({ issueNumber, title, description, findingId })`.
@@ -281,7 +324,8 @@ retrospective:
 
 - the behaviour to change, in terms of what the runner does today
 - the evidence, as counts and numbers rather than job ids
-- the files and functions you believe are responsible, and why
+- the files and functions responsible, at the revision you read them —
+  and, where you did not read them, that you did not
 - how to verify the fix — the test that should exist and fail today
 - what is explicitly out of scope, so a small fix stays small
 
@@ -333,6 +377,10 @@ Then `log` the summary and end your turn. The runner completes the job.
 
 - **You are read-only against history.** Never modify another job's
   state, and never treat a past job's working directory as writable.
+- **The source snapshot is for checking, not for fixing.** `_upstream/`
+  exists so your claims can be verified and your file lists can be real.
+  It is not a checkout: it has no `.git`, nothing can be pushed from it,
+  and a fix you edit there goes nowhere. Code changes are dispatched.
 - **Two jobs or it is not a finding.** The evidence bar is not
   negotiable; it is what makes these proposals reviewable by someone
   who cannot see your tool output.

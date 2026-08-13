@@ -454,6 +454,13 @@ export function createCoroMcpServer(
       // identifiers.
 
       tool(
+        'upstream_checkout',
+        'Put a read-only snapshot of the upstream Coro repository in your working directory, so you can check a finding against the actual code before reporting it. Call this in the `analysis` phase once you have candidate findings that make a claim about the runner or about base-intelligence files — then grep and read the snapshot to confirm the behaviour, find EVERY file involved, and correct any wrong assumption before it reaches a public issue. It snapshots upstream\'s default branch, which is also how you notice a defect that maintainers have already fixed. Returns the directory, the branch, and the commit sha you verified against — cite that sha. The tree has no `.git` and nothing can be pushed from it; code fixes still go through `dispatch_improvement_job`. This does not lower the evidence bar: a finding still needs two citing jobs from the job history. Retrospective jobs only, and only when a contribution destination is enabled.',
+        {},
+        h.upstream_checkout,
+      ),
+
+      tool(
         'upstream_search',
         'Search the upstream Coro repository for an existing report of a finding. ALWAYS call this before upstream_create_issue: several installs analyse the same Coro version, so the problem you found may already be filed. Pass `finding` to search by content fingerprint (exact) — `duplicate: true` means do not file again, add your evidence to the hit with upstream_comment_issue instead. Pass `query` for free-text search. Retrospective jobs only.',
         {
