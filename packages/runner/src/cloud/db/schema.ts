@@ -16,7 +16,7 @@ import {
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
 export const teamRoleEnum = pgEnum('team_role', ['admin', 'member'])
-export const jobTypeEnum = pgEnum('job_type', ['job', 'self-update'])
+export const jobTypeEnum = pgEnum('job_type', ['job', 'self-update', 'retrospective'])
 export const triggerSourceEnum = pgEnum('trigger_source', ['cli', 'jira', 'internal'])
 export const proposalStatusEnum = pgEnum('proposal_status', ['pending', 'approved', 'rejected'])
 export const webhookProviderEnum = pgEnum('webhook_provider', ['bitbucket', 'github', 'jira'])

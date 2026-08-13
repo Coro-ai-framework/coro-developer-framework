@@ -1085,6 +1085,36 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text({ artifacts: filtered, total: filtered.length })
     },
 
+    // Cross-job history (retrospective jobs only). Implementations live in
+    // `tools/job-history.ts`; the type gate is enforced there so the same
+    // rule applies however the tool is invoked.
+    list_jobs: async (args: { limit?: number; status?: string; since?: string; scope?: 'job' | 'retrospective' }) => {
+      const { listJobHistory } = await import('./tools/job-history')
+      try {
+        return text(await listJobHistory(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    get_job_report: async (args: { jobId: string; raw?: boolean }) => {
+      const { buildJobReportById } = await import('./tools/job-history')
+      try {
+        return text(await buildJobReportById(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    get_job_log_excerpts: async (args: { jobId: string; pattern?: string; limit?: number; raw?: boolean }) => {
+      const { getJobLogExcerpts } = await import('./tools/job-history')
+      try {
+        return text(await getJobLogExcerpts(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
     // Self-improvement
     propose_change: async (args: {
       type:

@@ -3,8 +3,10 @@ import * as fs from 'fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
+
 import { buildJobRecord, WorkflowResolutionError } from '../../src/jobs/creation'
-import { JobType } from '@coro-ai/cloud-protocol'
+import { JobType, RETROSPECTIVE_WORKFLOW_PATH } from '@coro-ai/cloud-protocol'
 
 // ── Setup helpers ────────────────────────────────────────────────────────────
 
@@ -62,6 +64,30 @@ describe('buildJobRecord (workflow resolution)', () => {
 
     expect(job.phase).toBe('planning')
     expect(job.status).toBe('planning')
+  })
+
+  it('builds a retrospective job from the shipped base-layer workflow', async () => {
+    // No fixture: this asserts the real base-layer file parses and that the
+    // developer checkpoint sits on `analysis`, so the runner parks *before*
+    // shipping rather than after it.
+    const job = await buildJobRecord(
+      {
+        type: 'retrospective',
+        triggerSource: 'internal',
+        params: { jobWindow: 25, interactive: true },
+      },
+      JobType.Retrospective,
+      RETROSPECTIVE_WORKFLOW_PATH,
+      { baseLayerDir: getBaseLayerRoot(), logger: noopLogger },
+    )
+
+    expect(job.phase).toBe('analysis')
+    expect(job.status).toBe('analyzing')
+    expect(job.interactive).toBe(true)
+    expect(job.workflowPhases).toEqual([
+      { name: 'analysis', status: 'analyzing', agent: 'agents/retrospective-analyst.md', interactiveCheckpoint: true },
+      { name: 'shipping', status: 'shipping', agent: 'agents/retrospective-analyst.md' },
+    ])
   })
 
   it('throws WorkflowResolutionError when no root has the workflow', async () => {

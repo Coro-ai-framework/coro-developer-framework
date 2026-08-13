@@ -11,6 +11,7 @@ import {
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_AWAITING_RATE_LIMIT,
   STATUS_CODING,
+  RETROSPECTIVE_WORKFLOW_PATH,
   type Job,
 } from '@coro-ai/cloud-protocol'
 import {
@@ -19,6 +20,8 @@ import {
   isParkingStatus,
   isResumableStatus,
   isCancellableStatus,
+  isRetrospectiveJob,
+  inputToJobType,
   defaultWorkflowPath,
   jobParam,
   jobReviewers,
@@ -230,6 +233,36 @@ describe('defaultWorkflowPath', () => {
   it('returns self-update workflow for SelfUpdate type', () => {
     expect(defaultWorkflowPath(JobType.SelfUpdate)).toBe('workflows/self-update/workflow.md')
   })
+
+  it('returns the retrospective workflow for Retrospective type', () => {
+    expect(defaultWorkflowPath(JobType.Retrospective)).toBe(RETROSPECTIVE_WORKFLOW_PATH)
+  })
+})
+
+// ── inputToJobType ────────────────────────────────────────────────────────────
+
+describe('inputToJobType', () => {
+  it('maps every wire-level type string onto the enum', () => {
+    expect(inputToJobType({ type: 'job', params: {} })).toBe(JobType.Job)
+    expect(inputToJobType({ type: 'self-update', params: {} })).toBe(JobType.SelfUpdate)
+    expect(inputToJobType({ type: 'retrospective', params: {} })).toBe(JobType.Retrospective)
+  })
+
+  it('throws on an unrecognised type rather than defaulting silently', () => {
+    expect(() => inputToJobType({ params: {} })).toThrow(/Unknown job type/)
+  })
+})
+
+// ── isRetrospectiveJob ────────────────────────────────────────────────────────
+
+describe('isRetrospectiveJob', () => {
+  it('keys off the job type, not the workflow path', () => {
+    expect(isRetrospectiveJob(makeJob({ type: JobType.Retrospective }))).toBe(true)
+    expect(isRetrospectiveJob(makeJob({
+      type: JobType.Job,
+      workflowPath: RETROSPECTIVE_WORKFLOW_PATH,
+    }))).toBe(false)
+  })
 })
 
 // ── jobParam ──────────────────────────────────────────────────────────────────
@@ -350,9 +383,10 @@ describe('JobType', () => {
   it('has expected string values', () => {
     expect(JobType.Job).toBe('job')
     expect(JobType.SelfUpdate).toBe('self-update')
+    expect(JobType.Retrospective).toBe('retrospective')
   })
 
-  it('has exactly 2 members', () => {
-    expect(Object.values(JobType)).toHaveLength(2)
+  it('has exactly 3 members', () => {
+    expect(Object.values(JobType)).toHaveLength(3)
   })
 })

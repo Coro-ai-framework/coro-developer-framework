@@ -7,7 +7,7 @@ import {
   Proposal,
   ProposalStatus,
 } from '@coro-ai/cloud-protocol'
-import { defaultWorkflowPath } from '../jobs/helpers'
+import { defaultWorkflowPath, inputToJobType } from '../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
@@ -346,11 +346,3 @@ function normalizeJob(job: Job): Job {
   }
 }
 
-function inputToJobType(input: JobInput): JobType {
-  switch (input.type) {
-    case 'job':         return JobType.Job
-    case 'self-update': return JobType.SelfUpdate
-    default:
-      throw new Error(`Unknown job type: ${String((input as unknown as Record<string, unknown>).type)}`)
-  }
-}

@@ -398,6 +398,49 @@ export function createCoroMcpServer(
         { annotations: { readOnlyHint: true } },
       ),
 
+      // ── Cross-job history (retrospective only) ────────────────────────────
+      //
+      // Reserved for the retrospective workflow: the handlers reject any
+      // other job type. Ordinary agents see one job — their own — and
+      // record learnings through `add_insight`.
+
+      tool(
+        'list_jobs',
+        'List past jobs for cross-job analysis, newest first. Returns one compact row per job: status, final phase, cost, escalation flag, work-item loop counts, and which phases executed more than once. Pass `scope: "retrospective"` to list past retrospective runs instead (use this to avoid re-proposing findings that were already shipped or rejected). Retrospective jobs only.',
+        {
+          limit: z.number().optional().describe('How many jobs to return (default 20, max 100).'),
+          status: z.string().optional().describe('Filter to one lifecycle status, e.g. "complete" or "escalated".'),
+          since: z.string().optional().describe('ISO timestamp; only jobs created at or after this are returned.'),
+          scope: z.enum(['job', 'retrospective']).optional().describe('Which job type to enumerate. Default "job".'),
+        },
+        h.list_jobs,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'get_job_report',
+        'Read an aggregated report for one past job: per-phase run counts (a phase with >1 run means the job looped back to it), cost and duration per phase, work-item loop counts, escalation reason, insights, PR open→merge latency, and artefact list. Identifiers are replaced with stable aliases (repo-A, ticket-ref-1) by default; pass `raw: true` only when you need real names for local reasoning — never quote raw values into anything published. Retrospective jobs only.',
+        {
+          jobId: z.string().describe('Job id from list_jobs.'),
+          raw: z.boolean().optional().describe('Return unsanitised identifiers. Default false.'),
+        },
+        h.get_job_report,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'get_job_log_excerpts',
+        'Read filtered log lines from a past job. Defaults to error, warning, rate-limit, escalation, and per-phase tool-use summary lines — use this to find a tool or build step that keeps failing across jobs. Returns the tail of the matches. Retrospective jobs only.',
+        {
+          jobId: z.string().describe('Job id from list_jobs.'),
+          pattern: z.string().optional().describe('Case-insensitive regex. Defaults to error/warning/rate-limit/tool-summary markers.'),
+          limit: z.number().optional().describe('Max lines to return (default 100, max 200).'),
+          raw: z.boolean().optional().describe('Return unsanitised identifiers. Default false.'),
+        },
+        h.get_job_log_excerpts,
+        { annotations: { readOnlyHint: true } },
+      ),
+
       // ── Self-improvement ──────────────────────────────────────────────────
 
       tool(

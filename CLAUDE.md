@@ -145,6 +145,7 @@ Every job carries a `type` and a `workflowPath`. The runner uses these — not h
 | `coro job ...` (CLI) | `job` | `workflows/job/workflow.md` |
 | Jira ticket assigned to agent | `job` | `workflows/job/workflow.md` |
 | Agent writes to `memory/`, `agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
+| **Run Retrospective** (dashboard) | `retrospective` | `workflows/retrospective/workflow.md` |
 
 ---
 
@@ -184,6 +185,7 @@ The system is fully language-agnostic. No language-specific defaults are hardcod
 | `agents/spec-writer.md` | spec-writing | job (Jira-triggered) |
 | `agents/campaign-planner.md` | campaign-planning | campaign |
 | `agents/campaign-evaluator.md` | aggregation | campaign |
+| `agents/retrospective-analyst.md` | analysis + shipping (cross-job self-analysis) | retrospective |
 
 Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go, .NET, and TypeScript projects — the invoked skills change, not the agent.
 
@@ -203,6 +205,7 @@ packages/intelligence-base/layer/.claude/skills/
   dotnet-conventions/SKILL.md       — .NET/C# coding standards
   sandbox-recovery/SKILL.md         — Recovery playbook for host-sandbox denials
   self-improvement-guide/SKILL.md   — Proposal types and file structure guide
+  retrospective-analysis/SKILL.md   — Thresholds + categorisation for cross-job self-analysis
 ```
 
 (Abridged — the directory holds the full set; the entries above are the ones
@@ -252,6 +255,43 @@ The self-improvement pipeline covers three writable surfaces (across the tenant 
 - **Memory** (`memory/*.md` tenant, `.coro/memory/*.md` repo) — high volatility, grows with every job
 - **Skills** (`.claude/skills/*/SKILL.md`) — medium volatility, updated when agents discover systemic gaps
 - **Agent instructions** (`agents/*.md`) — lower volatility, updated when procedures need fixing
+
+### Cross-job self-improvement: the retrospective
+
+`propose_change` is a *per-job* loop — the evaluator sees only the job it
+ran in. That is enough to capture "this build needs CGO_ENABLED=0"; it can
+never notice "the coding phase loops on every Go job", because no agent
+has ever seen two jobs at once.
+
+The **retrospective** (`workflows/retrospective/workflow.md`, job type
+`retrospective`) is that missing view. It is dispatched on demand, reads
+the install's own job records through three read-only MCP tools —
+`list_jobs`, `get_job_report`, `get_job_log_excerpts`, implemented in
+`packages/runner/src/tools/job-history.ts` — and produces findings that
+cite at least two jobs each with concrete metrics.
+
+Three properties make this safe to ship:
+
+1. **Type-gated tools.** The history tools reject any job whose type is
+   not `retrospective` (`tools/retrospective.ts`). An implementation job
+   cannot trawl the install's history.
+2. **Sanitised by default.** `tools/sanitize.ts` maps every known tenant
+   identifier (repo slugs, SCM org names, tracker keys, e-mails, tenant
+   id) to a stable alias, and the same object validates text in the other
+   direction so anything bound for a public repository fails closed.
+3. **A human checkpoint between finding and shipping.** The `analysis`
+   phase carries `interactive_checkpoint: true`, so the runner parks the
+   job in `awaiting-developer-input` before `shipping` runs. Note the
+   checkpoint sits on the phase being *left*, not the phase being
+   entered — and the park only happens when `job.interactive` is true,
+   which is why the dashboard always dispatches retrospectives with
+   `params.interactive = true`.
+
+Findings are categorised by which layer owns the fix:
+`tenant-intelligence` (ships today via `propose_change`),
+`base-intelligence`, and `runner-code`. The latter two belong to the
+open-source repository; until an upstream destination is configured they
+are reported but not shipped.
 
 ---
 

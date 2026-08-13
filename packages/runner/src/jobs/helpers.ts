@@ -13,6 +13,7 @@
 import {
   JobType,
   PAUSED_AWAITING_EVENT,
+  RETROSPECTIVE_WORKFLOW_PATH,
   STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_AWAITING_PLAN_APPROVAL,
@@ -24,6 +25,7 @@ import {
   STATUS_FAILED,
   type CampaignChildStatus,
   type Job,
+  type JobInput,
   type TokenUsage,
 } from '@coro-ai/cloud-protocol'
 
@@ -180,11 +182,39 @@ export function stalledJobPatch(reason: string): Partial<Job> {
 
 // ── Workflow paths ────────────────────────────────────────────────────────────
 
+/**
+ * Map the wire-level `JobInput.type` string onto the {@link JobType}
+ * enum. Shared by every state backend so a new job type only has to be
+ * taught here once.
+ */
+export function inputToJobType(input: JobInput): JobType {
+  switch (input.type) {
+    case 'job':           return JobType.Job
+    case 'self-update':   return JobType.SelfUpdate
+    case 'retrospective': return JobType.Retrospective
+    default:
+      throw new Error(`Unknown job type: ${String((input as unknown as Record<string, unknown>).type)}`)
+  }
+}
+
 export function defaultWorkflowPath(type: JobType): string {
   switch (type) {
-    case JobType.Job:        return 'workflows/job/workflow.md'
-    case JobType.SelfUpdate: return 'workflows/self-update/workflow.md'
+    case JobType.Job:           return 'workflows/job/workflow.md'
+    case JobType.SelfUpdate:    return 'workflows/self-update/workflow.md'
+    case JobType.Retrospective: return RETROSPECTIVE_WORKFLOW_PATH
   }
+}
+
+// ── Retrospective helpers ─────────────────────────────────────────────────────
+
+/**
+ * Whether this job is a cross-job self-analysis run. Gates the
+ * history-access MCP tools (`list_jobs`, `get_job_report`,
+ * `get_job_log_excerpts`) so an ordinary implementation job cannot
+ * trawl the install's whole job history.
+ */
+export function isRetrospectiveJob(job: Job): boolean {
+  return job.type === JobType.Retrospective
 }
 
 // ── Campaign helpers ──────────────────────────────────────────────────────────

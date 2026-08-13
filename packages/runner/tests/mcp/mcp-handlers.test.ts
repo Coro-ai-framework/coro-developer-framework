@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as fs from 'fs/promises'
 import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
-import { STATUS_ESCALATED } from '@coro-ai/cloud-protocol'
+import { JobType, STATUS_ESCALATED } from '@coro-ai/cloud-protocol'
 import type { ToolContext } from '../../src/tools/types'
 import {
   makeMockToolContext,
@@ -125,6 +125,38 @@ describe('createMcpToolHandlers — job control & signals', () => {
 // single check: the handler surface no longer exports these names.
 // Workflow markdown that still references them hits the SDK's
 // "tool not found" path, which surfaces a clean error to the agent.
+
+describe('createMcpToolHandlers — cross-job history', () => {
+  function historyCtx(jobOverrides: Record<string, unknown>): ToolContext {
+    const ctx = makeMockToolContext({ job: makeMockJob(jobOverrides) as ToolContext['job'] })
+    ctx.stateBackend.listJobs = vi.fn().mockResolvedValue([])
+    ctx.stateBackend.getLog = vi.fn().mockResolvedValue([])
+    return ctx
+  }
+
+  it('registers the three history tools', () => {
+    const h = createMcpToolHandlers(makeMockToolContext(), {}) as Record<string, unknown>
+    for (const name of ['list_jobs', 'get_job_report', 'get_job_log_excerpts']) {
+      expect(typeof h[name], `${name} should be registered`).toBe('function')
+    }
+  })
+
+  it('surfaces the retrospective-only gate as a structured tool error, not a throw', async () => {
+    const h = createMcpToolHandlers(historyCtx({ type: JobType.Job }), {})
+
+    const out = await h.list_jobs({})
+    expect(out.isError).toBe(true)
+    expect(out.content[0].text).toMatch(/only available to retrospective jobs/)
+  })
+
+  it('serves the history to a retrospective job', async () => {
+    const h = createMcpToolHandlers(historyCtx({ id: 'retro-1', type: JobType.Retrospective }), {})
+
+    const out = await h.list_jobs({})
+    expect(out.isError).toBeUndefined()
+    expect(parseJson(out)).toMatchObject({ scope: 'job', jobs: [] })
+  })
+})
 
 describe('createMcpToolHandlers — legacy shim removal', () => {
   it('bb_*/gh_*/jira_* handlers are not exported', () => {

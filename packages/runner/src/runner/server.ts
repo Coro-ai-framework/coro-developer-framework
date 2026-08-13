@@ -38,8 +38,14 @@ import { detectEditors, openInEditor, revealFolder } from './open-editor'
 import { assertJobPluginRequirements, PluginPreflightError } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { runIntakeStream } from '../intake/handler'
-import { type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
+import { JobType, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
+import {
+  buildRetrospectiveJobInput,
+  findActiveRetrospective,
+  summarizeRetrospective,
+  type RetrospectiveRequest,
+} from '../jobs/retrospective'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata, BUILTIN_PLUGIN_IDS_BY_KIND } from '../plugins/builtin'
@@ -1530,6 +1536,53 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
       res.json(job)
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // ── Retrospectives ──────────────────────────────────────────────────────
+  //
+  // A retrospective is an ordinary Job (type `retrospective`), so status,
+  // phases, log streaming, and approval all reuse the `/jobs/*` surface.
+  // These two endpoints exist only to own the dispatch shape — see
+  // `jobs/retrospective.ts` for why the flags matter — and to serve the
+  // history list with findings already parsed out of the artefacts.
+
+  app.post('/retrospectives', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as RetrospectiveRequest
+
+      const active = findActiveRetrospective(await stateBackend.listJobs())
+      if (active) {
+        res.status(409).json({
+          error: 'retrospective_in_progress',
+          message: `Retrospective ${active.id} is still running (${active.status}). Finish or cancel it first.`,
+          jobId: active.id,
+        })
+        return
+      }
+
+      const job = await dispatcher.dispatch(buildRetrospectiveJobInput(body))
+      res.status(201).json({
+        jobId: job.id,
+        status: job.status,
+        streamUrl: `/jobs/${job.id}/stream`,
+      })
+    } catch (err) {
+      logger.error({ err }, 'Retrospective dispatch failed')
+      res.status(400).json({ error: (err as Error).message })
+    }
+  })
+
+  app.get('/retrospectives', async (_req: Request, res: Response) => {
+    try {
+      const jobs = await stateBackend.listJobsByType(JobType.Retrospective)
+      const summaries = jobs
+        .slice()
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .map(summarizeRetrospective)
+      res.json(summaries)
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
     }

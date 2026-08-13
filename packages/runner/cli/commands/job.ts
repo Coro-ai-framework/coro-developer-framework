@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 import { apiPost, baseUrl, die } from '../http'
-import { connectSse } from '../sse-client'
+import { streamJobLogs } from '../job-stream'
 
 const IMPLEMENTATION_WORKFLOW_PATH = 'workflows/job/workflow.md'
 
@@ -78,27 +78,6 @@ export const jobCommand = new Command('job')
 
     if (opts.stream) {
       console.log('\x1b[90m─── Live log stream (Ctrl+C to detach) ───\x1b[0m')
-      streamLogs(res.data.jobId)
+      streamJobLogs(res.data.jobId)
     }
   })
-
-function streamLogs(jobId: string): void {
-  const sse = connectSse({
-    url: `${baseUrl()}/jobs/${jobId}/stream`,
-    onMessage: (data) => console.log(data),
-    onError: (err) => {
-      console.error(`\x1b[31mStream error:\x1b[0m ${err.message}`)
-      process.exit(1)
-    },
-    onClose: () => {
-      console.log('\n\x1b[90m─── Stream ended ───\x1b[0m')
-      process.exit(0)
-    },
-  })
-
-  process.on('SIGINT', () => {
-    sse.close()
-    console.log('\n\x1b[90mDetached from stream. Job continues running on the host.\x1b[0m')
-    process.exit(0)
-  })
-}

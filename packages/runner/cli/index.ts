@@ -13,6 +13,7 @@ import { initCommand } from './commands/init'
 import { runnerCommand, startCommand } from './commands/runner'
 import { campaignCommand } from './commands/campaign'
 import { pluginCommand } from './commands/plugin'
+import { retrospectiveCommand } from './commands/retrospective'
 
 const program = new Command()
 
@@ -42,6 +43,7 @@ program.addCommand(initCommand)
 program.addCommand(runnerCommand)
 program.addCommand(campaignCommand)
 program.addCommand(pluginCommand)
+program.addCommand(retrospectiveCommand)
 
 // Desktop shell spawns the runner via ELECTRON_RUN_AS_NODE (argv[0] is the Electron
 // binary, not "node"). Tell Commander to always strip the executable + script path.

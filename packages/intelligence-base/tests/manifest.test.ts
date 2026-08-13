@@ -62,6 +62,7 @@ describe('@coro-ai/intelligence-base manifest', () => {
         'planner.md',
         'pr-reviewer.md',
         'qa.md',
+        'retrospective-analyst.md',
         'spec-writer.md',
       ])
     })
@@ -71,9 +72,10 @@ describe('@coro-ai/intelligence-base manifest', () => {
         .readdirSync(path.join(layerRoot, 'workflows'), { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => e.name)
-      expect(workflows).toEqual(expect.arrayContaining(['job', 'self-update']))
+      expect(workflows).toEqual(expect.arrayContaining(['job', 'self-update', 'retrospective']))
       expect(fs.existsSync(path.join(layerRoot, 'workflows/job/workflow.md'))).toBe(true)
       expect(fs.existsSync(path.join(layerRoot, 'workflows/self-update/workflow.md'))).toBe(true)
+      expect(fs.existsSync(path.join(layerRoot, 'workflows/retrospective/workflow.md'))).toBe(true)
     })
 
     it('ships the bundled skills', () => {
@@ -103,6 +105,7 @@ describe('@coro-ai/intelligence-base manifest', () => {
         'observability-additions',
         'python-conventions',
         'register-convention',
+        'retrospective-analysis',
         'ruby-conventions',
         'rust-conventions',
         'sandbox-recovery',

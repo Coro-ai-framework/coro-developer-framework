@@ -16,6 +16,13 @@
 export enum JobType {
   Job        = 'job',
   SelfUpdate = 'self-update',
+  /**
+   * Cross-job self-analysis run. Reads the install's own job history,
+   * mines it for systemic agent struggles, and ships the findings as
+   * intelligence proposals or upstream contributions. Dispatched from
+   * the dashboard's retrospective page, never from a webhook.
+   */
+  Retrospective = 'retrospective',
 }
 
 // ── Well-known statuses ──────────────────────────────────────────────────────
@@ -521,7 +528,7 @@ export interface WorkflowSwitchEntry {
 // ── Job input ─────────────────────────────────────────────────────────────────
 
 export interface JobInput {
-  type?: 'job' | 'self-update'
+  type?: 'job' | 'self-update' | 'retrospective'
   workflowPath?: string
   triggerSource?: 'cli' | 'jira' | 'internal'
   params: Record<string, unknown>
@@ -608,3 +615,10 @@ export interface Proposal {
  * the workflow file itself through the layered intelligence resolver.
  */
 export const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
+
+/**
+ * Canonical path for the retrospective workflow. Dispatched by the
+ * dashboard's retrospective page; tenants override the workflow file
+ * itself through the layered intelligence resolver.
+ */
+export const RETROSPECTIVE_WORKFLOW_PATH = 'workflows/retrospective/workflow.md'

@@ -67,7 +67,7 @@ export const JobCreateBodySchema = z
     jiraTicketId: z.string().optional(),
     interactive: z.boolean().optional(),
     params: z.record(z.string(), z.unknown()).optional(),
-    type: z.enum(['job', 'campaign', 'self-update']).optional(),
+    type: z.enum(['job', 'campaign', 'self-update', 'retrospective']).optional(),
   })
   .passthrough()
 export type JobCreateBody = z.infer<typeof JobCreateBodySchema>
