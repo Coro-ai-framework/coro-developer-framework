@@ -43,7 +43,11 @@ vi.mock('../../src/intelligence/writer', async importOriginal => {
   }
 })
 
+/** Stands in for `Dispatcher.dispatch`, wired through `ToolContext`. */
+const dispatchJob = vi.fn()
+
 const {
+  dispatchImprovementJob,
   fingerprintFinding,
   normalizeUpstreamFiles,
   upstreamCommentIssue,
@@ -76,6 +80,7 @@ function makeCtx(over: {
   job?: Record<string, unknown>
   upstream?: Partial<typeof UPSTREAM_SETTINGS> | undefined
   jobs?: Job[]
+  dispatchJob?: ToolContext['dispatchJob'] | null
 } = {}): ToolContext {
   const job = makeMockJob({
     id: 'retro-1',
@@ -101,6 +106,7 @@ function makeCtx(over: {
   return makeMockToolContext({
     job,
     stateBackend,
+    ...(over.dispatchJob === null ? {} : { dispatchJob: over.dispatchJob ?? dispatchJob }),
     settings: {
       paths: { workingDir: '/tmp/work', coroIntelligenceDir: '/tmp/intel' },
       bitbucket: { workspace: 'acme' },
@@ -140,6 +146,7 @@ beforeEach(() => {
     remoteUrl: 'https://github.com/contributor/coro.git',
   })
   writer.commitAndPush.mockResolvedValue(undefined)
+  dispatchJob.mockResolvedValue({ id: 'coro-child-1' })
 })
 
 describe('fingerprintFinding', () => {
@@ -389,5 +396,93 @@ describe('upstreamOpenIntelligencePr', () => {
 
     expect(writer.prepareUpstreamWriter).not.toHaveBeenCalled()
     expect(gh.ensureFork).not.toHaveBeenCalled()
+  })
+})
+
+describe('dispatchImprovementJob', () => {
+  const args = {
+    issueNumber: 42,
+    title: 'Phase retry loses the corrective prompt',
+    description: 'The corrective prompt is dropped on retry; see packages/runner/src/jobs/runner.ts.',
+    findingId: 'finding-3',
+  }
+
+  it('dispatches a child job aimed at upstream from the fork', async () => {
+    const ctx = makeCtx()
+    const result = await dispatchImprovementJob(args, ctx)
+
+    const input = dispatchJob.mock.calls[0][0]
+    expect(input).toMatchObject({
+      type: 'job',
+      workflowPath: 'workflows/oss-contribution/workflow.md',
+      triggerSource: 'internal',
+    })
+    // The clone target is the fork; the PR target is upstream. Swapping
+    // these produces a PR nobody upstream ever sees.
+    expect(input.params).toMatchObject({
+      repo: 'contributor/coro',
+      repoSlug: 'contributor/coro',
+      upstreamRepo: 'coro-ai-framework/coro',
+      prSourceOwner: 'contributor',
+      prTargetBranch: 'main',
+      upstreamIssueNumber: 42,
+      retrospectiveJobId: 'retro-1',
+      retrospectiveFindingId: 'finding-3',
+      epicAllowed: false,
+      reviewers: [],
+    })
+
+    expect(result).toMatchObject({
+      childJobId: 'coro-child-1',
+      forkSlug: 'contributor/coro',
+      upstreamRepo: 'coro-ai-framework/coro',
+      codeJobsDispatchedThisRun: 1,
+    })
+  })
+
+  it('syncs the fork so the child branches from current upstream', async () => {
+    await dispatchImprovementJob(args, makeCtx())
+    expect(gh.ensureFork).toHaveBeenCalledWith('coro-ai-framework/coro', 'contributor')
+    expect(gh.syncFork).toHaveBeenCalledWith('contributor/coro', 'main')
+  })
+
+  it('refuses when the run was launched without the code destination', async () => {
+    const ctx = makeCtx({
+      job: { params: { tiers: { tenant: true, upstreamIntelligence: true, upstreamCode: false } } },
+    })
+    await expect(dispatchImprovementJob(args, ctx)).rejects.toThrow(/upstreamCode/)
+    expect(dispatchJob).not.toHaveBeenCalled()
+  })
+
+  it('tells the agent the issue is still the outcome when no dispatcher exists', async () => {
+    const ctx = makeCtx({ dispatchJob: null })
+    await expect(dispatchImprovementJob(args, ctx)).rejects.toThrow(/cannot start jobs/)
+  })
+
+  it('requires the issue and a briefing the child can act on', async () => {
+    await expect(dispatchImprovementJob({ ...args, issueNumber: 0 }, makeCtx()))
+      .rejects.toThrow(/requires the `issueNumber`/)
+    await expect(dispatchImprovementJob({ ...args, description: '' }, makeCtx()))
+      .rejects.toThrow(/requires a description/)
+    await expect(dispatchImprovementJob({ ...args, findingId: '' }, makeCtx()))
+      .rejects.toThrow(/requires the `findingId`/)
+    expect(dispatchJob).not.toHaveBeenCalled()
+  })
+
+  it('refuses a briefing that names this install, before dispatching', async () => {
+    const jobs = [makeMockJob({ id: 'job-1', params: { repoSlug: 'billing-api' } }) as unknown as Job]
+    await expect(dispatchImprovementJob(
+      { ...args, description: 'Reproduced on billing-api.' },
+      makeCtx({ jobs }),
+    )).rejects.toThrow(/still contains identifiers/)
+    expect(dispatchJob).not.toHaveBeenCalled()
+  })
+
+  it('stops at the configured per-run cap', async () => {
+    const ctx = makeCtx()
+    await dispatchImprovementJob(args, ctx)
+    await expect(dispatchImprovementJob({ ...args, findingId: 'finding-4' }, ctx))
+      .rejects.toThrow(/configured limit \(1\)/)
+    expect(dispatchJob).toHaveBeenCalledTimes(1)
   })
 })

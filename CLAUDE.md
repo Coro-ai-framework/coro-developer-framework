@@ -145,7 +145,8 @@ Every job carries a `type` and a `workflowPath`. The runner uses these — not h
 | `coro job ...` (CLI) | `job` | `workflows/job/workflow.md` |
 | Jira ticket assigned to agent | `job` | `workflows/job/workflow.md` |
 | Agent writes to `memory/`, `agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
-| **Run Retrospective** (dashboard) | `retrospective` | `workflows/retrospective/workflow.md` |
+| **Run Retrospective** (dashboard / `coro retrospective run`) | `retrospective` | `workflows/retrospective/workflow.md` |
+| `dispatch_improvement_job` (from a retrospective) | `job` | `workflows/oss-contribution/workflow.md` |
 
 ---
 
@@ -186,6 +187,7 @@ The system is fully language-agnostic. No language-specific defaults are hardcod
 | `agents/campaign-planner.md` | campaign-planning | campaign |
 | `agents/campaign-evaluator.md` | aggregation | campaign |
 | `agents/retrospective-analyst.md` | analysis + shipping (cross-job self-analysis) | retrospective |
+| `agents/oss-contributor.md` | contribution (opens the fork → upstream PR) | oss-contribution |
 
 Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go, .NET, and TypeScript projects — the invoked skills change, not the agent.
 
@@ -293,9 +295,9 @@ and `runner-code` belong to the open-source repository.
 
 **Upstream contribution** (`tools/upstream.ts`) is how the latter two
 leave the machine: `upstream_search` → `upstream_create_issue` or
-`upstream_comment_issue` → `upstream_open_intelligence_pr`. It is off
-unless the install sets `upstream.repoUrl` in `~/.coro/config.json`, and
-four constraints bound it:
+`upstream_comment_issue` → `upstream_open_intelligence_pr` (prose) or
+`dispatch_improvement_job` (code). It is off unless the install sets
+`upstream.repoUrl` in `~/.coro/config.json`, and four constraints bound it:
 
 - **Fingerprint dedup.** `fingerprintFinding()` hashes the finding's
   category, target paths, and normalised title, and the hash is embedded
@@ -317,8 +319,21 @@ fast-forwards it to the upstream default branch, and the shared writer
 (`intelligence/writer.ts`) pushes a `coro/retro/*` branch that
 `createPr({ sourceOwner })` turns into a cross-repository PR. Paths are
 restricted to `packages/intelligence-base/layer/**.md` — prose a
-maintainer can review as a diff. A `runner-code` finding stops at the
-issue, because a code change needs a run that builds and tests it.
+maintainer can review as a diff.
+
+**A `runner-code` finding gets delegated, not written.** The retrospective
+has no build or test loop and its context is aggregated metrics, so
+`dispatch_improvement_job` hands the finding to an ordinary implementation
+job on `workflows/oss-contribution/workflow.md` (planner → coder →
+`agents/oss-contributor.md`). That job clones the **fork**
+(`params.repo`), opens its PR against **upstream** (`params.upstreamRepo`
++ `params.prSourceOwner`), and ends there — nobody here can merge it. The
+shape lives in `jobs/oss-contribution.ts`; dispatch reaches the tool
+through `ToolContext.dispatchJob`, a single-method capability the
+`Dispatcher` passes into `runJob` rather than handing tools the dispatcher
+itself. The child is capped by `upstream.maxCodeJobsPerRun`, cannot promote
+itself into a campaign (`epicAllowed: false`), and is linked from the
+finding's outcome as `childJobId`. The retrospective does not wait for it.
 
 **Surfaces.** Three runner endpoints back both triggers —
 `POST /retrospectives` (dispatch; 409 while one is already running),

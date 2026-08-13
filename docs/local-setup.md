@@ -251,11 +251,21 @@ fork is created and fast-forwarded automatically; branches are pushed to it
 using your ambient git credentials, so make sure `git push` to your own
 GitHub account works from the shell running the runner.
 
-Two things are worth knowing before you enable it:
+With `upstream-code` enabled, a finding that needs an actual code change is
+handed to a separate implementation job rather than being written by the
+retrospective. That job clones your fork, implements and tests the change,
+and opens a pull request against the Coro repository; it appears in your
+job list like any other run, and its PR is linked from the finding. Cap how
+many of these a single run may start with `maxCodeJobsPerRun`.
+
+Three things are worth knowing before you enable it:
 
 - **Nothing is published without both an approval and a tier.** You choose
   per run how far findings may travel (`--tiers tenant,upstream-intelligence,upstream-code`),
   and the approval checkpoint still applies.
+- **Contribution jobs are autonomous once dispatched.** They pause for you
+  before their PR becomes public (the coding checkpoint), but the
+  retrospective that started them finishes without waiting.
 - **Identifiers are aliased, and the check fails closed.** Repo slugs,
   org names, ticket keys, and e-mail addresses are replaced with stable
   aliases (`repo-A`, `ticket-ref-1`) in everything the analyst reads, and

@@ -622,3 +622,11 @@ export const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
  * itself through the layered intelligence resolver.
  */
 export const RETROSPECTIVE_WORKFLOW_PATH = 'workflows/retrospective/workflow.md'
+
+/**
+ * Canonical path for the open-source contribution workflow — an ordinary
+ * implementation job (`type: 'job'`) that works on a fork and opens its PR
+ * against the upstream repository. Dispatched by a retrospective for a
+ * finding that needs a code change rather than a wording change.
+ */
+export const OSS_CONTRIBUTION_WORKFLOW_PATH = 'workflows/oss-contribution/workflow.md'

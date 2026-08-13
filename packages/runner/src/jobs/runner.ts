@@ -37,7 +37,7 @@ import {
 } from '../prompt/builder'
 import { createCoroMcpServer } from '../mcp-server'
 import { resolveModelAlias } from './phase-assignment'
-import { ToolContext, PhaseSignals } from '../tools/types'
+import { ToolContext, PhaseSignals, type DispatchJob } from '../tools/types'
 import {
   loadWorkflowConfigFromRoots,
   getNextPhase as wfGetNextPhase,
@@ -146,6 +146,19 @@ export interface RunJobOptions {
    * When set, skips `loadWorkflowConfig` from disk. Pass `null` for jobs with no workflow file.
    */
   workflowConfigOverride?: WorkflowConfig | null
+  /**
+   * Create and start another job from inside this one.
+   *
+   * Passed as a function rather than the `Dispatcher` itself: the runner
+   * is what the dispatcher calls, so holding the object would close a
+   * dependency cycle, and a single-method capability is easier to reason
+   * about — a tool that receives this can start a job and nothing else.
+   *
+   * Only the retrospective's `dispatch_improvement_job` uses it today,
+   * and that tool is type-gated and capped. Omitted in tests, where the
+   * dependent tool then refuses with a clear message.
+   */
+  dispatchJob?: DispatchJob
   /**
    * Called BEFORE the phase executor is invoked, with the
    * {@link DeveloperInputChannel} the executor will consume. The
@@ -331,6 +344,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     plugins: ctx.plugins,
     logger,
     declaredPhases: workflowConfig?.phases.map(p => p.name),
+    ...(options?.dispatchJob ? { dispatchJob: options.dispatchJob } : {}),
   }
 
   const signals: PhaseSignals = {}

@@ -28,10 +28,11 @@
 
 import { createHash } from 'node:crypto'
 
-import { GitHubClient, type IssueSearchHit } from '../clients/github'
+import { GitHubClient, type IssueSearchHit, type RepoInfo } from '../clients/github'
 import { defaultWriterCacheRoot } from '../config/local-config'
 import type { UpstreamSettings } from '../config/settings'
 import { commitAndPush, parseRepoUrl, prepareUpstreamWriter } from '../intelligence/writer'
+import { buildOssContributionJobInput } from '../jobs/oss-contribution'
 import { retrospectiveTiers, type RetrospectiveTiers } from '../jobs/retrospective'
 import { assertRetrospectiveJob } from './retrospective'
 import { buildSanitizer } from './sanitize'
@@ -45,8 +46,9 @@ export const UPSTREAM_BRANCH_PREFIX = 'coro/retro/'
 /** Only the base intelligence layer is contributable through this path. */
 export const UPSTREAM_INTELLIGENCE_PREFIX = 'packages/intelligence-base/layer/'
 
-/** Counter param backing `upstream.maxIssuesPerRun`. */
+/** Counter params backing `upstream.maxIssuesPerRun` / `maxCodeJobsPerRun`. */
 const ISSUES_OPENED_PARAM = 'upstreamIssuesOpened'
+const CODE_JOBS_PARAM = 'upstreamCodeJobsDispatched'
 
 // ── Fingerprints ─────────────────────────────────────────────────────────────
 
@@ -399,6 +401,35 @@ export async function upstreamCommentIssue(
   return { issueNumber: args.number, url: issue.url }
 }
 
+// ── Fork preparation ─────────────────────────────────────────────────────────
+
+/**
+ * Make sure the contributor's fork exists and is level with upstream, and
+ * report the upstream default branch every caller needs as its PR base.
+ *
+ * Syncing matters more than it looks: a fork made months ago branches off
+ * stale code, so both the markdown PR and the code job would be written
+ * against a tree the maintainers have moved past. A fork that has diverged
+ * cannot be fast-forwarded — that is reported, not fatal, because the PR
+ * still diffs correctly and a conflict is a reviewer's problem, not a
+ * reason to abandon the finding.
+ */
+async function prepareFork(
+  runtime: UpstreamRuntime,
+  ctx: ToolContext,
+): Promise<{ fork: RepoInfo; upstreamRepo: RepoInfo; forkInSync: boolean }> {
+  const fork = await runtime.client.ensureFork(runtime.upstreamSlug, runtime.forkOwner)
+  const upstreamRepo = await runtime.client.getRepo(runtime.upstreamSlug)
+  const forkInSync = await runtime.client.syncFork(fork.full_name, upstreamRepo.default_branch)
+  if (!forkInSync) {
+    ctx.logger.warn(
+      { fork: fork.full_name, branch: upstreamRepo.default_branch },
+      'Fork could not be fast-forwarded to upstream; work will be based on the fork as-is',
+    )
+  }
+  return { fork, upstreamRepo, forkInSync }
+}
+
 // ── upstream_open_intelligence_pr ────────────────────────────────────────────
 
 export interface UpstreamPrFile {
@@ -459,17 +490,7 @@ export async function upstreamOpenIntelligencePr(
     ...files.map(file => ({ label: file.path, text: file.content })),
   ])
 
-  // Ensure the fork exists, then fast-forward it so the PR is based on
-  // current upstream rather than on whenever the fork was made.
-  const fork = await runtime.client.ensureFork(runtime.upstreamSlug, runtime.forkOwner)
-  const upstreamRepo = await runtime.client.getRepo(runtime.upstreamSlug)
-  const forkInSync = await runtime.client.syncFork(fork.full_name, upstreamRepo.default_branch)
-  if (!forkInSync) {
-    ctx.logger.warn(
-      { fork: fork.full_name, branch: upstreamRepo.default_branch },
-      'Fork could not be fast-forwarded to upstream; PR will be based on the fork as-is',
-    )
-  }
+  const { fork, upstreamRepo, forkInSync } = await prepareFork(runtime, ctx)
 
   const writer = await prepareUpstreamWriter({
     url: fork.clone_url,
@@ -552,6 +573,123 @@ function buildPrBody(body: string, issueNumber: number, files: ReadonlyArray<Ups
     'Evidence is in the linked issue; identifiers are aliased._',
   ]
   return lines.join('\n')
+}
+
+// ── dispatch_improvement_job ─────────────────────────────────────────────────
+
+export interface DispatchImprovementJobArgs {
+  /** Upstream issue the contribution fixes. */
+  issueNumber: number
+  /** One line, problem-first. Becomes the child job's title and its PR title. */
+  title: string
+  /** What to change and why. Reaches a public PR, so it is leak-checked. */
+  description: string
+  /** Finding this fixes, for reconciling outcomes later. */
+  findingId: string
+}
+
+export interface DispatchImprovementJobResult {
+  childJobId: string
+  forkSlug: string
+  upstreamRepo: string
+  baseBranch: string
+  issueUrl: string
+  codeJobsDispatchedThisRun: number
+  forkInSync: boolean
+}
+
+/**
+ * Hand a `runner-code` finding to an implementation job.
+ *
+ * The retrospective deliberately does not write code. Its context is a
+ * pile of aggregated metrics from other jobs, which is the wrong context
+ * for editing a codebase, and it has no build or test loop to check
+ * itself with. An implementation job has both, so this tool describes the
+ * work and lets that job do it — on a fork, with the PR aimed upstream.
+ *
+ * The child inherits nothing about this install: it is given the upstream
+ * issue and a sanitised description, and everything it publishes flows
+ * from those.
+ */
+export async function dispatchImprovementJob(
+  args: DispatchImprovementJobArgs,
+  ctx: ToolContext,
+): Promise<DispatchImprovementJobResult> {
+  const runtime = await resolveUpstreamRuntime(ctx, 'dispatch_improvement_job', 'upstreamCode')
+
+  const dispatch = ctx.dispatchJob
+  if (!dispatch) {
+    throw new Error(
+      'dispatch_improvement_job cannot start jobs in this runtime (no dispatcher available). ' +
+      'Record the finding as not-shipped with reason "job dispatch unavailable" — the upstream ' +
+      'issue you filed is still the useful outcome.',
+    )
+  }
+
+  const title = args.title?.trim()
+  const description = args.description?.trim()
+  const findingId = args.findingId?.trim()
+  if (!title) throw new Error('dispatch_improvement_job requires a title.')
+  if (!description) {
+    throw new Error(
+      'dispatch_improvement_job requires a description: the child job starts with no knowledge ' +
+      'of your analysis, so state the behaviour to change, the files involved, and how to verify it.',
+    )
+  }
+  if (!findingId) {
+    throw new Error('dispatch_improvement_job requires the `findingId` this job fixes.')
+  }
+  if (!Number.isInteger(args.issueNumber) || args.issueNumber <= 0) {
+    throw new Error(
+      'dispatch_improvement_job requires the `issueNumber` this job fixes. File the issue first ' +
+      'with upstream_create_issue — a code PR with no report behind it is unreviewable.',
+    )
+  }
+
+  await assertPublishable(ctx, 'dispatch_improvement_job', [
+    { label: 'title', text: title },
+    { label: 'description', text: description },
+  ])
+
+  const { fork, upstreamRepo, forkInSync } = await prepareFork(runtime, ctx)
+  const issue = await runtime.client.getIssue(runtime.upstreamSlug, args.issueNumber)
+
+  const dispatched = await consumeBudget(
+    ctx,
+    CODE_JOBS_PARAM,
+    runtime.config.maxCodeJobsPerRun,
+    'dispatch_improvement_job',
+    'dispatched an upstream code job',
+  )
+
+  const child = await dispatch(buildOssContributionJobInput({
+    upstreamSlug: runtime.upstreamSlug,
+    forkSlug: fork.full_name,
+    forkOwner: runtime.forkOwner,
+    baseBranch: upstreamRepo.default_branch,
+    issueNumber: args.issueNumber,
+    issueUrl: issue.url,
+    title,
+    description,
+    retrospectiveJobId: ctx.job.id,
+    findingId,
+  }))
+
+  await ctx.stateBackend.appendLog(
+    ctx.job.id,
+    `[upstream] Dispatched contribution job ${child.id} for issue #${args.issueNumber} ` +
+    `on ${runtime.upstreamSlug} (fork ${fork.full_name})`,
+  )
+
+  return {
+    childJobId: child.id,
+    forkSlug: fork.full_name,
+    upstreamRepo: runtime.upstreamSlug,
+    baseBranch: upstreamRepo.default_branch,
+    issueUrl: issue.url,
+    codeJobsDispatchedThisRun: dispatched,
+    forkInSync,
+  }
 }
 
 function toSlug(value: string): string {

@@ -474,30 +474,8 @@ export class GitHubClient {
     }))
   }
 
-  /**
-   * Coerce any of these input shapes into an `{ owner, repo }` pair:
-   *   - `repo`                              → configured owner
-   *   - `owner/repo`                        → that owner (may differ from config)
-   *   - `https://github.com/owner/repo`     → that owner
-   *   - `https://github.com/owner/repo.git` → that owner
-   *   - `git@github.com:owner/repo.git`     → that owner
-   *
-   * An explicit owner always wins over the configured one so cross-org
-   * repositories address correctly instead of being silently rewritten to
-   * the configured org.
-   */
   private parseRepo(repoSlug: string): { owner: string; repo: string } {
-    let s = String(repoSlug ?? '').trim()
-    // Strip protocol + host (https://…, git@github.com:).
-    s = s.replace(/^https?:\/\/[^/]+\//, '')
-    s = s.replace(/^git@[^:]+:/, '')
-    const parts = s.split('/').filter(Boolean)
-    if (parts.length >= 2) {
-      // First two segments, so trailing path noise on a copied browser URL
-      // (…/owner/repo/pull/5) resolves to the repo rather than to `pull/5`.
-      return { owner: parts[0]!, repo: parts[1]!.replace(/\.git$/, '') }
-    }
-    return { owner: this.owner, repo: (parts[0] ?? '').replace(/\.git$/, '') }
+    return parseGitHubRepo(repoSlug, this.owner)
   }
 
   // ── Internal helpers ────────────────────────────────────────────────────────
@@ -643,6 +621,38 @@ interface GhReviewComment {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Coerce any of these input shapes into an `{ owner, repo }` pair:
+ *   - `repo`                              → `defaultOwner`
+ *   - `owner/repo`                        → that owner (may differ from config)
+ *   - `https://github.com/owner/repo`     → that owner
+ *   - `https://github.com/owner/repo.git` → that owner
+ *   - `git@github.com:owner/repo.git`     → that owner
+ *
+ * An explicit owner always wins over the configured one so cross-org
+ * repositories address correctly instead of being silently rewritten to
+ * the configured org. Exported because clone URLs are built outside this
+ * client (the GitHub plugin's `cloneInfo`) and the two must agree — a job
+ * working on a fork passes `owner/repo` and would otherwise clone
+ * `github.com/<configured-owner>/<owner>/<repo>.git`.
+ */
+export function parseGitHubRepo(
+  repoSlug: string,
+  defaultOwner: string,
+): { owner: string; repo: string } {
+  let s = String(repoSlug ?? '').trim()
+  // Strip protocol + host (https://…, git@github.com:).
+  s = s.replace(/^https?:\/\/[^/]+\//, '')
+  s = s.replace(/^git@[^:]+:/, '')
+  const parts = s.split('/').filter(Boolean)
+  if (parts.length >= 2) {
+    // First two segments, so trailing path noise on a copied browser URL
+    // (…/owner/repo/pull/5) resolves to the repo rather than to `pull/5`.
+    return { owner: parts[0]!, repo: parts[1]!.replace(/\.git$/, '') }
+  }
+  return { owner: defaultOwner, repo: (parts[0] ?? '').replace(/\.git$/, '') }
+}
 
 function normalizeGhPr(ghPr: GhPullRequest): PullRequest {
   let state: PullRequest['state'] = 'OPEN'

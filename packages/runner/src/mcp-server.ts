@@ -94,6 +94,11 @@ export function createCoroMcpServer(
           title: z.string(),
           description: z.string().min(1).describe('PR body (required). Include ## What and implementation details.'),
           sourceBranch: z.string(),
+          sourceOwner: z.string().optional().describe(
+            'Account that owns the branch, when it lives in a fork rather than in `repo`. ' +
+            'Only for open-source contributions, where you push to your fork and target the ' +
+            'upstream repository — set `repo` to upstream and this to the fork owner.',
+          ),
           targetBranch: z.string().optional(),
           reviewers: z.array(z.string()).optional(),
         },
@@ -509,6 +514,21 @@ export function createCoroMcpServer(
             .describe('Every file this PR changes. One call is one PR — bundle them.'),
         },
         h.upstream_open_intelligence_pr,
+      ),
+
+      tool(
+        'dispatch_improvement_job',
+        'Hand a code-level finding to an implementation job that fixes it upstream. Use this for `runner-code` findings, after filing the issue: the job clones a fork of the Coro repository, implements and tests the change, and opens a pull request against upstream linking your issue. Do not attempt the code change yourself — you have no build or test loop, and your context is aggregated metrics rather than the codebase. The description is the job\'s only briefing, so state the behaviour to change, the files involved, and how to verify the fix. Capped per run. Retrospective jobs only.',
+        {
+          issueNumber: z.number().describe('Upstream issue this job fixes. File it first.'),
+          title: z.string().describe('One line, problem-first. Becomes the PR title. No identifiers.'),
+          description: z.string().describe(
+            'Full briefing for an agent that has never seen your analysis: observed behaviour, ' +
+            'suspected cause, files to look at, and how to verify. Aliases only.',
+          ),
+          findingId: z.string().describe('The finding id this job fixes, e.g. "finding-3".'),
+        },
+        h.dispatch_improvement_job,
       ),
 
       // ── Self-improvement ──────────────────────────────────────────────────

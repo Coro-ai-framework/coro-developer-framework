@@ -533,7 +533,7 @@ business-specific capabilities under the `mcp__coro__` prefix:
 - **Retrospective** (only for `retrospective` jobs) — `list_jobs`,
   `get_job_report`, `get_job_log_excerpts`, `upstream_search`,
   `upstream_create_issue`, `upstream_comment_issue`,
-  `upstream_open_intelligence_pr`
+  `upstream_open_intelligence_pr`, `dispatch_improvement_job`
 
 These tools are domain-aware but workflow-agnostic. The workflow and
 agent markdown decide when to call them.

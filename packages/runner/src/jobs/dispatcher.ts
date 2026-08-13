@@ -1503,6 +1503,7 @@ export class Dispatcher {
             this.activeInputQueues.delete(id)
           },
           onRateLimitPark: (id, resumeAt) => this.rateLimitScheduler.schedule(id, resumeAt),
+          dispatchJob: input => this.dispatch(input),
         })
       })
       .catch(err => {

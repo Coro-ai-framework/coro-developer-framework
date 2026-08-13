@@ -42,6 +42,7 @@ context to know which procedure below applies.
 | `upstream_create_issue` | File a new upstream issue with the sanitised evidence. |
 | `upstream_comment_issue` | Add your evidence to an existing upstream report. |
 | `upstream_open_intelligence_pr` | Open an upstream PR changing base-intelligence markdown. |
+| `dispatch_improvement_job` | Hand a code-level finding to an implementation job that fixes it upstream. |
 | `log` | Narrate what you are finding as you go. |
 | `escalate` | Stop when the shipping phase was reached without approval. |
 
@@ -221,9 +222,36 @@ file first (it lives under `_intelligence/`, and the same content is in
 the repo) and supply the **complete** new content — you are replacing
 the file, not patching it. One call ships one PR; bundle every file.
 
-For `runner-code` findings, stop after the issue. A code change has to
-be built and tested, which is not something this phase does; the issue
-is the deliverable and the outcome is `destination: "upstream-issue"`.
+**4. Fix, when the fix is code.** For `runner-code` findings, call
+`dispatch_improvement_job({ issueNumber, title, description, findingId })`.
+That starts a separate implementation job which clones a fork of the Coro
+repository, writes the change, builds and tests it, and opens the upstream
+PR against your issue.
+
+Do not attempt the code change here. You have no build or test loop, and
+your context is a pile of aggregated metrics rather than the codebase —
+the two worst conditions under which to edit a shared repository.
+
+The `description` is the child job's **only** briefing; it inherits none
+of your analysis. Write it for an agent that has never seen this
+retrospective:
+
+- the behaviour to change, in terms of what the runner does today
+- the evidence, as counts and numbers rather than job ids
+- the files and functions you believe are responsible, and why
+- how to verify the fix — the test that should exist and fail today
+- what is explicitly out of scope, so a small fix stays small
+
+Record the outcome as `destination: "upstream-code"` with the issue URL
+and the returned `childJobId`. The child job is autonomous from that
+point: it appears on the dashboard as an ordinary job, and its PR is
+reviewed by upstream maintainers. Your retrospective does not wait for
+it, and its result does not change your report.
+
+If the tool refuses — no upstream configured, `upstreamCode` not enabled
+for this run, cap reached, or no dispatcher available — the issue you
+filed is still the useful outcome. Record `destination: "upstream-issue"`
+with the reason and move on.
 
 **When a step refuses** — no upstream configured, destination disabled
 for this run, per-run cap reached — that is a final answer for this
@@ -249,7 +277,7 @@ post_artifact({
     outcomes: [
       { findingId: "finding-1", destination: "tenant", prUrl: "https://..." },
       { findingId: "finding-2", destination: "upstream-intelligence", issueUrl: "https://...", prUrl: "https://..." },
-      { findingId: "finding-3", destination: "upstream-issue", issueUrl: "https://..." },
+      { findingId: "finding-3", destination: "upstream-code", issueUrl: "https://...", childJobId: "coro-job-..." },
       { findingId: "finding-4", destination: "none", reason: "no upstream destination configured" }
     ]
   }

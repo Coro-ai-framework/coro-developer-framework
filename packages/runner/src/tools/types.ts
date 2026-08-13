@@ -9,8 +9,14 @@ import { Settings } from '../config/settings'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
 import type { StateBackend } from '../state/backend'
-import { Job } from '@coro-ai/cloud-protocol'
+import { Job, type JobInput } from '@coro-ai/cloud-protocol'
 import type { PhaseConfig } from '../workflow-parser'
+
+/**
+ * Create and start a job. Supplied by the dispatcher through
+ * `RunJobOptions.dispatchJob`; see {@link ToolContext.dispatchJob}.
+ */
+export type DispatchJob = (input: JobInput) => Promise<Job>
 
 // ── Tool execution context ────────────────────────────────────────────────────
 //
@@ -47,6 +53,17 @@ export interface ToolContext {
    */
   plugins: PluginRegistry
   logger: Logger
+  /**
+   * Start another job from inside this one. Present only when the
+   * dispatcher supplied it (production runs); a tool that needs it must
+   * handle its absence rather than assume.
+   *
+   * Deliberately a single function instead of the `Dispatcher`: the only
+   * capability any tool has needed is "start this job", and widening it
+   * would put job cancellation and campaign coordination one property
+   * access away from the model.
+   */
+  dispatchJob?: DispatchJob
   /** Phase names from the active workflow; used to validate goto_phase targets. */
   declaredPhases?: string[]
   /**

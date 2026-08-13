@@ -13,6 +13,7 @@ import {
 } from './guardrails'
 import { loadLocalConfig } from './config/local-config'
 import type {
+  DispatchImprovementJobArgs,
   UpstreamCommentIssueArgs,
   UpstreamCreateIssueArgs,
   UpstreamOpenPrArgs,
@@ -282,6 +283,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     title: string
     description?: string
     sourceBranch: string
+    sourceOwner?: string
     targetBranch?: string
     reviewers?: string[]
   }) => {
@@ -312,7 +314,9 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
           repo: args.repo,
           title: args.title,
           ...(args.description ? { body: args.description } : {}),
-          head: args.sourceBranch,
+          // Cross-repository PRs are expressed as `owner:branch` in the
+          // GitHub API, and the upstream MCP tools follow that spelling.
+          head: args.sourceOwner ? `${args.sourceOwner}:${args.sourceBranch}` : args.sourceBranch,
           base: targetBranch,
           ...(reviewers.length ? { reviewers } : {}),
         },
@@ -323,6 +327,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       title: args.title,
       ...(args.description ? { description: args.description } : {}),
       sourceBranch: args.sourceBranch,
+      ...(args.sourceOwner ? { sourceOwner: args.sourceOwner } : {}),
       targetBranch,
       reviewers,
     })
@@ -1155,6 +1160,15 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       const { upstreamOpenIntelligencePr } = await import('./tools/upstream')
       try {
         return text(await upstreamOpenIntelligencePr(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    dispatch_improvement_job: async (args: DispatchImprovementJobArgs) => {
+      const { dispatchImprovementJob } = await import('./tools/upstream')
+      try {
+        return text(await dispatchImprovementJob(args, ctx))
       } catch (err) {
         return error((err as Error).message)
       }

@@ -319,6 +319,16 @@ export interface ScmCreatePrArgs {
   title: string
   description?: string
   sourceBranch: string
+  /**
+   * Account owning the branch, when it lives in a fork rather than in
+   * `repoSlug`. Set for open-source contributions, where the job can push
+   * to its fork but not to the repository it is targeting.
+   *
+   * Providers without a fork-PR concept should ignore it; a provider that
+   * silently opened the PR inside the fork instead would produce a PR
+   * nobody upstream ever sees.
+   */
+  sourceOwner?: string
   targetBranch?: string
   reviewers?: ReadonlyArray<string>
 }

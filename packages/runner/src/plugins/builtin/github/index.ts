@@ -28,7 +28,7 @@
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
-import { GitHubClient, type PrComment } from '../../../clients/github'
+import { GitHubClient, parseGitHubRepo, type PrComment } from '../../../clients/github'
 import type { ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
 import { externalIdString } from '../../refs'
 import type {
@@ -244,8 +244,11 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
   cloneInfo(args: { repo: string }): ScmCloneInfo {
     // GitHub PATs use `x-access-token` as the HTTPS basic-auth username.
     const token = encodeURIComponent(this.token)
+    // `repo` may carry its own owner (`someone/coro`) — an upstream
+    // contribution clones a fork that is not under the configured org.
+    const { owner, repo } = parseGitHubRepo(args.repo, this.owner)
     return {
-      url: `https://x-access-token:${token}@github.com/${this.owner}/${args.repo}.git`,
+      url: `https://x-access-token:${token}@github.com/${owner}/${repo}.git`,
       envForGit: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
     }
   }
@@ -294,6 +297,7 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
       title: args.title,
       ...(args.description !== undefined ? { description: args.description } : {}),
       sourceBranch: args.sourceBranch,
+      ...(args.sourceOwner !== undefined ? { sourceOwner: args.sourceOwner } : {}),
       ...(args.targetBranch !== undefined ? { targetBranch: args.targetBranch } : {}),
       ...(reviewers && reviewers.length > 0 ? { reviewerUsernames: reviewers } : {}),
     })
