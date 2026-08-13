@@ -215,6 +215,16 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
         ? `${draft.guardrailRules.filter(r => r.enabled).length} rule(s) active`
         : 'Disabled',
     },
+    contribution: {
+      // A repository URL is what switches contribution on; the fork owner
+      // and token fall back to the GitHub plugin's, so they are not part
+      // of the readiness signal.
+      status: draft.upstreamRepoUrl.trim() ? 'ok' : 'optional',
+      ...(draft.upstreamRepoUrl.trim() ? { label: 'Enabled' } : {}),
+      detail: draft.upstreamRepoUrl.trim()
+        ? 'Findings about Coro itself can be contributed upstream'
+        : 'Findings about Coro itself stay on this machine',
+    },
   }
 
   const missingRequired: SettingsSectionId[] = []

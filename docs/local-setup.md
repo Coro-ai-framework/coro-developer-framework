@@ -228,8 +228,9 @@ per finding — the run parks in `awaiting-developer-input` exactly like an
 interactive job.
 
 Findings whose fix belongs to Coro itself (its base intelligence layer, or
-runner code) can be contributed upstream. That is **off by default**; add
-an `upstream` block to opt in:
+runner code) can be contributed upstream. That is **off by default**. Turn
+it on in the dashboard under **Settings → Coro contribution**, or add an
+`upstream` block by hand:
 
 ```jsonc
 {
@@ -244,7 +245,14 @@ an `upstream` block to opt in:
 ```
 
 Equivalent env vars: `CORO_UPSTREAM_REPO_URL`, `CORO_UPSTREAM_FORK_OWNER`,
-`CORO_UPSTREAM_TOKEN`.
+`CORO_UPSTREAM_TOKEN`. Set by env, the Settings fields stay blank while
+contribution still shows as available — the runner reports what it
+resolved, not what is in the file.
+
+Until a destination is configured, the two contribution toggles on the
+retrospective launch form are disabled rather than merely documented as
+requiring config: dispatch refuses a run it cannot honour, so offering the
+choice would only fail later.
 
 The token needs `public_repo` scope (fork, push, open issues and PRs). The
 fork is created and fast-forwarded automatically; branches are pushed to it

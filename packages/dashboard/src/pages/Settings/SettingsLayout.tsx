@@ -33,6 +33,7 @@ import McpServersSection from './sections/McpServersSection'
 import PathsSection from './sections/PathsSection'
 import GuardrailsSection from './sections/GuardrailsSection'
 import GeneralSection from './sections/GeneralSection'
+import ContributionSection from './sections/ContributionSection'
 
 const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   general: GeneralSection,
@@ -43,6 +44,7 @@ const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   mcp: McpServersSection,
   paths: PathsSection,
   guardrails: GuardrailsSection,
+  contribution: ContributionSection,
 }
 
 interface SettingsLayoutProps {

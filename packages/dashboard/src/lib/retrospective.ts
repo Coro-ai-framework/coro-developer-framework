@@ -28,6 +28,12 @@ export interface TierMeta {
   key: TierKey
   label: string
   description: string
+  /**
+   * Needs a contribution destination in the runner's config. The launch
+   * form disables these when the runner reports none, because dispatch
+   * refuses the run outright rather than downgrading it.
+   */
+  requiresUpstream?: boolean
 }
 
 /**
@@ -44,18 +50,35 @@ export const TIER_META: ReadonlyArray<TierMeta> = [
   {
     key: 'upstreamIntelligence',
     label: 'Coro intelligence',
-    description:
-      'Open an issue and a markdown pull request against the Coro repository. ' +
-      'Requires an upstream destination in your config.',
+    description: 'Open an issue and a markdown pull request against the Coro repository.',
+    requiresUpstream: true,
   },
   {
     key: 'upstreamCode',
     label: 'Coro code',
-    description:
-      'Dispatch an implementation run that fixes runner code upstream. ' +
-      'Requires an upstream destination in your config.',
+    description: 'Dispatch an implementation run that fixes Coro\u2019s code and opens a pull request upstream.',
+    requiresUpstream: true,
   },
 ]
+
+/** Settings deep link for the config the upstream tiers need. */
+export const CONTRIBUTION_SETTINGS_PATH = '/settings#contribution'
+
+/**
+ * Tiers with their unconfigured destinations turned off.
+ *
+ * Used when the runner reports no contribution destination: the toggles
+ * are disabled, but state set before that answer arrived (or persisted by
+ * a future default) must not reach dispatch either.
+ */
+export function availableTiers(tiers: RetrospectiveTiers, upstreamConfigured: boolean): RetrospectiveTiers {
+  if (upstreamConfigured) return tiers
+  return {
+    ...tiers,
+    upstreamIntelligence: false,
+    upstreamCode: false,
+  }
+}
 
 interface CategoryMeta {
   label: string

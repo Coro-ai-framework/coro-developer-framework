@@ -3,6 +3,7 @@ import {
   Bot,
   FolderTree,
   GitBranch,
+  GitPullRequestArrow,
   Plug,
   Server,
   ShieldCheck,
@@ -79,6 +80,14 @@ export const SETTINGS_SECTIONS: SettingsSectionDescriptor[] = [
     label: 'Guardrails',
     description: 'Policies the runner enforces before agents open PRs or call tools.',
     icon: ShieldCheck,
+    required: false,
+  },
+  {
+    id: 'contribution',
+    group: 'extensions',
+    label: 'Coro contribution',
+    description: 'Optional. Lets a retrospective report defects it finds in Coro itself back to the Coro repository.',
+    icon: GitPullRequestArrow,
     required: false,
   },
   {

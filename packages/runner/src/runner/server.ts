@@ -27,6 +27,7 @@ import {
   defaultConfigPath,
   detectMode,
   resolveIntelligenceDir,
+  resolveUpstreamConfig,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
@@ -226,6 +227,15 @@ function pruneEmptyConfigSections(config: Record<string, unknown>): Record<strin
     const hasUrl = typeof cloud.url === 'string' && cloud.url.length > 0
     const hasToken = typeof cloud.token === 'string' && cloud.token.length > 0
     if (!hasUrl || !hasToken) delete out.cloud
+  }
+
+  // Upstream: `repoUrl` is what switches the feature on, so a block
+  // without one is dead weight — and keeping a stale fork owner or cap
+  // around would make the settings form look configured when it is not.
+  const upstream = out.upstream as { repoUrl?: unknown } | undefined
+  if (upstream) {
+    const hasRepoUrl = typeof upstream.repoUrl === 'string' && upstream.repoUrl.length > 0
+    if (!hasRepoUrl) delete out.upstream
   }
 
   // Tracker block: keep only the section relevant to the chosen provider
@@ -2554,6 +2564,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
               ...(config.guardrails.rules ? { rules: config.guardrails.rules } : {}),
             }
           : undefined,
+        // Upstream contribution. The token is a GitHub PAT that can open
+        // issues and PRs under the operator's own account, so it gets the
+        // same treatment as plugin credentials: redacted out, restored on
+        // PUT when the dashboard echoes the `...` form back.
+        upstream: config.upstream
+          ? {
+              ...config.upstream,
+              ...(config.upstream.token ? { token: redactSecret(config.upstream.token) } : {}),
+            }
+          : undefined,
       } : null
 
       const guardrailsResolved = resolveGuardrails(config?.guardrails ?? null).resolved
@@ -2571,6 +2591,12 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           intelligenceDir: resolveIntelligenceDir(config),
           workingDir: resolveLocalWorkingDir(config),
           guardrails: guardrailsResolved,
+          // Whether retrospective findings can reach the Coro repository.
+          // Resolved rather than read off `config.upstream`, because the
+          // env vars (`CORO_UPSTREAM_REPO_URL`, …) configure it just as
+          // validly and the launch form must not offer a destination the
+          // dispatcher will then refuse.
+          upstreamConfigured: Boolean(resolveUpstreamConfig(config)),
         },
       })
     } catch (err) {
@@ -2879,6 +2905,51 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           } else {
             delete (merged as Record<string, unknown>).llm
           }
+        }
+      }
+
+      // Upstream contribution destination (retrospective findings that
+      // belong to Coro itself). Absent means the feature stays off, so
+      // clearing `repoUrl` is a meaningful edit rather than a no-op — the
+      // prune step below drops the block once nothing is left in it.
+      if (Object.prototype.hasOwnProperty.call(updates, 'upstream')) {
+        const incoming = (updates as Record<string, unknown>)['upstream'] as
+          | NonNullable<LocalConfig['upstream']>
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).upstream
+        } else if (incoming && typeof incoming === 'object') {
+          const previous = existing.upstream ?? {}
+          const next: NonNullable<LocalConfig['upstream']> = { ...previous }
+
+          const text = (key: 'repoUrl' | 'forkOwner'): void => {
+            const value = incoming[key]
+            if (typeof value !== 'string') return
+            const trimmed = value.trim()
+            if (trimmed) next[key] = trimmed
+            else delete next[key]
+          }
+          text('repoUrl')
+          text('forkOwner')
+
+          // A redacted token means "unchanged"; an empty string means the
+          // operator cleared it deliberately.
+          if (typeof incoming.token === 'string' && !isRedacted(incoming.token)) {
+            const trimmed = incoming.token.trim()
+            if (trimmed) next.token = trimmed
+            else delete next.token
+          }
+
+          const count = (key: 'maxIssuesPerRun' | 'maxCodeJobsPerRun'): void => {
+            const value = incoming[key]
+            if (typeof value === 'number' && Number.isInteger(value) && value >= 0) next[key] = value
+            else if (value === null) delete next[key]
+          }
+          count('maxIssuesPerRun')
+          count('maxCodeJobsPerRun')
+
+          ;(merged as Record<string, unknown>).upstream = next
         }
       }
 

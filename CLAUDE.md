@@ -297,7 +297,8 @@ and `runner-code` belong to the open-source repository.
 leave the machine: `upstream_search` → `upstream_create_issue` or
 `upstream_comment_issue` → `upstream_open_intelligence_pr` (prose) or
 `dispatch_improvement_job` (code). It is off unless the install sets
-`upstream.repoUrl` in `~/.coro/config.json`, and four constraints bound it:
+`upstream.repoUrl` — via **Settings → Coro contribution**, `~/.coro/config.json`,
+or `CORO_UPSTREAM_REPO_URL` — and four constraints bound it:
 
 - **Fingerprint dedup.** `fingerprintFinding()` hashes the finding's
   category, target paths, and normalised title, and the hash is embedded
@@ -347,6 +348,16 @@ job detail fetches `GET /retrospectives/:jobId` instead of reading
 `job.artifacts`. Approval itself reuses the ordinary interactive
 checkpoint UI (`ApprovalBox` → `POST /jobs/:id/message`) — the
 retrospective adds a findings panel above it, not a second approval path.
+
+The contribution destination is editable from the dashboard
+(`Settings → Coro contribution`, `pages/Settings/sections/ContributionSection.tsx`).
+`GET /config` redacts `upstream.token` and reports
+`resolved.upstreamConfigured`, which is derived from
+`resolveUpstreamConfig()` rather than from `config.upstream` so an
+env-configured install reads as configured too. The launch form uses that
+flag to disable the two contribution tiers, since
+`assertRetrospectiveTiersAvailable` refuses a run it cannot honour instead
+of quietly downgrading it.
 
 ---
 

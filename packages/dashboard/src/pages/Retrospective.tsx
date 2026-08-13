@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ArrowRight, Microscope, Play, Sparkles } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import PageHeader from '../components/common/page-header'
@@ -16,6 +16,8 @@ import { useRetrospectives } from '../hooks/useRetrospectives'
 import { ApiError, jsonRequest, requestJson } from '../lib/http'
 import { formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import {
+  availableTiers,
+  CONTRIBUTION_SETTINGS_PATH,
   enabledTierLabels,
   RETROSPECTIVE_DEFAULT_TIERS,
   RETROSPECTIVE_DEFAULT_WINDOW,
@@ -25,6 +27,7 @@ import {
   TIER_META,
 } from '../lib/retrospective'
 import { isTerminalStatus } from '../lib/status'
+import type { ConfigResponse } from './Settings/SettingsContext'
 import type { RetrospectiveSummary, RetrospectiveTiers } from '../types'
 
 interface DispatchResponse {
@@ -85,19 +88,49 @@ export default function Retrospective() {
 
 // ── Launching ────────────────────────────────────────────────────────────────
 
+/**
+ * Whether the runner can publish upstream, from its own resolved view
+ * (which also accounts for the `CORO_UPSTREAM_*` env vars). Assumes "no"
+ * until the answer arrives, and on failure: the cost of guessing wrong
+ * that way is a disabled toggle, versus a run rejected at dispatch.
+ */
+function useUpstreamConfigured(): boolean {
+  const [configured, setConfigured] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void requestJson<ConfigResponse>('/config')
+      .then(data => {
+        if (!cancelled) setConfigured(data.resolved?.upstreamConfigured === true)
+      })
+      .catch(() => {
+        if (!cancelled) setConfigured(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return configured
+}
+
 function LaunchCard({ onLaunched }: { onLaunched: () => void | Promise<void> }) {
   const navigate = useNavigate()
   const [windowText, setWindowText] = useState(String(RETROSPECTIVE_DEFAULT_WINDOW))
   const [tiers, setTiers] = useState<RetrospectiveTiers>(RETROSPECTIVE_DEFAULT_TIERS)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const upstreamConfigured = useUpstreamConfigured()
 
   const parsedWindow = Number.parseInt(windowText, 10)
   const windowValid =
     Number.isFinite(parsedWindow) &&
     parsedWindow >= RETROSPECTIVE_MIN_WINDOW &&
     parsedWindow <= RETROSPECTIVE_MAX_WINDOW
-  const anyTier = TIER_META.some(tier => tiers[tier.key])
+  // What will actually be sent: a destination the runner cannot honour is
+  // dropped here rather than rejected at dispatch.
+  const effectiveTiers = availableTiers(tiers, upstreamConfigured)
+  const anyTier = TIER_META.some(tier => effectiveTiers[tier.key])
 
   const start = async () => {
     setStarting(true)
@@ -105,7 +138,7 @@ function LaunchCard({ onLaunched }: { onLaunched: () => void | Promise<void> }) 
     try {
       const data = await requestJson<DispatchResponse>(
         RETROSPECTIVE_PATH,
-        jsonRequest({ jobWindow: parsedWindow, tiers }, { method: 'POST' }),
+        jsonRequest({ jobWindow: parsedWindow, tiers: effectiveTiers }, { method: 'POST' }),
       )
       await onLaunched()
       navigate(`/jobs/${data.jobId}`)
@@ -161,23 +194,36 @@ function LaunchCard({ onLaunched }: { onLaunched: () => void | Promise<void> }) 
         <div className="space-y-2">
           <div className="text-sm font-medium text-fg">Where approved findings may go</div>
           <div className="space-y-2">
-            {TIER_META.map(tier => (
-              <div
-                key={tier.key}
-                className="flex items-start gap-3 rounded-xl border border-line bg-overlay/40 px-3 py-2.5"
-              >
-                <Switch
-                  checked={tiers[tier.key]}
-                  onCheckedChange={checked => setTiers(prev => ({ ...prev, [tier.key]: checked }))}
-                  ariaLabel={tier.label}
-                  className="mt-0.5"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-fg">{tier.label}</div>
-                  <p className="text-[12px] leading-5 text-fg-muted">{tier.description}</p>
+            {TIER_META.map(tier => {
+              const locked = Boolean(tier.requiresUpstream) && !upstreamConfigured
+              return (
+                <div
+                  key={tier.key}
+                  className="flex items-start gap-3 rounded-xl border border-line bg-overlay/40 px-3 py-2.5"
+                >
+                  <Switch
+                    checked={effectiveTiers[tier.key]}
+                    onCheckedChange={checked => setTiers(prev => ({ ...prev, [tier.key]: checked }))}
+                    ariaLabel={tier.label}
+                    className="mt-0.5"
+                    disabled={locked}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-fg">{tier.label}</div>
+                    <p className="text-[12px] leading-5 text-fg-muted">{tier.description}</p>
+                    {locked ? (
+                      <p className="mt-1 text-[12px] leading-5 text-fg-subtle">
+                        Needs a contribution destination.{' '}
+                        <Link to={CONTRIBUTION_SETTINGS_PATH} className="text-accent-300 hover:underline">
+                          Set one up in Settings
+                        </Link>
+                        .
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
 

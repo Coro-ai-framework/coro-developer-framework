@@ -95,6 +95,19 @@ export interface LlmConfigShape {
   aliases?: Record<string, LlmAliasConfig>
 }
 
+/**
+ * Upstream contribution destination. Mirrors `upstreamConfigSchema` in the
+ * runner's `config/local-config.ts`. `token` arrives redacted (`ghp_…abcd`)
+ * and is echoed back unchanged unless the operator types a new one.
+ */
+export interface UpstreamConfigShape {
+  repoUrl?: string
+  forkOwner?: string
+  token?: string
+  maxIssuesPerRun?: number
+  maxCodeJobsPerRun?: number
+}
+
 export interface ConfigResponse {
   config: {
     /**
@@ -128,6 +141,8 @@ export interface ConfigResponse {
         script?: string
       }>
     }
+    /** Where retrospective findings about Coro itself get published. */
+    upstream?: UpstreamConfigShape
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
@@ -139,6 +154,12 @@ export interface ConfigResponse {
       rules: GuardrailRuleDraft[]
       scriptsDir: string
     }
+    /**
+     * True when the runner can actually publish upstream. Not the same as
+     * `config.upstream` being present: the env vars configure it too, and
+     * only `repoUrl` is load-bearing.
+     */
+    upstreamConfigured?: boolean
   }
   configError?: string
   rawConfig?: unknown
@@ -184,6 +205,14 @@ export interface SettingsDraft {
   guardrailsEnabled: boolean
   guardrailRules: GuardrailRuleDraft[]
   guardrailsRulesText: string
+  // Upstream contribution. Counts are held as text so an empty field
+  // means "use the default" rather than zero, which would silently
+  // disable publishing.
+  upstreamRepoUrl: string
+  upstreamForkOwner: string
+  upstreamToken: string
+  upstreamMaxIssuesPerRun: string
+  upstreamMaxCodeJobsPerRun: string
 }
 
 const EMPTY_DRAFT: SettingsDraft = {
@@ -200,6 +229,11 @@ const EMPTY_DRAFT: SettingsDraft = {
   guardrailsEnabled: true,
   guardrailRules: [],
   guardrailsRulesText: '[]',
+  upstreamRepoUrl: '',
+  upstreamForkOwner: '',
+  upstreamToken: '',
+  upstreamMaxIssuesPerRun: '',
+  upstreamMaxCodeJobsPerRun: '',
 }
 
 // ── Section identity ────────────────────────────────────────────────────────
@@ -213,6 +247,7 @@ export type SettingsSectionId =
   | 'mcp'
   | 'paths'
   | 'guardrails'
+  | 'contribution'
 
 /** Static (non-plugin) field → section. Plugin entries are mapped
  * dynamically via the plugin manifest kind. */
@@ -229,6 +264,11 @@ const STATIC_FIELD_TO_SECTION: Partial<Record<keyof SettingsDraft, SettingsSecti
   guardrailsEnabled: 'guardrails',
   guardrailRules: 'guardrails',
   guardrailsRulesText: 'guardrails',
+  upstreamRepoUrl: 'contribution',
+  upstreamForkOwner: 'contribution',
+  upstreamToken: 'contribution',
+  upstreamMaxIssuesPerRun: 'contribution',
+  upstreamMaxCodeJobsPerRun: 'contribution',
 }
 
 // ── Context shape ───────────────────────────────────────────────────────────
@@ -348,8 +388,38 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     guardrailsEnabled: response.resolved?.guardrails?.enabled ?? cfg?.guardrails?.enabled ?? true,
     guardrailRules,
     guardrailsRulesText,
+    upstreamRepoUrl: cfg.upstream?.repoUrl ?? '',
+    upstreamForkOwner: cfg.upstream?.forkOwner ?? '',
+    upstreamToken: cfg.upstream?.token ?? '',
+    upstreamMaxIssuesPerRun: numberToText(cfg.upstream?.maxIssuesPerRun),
+    upstreamMaxCodeJobsPerRun: numberToText(cfg.upstream?.maxCodeJobsPerRun),
   }
 }
+
+/** Blank for an unset count, so the form can show the runner's default. */
+function numberToText(value: number | undefined): string {
+  return typeof value === 'number' ? String(value) : ''
+}
+
+/**
+ * `null` for a blank or unparseable count — the server reads that as
+ * "drop the override and use the default", where `undefined` would be
+ * indistinguishable from "leave whatever is on disk".
+ */
+function textToCount(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Number.parseInt(trimmed, 10)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+export const UPSTREAM_DRAFT_FIELDS: Array<keyof SettingsDraft> = [
+  'upstreamRepoUrl',
+  'upstreamForkOwner',
+  'upstreamToken',
+  'upstreamMaxIssuesPerRun',
+  'upstreamMaxCodeJobsPerRun',
+]
 
 function draftEqualField<K extends keyof SettingsDraft>(a: SettingsDraft[K], b: SettingsDraft[K]): boolean {
   if (a === b) return true
@@ -695,6 +765,21 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
       body['guardrails'] = {
         enabled: draft.guardrailsEnabled,
         rules,
+      }
+    }
+
+    // Upstream contribution. Sent whole so clearing the repository URL
+    // reaches the server as an edit — that is how the operator turns
+    // publishing back off.
+    if (UPSTREAM_DRAFT_FIELDS.some(field => dirtyFields.has(field))) {
+      body['upstream'] = {
+        repoUrl: draft.upstreamRepoUrl.trim(),
+        forkOwner: draft.upstreamForkOwner.trim(),
+        // The server treats a redacted value as "unchanged", so echoing
+        // what GET handed us keeps the stored token intact.
+        token: draft.upstreamToken,
+        maxIssuesPerRun: textToCount(draft.upstreamMaxIssuesPerRun),
+        maxCodeJobsPerRun: textToCount(draft.upstreamMaxCodeJobsPerRun),
       }
     }
 
