@@ -1004,10 +1004,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return text({ goingToPhase: phase })
     },
 
-    await_event: async ({ eventName, prId }: { eventName: string; prId?: number }) => {
+    await_event: async ({ eventName, prId }: { eventName: string; prId?: number | string }) => {
+      const parsed = prId === undefined ? undefined : Number(prId)
+      if (parsed !== undefined && !Number.isFinite(parsed)) {
+        return mcpError(`await_event: prId "${String(prId)}" is not a number.`)
+      }
       signals.awaitingEvent = eventName
-      signals.awaitingPrId = prId
-      return text({ awaiting: eventName, prId: prId ?? null })
+      signals.awaitingPrId = parsed
+      return text({ awaiting: eventName, prId: parsed ?? null })
     },
 
     escalate: async ({ reason }: { reason: string }) => {

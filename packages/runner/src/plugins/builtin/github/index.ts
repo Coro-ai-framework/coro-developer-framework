@@ -1,33 +1,34 @@
-// ── GitHub SCM plugin (MCP mode) ─────────────────────────────────────────────
+// ── GitHub SCM plugin ────────────────────────────────────────────────────────
 //
-// After the MCP-first pivot, GitHub's agent-facing operations come from the
-// upstream `@modelcontextprotocol/server-github` MCP server (attached at job
-// start via `mcpServer()`). The plugin keeps only the responsibilities MCP
-// can't do:
+// The upstream `@modelcontextprotocol/server-github` MCP server is still
+// attached at job start (via `mcpServer()`) so agents can reach the long tail
+// of GitHub operations as `mcp__github__*` tools. But the PR lifecycle —
+// create, status, comments, reply, approve, merge — is served here by the
+// inline `GitHubClient`, alongside the operations MCP structurally cannot do:
 //
-//   - `cloneInfo(...)`        — provides the credentialed HTTPS clone URL.
-//                               No MCP equivalent.
+//   - `cloneInfo(...)`        — credentialed HTTPS clone URL. No MCP
+//                               equivalent.
 //   - `matchesRemote(...)`    — host check for self-improvement remote
 //                               detection. Pure string match.
 //   - `normalizeInbound(...)` — parses GitHub webhook payloads into a
 //                               provider-neutral NormalizedEvent. MCP
 //                               doesn't see webhooks.
 //   - `pollPr(...)`           — runs OUTSIDE an active `query()`, so it
-//                               can't reach the MCP server. We keep a
-//                               tiny inline GitHubClient call for this
-//                               single method.
+//                               cannot reach any MCP server.
 //
-// All other operations (createPr, getPrStatus, listPrComments,
-// postPrComment, replyToComment, approvePr, mergePr, createRepo) are
-// served by the upstream MCP server as `mcp__github__*` tools and have
-// been removed from this runtime. The hybrid `scm_*` proxy
-// (`packages/runner/src/mcp-handlers.ts`, S4) forwards generic
-// `scm_create_pr` etc. through the SDK's MCP client instead.
+// The MCP-first pivot (S4) had removed the lifecycle methods so the generic
+// `scm_*` proxy would redirect agents to the native tools. That redirect is
+// delivered as `isError: true`, so an agent working a PR saw a run of
+// failures across five tools and could reasonably conclude the PR surface was
+// broken — one such job escalated instead of merging. Serving them locally
+// also makes GitHub behave like Bitbucket, which never stopped doing so.
+// `mcpToolMap` stays in the manifest as the fallback contract: the proxy only
+// redirects for ops a plugin leaves undefined.
 
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
-import { GitHubClient } from '../../../clients/github'
+import { GitHubClient, type PrComment } from '../../../clients/github'
 import type { ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
 import { externalIdString } from '../../refs'
 import type {
@@ -39,6 +40,7 @@ import type {
   ScmCodeSearchHit,
   ScmDirectoryEntry,
   ScmCreatePrArgs,
+  ScmMergeOptions,
   ScmPluginRuntime,
   ScmPollSnapshot,
   ScmPrComment,
@@ -203,14 +205,7 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
       this.client.getPrStatus(repoSlug, prId),
       this.client.getComments(repoSlug, prId),
     ])
-    const normalisedComments: ScmPrComment[] = comments.map(c => ({
-      id: String(c.id),
-      body: c.content.raw,
-      createdAt: c.created_on,
-      updatedAt: c.updated_on,
-      ...(c.parent ? { parentId: String(c.parent.id) } : {}),
-      ...(c.inline ? { inline: { path: c.inline.path, line: c.inline.to } } : {}),
-    }))
+    const normalisedComments: ScmPrComment[] = comments.map(toScmComment)
     return {
       state: normalisePrState(status.state),
       approvalCount: status.approvalCount,
@@ -235,14 +230,7 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     return this.client.listFiles(args.repo, args.path ?? '', args.ref ?? 'HEAD')
   }
 
-  /**
-   * Self-improvement writer escape hatch (see ScmPluginRuntime.writerCreatePr).
-   * Re-uses the inline `GitHubClient` that `pollPr` already needs, so
-   * we don't pay the round-trip cost of spawning a fresh upstream
-   * MCP server outside `query()` — which the SDK doesn't support
-   * today anyway.
-   */
-  async writerCreatePr(args: ScmCreatePrArgs): Promise<ExternalRef> {
+  async createPr(args: ScmCreatePrArgs): Promise<ExternalRef> {
     const reviewers = args.reviewers ? Array.from(args.reviewers) : undefined
     const pr = await this.client.createPr({
       repoSlug: args.repoSlug,
@@ -259,6 +247,67 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
       externalId: String(pr.id),
       url: pr.links.html.href,
     }
+  }
+
+  /**
+   * Self-improvement writer escape hatch (see ScmPluginRuntime.writerCreatePr).
+   * Uses the inline `GitHubClient` because it runs outside `query()`, where
+   * no MCP server is reachable.
+   */
+  async writerCreatePr(args: ScmCreatePrArgs): Promise<ExternalRef> {
+    return this.createPr(args)
+  }
+
+  // ── PR lifecycle ───────────────────────────────────────────────────────────
+  //
+  // Served by the inline `GitHubClient` rather than redirected to the
+  // upstream MCP server. The generic `scm_*` proxy only redirects when the
+  // plugin leaves a method undefined, and a redirect is reported to the
+  // agent as `isError: true` — so leaving these out meant every PR
+  // operation looked like a failure, and an agent that hit several in a
+  // row could reasonably conclude the whole PR surface was broken.
+  //
+  // Implementing them also makes GitHub behave like Bitbucket, which has
+  // always served these locally. The client already had every method; only
+  // the wiring was missing.
+
+  async getPrStatus(ref: ExternalRef): Promise<ScmPrStatus> {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    const status = await this.client.getPrStatus(repoSlug, prId)
+    return {
+      state: normalisePrState(status.state),
+      approvalCount: status.approvalCount,
+    }
+  }
+
+  async listPrComments(ref: ExternalRef): Promise<ScmPrComment[]> {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    const comments = await this.client.getComments(repoSlug, prId)
+    return comments.map(toScmComment)
+  }
+
+  async postPrComment(ref: ExternalRef, body: string): Promise<ScmPrComment> {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    return toScmComment(await this.client.postComment(repoSlug, prId, body))
+  }
+
+  async replyToComment(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment> {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    const parent = Number(parentId)
+    if (!Number.isFinite(parent)) {
+      throw new Error(`github plugin: parentCommentId "${parentId}" is not a number`)
+    }
+    return toScmComment(await this.client.replyToComment(repoSlug, prId, parent, body))
+  }
+
+  async approvePr(ref: ExternalRef): Promise<void> {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    await this.client.approvePr(repoSlug, prId)
+  }
+
+  async mergePr(ref: ExternalRef, opts?: ScmMergeOptions): Promise<void> {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    await this.client.mergePr(repoSlug, prId, opts?.message)
   }
 
   normalizeInbound(req: { headers: Record<string, string | string[] | undefined>; rawBody: Buffer }): NormalizedEvent | null {
@@ -320,6 +369,17 @@ function parseRef(ref: ExternalRefShape, pluginId: string): { repoSlug: string; 
     throw new Error(`github plugin: ref.externalId "${ref.externalId}" is not a number`)
   }
   return { repoSlug: ref.repoKey, prId }
+}
+
+function toScmComment(c: PrComment): ScmPrComment {
+  return {
+    id: String(c.id),
+    body: c.content.raw,
+    createdAt: c.created_on,
+    updatedAt: c.updated_on,
+    ...(c.parent ? { parentId: String(c.parent.id) } : {}),
+    ...(c.inline ? { inline: { path: c.inline.path, line: c.inline.to } } : {}),
+  }
 }
 
 function normalisePrState(s: string): ScmPrStatus['state'] {

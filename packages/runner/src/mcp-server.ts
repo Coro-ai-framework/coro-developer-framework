@@ -354,7 +354,11 @@ export function createCoroMcpServer(
       tool(
         'await_event',
         'Park the job and wait for an external event (e.g. PR merge, Jira comment). The runner stops until the webhook arrives. Only call this when you genuinely need to wait — otherwise just finish and the runner auto-advances. To pause mid-phase for developer input (interactive mode), pass eventName "developer-input: <short reason>"; the job will park with status `awaiting-developer-input` and resume when the developer replies.',
-        { eventName: z.string(), prId: z.number().optional() },
+        // `prId` accepts a string as well as a number, matching every
+        // `scm_*` tool. Models routinely emit `"5"` for an id, and a
+        // strict `z.number()` here rejected the call outright — which
+        // reads to the agent as the park itself being unavailable.
+        { eventName: z.string(), prId: z.union([z.number(), z.string()]).optional() },
         h.await_event,
       ),
 

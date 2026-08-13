@@ -57,6 +57,22 @@ describe('createMcpToolHandlers — job control & signals', () => {
     expect(signals.awaitingPrId).toBeUndefined()
   })
 
+  // Every `scm_*` tool declares `prId` as number-or-string, so a model that
+  // has been passing `"5"` all phase long will pass it here too. Rejecting
+  // that read to the agent as the park being unavailable.
+  it('await_event accepts a string prId and stores it as a number', async () => {
+    const h = createMcpToolHandlers(ctx, signals)
+    await h.await_event({ eventName: 'pr:approved', prId: '5' })
+    expect(signals.awaitingPrId).toBe(5)
+  })
+
+  it('await_event rejects a prId that is not a number at all', async () => {
+    const h = createMcpToolHandlers(ctx, signals)
+    const out = await h.await_event({ eventName: 'pr:approved', prId: 'not-a-pr' })
+    expect(out.isError).toBe(true)
+    expect(signals.awaitingPrId).toBeUndefined()
+  })
+
   it('escalate updates job in registry and sets signals', async () => {
     const h = createMcpToolHandlers(ctx, signals)
     const out = parseJson(await h.escalate({ reason: 'Blocked on auth' })) as Record<string, unknown>
