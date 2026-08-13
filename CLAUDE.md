@@ -368,7 +368,10 @@ leave the machine: `upstream_checkout` (verify) → `upstream_search` →
   travel (`params.tiers`); the tools re-read that from the job, so an
   analyst cannot widen its own scope mid-run. `upstream_checkout` passes
   when *either* contribution tier is on — a run that cannot publish has
-  nothing to verify for publication, and cloning for it is pure cost.
+  nothing to verify for publication, and cloning for it is pure cost. The
+  local destination is gated the same way (`assertTenantTierPermitted` in
+  `tools/self-improvement.ts`), and only for retrospectives: ordinary jobs
+  carry no tiers, so the evaluator's `propose_change` is untouched.
 - **Fail-closed sanitisation.** Every title, body, and file body is run
   through `Sanitizer.findLeaks()` before the request goes out. A leak
   cannot be un-published, so the check refuses rather than scrubs.

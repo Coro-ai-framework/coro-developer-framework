@@ -35,12 +35,14 @@ import {
   prepareTenantWriter,
 } from '../intelligence/writer'
 import { jobReviewers } from '../jobs/helpers'
-import type {
-  Proposal,
-  ProposalFile,
-  ProposalStatus,
-  ProposalTargetLayer,
-  ProposalType,
+import { retrospectiveTiers } from '../jobs/retrospective'
+import {
+  JobType,
+  type Proposal,
+  type ProposalFile,
+  type ProposalStatus,
+  type ProposalTargetLayer,
+  type ProposalType,
 } from '@coro-ai/cloud-protocol'
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -481,10 +483,35 @@ export function validateProposalFiles(
  * so the agent can correct and retry rather than discovering the
  * problem from a half-pushed branch.
  */
+/**
+ * A retrospective launched without the `tenant` destination may not
+ * propose to this install's layers.
+ *
+ * The two upstream destinations have always been gated in code, because a
+ * public issue cannot be unpublished. The local one was gated by prose
+ * alone — so a run the developer deliberately scoped to "look, do not
+ * touch" could still open a PR against the intelligence repo, and nothing
+ * would say it had happened. Ordinary jobs are unaffected: they carry no
+ * tiers, and the default is permissive.
+ */
+function assertTenantTierPermitted(ctx: ToolContext): void {
+  if (ctx.job.type !== JobType.Retrospective) return
+  if (retrospectiveTiers(ctx.job).tenant) return
+
+  throw new Error(
+    'propose_change is not permitted for this run: the developer launched it with the "tenant" ' +
+    'destination disabled, so findings may not be proposed to this install\'s own layers. ' +
+    'Record the finding as not-shipped with reason "tenant destination not enabled for this run" ' +
+    '— that record is what tells the developer to re-run with the destination enabled.',
+  )
+}
+
 export async function proposeChange(
   input: ProposeChangeInput,
   ctx: ToolContext,
 ): Promise<ProposeChangeResult> {
+  assertTenantTierPermitted(ctx)
+
   const requestedFiles = applyMemoryEntries(normaliseFiles(input), input.entries)
   validateProposalFiles(input.type, requestedFiles)
 

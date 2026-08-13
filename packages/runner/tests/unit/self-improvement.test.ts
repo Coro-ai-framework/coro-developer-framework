@@ -518,6 +518,58 @@ describe('proposeChange', () => {
     expect(ctx.stateBackend.createProposal).not.toHaveBeenCalled()
   })
 
+  it('refuses a retrospective launched without the tenant destination', async () => {
+    // The two upstream destinations were always gated in code; the local
+    // one was prose-only, so a "look, do not touch" run could still open a
+    // PR against the intelligence repo.
+    const ctx = makeCtx({
+      job: {
+        type: JobType.Retrospective,
+        workflowPath: 'workflows/retrospective/workflow.md',
+        params: { repoSlug: 'my-repo', tiers: { tenant: false, upstreamIntelligence: true, upstreamCode: false } },
+      },
+    })
+
+    await expect(
+      proposeChange(
+        { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
+          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+        ctx,
+      ),
+    ).rejects.toThrow(/"tenant" destination disabled/)
+    expect(writerMock.commitAndPush).not.toHaveBeenCalled()
+  })
+
+  it('allows a retrospective that enabled the tenant destination', async () => {
+    const ctx = makeCtx({
+      job: {
+        type: JobType.Retrospective,
+        workflowPath: 'workflows/retrospective/workflow.md',
+        params: { repoSlug: 'my-repo', tiers: { tenant: true } },
+      },
+    })
+
+    await expect(
+      proposeChange(
+        { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
+          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+        ctx,
+      ),
+    ).resolves.toBeTruthy()
+  })
+
+  it('leaves ordinary jobs alone, which carry no tiers at all', async () => {
+    // The evaluator proposes on every job; a tier default must never gate it.
+    const ctx = makeCtx()
+    await expect(
+      proposeChange(
+        { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
+          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+        ctx,
+      ),
+    ).resolves.toBeTruthy()
+  })
+
   it('normalises legacy targetFile + proposedContent into the files array', async () => {
     const ctx = makeCtx()
     await proposeChange(

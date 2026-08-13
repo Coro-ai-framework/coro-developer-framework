@@ -157,6 +157,11 @@ Write `working/{job-id}/retrospective-report.md`:
 **Proposed remedy:** {which file, what changes}
 **Target paths:** {paths}
 
+## Blocked by another finding
+
+- {candidate}: real, but its evidence rests on {what}, which `finding-N`
+  says cannot be trusted. Re-check once that is fixed.
+
 ## Checked and cleared
 
 - {signal}: {why it did not clear the threshold}
@@ -164,6 +169,10 @@ Write `working/{job-id}/retrospective-report.md`:
 
 The "Checked and cleared" section matters. It tells the reviewer you
 looked, and it stops the next retrospective re-treading the same ground.
+Keep it for signals that genuinely did not clear the bar — the skill's §7
+lists the two things that must be reported as findings even when they
+cannot ship, and burying either of them there is how a real problem goes
+missing. Drop the "Blocked by" section when nothing is blocked.
 
 Then post the artefact, with the machine-readable findings in `data`. This
 is what the dashboard renders as the per-finding approve/skip ballot, so a
@@ -197,6 +206,13 @@ post_artifact({
 Keep `id` values stable and sequential (`finding-1`, `finding-2`) — the
 developer's approval names them by id, and `shipping` matches on them
 verbatim.
+
+Every finding goes in `findings[]`, including one whose destination is not
+enabled for this run. The developer can then see it and approve it; the
+shipping tool refuses — every destination is gated in code, the local one
+included — and `shipping` records it as not shipped with the tier reason.
+That refusal is a useful outcome: it is what tells the developer a wider
+run would have caught something.
 
 ### 6. End the turn
 

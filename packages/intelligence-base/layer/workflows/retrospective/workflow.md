@@ -113,6 +113,11 @@ works on a fork and opens its pull request upstream.
   citing jobs is an anecdote; anecdotes stay in the report. Access to the
   source does not change this: something noticed by reading code, with no
   run behind it, is a code review and belongs to a different workflow.
+- **Tiers gate where a finding goes, not whether it is reported.** Every
+  destination refuses in code when its tier is off — including
+  `propose_change` for the local layers. A finding the run cannot ship is
+  still reported and still recorded as not shipped, with the tier as the
+  reason; that record is how a developer learns a wider run was warranted.
 - **Search upstream before filing.** Other installs run this same
   workflow against the same Coro version. A second issue for a known
   problem is worse than no issue at all — add evidence to the existing

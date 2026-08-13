@@ -35,18 +35,40 @@ The report does that subtraction for you. Use `reworkRuns` and
 arithmetic. Never build a rework claim out of `runs` alone.
 
 **Threshold:** `reworkRuns ≥ 1` on the same phase in **≥ 30% of the
-window** (minimum 2 jobs). One job looping four times is a bad day; a
-third of jobs reworking the same phase is a missing instruction.
+window** (minimum 2 jobs), counting only the runs that survive the check
+below. One job looping four times is a bad day; a third of jobs reworking
+the same phase is a missing instruction.
 
 Cost of the finding = sum of `reworkCostUsd` across the citing jobs.
 Quote it — "$11 of avoidable rework across 4 jobs" is what makes a
 maintainer act. If that sum is what puts the finding over the `high`
 severity bar, say the number in the finding, not just in your reasoning.
 
-The attributions are derived, not recorded, and they are tuned to
-undercount: a run is only `rework` when nothing structural explains it.
-So treat `reworkRuns` as a floor. If a phase shows zero rework but still
-looks expensive, the finding is about cost, not loops.
+**The attributions are derived, not recorded — check them before you
+build on them.** A run is labelled `rework` when nothing structural
+explains it, and the only thing the derivation has to reason from is the
+work-item stamp on each run. Two kinds of run carry no usable stamp, so
+they are labelled `rework` when nothing went wrong. Both are visible in
+`phaseRuns[]`:
+
+- **A `rework` run with `costUsd: 0`.** A run that ends by parking — on a
+  PR merge, on developer input — is recorded with no cost. Free rework is
+  a park and a resume, not a loop.
+- **A run with no `workItem`.** Phases that run before work items exist
+  (`spec-writing`, `planning`) have nothing to key on, so all their
+  repeats collide into one bucket. Treat those as unattributed.
+
+Where either applies, confirm the cause in the log before you write the
+finding:
+
+```
+get_job_log_excerpts({ jobId, pattern: "parked|phase advanced" })
+```
+
+One `Job parked — waiting for:` per repeat is a structural cause, and the
+run is not rework however the report labelled it. A run that survives the
+check is still only a floor: a phase with no rework that nevertheless
+looks expensive is a cost finding, not a loop finding.
 
 ### Escalation clusters
 
@@ -191,9 +213,11 @@ it:
    data was there all along, a maintainer has to correct your issue
    before they can act on it. Read the type before you claim it lacks a
    field.
-2. **A defect already fixed.** The snapshot is upstream's default branch,
-   not the version that produced your job history. If the fix is already
-   there, the finding is closed, not filed.
+2. **A defect already fixed — if the direction of time works out.** The
+   snapshot is upstream's default branch, not the version that produced
+   your job history, so a remedy you find there may postdate your
+   evidence. It may equally have been in place the whole time, and then it
+   is not a remedy at all. See §6 before clearing anything on this basis.
 3. **The real file list.** Name the files you actually found, and the
    function inside them. `targetPaths` feeds the dedup fingerprint, so
    "paths to be located during implementation" makes your issue fail to
@@ -242,6 +266,17 @@ inventing a path.
 | `medium` | Measurable rework or repeated friction; nothing blocked. |
 | `low` | Real but cheap; worth recording, easy to defer. |
 
+That table measures wasted money and blocked jobs, which is what most
+findings are about. Two kinds are `high` whatever they cost:
+
+- **A defect in the evidence you reason from.** If a metric, a report
+  field, or a log view is wrong, every finding measured through it is
+  unsafe — yours, and every future run's. Dollars are the wrong yardstick
+  here; state instead what it made you unable to conclude.
+- **A defect that cost you another finding.** If you dropped or
+  downgraded a candidate because you could not trust the data behind it,
+  the defect outranks the candidate.
+
 ## 6. What is not a finding
 
 - **A single job's bad luck.** One rate-limit park, one flaky test.
@@ -250,14 +285,56 @@ inventing a path.
 - **A remedy you cannot name.** If you cannot say which files change
   (all of them — see §4) and roughly how, you have a symptom. Log it and
   move on.
-- **Something already fixed.** Check past retrospectives with
-  `list_jobs({ scope: "retrospective" })`, and — for anything going
-  upstream — check the code itself in `_upstream/`. Your job history is
-  older than upstream's `main`.
+- **Something already fixed — and you can show it.** Check past
+  retrospectives with `list_jobs({ scope: "retrospective" })`, and, for
+  anything going upstream, the code in `_upstream/`.
+
+  Seeing the remedy in the code is **not** enough to clear a finding. Two
+  things have to hold as well, and both have been got wrong:
+
+  - **The runs have to predate it.** The snapshot cannot tell you when a
+    line landed — it is a depth-1 tree with no history — so unless a past
+    retrospective or a memory entry dates the change, you do not know.
+    Jobs that hit the behaviour *after* a remedy was in place make the
+    finding stronger, not weaker.
+  - **It has to address the same mechanism.** A setting that governs the
+    model SDK's permission prompts does not affect a denial from Coro's
+    own tool hooks, however similar the agent's description of the two
+    sounds. Match the remedy to the failure, not to the wording.
+
+  When you cannot establish both, report it with the contradiction stated
+  — "the guard is on `main` at `<sha>` and three runs still hit this, so
+  either it misses this case or the installed build predates it". That is
+  a better issue than the symptom alone. What this failure mode eats is
+  precisely the loudest signals, because those are the ones whose remedy
+  looks obvious enough to assume.
 - **Anything about a specific person.** Reviewer names, commit authors,
   and ticket assignees are out of scope. You analyse the agents.
 
-## 7. Volume
+## 7. Report it even when it cannot ship
+
+"Checked and cleared" is for signals that did not clear the bar. It is not
+a drawer for real problems that have nowhere to go, and two things must
+never end up there.
+
+- **A finding whose destination is disabled for this run.**
+  `params.tiers` decides where a finding may travel, not whether it
+  exists. Report it as a finding, with its real category and evidence, and
+  say in the remedy that its destination is not enabled — `shipping` will
+  record it as not shipped for that reason, which is exactly the note a
+  developer needs to decide whether to re-run with the tier on. Clearing
+  it instead makes a three-job problem invisible because of a launch
+  toggle.
+- **A candidate you dropped because you could not trust the data.** Name
+  the finding that blocked it, by id. "Not enough evidence" and "the
+  evidence is unreliable, and finding-1 is about that" are different
+  statements, and only the second one ever gets fixed.
+- **A signal you believe is already fixed but cannot date.** §6 has the
+  two conditions and the wording to use. If you find yourself writing
+  "the remedy appears to be present" plus an action for the developer to
+  go and check, you have written a finding, not a clearance.
+
+## 8. Volume
 
 Report **at most 5 findings**, ranked by severity. A retrospective that
 proposes twenty changes gets none of them reviewed. Fewer, better-
