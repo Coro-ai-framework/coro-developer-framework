@@ -144,6 +144,13 @@ export class GitHubClient {
    * `GET /repos/<forkOwner>/<repo>` succeeds. An existing fork short-
    * circuits — GitHub treats a repeated POST as a no-op, but checking
    * first keeps the common path to one request.
+   *
+   * The `organization` body parameter is the trap here. GitHub accepts it
+   * *only* when forking into an organisation, and rejects a personal login
+   * outright with `422 Fork organization invalid` — so a target account
+   * has to be classified before the request is built, not after. Passing
+   * it unconditionally made the documented configuration (`forkOwner` =
+   * your own username) fail every time.
    */
   async ensureFork(
     repoSlug: string,
@@ -157,9 +164,11 @@ export class GitHubClient {
     const existing = await this.getRepo(forkSlug).catch(() => null)
     if (existing) return existing
 
-    await this.request('POST', `/repos/${this.repoPath(repoSlug)}/forks`, {
-      ...(forkOwner ? { organization: forkOwner } : {}),
-    })
+    await this.request(
+      'POST',
+      `/repos/${this.repoPath(repoSlug)}/forks`,
+      await this.forkTarget(forkOwner),
+    )
 
     const attempts = opts.attempts ?? 10
     const delayMs = opts.delayMs ?? 2000
@@ -173,6 +182,59 @@ export class GitHubClient {
       504,
       `fork ${forkSlug} was requested but did not become available after ${attempts} checks`,
     )
+  }
+
+  /**
+   * The body for `POST /forks`: `{ organization }` for an org, `{}` for
+   * the token's own account.
+   *
+   * A third case exists and is not a body at all — a personal account that
+   * is not the token's. GitHub cannot fork into someone else's account, so
+   * omitting `organization` would quietly fork into the token's own
+   * account instead, and the caller would then poll for a repository that
+   * is never going to appear. Refusing here names the misconfigured
+   * setting while the operator can still act on it.
+   */
+  private async forkTarget(forkOwner?: string): Promise<Record<string, string>> {
+    if (!forkOwner) return {}
+
+    const account = await this.request<{ type?: string; login?: string }>(
+      'GET',
+      `/users/${encodeURIComponent(forkOwner)}`,
+    ).catch((err: unknown) => {
+      if (err instanceof GitHubError && err.statusCode === 404) {
+        throw new GitHubError(
+          404,
+          `No GitHub user or organisation named "${forkOwner}". Fix \`upstream.forkOwner\` ` +
+          '(Settings → Coro contribution) — it is the account Coro forks the upstream ' +
+          'repository into, and it must be either your own username or an organisation you ' +
+          'can create repositories in.',
+        )
+      }
+      throw err
+    })
+
+    if (account.type === 'Organization') return { organization: forkOwner }
+
+    const self = await this.authenticatedLogin()
+    if (self && self.toLowerCase() !== forkOwner.toLowerCase()) {
+      throw new GitHubError(
+        422,
+        `\`upstream.forkOwner\` is "${forkOwner}", which is a personal account other than the ` +
+        `one this token belongs to ("${self}"). GitHub can only fork into your own account or ` +
+        `an organisation you belong to. Set it to "${self}" or to such an organisation ` +
+        '(Settings → Coro contribution).',
+      )
+    }
+
+    // Own account: `organization` must be absent, not empty.
+    return {}
+  }
+
+  /** Login behind the token, used to validate a fork target. */
+  private async authenticatedLogin(): Promise<string | null> {
+    const user = await this.request<{ login?: string }>('GET', '/user').catch(() => null)
+    return user?.login ?? null
   }
 
   /**
