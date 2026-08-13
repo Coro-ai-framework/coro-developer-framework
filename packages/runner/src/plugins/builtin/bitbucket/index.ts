@@ -162,6 +162,7 @@ const MANIFEST: PluginManifest = {
         recommended: true,
         startPath: '/config/plugins/bitbucket/auth/atlassian-oauth/start',
         statusPath: '/config/plugins/bitbucket/auth/atlassian-oauth/status',
+        clientIdConfigKey: 'oauthClientId',
       },
       {
         kind: 'form',

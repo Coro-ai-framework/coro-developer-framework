@@ -20,6 +20,11 @@ import {
 } from '../../lib/plugin-catalog-types'
 import type { TestResult } from './wizard-state'
 
+function isSetupLikeOAuthError(message: string | undefined): boolean {
+  if (!message) return false
+  return /not configured|client id|install the github cli/i.test(message)
+}
+
 function applyConfigPatch(
   patch: Record<string, unknown>,
   onChange: (key: string, value: unknown) => void,
@@ -338,13 +343,21 @@ function OAuthAuthMethod({
   const [testing, setTesting] = useState(false)
   const [availabilityChecked, setAvailabilityChecked] = useState(false)
 
+  const clientIdKey = method.clientIdConfigKey ?? 'oauthClientId'
   const oauthClientId =
-    typeof draftConfig['oauthClientId'] === 'string' ? draftConfig['oauthClientId'] : ''
-  const oauthAvailable = oauth.available !== false || oauthClientId.trim().length > 0
+    typeof draftConfig[clientIdKey] === 'string' ? (draftConfig[clientIdKey] as string) : ''
+  const supportsByoClientId = Boolean(method.clientIdConfigKey)
+  const oauthAvailable =
+    oauth.available !== false || (supportsByoClientId && oauthClientId.trim().length > 0)
+  const setupMessage = oauth.setupHint ?? oauth.message
+  const showSetupNotice =
+    !oauthAvailable && availabilityChecked && Boolean(setupMessage)
+  const showClientIdField = supportsByoClientId && showSetupNotice
   const isSetupError =
     oauth.state === 'error' &&
     typeof oauth.message === 'string' &&
-    /not configured|client id/i.test(oauth.message)
+    (/not configured|client id|install the github cli/i.test(oauth.message) ||
+      Boolean(showSetupNotice))
 
   useEffect(() => {
     let cancelled = false
@@ -443,7 +456,9 @@ function OAuthAuthMethod({
     try {
       const payload: Record<string, unknown> = {}
       if (force) payload['force'] = true
-      if (oauthClientId.trim()) payload['oauthClientId'] = oauthClientId.trim()
+      if (supportsByoClientId && oauthClientId.trim()) {
+        payload['oauthClientId'] = oauthClientId.trim()
+      }
       const data = await requestJson<NormalizedOAuthStatus>(
         method.startPath,
         jsonRequest(payload, { method: 'POST' }),
@@ -453,7 +468,7 @@ function OAuthAuthMethod({
         window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer')
       }
       if (data.state === 'error') {
-        if (data.available === false || /not configured|client id/i.test(data.message ?? '')) {
+        if (data.available === false || isSetupLikeOAuthError(data.message)) {
           setError(data.message ?? 'OAuth is not configured on this runner.')
           setOauth(prev => ({ ...prev, state: 'idle', available: false, message: data.message }))
           return
@@ -471,42 +486,65 @@ function OAuthAuthMethod({
     oauth.state === 'success' || ready
       ? { status: 'ok' as const, label: 'Connected' }
       : oauth.state === 'pending'
-        ? { status: 'pending' as const, label: 'Waiting for browser…' }
-        : !oauthAvailable && availabilityChecked
+        ? { status: 'pending' as const, label: oauth.userCode ? 'Enter code in browser' : 'Waiting for browser…' }
+        : showSetupNotice
           ? { status: 'unset' as const, label: 'Setup required' }
           : oauth.state === 'error' && !isSetupError
             ? { status: 'error' as const, label: 'Failed' }
             : { status: 'unset' as const, label: 'Not connected' }
 
+  const displayError = error && !(showSetupNotice && error === setupMessage) ? error : null
+
   return (
     <div className="space-y-3">
-      {!oauthAvailable && availabilityChecked ? (
+      {showSetupNotice ? (
         <SettingsNotice tone="warning">
-          {oauth.setupHint ?? oauth.message ?? 'OAuth is not configured on this runner.'}
+          {setupMessage}
           {oauth.callbackUrl ? (
             <>
               {' '}
               Register callback URL{' '}
-              <span className="font-mono text-fg">{oauth.callbackUrl}</span> in your Atlassian app.
+              <span className="font-mono text-fg">{oauth.callbackUrl}</span> in your OAuth app.
             </>
           ) : null}
         </SettingsNotice>
       ) : null}
-      {!oauthAvailable && availabilityChecked ? (
+      {showClientIdField ? (
         <Field
           label="OAuth client ID"
-          hint="From developer.atlassian.com → your app → Settings. Alternatively set CORO_ATLASSIAN_OAUTH_CLIENT_ID before starting Coro."
+          hint="From your provider's developer console (e.g. developer.atlassian.com → your app → Settings)."
         >
           <Input
             value={oauthClientId}
-            onChange={event => onChange('oauthClientId', event.target.value)}
-            placeholder="Your Atlassian OAuth client ID"
+            onChange={event => onChange(clientIdKey, event.target.value)}
+            placeholder="Your OAuth client ID"
             autoComplete="off"
             spellCheck={false}
           />
         </Field>
       ) : null}
-      {error ? <SettingsNotice tone={oauthAvailable ? 'danger' : 'warning'}>{error}</SettingsNotice> : null}
+      {oauth.state === 'pending' && oauth.userCode ? (
+        <SettingsNotice tone="accent">
+          Enter code{' '}
+          <span className="font-mono font-semibold text-fg">{oauth.userCode}</span> at{' '}
+          {oauth.authorizeUrl ? (
+            <a
+              href={oauth.authorizeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent-300 underline underline-offset-2"
+            >
+              {oauth.authorizeUrl}
+            </a>
+          ) : (
+            'the verification page'
+          )}
+          .
+        </SettingsNotice>
+      ) : null}
+      {displayError ? (
+        <SettingsNotice tone={oauthAvailable ? 'danger' : 'warning'}>{displayError}</SettingsNotice>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-canvas/30 px-3 py-2.5">
         <div className="flex items-center gap-3 min-w-0">
           <SettingsStatusBadge status={statusBadge.status} label={statusBadge.label} />
@@ -518,7 +556,7 @@ function OAuthAuthMethod({
           type="button"
           size="sm"
           onClick={() => void startOAuth(ready)}
-          disabled={connecting || (!oauthAvailable && !oauthClientId.trim())}
+          disabled={connecting || (showClientIdField && !oauthClientId.trim())}
         >
           {connecting ? 'Starting…' : ready ? 'Reconnect' : method.label}
         </Button>

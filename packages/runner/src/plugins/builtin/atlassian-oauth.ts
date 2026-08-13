@@ -18,7 +18,7 @@ const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token'
 export const ATLASSIAN_OAUTH_CALLBACK_URL = 'http://127.0.0.1/callback'
 
 const SETUP_HINT =
-  'Create an OAuth 2.0 (3LO) app at developer.atlassian.com, set the callback URL to http://127.0.0.1/callback, then set CORO_ATLASSIAN_OAUTH_CLIENT_ID before starting Coro or enter your client ID below.'
+  'Create an OAuth 2.0 (3LO) app at developer.atlassian.com, set the callback URL to http://127.0.0.1/callback, then enter your client ID below.'
 
 type AtlassianFlow =
   | { state: 'idle' }
@@ -72,7 +72,7 @@ function idleStatus(pluginId: string) {
       ? {}
       : {
           message:
-            'Atlassian OAuth is not configured on this runner. Set CORO_ATLASSIAN_OAUTH_CLIENT_ID or enter your OAuth client ID below, then try again. You can also switch to API token auth.',
+            'Atlassian OAuth is not configured yet. Create an app at developer.atlassian.com and enter your OAuth client ID below, or switch to API token auth.',
         }),
   }
 }

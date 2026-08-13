@@ -140,6 +140,8 @@ export type PluginAuthMethodDescriptor =
       statusPath: string
       configOnSelect?: Record<string, unknown>
       successAccountPath?: string
+      /** When set, dashboard shows a BYO OAuth client ID field bound to this config key. */
+      clientIdConfigKey?: string
     }
   | {
       kind: 'detect'

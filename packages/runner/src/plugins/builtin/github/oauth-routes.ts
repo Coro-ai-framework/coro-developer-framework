@@ -1,33 +1,26 @@
-// ── GitHub device-flow OAuth routes ─────────────────────────────────────────
+// ── GitHub browser sign-in (via GitHub CLI) ─────────────────────────────────
+//
+// Uses `gh auth login --web` so users never configure OAuth client IDs or
+// environment variables. Requires the GitHub CLI on PATH; otherwise the
+// dashboard steers users to install gh or use a PAT.
 
 import type { Request, Response } from 'express'
 import type { PluginHttpRoutesContext } from '@coro-ai/plugin-sdk'
 import {
-  persistOAuthTokensPatch,
-  pollDeviceFlowToken,
-  startDeviceFlow,
-} from '@coro-ai/plugin-sdk'
-
-const GITHUB_DEVICE_AUTH_URL = 'https://github.com/login/device/code'
-const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token'
-const DEFAULT_CLIENT_ID = process.env['CORO_GITHUB_OAUTH_CLIENT_ID'] ?? 'Ov23liPLACEHOLDER'
+  ghCommandExists,
+  tryGhAuthToken,
+  validateGithubToken,
+  waitForGhWebLogin,
+} from './gh-session'
 
 type FlowState =
   | { state: 'idle' }
-  | {
-      state: 'pending'
-      userCode: string
-      verificationUri: string
-      deviceCode: string
-      clientId: string
-      interval: number
-      expiresIn: number
-    }
+  | { state: 'pending' }
   | { state: 'success'; account?: { label: string } }
   | { state: 'error'; message: string }
 
 const flows = new Map<string, FlowState>()
-const pollPromises = new Map<string, Promise<void>>()
+const loginPromises = new Map<string, Promise<void>>()
 
 export interface GitHubOAuthRouteOptions {
   pluginId: string
@@ -39,15 +32,58 @@ function flowFor(pluginId: string): FlowState {
   return flows.get(pluginId) ?? { state: 'idle' }
 }
 
+const GH_INSTALL_HINT =
+  'Install the GitHub CLI (https://cli.github.com) to sign in with your browser, or switch to a personal access token.'
+
+async function persistGhSession(
+  ctx: PluginHttpRoutesContext,
+  pluginId: string,
+  ownerConfigKey: string,
+): Promise<string | null> {
+  const token = await tryGhAuthToken()
+  if (!token) return null
+  const account = await validateGithubToken(globalThis.fetch, token)
+  if (!account) return null
+  ctx.savePluginConfig(pluginId, {
+    [ownerConfigKey]: account.login,
+    token,
+  })
+  return account.login
+}
+
+async function idleStatus(
+  ctx: PluginHttpRoutesContext,
+  pluginId: string,
+  ownerConfigKey: string,
+) {
+  const login = await persistGhSession(ctx, pluginId, ownerConfigKey)
+  if (login) {
+    flows.set(pluginId, { state: 'success', account: { label: login } })
+    return { state: 'success' as const, account: { label: login } }
+  }
+
+  const ghInstalled = await ghCommandExists()
+  return {
+    state: 'idle' as const,
+    available: ghInstalled,
+    ...(ghInstalled
+      ? {}
+      : {
+          setupHint: GH_INSTALL_HINT,
+          message: GH_INSTALL_HINT,
+        }),
+  }
+}
+
 export function registerGitHubOAuthRoutes(
   ctx: PluginHttpRoutesContext,
   options: GitHubOAuthRouteOptions,
 ): void {
-  const { app, logger, savePluginConfig } = ctx
+  const { app, logger } = ctx
   const { pluginId, ownerConfigKey } = options
   const base = `/config/plugins/${pluginId}/auth/device-oauth`
 
-  app.get(`${base}/status`, ((_req: Request, res: Response) => {
+  app.get(`${base}/status`, (async (_req: Request, res: Response) => {
     const flow = flowFor(pluginId)
     if (flow.state === 'success') {
       res.json({
@@ -57,96 +93,62 @@ export function registerGitHubOAuthRoutes(
       return
     }
     if (flow.state === 'pending') {
-      res.json({
-        state: 'pending',
-        userCode: flow.userCode,
-        authorizeUrl: flow.verificationUri,
-      })
+      const login = await persistGhSession(ctx, pluginId, ownerConfigKey)
+      if (login) {
+        flows.set(pluginId, { state: 'success', account: { label: login } })
+        res.json({ state: 'success', account: { label: login } })
+        return
+      }
+      res.json({ state: 'pending' })
       return
     }
     if (flow.state === 'error') {
       res.json({ state: 'error', message: flow.message })
       return
     }
-    res.json({ state: 'idle' })
+    res.json(await idleStatus(ctx, pluginId, ownerConfigKey))
   }) as never)
 
-  app.post(`${base}/start`, (async (req: Request, res: Response) => {
+  app.post(`${base}/start`, (async (_req: Request, res: Response) => {
     try {
-      const clientId =
-        typeof (req as { body?: { clientId?: string } }).body?.clientId === 'string'
-          ? (req as { body: { clientId: string } }).body.clientId
-          : DEFAULT_CLIENT_ID
-      if (!clientId || clientId.includes('PLACEHOLDER')) {
-        const err = {
-          state: 'error' as const,
-          message:
-            'GitHub device OAuth is not configured. Set CORO_GITHUB_OAUTH_CLIENT_ID or use a personal access token.',
-        }
+      const existing = await persistGhSession(ctx, pluginId, ownerConfigKey)
+      if (existing) {
+        flows.set(pluginId, { state: 'success', account: { label: existing } })
+        res.json({ state: 'success', account: { label: existing } })
+        return
+      }
+
+      const ghInstalled = await ghCommandExists()
+      if (!ghInstalled) {
+        const err = { state: 'error' as const, message: GH_INSTALL_HINT, available: false }
         flows.set(pluginId, err)
         res.json(err)
         return
       }
-      const started = await startDeviceFlow({
-        deviceAuthorizationUrl: GITHUB_DEVICE_AUTH_URL,
-        clientId,
-        scope: 'repo read:user',
-      })
-      flows.set(pluginId, {
-        state: 'pending',
-        userCode: started.userCode,
-        verificationUri: started.verificationUri,
-        deviceCode: started.deviceCode,
-        clientId,
-        interval: started.interval,
-        expiresIn: started.expiresIn,
-      })
-      res.json({
-        state: 'pending',
-        userCode: started.userCode,
-        authorizeUrl: started.verificationUri,
-      })
 
-      if (pollPromises.has(pluginId)) return
-      const pollPromise = (async () => {
+      flows.set(pluginId, { state: 'pending' })
+      res.json({ state: 'pending' })
+
+      if (loginPromises.has(pluginId)) return
+      const loginPromise = (async () => {
         try {
-          const tokens = await pollDeviceFlowToken({
-            tokenUrl: GITHUB_TOKEN_URL,
-            clientId,
-            deviceCode: started.deviceCode,
-            interval: started.interval,
-            expiresIn: started.expiresIn,
-            logger,
-          })
-          const userRes = await fetch('https://api.github.com/user', {
-            headers: {
-              Authorization: `Bearer ${tokens.accessToken}`,
-              Accept: 'application/vnd.github+json',
-              'User-Agent': 'coro-runner',
-            },
-          })
-          const user = userRes.ok
-            ? ((await userRes.json()) as { login?: string })
-            : {}
-          savePluginConfig(pluginId, {
-            [ownerConfigKey]: user.login ?? '',
-            token: tokens.accessToken,
-            ...persistOAuthTokensPatch(tokens),
-          })
-          flows.set(pluginId, {
-            state: 'success',
-            account: { label: user.login ?? 'GitHub' },
-          })
+          await waitForGhWebLogin()
+          const login = await persistGhSession(ctx, pluginId, ownerConfigKey)
+          if (!login) {
+            throw new Error('GitHub sign-in finished but no token was found. Try again.')
+          }
+          flows.set(pluginId, { state: 'success', account: { label: login } })
         } catch (err) {
+          logger.warn({ err, pluginId }, 'github gh web login failed')
           flows.set(pluginId, {
             state: 'error',
             message: err instanceof Error ? err.message : String(err),
           })
         } finally {
-          pollPromises.delete(pluginId)
+          loginPromises.delete(pluginId)
         }
       })()
-      pollPromises.set(pluginId, pollPromise)
+      loginPromises.set(pluginId, loginPromise)
     } catch (err) {
       flows.set(pluginId, {
         state: 'error',

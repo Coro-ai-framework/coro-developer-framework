@@ -95,6 +95,8 @@ export type PluginAuthMethodDescriptor =
       configOnSelect?: Record<string, unknown>
       /** Dot-path (e.g. `account.email`) populated from OAuth success account label. */
       successAccountPath?: string
+      /** When set, dashboard shows a BYO OAuth client ID field bound to this config key. */
+      clientIdConfigKey?: string
     }
   | {
       kind: 'detect'

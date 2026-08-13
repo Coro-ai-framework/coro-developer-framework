@@ -115,6 +115,7 @@ const MANIFEST: PluginManifest = {
         recommended: true,
         startPath: '/config/plugins/jira/auth/atlassian-oauth/start',
         statusPath: '/config/plugins/jira/auth/atlassian-oauth/status',
+        clientIdConfigKey: 'oauthClientId',
       },
       {
         kind: 'form',

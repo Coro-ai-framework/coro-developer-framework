@@ -21,6 +21,7 @@ export type PluginAuthMethodDescriptor =
       statusPath: string
       configOnSelect?: Record<string, unknown>
       successAccountPath?: string
+      clientIdConfigKey?: string
     }
   | {
       kind: 'detect'
