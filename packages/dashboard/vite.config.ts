@@ -24,6 +24,7 @@ export default defineConfig({
       '/health': apiProxy,
       '/webhook': apiProxy,
       '/config': apiProxy,
+      '/retrospectives': apiProxy,
     },
   },
 })

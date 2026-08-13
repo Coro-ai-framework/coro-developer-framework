@@ -22,6 +22,7 @@ import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
 import WorkflowFlow, { WorkItemsBreakdown } from '../components/WorkflowFlow'
 import PhaseModelPanel from '../components/jobs/PhaseModelPanel'
+import RetrospectiveFindingsPanel from '../components/retrospective/findings-panel'
 import ErrorState from '../components/common/error-state'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
@@ -52,6 +53,7 @@ import {
   hostsSubRuns,
 } from '../lib/run-labels'
 import { jsonRequest, requestJson } from '../lib/http'
+import { isRetrospectiveJob } from '../lib/retrospective'
 import { useJob } from '../hooks/useJob'
 import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
@@ -1074,6 +1076,8 @@ export default function JobDetail() {
         <TabsContent value="activity" className="space-y-5">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
             <div className="space-y-5">
+              {isRetrospectiveJob(job) ? <RetrospectiveFindingsPanel job={job} /> : null}
+
               {job.status === 'awaiting-developer-input' && !isDevPaused ? (
                 <ApprovalBox
                   job={job}

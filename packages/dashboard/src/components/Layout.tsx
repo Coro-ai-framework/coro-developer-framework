@@ -2,6 +2,7 @@ import {
   Gauge,
   History,
   Layers,
+  Microscope,
   Plus,
   Settings2,
   Workflow,
@@ -32,6 +33,7 @@ const NAV: NavigationItem[] = [
   { label: 'History', to: '/history', icon: History, group: 'primary' },
   { label: 'New Run', to: '/jobs/new', icon: Plus, group: 'secondary' },
   { label: 'Intelligence', to: '/intelligence', icon: Layers, group: 'secondary' },
+  { label: 'Retrospective', to: '/retrospectives', icon: Microscope, group: 'secondary' },
   { label: 'Settings', to: '/settings', icon: Settings2, group: 'secondary' },
 ]
 

@@ -1588,6 +1588,27 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  // Findings for one run. Lets the approval checkpoint render the report
+  // without teaching the dashboard how to parse the raw artefact payload —
+  // `summarizeRetrospective` stays the only reader of that shape.
+  app.get('/retrospectives/:jobId', async (req: Request, res: Response) => {
+    try {
+      const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId
+      const job = await stateBackend.getJob(jobId)
+      if (!job) {
+        res.status(404).json({ error: `Job ${jobId} not found` })
+        return
+      }
+      if (job.type !== JobType.Retrospective) {
+        res.status(400).json({ error: `Job ${jobId} is not a retrospective (type "${job.type}")` })
+        return
+      }
+      res.json(summarizeRetrospective(job))
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
   // ── Campaign child mutations ────────────────────────────────────────────
   //
   // Live-control endpoints forwarded to the dispatcher's coordinator. Each

@@ -293,6 +293,19 @@ Findings are categorised by which layer owns the fix:
 open-source repository; until an upstream destination is configured they
 are reported but not shipped.
 
+**Surfaces.** Three runner endpoints back both triggers —
+`POST /retrospectives` (dispatch; 409 while one is already running),
+`GET /retrospectives` (history with findings parsed out of the artefacts),
+and `GET /retrospectives/:jobId` (one run's findings). The dispatch shape
+lives in `jobs/retrospective.ts` so the CLI (`coro retrospective
+run|list`) and the dashboard's Retrospective page produce identical jobs.
+`summarizeRetrospective` is the only reader of the report artefact
+payload: the dashboard never parses it, which is why the findings panel on
+job detail fetches `GET /retrospectives/:jobId` instead of reading
+`job.artifacts`. Approval itself reuses the ordinary interactive
+checkpoint UI (`ApprovalBox` → `POST /jobs/:id/message`) — the
+retrospective adds a findings panel above it, not a second approval path.
+
 ---
 
 ## Repository structure

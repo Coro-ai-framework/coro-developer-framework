@@ -212,3 +212,61 @@ export interface Job {
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
+
+// ── Retrospective ────────────────────────────────────────────────────────────
+//
+// Wire shapes returned by `GET /retrospectives`. Mirrors
+// `packages/runner/src/jobs/retrospective.ts`; the runner is the source of
+// truth for the parsing rules, this file only describes what arrives.
+
+/** Which intelligence layer owns the fix for a finding. */
+export type FindingCategory = 'tenant-intelligence' | 'base-intelligence' | 'runner-code'
+export type FindingSeverity = 'high' | 'medium' | 'low'
+
+export interface FindingEvidence {
+  jobId: string
+  detail: string
+  metrics?: Record<string, unknown>
+}
+
+export interface RetrospectiveFinding {
+  id: string
+  title: string
+  category: FindingCategory
+  severity: FindingSeverity
+  evidence: FindingEvidence[]
+  proposedRemedy?: string
+  targetPaths?: string[]
+}
+
+export interface RetrospectiveOutcome {
+  findingId: string
+  /** Where the finding landed. `none` carries a `reason`. */
+  destination: string
+  prUrl?: string
+  issueUrl?: string
+  childJobId?: string
+  reason?: string
+}
+
+/** How far an approved finding is allowed to travel. */
+export interface RetrospectiveTiers {
+  tenant: boolean
+  upstreamIntelligence: boolean
+  upstreamCode: boolean
+}
+
+export interface RetrospectiveSummary {
+  jobId: string
+  status: string
+  phase: string
+  createdAt: string
+  updatedAt: string
+  jobWindow: number
+  tiers: RetrospectiveTiers
+  costUsd: number
+  /** True while the run is parked on the analysis → shipping approval gate. */
+  awaitingApproval: boolean
+  findings: RetrospectiveFinding[]
+  outcomes: RetrospectiveOutcome[]
+}
