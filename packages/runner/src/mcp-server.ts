@@ -411,7 +411,7 @@ export function createCoroMcpServer(
 
       tool(
         'list_jobs',
-        'List past jobs for cross-job analysis, newest first. Returns one compact row per job: status, final phase, cost, escalation flag, work-item loop counts, and which phases executed more than once. Pass `scope: "retrospective"` to list past retrospective runs instead (use this to avoid re-proposing findings that were already shipped or rejected). Retrospective jobs only.',
+        'List past jobs for cross-job analysis, newest first. Returns one compact row per job: status, final phase, cost, escalation flag, work-item loop counts, and `reworkPhases` — phases that ran more often than the workflow required, with the cost of the excess. Note that a phase running once per work item, plus once more per approval, is expected and is NOT reported as rework. Pass `scope: "retrospective"` to list past retrospective runs instead (use this to avoid re-proposing findings that were already shipped or rejected). Retrospective jobs only.',
         {
           limit: z.number().optional().describe('How many jobs to return (default 20, max 100).'),
           status: z.string().optional().describe('Filter to one lifecycle status, e.g. "complete" or "escalated".'),
@@ -424,7 +424,7 @@ export function createCoroMcpServer(
 
       tool(
         'get_job_report',
-        'Read an aggregated report for one past job: per-phase run counts (a phase with >1 run means the job looped back to it), cost and duration per phase, work-item loop counts, escalation reason, insights, PR open→merge latency, and artefact list. Identifiers are replaced with stable aliases (repo-A, ticket-ref-1) by default; pass `raw: true` only when you need real names for local reasoning — never quote raw values into anything published. Retrospective jobs only.',
+        'Read an aggregated report for one past job. `phases[]` gives per-phase cost, duration and turns, split into `workItemsHandled` (expected progression), `checkpointResumeRuns` (the re-entry after a developer approval), and `reworkRuns` / `reworkCostUsd` (loops with no structural explanation). `phaseRuns[]` lists every execution in order with the same attribution, so an avoidable-cost claim can name the runs it counted. Also returns work-item loop counts, escalation reason, insights, PR open→merge latency, and artefacts. Attributions are derived from work-item stamps and the workflow\'s checkpoints, not recorded reasons — they deliberately undercount rework rather than invent it. Identifiers are replaced with stable aliases (repo-A, ticket-ref-1) by default; pass `raw: true` only when you need real names for local reasoning — never quote raw values into anything published. Retrospective jobs only.',
         {
           jobId: z.string().describe('Job id from list_jobs.'),
           raw: z.boolean().optional().describe('Return unsanitised identifiers. Default false.'),

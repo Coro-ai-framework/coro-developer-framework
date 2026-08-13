@@ -69,15 +69,17 @@ names for a tenant-layer proposal that stays on this machine.
 ### 2. Read the window
 
 Call `list_jobs({ limit: <params.jobWindow> })`. The rows are compact on
-purpose: status, final phase, cost, escalation flag, loop counts, and
-which phases ran more than once.
+purpose: status, final phase, cost, escalation flag, work-item loop
+counts, and `reworkPhases` — phases that ran more often than the workflow
+required. A phase that ran once per work item, plus once more per
+approval, is absent from that list because it did nothing wrong.
 
 Then be selective. Do **not** call `get_job_report` on all of them
 reflexively — pull reports for the jobs whose summary row already shows
-something (escalated, looped phases, high `maxLoopCount`, cost far above
-its neighbours), plus a couple of clean ones as a baseline. Reach for
-`get_job_log_excerpts` only when a report points at a failure whose
-cause you cannot name.
+something (escalated, non-empty `reworkPhases`, high `maxLoopCount`, cost
+far above its neighbours), plus a couple of clean ones as a baseline.
+Reach for `get_job_log_excerpts` only when a report points at a failure
+whose cause you cannot name.
 
 Compute the medians you need for outlier comparison from the summary
 rows — that is what they are for.
@@ -89,8 +91,11 @@ Apply the skill's thresholds. For each candidate, write down:
 - **What repeats**, stated as a behaviour, not a metric.
 - **Evidence**: ≥ 2 `jobId`s, each with a real number.
 - **Category**: `tenant-intelligence` | `base-intelligence` | `runner-code`.
-- **Severity**: `high` | `medium` | `low`.
-- **Proposed remedy**: which file changes, and roughly how.
+- **Severity**: `high` | `medium` | `low`, with the cost that justifies it.
+- **Proposed remedy**: which files change, and roughly how. **Every** file
+  that states the thing you are changing — search `_intelligence/` for the
+  phrase rather than naming the first file that comes to mind. The skill's
+  §4 has the procedure and the module map for `runner-code` findings.
 
 If nothing clears the thresholds, say so. A retrospective that reports
 "no systemic patterns in the last 25 jobs, here is what I checked" is a

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { JobType, type Job, type PhaseUsage } from '@coro-ai/cloud-protocol'
 import {
   aggregatePhaseRuns,
+  attributePhaseRuns,
   buildJobReport,
   buildJobReportById,
   getJobLogExcerpts,
@@ -78,7 +79,7 @@ describe('aggregatePhaseRuns', () => {
       phaseRun('coding', { costUsd: 3, durationMs: 3000, numTurns: 12, model: 'claude-other' }),
     ])
 
-    expect(aggregated).toEqual([
+    expect(aggregated).toMatchObject([
       { phase: 'planning', runs: 1, costUsd: 1, durationMs: 1000, turns: 4, models: ['claude-test'] },
       { phase: 'coding', runs: 2, costUsd: 5, durationMs: 5000, turns: 22, models: ['claude-test', 'claude-other'] },
     ])
@@ -89,6 +90,119 @@ describe('aggregatePhaseRuns', () => {
       { phase: 'coding', model: '' } as unknown as PhaseUsage,
     ])
     expect(aggregated[0]).toMatchObject({ runs: 1, costUsd: 0, turns: 0, models: [] })
+  })
+
+  it('does not call per-work-item progression rework', () => {
+    // The workflow requires coding → review → coding for each work item, so
+    // three coding runs for three work items is the pipeline working.
+    const aggregated = aggregatePhaseRuns([
+      phaseRun('coding', { workItem: 'wi-1' }),
+      phaseRun('coding', { workItem: 'wi-2' }),
+      phaseRun('coding', { workItem: 'wi-3' }),
+    ])
+
+    expect(aggregated[0]).toMatchObject({
+      runs: 3,
+      workItemsHandled: 3,
+      reworkRuns: 0,
+      reworkCostUsd: 0,
+    })
+  })
+
+  it('absorbs one approval resume per work item at a checkpoint phase', () => {
+    // Approving a checkpoint re-enters the departing phase so the agent can
+    // finish its turn: 3 work items × (1 run + 1 resume) = 6 runs, no rework.
+    const usage = ['wi-1', 'wi-1', 'wi-2', 'wi-2', 'wi-3', 'wi-3']
+      .map(workItem => phaseRun('coding', { workItem }))
+
+    const aggregated = aggregatePhaseRuns(usage, {
+      checkpointPhases: new Set(['coding']),
+      interactive: true,
+    })
+
+    expect(aggregated[0]).toMatchObject({
+      runs: 6,
+      workItemsHandled: 3,
+      checkpointResumeRuns: 3,
+      reworkRuns: 0,
+    })
+  })
+
+  it('counts the runs nothing explains, and only their cost', () => {
+    const aggregated = aggregatePhaseRuns([
+      phaseRun('review', { workItem: 'wi-1', costUsd: 1 }),
+      phaseRun('review', { workItem: 'wi-1', costUsd: 2 }),
+      phaseRun('review', { workItem: 'wi-1', costUsd: 4 }),
+      phaseRun('review', { workItem: 'wi-2', costUsd: 8 }),
+    ])
+
+    expect(aggregated[0]).toMatchObject({
+      runs: 4,
+      workItemsHandled: 2,
+      checkpointResumeRuns: 0,
+      reworkRuns: 2,
+      costUsd: 15,
+      reworkCostUsd: 6,
+    })
+  })
+
+  it('charges the resume allowance only when checkpoints were enforced', () => {
+    const usage = [
+      phaseRun('coding', { workItem: 'wi-1' }),
+      phaseRun('coding', { workItem: 'wi-1' }),
+    ]
+
+    const enforced = aggregatePhaseRuns(usage, {
+      checkpointPhases: new Set(['coding']),
+      interactive: true,
+    })
+    const autonomous = aggregatePhaseRuns(usage, {
+      checkpointPhases: new Set(['coding']),
+      interactive: false,
+    })
+
+    expect(enforced[0]).toMatchObject({ checkpointResumeRuns: 1, reworkRuns: 0 })
+    expect(autonomous[0]).toMatchObject({ checkpointResumeRuns: 0, reworkRuns: 1 })
+  })
+
+  it('treats a return to an earlier work item as rework, not progression', () => {
+    // coding: wi-1, wi-2, then back to wi-1 after review feedback.
+    const aggregated = aggregatePhaseRuns([
+      phaseRun('coding', { workItem: 'wi-1' }),
+      phaseRun('coding', { workItem: 'wi-2' }),
+      phaseRun('coding', { workItem: 'wi-1' }),
+    ])
+
+    expect(aggregated[0]).toMatchObject({ workItemsHandled: 2, reworkRuns: 1 })
+  })
+})
+
+describe('attributePhaseRuns', () => {
+  it('names every execution in order so a cost claim can be checked', () => {
+    const runs = attributePhaseRuns(
+      [
+        phaseRun('planning'),
+        phaseRun('coding', { workItem: 'wi-1' }),
+        phaseRun('coding', { workItem: 'wi-1' }),
+        phaseRun('coding', { workItem: 'wi-1', costUsd: 9 }),
+      ],
+      { checkpointPhases: new Set(['coding']), interactive: true },
+    )
+
+    expect(runs.map(run => run.attribution)).toEqual([
+      'work-item',
+      'work-item',
+      'checkpoint-resume',
+      'rework',
+    ])
+    expect(runs[3]).toMatchObject({ phase: 'coding', workItem: 'wi-1', costUsd: 9 })
+  })
+
+  it('scrubs work-item names, which can carry service identifiers', () => {
+    const runs = attributePhaseRuns([phaseRun('coding', { workItem: 'billing-api port' })], {
+      scrub: text => text.replace('billing-api', 'repo-A'),
+    })
+    expect(runs[0].workItem).toBe('repo-A port')
   })
 })
 
@@ -114,8 +228,13 @@ describe('listJobHistory', () => {
       historyJob('job-new', {
         createdAt: '2026-02-01T00:00:00Z',
         updatedAt: '2026-02-01T00:30:00Z',
+        interactive: false,
         workItems: [{ name: 'wi-1', status: 'complete', loopCount: 3 }],
-        phaseUsage: [phaseRun('coding'), phaseRun('coding'), phaseRun('evaluation')],
+        phaseUsage: [
+          phaseRun('coding', { workItem: 'wi-1' }),
+          phaseRun('coding', { workItem: 'wi-1' }),
+          phaseRun('evaluation', { workItem: 'wi-1' }),
+        ],
         tokenUsage: {
           inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0, totalCostUsd: 4.25,
@@ -130,7 +249,7 @@ describe('listJobHistory', () => {
       costUsd: 4.25,
       durationMs: 30 * 60 * 1000,
       maxLoopCount: 3,
-      loopedPhases: [{ phase: 'coding', runs: 2 }],
+      reworkPhases: [{ phase: 'coding', runs: 2, reworkRuns: 1, reworkCostUsd: 1 }],
       repo: 'repo-A',
     })
   })
@@ -188,8 +307,12 @@ describe('buildJobReport', () => {
     status: 'escalated',
     phase: 'coding',
     escalationMessage: 'could not clone billing-api for PROJ-77',
+    interactive: false,
     workItems: [{ name: 'add billing-api endpoint', status: 'escalated', loopCount: 4 }],
-    phaseUsage: [phaseRun('coding'), phaseRun('coding', { costUsd: 2 })],
+    phaseUsage: [
+      phaseRun('coding', { workItem: 'add billing-api endpoint' }),
+      phaseRun('coding', { workItem: 'add billing-api endpoint', costUsd: 2 }),
+    ],
     insights: [{
       phase: 'coding', category: 'tooling', summary: 'clone of billing-api failed',
       detail: 'd', status: 'approved' as const,
@@ -219,10 +342,13 @@ describe('buildJobReport', () => {
     expect(report.repo).toBe('billing-api')
   })
 
-  it('surfaces loops, escalation, rate-limit retries, and PR latency', () => {
+  it('surfaces rework, escalation, rate-limit retries, and PR latency', () => {
     const report = buildJobReport(job, sanitizer)
 
-    expect(report.loopedPhases).toEqual([{ phase: 'coding', runs: 2 }])
+    expect(report.reworkPhases).toEqual([
+      { phase: 'coding', runs: 2, reworkRuns: 1, reworkCostUsd: 2 },
+    ])
+    expect(report.phaseRuns.map(run => run.attribution)).toEqual(['work-item', 'rework'])
     expect(report.escalated).toBe(true)
     expect(report.rateLimitRetries).toBe(2)
     expect(report.prs[0].timeToMergeMs).toBe(2 * 60 * 60 * 1000)

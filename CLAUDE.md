@@ -272,6 +272,19 @@ the install's own job records through three read-only MCP tools —
 `packages/runner/src/tools/job-history.ts` — and produces findings that
 cite at least two jobs each with concrete metrics.
 
+Those metrics have to be interpreted before they mean anything, and that
+is `attributePhaseRuns`' job. A repeated phase is usually not a loop:
+`coding → review → coding` is the required path for every work item, and
+approving a checkpoint re-enters the departing phase so the agent can
+finish its turn. Attributing each `phaseUsage` snapshot as `work-item`,
+`checkpoint-resume`, or `rework` is what stops the analyst reading a
+six-run coding phase on a three-work-item job as pathological — it filed
+exactly that false finding when the report exposed only raw run counts.
+The attribution is derived (work-item stamps plus the workflow's declared
+checkpoints), never recorded, so it is deliberately tuned to undercount:
+`reworkRuns` is a floor, and a finding built on it is a candidate rather
+than a proof.
+
 Three properties make this safe to ship:
 
 1. **Type-gated tools.** The history tools reject any job whose type is
