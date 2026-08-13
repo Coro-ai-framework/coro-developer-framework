@@ -1,13 +1,10 @@
-import { useState } from 'react'
-import { Plug, ShieldCheck } from 'lucide-react'
+import { Plug } from 'lucide-react'
 import StepShell from './components/StepShell'
 import ProviderCard from './components/ProviderCard'
-import ProviderConfigForm from './components/ProviderConfigForm'
 import LiveTestPanel from './components/LiveTestPanel'
-import { Button } from '../../ui/button'
-import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
-import { buildTestPayload, getProvidersForStep } from '../provider-catalog'
-import type { StepState, TestCheck, WizardAction } from '../wizard-state'
+import GenericAuthPanel from '../GenericAuthPanel'
+import { getProvidersForStep, useProviderCatalog } from '../../../hooks/useProviderCatalog'
+import type { StepState, WizardAction } from '../wizard-state'
 
 interface ScmStepProps {
   state: StepState
@@ -15,77 +12,11 @@ interface ScmStepProps {
   onOpenDrawer: () => void
 }
 
-interface GitTestResponse {
-  ok: boolean
-  message?: string
-  hint?: string
-  checks?: TestCheck[]
-}
-
-/**
- * "Where does your code live?" — pick GitHub or Bitbucket, fill in
- * the minimum required fields, then click Test & Continue. Hits the
- * existing `POST /test/git` endpoint which already returns a
- * structured per-check breakdown (REST auth, scopes, git smart-HTTP)
- * that LiveTestPanel renders verbatim.
- */
 export default function ScmStep({ state, dispatch, onOpenDrawer }: ScmStepProps) {
-  const providers = getProvidersForStep('scm')
+  const { plugins, loading } = useProviderCatalog()
+  const providers = getProvidersForStep(plugins, 'scm')
   const selectedId = state.selectedProviderId
   const selected = providers.find(p => p.id === selectedId)
-  const [testing, setTesting] = useState(false)
-
-  async function runTest() {
-    if (!selected) return
-    const payload = buildTestPayload('scm', selected.id, state.draftConfig)
-    if (!payload) {
-      dispatch({
-        type: 'testResult',
-        step: 'scm',
-        result: {
-          ok: false,
-          message: 'This plugin has no built-in connectivity test.',
-        },
-      })
-      return
-    }
-    setTesting(true)
-    dispatch({ type: 'beginTest', step: 'scm' })
-    try {
-      const result = await requestJson<GitTestResponse>(
-        payload.url,
-        jsonRequest(payload.body, { method: 'POST' }),
-      )
-      dispatch({
-        type: 'testResult',
-        step: 'scm',
-        result: {
-          ok: result.ok,
-          message: result.message ?? (result.ok ? 'Authenticated.' : 'Test failed.'),
-          ...(result.hint ? { hint: result.hint } : {}),
-          ...(result.checks ? { checks: result.checks } : {}),
-        },
-      })
-    } catch (err) {
-      dispatch({
-        type: 'testResult',
-        step: 'scm',
-        result: {
-          ok: false,
-          message: err instanceof ApiError ? err.message : err instanceof Error ? err.message : String(err),
-        },
-      })
-    } finally {
-      setTesting(false)
-    }
-  }
-
-  const requiredFilled = !!selected && selected.fields
-    .filter(f => f.required)
-    .every(f => {
-      const v = state.draftConfig[f.key]
-      return typeof v === 'string' && v.length > 0
-    })
 
   return (
     <StepShell
@@ -94,12 +25,14 @@ export default function ScmStep({ state, dispatch, onOpenDrawer }: ScmStepProps)
       description="Coro clones repositories, opens branches, and submits pull requests on your behalf. Connect a git host so the agents can push their work."
     >
       <div className="space-y-3">
+        {loading ? <p className="text-sm text-fg-muted">Loading providers…</p> : null}
         {providers.map(provider => (
           <ProviderCard
             key={provider.id}
             pluginId={provider.id}
-            title={provider.title}
-            subtitle={provider.subtitle}
+            title={provider.displayName}
+            subtitle={provider.ui?.subtitle ?? ''}
+            recommended={provider.ui?.recommendedForOnboarding}
             selected={selectedId === provider.id}
             onSelect={() =>
               dispatch({ type: 'selectProvider', step: 'scm', providerId: provider.id })
@@ -118,26 +51,18 @@ export default function ScmStep({ state, dispatch, onOpenDrawer }: ScmStepProps)
       </div>
 
       {selected ? (
-        <>
-          <ProviderConfigForm
-            provider={selected}
-            draft={state.draftConfig}
-            onChange={(key, value) =>
-              dispatch({ type: 'setField', step: 'scm', key, value })
-            }
-          />
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void runTest()}
-              disabled={!requiredFilled || testing}
-            >
-              <ShieldCheck />
-              {testing ? 'Testing…' : 'Test connection'}
-            </Button>
-          </div>
-        </>
+        <GenericAuthPanel
+          entry={selected}
+          draftConfig={state.draftConfig}
+          autoVerifyWhenReady
+          onChange={(key, value) =>
+            dispatch({ type: 'setField', step: 'scm', key, value })
+          }
+          onBeginTest={() => dispatch({ type: 'beginTest', step: 'scm' })}
+          onTestResult={result =>
+            dispatch({ type: 'testResult', step: 'scm', result })
+          }
+        />
       ) : null}
 
       <LiveTestPanel status={state.status} result={state.lastResult} />

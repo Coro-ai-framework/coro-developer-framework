@@ -16,6 +16,7 @@ import { createGitHubScmPlugin } from './github'
 import { createJiraTrackerPlugin } from './jira'
 import { createLinearTrackerPlugin } from './linear'
 import { createGitHubTrackerPlugin } from './github-tracker'
+import { createLocalScmPlugin } from './local'
 
 // ── Built-in plugin factories ────────────────────────────────────────────────
 //
@@ -38,6 +39,7 @@ export type BuiltinPluginFactory = (args: {
 export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
   bitbucket: createBitBucketScmPlugin,
   github: createGitHubScmPlugin,
+  local: createLocalScmPlugin,
   jira: createJiraTrackerPlugin,
   linear: createLinearTrackerPlugin,
   // GitHub doubles as a tracker (Issues). Registered under a distinct
@@ -69,7 +71,7 @@ export const BUILTIN_PLUGIN_FACTORIES: Record<string, BuiltinPluginFactory> = {
  * sync with {@link BUILTIN_PLUGIN_FACTORIES}.
  */
 export const BUILTIN_PLUGIN_IDS_BY_KIND: Readonly<Record<'scm' | 'tracker' | 'executor', readonly string[]>> = {
-  scm: ['bitbucket', 'github'],
+  scm: ['bitbucket', 'github', 'local'],
   tracker: ['jira', 'linear', 'github-issues'],
   executor: ['anthropic', 'openai'],
 }
@@ -84,6 +86,8 @@ const BUILTIN_PLUGIN_ACTIVATION_HINTS: Readonly<Record<string, string>> = {
     'Built in. Configure Settings > Git with provider Bitbucket, workspace slug, username, and app password to enable it.',
   github:
     'Built in. Configure Settings > Git with provider GitHub, organization/owner, and personal access token to enable it.',
+  local:
+    'Built in. Enable local mode to run jobs against an existing git checkout on this machine without a remote host.',
   jira:
     'Built in. Configure Settings > Tracker with provider Jira, base URL, username, and API token to enable it.',
   linear:

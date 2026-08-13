@@ -12,6 +12,7 @@ export * from './mcp'
 export * from './rate-limit'
 export * from './guardrails'
 export * from './chat-mcp'
+export * from './oauth-helpers'
 
 /**
  * The plugin-API host version this SDK release was built against.
@@ -19,4 +20,4 @@ export * from './chat-mcp'
  * the runner's `HOST_PLUGIN_API_VERSION` (kept in sync with this
  * value) to decide whether to load. Bump on breaking surface changes.
  */
-export const SDK_PLUGIN_API_VERSION = '1.0.0' as const
+export const SDK_PLUGIN_API_VERSION = '1.1.0' as const

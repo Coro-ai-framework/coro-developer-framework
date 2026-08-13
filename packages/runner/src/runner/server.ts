@@ -35,7 +35,7 @@ import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
 import { computeJobDiff, emptyJobDiff, resolveDiffBase } from '../jobs/job-diff'
 import { detectEditors, openInEditor, revealFolder } from './open-editor'
-import { assertJobPluginRequirements } from '../jobs/plugin-preflight'
+import { assertJobPluginRequirements, PluginPreflightError } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { runIntakeStream } from '../intake/handler'
 import { type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
@@ -980,6 +980,160 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
+  // GET /config/plugins/catalog — provider-agnostic onboarding catalog
+  // (manifests + auth descriptors + serialised config schemas).
+  app.get('/config/plugins/catalog', async (_req: Request, res: Response) => {
+    try {
+      const config = loadLocalConfig()
+      const { resolvePluginsConfig } = await import('../config/local-config')
+      const resolved = resolvePluginsConfig(config)
+      const { buildPluginCatalog } = await import('../plugins/plugin-catalog')
+      const catalog = await buildPluginCatalog({
+        logger,
+        pluginsConfig: resolved,
+        runtimes: plugins?.all() ?? [],
+      })
+      res.json({ plugins: catalog })
+    } catch (err) {
+      logger.error({ err }, 'GET /config/plugins/catalog failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // GET /config/mcp/discovered — count + ids for Claude Code MCP inheritance.
+  app.get('/config/mcp/discovered', async (_req: Request, res: Response) => {
+    try {
+      const { discoverClaudeCodeMcpServers } = await import('../config/local-config')
+      const { servers } = discoverClaudeCodeMcpServers()
+      const ids = Object.keys(servers)
+      res.json({ count: ids.length, ids })
+    } catch (err) {
+      logger.error({ err }, 'GET /config/mcp/discovered failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // POST /config/plugins/:id/auth/detect — local credential discovery.
+  app.post('/config/plugins/:id/auth/detect', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id']
+      const pluginId = typeof rawId === 'string' ? rawId : rawId?.[0]
+      if (!pluginId) {
+        res.status(400).json({ error: 'plugin id is required' })
+        return
+      }
+      const runtime = plugins?.byId(pluginId)
+      let probeRuntime = runtime
+      if (!probeRuntime) {
+        const config = loadLocalConfig()
+        const { resolvePluginsConfig } = await import('../config/local-config')
+        const resolved = resolvePluginsConfig(config)
+        const { createTransientPluginRuntime } = await import('../plugins/plugin-probe')
+        probeRuntime = await createTransientPluginRuntime({
+          pluginId,
+          config: {},
+          logger,
+          pluginsConfig: resolved,
+          settings: runnerCtx?.settings,
+        }) ?? undefined
+      }
+      if (!probeRuntime || typeof probeRuntime.detectCredentials !== 'function') {
+        res.json({ candidates: [] })
+        return
+      }
+      const raw = await probeRuntime.detectCredentials()
+      const { storeDetectCandidates } = await import('../plugins/detect-cache')
+      storeDetectCandidates(pluginId, raw)
+      res.json({
+        candidates: raw.map(c => ({
+          id: c.id,
+          sourceLabel: c.sourceLabel,
+          accountHint: c.accountHint,
+          preview: c.preview,
+        })),
+      })
+    } catch (err) {
+      logger.warn({ err }, 'POST /config/plugins/:id/auth/detect failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // POST /config/plugins/:id/auth/detect/apply — persist a cached candidate.
+  app.post('/config/plugins/:id/auth/detect/apply', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id']
+      const pluginId = typeof rawId === 'string' ? rawId : rawId?.[0]
+      const body = (req.body ?? {}) as {
+        candidateId?: string
+        overrides?: Record<string, unknown>
+      }
+      if (!pluginId || !body.candidateId) {
+        res.status(400).json({ error: 'plugin id and candidateId are required' })
+        return
+      }
+      const { takeDetectCandidate } = await import('../plugins/detect-cache')
+      const candidate = takeDetectCandidate(pluginId, body.candidateId)
+      if (!candidate) {
+        res.status(410).json({ ok: false, message: 'Credential candidate expired or not found.' })
+        return
+      }
+      const mergedConfig = {
+        ...candidate.config,
+        ...(body.overrides ?? {}),
+      }
+      pluginSavePluginConfig(pluginId, mergedConfig)
+      const existing = loadLocalConfig()
+      const onDisk = (existing?.plugins?.installed?.[pluginId]?.config ?? {}) as Record<string, unknown>
+      const { probePluginConnection } = await import('../plugins/plugin-probe')
+      const { resolvePluginsConfig } = await import('../config/local-config')
+      const resolved = resolvePluginsConfig(existing)
+      const result = await probePluginConnection({
+        pluginId,
+        draftConfig: mergedConfig,
+        onDiskConfig: onDisk,
+        logger,
+        pluginsConfig: resolved,
+        settings: runnerCtx?.settings,
+        existingRuntime: plugins?.byId(pluginId) ?? null,
+      })
+      res.json(result)
+    } catch (err) {
+      logger.warn({ err }, 'POST /config/plugins/:id/auth/detect/apply failed')
+      res.json({ ok: false, message: (err as Error).message })
+    }
+  })
+
+  // POST /test/plugin/:id — generic plugin credential probe.
+  app.post('/test/plugin/:id', async (req: Request, res: Response) => {
+    try {
+      const rawId = req.params['id']
+      const pluginId = typeof rawId === 'string' ? rawId : rawId?.[0]
+      if (!pluginId) {
+        res.status(400).json({ ok: false, message: 'plugin id is required' })
+        return
+      }
+      const body = (req.body ?? {}) as { config?: Record<string, unknown> }
+      const existing = loadLocalConfig()
+      const onDisk = (existing?.plugins?.installed?.[pluginId]?.config ?? {}) as Record<string, unknown>
+      const { resolvePluginsConfig } = await import('../config/local-config')
+      const resolved = resolvePluginsConfig(existing)
+      const { probePluginConnection } = await import('../plugins/plugin-probe')
+      const result = await probePluginConnection({
+        pluginId,
+        draftConfig: body.config ?? {},
+        onDiskConfig: onDisk,
+        logger,
+        pluginsConfig: resolved,
+        settings: runnerCtx?.settings,
+        existingRuntime: plugins?.byId(pluginId) ?? null,
+      })
+      res.json(result)
+    } catch (err) {
+      logger.warn({ err }, 'POST /test/plugin/:id failed')
+      res.json({ ok: false, message: (err as Error).message })
+    }
+  })
+
   // POST /plugins/install — drop-in install via npm spec. Wraps the
   // CLI flow (`coro plugin install …`) in an HTTP endpoint so the
   // dashboard's "Install plugin" form can spawn the same install
@@ -1182,6 +1336,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         streamUrl: `/jobs/${job.id}/stream`,
       })
     } catch (err) {
+      if (err instanceof PluginPreflightError) {
+        res.status(409).json({ error: 'plugin_required', missingKind: err.missingKind, message: err.message })
+        return
+      }
       logger.error({ err }, 'Generic job dispatch failed')
       res.status(400).json({ error: (err as Error).message })
     }

@@ -67,6 +67,69 @@ export type PluginMcpServerConfig =
 
 export type PluginKind = 'scm' | 'tracker' | 'executor' | (string & {})
 
+// ── Auth method descriptors (onboarding) ────────────────────────────────────
+
+export type PluginAuthFieldKind = 'text' | 'secret' | 'url'
+
+export interface PluginAuthFieldDescriptor {
+  /** Plugin-config key (matches configSchema). */
+  key: string
+  label: string
+  hint?: string
+  placeholder?: string
+  kind: PluginAuthFieldKind
+  required?: boolean
+}
+
+export type PluginAuthMethodDescriptor =
+  | {
+      kind: 'oauth'
+      id: string
+      label: string
+      recommended?: boolean
+      /** POST — plugin registers via registerHttpRoutes. */
+      startPath: string
+      /** GET — polled by the dashboard. */
+      statusPath: string
+      /** Merged into plugin config when the user selects this method. */
+      configOnSelect?: Record<string, unknown>
+      /** Dot-path (e.g. `account.email`) populated from OAuth success account label. */
+      successAccountPath?: string
+    }
+  | {
+      kind: 'detect'
+      id: string
+      label: string
+      recommended?: boolean
+      /** Config key the user can override before apply (e.g. org owner). */
+      accountConfigKey?: string
+    }
+  | {
+      kind: 'form'
+      id: string
+      label: string
+      recommended?: boolean
+      fields: PluginAuthFieldDescriptor[]
+      /** Merged into plugin config when the user selects this method. */
+      configOnSelect?: Record<string, unknown>
+    }
+
+export interface PluginAuthDescriptor {
+  methods: ReadonlyArray<PluginAuthMethodDescriptor>
+}
+
+/**
+ * One locally-detectable credential bundle. Raw `config` is server-side
+ * only — the dashboard sees {@link preview} and applies by {@link id}.
+ */
+export interface CredentialCandidate {
+  id: string
+  sourceLabel: string
+  accountHint?: string
+  config: Record<string, unknown>
+  preview: ReadonlyArray<{ label: string; value: string }>
+}
+
 export interface PluginWebhookDescriptor {
   pathSuffix?: string
   algorithm: 'hmac-sha256' | 'hmac-sha1' | 'none'
@@ -100,8 +163,14 @@ export interface PluginManifest {
    * providers (e.g. Anthropic) whose configuration is an OAuth flow
    * rather than a flat key/value list.
    */
+  /** Declarative auth methods for the FTUE wizard and Settings. */
+  auth?: PluginAuthDescriptor
   ui?: {
     customPanel?: string
+    /** One-line subtitle for onboarding provider cards. */
+    subtitle?: string
+    /** When true, the FTUE wizard renders a "Recommended" pill. */
+    recommendedForOnboarding?: boolean
   }
 }
 
@@ -222,6 +291,11 @@ export interface PluginRuntime<Config = unknown> {
    * for any failure so the dashboard always gets a structured result.
    */
   testConnection?(config: Config): Promise<PluginTestResult>
+  /**
+   * Optional local credential discovery. The runner caches raw results
+   * server-side; the dashboard applies a candidate by id.
+   */
+  detectCredentials?(): Promise<ReadonlyArray<CredentialCandidate>>
 }
 
 // ── SCM plugin ───────────────────────────────────────────────────────────────

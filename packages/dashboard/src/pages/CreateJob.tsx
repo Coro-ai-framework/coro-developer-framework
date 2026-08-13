@@ -55,6 +55,9 @@ import {
 } from '../lib/coach-mode'
 import { firstPlaceholder, type PromptTemplate } from '../lib/prompt-templates'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
+import GenericAuthPanel from '../components/wizard/GenericAuthPanel'
+import { useProviderCatalog } from '../hooks/useProviderCatalog'
+import type { StepKind } from '../lib/plugin-catalog-types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -180,6 +183,8 @@ export default function CreateJob() {
 
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [jitConnectKind, setJitConnectKind] = useState<StepKind | null>(null)
+  const { plugins: catalogPlugins } = useProviderCatalog()
 
   useEffect(() => {
     void (async () => {
@@ -288,10 +293,33 @@ export default function CreateJob() {
       clearNewRunDraft()
       navigate(`/jobs/${data.jobId}`)
     } catch (err) {
+      if (
+        err instanceof ApiError
+        && err.status === 409
+        && typeof err.payload === 'object'
+        && err.payload !== null
+        && (err.payload as { error?: string }).error === 'plugin_required'
+      ) {
+        const missingKind = (err.payload as { missingKind?: StepKind }).missingKind
+        if (missingKind === 'scm' || missingKind === 'tracker') {
+          setJitConnectKind(missingKind)
+          setError('Connect a provider below, then retry dispatch.')
+          setSubmitting(false)
+          return
+        }
+      }
       setError(err instanceof ApiError ? err.message : (err as Error).message)
       setSubmitting(false)
     }
   }
+
+  const jitPluginEntry = useMemo(() => {
+    if (!jitConnectKind || !catalogPlugins) return null
+    const kind = jitConnectKind === 'llm' ? 'executor' : jitConnectKind
+    const matches = catalogPlugins.filter(p => p.kind === kind)
+    const preferredId = jitConnectKind === 'scm' ? scmId : jitConnectKind === 'tracker' ? trackerId : undefined
+    return matches.find(p => p.id === preferredId) ?? matches[0] ?? null
+  }, [jitConnectKind, catalogPlugins, scmId, trackerId])
 
   function handleTemplateSelect(template: PromptTemplate) {
     patchDraft({ mode: template.mode })
@@ -625,6 +653,25 @@ export default function CreateJob() {
         {error ? (
           <div className="rounded-2xl border border-danger-500/30 bg-danger-500/10 p-4 text-sm text-danger-200">
             {error}
+          </div>
+        ) : null}
+
+        {jitConnectKind && jitPluginEntry ? (
+          <div className="rounded-2xl border border-warning-500/30 bg-warning-500/8 p-4 space-y-3">
+            <div className="text-sm font-medium text-fg">
+              Connect {jitConnectKind === 'scm' ? 'source control' : 'issue tracker'}
+            </div>
+            <GenericAuthPanel
+              entry={jitPluginEntry}
+              draftConfig={{}}
+              onChange={() => {}}
+              onTestResult={result => {
+                if (result.ok) {
+                  setJitConnectKind(null)
+                  setError(null)
+                }
+              }}
+            />
           </div>
         ) : null}
         </form>

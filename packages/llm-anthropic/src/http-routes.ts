@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import type { PluginHttpRoutesContext } from '@coro-ai/plugin-sdk'
 import { ClaudeLoginManager } from './login'
+import { normalizeClaudeLoginStatus } from './oauth-status'
 import { ensureClaudeCodeCliExecutable, resolveClaudeCodeCliPath } from './cli-path'
 import { resetRefreshCooldown } from './credential-store'
 
@@ -50,11 +51,11 @@ export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void 
 
   app.get('/config/anthropic/claude-login/status', ((_req: unknown, res: any) => {
     try {
-      const state = claudeLoginManager.getState()
-      if (state.status === 'connected') {
-        saveClaudeLoginConfig(state.account)
+      const raw = claudeLoginManager.getState()
+      if (raw.status === 'connected') {
+        saveClaudeLoginConfig(raw.account)
       }
-      res.json(state)
+      res.json(normalizeClaudeLoginStatus(raw))
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
     }
@@ -63,11 +64,11 @@ export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void 
   app.post('/config/anthropic/claude-login/start', (async (req: any, res: any) => {
     try {
       const forceReauth = req.body?.force === true
-      const state = await claudeLoginManager.start({ forceReauth })
-      if (state.status === 'connected') {
-        saveClaudeLoginConfig(state.account)
+      const raw = await claudeLoginManager.start({ forceReauth })
+      if (raw.status === 'connected') {
+        saveClaudeLoginConfig(raw.account)
       }
-      res.json(state)
+      res.json(normalizeClaudeLoginStatus(raw))
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
     }
@@ -87,14 +88,14 @@ export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void 
         return
       }
 
-      const state = await claudeLoginManager.submitCallback({
+      const raw = await claudeLoginManager.submitCallback({
         authorizationCode,
         state: callbackState,
       })
-      if (state.status === 'connected') {
-        saveClaudeLoginConfig(state.account)
+      if (raw.status === 'connected') {
+        saveClaudeLoginConfig(raw.account)
       }
-      res.json(state)
+      res.json(normalizeClaudeLoginStatus(raw))
     } catch (err) {
       const message = (err as Error).message
       const status = message === 'No active Claude login flow' ? 409 : 500

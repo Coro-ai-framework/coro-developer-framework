@@ -77,6 +77,7 @@ const VALID_CONFIGS: Record<string, Record<string, unknown>> = {
     token: 'tok',
     defaultOwner: 'acme',
   },
+  local: {},
 }
 
 /**
@@ -89,6 +90,7 @@ const INVALID_CONFIGS: Record<string, Record<string, unknown>> = {
   jira: { baseUrl: 'https://example.atlassian.net' }, // missing creds
   linear: {},                                // missing apiKey
   'github-issues': { token: 't' },           // missing defaultOwner
+  local: {},
 }
 
 interface ConformanceCase {
@@ -192,6 +194,7 @@ describe.each(CASES)('plugin manifest — $id', ({ factory, validConfig }) => {
 
 describe.each(CASES)('plugin lifecycle — $id', (kase) => {
   it('init() rejects malformed config', async () => {
+    if (kase.id === 'local') return
     const runtime = syncCall(kase.factory, kase.invalidConfig)
     await expect(
       runtime.init(kase.invalidConfig as never, { logger, fetch: globalThis.fetch }),
@@ -240,6 +243,7 @@ describe.each(CASES)('plugin lifecycle — $id', (kase) => {
 // ── SCM-specific contract ────────────────────────────────────────────────────
 
 const SCM_CASES = CASES.filter(c => {
+  if (c.id === 'local') return false
   const r = syncCall(c.factory, c.validConfig)
   return isScmPlugin(r)
 })
@@ -253,13 +257,18 @@ describe.each(SCM_CASES)('SCM plugin contract — $id', (kase) => {
 
   it('cloneInfo() returns a non-empty URL and an envForGit object', async () => {
     const r = await init()
-    const info = r.cloneInfo({ repo: 'test-repo' })
-    expect(info.url).toMatch(/^https?:\/\//)
+    const info = r.cloneInfo({ repo: kase.id === 'local' ? process.cwd() : 'test-repo' })
+    if (kase.id === 'local') {
+      expect(path.isAbsolute(info.url)).toBe(true)
+    } else {
+      expect(info.url).toMatch(/^https?:\/\//)
+    }
     expect(typeof info.envForGit).toBe('object')
     expect(info.envForGit).not.toBeNull()
   })
 
   it('cloneInfo() URL embeds the repo slug verbatim', async () => {
+    if (kase.id === 'local') return
     const r = await init()
     const info = r.cloneInfo({ repo: 'svc-abc' })
     expect(info.url).toContain('svc-abc')
@@ -417,6 +426,29 @@ describe.each(TRACKER_CASES)('Tracker plugin contract — $id', (kase) => {
       rawBody: Buffer.from(JSON.stringify({ ping: true })),
     })
     expect(event).toBeNull()
+  })
+})
+
+describe('auth manifest contract', () => {
+  it('oauth methods declare non-empty paths; detect methods require detectCredentials', async () => {
+    for (const c of CASES) {
+      const runtime = syncCall(c.factory, c.validConfig)
+      const methods = runtime.manifest.auth?.methods ?? []
+      for (const method of methods) {
+        if (method.kind === 'oauth') {
+          expect(method.startPath.length).toBeGreaterThan(0)
+          expect(method.statusPath.length).toBeGreaterThan(0)
+        }
+        if (method.kind === 'form') {
+          for (const field of method.fields) {
+            expect(typeof field.key).toBe('string')
+          }
+        }
+        if (method.kind === 'detect') {
+          expect(typeof runtime.detectCredentials).toBe('function')
+        }
+      }
+    }
   })
 })
 

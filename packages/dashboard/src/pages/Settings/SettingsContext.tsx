@@ -14,10 +14,8 @@ import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 // ── Persisted config shapes ─────────────────────────────────────────────────
 //
 // LLM-provider-specific shapes (Anthropic Claude login state, OAuth
-// accounts, etc.) used to live here back when Anthropic was the only
-// provider hard-coded into the runner. They have moved to the
-// AnthropicAuthPanel custom panel under `sections/AnthropicAuthPanel.tsx`
-// so adding a new provider plugin no longer means editing this context.
+// accounts, etc.) are configured via each plugin manifest's
+// `auth.methods` and rendered by {@link GenericAuthPanel}.
 
 export interface McpServerEntry {
   type: 'stdio' | 'http' | 'sse'
@@ -58,14 +56,10 @@ export interface PluginManifestSummary {
   capabilities?: Record<string, boolean>
   configSchema: unknown
   /**
-   * Optional UI override surfaced by the plugin. When `customPanel`
-   * is set, the dashboard renders the matching component from
-   * {@link customPanels} instead of the schema-driven
-   * {@link PluginConfigCard}. Used by providers (e.g. Anthropic)
-   * whose configuration is an OAuth flow rather than a flat
-   * key/value list.
+   * Optional UI hints surfaced by the plugin manifest. Auth flows are
+   * rendered generically from `auth.methods` via {@link GenericAuthPanel}.
    */
-  ui?: { customPanel?: string }
+  ui?: { customPanel?: string; subtitle?: string; recommendedForOnboarding?: boolean }
 }
 
 export interface PluginEntry {

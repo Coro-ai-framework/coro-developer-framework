@@ -1,7 +1,10 @@
+import { useEffect, useState } from 'react'
 import { AlertTriangle, ArrowRight, Bot, CheckCircle2, FileStack, GitBranch, KanbanSquare, Layers, PlayCircle, Settings2, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '../../ui/button'
+import { Switch } from '../../ui/switch'
 import { cn } from '../../../lib/utils'
+import { jsonRequest, requestJson } from '../../../lib/http'
 import type { WizardState } from '../wizard-state'
 import { hasSkippedRequiredStep } from '../wizard-state'
 
@@ -45,6 +48,20 @@ const STATUS_PILL = {
  */
 export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps) {
   const skippedRequired = hasSkippedRequiredStep(wizardState)
+  const [mcpDiscovered, setMcpDiscovered] = useState<{ count: number; ids: string[] } | null>(null)
+  const [inheritMcps, setInheritMcps] = useState(false)
+
+  useEffect(() => {
+    void requestJson<{ count: number; ids: string[] }>('/config/mcp/discovered')
+      .then(setMcpDiscovered)
+      .catch(() => setMcpDiscovered(null))
+  }, [])
+
+  async function toggleInheritMcps(enabled: boolean) {
+    setInheritMcps(enabled)
+    await requestJson('/config', jsonRequest({ inheritClaudeCodeMcps: enabled }, { method: 'PUT' }))
+  }
+
   const rows = [
     { id: 'llm' as const, icon: Bot, label: 'LLM provider' },
     { id: 'scm' as const, icon: GitBranch, label: 'Code host' },
@@ -106,6 +123,20 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
           )
         })}
       </div>
+
+      {mcpDiscovered && mcpDiscovered.count > 0 ? (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-fg">
+              Reuse {mcpDiscovered.count} MCP server{mcpDiscovered.count === 1 ? '' : 's'} from Claude Code
+            </div>
+            <div className="text-[12px] text-fg-muted truncate">
+              {mcpDiscovered.ids.join(', ')}
+            </div>
+          </div>
+          <Switch checked={inheritMcps} onCheckedChange={v => void toggleInheritMcps(v)} />
+        </div>
+      ) : null}
 
       {/* ── How Coro works (mini explainer) ───────────────────────── */}
       <div className="space-y-3 rounded-2xl border border-line bg-overlay/30 p-5">

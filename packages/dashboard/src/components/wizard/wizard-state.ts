@@ -13,7 +13,7 @@
 // SettingsContext when a step's "Test & Continue" passes (or the
 // user explicitly skips).
 
-import type { StepKind } from './provider-catalog'
+export type StepKind = 'llm' | 'scm' | 'tracker'
 
 export type StepStatus = 'idle' | 'testing' | 'passed' | 'failed' | 'skipped'
 
@@ -104,8 +104,23 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     }
     case 'setField': {
       const prev = state.steps[action.step]
+      const existing = prev.draftConfig[action.key]
+      const isClear =
+        action.value === '' || action.value === undefined || action.value === null
+      if (isClear && existing === undefined) return state
+      if (!isClear && existing === action.value) return state
+      if (
+        !isClear &&
+        existing !== null &&
+        typeof existing === 'object' &&
+        action.value !== null &&
+        typeof action.value === 'object' &&
+        JSON.stringify(existing) === JSON.stringify(action.value)
+      ) {
+        return state
+      }
       const nextConfig = { ...prev.draftConfig }
-      if (action.value === '' || action.value === undefined || action.value === null) {
+      if (isClear) {
         delete nextConfig[action.key]
       } else {
         nextConfig[action.key] = action.value

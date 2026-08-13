@@ -32,6 +32,7 @@
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
+import { registerAtlassianOAuthRoutes } from '../atlassian-oauth'
 import {
   BitBucketClient,
   type CreatePrOptions,
@@ -96,6 +97,8 @@ const bbConfigSchema = z.object({
     .string()
     .optional()
     .describe('Override the Bitbucket Cloud REST base URL (Server/DC installs).'),
+  /** Optional OAuth 2.0 client ID from developer.atlassian.com (BYO app). */
+  oauthClientId: z.string().optional(),
 })
 
 export type BitBucketPluginConfig = z.infer<typeof bbConfigSchema>
@@ -145,6 +148,53 @@ const MANIFEST: PluginManifest = {
   intelligence: {
     snippets: [
       { id: 'bitbucket-clone', relativePath: 'snippets/bitbucket-clone.md' },
+    ],
+  },
+  ui: {
+    subtitle: 'bitbucket.org workspaces. Atlassian API tokens.',
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'oauth',
+        id: 'atlassian-oauth',
+        label: 'Sign in with Atlassian',
+        recommended: true,
+        startPath: '/config/plugins/bitbucket/auth/atlassian-oauth/start',
+        statusPath: '/config/plugins/bitbucket/auth/atlassian-oauth/status',
+      },
+      {
+        kind: 'form',
+        id: 'manual',
+        label: 'Atlassian API token',
+        recommended: true,
+        fields: [
+          {
+            key: 'workspace',
+            label: 'Workspace',
+            kind: 'text',
+            placeholder: 'my-workspace',
+            hint: 'The workspace slug from your Bitbucket URL.',
+            required: true,
+          },
+          {
+            key: 'coderUsername',
+            label: 'Username or email',
+            kind: 'text',
+            placeholder: 'you@example.com',
+            hint: 'Username for the agent account that will push commits.',
+            required: true,
+          },
+          {
+            key: 'coderToken',
+            label: 'API token',
+            kind: 'secret',
+            placeholder: 'ATATT…',
+            hint: 'Atlassian API token from id.atlassian.com/manage-profile/security/api-tokens.',
+            required: true,
+          },
+        ],
+      },
     ],
   },
 }
@@ -245,6 +295,14 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     } catch (err) {
       return { ok: false, reason: `Bitbucket auth check threw: ${(err as Error).message}` }
     }
+  }
+
+  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
+    registerAtlassianOAuthRoutes(
+      ctx,
+      'bitbucket',
+      'repository:write pullrequest:write offline_access',
+    )
   }
 
   async dispose(): Promise<void> {

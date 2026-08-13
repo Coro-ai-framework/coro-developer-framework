@@ -1,13 +1,10 @@
-import { useState } from 'react'
-import { Ban, Plug, ShieldCheck } from 'lucide-react'
+import { Ban, Plug } from 'lucide-react'
 import StepShell from './components/StepShell'
 import ProviderCard from './components/ProviderCard'
-import ProviderConfigForm from './components/ProviderConfigForm'
 import LiveTestPanel from './components/LiveTestPanel'
-import { Button } from '../../ui/button'
-import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
+import GenericAuthPanel from '../GenericAuthPanel'
 import { cn } from '../../../lib/utils'
-import { buildTestPayload, getProvidersForStep } from '../provider-catalog'
+import { getProvidersForStep, useProviderCatalog } from '../../../hooks/useProviderCatalog'
 import type { StepState, WizardAction } from '../wizard-state'
 
 interface TrackerStepProps {
@@ -17,72 +14,12 @@ interface TrackerStepProps {
   onOpenDrawer: () => void
 }
 
-interface TrackerTestResponse {
-  ok: boolean
-  message?: string
-  hint?: string
-}
-
-/**
- * "Where do your tickets live?" — optional step. Includes an explicit
- * "I don't use a tracker" card that immediately marks the step
- * skipped and advances. Trackers we know how to test ping their
- * provider via `POST /test/tracker`.
- */
 export default function TrackerStep({ state, dispatch, onSkip, onOpenDrawer }: TrackerStepProps) {
-  const providers = getProvidersForStep('tracker')
+  const { plugins, loading } = useProviderCatalog()
+  const providers = getProvidersForStep(plugins, 'tracker')
   const selectedId = state.selectedProviderId
   const selected = providers.find(p => p.id === selectedId)
   const skipSelected = selectedId === '__skip__'
-  const [testing, setTesting] = useState(false)
-
-  async function runTest() {
-    if (!selected) return
-    const payload = buildTestPayload('tracker', selected.id, state.draftConfig)
-    if (!payload) {
-      dispatch({
-        type: 'testResult',
-        step: 'tracker',
-        result: { ok: false, message: 'This plugin has no built-in connectivity test.' },
-      })
-      return
-    }
-    setTesting(true)
-    dispatch({ type: 'beginTest', step: 'tracker' })
-    try {
-      const result = await requestJson<TrackerTestResponse>(
-        payload.url,
-        jsonRequest(payload.body, { method: 'POST' }),
-      )
-      dispatch({
-        type: 'testResult',
-        step: 'tracker',
-        result: {
-          ok: result.ok,
-          message: result.message ?? (result.ok ? 'Connected.' : 'Test failed.'),
-          ...(result.hint ? { hint: result.hint } : {}),
-        },
-      })
-    } catch (err) {
-      dispatch({
-        type: 'testResult',
-        step: 'tracker',
-        result: {
-          ok: false,
-          message: err instanceof ApiError ? err.message : err instanceof Error ? err.message : String(err),
-        },
-      })
-    } finally {
-      setTesting(false)
-    }
-  }
-
-  const requiredFilled = !!selected && selected.fields
-    .filter(f => f.required)
-    .every(f => {
-      const v = state.draftConfig[f.key]
-      return typeof v === 'string' && v.length > 0
-    })
 
   return (
     <StepShell
@@ -91,12 +28,14 @@ export default function TrackerStep({ state, dispatch, onSkip, onOpenDrawer }: T
       description="Optional. Connect a tracker so Coro can pick up assigned tickets and report progress back. You can skip this and add it later from Settings."
     >
       <div className="space-y-3">
+        {loading ? <p className="text-sm text-fg-muted">Loading providers…</p> : null}
         {providers.map(provider => (
           <ProviderCard
             key={provider.id}
             pluginId={provider.id}
-            title={provider.title}
-            subtitle={provider.subtitle}
+            title={provider.displayName}
+            subtitle={provider.ui?.subtitle ?? ''}
+            recommended={provider.ui?.recommendedForOnboarding}
             selected={selectedId === provider.id}
             onSelect={() =>
               dispatch({ type: 'selectProvider', step: 'tracker', providerId: provider.id })
@@ -107,7 +46,6 @@ export default function TrackerStep({ state, dispatch, onSkip, onOpenDrawer }: T
         <button
           type="button"
           onClick={() => {
-            // Synthetic id; we don't bind it to a provider entry.
             dispatch({ type: 'selectProvider', step: 'tracker', providerId: '__skip__' })
             dispatch({ type: 'skip', step: 'tracker' })
             onSkip()
@@ -128,7 +66,7 @@ export default function TrackerStep({ state, dispatch, onSkip, onOpenDrawer }: T
           <div className="min-w-0 flex-1">
             <div className="text-[15px] font-medium text-fg">I don't use a tracker</div>
             <div className="mt-1 text-[13px] leading-relaxed text-fg-muted">
-              Skip this step. You can wire up Jira, Linear, or GitHub Issues later in Settings.
+              Skip this step. You can wire up a tracker later in Settings.
             </div>
           </div>
         </button>
@@ -144,26 +82,18 @@ export default function TrackerStep({ state, dispatch, onSkip, onOpenDrawer }: T
       </div>
 
       {selected ? (
-        <>
-          <ProviderConfigForm
-            provider={selected}
-            draft={state.draftConfig}
-            onChange={(key, value) =>
-              dispatch({ type: 'setField', step: 'tracker', key, value })
-            }
-          />
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void runTest()}
-              disabled={!requiredFilled || testing}
-            >
-              <ShieldCheck />
-              {testing ? 'Testing…' : 'Test connection'}
-            </Button>
-          </div>
-        </>
+        <GenericAuthPanel
+          entry={selected}
+          draftConfig={state.draftConfig}
+          autoVerifyWhenReady
+          onChange={(key, value) =>
+            dispatch({ type: 'setField', step: 'tracker', key, value })
+          }
+          onBeginTest={() => dispatch({ type: 'beginTest', step: 'tracker' })}
+          onTestResult={result =>
+            dispatch({ type: 'testResult', step: 'tracker', result })
+          }
+        />
       ) : null}
 
       <LiveTestPanel status={state.status} result={state.lastResult} />

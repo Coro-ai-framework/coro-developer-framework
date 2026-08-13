@@ -46,7 +46,10 @@ import type {
   ScmPrComment,
   ScmPrStatus,
   ScmReadFileResult,
+  CredentialCandidate,
 } from '../../types'
+import { detectGitHubCredentials } from './detect'
+import { registerGitHubOAuthRoutes } from './oauth-routes'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -129,6 +132,50 @@ const MANIFEST: PluginManifest = {
       { id: 'github-clone', relativePath: 'snippets/github-clone.md' },
     ],
   },
+  ui: {
+    subtitle: 'github.com or GitHub Enterprise. Personal or fine-grained PAT.',
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'detect',
+        id: 'gh-cli',
+        label: 'Use existing GitHub CLI session',
+        recommended: true,
+        accountConfigKey: 'owner',
+      },
+      {
+        kind: 'oauth',
+        id: 'device-oauth',
+        label: 'Sign in with GitHub',
+        startPath: '/config/plugins/github/auth/device-oauth/start',
+        statusPath: '/config/plugins/github/auth/device-oauth/status',
+      },
+      {
+        kind: 'form',
+        id: 'manual',
+        label: 'Personal access token',
+        fields: [
+          {
+            key: 'owner',
+            label: 'Owner / organisation',
+            kind: 'text',
+            placeholder: 'acme-inc',
+            hint: 'The org or user that owns the repos you want Coro to work in.',
+            required: true,
+          },
+          {
+            key: 'token',
+            label: 'Personal access token',
+            kind: 'secret',
+            placeholder: 'ghp_… or github_pat_…',
+            hint: "Needs the 'repo' scope (or equivalent fine-grained permissions).",
+            required: true,
+          },
+        ],
+      },
+    ],
+  },
 }
 
 // ── Runtime ──────────────────────────────────────────────────────────────────
@@ -141,13 +188,23 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
   private owner!: string
   private token!: string
   private baseUrl?: string
+  private fetchFn: typeof fetch = globalThis.fetch
 
-  async init(rawConfig: GitHubPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
+  async init(rawConfig: GitHubPluginConfig | Record<string, unknown>, deps: PluginDeps): Promise<void> {
     const cfg = ghConfigSchema.parse(rawConfig)
     this.owner = cfg.owner
     this.token = cfg.token
     this.baseUrl = cfg.baseUrl
+    this.fetchFn = deps.fetch
     this.client = new GitHubClient(cfg.owner, cfg.token, cfg.baseUrl)
+  }
+
+  async detectCredentials(): Promise<ReadonlyArray<CredentialCandidate>> {
+    return detectGitHubCredentials(this.fetchFn)
+  }
+
+  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
+    registerGitHubOAuthRoutes(ctx, { pluginId: 'github', ownerConfigKey: 'owner' })
   }
 
   async healthcheck(): Promise<PluginHealth> {

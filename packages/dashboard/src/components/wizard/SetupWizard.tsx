@@ -24,7 +24,7 @@ import {
   wizardReducer,
   type WizardStepId,
 } from './wizard-state'
-import type { StepKind } from './provider-catalog'
+import type { StepKind } from '../../lib/plugin-catalog-types'
 
 interface SetupWizardProps {
   open: boolean

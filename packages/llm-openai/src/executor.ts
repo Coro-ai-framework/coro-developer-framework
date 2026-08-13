@@ -119,6 +119,36 @@ export const OPENAI_MANIFEST: PluginManifest = {
   capabilities: {
     supportsResponsesApi: true,
   },
+  ui: {
+    subtitle: 'GPT-4 / GPT-5 family via the OpenAI API.',
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'form',
+        id: 'manual',
+        label: 'API key',
+        recommended: true,
+        fields: [
+          {
+            key: 'apiKey',
+            label: 'API key',
+            kind: 'secret',
+            placeholder: 'sk-…',
+            hint: 'From platform.openai.com/api-keys.',
+            required: true,
+          },
+          {
+            key: 'baseURL',
+            label: 'Base URL',
+            kind: 'url',
+            placeholder: 'https://api.openai.com/v1',
+            hint: 'Optional. Override for Azure or self-hosted compatible endpoints.',
+          },
+        ],
+      },
+    ],
+  },
 }
 
 export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {

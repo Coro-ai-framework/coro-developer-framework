@@ -28,6 +28,7 @@ import type {
 } from '../../types'
 import { LinearTrackerClient } from '../../../clients/tracker/linear'
 import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
+import { registerLinearOAuthRoutes } from './oauth-routes'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,43 @@ const MANIFEST: PluginManifest = {
       { id: 'linear-keys', relativePath: 'snippets/linear-keys.md' },
     ],
   },
+  ui: {
+    subtitle: 'Linear API key. Fast issue tracker for product teams.',
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'oauth',
+        id: 'oauth',
+        label: 'Sign in with Linear',
+        recommended: true,
+        startPath: '/config/plugins/linear/auth/oauth/start',
+        statusPath: '/config/plugins/linear/auth/oauth/status',
+      },
+      {
+        kind: 'form',
+        id: 'manual',
+        label: 'API key',
+        fields: [
+          {
+            key: 'apiKey',
+            label: 'API key',
+            kind: 'secret',
+            placeholder: 'lin_api_…',
+            hint: 'Generate in Linear → Settings → API → Personal API keys.',
+            required: true,
+          },
+          {
+            key: 'teamKey',
+            label: 'Default team key',
+            kind: 'text',
+            placeholder: 'ENG',
+            hint: "Optional. Picks the team Coro files issues against when a job doesn't specify one.",
+          },
+        ],
+      },
+    ],
+  },
 }
 
 class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
@@ -120,6 +158,23 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
   }
 
   async dispose(): Promise<void> {}
+
+  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
+    registerLinearOAuthRoutes(ctx)
+  }
+
+  async testConnection(): Promise<import('../../types').PluginTestResult> {
+    const result = await this.trackerClient.searchIssues('', 1)
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'available' in result &&
+      (result as TrackerNotConfigured).available === false
+    ) {
+      return { ok: false, message: (result as TrackerNotConfigured).reason }
+    }
+    return { ok: true, message: 'Authenticated with Linear.' }
+  }
 
   intelligenceRoot(): string | undefined {
     return path.join(__dirname, 'intelligence')

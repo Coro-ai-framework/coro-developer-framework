@@ -34,6 +34,7 @@ import type {
   TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
+import { registerAtlassianOAuthRoutes } from '../atlassian-oauth'
 import { JiraTrackerClient } from '../../../clients/tracker/jira'
 import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 
@@ -43,6 +44,8 @@ const jiraConfigSchema = z.object({
   baseUrl: z.string().min(1),
   username: z.string().min(1),
   apiToken: z.string().min(1),
+  /** Optional OAuth 2.0 client ID from developer.atlassian.com (BYO app). */
+  oauthClientId: z.string().optional(),
 })
 
 export type JiraPluginConfig = z.infer<typeof jiraConfigSchema>
@@ -100,6 +103,49 @@ const MANIFEST: PluginManifest = {
       { id: 'jira-transitions', relativePath: 'snippets/jira-transitions.md' },
     ],
   },
+  ui: {
+    subtitle: 'Atlassian Cloud or Data Center. API token auth.',
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'oauth',
+        id: 'atlassian-oauth',
+        label: 'Sign in with Atlassian',
+        recommended: true,
+        startPath: '/config/plugins/jira/auth/atlassian-oauth/start',
+        statusPath: '/config/plugins/jira/auth/atlassian-oauth/status',
+      },
+      {
+        kind: 'form',
+        id: 'manual',
+        label: 'API token',
+        fields: [
+          {
+            key: 'baseUrl',
+            label: 'Base URL',
+            kind: 'url',
+            placeholder: 'https://acme.atlassian.net',
+            required: true,
+          },
+          {
+            key: 'username',
+            label: 'Email',
+            kind: 'text',
+            placeholder: 'you@example.com',
+            required: true,
+          },
+          {
+            key: 'apiToken',
+            label: 'API token',
+            kind: 'secret',
+            placeholder: 'ATATT…',
+            required: true,
+          },
+        ],
+      },
+    ],
+  },
 }
 
 // ── Runtime ──────────────────────────────────────────────────────────────────
@@ -131,6 +177,14 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
     return this.available
       ? { ok: true }
       : { ok: false, reason: 'jira plugin: missing baseUrl/username/apiToken' }
+  }
+
+  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
+    registerAtlassianOAuthRoutes(
+      ctx,
+      'jira',
+      'read:jira-work write:jira-work offline_access',
+    )
   }
 
   async dispose(): Promise<void> {}

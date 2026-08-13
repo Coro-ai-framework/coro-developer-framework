@@ -77,6 +77,30 @@ describe('@coro-ai/plugin-gitlab', () => {
     expect(evt!.ref.externalId).toBe('42')
   })
 
+  it('declares detect auth in manifest', () => {
+    const plugin = makePlugin()
+    const detect = plugin.manifest.auth?.methods.find(m => m.kind === 'detect')
+    expect(detect).toBeDefined()
+  })
+
+  it('validates credentials via testConnection', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (url.toString().endsWith('/user')) {
+        return new Response(JSON.stringify({ username: 'alice' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const plugin = makePlugin()
+    await plugin.init({ namespace: 'team', token: 'glpat-abc' }, { logger, fetch: fetchMock })
+    const result = await plugin.testConnection!()
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('alice')
+  })
+
   it('opens an MR via REST in writerCreatePr', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const u = url.toString()

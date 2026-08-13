@@ -5,7 +5,7 @@ import { Input } from '../../ui/input'
 import SettingsNotice from '../../settings/SettingsNotice'
 import Field from '../../forms/field'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
-import type { StepKind } from '../provider-catalog'
+import type { StepKind } from '../../../lib/plugin-catalog-types'
 
 interface PluginManifest {
   id: string

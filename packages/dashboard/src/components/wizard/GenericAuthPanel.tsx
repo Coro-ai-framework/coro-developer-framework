@@ -1,0 +1,718 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { KeyRound } from 'lucide-react'
+import { Button } from '../ui/button'
+import Field from '../forms/field'
+import SecretInput from '../settings/SecretInput'
+import SettingsNotice from '../settings/SettingsNotice'
+import SettingsStatusBadge from '../settings/StatusBadge'
+import { Input } from '../ui/input'
+import { ApiError, jsonRequest, requestJson } from '../../lib/http'
+import type {
+  DetectCandidatePreview,
+  NormalizedOAuthStatus,
+  PluginAuthFieldDescriptor,
+  PluginAuthMethodDescriptor,
+  PluginCatalogEntry,
+} from '../../lib/plugin-catalog-types'
+import {
+  activeFormFields,
+  pickDefaultAuthMethod,
+} from '../../lib/plugin-catalog-types'
+import type { TestResult } from './wizard-state'
+
+function applyConfigPatch(
+  patch: Record<string, unknown>,
+  onChange: (key: string, value: unknown) => void,
+): void {
+  for (const [key, value] of Object.entries(patch)) {
+    onChange(key, value)
+  }
+}
+
+function applyAccountPath(
+  path: string,
+  label: string,
+  draftConfig: Record<string, unknown>,
+  onChange: (key: string, value: unknown) => void,
+): void {
+  const parts = path.split('.')
+  if (parts.length === 1) {
+    onChange(parts[0]!, label)
+    return
+  }
+  const [root, leaf] = [parts[0]!, parts[parts.length - 1]!]
+  const current =
+    typeof draftConfig[root] === 'object' && draftConfig[root] !== null
+      ? (draftConfig[root] as Record<string, unknown>)
+      : {}
+  onChange(root, { ...current, [leaf]: label })
+}
+
+function hasAccountPath(draftConfig: Record<string, unknown>, path: string): boolean {
+  const parts = path.split('.')
+  let current: unknown = draftConfig
+  for (const part of parts) {
+    if (typeof current !== 'object' || current === null) return false
+    current = (current as Record<string, unknown>)[part]
+  }
+  return typeof current === 'string' && current.length > 0
+}
+
+function selectAuthMethod(
+  method: PluginAuthMethodDescriptor,
+  setSelectedMethodId: (id: string) => void,
+  onChange: (key: string, value: unknown) => void,
+): void {
+  setSelectedMethodId(method.id)
+  if ((method.kind === 'form' || method.kind === 'oauth') && method.configOnSelect) {
+    applyConfigPatch(method.configOnSelect, onChange)
+  }
+}
+
+function useStableOnChange(onChange: (key: string, value: unknown) => void) {
+  const ref = useRef(onChange)
+  ref.current = onChange
+  return useCallback((key: string, value: unknown) => {
+    ref.current(key, value)
+  }, [])
+}
+
+/** When credentials look ready (OAuth connected, form filled), run probe once. */
+function useAutoVerifyWhenReady(
+  autoVerifyWhenReady: boolean | undefined,
+  ready: boolean,
+  verifyKey: string,
+  onVerify: () => Promise<void>,
+): void {
+  const onVerifyRef = useRef(onVerify)
+  onVerifyRef.current = onVerify
+  const prevReadyRef = useRef(false)
+  const lastVerifiedKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const becameReady = ready && !prevReadyRef.current
+    prevReadyRef.current = ready
+    if (!ready) {
+      lastVerifiedKeyRef.current = null
+    }
+    if (!autoVerifyWhenReady || !ready) return
+    if (!becameReady && lastVerifiedKeyRef.current === verifyKey) return
+    lastVerifiedKeyRef.current = verifyKey
+    void onVerifyRef.current()
+  }, [autoVerifyWhenReady, ready, verifyKey])
+}
+
+/** Apply manifest `configOnSelect` once per method — avoids render loops. */
+function useApplyConfigOnSelect(
+  methodId: string,
+  configOnSelect: Record<string, unknown> | undefined,
+  onChange: (key: string, value: unknown) => void,
+): void {
+  const appliedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!configOnSelect) return
+    if (appliedRef.current === methodId) return
+    appliedRef.current = methodId
+    applyConfigPatch(configOnSelect, onChange)
+  }, [methodId, configOnSelect, onChange])
+}
+
+interface GenericAuthPanelProps {
+  entry: PluginCatalogEntry
+  draftConfig: Record<string, unknown>
+  onChange: (key: string, value: unknown) => void
+  onTestResult: (result: TestResult) => void
+  onBeginTest?: () => void
+  /** When applying detected credentials, merge owner overrides etc. */
+  detectOverrides?: Record<string, unknown>
+  /** Wizard: probe automatically when auth looks ready (enables Continue). */
+  autoVerifyWhenReady?: boolean
+}
+
+export default function GenericAuthPanel({
+  entry,
+  draftConfig,
+  onChange,
+  onTestResult,
+  onBeginTest,
+  detectOverrides,
+  autoVerifyWhenReady,
+}: GenericAuthPanelProps) {
+  const stableOnChange = useStableOnChange(onChange)
+  const methods = entry.authMethods ?? []
+  const defaultMethod = useMemo(() => pickDefaultAuthMethod(methods), [methods])
+  const [selectedMethodId, setSelectedMethodId] = useState<string | null>(
+    defaultMethod?.id ?? null,
+  )
+  const selectedMethod = methods.find(m => m.id === selectedMethodId) ?? defaultMethod
+  const appliedDefaultRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!selectedMethodId && defaultMethod) {
+      setSelectedMethodId(defaultMethod.id)
+    }
+  }, [defaultMethod, selectedMethodId])
+
+  useEffect(() => {
+    if (!defaultMethod || selectedMethodId !== defaultMethod.id) return
+    if (appliedDefaultRef.current === defaultMethod.id) return
+    if (
+      (defaultMethod.kind === 'form' || defaultMethod.kind === 'oauth') &&
+      defaultMethod.configOnSelect
+    ) {
+      applyConfigPatch(defaultMethod.configOnSelect, stableOnChange)
+    }
+    appliedDefaultRef.current = defaultMethod.id
+  }, [defaultMethod, selectedMethodId, stableOnChange])
+
+  if (methods.length === 0) {
+    return (
+      <AuthTestButton
+        pluginId={entry.id}
+        draftConfig={draftConfig}
+        canTest
+        autoVerifyWhenReady={autoVerifyWhenReady}
+        onTestResult={onTestResult}
+        onBeginTest={onBeginTest}
+      />
+    )
+  }
+
+  return (
+    <div className="space-y-3.5 rounded-2xl border border-line bg-overlay/30 p-4">
+      {methods.length > 1 ? (
+        <div className="space-y-2">
+          <span className="text-sm font-medium text-fg">How should we authenticate?</span>
+          <div className="inline-flex flex-wrap gap-1 rounded-xl border border-line bg-canvas/40 p-1 text-sm">
+            {methods.map(method => (
+              <button
+                key={method.id}
+                type="button"
+                onClick={() => selectAuthMethod(method, setSelectedMethodId, stableOnChange)}
+                className={
+                  selectedMethod?.id === method.id
+                    ? 'inline-flex items-center gap-2 rounded-lg bg-accent-500/15 px-3 py-1.5 font-medium text-accent-200 ring-1 ring-accent-500/30'
+                    : 'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-fg-muted hover:text-fg'
+                }
+              >
+                {method.label}
+                {method.recommended ? (
+                  <span className="rounded-full bg-overlay/60 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
+                    Recommended
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {selectedMethod?.kind === 'oauth' ? (
+        <OAuthAuthMethod
+          method={selectedMethod}
+          draftConfig={draftConfig}
+          onChange={stableOnChange}
+          pluginId={entry.id}
+          autoVerifyWhenReady={autoVerifyWhenReady}
+          onTestResult={onTestResult}
+          onBeginTest={onBeginTest}
+        />
+      ) : null}
+
+      {selectedMethod?.kind === 'detect' ? (
+        <DetectAuthMethod
+          pluginId={entry.id}
+          method={selectedMethod}
+          draftConfig={draftConfig}
+          onChange={stableOnChange}
+          overrides={detectOverrides}
+          onTestResult={onTestResult}
+          onBeginTest={onBeginTest}
+        />
+      ) : null}
+
+      {selectedMethod?.kind === 'form' ? (
+        <FormAuthMethod
+          pluginId={entry.id}
+          method={selectedMethod}
+          fields={activeFormFields(selectedMethod)}
+          draftConfig={draftConfig}
+          onChange={stableOnChange}
+          autoVerifyWhenReady={autoVerifyWhenReady}
+          onTestResult={onTestResult}
+          onBeginTest={onBeginTest}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function FormAuthMethod({
+  pluginId,
+  method,
+  fields,
+  draftConfig,
+  onChange,
+  autoVerifyWhenReady,
+  onTestResult,
+  onBeginTest,
+}: {
+  pluginId: string
+  method: Extract<PluginAuthMethodDescriptor, { kind: 'form' }>
+  fields: PluginAuthFieldDescriptor[]
+  draftConfig: Record<string, unknown>
+  onChange: (key: string, value: unknown) => void
+  autoVerifyWhenReady?: boolean
+  onTestResult: (result: TestResult) => void
+  onBeginTest?: () => void
+}) {
+  useApplyConfigOnSelect(method.id, method.configOnSelect, onChange)
+
+  const requiredFilled =
+    fields.filter(f => f.required).every(f => {
+      const v = draftConfig[f.key]
+      return typeof v === 'string' && v.length > 0
+    })
+  const canTest = fields.length === 0 || requiredFilled
+
+  return (
+    <div className="space-y-3">
+      {fields.length > 0 ? (
+        <div className="space-y-3">
+          {fields.map(field => (
+            <Field key={field.key} label={field.label} hint={field.hint} required={field.required}>
+              {field.kind === 'secret' ? (
+                <SecretInput
+                  value={typeof draftConfig[field.key] === 'string' ? (draftConfig[field.key] as string) : ''}
+                  placeholder={field.placeholder}
+                  onChange={event => onChange(field.key, event.target.value)}
+                />
+              ) : (
+                <Input
+                  type={field.kind === 'url' ? 'url' : 'text'}
+                  value={typeof draftConfig[field.key] === 'string' ? (draftConfig[field.key] as string) : ''}
+                  placeholder={field.placeholder}
+                  onChange={event => onChange(field.key, event.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[12px] text-fg-subtle">No credentials required — click Test to enable.</p>
+      )}
+      <AuthTestButton
+        pluginId={pluginId}
+        draftConfig={draftConfig}
+        canTest={canTest}
+        autoVerifyWhenReady={autoVerifyWhenReady}
+        onTestResult={onTestResult}
+        onBeginTest={onBeginTest}
+      />
+    </div>
+  )
+}
+
+function OAuthAuthMethod({
+  method,
+  draftConfig,
+  onChange,
+  pluginId,
+  autoVerifyWhenReady,
+  onTestResult,
+  onBeginTest,
+}: {
+  method: Extract<PluginAuthMethodDescriptor, { kind: 'oauth' }>
+  draftConfig: Record<string, unknown>
+  onChange: (key: string, value: unknown) => void
+  pluginId: string
+  autoVerifyWhenReady?: boolean
+  onTestResult: (result: TestResult) => void
+  onBeginTest?: () => void
+}) {
+  const [oauth, setOauth] = useState<NormalizedOAuthStatus>({ state: 'idle' })
+  const [connecting, setConnecting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [availabilityChecked, setAvailabilityChecked] = useState(false)
+
+  const oauthClientId =
+    typeof draftConfig['oauthClientId'] === 'string' ? draftConfig['oauthClientId'] : ''
+  const oauthAvailable = oauth.available !== false || oauthClientId.trim().length > 0
+  const isSetupError =
+    oauth.state === 'error' &&
+    typeof oauth.message === 'string' &&
+    /not configured|client id/i.test(oauth.message)
+
+  useEffect(() => {
+    let cancelled = false
+    void requestJson<NormalizedOAuthStatus>(method.statusPath)
+      .then(data => {
+        if (cancelled) return
+        setOauth(data)
+        setAvailabilityChecked(true)
+      })
+      .catch(() => {
+        if (!cancelled) setAvailabilityChecked(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [method.statusPath])
+
+  useApplyConfigOnSelect(method.id, method.configOnSelect, onChange)
+
+  useEffect(() => {
+    if (
+      method.successAccountPath &&
+      hasAccountPath(draftConfig, method.successAccountPath) &&
+      oauth.state === 'idle'
+    ) {
+      const parts = method.successAccountPath.split('.')
+      let current: unknown = draftConfig
+      for (const part of parts) {
+        current = (current as Record<string, unknown>)?.[part]
+      }
+      if (typeof current === 'string') {
+        setOauth({ state: 'success', account: { label: current } })
+      }
+    }
+  }, [draftConfig, method.successAccountPath, oauth.state])
+
+  useEffect(() => {
+    if (oauth.state !== 'pending') return
+    const timer = window.setInterval(async () => {
+      try {
+        const data = await requestJson<NormalizedOAuthStatus>(method.statusPath)
+        setOauth(data)
+        if (data.state === 'success') {
+          if (method.configOnSelect) {
+            applyConfigPatch(method.configOnSelect, onChange)
+          }
+          if (data.account?.label && method.successAccountPath) {
+            applyAccountPath(method.successAccountPath, data.account.label, draftConfig, onChange)
+          }
+        }
+      } catch {
+        /* soft fail */
+      }
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [oauth.state, method.statusPath, method.configOnSelect, method.successAccountPath, draftConfig, onChange])
+
+  const ready =
+    oauth.state === 'success' ||
+    (method.successAccountPath ? hasAccountPath(draftConfig, method.successAccountPath) : false)
+
+  const runTest = useCallback(async () => {
+    setTesting(true)
+    onBeginTest?.()
+    try {
+      const result = await requestJson<{ ok: boolean; message?: string; hint?: string; checks?: TestResult['checks'] }>(
+        `/test/plugin/${encodeURIComponent(pluginId)}`,
+        jsonRequest({ config: draftConfig }, { method: 'POST' }),
+      )
+      onTestResult({
+        ok: result.ok,
+        message: result.message ?? (result.ok ? 'Authenticated.' : 'Test failed.'),
+        ...(result.hint ? { hint: result.hint } : {}),
+        ...(result.checks ? { checks: result.checks } : {}),
+      })
+    } catch (err) {
+      onTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setTesting(false)
+    }
+  }, [draftConfig, onBeginTest, onTestResult, pluginId])
+
+  useAutoVerifyWhenReady(
+    autoVerifyWhenReady,
+    ready,
+    `${pluginId}:${method.id}`,
+    runTest,
+  )
+
+  async function startOAuth(force = false) {
+    setConnecting(true)
+    setError(null)
+    try {
+      const payload: Record<string, unknown> = {}
+      if (force) payload['force'] = true
+      if (oauthClientId.trim()) payload['oauthClientId'] = oauthClientId.trim()
+      const data = await requestJson<NormalizedOAuthStatus>(
+        method.startPath,
+        jsonRequest(payload, { method: 'POST' }),
+      )
+      setOauth(data)
+      if (data.state === 'pending' && data.authorizeUrl) {
+        window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer')
+      }
+      if (data.state === 'error') {
+        if (data.available === false || /not configured|client id/i.test(data.message ?? '')) {
+          setError(data.message ?? 'OAuth is not configured on this runner.')
+          setOauth(prev => ({ ...prev, state: 'idle', available: false, message: data.message }))
+          return
+        }
+        throw new Error(data.message ?? 'OAuth failed to start.')
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : String(err))
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const statusBadge =
+    oauth.state === 'success' || ready
+      ? { status: 'ok' as const, label: 'Connected' }
+      : oauth.state === 'pending'
+        ? { status: 'pending' as const, label: 'Waiting for browser…' }
+        : !oauthAvailable && availabilityChecked
+          ? { status: 'unset' as const, label: 'Setup required' }
+          : oauth.state === 'error' && !isSetupError
+            ? { status: 'error' as const, label: 'Failed' }
+            : { status: 'unset' as const, label: 'Not connected' }
+
+  return (
+    <div className="space-y-3">
+      {!oauthAvailable && availabilityChecked ? (
+        <SettingsNotice tone="warning">
+          {oauth.setupHint ?? oauth.message ?? 'OAuth is not configured on this runner.'}
+          {oauth.callbackUrl ? (
+            <>
+              {' '}
+              Register callback URL{' '}
+              <span className="font-mono text-fg">{oauth.callbackUrl}</span> in your Atlassian app.
+            </>
+          ) : null}
+        </SettingsNotice>
+      ) : null}
+      {!oauthAvailable && availabilityChecked ? (
+        <Field
+          label="OAuth client ID"
+          hint="From developer.atlassian.com → your app → Settings. Alternatively set CORO_ATLASSIAN_OAUTH_CLIENT_ID before starting Coro."
+        >
+          <Input
+            value={oauthClientId}
+            onChange={event => onChange('oauthClientId', event.target.value)}
+            placeholder="Your Atlassian OAuth client ID"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </Field>
+      ) : null}
+      {error ? <SettingsNotice tone={oauthAvailable ? 'danger' : 'warning'}>{error}</SettingsNotice> : null}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-canvas/30 px-3 py-2.5">
+        <div className="flex items-center gap-3 min-w-0">
+          <SettingsStatusBadge status={statusBadge.status} label={statusBadge.label} />
+          {oauth.account?.label ? (
+            <span className="truncate text-sm text-fg-muted">{oauth.account.label}</span>
+          ) : null}
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => void startOAuth(ready)}
+          disabled={connecting || (!oauthAvailable && !oauthClientId.trim())}
+        >
+          {connecting ? 'Starting…' : ready ? 'Reconnect' : method.label}
+        </Button>
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={() => void runTest()} disabled={!ready || testing}>
+          <KeyRound />
+          {testing ? 'Testing…' : 'Test connection'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function DetectAuthMethod({
+  pluginId,
+  method,
+  draftConfig,
+  onChange,
+  overrides,
+  onTestResult,
+  onBeginTest,
+}: {
+  pluginId: string
+  method: Extract<PluginAuthMethodDescriptor, { kind: 'detect' }>
+  draftConfig: Record<string, unknown>
+  onChange: (key: string, value: unknown) => void
+  overrides?: Record<string, unknown>
+  onTestResult: (result: TestResult) => void
+  onBeginTest?: () => void
+}) {
+  const [candidates, setCandidates] = useState<DetectCandidatePreview[]>([])
+  const [loading, setLoading] = useState(true)
+  const [applying, setApplying] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void requestJson<{ candidates: DetectCandidatePreview[] }>(
+      `/config/plugins/${encodeURIComponent(pluginId)}/auth/detect`,
+      { method: 'POST' },
+    )
+      .then(res => {
+        if (!cancelled) setCandidates(res.candidates)
+      })
+      .catch(() => {
+        if (!cancelled) setCandidates([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [pluginId])
+
+  async function applyCandidate(candidate: DetectCandidatePreview) {
+    setApplying(candidate.id)
+    onBeginTest?.()
+    const accountKey = method.accountConfigKey
+    try {
+      const mergedOverrides = { ...overrides }
+      for (const [key, value] of Object.entries(draftConfig)) {
+        if (typeof value === 'string' && value.trim()) {
+          mergedOverrides[key] = value
+        }
+      }
+      const result = await requestJson<{ ok: boolean; message?: string; hint?: string; checks?: TestResult['checks'] }>(
+        `/config/plugins/${encodeURIComponent(pluginId)}/auth/detect/apply`,
+        jsonRequest({ candidateId: candidate.id, overrides: mergedOverrides }, { method: 'POST' }),
+      )
+      if (result.ok) {
+        if (accountKey && candidate.accountHint) {
+          onChange(accountKey, candidate.accountHint)
+        }
+      }
+      onTestResult({
+        ok: result.ok,
+        message: result.message ?? (result.ok ? 'Credentials applied.' : 'Apply failed.'),
+        ...(result.hint ? { hint: result.hint } : {}),
+        ...(result.checks ? { checks: result.checks } : {}),
+      })
+    } catch (err) {
+      onTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setApplying(null)
+    }
+  }
+
+  if (loading) return <p className="text-sm text-fg-muted">Scanning for existing credentials…</p>
+  if (candidates.length === 0) {
+    return (
+      <p className="text-[12px] text-fg-subtle">
+        No local credentials found for {method.label.toLowerCase()}.
+      </p>
+    )
+  }
+
+  return (
+    <div className="space-y-2 rounded-xl border border-accent-500/25 bg-accent-500/5 p-3">
+      <div className="text-sm font-medium text-fg">Found existing credentials</div>
+      {candidates.map(candidate => (
+        <div
+          key={candidate.id}
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line bg-canvas/40 px-3 py-2"
+        >
+          <div className="min-w-0 text-sm">
+            <div className="font-medium text-fg">{candidate.sourceLabel}</div>
+            {candidate.accountHint ? (
+              <div className="text-fg-muted">{candidate.accountHint}</div>
+            ) : null}
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={applying === candidate.id}
+            onClick={() => void applyCandidate(candidate)}
+          >
+            {applying === candidate.id ? 'Applying…' : 'Use this'}
+          </Button>
+        </div>
+      ))}
+      {method.accountConfigKey ? (
+        <Field
+          label="Owner / organisation"
+          hint="Org-owned repos are common — override the detected personal login if needed."
+        >
+          <Input
+            value={
+              typeof draftConfig[method.accountConfigKey] === 'string'
+                ? (draftConfig[method.accountConfigKey] as string)
+                : ''
+            }
+            onChange={event => onChange(method.accountConfigKey!, event.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+      ) : null}
+    </div>
+  )
+}
+
+function AuthTestButton({
+  pluginId,
+  draftConfig,
+  canTest,
+  autoVerifyWhenReady,
+  onTestResult,
+  onBeginTest,
+}: {
+  pluginId: string
+  draftConfig: Record<string, unknown>
+  canTest: boolean
+  autoVerifyWhenReady?: boolean
+  onTestResult: (result: TestResult) => void
+  onBeginTest?: () => void
+}) {
+  const [testing, setTesting] = useState(false)
+
+  const runTest = useCallback(async () => {
+    if (!canTest) return
+    setTesting(true)
+    onBeginTest?.()
+    try {
+      const result = await requestJson<{ ok: boolean; message?: string; hint?: string; checks?: TestResult['checks'] }>(
+        `/test/plugin/${encodeURIComponent(pluginId)}`,
+        jsonRequest({ config: draftConfig }, { method: 'POST' }),
+      )
+      onTestResult({
+        ok: result.ok,
+        message: result.message ?? (result.ok ? 'Authenticated.' : 'Test failed.'),
+        ...(result.hint ? { hint: result.hint } : {}),
+        ...(result.checks ? { checks: result.checks } : {}),
+      })
+    } catch (err) {
+      onTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setTesting(false)
+    }
+  }, [canTest, draftConfig, onBeginTest, onTestResult, pluginId])
+
+  useAutoVerifyWhenReady(autoVerifyWhenReady, canTest, pluginId, runTest)
+
+  return (
+    <div className="flex items-center justify-end gap-2 pt-1">
+      <Button type="button" variant="secondary" onClick={() => void runTest()} disabled={!canTest || testing}>
+        <KeyRound />
+        {testing ? 'Testing…' : 'Test connection'}
+      </Button>
+    </div>
+  )
+}

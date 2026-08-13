@@ -19,14 +19,19 @@ import type { Logger } from 'pino'
 import type { NormalizedEvent } from '@coro-ai/cloud-protocol'
 import { externalIdString } from '../../refs'
 import type {
+  CredentialCandidate,
   PluginDeps,
   PluginHealth,
   PluginManifest,
   PluginMcpServerConfig,
+  PluginTestResult,
   TrackerComment,
   TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
+import { detectGitHubCredentials } from '../github/detect'
+import { registerGitHubOAuthRoutes } from '../github/oauth-routes'
+import { loadLocalConfig } from '../../../config/local-config'
 import { GitHubTrackerClient } from '../../../clients/tracker/github'
 import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 
@@ -83,6 +88,50 @@ const MANIFEST: PluginManifest = {
       { id: 'github-issues-keys', relativePath: 'snippets/github-issues-keys.md' },
     ],
   },
+  ui: {
+    subtitle: 'Reuse your GitHub credentials to track work in repo issues.',
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'detect',
+        id: 'gh-cli',
+        label: 'Use existing GitHub CLI session',
+        recommended: true,
+        accountConfigKey: 'defaultOwner',
+      },
+      {
+        kind: 'oauth',
+        id: 'device-oauth',
+        label: 'Sign in with GitHub',
+        startPath: '/config/plugins/github-issues/auth/device-oauth/start',
+        statusPath: '/config/plugins/github-issues/auth/device-oauth/status',
+      },
+      {
+        kind: 'form',
+        id: 'manual',
+        label: 'Personal access token',
+        fields: [
+          {
+            key: 'defaultOwner',
+            label: 'Owner / organisation',
+            kind: 'text',
+            placeholder: 'acme-inc',
+            hint: 'The org or user that owns the repos you file issues against.',
+            required: true,
+          },
+          {
+            key: 'token',
+            label: 'Personal access token',
+            kind: 'secret',
+            placeholder: 'ghp_… or github_pat_…',
+            hint: "Needs the 'repo' scope. The same token used for source control works.",
+            required: true,
+          },
+        ],
+      },
+    ],
+  },
 }
 
 class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginConfig> {
@@ -93,13 +142,15 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
   private apiBaseUrl?: string
   private defaultOwner?: string
   private available = false
+  private fetchFn: typeof fetch = globalThis.fetch
   private trackerClient!: GitHubTrackerClient
 
-  async init(rawConfig: GitHubTrackerPluginConfig | Record<string, unknown>, _deps: PluginDeps): Promise<void> {
+  async init(rawConfig: GitHubTrackerPluginConfig | Record<string, unknown>, deps: PluginDeps): Promise<void> {
     const cfg = ghTrackerConfigSchema.parse(rawConfig)
     this.token = cfg.token
     this.apiBaseUrl = cfg.apiBaseUrl
     this.defaultOwner = cfg.defaultOwner
+    this.fetchFn = deps.fetch
     this.available = Boolean(cfg.token && cfg.defaultOwner)
     this.trackerClient = new GitHubTrackerClient({
       token: cfg.token,
@@ -107,6 +158,71 @@ class GitHubTrackerPlugin implements TrackerPluginRuntime<GitHubTrackerPluginCon
       ...(cfg.defaultRepo ? { defaultRepo: cfg.defaultRepo } : {}),
       ...(cfg.apiBaseUrl ? { apiBaseUrl: cfg.apiBaseUrl } : {}),
     })
+  }
+
+  async detectCredentials(): Promise<ReadonlyArray<CredentialCandidate>> {
+    const candidates: CredentialCandidate[] = []
+
+    const localCfg = loadLocalConfig()
+    const scmCfg = (localCfg?.plugins?.installed?.github?.config ?? {}) as Record<string, unknown>
+    const scmOwner = typeof scmCfg['owner'] === 'string' ? scmCfg['owner'] : ''
+    const scmToken = typeof scmCfg['token'] === 'string' ? scmCfg['token'] : ''
+    if (scmOwner && scmToken) {
+      candidates.push({
+        id: 'github-issues-from-scm',
+        sourceLabel: 'GitHub source control plugin',
+        accountHint: scmOwner,
+        config: { defaultOwner: scmOwner, token: scmToken },
+        preview: [
+          { label: 'Account', value: scmOwner },
+          { label: 'Token', value: '…(redacted)' },
+        ],
+      })
+    }
+
+    for (const detected of await detectGitHubCredentials(this.fetchFn)) {
+      const owner = typeof detected.config['owner'] === 'string' ? detected.config['owner'] : ''
+      const token = typeof detected.config['token'] === 'string' ? detected.config['token'] : ''
+      if (!owner || !token) continue
+      candidates.push({
+        ...detected,
+        id: detected.id.replace(/^github-/, 'github-issues-'),
+        config: { defaultOwner: owner, token },
+      })
+    }
+
+    return candidates
+  }
+
+  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
+    registerGitHubOAuthRoutes(ctx, {
+      pluginId: 'github-issues',
+      ownerConfigKey: 'defaultOwner',
+    })
+  }
+
+  async testConnection(config: GitHubTrackerPluginConfig | Record<string, unknown>): Promise<PluginTestResult> {
+    try {
+      const cfg = ghTrackerConfigSchema.parse(config)
+      const fetchFn = this.fetchFn ?? globalThis.fetch
+      const res = await fetchFn('https://api.github.com/user', {
+        headers: {
+          Authorization: `Bearer ${cfg.token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'coro-runner',
+        },
+      })
+      if (!res.ok) {
+        return { ok: false, message: `GitHub API returned ${res.status}. Check your token.` }
+      }
+      const user = (await res.json()) as { login?: string }
+      return {
+        ok: true,
+        message: user.login ? `Authenticated as ${user.login}.` : 'Authenticated.',
+      }
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+    }
   }
 
   /**

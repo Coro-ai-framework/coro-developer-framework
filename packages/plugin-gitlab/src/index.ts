@@ -28,15 +28,18 @@ import {
   buildExternalRef,
   mcpStdioDescriptor,
   readHeader,
+  type CredentialCandidate,
   type PluginDeps,
   type PluginManifest,
   type PluginMcpServerConfig,
+  type PluginTestResult,
   type ScmCloneInfo,
   type ScmCreatePrArgs,
   type ScmPollSnapshot,
   type ScmPrComment,
   type ScmPrStatus,
 } from '@coro-ai/plugin-sdk'
+import { detectGitLabCredentials } from './detect'
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -117,6 +120,49 @@ const MANIFEST: PluginManifest = {
       { id: 'gitlab-clone', relativePath: 'snippets/gitlab-clone.md' },
     ],
   },
+  ui: {
+    subtitle: 'gitlab.com or self-managed GitLab. Personal access token or glab CLI.',
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'detect',
+        id: 'glab-cli',
+        label: 'Use existing GitLab CLI session',
+        recommended: true,
+      },
+      {
+        kind: 'form',
+        id: 'manual',
+        label: 'Personal access token',
+        fields: [
+          {
+            key: 'namespace',
+            label: 'Namespace (group or user)',
+            kind: 'text',
+            placeholder: 'my-group',
+            hint: 'Top-level group or username that owns the repos Coro should work in.',
+            required: true,
+          },
+          {
+            key: 'token',
+            label: 'Personal access token',
+            kind: 'secret',
+            placeholder: 'glpat-…',
+            hint: 'Needs api + read_repository scopes.',
+            required: true,
+          },
+          {
+            key: 'baseUrl',
+            label: 'API base URL',
+            kind: 'url',
+            placeholder: 'https://gitlab.com/api/v4',
+            hint: 'Optional. Override for self-managed GitLab.',
+          },
+        ],
+      },
+    ],
+  },
 }
 
 // ── Runtime ─────────────────────────────────────────────────────────────────
@@ -135,6 +181,29 @@ class GitLabScmPlugin extends ScmPluginBase<GitLabPluginConfig> {
     this.token = cfg.token
     if (cfg.baseUrl) this.baseUrl = cfg.baseUrl
     this.fetchImpl = deps.fetch
+  }
+
+  async detectCredentials(): Promise<ReadonlyArray<CredentialCandidate>> {
+    return detectGitLabCredentials(this.fetchImpl, this.baseUrl ?? 'https://gitlab.com/api/v4')
+  }
+
+  async testConnection(): Promise<PluginTestResult> {
+    try {
+      const apiBase = this.baseUrl ?? 'https://gitlab.com/api/v4'
+      const res = await this.fetchImpl(`${apiBase}/user`, {
+        headers: { 'PRIVATE-TOKEN': this.token, 'User-Agent': 'coro-runner' },
+      })
+      if (!res.ok) {
+        return { ok: false, message: `GitLab API returned ${res.status}. Check your token and base URL.` }
+      }
+      const user = (await res.json()) as { username?: string }
+      return {
+        ok: true,
+        message: user.username ? `Authenticated as ${user.username}.` : 'Authenticated.',
+      }
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+    }
   }
 
   intelligenceRoot(): string | undefined {

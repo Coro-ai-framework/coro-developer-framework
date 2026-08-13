@@ -117,6 +117,58 @@ export type {
  */
 export type PluginKind = 'scm' | 'tracker' | (string & {})
 
+// ── Auth method descriptors (onboarding) ────────────────────────────────────
+
+export type PluginAuthFieldKind = 'text' | 'secret' | 'url'
+
+export interface PluginAuthFieldDescriptor {
+  key: string
+  label: string
+  hint?: string
+  placeholder?: string
+  kind: PluginAuthFieldKind
+  required?: boolean
+}
+
+export type PluginAuthMethodDescriptor =
+  | {
+      kind: 'oauth'
+      id: string
+      label: string
+      recommended?: boolean
+      startPath: string
+      statusPath: string
+      configOnSelect?: Record<string, unknown>
+      successAccountPath?: string
+    }
+  | {
+      kind: 'detect'
+      id: string
+      label: string
+      recommended?: boolean
+      accountConfigKey?: string
+    }
+  | {
+      kind: 'form'
+      id: string
+      label: string
+      recommended?: boolean
+      fields: PluginAuthFieldDescriptor[]
+      configOnSelect?: Record<string, unknown>
+    }
+
+export interface PluginAuthDescriptor {
+  methods: ReadonlyArray<PluginAuthMethodDescriptor>
+}
+
+export interface CredentialCandidate {
+  id: string
+  sourceLabel: string
+  accountHint?: string
+  config: Record<string, unknown>
+  preview: ReadonlyArray<{ label: string; value: string }>
+}
+
 // ── Manifest (static, JSON-serialisable) ─────────────────────────────────────
 
 /**
@@ -228,8 +280,12 @@ export interface PluginManifest {
    * providers (e.g. Anthropic) whose configuration is an OAuth flow
    * rather than a flat key/value list.
    */
+  /** Declarative auth methods for the FTUE wizard and Settings. */
+  auth?: PluginAuthDescriptor
   ui?: {
     customPanel?: string
+    subtitle?: string
+    recommendedForOnboarding?: boolean
   }
 }
 
@@ -356,6 +412,8 @@ export interface PluginRuntime<Config = unknown> {
    * lives in its own plugin package instead of the runner core.
    */
   testConnection?(config: Config): Promise<PluginTestResult>
+  /** Optional local credential discovery (see SDK mirror). */
+  detectCredentials?(): Promise<ReadonlyArray<CredentialCandidate>>
 }
 
 // ── SCM plugin runtime ───────────────────────────────────────────────────────

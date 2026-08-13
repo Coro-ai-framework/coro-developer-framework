@@ -300,13 +300,38 @@ export const ANTHROPIC_MANIFEST: PluginManifest = {
     supportsClaudeAgentSdk: true,
   },
   ui: {
-    /**
-     * The dashboard renders {@link AnthropicAuthPanel} (claude-login
-     * + api-key + legacy oauth) instead of the schema-driven form,
-     * because Anthropic auth is an OAuth flow rather than a flat
-     * key/value config.
-     */
-    customPanel: 'anthropic-auth',
+    subtitle: 'Best results today. One-click sign-in with Claude login.',
+    recommendedForOnboarding: true,
+  },
+  auth: {
+    methods: [
+      {
+        kind: 'oauth',
+        id: 'claude-login',
+        label: 'Connect Claude',
+        recommended: true,
+        startPath: '/config/anthropic/claude-login/start',
+        statusPath: '/config/anthropic/claude-login/status',
+        configOnSelect: { method: 'claudeLogin' },
+        successAccountPath: 'account.email',
+      },
+      {
+        kind: 'form',
+        id: 'api-key',
+        label: 'API key',
+        configOnSelect: { method: 'apiKey' },
+        fields: [
+          {
+            key: 'apiKey',
+            label: 'API key',
+            kind: 'secret',
+            placeholder: 'sk-ant-…',
+            hint: 'From console.anthropic.com.',
+            required: true,
+          },
+        ],
+      },
+    ],
   },
 }
 

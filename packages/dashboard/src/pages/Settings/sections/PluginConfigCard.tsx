@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Input } from '../../../components/ui/input'
 import ProviderLogo from '../../../components/settings/ProviderLogo'
 import Field from '../../../components/forms/field'
@@ -15,7 +15,9 @@ import {
   type PluginEntry,
   type PluginInstalledEntry,
 } from '../SettingsContext'
-import { customPanels } from './customPanels'
+import GenericAuthPanel from '../../../components/wizard/GenericAuthPanel'
+import { useProviderCatalog } from '../../../hooks/useProviderCatalog'
+import type { TestResult } from '../../../components/wizard/wizard-state'
 
 // ── JSON-Schema → form field decoder ───────────────────────────────────────
 //
@@ -129,9 +131,10 @@ export default function PluginConfigCard({
   onTest,
   defaultControl,
   footerNotice,
-  onConnected,
 }: PluginConfigCardProps) {
   const { draft, setPluginField, setPluginEnabled, dirtyPluginIds } = useSettings()
+  const { plugins: catalogPlugins } = useProviderCatalog()
+  const [authTestResult, setAuthTestResult] = useState<TestResult | null>(null)
   const { manifest, source, configured, active, activationHint } = plugin
   // `entryExists` differentiates "the user has never touched this
   // plugin" from "the user explicitly toggled it off". The runner
@@ -148,10 +151,10 @@ export default function PluginConfigCard({
     : { config: {} }
   const enabled = entryExists && entry.enabled !== false
   const fields = useMemo(() => decodeSchema(manifest.configSchema), [manifest.configSchema])
+  const catalogEntry = catalogPlugins?.find(p => p.id === manifest.id)
+  const authMethods = catalogEntry?.authMethods ?? []
+  const usesAuthPanel = authMethods.length > 0
   const dirty = dirtyPluginIds.has(manifest.id)
-  const CustomPanel = manifest.ui?.customPanel
-    ? customPanels[manifest.ui.customPanel]
-    : undefined
 
   // Required fields filled (vacuously true when the plugin has none).
   // Tracked separately from `hasAnyConfig` because the readiness
@@ -272,9 +275,20 @@ export default function PluginConfigCard({
           one-click expand. */}
       {enabled ? (
         <>
-          {CustomPanel ? (
-            <div className="mt-4">
-              <CustomPanel pluginId={manifest.id} onConnected={onConnected} />
+          {usesAuthPanel && catalogEntry ? (
+            <div className="mt-4 space-y-3">
+              <GenericAuthPanel
+                entry={catalogEntry}
+                draftConfig={entry.config}
+                onChange={(key, value) => setPluginField(manifest.id, key, value)}
+                onTestResult={result => setAuthTestResult(result)}
+              />
+              {authTestResult ? (
+                <SettingsNotice tone={authTestResult.ok ? 'success' : 'danger'}>
+                  {authTestResult.message}
+                  {authTestResult.hint ? ` ${authTestResult.hint}` : ''}
+                </SettingsNotice>
+              ) : null}
             </div>
           ) : fields.length === 0 ? (
             <SettingsNotice tone="neutral" className="mt-4">
@@ -298,7 +312,7 @@ export default function PluginConfigCard({
 
           {(onTest || defaultControl || footerNotice) && (
             <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
-              {onTest && !CustomPanel ? (
+              {onTest && !usesAuthPanel ? (
                 <TestConnectionButton
                   onTest={() => onTest(entry.config)}
                   disabled={!allRequiredFilled}

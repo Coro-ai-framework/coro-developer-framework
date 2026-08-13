@@ -58,11 +58,22 @@ export function getJobPluginRequirementIssues(
   return issues
 }
 
+export class PluginPreflightError extends Error {
+  readonly missingKind: 'scm' | 'tracker'
+
+  constructor(missingKind: 'scm' | 'tracker', message: string) {
+    super(message)
+    this.name = 'PluginPreflightError'
+    this.missingKind = missingKind
+  }
+}
+
 export function assertJobPluginRequirements(
   input: JobPluginParamsSource,
   plugins: PluginRegistry,
 ): void {
   const issues = getJobPluginRequirementIssues(input, plugins)
   if (issues.length === 0) return
-  throw new Error(issues.map(issue => issue.message).join(' '))
+  const first = issues[0]!
+  throw new PluginPreflightError(first.kind, issues.map(issue => issue.message).join(' '))
 }

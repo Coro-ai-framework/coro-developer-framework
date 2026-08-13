@@ -50,7 +50,7 @@ import type { PluginsConfig } from '../config/plugins-config'
  * current host version, which keeps a v2-incompatible plugin out of
  * a v1.5 runner without crashing it.
  */
-export const HOST_PLUGIN_API_VERSION = '1.0.0'
+export const HOST_PLUGIN_API_VERSION = '1.1.0'
 
 // ── Manifest schema ──────────────────────────────────────────────────────────
 
