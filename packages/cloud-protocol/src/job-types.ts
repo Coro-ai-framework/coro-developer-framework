@@ -368,6 +368,34 @@ export interface Job {
    */
   approvedAdvanceFromPhase?: string
 
+  /**
+   * What the developer said when they approved a phase-boundary checkpoint,
+   * kept for the phase that follows.
+   *
+   * The resume path frames the reply into `pendingPrompt`, which the
+   * *departing* phase consumes on its final turn — so by the time the next
+   * phase starts, the words are gone. That is fine when approval means
+   * "carry on", and wrong whenever the decision is itself the input to the
+   * next phase: a retrospective's shipping phase needs to know which
+   * findings were approved, and it cannot ask.
+   *
+   * Set only for boundary approvals (never for a mid-phase answer, which
+   * belongs to the phase that asked) and addressed to one phase by name:
+   * `forPhase` is what the kickoff matches on, so an approval that never
+   * gets consumed — the agent jumped elsewhere with `goto_phase`, a webhook
+   * displaced the kickoff — can never surface as guidance in a phase it was
+   * not about.
+   */
+  checkpointApproval?: {
+    /** Phase the developer approved leaving. Named in the prompt. */
+    fromPhase: string
+    /** Phase the approval is addressed to — the only one that reads it. */
+    forPhase: string
+    /** The developer's reply, verbatim. */
+    message: string
+    at: string
+  }
+
   /** Accumulated learnings from all agents. The evaluator reviews these and decides what to propose. */
   insights: Insight[]
 

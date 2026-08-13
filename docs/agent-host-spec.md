@@ -329,6 +329,24 @@ The job runner does **not** decide work-item boundaries, loop counts,
 or feature-specific logic. Those decisions live in the workflow + agent
 markdown and are surfaced to the runner exclusively via tool calls.
 
+**Interactive checkpoints and the approval carry.** A phase with
+`interactive_checkpoint: true` parks *without* advancing: `phase` stays
+put and `awaitingNextPhase` names where the job would go. When the
+developer replies, `Dispatcher.sendMessage` frames the reply into
+`pendingPrompt` (read by the departing phase on its final turn) and
+stamps `approvedAdvanceFromPhase` so the runner does not re-park.
+
+That alone leaves the *entering* phase blind: `pendingPrompt` is cleared
+the moment it is used, and the next phase would begin with a plain
+kickoff. For a phase whose work is defined by the decision — a
+retrospective shipping only the findings that were approved — that is
+fatal. `Job.checkpointApproval` carries it across: `{ fromPhase, forPhase,
+message, at }`, written only for boundary approvals, rendered at the top
+of `forPhase`'s kickoff by `buildCheckpointApprovalBlock`, and cleared on
+consumption. Keying on `forPhase` means an approval whose transition never
+happened (the agent called `goto_phase` elsewhere) cannot resurface as
+guidance in an unrelated phase.
+
 ### 7.3a Job completion readiness (completion gate)
 
 When the workflow's last phase ends and no `goto_phase` / `await_event`

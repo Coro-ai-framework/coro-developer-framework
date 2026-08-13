@@ -513,6 +513,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // that verbatim instead — it carries the event payload the agent
       // needs to react to.
       const jobWorkingDir = path.join(settings.paths.workingDir, liveJob.id)
+      const hadPendingPrompt = Boolean(liveJob.pendingPrompt)
       const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(
         liveJob,
         jobWorkingDir,
@@ -523,6 +524,15 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Clear pendingPrompt immediately so it isn't replayed on the next turn.
       if (liveJob.pendingPrompt) {
         liveJob = await syncJob(stateBackend, liveJob, { pendingPrompt: undefined })
+        toolCtx.job = liveJob
+      }
+
+      // Same for a carried checkpoint approval, once the phase it was
+      // addressed to has read it. Clearing on consumption rather than on
+      // phase advance is what lets it survive the departing phase's final
+      // turn, which is the whole point of the field.
+      if (liveJob.checkpointApproval?.forPhase === liveJob.phase && !hadPendingPrompt) {
+        liveJob = await syncJob(stateBackend, liveJob, { checkpointApproval: undefined })
         toolCtx.job = liveJob
       }
 

@@ -55,6 +55,7 @@ import {
 import { jsonRequest, requestJson } from '../lib/http'
 import { isRetrospectiveJob } from '../lib/retrospective'
 import { useJob } from '../hooks/useJob'
+import { useFindingsBallot } from '../hooks/useRetrospectives'
 import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
@@ -716,6 +717,10 @@ export default function JobDetail() {
 
   const carriesSubRuns = job ? isCampaignJob(job) : false
 
+  // Findings + the developer's per-finding decision. Inert for every job
+  // that is not a retrospective sitting at its approval gate.
+  const ballot = useFindingsBallot(job)
+
   useRegisterWorkspaceTab(jobId
     ? {
         id: jobId,
@@ -1076,7 +1081,15 @@ export default function JobDetail() {
         <TabsContent value="activity" className="space-y-5">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
             <div className="space-y-5">
-              {isRetrospectiveJob(job) ? <RetrospectiveFindingsPanel job={job} /> : null}
+              {isRetrospectiveJob(job) ? (
+                <RetrospectiveFindingsPanel
+                  retrospective={ballot.retrospective}
+                  error={ballot.error}
+                  approved={ballot.selecting ? ballot.approved : undefined}
+                  onToggleApproved={ballot.selecting ? ballot.toggle : undefined}
+                  selectionDisabled={isDevPaused}
+                />
+              ) : null}
 
               {job.status === 'awaiting-developer-input' && !isDevPaused ? (
                 <ApprovalBox
@@ -1084,6 +1097,7 @@ export default function JobDetail() {
                   onSend={postMessage}
                   onCancel={handleCancel}
                   onViewChanges={() => setActiveTab('changes')}
+                  approveMessage={ballot.approveMessage}
                 />
               ) : null}
 

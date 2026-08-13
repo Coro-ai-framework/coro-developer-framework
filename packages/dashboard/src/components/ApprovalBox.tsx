@@ -11,6 +11,13 @@ interface ApprovalBoxProps {
   onCancel?: () => Promise<void>
   /** Jump to the Changes tab so the developer can review the diff before approving. */
   onViewChanges?: () => void
+  /**
+   * What "approve" sends, when a plain go-ahead is not enough. A
+   * retrospective's next phase acts on each finding separately, so the
+   * decision it needs is composed from the findings ballot above this box
+   * rather than assumed here.
+   */
+  approveMessage?: string
 }
 
 const APPROVE_MESSAGE = 'Approved. Please continue to the next phase.'
@@ -19,7 +26,13 @@ const APPROVE_MESSAGE = 'Approved. Please continue to the next phase.'
  * Developer-facing approval + rework UI shown only when a job is parked
  * awaiting developer input.
  */
-export default function ApprovalBox({ job, onSend, onCancel, onViewChanges }: ApprovalBoxProps) {
+export default function ApprovalBox({
+  job,
+  onSend,
+  onCancel,
+  onViewChanges,
+  approveMessage = APPROVE_MESSAGE,
+}: ApprovalBoxProps) {
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -79,7 +92,7 @@ export default function ApprovalBox({ job, onSend, onCancel, onViewChanges }: Ap
           artifacts={phaseArtifacts}
           phaseLabel={job.phase}
           sending={sending}
-          onApprove={() => void handle(APPROVE_MESSAGE)}
+          onApprove={() => void handle(approveMessage)}
           onRequestChanges={text => void handle(text)}
           onCancel={() => void handleCancel()}
           onViewChanges={onViewChanges}
@@ -116,7 +129,7 @@ export default function ApprovalBox({ job, onSend, onCancel, onViewChanges }: Ap
             <div className="flex flex-wrap items-center gap-3">
               <Button
                 type="button"
-                onClick={() => void handle(APPROVE_MESSAGE)}
+                onClick={() => void handle(approveMessage)}
                 disabled={sending}
                 variant="success"
                 size="sm"

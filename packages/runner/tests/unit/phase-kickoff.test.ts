@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   buildPhaseKickoffMessage,
   buildOpenPrsKickoffBlock,
+  buildCheckpointApprovalBlock,
   buildCodingPreflightWarning,
   formatRelativeAge,
 } from '../../src/jobs/phase-kickoff'
@@ -116,6 +117,23 @@ describe('buildPhaseKickoffMessage', () => {
     expect(msg).toContain('Begin phase **coding**')
   })
 
+  it('leads with the approval the developer gave to reach this phase', () => {
+    const msg = buildPhaseKickoffMessage(makeJob({
+      phase: 'shipping',
+      checkpointApproval: {
+        fromPhase: 'analysis',
+        forPhase: 'shipping',
+        message: 'Approved findings: finding-1\nSkipped findings: finding-2',
+        at: '2026-05-21T11:00:00Z',
+      },
+    }), JOB_DIR, NOW)
+
+    expect(msg).toContain('[DEVELOPER APPROVAL]')
+    expect(msg).toContain('Approved findings: finding-1')
+    expect(msg).toContain('`analysis`')
+    expect(msg.indexOf('[DEVELOPER APPROVAL]')).toBeLessThan(msg.indexOf('Begin phase'))
+  })
+
   it('includes workspace block when repo checkout params are set', () => {
     const msg = buildPhaseKickoffMessage(makeJob({
       params: {
@@ -128,5 +146,31 @@ describe('buildPhaseKickoffMessage', () => {
     expect(msg).toContain('cd my-service &&')
     expect(msg).toContain('{language}-conventions')
     expect(msg).not.toContain('go build')
+  })
+})
+
+describe('buildCheckpointApprovalBlock', () => {
+  const approval = {
+    fromPhase: 'analysis',
+    forPhase: 'shipping',
+    message: 'Approved findings: finding-1',
+    at: '2026-05-21T11:00:00Z',
+  }
+
+  it('is empty for a phase the approval was not addressed to', () => {
+    // The departing phase already read the reply in its resume prompt, and a
+    // third phase was never part of the decision.
+    expect(buildCheckpointApprovalBlock(makeJob({ phase: 'analysis', checkpointApproval: approval }))).toBe('')
+    expect(buildCheckpointApprovalBlock(makeJob({ phase: 'review', checkpointApproval: approval }))).toBe('')
+  })
+
+  it('is empty when no approval is carried', () => {
+    expect(buildCheckpointApprovalBlock(makeJob({ phase: 'shipping' }))).toBe('')
+  })
+
+  it('renders for the phase the approval released', () => {
+    const block = buildCheckpointApprovalBlock(makeJob({ phase: 'shipping', checkpointApproval: approval }))
+    expect(block).toContain('[DEVELOPER APPROVAL]')
+    expect(block).toContain('"Approved findings: finding-1"')
   })
 })

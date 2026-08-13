@@ -6,7 +6,14 @@
 // tier copy, category and severity labels, window bounds — shared by the
 // launch form, the history list, and the checkpoint panel.
 
-import type { FindingCategory, FindingSeverity, Job, RetrospectiveOutcome, RetrospectiveTiers } from '../types'
+import type {
+  FindingCategory,
+  FindingSeverity,
+  Job,
+  RetrospectiveFinding,
+  RetrospectiveOutcome,
+  RetrospectiveTiers,
+} from '../types'
 import type { Tone } from './status'
 
 export const RETROSPECTIVE_PATH = '/retrospectives'
@@ -78,6 +85,37 @@ export function availableTiers(tiers: RetrospectiveTiers, upstreamConfigured: bo
     upstreamIntelligence: false,
     upstreamCode: false,
   }
+}
+
+/**
+ * The approval message the analyst reads at the start of its shipping phase.
+ *
+ * The shipping phase acts per finding, so a bare "approved" leaves it
+ * guessing which of five findings the developer meant. This composes the
+ * decision into the shape `agents/retrospective-analyst.md` is written
+ * against: ids on an `Approved findings:` line, ids on a `Skipped findings:`
+ * line, nothing else that could read as a finding id.
+ *
+ * Ids are emitted in the analyst's own order rather than click order, so the
+ * message reads against the list the developer was looking at.
+ */
+export function composeApprovalMessage(
+  findings: ReadonlyArray<Pick<RetrospectiveFinding, 'id'>>,
+  approvedIds: ReadonlySet<string>,
+): string {
+  const approved = findings.filter(f => approvedIds.has(f.id)).map(f => f.id)
+  const skipped = findings.filter(f => !approvedIds.has(f.id)).map(f => f.id)
+
+  const lines = [
+    `Approved findings: ${approved.length > 0 ? approved.join(', ') : 'none'}`,
+    `Skipped findings: ${skipped.length > 0 ? skipped.join(', ') : 'none'}`,
+  ]
+  lines.push(
+    approved.length === 0
+      ? 'Ship nothing. Record every finding as not shipped, with the reason "not approved by the developer", and finish the run.'
+      : 'Ship only the approved findings. Record each skipped finding as not shipped, with the reason "not approved by the developer".',
+  )
+  return lines.join('\n')
 }
 
 interface CategoryMeta {

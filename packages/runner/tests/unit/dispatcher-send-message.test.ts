@@ -71,8 +71,32 @@ describe('Dispatcher.sendMessage', () => {
         approvedAdvanceFromPhase: 'coding',
         escalationMessage: undefined,
         pendingPrompt: expect.stringContaining('[DEVELOPER RESPONSE]'),
+        checkpointApproval: expect.objectContaining({
+          fromPhase: 'coding',
+          forPhase: 'review',
+          message: 'go ahead',
+        }),
       }),
     )
+  })
+
+  it('does not carry an approval for a mid-phase question', async () => {
+    // No `awaitingNextPhase` — the agent asked something inside the phase, so
+    // the answer belongs to that phase alone and must not resurface later.
+    const job = { ...makeJob(), awaitingNextPhase: undefined }
+    const getJob = vi.fn(async () => job)
+    const updateJob = vi.fn(async (_jobId: string, patch: Partial<Job>) => ({ ...job, ...patch }))
+
+    const dispatcher = new Dispatcher({
+      stateBackend: { getJob, updateJob, appendLog: vi.fn(async () => undefined) },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    } as never)
+
+    await dispatcher.sendMessage(job.id, 'yes, make it idempotent')
+
+    const patch = updateJob.mock.calls[0]?.[1] as Partial<Job>
+    expect(patch.checkpointApproval).toBeUndefined()
+    expect(patch.approvedAdvanceFromPhase).toBeUndefined()
   })
 
   it('preserves earlier pendingPrompt when another parked message arrives', async () => {

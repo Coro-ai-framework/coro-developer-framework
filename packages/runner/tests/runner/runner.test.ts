@@ -747,6 +747,55 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.approvedAdvanceFromPhase).toBeUndefined()
   })
 
+  it('carries a checkpoint approval into the phase it released, then clears it', async () => {
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+
+    // State as the dispatcher leaves it when the developer approves at the
+    // alpha→beta boundary. `alpha` re-runs once and then advances; the
+    // approval has to survive that turn to be of any use to `beta`.
+    const approval = {
+      fromPhase: 'alpha',
+      forPhase: 'beta',
+      message: 'Approved findings: finding-1\nSkipped findings: finding-2',
+      at: '2026-05-21T11:00:00Z',
+    }
+    const resumed = makeJob({
+      phase: 'alpha',
+      status: 'queued',
+      interactive: true,
+      approvedAdvanceFromPhase: 'alpha',
+      checkpointApproval: approval,
+    })
+
+    stateBackend = createMockStateBackend(resumed)
+    ctx = makeRunnerContext(stateBackend)
+
+    const prompts: string[] = []
+    await runWithStubExecutor(
+      resumed,
+      ctx,
+      async function* (req) {
+        prompts.push(req.userPrompt)
+        yield* yieldEmptyPhase(`sess-carry-${prompts.length}`)
+      },
+      { workflowConfigOverride: workflowCheckpoint },
+    )
+
+    expect(prompts).toHaveLength(2)
+    expect(prompts[0]).not.toContain('[DEVELOPER APPROVAL]')
+    expect(prompts[1]).toContain('[DEVELOPER APPROVAL]')
+    expect(prompts[1]).toContain('Approved findings: finding-1')
+    expect(stateBackend.current.checkpointApproval).toBeUndefined()
+  })
+
   it('parks with awaiting-plan-approval when event name includes "plan"', async () => {
     await runWithStubExecutor(
       makeJob({ phase: 'alpha' }),

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight, ExternalLink, GitPullRequest } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Badge } from '../ui/badge'
+import { Switch } from '../ui/switch'
 import { cn } from '../../lib/utils'
 import {
   categoryDescription,
@@ -20,6 +21,14 @@ interface FindingsListProps {
   outcomes?: ReadonlyArray<RetrospectiveOutcome>
   /** Expand the first finding on mount. Used at the approval checkpoint. */
   defaultExpandFirst?: boolean
+  /**
+   * Ids the developer has approved. Presence of this prop is what turns the
+   * cards into a ballot; `undefined` keeps the read-only rendering used by
+   * the history page and by finished runs.
+   */
+  approved?: ReadonlySet<string>
+  onToggleApproved?: (findingId: string) => void
+  selectionDisabled?: boolean
   className?: string
 }
 
@@ -32,6 +41,9 @@ export default function FindingsList({
   findings,
   outcomes = [],
   defaultExpandFirst = false,
+  approved,
+  onToggleApproved,
+  selectionDisabled = false,
   className,
 }: FindingsListProps) {
   const [expanded, setExpanded] = useState<Set<string>>(
@@ -57,6 +69,9 @@ export default function FindingsList({
           outcome={outcomeFor.get(finding.id)}
           expanded={expanded.has(finding.id)}
           onToggle={() => toggle(finding.id)}
+          approved={approved ? approved.has(finding.id) : undefined}
+          onToggleApproved={onToggleApproved ? () => onToggleApproved(finding.id) : undefined}
+          selectionDisabled={selectionDisabled}
         />
       ))}
     </div>
@@ -68,40 +83,77 @@ interface FindingCardProps {
   outcome: RetrospectiveOutcome | undefined
   expanded: boolean
   onToggle: () => void
+  /** `undefined` renders the card read-only. */
+  approved?: boolean
+  onToggleApproved?: () => void
+  selectionDisabled?: boolean
 }
 
-function FindingCard({ finding, outcome, expanded, onToggle }: FindingCardProps) {
+function FindingCard({
+  finding,
+  outcome,
+  expanded,
+  onToggle,
+  approved,
+  onToggleApproved,
+  selectionDisabled = false,
+}: FindingCardProps) {
   const ChevronIcon = expanded ? ChevronDown : ChevronRight
+  const selectable = approved !== undefined && onToggleApproved !== undefined
 
   return (
-    <div className="rounded-xl border border-line bg-overlay/40">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        className="flex w-full items-start gap-3 p-3 text-left"
-      >
-        <ChevronIcon className="mt-0.5 size-4 shrink-0 text-fg-subtle" />
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={severityTone(finding.severity)} className="capitalize">
-              {finding.severity}
-            </Badge>
-            <Badge variant={categoryTone(finding.category)} title={categoryDescription(finding.category)}>
-              {categoryLabel(finding.category)}
-            </Badge>
-            <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-              {finding.evidence.length} {finding.evidence.length === 1 ? 'run' : 'runs'}
-            </span>
-            {outcome ? (
-              <Badge variant={destinationTone(outcome.destination)}>
-                {destinationLabel(outcome.destination)}
-              </Badge>
-            ) : null}
+    <div
+      className={cn(
+        'rounded-xl border bg-overlay/40 transition-colors',
+        selectable && !approved ? 'border-line/60 opacity-60' : 'border-line',
+      )}
+    >
+      <div className="flex items-start">
+        {selectable ? (
+          <div className="flex items-center gap-2 py-3 pl-3 pt-4">
+            <Switch
+              checked={approved}
+              onCheckedChange={onToggleApproved}
+              disabled={selectionDisabled}
+              size="sm"
+              ariaLabel={approved ? `Skip finding ${finding.id}` : `Approve finding ${finding.id}`}
+            />
           </div>
-          <div className="text-sm font-medium leading-snug text-fg">{finding.title}</div>
-        </div>
-      </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 items-start gap-3 p-3 text-left"
+        >
+          <ChevronIcon className="mt-0.5 size-4 shrink-0 text-fg-subtle" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              {/* The id is what an approval names, so it has to be readable
+                  for a developer replying by message rather than by toggle. */}
+              <span className="font-mono text-[11px] text-fg-subtle">{finding.id}</span>
+              <Badge variant={severityTone(finding.severity)} className="capitalize">
+                {finding.severity}
+              </Badge>
+              <Badge variant={categoryTone(finding.category)} title={categoryDescription(finding.category)}>
+                {categoryLabel(finding.category)}
+              </Badge>
+              <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
+                {finding.evidence.length} {finding.evidence.length === 1 ? 'run' : 'runs'}
+              </span>
+              {outcome ? (
+                <Badge variant={destinationTone(outcome.destination)}>
+                  {destinationLabel(outcome.destination)}
+                </Badge>
+              ) : null}
+              {selectable && !approved ? (
+                <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">Will be skipped</span>
+              ) : null}
+            </div>
+            <div className="text-sm font-medium leading-snug text-fg">{finding.title}</div>
+          </div>
+        </button>
+      </div>
 
       {expanded ? (
         <div className="space-y-4 border-t border-line/60 px-4 py-4 pl-10">

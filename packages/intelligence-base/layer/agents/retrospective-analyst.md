@@ -129,8 +129,10 @@ Write `working/{job-id}/retrospective-report.md`:
 The "Checked and cleared" section matters. It tells the reviewer you
 looked, and it stops the next retrospective re-treading the same ground.
 
-Then post the artefact, with the machine-readable findings in `data` so
-the dashboard can render per-finding approval checkboxes:
+Then post the artefact, with the machine-readable findings in `data`. This
+is what the dashboard renders as the per-finding approve/skip ballot, so a
+finding missing from `data` can never be approved — even if the markdown
+describes it:
 
 ```
 post_artifact({
@@ -157,7 +159,8 @@ post_artifact({
 ```
 
 Keep `id` values stable and sequential (`finding-1`, `finding-2`) — the
-developer's approval message refers to them by id.
+developer's approval names them by id, and `shipping` matches on them
+verbatim.
 
 ### 5. End the turn
 
@@ -167,15 +170,50 @@ approval; you resume in `shipping`.
 
 ## Phase 2 — `shipping`
 
-### 1. Find the approval
+### 1. Read the approval
 
-The resume prompt carries the developer's decision, naming approved and
-skipped finding ids.
+The developer's decision is quoted in your prompt, under one of two
+headings depending on how it reached you:
 
-**If there is no approval message**, or it names no findings: call
-`escalate` with "shipping phase reached without a developer approval
-message" and stop. Do not ship on an assumption — this check is the
-reason the checkpoint is trustworthy.
+- `[DEVELOPER APPROVAL]` — the checkpoint that released this phase. The
+  normal path.
+- `[DEVELOPER RESPONSE]` — a reply to a question or an escalation of
+  yours. Counts just the same; it is the same human answering.
+
+From the dashboard the decision arrives already itemised:
+
+```
+Approved findings: finding-1, finding-3
+Skipped findings: finding-2
+Ship only the approved findings. ...
+```
+
+Read it as follows:
+
+- **Ids named as approved** → ship exactly those, and nothing else.
+- **Ids named as skipped**, or `Approved findings: none` → do not ship
+  them; record each as `destination: "none"` with the developer's reason.
+- **An approval that names no ids at all** (a plain "approved, go ahead",
+  typical of a CLI reply) → treat every finding in your report as
+  approved. The developer approved the report they were looking at; that
+  report is the list.
+- **Written guidance instead of a verdict** ("only the Go one", "skip
+  anything touching auth") → follow it, and say in your outcome which ids
+  you read it as naming.
+
+**Only if neither block is present**: call `escalate` and stop. Shipping
+without a human verdict is the one thing this phase must never do — but a
+verdict phrased loosely is still a verdict, so do not escalate merely
+because it named no ids.
+
+When you escalate here, the developer is looking at a run that has stopped
+and needs to know what to type. Say so, and list the ids:
+
+```
+escalate({
+  reason: "The shipping phase started with no developer decision in its prompt, so nothing has been shipped. Reply with `Approved findings: finding-1, finding-3` (or `Approved findings: none`) and I will ship exactly those. Findings in this report: finding-1 (Coder loops on Go test scaffolding), finding-2 (…), finding-3 (…)."
+})
+```
 
 Re-read your own report with `get_artifacts({ phase: "analysis" })`;
 your prior turn's context may not have survived the park.

@@ -955,14 +955,29 @@ export class Dispatcher {
       ? `${job.pendingPrompt}\n\n---\n\n${framedPrompt}`
       : framedPrompt
 
+    // A boundary approval is a decision about the *transition*, so the
+    // phase being entered needs it as much as the one being left — the
+    // framed prompt above only reaches the latter.
+    const nextPhase = parked ? job.awaitingNextPhase : undefined
+
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
       escalationMessage: undefined,
       awaitingEvent: undefined,
       awaitingPrId: undefined,
       awaitingNextPhase: undefined,
-      approvedAdvanceFromPhase: parked && job.awaitingNextPhase ? job.phase : undefined,
+      approvedAdvanceFromPhase: nextPhase ? job.phase : undefined,
       pendingPrompt: mergedPrompt,
+      ...(nextPhase
+        ? {
+            checkpointApproval: {
+              fromPhase: job.phase,
+              forPhase: nextPhase,
+              message,
+              at: new Date().toISOString(),
+            },
+          }
+        : {}),
     })
 
     await this.ctx.stateBackend.appendLog(jobId, `[human] ${message}`)

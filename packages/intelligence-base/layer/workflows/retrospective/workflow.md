@@ -62,9 +62,11 @@ human decides which ones are allowed to leave the machine.
 
 ### `shipping`
 
-Resumes with the developer's approval message. The analyst ships only
-the approved findings, then posts a `retrospective-outcome` artefact
-recording where each one landed.
+Resumes with the developer's decision quoted in a `[DEVELOPER APPROVAL]`
+block at the top of the phase prompt — itemised per finding when it came
+from the dashboard ballot. The analyst ships only the approved findings,
+records the rest as not shipped, then posts a `retrospective-outcome`
+artefact saying where each one landed.
 
 Where a finding goes depends on which layer owns the fix:
 
@@ -72,17 +74,22 @@ Where a finding goes depends on which layer owns the fix:
 |----------|-------------|------|
 | `tenant-intelligence` | This install's own layers | `propose_change` |
 | `base-intelligence` | Upstream issue **and** a markdown PR | `upstream_search` → `upstream_create_issue` / `upstream_comment_issue` → `upstream_open_intelligence_pr` |
-| `runner-code` | Upstream issue only | `upstream_search` → `upstream_create_issue` |
+| `runner-code` | Upstream issue, then a delegated implementation run | `upstream_search` → `upstream_create_issue` → `dispatch_improvement_job` |
 
-`runner-code` stops at the issue because a code change must be built and
-tested, and this phase does neither.
+`runner-code` is delegated rather than written here: a code change has to
+build and pass tests, and this phase has neither a checkout nor a test
+loop. `dispatch_improvement_job` hands the issue to an ordinary
+implementation job on `workflows/oss-contribution/workflow.md`, which
+works on a fork and opens its pull request upstream.
 
 ## Output
 
 - `working/{job-id}/retrospective-report.md` — the findings, with evidence.
 - One `propose_change` PR per writable layer that had approved findings.
-- Upstream issues, and one markdown PR per approved `base-intelligence`
-  finding, when an upstream destination is configured and enabled.
+- Upstream issues, one markdown PR per approved `base-intelligence`
+  finding, and one dispatched implementation run per approved
+  `runner-code` finding — when an upstream destination is configured and
+  the tier is enabled.
 - `working/{job-id}/retrospective-outcome.md` — where each finding landed.
 
 ## Important rules
@@ -91,8 +98,9 @@ tested, and this phase does neither.
   workflow may merge anything, in any layer. That asymmetry is what
   keeps a self-improving loop from drifting.
 - **Nothing public before the checkpoint.** If the `shipping` phase
-  starts without an approval message in the prompt, the analyst
-  escalates instead of guessing.
+  starts with no developer approval in its prompt, the analyst escalates
+  instead of guessing. An approval that names no finding ids is still an
+  approval — of the whole report; a missing one is not.
 - **Evidence or it does not ship.** A finding with fewer than two
   citing jobs is an anecdote; anecdotes stay in the report.
 - **Search upstream before filing.** Other installs run this same

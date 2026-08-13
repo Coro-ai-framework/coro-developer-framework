@@ -289,6 +289,26 @@ Three properties make this safe to ship:
    which is why the dashboard always dispatches retrospectives with
    `params.interactive = true`.
 
+The approval has to *arrive* somewhere, and that is not automatic. A
+boundary approval is framed into `pendingPrompt`, which the departing
+phase consumes on its last turn — so `shipping` would otherwise start
+with a plain kickoff and no idea what was approved. `Job.checkpointApproval`
+is what closes that gap: `Dispatcher.sendMessage` records the reply against
+the phase it releases (`forPhase`), `buildCheckpointApprovalBlock` leads
+that phase's kickoff with it, and the runner clears it on consumption.
+Every workflow with a checkpoint gets this; the retrospective is only the
+first that cannot work without it.
+
+Because `shipping` acts per finding, an unqualified "approved" is not
+enough input. The dashboard therefore renders the report's `findings[]` as
+a per-finding ballot (`components/retrospective/findings-list.tsx`) and
+`composeApprovalMessage` turns the toggles into the `Approved findings:` /
+`Skipped findings:` lines the analyst parses. The ballot feeds the existing
+approve button rather than adding a second one, so there is one approval
+action on the page. A reply that names no ids still means "all of it" —
+`agents/retrospective-analyst.md` reads it that way so a CLI `coro message`
+approval works too.
+
 Findings are categorised by which layer owns the fix:
 `tenant-intelligence` ships via `propose_change`, while `base-intelligence`
 and `runner-code` belong to the open-source repository.

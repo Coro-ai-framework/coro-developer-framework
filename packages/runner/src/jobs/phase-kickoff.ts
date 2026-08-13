@@ -104,12 +104,41 @@ export function buildCodingPreflightWarning(
   ].join('\n')
 }
 
+/**
+ * The developer's words from the checkpoint that let this phase start.
+ *
+ * Empty unless the approval was addressed to this exact phase: the phase
+ * that was approved already read the reply in its own resume prompt, and an
+ * approval left over from a transition that did not happen must not read as
+ * guidance somewhere else. When it does apply it leads the kickoff, because
+ * for a phase whose job is to act on a decision, the decision is the first
+ * thing to read.
+ */
+export function buildCheckpointApprovalBlock(job: Job): string {
+  const approval = job.checkpointApproval
+  if (!approval?.message?.trim()) return ''
+  if (approval.forPhase !== job.phase) return ''
+
+  return [
+    `[DEVELOPER APPROVAL] The developer approved leaving phase \`${approval.fromPhase}\`, which is why`,
+    `you are in \`${job.phase}\` now. They said:`,
+    '',
+    `"${approval.message.trim()}"`,
+    '',
+    'Treat this as your instruction set, not as encouragement: act on what it approves and ' +
+    'leave out what it does not. If it asks for something this phase cannot do, say so with ' +
+    '`escalate` rather than doing an approximation of it.',
+    '',
+  ].join('\n')
+}
+
 export function buildPhaseKickoffMessage(
   job: Job,
   jobWorkingDir: string,
   nowMs = Date.now(),
   declaredPhases?: string[],
 ): string {
+  const approval = buildCheckpointApprovalBlock(job)
   const preflight = buildCodingPreflightWarning(job, declaredPhases)
   const workspace = buildWorkspaceLayoutKickoffBlock(
     resolveJobWorkspaceLayout(job, jobWorkingDir),
@@ -127,5 +156,5 @@ export function buildPhaseKickoffMessage(
     )
 
   const openPrs = buildOpenPrsKickoffBlock(job, nowMs)
-  return [preflight, workspace, base, openPrs].filter(Boolean).join('\n')
+  return [approval, preflight, workspace, base, openPrs].filter(Boolean).join('\n')
 }

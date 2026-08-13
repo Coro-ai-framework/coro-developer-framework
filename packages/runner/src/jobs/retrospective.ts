@@ -17,6 +17,7 @@
 import {
   JobType,
   RETROSPECTIVE_WORKFLOW_PATH,
+  STATUS_AWAITING_DEVELOPER_INPUT,
   type Job,
   type JobInput,
 } from '@coro-ai/cloud-protocol'
@@ -197,7 +198,12 @@ export function summarizeRetrospective(job: Job): RetrospectiveSummary {
     jobWindow: normalizeRetrospectiveWindow(numberOr(job.params?.['jobWindow'], undefined)),
     tiers: normalizeRetrospectiveTiers(job.params?.['tiers'] as Partial<RetrospectiveTiers> | undefined),
     costUsd: job.tokenUsage?.totalCostUsd ?? 0,
-    awaitingApproval: job.phase === 'analysis' && Boolean(job.awaitingNextPhase),
+    // A boundary park (`awaitingNextPhase`) on a retrospective is always the
+    // findings gate — the workflow declares one checkpoint. Keyed on that
+    // rather than on the phase name so an overlay that renames `analysis`
+    // still surfaces the approval controls.
+    awaitingApproval:
+      job.status === STATUS_AWAITING_DEVELOPER_INPUT && Boolean(job.awaitingNextPhase),
     findings: parseFindings(report?.['findings']),
     outcomes: parseOutcomes(outcome?.['outcomes']),
   }

@@ -181,6 +181,21 @@ describe('summarizeRetrospective', () => {
     expect(summarizeRetrospective(withReport).awaitingApproval).toBe(false)
   })
 
+  it('flags the gate by the park, not by the phase name', () => {
+    // An overlay may rename `analysis`; a boundary park on a retrospective
+    // is the gate regardless, since the workflow declares one checkpoint.
+    const renamed = retroJob({
+      status: 'awaiting-developer-input',
+      phase: 'review-findings',
+      awaitingNextPhase: 'shipping',
+    })
+    expect(summarizeRetrospective(renamed).awaitingApproval).toBe(true)
+
+    // Mid-phase question: parked, but not at a boundary — no ballot.
+    const midPhase = retroJob({ status: 'awaiting-developer-input', phase: 'analysis' })
+    expect(summarizeRetrospective(midPhase).awaitingApproval).toBe(false)
+  })
+
   it('survives a model-authored artefact that is malformed', () => {
     const messy = retroJob({
       artifacts: [
