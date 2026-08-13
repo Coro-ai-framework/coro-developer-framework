@@ -66,10 +66,23 @@ Resumes with the developer's approval message. The analyst ships only
 the approved findings, then posts a `retrospective-outcome` artefact
 recording where each one landed.
 
+Where a finding goes depends on which layer owns the fix:
+
+| Category | Destination | Tool |
+|----------|-------------|------|
+| `tenant-intelligence` | This install's own layers | `propose_change` |
+| `base-intelligence` | Upstream issue **and** a markdown PR | `upstream_search` → `upstream_create_issue` / `upstream_comment_issue` → `upstream_open_intelligence_pr` |
+| `runner-code` | Upstream issue only | `upstream_search` → `upstream_create_issue` |
+
+`runner-code` stops at the issue because a code change must be built and
+tested, and this phase does neither.
+
 ## Output
 
 - `working/{job-id}/retrospective-report.md` — the findings, with evidence.
 - One `propose_change` PR per writable layer that had approved findings.
+- Upstream issues, and one markdown PR per approved `base-intelligence`
+  finding, when an upstream destination is configured and enabled.
 - `working/{job-id}/retrospective-outcome.md` — where each finding landed.
 
 ## Important rules
@@ -82,3 +95,10 @@ recording where each one landed.
   escalates instead of guessing.
 - **Evidence or it does not ship.** A finding with fewer than two
   citing jobs is an anecdote; anecdotes stay in the report.
+- **Search upstream before filing.** Other installs run this same
+  workflow against the same Coro version. A second issue for a known
+  problem is worse than no issue at all — add evidence to the existing
+  one instead.
+- **Aliases only in anything public.** The upstream tools refuse text
+  carrying a real repository, org, ticket, or e-mail identifier. That
+  refusal is final, not something to phrase around.

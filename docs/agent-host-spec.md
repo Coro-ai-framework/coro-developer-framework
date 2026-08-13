@@ -539,6 +539,12 @@ Tool surface (under the `mcp__coro__` prefix):
 | Job control                    | `set_work_items`, `update_work_item`, `get_work_items`, `request_new_session`, `set_job_params`, `goto_phase`, `await_event`, `escalate`, `log` |
 | Artefacts                      | `post_artifact`, `get_artifacts`                                                                                      |
 | Self-improvement               | `add_insight`, `propose_change`, `list_proposals`, `read_memory`                                                      |
+| Retrospective (type-gated)     | `list_jobs`, `get_job_report`, `get_job_log_excerpts`, `upstream_search`, `upstream_create_issue`, `upstream_comment_issue`, `upstream_open_intelligence_pr` |
+
+The retrospective group is refused for any job whose type is not
+`retrospective`; the upstream tools additionally require an
+`upstream.repoUrl` in the local config and the matching destination
+enabled on the run.
 
 The SDK ships standard built-in tools (Read, Write, Edit, Bash, Glob,
 Grep, Skill, …) which the workflow's per-phase tool allowlist may

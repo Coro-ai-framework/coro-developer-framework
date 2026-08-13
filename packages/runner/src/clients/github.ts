@@ -25,8 +25,36 @@ export interface CreatePrOptions {
   title: string
   description?: string
   sourceBranch: string
+  /**
+   * Account that owns the branch, when it lives in a fork rather than in
+   * `repoSlug`. GitHub expresses cross-repository PRs as
+   * `head: "<owner>:<branch>"`; set this instead of encoding the owner
+   * into `sourceBranch` by hand.
+   */
+  sourceOwner?: string
   targetBranch?: string
   reviewerUsernames?: string[]
+}
+
+export interface RepoInfo {
+  full_name: string
+  default_branch: string
+  clone_url: string
+  html_url: string
+  fork: boolean
+}
+
+/** One issue or PR as returned by search / issue reads. */
+export interface IssueSearchHit {
+  number: number
+  title: string
+  url: string
+  state: string
+  /** GitHub's issue search returns PRs too; they carry `pull_request`. */
+  isPr: boolean
+  body: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface PrComment {
@@ -101,13 +129,124 @@ export class GitHubClient {
     return { full_name: data.full_name }
   }
 
+  /** Repository metadata. `default_branch` is what PR bases are resolved from. */
+  async getRepo(repoSlug: string): Promise<RepoInfo> {
+    return await this.request<RepoInfo>('GET', `/repos/${this.repoPath(repoSlug)}`)
+  }
+
+  /**
+   * Ensure a fork of `repoSlug` exists under `forkOwner` (or the
+   * authenticated user when omitted) and return it once GitHub reports it
+   * ready.
+   *
+   * Forking is asynchronous: `POST /forks` returns 202 with the repo
+   * record before the fork is actually clonable, so we poll until
+   * `GET /repos/<forkOwner>/<repo>` succeeds. An existing fork short-
+   * circuits — GitHub treats a repeated POST as a no-op, but checking
+   * first keeps the common path to one request.
+   */
+  async ensureFork(
+    repoSlug: string,
+    forkOwner?: string,
+    opts: { attempts?: number; delayMs?: number } = {},
+  ): Promise<RepoInfo> {
+    const { repo } = this.parseRepo(repoSlug)
+    const owner = forkOwner ?? this.owner
+    const forkSlug = `${owner}/${repo}`
+
+    const existing = await this.getRepo(forkSlug).catch(() => null)
+    if (existing) return existing
+
+    await this.request('POST', `/repos/${this.repoPath(repoSlug)}/forks`, {
+      ...(forkOwner ? { organization: forkOwner } : {}),
+    })
+
+    const attempts = opts.attempts ?? 10
+    const delayMs = opts.delayMs ?? 2000
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      await sleep(delayMs)
+      const fork = await this.getRepo(forkSlug).catch(() => null)
+      if (fork) return fork
+    }
+
+    throw new GitHubError(
+      504,
+      `fork ${forkSlug} was requested but did not become available after ${attempts} checks`,
+    )
+  }
+
+  /**
+   * Fast-forward a fork's branch to its parent — GitHub's "Sync fork"
+   * button. Returns false when the fork has diverged and cannot be
+   * fast-forwarded, which is informative rather than fatal: a PR from a
+   * stale base still diffs correctly, it just may conflict.
+   */
+  async syncFork(forkSlug: string, branch: string): Promise<boolean> {
+    try {
+      await this.request('POST', `/repos/${this.repoPath(forkSlug)}/merge-upstream`, { branch })
+      return true
+    } catch (err) {
+      if (err instanceof GitHubError && err.statusCode === 409) return false
+      throw err
+    }
+  }
+
+  // ── Issues ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Search issues and pull requests inside one repository.
+   *
+   * `query` goes to GitHub's search syntax verbatim, so a caller can pass
+   * a quoted marker string to find a specific record. The `repo:` and
+   * `is:` qualifiers are added here so callers cannot accidentally search
+   * the whole of GitHub.
+   */
+  async searchIssues(
+    repoSlug: string,
+    query: string,
+    opts: { state?: 'open' | 'closed' | 'all'; maxResults?: number } = {},
+  ): Promise<IssueSearchHit[]> {
+    const { owner, repo } = this.parseRepo(repoSlug)
+    const state = opts.state ?? 'open'
+    const maxResults = opts.maxResults ?? 20
+    const qualifiers = [query, `repo:${owner}/${repo}`]
+    if (state !== 'all') qualifiers.push(`is:${state}`)
+
+    const data = await this.request<{ items?: GhIssue[] }>(
+      'GET',
+      `/search/issues?q=${encodeURIComponent(qualifiers.join(' '))}&per_page=${Math.min(maxResults, 100)}`,
+    )
+
+    return (data.items ?? []).slice(0, maxResults).map(normalizeGhIssue)
+  }
+
+  async createIssue(
+    repoSlug: string,
+    opts: { title: string; body: string; labels?: string[] },
+  ): Promise<IssueSearchHit> {
+    const issue = await this.request<GhIssue>('POST', `/repos/${this.repoPath(repoSlug)}/issues`, {
+      title: opts.title,
+      body: opts.body,
+      ...(opts.labels && opts.labels.length > 0 ? { labels: opts.labels } : {}),
+    })
+    return normalizeGhIssue(issue)
+  }
+
+  async getIssue(repoSlug: string, number: number): Promise<IssueSearchHit> {
+    const issue = await this.request<GhIssue>(
+      'GET',
+      `/repos/${this.repoPath(repoSlug)}/issues/${number}`,
+    )
+    return normalizeGhIssue(issue)
+  }
+
   // ── Pull requests ────────────────────────────────────────────────────────────
 
   async createPr(opts: CreatePrOptions): Promise<PullRequest> {
     const body = {
       title: opts.title,
       body: opts.description ?? '',
-      head: opts.sourceBranch,
+      head: opts.sourceOwner ? `${opts.sourceOwner}:${opts.sourceBranch}` : opts.sourceBranch,
       base: opts.targetBranch ?? 'main',
     }
 
@@ -475,6 +614,17 @@ interface GhReview {
   state: string
 }
 
+interface GhIssue {
+  number: number
+  title: string
+  body: string | null
+  state: string
+  html_url: string
+  pull_request?: { url: string }
+  created_at: string
+  updated_at: string
+}
+
 interface GhIssueComment {
   id: number
   body: string
@@ -510,6 +660,19 @@ function normalizeGhPr(ghPr: GhPullRequest): PullRequest {
     created_on: ghPr.created_at,
     updated_on: ghPr.updated_at,
     links: { html: { href: ghPr.html_url } },
+  }
+}
+
+function normalizeGhIssue(issue: GhIssue): IssueSearchHit {
+  return {
+    number: issue.number,
+    title: issue.title,
+    url: issue.html_url,
+    state: issue.state,
+    isPr: issue.pull_request !== undefined,
+    body: issue.body ?? '',
+    createdAt: issue.created_at,
+    updatedAt: issue.updated_at,
   }
 }
 

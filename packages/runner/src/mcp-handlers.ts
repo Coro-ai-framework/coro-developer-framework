@@ -12,6 +12,12 @@ import {
   createGuardrailScmDeps,
 } from './guardrails'
 import { loadLocalConfig } from './config/local-config'
+import type {
+  UpstreamCommentIssueArgs,
+  UpstreamCreateIssueArgs,
+  UpstreamOpenPrArgs,
+  UpstreamSearchArgs,
+} from './tools/upstream'
 
 // ── Response helpers (shared with MCP server wiring) ──────────────────────────
 
@@ -1110,6 +1116,45 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       const { getJobLogExcerpts } = await import('./tools/job-history')
       try {
         return text(await getJobLogExcerpts(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    // Upstream contribution (retrospective jobs only). Implementations live
+    // in `tools/upstream.ts`, which owns the tier gate, the sanitisation
+    // gate, and the per-run publication caps.
+    upstream_search: async (args: UpstreamSearchArgs) => {
+      const { upstreamSearch } = await import('./tools/upstream')
+      try {
+        return text(await upstreamSearch(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    upstream_create_issue: async (args: UpstreamCreateIssueArgs) => {
+      const { upstreamCreateIssue } = await import('./tools/upstream')
+      try {
+        return text(await upstreamCreateIssue(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    upstream_comment_issue: async (args: UpstreamCommentIssueArgs) => {
+      const { upstreamCommentIssue } = await import('./tools/upstream')
+      try {
+        return text(await upstreamCommentIssue(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    upstream_open_intelligence_pr: async (args: UpstreamOpenPrArgs) => {
+      const { upstreamOpenIntelligencePr } = await import('./tools/upstream')
+      try {
+        return text(await upstreamOpenIntelligencePr(args, ctx))
       } catch (err) {
         return error((err as Error).message)
       }

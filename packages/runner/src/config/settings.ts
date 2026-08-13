@@ -37,6 +37,15 @@ export interface GitHubConfig {
   baseUrl: string
 }
 
+/** Mirrors `ResolvedUpstreamConfig` from `config/local-config.ts`. */
+export interface UpstreamSettings {
+  repoUrl: string
+  forkOwner?: string
+  token?: string
+  maxIssuesPerRun: number
+  maxCodeJobsPerRun: number
+}
+
 export interface Settings {
   host: {
     port: number
@@ -100,6 +109,14 @@ export interface Settings {
       strategy: 'path' | 'agent'
     }
   }
+  /**
+   * Where retrospective findings that belong to Coro itself get
+   * published. Undefined when the install has not opted in — the
+   * upstream MCP tools then refuse with a configuration message rather
+   * than silently doing nothing. Resolved from `upstream` in
+   * `LocalConfig` by `resolveUpstreamConfig()`.
+   */
+  upstream?: UpstreamSettings
   /**
    * Multi-provider LLM configuration. The runtime treats this as the
    * single source of truth for executor selection and alias resolution.

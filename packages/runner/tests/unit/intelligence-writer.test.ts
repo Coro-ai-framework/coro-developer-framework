@@ -465,7 +465,29 @@ describe('commitAndPush', () => {
     )
   })
 
-  it('refuses to commit onto a branch outside the coro/proposal namespace', async () => {
+  it('accepts the retrospective branch namespace', async () => {
+    const dir = path.join(root, 'retro-work')
+    await fs.mkdir(dir, { recursive: true })
+    const git = makeGitMock({ branchesLocal: ['main'] })
+
+    await commitAndPush({
+      dir,
+      branch: 'coro/retro/retro-1-coder-scaffolding',
+      baseRef: 'main',
+      files: [{ path: 'packages/intelligence-base/layer/agents/coder.md', content: '# Coder\n' }],
+      commitMessage: 'docs(intelligence): tighten the coder procedure',
+      logger: makeLogger(),
+      gitFactory: git.factory,
+    })
+
+    expect(git.push).toHaveBeenCalledWith(
+      'origin',
+      'coro/retro/retro-1-coder-scaffolding',
+      ['--set-upstream'],
+    )
+  })
+
+  it('refuses to commit onto a branch outside the Coro-owned namespaces', async () => {
     await expect(
       commitAndPush({
         dir: root,
@@ -476,7 +498,7 @@ describe('commitAndPush', () => {
         logger: makeLogger(),
         gitFactory: makeGitMock().factory,
       }),
-    ).rejects.toThrow('coro/proposal/* namespace')
+    ).rejects.toThrow('coro/proposal/*, coro/retro/*')
   })
 
   it('rejects file paths that escape the writer dir', async () => {

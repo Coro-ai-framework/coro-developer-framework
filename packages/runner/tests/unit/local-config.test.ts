@@ -10,7 +10,10 @@ import {
   resolveIntelligenceDir,
   resolveProposalsConfig,
   resolveTenantOverlaySource,
+  resolveUpstreamConfig,
   resolveWorkingDir,
+  UPSTREAM_DEFAULT_MAX_CODE_JOBS_PER_RUN,
+  UPSTREAM_DEFAULT_MAX_ISSUES_PER_RUN,
   type LocalConfig,
 } from '../../src/config/local-config'
 
@@ -214,6 +217,50 @@ describe('local-config', () => {
         }),
       )
       expect(() => loadLocalConfig(configPath)).toThrow()
+    })
+  })
+
+  // ── Upstream contribution schema ─────────────────────────────────────────
+  describe('upstream config', () => {
+    it('stays undefined until an install opts in with a repo URL', () => {
+      expect(resolveUpstreamConfig(null)).toBeUndefined()
+      expect(resolveUpstreamConfig({})).toBeUndefined()
+      expect(resolveUpstreamConfig({ upstream: { forkOwner: 'me' } })).toBeUndefined()
+    })
+
+    it('round-trips an explicit block and applies the publication caps', () => {
+      saveLocalConfig(
+        { upstream: { repoUrl: 'https://github.com/coro/coro', forkOwner: 'me', token: 'tok' } },
+        configPath,
+      )
+      expect(resolveUpstreamConfig(loadLocalConfig(configPath))).toEqual({
+        repoUrl: 'https://github.com/coro/coro',
+        forkOwner: 'me',
+        token: 'tok',
+        maxIssuesPerRun: UPSTREAM_DEFAULT_MAX_ISSUES_PER_RUN,
+        maxCodeJobsPerRun: UPSTREAM_DEFAULT_MAX_CODE_JOBS_PER_RUN,
+      })
+    })
+
+    it('honours explicit caps, including zero', () => {
+      const resolved = resolveUpstreamConfig({
+        upstream: { repoUrl: 'https://github.com/coro/coro', maxIssuesPerRun: 0, maxCodeJobsPerRun: 0 },
+      })
+      expect(resolved).toMatchObject({ maxIssuesPerRun: 0, maxCodeJobsPerRun: 0 })
+    })
+
+    it('falls back to the environment when the config block is absent', () => {
+      process.env.CORO_UPSTREAM_REPO_URL = 'https://github.com/coro/coro'
+      process.env.CORO_UPSTREAM_FORK_OWNER = 'env-owner'
+      try {
+        expect(resolveUpstreamConfig({})).toMatchObject({
+          repoUrl: 'https://github.com/coro/coro',
+          forkOwner: 'env-owner',
+        })
+      } finally {
+        delete process.env.CORO_UPSTREAM_REPO_URL
+        delete process.env.CORO_UPSTREAM_FORK_OWNER
+      }
     })
   })
 

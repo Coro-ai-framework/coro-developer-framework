@@ -44,12 +44,16 @@ export const TIER_META: ReadonlyArray<TierMeta> = [
   {
     key: 'upstreamIntelligence',
     label: 'Coro intelligence',
-    description: 'Open an issue and a markdown pull request against the Coro repository.',
+    description:
+      'Open an issue and a markdown pull request against the Coro repository. ' +
+      'Requires an upstream destination in your config.',
   },
   {
     key: 'upstreamCode',
     label: 'Coro code',
-    description: 'Dispatch an implementation run that fixes runner code upstream.',
+    description:
+      'Dispatch an implementation run that fixes runner code upstream. ' +
+      'Requires an upstream destination in your config.',
   },
 ]
 
@@ -123,6 +127,10 @@ export function destinationLabel(destination: string): string {
       return 'Your intelligence'
     case 'upstream-intelligence':
       return 'Coro intelligence'
+    case 'upstream-issue':
+      return 'Reported to Coro'
+    case 'upstream-issue-comment':
+      return 'Added to existing Coro report'
     case 'upstream-code':
       return 'Coro code'
     case 'none':

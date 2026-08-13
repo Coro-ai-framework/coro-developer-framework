@@ -71,6 +71,16 @@ export interface PrepareTenantWriterArgs {
   gitFactory?: (cwd: string) => SimpleGit
 }
 
+export interface PrepareUpstreamWriterArgs {
+  /** Clone URL of the fork the runner pushes branches to. */
+  url: string
+  ref?: string
+  /** Root under which writer clones live (`~/.coro/cache/writers/`). */
+  writerCacheRoot: string
+  logger: Logger
+  gitFactory?: (cwd: string) => SimpleGit
+}
+
 export interface PrepareRepoWriterArgs {
   /** `<workingRoot>/<jobId>/<repoSlug>` — the agent's clone of the target repo. */
   repoCheckoutDir: string
@@ -147,14 +157,77 @@ const BOOTSTRAP_COMMIT_MSG = 'chore(coro): bootstrap empty tenant intelligence r
 export async function prepareTenantWriter(
   args: PrepareTenantWriterArgs,
 ): Promise<WriterClone> {
-  const { url, tenantId, writerCacheRoot, logger } = args
+  if (!args.url) throw new Error('prepareTenantWriter: url is required')
+  if (!args.tenantId) throw new Error('prepareTenantWriter: tenantId is required')
+
+  return prepareWriterClone({
+    url: args.url,
+    ...(args.ref ? { ref: args.ref } : {}),
+    dir: path.join(args.writerCacheRoot, args.tenantId, 'tenant'),
+    label: args.tenantId,
+    // A brand-new tenant intelligence repo is legitimately empty; the
+    // first proposal is what gives it a default branch.
+    bootstrapWhenEmpty: true,
+    logger: args.logger,
+    ...(args.gitFactory ? { gitFactory: args.gitFactory } : {}),
+  })
+}
+
+// ── Upstream writer ──────────────────────────────────────────────────────────
+
+/**
+ * Working clone of the contributor's fork of the upstream Coro
+ * repository, at `<writerCacheRoot>/upstream/<owner>-<repo>/`.
+ *
+ * Unlike the tenant writer this never bootstraps: the upstream repo
+ * always has history, so an empty remote means the configured URL is
+ * wrong and pushing a `.gitkeep` to a stranger's fork would be the worst
+ * possible response.
+ */
+export async function prepareUpstreamWriter(
+  args: PrepareUpstreamWriterArgs,
+): Promise<WriterClone> {
+  if (!args.url) throw new Error('prepareUpstreamWriter: url is required')
+
+  const parsed = parseRepoUrl(args.url)
+  if (!parsed) throw new Error(`prepareUpstreamWriter: cannot parse fork URL "${args.url}"`)
+  const slug = `${parsed.owner}-${parsed.repoSlug}`.replace(/[^A-Za-z0-9._-]/g, '-')
+
+  return prepareWriterClone({
+    url: args.url,
+    ...(args.ref ? { ref: args.ref } : {}),
+    dir: path.join(args.writerCacheRoot, 'upstream', slug),
+    label: slug,
+    bootstrapWhenEmpty: false,
+    logger: args.logger,
+    ...(args.gitFactory ? { gitFactory: args.gitFactory } : {}),
+  })
+}
+
+interface PrepareWriterCloneArgs {
+  url: string
+  ref?: string
+  /** Absolute path the clone lives at. */
+  dir: string
+  /** Identifier used in log lines and error messages. */
+  label: string
+  /** Whether an empty remote should be seeded with an initial commit. */
+  bootstrapWhenEmpty: boolean
+  logger: Logger
+  gitFactory?: (cwd: string) => SimpleGit
+}
+
+/**
+ * Shared clone/refresh routine behind every writer: full clone on first
+ * use, then fetch + hard-reset to the resolved base ref. Callers differ
+ * only in where the clone lives and whether an empty remote is
+ * acceptable.
+ */
+async function prepareWriterClone(args: PrepareWriterCloneArgs): Promise<WriterClone> {
+  const { url, dir, label, bootstrapWhenEmpty, logger } = args
   const explicitRef = args.ref
   const factory = args.gitFactory ?? defaultGitFactory
 
-  if (!url) throw new Error('prepareTenantWriter: url is required')
-  if (!tenantId) throw new Error('prepareTenantWriter: tenantId is required')
-
-  const dir = path.join(writerCacheRoot, tenantId, 'tenant')
   const exists = await isGitRepo(dir)
 
   if (!exists) {
@@ -164,7 +237,7 @@ export async function prepareTenantWriter(
     const git = factory(parent)
     // Full clone — we need to be able to branch off any commit and push.
     await git.clone(url, dir)
-    logger.info({ tenantId, url, dir }, 'Cloned tenant overlay (writer)')
+    logger.info({ label, url, dir }, 'Cloned writer working tree')
   }
 
   // Refresh remotes (all heads), resolve baseRef, optionally bootstrap an empty repo.
@@ -175,6 +248,11 @@ export async function prepareTenantWriter(
 
     let heads = await listOriginRemoteHeads(git)
     if (heads.length === 0) {
+      if (!bootstrapWhenEmpty) {
+        throw new Error(
+          'remote has no branches — expected an existing repository, so the configured URL is likely wrong',
+        )
+      }
       const bootstrapRef = explicitRef ?? DEFAULT_REF
       await bootstrapEmptyTenantRemote(dir, git, bootstrapRef, logger)
       await git.fetch('origin')
@@ -195,9 +273,9 @@ export async function prepareTenantWriter(
     await git.reset(['--hard', `origin/${baseRef}`])
   } catch (err) {
     const refLabel = explicitRef ?? '(auto)'
-    logger.error({ err, tenantId, url, ref: refLabel }, 'Failed to refresh tenant writer clone')
+    logger.error({ err, label, url, ref: refLabel }, 'Failed to refresh writer clone')
     throw new Error(
-      `Failed to refresh tenant writer clone at ${dir} (ref=${refLabel}): ${(err as Error).message}`,
+      `Failed to refresh writer clone at ${dir} (ref=${refLabel}): ${(err as Error).message}`,
     )
   }
 
@@ -263,6 +341,13 @@ export async function prepareRepoWriter(
 // ── Commit + push ────────────────────────────────────────────────────────────
 
 /**
+ * Branch namespaces the writer may commit onto. `coro/proposal/` is
+ * `propose_change`; `coro/retro/` is the retrospective's upstream
+ * contributions. Anything else is refused.
+ */
+export const WRITER_BRANCH_PREFIXES = ['coro/proposal/', 'coro/retro/'] as const
+
+/**
  * Create a fresh feature branch off `baseRef`, write each file
  * (creating parent directories as needed), stage everything, commit,
  * and push to origin with `--set-upstream`.
@@ -277,11 +362,14 @@ export async function commitAndPush(args: CommitAndPushArgs): Promise<void> {
   const { dir, branch, baseRef, files, commitMessage, logger } = args
   const factory = args.gitFactory ?? defaultGitFactory
 
-  if (!branch || !branch.startsWith('coro/proposal/')) {
-    // Defence in depth — propose_change generates branches in this
-    // namespace. If something else passes a stray branch, refuse so
-    // we never accidentally write to `main` etc.
-    throw new Error(`commitAndPush: refusing to commit onto branch "${branch}" — must be in coro/proposal/* namespace`)
+  if (!branch || !WRITER_BRANCH_PREFIXES.some(prefix => branch.startsWith(prefix))) {
+    // Defence in depth — every writer generates branches in a Coro-owned
+    // namespace. If something else passes a stray branch, refuse so we
+    // never accidentally write to `main` etc.
+    throw new Error(
+      `commitAndPush: refusing to commit onto branch "${branch}" — must be in one of ` +
+        `${WRITER_BRANCH_PREFIXES.map(p => `${p}*`).join(', ')}`,
+    )
   }
 
   const git = factory(dir)

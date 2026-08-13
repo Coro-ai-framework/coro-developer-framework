@@ -38,6 +38,10 @@ context to know which procedure below applies.
 | `read_memory` | Check whether a finding is already documented. |
 | `post_artifact` | Record the findings report and the outcome report. |
 | `propose_change` | Ship approved findings to a writable intelligence layer. |
+| `upstream_search` | Check whether the upstream Coro repo already has this report. |
+| `upstream_create_issue` | File a new upstream issue with the sanitised evidence. |
+| `upstream_comment_issue` | Add your evidence to an existing upstream report. |
+| `upstream_open_intelligence_pr` | Open an upstream PR changing base-intelligence markdown. |
 | `log` | Narrate what you are finding as you go. |
 | `escalate` | Stop when the shipping phase was reached without approval. |
 
@@ -186,13 +190,49 @@ second call for the same `(jobId, layer)`. Invoke the
 `self-improvement-guide` skill first for proposal types and path rules.
 Prefer the structured `entries[]` field for memory updates.
 
-**`base-intelligence` and `runner-code` findings** — these belong to the
-upstream Coro repository, which this install may not be configured to
-contribute to. If no upstream destination is available, record each one
-in the outcome report as `not-shipped: no upstream destination
-configured` and move on. Do not smuggle a generic fix into the tenant
-layer to feel productive: a tenant-local copy of a base-layer fix helps
-one install and hides the problem from everyone else.
+**`base-intelligence` and `runner-code` findings** belong to the upstream
+Coro repository — every install has the same defect. Take them one at a
+time, in severity order, through the sequence below.
+
+**1. Deduplicate.** `upstream_search({ finding })`. The tool derives the
+fingerprint from the finding's category, title, and target paths, so an
+issue filed by a different install for the same problem matches.
+
+- `duplicate: true` → the report exists. Call `upstream_comment_issue`
+  with your evidence and stop there. Record the outcome as
+  `destination: "upstream-issue-comment"` with the issue URL. Adding a
+  second issue for a known problem is worse than adding nothing.
+- No match → search once more in free text (`state: "all"`) using the
+  words a maintainer would have used. Fingerprints only match findings
+  phrased alike; a human-written issue about the same behaviour will not
+  carry the marker.
+
+**2. Report.** `upstream_create_issue({ title, body, finding })`. The
+body is read by someone with no access to your logs, so it must stand
+alone: the behaviour, how many runs showed it, the numbers, the files
+you believe are responsible, and the fix you would make. Use the aliases
+from the sanitised reports (`repo-A`, `ticket-ref-1`) — the tool refuses
+text containing real identifiers, and that refusal is not something to
+work around by paraphrasing the identifier.
+
+**3. Fix, when the fix is prose.** For `base-intelligence` findings,
+`upstream_open_intelligence_pr({ issueNumber, ... })`. Read each target
+file first (it lives under `_intelligence/`, and the same content is in
+the repo) and supply the **complete** new content — you are replacing
+the file, not patching it. One call ships one PR; bundle every file.
+
+For `runner-code` findings, stop after the issue. A code change has to
+be built and tested, which is not something this phase does; the issue
+is the deliverable and the outcome is `destination: "upstream-issue"`.
+
+**When a step refuses** — no upstream configured, destination disabled
+for this run, per-run cap reached — that is a final answer for this
+finding, not something to retry. Record it in the outcome report with
+the reason the tool gave and move to the next finding.
+
+Do not smuggle a generic fix into the tenant layer to feel productive: a
+tenant-local copy of a base-layer fix helps one install and hides the
+problem from everyone else.
 
 ### 3. Record outcomes
 
@@ -208,7 +248,9 @@ post_artifact({
     path: "retrospective-outcome.md",
     outcomes: [
       { findingId: "finding-1", destination: "tenant", prUrl: "https://..." },
-      { findingId: "finding-3", destination: "none", reason: "no upstream destination configured" }
+      { findingId: "finding-2", destination: "upstream-intelligence", issueUrl: "https://...", prUrl: "https://..." },
+      { findingId: "finding-3", destination: "upstream-issue", issueUrl: "https://..." },
+      { findingId: "finding-4", destination: "none", reason: "no upstream destination configured" }
     ]
   }
 })

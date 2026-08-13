@@ -211,6 +211,58 @@ Merge semantics: [architecture.md §4](architecture.md#4-layered-intelligence).
 
 ---
 
+## Retrospective and upstream contribution (optional)
+
+A **retrospective** reads this install's own job history, finds patterns no
+single job can see ("the coding phase looped on four of the last ten Go
+jobs"), and turns them into reviewable proposals. Run it from
+**Retrospective** in the dashboard or:
+
+```bash
+coro retrospective run --window 25 --tiers tenant
+coro retrospective list
+```
+
+It stops for your approval before shipping anything, and you approve
+per finding — the run parks in `awaiting-developer-input` exactly like an
+interactive job.
+
+Findings whose fix belongs to Coro itself (its base intelligence layer, or
+runner code) can be contributed upstream. That is **off by default**; add
+an `upstream` block to opt in:
+
+```jsonc
+{
+  "upstream": {
+    "repoUrl": "https://github.com/Coro-ai-framework/coro",
+    "forkOwner": "my-github-username",   // where branches are pushed; defaults to the GitHub plugin's owner
+    "token": "ghp_…",                    // defaults to the GitHub plugin's token
+    "maxIssuesPerRun": 5,
+    "maxCodeJobsPerRun": 2
+  }
+}
+```
+
+Equivalent env vars: `CORO_UPSTREAM_REPO_URL`, `CORO_UPSTREAM_FORK_OWNER`,
+`CORO_UPSTREAM_TOKEN`.
+
+The token needs `public_repo` scope (fork, push, open issues and PRs). The
+fork is created and fast-forwarded automatically; branches are pushed to it
+using your ambient git credentials, so make sure `git push` to your own
+GitHub account works from the shell running the runner.
+
+Two things are worth knowing before you enable it:
+
+- **Nothing is published without both an approval and a tier.** You choose
+  per run how far findings may travel (`--tiers tenant,upstream-intelligence,upstream-code`),
+  and the approval checkpoint still applies.
+- **Identifiers are aliased, and the check fails closed.** Repo slugs,
+  org names, ticket keys, and e-mail addresses are replaced with stable
+  aliases (`repo-A`, `ticket-ref-1`) in everything the analyst reads, and
+  any text still carrying a real one is refused before it is sent.
+
+---
+
 ## Hybrid (team) mode
 
 > **Pre-1.0.** Hybrid mode (local runner + shared cloud control plane) is under

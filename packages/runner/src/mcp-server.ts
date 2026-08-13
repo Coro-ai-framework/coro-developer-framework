@@ -441,6 +441,76 @@ export function createCoroMcpServer(
         { annotations: { readOnlyHint: true } },
       ),
 
+      // ── Upstream contribution (retrospective only) ─────────────────────────
+      //
+      // These publish to a public repository. The handlers refuse unless the
+      // install opted in (`upstream.repoUrl`), the run was launched with the
+      // matching destination enabled, and the text carries no tenant
+      // identifiers.
+
+      tool(
+        'upstream_search',
+        'Search the upstream Coro repository for an existing report of a finding. ALWAYS call this before upstream_create_issue: several installs analyse the same Coro version, so the problem you found may already be filed. Pass `finding` to search by content fingerprint (exact) — `duplicate: true` means do not file again, add your evidence to the hit with upstream_comment_issue instead. Pass `query` for free-text search. Retrospective jobs only.',
+        {
+          finding: z
+            .object({
+              category: z.string().describe('Finding category, e.g. "base-intelligence" or "runner-code".'),
+              title: z.string().describe('Finding title, exactly as recorded in the findings artefact.'),
+              targetPaths: z.array(z.string()).optional().describe('Repo-relative paths the finding points at.'),
+            })
+            .optional()
+            .describe('Fingerprint search — preferred. The tool derives the fingerprint; do not invent one.'),
+          query: z.string().optional().describe('Free-text GitHub search, automatically scoped to the upstream repo.'),
+          state: z.enum(['open', 'closed', 'all']).optional().describe('Default "open". Use "all" to catch already-fixed reports.'),
+          limit: z.number().optional().describe('Max hits (default 20).'),
+        },
+        h.upstream_search,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'upstream_create_issue',
+        'File an issue on the upstream Coro repository describing a finding, with the sanitised evidence behind it. Write it for a maintainer who has never seen your install: what the agents did, how often, across how many runs, and what you believe the fix is. The tool appends a content fingerprint so later runs recognise this report. Refuses if the text still contains your repo, org, ticket, or e-mail identifiers — use the aliases from the sanitised job reports. Capped per run. Retrospective jobs only.',
+        {
+          title: z.string().describe('One line, problem-first. No identifiers.'),
+          body: z.string().describe('Markdown: symptom, evidence (aliased job ids + numbers), affected paths, proposed fix.'),
+          finding: z.object({
+            category: z.string(),
+            title: z.string(),
+            targetPaths: z.array(z.string()).optional(),
+          }).describe('The finding this issue reports — same values you passed to upstream_search.'),
+        },
+        h.upstream_create_issue,
+      ),
+
+      tool(
+        'upstream_comment_issue',
+        'Add this install\'s evidence to an existing upstream issue. Use this whenever upstream_search finds the problem already reported: one issue with several installs\' evidence is far more actionable than several near-duplicates. Same sanitisation rules as upstream_create_issue. Retrospective jobs only.',
+        {
+          number: z.number().describe('Issue number from upstream_search.'),
+          body: z.string().describe('Your evidence, aliased. Say what you observed and how often — do not restate the issue.'),
+        },
+        h.upstream_comment_issue,
+      ),
+
+      tool(
+        'upstream_open_intelligence_pr',
+        'Open a pull request on the upstream Coro repository from this install\'s fork, changing base-intelligence markdown only (paths under packages/intelligence-base/layer/, .md files). Use it when the fix is prose an agent reads — an agent procedure, a skill, a workflow. Supply the FULL new content of each file, not a diff; read the current file first so you preserve everything you are not changing. Requires the issue number the PR fixes. Runner code fixes do not go here — they need an implementation run that builds and tests. Retrospective jobs only.',
+        {
+          issueNumber: z.number().describe('Issue this PR fixes. Open or find it first.'),
+          title: z.string().describe('PR title. No identifiers.'),
+          body: z.string().describe('What changes and why, in terms a maintainer can review without your job history.'),
+          branchSlug: z.string().describe('Short kebab-case slug for the branch name, e.g. "coder-test-scaffolding".'),
+          files: z
+            .array(z.object({
+              path: z.string().describe('Repo-relative path under packages/intelligence-base/layer/, ending in .md.'),
+              content: z.string().describe('Complete file content after the change.'),
+            }))
+            .describe('Every file this PR changes. One call is one PR — bundle them.'),
+        },
+        h.upstream_open_intelligence_pr,
+      ),
+
       // ── Self-improvement ──────────────────────────────────────────────────
 
       tool(

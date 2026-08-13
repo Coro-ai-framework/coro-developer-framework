@@ -1,13 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { JobType, RETROSPECTIVE_WORKFLOW_PATH, type Job } from '@coro-ai/cloud-protocol'
 import {
+  assertRetrospectiveTiersAvailable,
   buildRetrospectiveJobInput,
   findActiveRetrospective,
+  normalizeRetrospectiveTiers,
   RETROSPECTIVE_DEFAULT_WINDOW,
   RETROSPECTIVE_MAX_WINDOW,
   RETROSPECTIVE_MIN_WINDOW,
   retrospectiveFindings,
   summarizeRetrospective,
+  type RetrospectiveTiers,
 } from '../../src/jobs/retrospective'
 import { makeMockJob } from '../mcp/fixtures'
 
@@ -67,6 +70,28 @@ describe('buildRetrospectiveJobInput', () => {
   it('fills in unspecified tiers rather than dropping them', () => {
     const params = buildRetrospectiveJobInput({ tiers: { upstreamCode: true } }).params
     expect(params['tiers']).toEqual({ tenant: true, upstreamIntelligence: false, upstreamCode: true })
+  })
+})
+
+describe('assertRetrospectiveTiersAvailable', () => {
+  const tiers = (over: Partial<RetrospectiveTiers> = {}) => normalizeRetrospectiveTiers(over)
+
+  it('refuses an upstream destination the install cannot reach', () => {
+    expect(() => assertRetrospectiveTiersAvailable(tiers({ upstreamIntelligence: true }), false))
+      .toThrow(/upstream\.repoUrl/)
+    expect(() => assertRetrospectiveTiersAvailable(tiers({ upstreamCode: true }), false))
+      .toThrow(/upstream\.repoUrl/)
+  })
+
+  it('allows a tenant-only run on an install with no upstream', () => {
+    expect(() => assertRetrospectiveTiersAvailable(tiers(), false)).not.toThrow()
+  })
+
+  it('allows upstream destinations once one is configured', () => {
+    expect(() => assertRetrospectiveTiersAvailable(
+      tiers({ upstreamIntelligence: true, upstreamCode: true }),
+      true,
+    )).not.toThrow()
   })
 })
 

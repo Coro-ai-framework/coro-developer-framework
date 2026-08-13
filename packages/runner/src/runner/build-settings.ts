@@ -13,6 +13,7 @@ import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
 import {
   resolveIntelligenceDir,
   resolveProposalsConfig,
+  resolveUpstreamConfig,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
@@ -151,6 +152,7 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
       staticDomain: '',
     },
     proposals: resolveProposalsConfig(config),
+    upstream: resolveUpstreamConfig(config),
     llm: {
       defaultProvider: config.llm?.defaultProvider ?? 'anthropic',
       providers: {},

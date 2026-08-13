@@ -86,6 +86,37 @@ export function buildRetrospectiveJobInput(request: RetrospectiveRequest = {}): 
 }
 
 /**
+ * Refuse a run whose destinations it cannot honour.
+ *
+ * Without this the mismatch only surfaces at the end: the analyst spends
+ * a full window's worth of tokens, the developer approves findings, and
+ * the shipping phase then reports "no upstream destination configured"
+ * for every one of them. Failing at dispatch costs nothing and says what
+ * to fix.
+ */
+export function assertRetrospectiveTiersAvailable(
+  tiers: RetrospectiveTiers,
+  upstreamConfigured: boolean,
+): void {
+  if (upstreamConfigured) return
+  if (!tiers.upstreamIntelligence && !tiers.upstreamCode) return
+  throw new Error(
+    'This run asks to contribute findings to the Coro repository, but no upstream ' +
+    'destination is configured. Set `upstream.repoUrl` in ~/.coro/config.json (see ' +
+    'docs/local-setup.md), or launch with the tenant destination only.',
+  )
+}
+
+/**
+ * Tiers this run was launched with. Read by the upstream tools so a run
+ * the developer scoped to their own intelligence cannot publish, whatever
+ * the analyst decides mid-run.
+ */
+export function retrospectiveTiers(job: Job): RetrospectiveTiers {
+  return normalizeRetrospectiveTiers(job.params?.['tiers'] as Partial<RetrospectiveTiers> | undefined)
+}
+
+/**
  * The retrospective currently in flight, if any. Two concurrent runs would
  * analyse the same window and race to propose the same fixes, so callers
  * refuse to start a second one.

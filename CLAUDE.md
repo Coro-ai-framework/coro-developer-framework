@@ -288,10 +288,37 @@ Three properties make this safe to ship:
    `params.interactive = true`.
 
 Findings are categorised by which layer owns the fix:
-`tenant-intelligence` (ships today via `propose_change`),
-`base-intelligence`, and `runner-code`. The latter two belong to the
-open-source repository; until an upstream destination is configured they
-are reported but not shipped.
+`tenant-intelligence` ships via `propose_change`, while `base-intelligence`
+and `runner-code` belong to the open-source repository.
+
+**Upstream contribution** (`tools/upstream.ts`) is how the latter two
+leave the machine: `upstream_search` → `upstream_create_issue` or
+`upstream_comment_issue` → `upstream_open_intelligence_pr`. It is off
+unless the install sets `upstream.repoUrl` in `~/.coro/config.json`, and
+four constraints bound it:
+
+- **Fingerprint dedup.** `fingerprintFinding()` hashes the finding's
+  category, target paths, and normalised title, and the hash is embedded
+  in the issue body as `<!-- coro-retro:<hash> -->`. The agent never
+  supplies it, so two installs that independently hit the same defect
+  converge on one issue instead of filing near-duplicates.
+- **Tier gate.** The developer picks at launch how far findings may
+  travel (`params.tiers`); the tools re-read that from the job, so an
+  analyst cannot widen its own scope mid-run.
+- **Fail-closed sanitisation.** Every title, body, and file body is run
+  through `Sanitizer.findLeaks()` before the request goes out. A leak
+  cannot be un-published, so the check refuses rather than scrubs.
+- **Per-run caps.** `upstream.maxIssuesPerRun` / `maxCodeJobsPerRun`,
+  counted in `job.params` (not in memory) so a retried phase cannot
+  reset its own budget. The charge lands before the API call.
+
+PRs go out from a fork: `ensureFork` creates it if needed, `syncFork`
+fast-forwards it to the upstream default branch, and the shared writer
+(`intelligence/writer.ts`) pushes a `coro/retro/*` branch that
+`createPr({ sourceOwner })` turns into a cross-repository PR. Paths are
+restricted to `packages/intelligence-base/layer/**.md` — prose a
+maintainer can review as a diff. A `runner-code` finding stops at the
+issue, because a code change needs a run that builds and tests it.
 
 **Surfaces.** Three runner endpoints back both triggers —
 `POST /retrospectives` (dispatch; 409 while one is already running),

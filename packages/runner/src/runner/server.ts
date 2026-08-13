@@ -41,8 +41,10 @@ import { runIntakeStream } from '../intake/handler'
 import { JobType, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
 import {
+  assertRetrospectiveTiersAvailable,
   buildRetrospectiveJobInput,
   findActiveRetrospective,
+  normalizeRetrospectiveTiers,
   summarizeRetrospective,
   type RetrospectiveRequest,
 } from '../jobs/retrospective'
@@ -1562,6 +1564,11 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         })
         return
       }
+
+      assertRetrospectiveTiersAvailable(
+        normalizeRetrospectiveTiers(body.tiers),
+        Boolean(runnerCtx?.settings.upstream),
+      )
 
       const job = await dispatcher.dispatch(buildRetrospectiveJobInput(body))
       res.status(201).json({

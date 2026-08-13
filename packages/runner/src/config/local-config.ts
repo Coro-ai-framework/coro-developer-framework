@@ -95,6 +95,30 @@ const proposalsConfigSchema = z.object({
   }).optional(),
 }).optional()
 
+// ── Upstream contribution ────────────────────────────────────────────────────
+//
+// Where the retrospective sends findings that belong to Coro itself rather
+// than to this install. Absent by default: contributing upstream means
+// writing in public, so it is opt-in per install.
+//
+// `forkOwner` is the GitHub account the runner pushes branches to. Coro
+// contributors rarely have write access to the upstream repo, so PRs are
+// always opened from a fork. When omitted it falls back to the configured
+// GitHub owner. `token` likewise falls back to the GitHub plugin's token —
+// a separate one is only needed when the upstream account differs from the
+// account used for day-to-day work.
+//
+// The caps are per retrospective run. They exist because the failure mode
+// here is not a wrong issue, it is fifty of them.
+
+const upstreamConfigSchema = z.object({
+  repoUrl: z.string().min(1).optional(),
+  forkOwner: z.string().min(1).optional(),
+  token: z.string().min(1).optional(),
+  maxIssuesPerRun: z.number().int().min(0).optional(),
+  maxCodeJobsPerRun: z.number().int().min(0).optional(),
+}).optional()
+
 // ── BYO (bring-your-own) MCP servers ─────────────────────────────────────────
 //
 // S8 of the MCP-first plugins pivot. Operators can attach any MCP
@@ -223,6 +247,12 @@ const localConfigSchema = z.object({
   paths: pathsConfigSchema,
   tenant: tenantConfigSchema,
   proposals: proposalsConfigSchema,
+  /**
+   * Opt-in destination for retrospective findings that belong to Coro
+   * itself. Absent means findings categorised `base-intelligence` or
+   * `runner-code` are reported but never published.
+   */
+  upstream: upstreamConfigSchema,
   /**
    * Provider-plugin config — the single source of truth for executor
    * (LLM), SCM, and tracker credentials. Each entry under
@@ -450,6 +480,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     paths: patch.paths !== undefined ? patch.paths : existing.paths,
     tenant: patch.tenant !== undefined ? patch.tenant : existing.tenant,
     proposals: patch.proposals !== undefined ? patch.proposals : existing.proposals,
+    upstream: patch.upstream !== undefined ? patch.upstream : existing.upstream,
     plugins: patch.plugins !== undefined ? patch.plugins : existing.plugins,
     llm: patch.llm !== undefined ? patch.llm : existing.llm,
     mcpServers: patch.mcpServers !== undefined ? patch.mcpServers : existing.mcpServers,
@@ -546,6 +577,47 @@ export function resolveProposalsConfig(config: LocalConfig | null): ResolvedProp
     routing: {
       strategy: config?.proposals?.routing?.strategy ?? 'path',
     },
+  }
+}
+
+/**
+ * Per-run publication caps. Low on purpose: a retrospective that files
+ * five issues is useful, one that files fifty is spam, and the operator
+ * only finds out after the fact.
+ */
+export const UPSTREAM_DEFAULT_MAX_ISSUES_PER_RUN = 5
+export const UPSTREAM_DEFAULT_MAX_CODE_JOBS_PER_RUN = 2
+
+export interface ResolvedUpstreamConfig {
+  /** Upstream repository, e.g. `https://github.com/coro-ai/coro`. */
+  repoUrl: string
+  /** Account branches are pushed to. Falls back to the GitHub owner. */
+  forkOwner?: string
+  /** Falls back to the GitHub plugin's token when unset. */
+  token?: string
+  maxIssuesPerRun: number
+  maxCodeJobsPerRun: number
+}
+
+/**
+ * Resolve the upstream contribution target, or `undefined` when this
+ * install has not opted in. `repoUrl` is the switch: without it there is
+ * nowhere to publish and the retrospective's upstream tools stay closed.
+ */
+export function resolveUpstreamConfig(config: LocalConfig | null): ResolvedUpstreamConfig | undefined {
+  const upstream = config?.upstream
+  const repoUrl = upstream?.repoUrl?.trim() || process.env.CORO_UPSTREAM_REPO_URL?.trim() || ''
+  if (!repoUrl) return undefined
+
+  const token = upstream?.token?.trim() || process.env.CORO_UPSTREAM_TOKEN?.trim() || ''
+  const forkOwner = upstream?.forkOwner?.trim() || process.env.CORO_UPSTREAM_FORK_OWNER?.trim() || ''
+
+  return {
+    repoUrl,
+    ...(forkOwner ? { forkOwner } : {}),
+    ...(token ? { token } : {}),
+    maxIssuesPerRun: upstream?.maxIssuesPerRun ?? UPSTREAM_DEFAULT_MAX_ISSUES_PER_RUN,
+    maxCodeJobsPerRun: upstream?.maxCodeJobsPerRun ?? UPSTREAM_DEFAULT_MAX_CODE_JOBS_PER_RUN,
   }
 }
 
