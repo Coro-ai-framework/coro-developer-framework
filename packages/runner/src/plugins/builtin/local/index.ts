@@ -47,7 +47,7 @@ const MANIFEST: PluginManifest = {
   },
   ui: {
     subtitle: 'Work on local repositories — no account needed.',
-    recommendedForOnboarding: false,
+    recommendedForOnboarding: true,
   },
   auth: {
     methods: [

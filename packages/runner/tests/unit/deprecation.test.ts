@@ -153,9 +153,12 @@ describe('resolvePluginsConfig', () => {
     expect(got.installed['github']).toBeDefined()
   })
 
-  it('returns an empty registry when plugins is absent', async () => {
+  it('seeds local SCM when plugins is absent', async () => {
     const { resolvePluginsConfig } = await import('../../src/config/local-config')
     const got = resolvePluginsConfig({})
-    expect(got).toEqual({ installed: {} })
+    expect(got).toEqual({
+      defaults: { scm: 'local' },
+      installed: { local: { enabled: true, config: {} } },
+    })
   })
 })

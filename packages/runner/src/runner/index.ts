@@ -67,6 +67,7 @@ import {
   resolvePluginsConfig,
   resolveTenantOverlaySource,
   resolveWorkingDir as resolveLocalWorkingDir,
+  persistFreshInstallDefaultsIfNeeded,
   type LocalConfig,
 } from '../config/local-config'
 import { buildBuiltinPluginRegistry } from '../plugins/builtin'
@@ -106,7 +107,7 @@ export async function startLocalRunner(
   // path is identical regardless of where the credential came from.
   const envOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN
   const envApiKey = process.env.ANTHROPIC_API_KEY
-  const effectiveConfig: LocalConfig = config ?? {
+  const baseConfig: LocalConfig = config ?? {
     plugins: {
       installed: {
         anthropic: {
@@ -118,6 +119,7 @@ export async function startLocalRunner(
       },
     },
   }
+  const effectiveConfig = persistFreshInstallDefaultsIfNeeded(baseConfig)
   const settings = buildSettingsFromLocal(effectiveConfig)
 
   // Ensure working + intelligence dirs exist
@@ -247,7 +249,9 @@ export async function startHybridRunner(
     throw new Error('Hybrid mode requires cloud.url and cloud.token in config')
   }
 
-  const settings = buildSettingsFromLocal(config)
+  const effectiveConfig = persistFreshInstallDefaultsIfNeeded(config)
+  const settings = buildSettingsFromLocal(effectiveConfig)
+  const cloud = config.cloud
 
   // Ensure working + intelligence dirs exist
   fs.mkdirSync(settings.paths.workingDir, { recursive: true })
@@ -255,25 +259,25 @@ export async function startHybridRunner(
 
   // Build the plugin registry up front so we can supply the WS
   // transport with a closure that normalises plugin webhooks.
-  const pluginsConfig = resolvePluginsConfig(config)
+  const pluginsConfig = resolvePluginsConfig(effectiveConfig)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
   seedExecutorDefaultAliases({ plugins, settings })
 
   // Create WebSocket transport to cloud
   const transport = new WebSocketTransport({
-    url: config.cloud.url.replace(/^http/, 'ws') + '/ws/runner',
-    token: config.cloud.token,
+    url: cloud.url.replace(/^http/, 'ws') + '/ws/runner',
+    token: cloud.token,
     logger,
     normalizePluginWebhook: makePluginWebhookNormalizer({ plugins, logger }),
   })
 
   // Connect to cloud
-  logger.info({ url: config.cloud.url }, 'Connecting to cloud control plane...')
+  logger.info({ url: cloud.url }, 'Connecting to cloud control plane...')
   await transport.connect()
   logger.info('Connected to cloud control plane')
 
   // Extract team ID from the runner token (JWT payload)
-  const teamId = extractTeamIdFromToken(config.cloud.token)
+  const teamId = extractTeamIdFromToken(cloud.token)
 
   // Hybrid mode = the runner acts on behalf of a team. The tenant ID is
   // derived from the JWT-issued teamId so every job dispatched here is
@@ -284,8 +288,8 @@ export async function startHybridRunner(
   // Phase 5 will populate this from a `tenant.overlay` field returned by
   // `wireCloudJobDispatch`'s initial `runner_hello` response.
   const tenantContext = tenantFromTeamId(teamId, {
-    displayName: config.tenant?.displayName,
-    overlay: resolveTenantOverlaySource(config),
+    displayName: effectiveConfig.tenant?.displayName,
+    overlay: resolveTenantOverlaySource(effectiveConfig),
   })
   logger.info(
     {

@@ -10,7 +10,7 @@ import path from 'path'
 import os from 'os'
 import { z } from 'zod'
 import type { TenantOverlaySource } from '../intelligence/tenant-context'
-import { pluginsConfigSchema, type PluginsConfig } from './plugins-config'
+import { pluginsConfigSchema, applyFreshInstallScmDefaults, type PluginsConfig } from './plugins-config'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -472,11 +472,50 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
  * runner at bootstrap.
  */
 export function resolvePluginsConfig(config: LocalConfig | null): PluginsConfig {
-  if (!config?.plugins) return { installed: {} }
-  return {
+  if (!config?.plugins) return applyFreshInstallScmDefaults(undefined)
+  return applyFreshInstallScmDefaults({
     ...(config.plugins.defaults ? { defaults: config.plugins.defaults } : {}),
     installed: { ...config.plugins.installed },
+  })
+}
+
+/**
+ * Ensure a fresh install always has local SCM enabled when no other SCM
+ * provider is configured. Returns a new config object when defaults were added.
+ */
+export function applyFreshInstallPluginDefaults(config: LocalConfig): LocalConfig {
+  const nextPlugins = applyFreshInstallScmDefaults(
+    config.plugins
+      ? {
+          ...(config.plugins.defaults ? { defaults: config.plugins.defaults } : {}),
+          installed: { ...config.plugins.installed },
+        }
+      : undefined,
+  )
+  const prevJson = JSON.stringify(config.plugins ?? {})
+  const nextJson = JSON.stringify(nextPlugins)
+  if (prevJson === nextJson) return config
+  return {
+    ...config,
+    plugins: nextPlugins,
   }
+}
+
+/**
+ * Apply fresh-install SCM defaults and persist when the on-disk config
+ * still lacks an enabled SCM plugin (typically first `coro start`).
+ */
+export function persistFreshInstallDefaultsIfNeeded(
+  config: LocalConfig | null,
+  configPath?: string,
+): LocalConfig {
+  const next = applyFreshInstallPluginDefaults(config ?? {})
+  if (config?.setup?.completedAt) return next
+  const changed = JSON.stringify(next) !== JSON.stringify(config ?? {})
+  if (changed) {
+    saveLocalConfig(next, configPath)
+  }
+  return next
 }
 
 /**

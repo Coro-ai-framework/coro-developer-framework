@@ -263,12 +263,18 @@ describe('resolvePluginsConfig', () => {
     expect(got.defaults?.scm).toBe('github')
   })
 
-  it('returns an empty registry when plugins is absent', () => {
-    expect(resolvePluginsConfig({})).toEqual({ installed: {} })
+  it('seeds local SCM when no SCM plugin is enabled yet', () => {
+    expect(resolvePluginsConfig({})).toEqual({
+      defaults: { scm: 'local' },
+      installed: { local: { enabled: true, config: {} } },
+    })
   })
 
   it('tolerates a null config (used in early bootstrap paths)', () => {
-    expect(resolvePluginsConfig(null)).toEqual({ installed: {} })
+    expect(resolvePluginsConfig(null)).toEqual({
+      defaults: { scm: 'local' },
+      installed: { local: { enabled: true, config: {} } },
+    })
   })
 })
 

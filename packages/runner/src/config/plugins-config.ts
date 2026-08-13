@@ -41,6 +41,37 @@ export const pluginsConfigSchema = z.object({
 
 export type PluginsConfig = z.infer<typeof pluginsConfigSchema>
 
+/** Built-in SCM plugin ids — keep in sync with `BUILTIN_PLUGIN_IDS_BY_KIND.scm`. */
+export const BUILTIN_SCM_PLUGIN_IDS = ['bitbucket', 'github', 'local'] as const
+
+/**
+ * Fresh installs should always have a zero-config SCM path. When no SCM
+ * plugin is enabled yet, enable `local` and set it as the default.
+ */
+export function applyFreshInstallScmDefaults(config: PluginsConfig | undefined): PluginsConfig {
+  const installed = { ...(config?.installed ?? {}) }
+  const hasEnabledScm = Object.entries(installed).some(
+    ([id, slot]) =>
+      (BUILTIN_SCM_PLUGIN_IDS as readonly string[]).includes(id) && slot.enabled !== false,
+  )
+  if (hasEnabledScm) {
+    return {
+      ...(config?.defaults ? { defaults: config.defaults } : {}),
+      installed,
+    }
+  }
+  return {
+    defaults: {
+      ...(config?.defaults ?? {}),
+      scm: config?.defaults?.scm ?? 'local',
+    },
+    installed: {
+      ...installed,
+      local: { enabled: true, config: {} },
+    },
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
