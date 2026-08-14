@@ -86,6 +86,28 @@ function useStableOnChange(onChange: (key: string, value: unknown) => void) {
   }, [])
 }
 
+/**
+ * Fingerprint of a draft config, used as part of the auto-verify key so that
+ * editing a field after a step has passed re-runs the probe instead of
+ * leaving the step stuck on a result for values the user has since changed.
+ * Hashed rather than concatenated so credentials aren't duplicated into a
+ * long-lived string.
+ */
+function configSignature(config: Record<string, unknown>): string {
+  const serialized = Object.keys(config)
+    .sort()
+    .map(key => `${key}=${String(config[key] ?? '')}`)
+    .join('|')
+  let hash = 5381
+  for (let i = 0; i < serialized.length; i += 1) {
+    hash = ((hash << 5) + hash + serialized.charCodeAt(i)) | 0
+  }
+  return (hash >>> 0).toString(36)
+}
+
+/** How long field edits must settle before a re-verify fires. */
+const VERIFY_DEBOUNCE_MS = 800
+
 /** When credentials look ready (OAuth connected, form filled), run probe once. */
 function useAutoVerifyWhenReady(
   autoVerifyWhenReady: boolean | undefined,
@@ -106,8 +128,15 @@ function useAutoVerifyWhenReady(
     }
     if (!autoVerifyWhenReady || !ready) return
     if (!becameReady && lastVerifiedKeyRef.current === verifyKey) return
-    lastVerifiedKeyRef.current = verifyKey
-    void onVerifyRef.current()
+    // `verifyKey` carries the field values, so it changes on every keystroke
+    // once the form is complete. Settle first — the probe is a real network
+    // round-trip against the provider.
+    const delay = becameReady ? 0 : VERIFY_DEBOUNCE_MS
+    const timer = window.setTimeout(() => {
+      lastVerifiedKeyRef.current = verifyKey
+      void onVerifyRef.current()
+    }, delay)
+    return () => window.clearTimeout(timer)
   }, [autoVerifyWhenReady, ready, verifyKey])
 }
 
@@ -396,9 +425,13 @@ function OAuthAuthMethod({
 
   useEffect(() => {
     if (oauth.state !== 'pending') return
+    // The poll outlives the panel when the user leaves the step mid-flow, so
+    // every write back into React state is gated on still being mounted.
+    let cancelled = false
     const timer = window.setInterval(async () => {
       try {
         const data = await requestJson<NormalizedOAuthStatus>(method.statusPath)
+        if (cancelled) return
         setOauth(data)
         if (data.state === 'success') {
           if (method.configOnSelect) {
@@ -412,7 +445,10 @@ function OAuthAuthMethod({
         /* soft fail */
       }
     }, 2000)
-    return () => window.clearInterval(timer)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
   }, [oauth.state, method.statusPath, method.configOnSelect, method.successAccountPath, draftConfig, onChange])
 
   const ready =
@@ -446,7 +482,7 @@ function OAuthAuthMethod({
   useAutoVerifyWhenReady(
     autoVerifyWhenReady,
     ready,
-    `${pluginId}:${method.id}`,
+    `${pluginId}:${method.id}:${configSignature(draftConfig)}`,
     runTest,
   )
 
@@ -597,6 +633,7 @@ function DetectAuthMethod({
 }) {
   const [candidates, setCandidates] = useState<DetectCandidatePreview[]>([])
   const [loading, setLoading] = useState(true)
+  const [scanError, setScanError] = useState<string | null>(null)
   const [applying, setApplying] = useState<string | null>(null)
   // Applying a candidate writes its account into the draft, so the override
   // field can't distinguish "what the last click filled in" from "what the
@@ -610,10 +647,16 @@ function DetectAuthMethod({
       { method: 'POST' },
     )
       .then(res => {
-        if (!cancelled) setCandidates(res.candidates)
+        if (cancelled) return
+        setCandidates(res.candidates)
+        setScanError(null)
       })
-      .catch(() => {
-        if (!cancelled) setCandidates([])
+      .catch(err => {
+        // A failed scan is not the same as "nothing found" — saying so would
+        // send the user to type a token they don't need.
+        if (cancelled) return
+        setCandidates([])
+        setScanError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -665,6 +708,13 @@ function DetectAuthMethod({
   }
 
   if (loading) return <p className="text-sm text-fg-muted">Scanning for existing credentials…</p>
+  if (scanError) {
+    return (
+      <p className="text-[12px] text-danger-300">
+        Could not scan this machine for credentials: {scanError}
+      </p>
+    )
+  }
   if (candidates.length === 0) {
     return (
       <p className="text-[12px] text-fg-subtle">
@@ -766,7 +816,12 @@ function AuthTestButton({
     }
   }, [canTest, draftConfig, onBeginTest, onTestResult, pluginId])
 
-  useAutoVerifyWhenReady(autoVerifyWhenReady, canTest, pluginId, runTest)
+  useAutoVerifyWhenReady(
+    autoVerifyWhenReady,
+    canTest,
+    `${pluginId}:${configSignature(draftConfig)}`,
+    runTest,
+  )
 
   return (
     <div className="flex items-center justify-end gap-2 pt-1">

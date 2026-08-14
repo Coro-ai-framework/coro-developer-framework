@@ -2,6 +2,7 @@ import { Ban, Plug } from 'lucide-react'
 import StepShell from './components/StepShell'
 import ProviderCard from './components/ProviderCard'
 import LiveTestPanel from './components/LiveTestPanel'
+import ProviderListError from './components/ProviderListError'
 import GenericAuthPanel from '../GenericAuthPanel'
 import { cn } from '../../../lib/utils'
 import { getProvidersForStep, useProviderCatalog } from '../../../hooks/useProviderCatalog'
@@ -15,7 +16,7 @@ interface TrackerStepProps {
 }
 
 export default function TrackerStep({ state, dispatch, onSkip, onOpenDrawer }: TrackerStepProps) {
-  const { plugins, loading } = useProviderCatalog()
+  const { plugins, loading, error, refresh } = useProviderCatalog()
   const providers = getProvidersForStep(plugins, 'tracker')
   const selectedId = state.selectedProviderId
   const selected = providers.find(p => p.id === selectedId)
@@ -29,6 +30,7 @@ export default function TrackerStep({ state, dispatch, onSkip, onOpenDrawer }: T
     >
       <div className="space-y-3">
         {loading ? <p className="text-sm text-fg-muted">Loading providers…</p> : null}
+        {error ? <ProviderListError message={error} onRetry={() => void refresh()} /> : null}
         {providers.map(provider => (
           <ProviderCard
             key={provider.id}

@@ -5,6 +5,7 @@ import { Button } from '../../ui/button'
 import { Switch } from '../../ui/switch'
 import { cn } from '../../../lib/utils'
 import { jsonRequest, requestJson } from '../../../lib/http'
+import { useSettings } from '../../../pages/Settings/SettingsContext'
 import type { WizardState } from '../wizard-state'
 import { hasSkippedRequiredStep } from '../wizard-state'
 
@@ -48,8 +49,16 @@ const STATUS_PILL = {
  */
 export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps) {
   const skippedRequired = hasSkippedRequiredStep(wizardState)
+  const { draft, reload } = useSettings()
   const [mcpDiscovered, setMcpDiscovered] = useState<{ count: number; ids: string[] } | null>(null)
-  const [inheritMcps, setInheritMcps] = useState(false)
+  // Mirrors the saved value rather than starting at false, so a user who
+  // already enabled inheritance doesn't see the switch off and turn it back.
+  const [inheritMcps, setInheritMcps] = useState(draft.inheritClaudeCodeMcps)
+  const [mcpError, setMcpError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setInheritMcps(draft.inheritClaudeCodeMcps)
+  }, [draft.inheritClaudeCodeMcps])
 
   useEffect(() => {
     void requestJson<{ count: number; ids: string[] }>('/config/mcp/discovered')
@@ -58,8 +67,16 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
   }, [])
 
   async function toggleInheritMcps(enabled: boolean) {
+    const previous = inheritMcps
     setInheritMcps(enabled)
-    await requestJson('/config', jsonRequest({ inheritClaudeCodeMcps: enabled }, { method: 'PUT' }))
+    setMcpError(null)
+    try {
+      await requestJson('/config', jsonRequest({ inheritClaudeCodeMcps: enabled }, { method: 'PUT' }))
+      await reload()
+    } catch (err) {
+      setInheritMcps(previous)
+      setMcpError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const rows = [
@@ -133,6 +150,9 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
             <div className="text-[12px] text-fg-muted truncate">
               {mcpDiscovered.ids.join(', ')}
             </div>
+            {mcpError ? (
+              <div className="text-[12px] text-danger-300">Could not save: {mcpError}</div>
+            ) : null}
           </div>
           <Switch checked={inheritMcps} onCheckedChange={v => void toggleInheritMcps(v)} />
         </div>

@@ -2,6 +2,7 @@ import { Plug } from 'lucide-react'
 import StepShell from './components/StepShell'
 import ProviderCard from './components/ProviderCard'
 import LiveTestPanel from './components/LiveTestPanel'
+import ProviderListError from './components/ProviderListError'
 import GenericAuthPanel from '../GenericAuthPanel'
 import { getProvidersForStep, useProviderCatalog } from '../../../hooks/useProviderCatalog'
 import type { StepState, WizardAction } from '../wizard-state'
@@ -13,7 +14,7 @@ interface ScmStepProps {
 }
 
 export default function ScmStep({ state, dispatch, onOpenDrawer }: ScmStepProps) {
-  const { plugins, loading } = useProviderCatalog()
+  const { plugins, loading, error, refresh } = useProviderCatalog()
   const providers = getProvidersForStep(plugins, 'scm')
   const selectedId = state.selectedProviderId
   const selected = providers.find(p => p.id === selectedId)
@@ -26,6 +27,7 @@ export default function ScmStep({ state, dispatch, onOpenDrawer }: ScmStepProps)
     >
       <div className="space-y-3">
         {loading ? <p className="text-sm text-fg-muted">Loading providers…</p> : null}
+        {error ? <ProviderListError message={error} onRetry={() => void refresh()} /> : null}
         {providers.map(provider => (
           <ProviderCard
             key={provider.id}

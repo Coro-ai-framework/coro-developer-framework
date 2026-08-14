@@ -5,6 +5,7 @@ import { Input } from '../../ui/input'
 import SettingsNotice from '../../settings/SettingsNotice'
 import Field from '../../forms/field'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
+import { invalidateProviderCatalogCache } from '../../../hooks/useProviderCatalog'
 import type { StepKind } from '../../../lib/plugin-catalog-types'
 
 interface PluginManifest {
@@ -95,6 +96,10 @@ export default function CustomPluginDrawer({ step, onClose }: CustomPluginDrawer
         `Installed ${spec}. The plugin is live — pick it from the provider list to configure it.`,
       )
       setInstallSpec('')
+      // The step behind this drawer renders from the provider catalog, which
+      // is cached module-wide; without this the plugin the user just
+      // installed is missing until a page reload.
+      invalidateProviderCatalogCache()
       await loadPlugins()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : String(err))

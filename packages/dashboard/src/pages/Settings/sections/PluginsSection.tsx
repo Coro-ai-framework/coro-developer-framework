@@ -6,6 +6,7 @@ import Field from '../../../components/forms/field'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
+import { invalidateProviderCatalogCache } from '../../../hooks/useProviderCatalog'
 import { cn } from '../../../lib/utils'
 import { toneClasses, type Tone } from '../../../lib/status'
 
@@ -124,6 +125,7 @@ export default function PluginsSection() {
       )
       setInstallSpec('')
       setInstallId('')
+      invalidateProviderCatalogCache()
       void loadPlugins()
     } catch (err) {
       setInstallError(err instanceof ApiError ? err.message : (err as Error).message)
@@ -144,6 +146,7 @@ export default function PluginsSection() {
         method: 'DELETE',
       })
       setInstallNotice(`Removed "${displayName}". ${result.restartHint ?? 'Restart the runner to fully unload it.'}`)
+      invalidateProviderCatalogCache()
       void loadPlugins()
     } catch (err) {
       setInstallError(`Failed to uninstall ${displayName}: ${err instanceof ApiError ? err.message : (err as Error).message}`)

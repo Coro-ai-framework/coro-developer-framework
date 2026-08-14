@@ -93,6 +93,15 @@ const INVALID_CONFIGS: Record<string, Record<string, unknown>> = {
   local: {},
 }
 
+/**
+ * Enough Settings to construct an executor plugin. Executors need ambient SCM
+ * env at construction time; none of the manifest-level checks below touch it.
+ */
+const EXECUTOR_SETTINGS = {
+  llm: { defaultProvider: 'anthropic', providers: {}, aliases: {} },
+  paths: { workingDir: '/tmp/coro-work', coroIntelligenceDir: '/tmp/coro-intel' },
+} as unknown as Parameters<BuiltinPluginFactory>[0]['settings']
+
 interface ConformanceCase {
   id: string
   factory: BuiltinPluginFactory
@@ -429,25 +438,91 @@ describe.each(TRACKER_CASES)('Tracker plugin contract — $id', (kase) => {
   })
 })
 
-describe('auth manifest contract', () => {
-  it('oauth methods declare non-empty paths; detect methods require detectCredentials', async () => {
-    for (const c of CASES) {
-      const runtime = syncCall(c.factory, c.validConfig)
-      const methods = runtime.manifest.auth?.methods ?? []
-      for (const method of methods) {
-        if (method.kind === 'oauth') {
-          expect(method.startPath.length).toBeGreaterThan(0)
-          expect(method.statusPath.length).toBeGreaterThan(0)
-        }
-        if (method.kind === 'form') {
-          for (const field of method.fields) {
-            expect(typeof field.key).toBe('string')
-          }
-        }
-        if (method.kind === 'detect') {
-          expect(typeof runtime.detectCredentials).toBe('function')
-        }
+/**
+ * Keys a plugin's `configSchema` accepts. Zod object schemas expose their
+ * shape; anything else (a union, a passthrough record) returns null, which
+ * the caller treats as "cannot check".
+ */
+function configSchemaKeys(schema: unknown): Set<string> | null {
+  const shape = (schema as { shape?: Record<string, unknown> })?.shape
+  if (!shape || typeof shape !== 'object') return null
+  return new Set(Object.keys(shape))
+}
+
+/**
+ * Assert the manifest's auth descriptors describe something the runner can
+ * actually serve. The form-field rule is the load-bearing one: the wizard
+ * writes each field's `key` straight into the plugin's config, so a key that
+ * the schema doesn't accept produces a form the user can fill in perfectly
+ * and still fail to save.
+ */
+function assertAuthManifest(runtime: PluginRuntime): void {
+  const m = runtime.manifest
+  const methods = m.auth?.methods ?? []
+  const schemaKeys = configSchemaKeys(m.configSchema)
+
+  for (const method of methods) {
+    if (method.kind === 'oauth') {
+      expect(method.startPath.length).toBeGreaterThan(0)
+      expect(method.statusPath.length).toBeGreaterThan(0)
+      // An OAuth method with no route behind it dead-ends the user.
+      expect(
+        typeof runtime.registerHttpRoutes,
+        `${m.id}: oauth method "${method.id}" declares routes but the plugin registers none`,
+      ).toBe('function')
+      if (method.clientIdConfigKey && schemaKeys) {
+        expect(
+          schemaKeys.has(method.clientIdConfigKey),
+          `${m.id}: clientIdConfigKey "${method.clientIdConfigKey}" is not in configSchema`,
+        ).toBe(true)
       }
+    }
+    if (method.kind === 'form') {
+      if (method.fields.length > 0) {
+        // Without readable keys the rule below silently passes, which is how
+        // the original version of this check ended up testing nothing.
+        expect(
+          schemaKeys,
+          `${m.id}: configSchema is not an object schema, so its form fields cannot be verified`,
+        ).not.toBeNull()
+      }
+      for (const field of method.fields) {
+        expect(typeof field.key).toBe('string')
+        if (!schemaKeys) continue
+        expect(
+          schemaKeys.has(field.key),
+          `${m.id}: form field "${field.key}" is not a key in configSchema`,
+        ).toBe(true)
+      }
+    }
+    if (method.kind === 'detect') {
+      expect(typeof runtime.detectCredentials).toBe('function')
+      if (method.accountConfigKey && schemaKeys) {
+        expect(
+          schemaKeys.has(method.accountConfigKey),
+          `${m.id}: accountConfigKey "${method.accountConfigKey}" is not in configSchema`,
+        ).toBe(true)
+      }
+    }
+  }
+}
+
+describe('auth manifest contract', () => {
+  it('every declared auth field maps to a real config key', () => {
+    for (const c of CASES) {
+      assertAuthManifest(syncCall(c.factory, c.validConfig))
+    }
+  })
+
+  // Executors are excluded from CASES because their factories are async and
+  // need runner Settings, but their auth descriptors drive the same wizard
+  // step, so the manifest contract applies to them equally.
+  it('holds for executor plugins too', async () => {
+    for (const id of BUILTIN_PLUGIN_IDS_BY_KIND.executor) {
+      const factory = BUILTIN_PLUGIN_FACTORIES[id]
+      if (!factory) continue
+      const runtime = await factory({ config: {}, logger, settings: EXECUTOR_SETTINGS })
+      assertAuthManifest(runtime)
     }
   })
 })

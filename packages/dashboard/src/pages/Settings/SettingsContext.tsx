@@ -11,6 +11,7 @@ import {
 import type { CoachModeConfig, IntakeConfig } from '../../lib/coach-mode'
 import type { PluginAuthMethodDescriptor } from '../../lib/plugin-catalog-types'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
+import { invalidateProviderCatalogCache } from '../../hooks/useProviderCatalog'
 
 // ── Persisted config shapes ─────────────────────────────────────────────────
 //
@@ -966,7 +967,10 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
         }
       }
       await requestJson('/config', jsonRequest(payload, { method: 'PUT' }))
-      // Refresh local draft so the rest of the UI sees the new state.
+      // Refresh local draft so the rest of the UI sees the new state. The
+      // provider catalog is cached separately and reports per-plugin
+      // configured state, so it has to be dropped too.
+      invalidateProviderCatalogCache()
       await reload()
     },
     [reload],
