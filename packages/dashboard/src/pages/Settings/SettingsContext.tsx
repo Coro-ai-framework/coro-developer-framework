@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { CoachModeConfig, IntakeConfig } from '../../lib/coach-mode'
+import type { PluginAuthMethodDescriptor } from '../../lib/plugin-catalog-types'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 
 // ── Persisted config shapes ─────────────────────────────────────────────────
@@ -56,10 +57,21 @@ export interface PluginManifestSummary {
   capabilities?: Record<string, boolean>
   configSchema: unknown
   /**
+   * The same auth descriptors the onboarding catalog serves. Readiness reads
+   * them to distinguish a plugin with nothing to configure from one the user
+   * has not configured yet.
+   */
+  authMethods?: ReadonlyArray<PluginAuthMethodDescriptor>
+  /**
    * Optional UI hints surfaced by the plugin manifest. Auth flows are
    * rendered generically from `auth.methods` via {@link GenericAuthPanel}.
    */
-  ui?: { customPanel?: string; subtitle?: string; recommendedForOnboarding?: boolean }
+  ui?: {
+    customPanel?: string
+    subtitle?: string
+    recommendedForOnboarding?: boolean
+    repoRef?: { kind: 'slug' | 'path'; label?: string; hint?: string; placeholder?: string }
+  }
 }
 
 export interface PluginEntry {
@@ -319,7 +331,7 @@ interface SettingsContextValue {
   // the wizard finishes.
   firstRunCompleted: boolean
   markFirstRunComplete: (opts?: { skipped?: Array<'llm' | 'scm' | 'tracker'> }) => Promise<void>
-  resetFirstRun: () => void
+  resetFirstRun: () => Promise<void>
   /** Server-side coach mode + intake preferences (from GET /config). */
   preferences: { coachMode?: CoachModeConfig; intake?: IntakeConfig } | null
   /**
@@ -548,17 +560,31 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
   const setPluginEnabled = useCallback((pluginId: string, enabled: boolean) => {
     setDraftState(previous => {
       const prevEntry = previous.pluginInstalled[pluginId] ?? { config: {} }
-      return {
-        ...previous,
-        pluginInstalled: {
-          ...previous.pluginInstalled,
-          [pluginId]: { ...prevEntry, enabled },
-        },
+      const pluginInstalled = {
+        ...previous.pluginInstalled,
+        [pluginId]: { ...prevEntry, enabled },
       }
+      const next = { ...previous, pluginInstalled }
+      if (enabled) return next
+
+      // A default pointing at a disabled plugin is a job that fails at
+      // dispatch with a confusing error, so re-point it at another enabled
+      // plugin of the same kind, or clear it.
+      const kind = pluginsCatalogue?.plugins.find(p => p.manifest.id === pluginId)?.manifest.kind
+      if (kind !== 'scm' && kind !== 'tracker') return next
+      const defaultKey = kind === 'scm' ? 'pluginDefaultScm' : 'pluginDefaultTracker'
+      if (previous[defaultKey] !== pluginId) return next
+      const replacement = pluginsCatalogue?.plugins.find(p =>
+        p.manifest.kind === kind
+        && p.manifest.id !== pluginId
+        && pluginInstalled[p.manifest.id]?.enabled !== false
+        && pluginInstalled[p.manifest.id] !== undefined,
+      )
+      return { ...next, [defaultKey]: replacement?.manifest.id ?? '' }
     })
     setSaveError(null)
     setSaveNotice(null)
-  }, [])
+  }, [pluginsCatalogue])
 
   const setPluginDefault = useCallback((kind: 'scm' | 'tracker', pluginId: string) => {
     setDraftState(previous =>
@@ -707,9 +733,17 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
           config: { ...entry.config },
         }
       }
+      // A dirty default is sent even when empty: an empty string is how the
+      // dashboard clears a default that pointed at a plugin the user just
+      // disabled. Omitting it would leave the stale value on disk, since the
+      // server merges defaults key-by-key.
       const defaults: Record<string, string> = {}
-      if (draft.pluginDefaultScm) defaults['scm'] = draft.pluginDefaultScm
-      if (draft.pluginDefaultTracker) defaults['tracker'] = draft.pluginDefaultTracker
+      if (draft.pluginDefaultScm || dirtyFields.has('pluginDefaultScm')) {
+        defaults['scm'] = draft.pluginDefaultScm
+      }
+      if (draft.pluginDefaultTracker || dirtyFields.has('pluginDefaultTracker')) {
+        defaults['tracker'] = draft.pluginDefaultTracker
+      }
       body['plugins'] = {
         ...(Object.keys(defaults).length > 0 ? { defaults } : {}),
         installed,
@@ -843,40 +877,44 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     return () => window.removeEventListener('beforeunload', handler)
   }, [isDirty])
 
+  // Completion is recorded on the server first. Setting the local flag on a
+  // failed write would tell the user setup is saved when it is not, and the
+  // wizard would never come back to let them retry.
   const markFirstRunComplete = useCallback(
     async (opts?: { skipped?: Array<'llm' | 'scm' | 'tracker'> }) => {
+      await requestJson(
+        '/config',
+        jsonRequest(
+          {
+            setup: {
+              completedAt: new Date().toISOString(),
+              ...(opts?.skipped && opts.skipped.length > 0 ? { skipped: opts.skipped } : {}),
+            },
+          },
+          { method: 'PUT' },
+        ),
+      )
       setFirstRunCompleted(true)
       if (typeof window !== 'undefined') {
         window.localStorage.setItem('coro.firstRun.completed', 'true')
-      }
-      // Best-effort server-side persistence so a different browser /
-      // device doesn't auto-launch the wizard again.
-      try {
-        await requestJson(
-          '/config',
-          jsonRequest(
-            {
-              setup: {
-                completedAt: new Date().toISOString(),
-                ...(opts?.skipped && opts.skipped.length > 0 ? { skipped: opts.skipped } : {}),
-              },
-            },
-            { method: 'PUT' },
-          ),
-        )
-      } catch {
-        // Older runners that don't accept `setup` simply ignore this —
-        // localStorage still suppresses the auto-launch on this browser.
+        // A finished wizard is no longer a dismissed one; leaving this set
+        // would suppress the auto-launch after a later reset.
+        window.localStorage.removeItem('coro.firstRun.dismissed')
       }
     },
     [],
   )
 
-  const resetFirstRun = useCallback(() => {
+  // Reset has to clear every signal that suppresses the wizard — the local
+  // completed flag, the local dismissal, and the server-side timestamp —
+  // otherwise "run setup again" silently does nothing on the next load.
+  const resetFirstRun = useCallback(async () => {
     setFirstRunCompleted(false)
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem('coro.firstRun.completed')
+      window.localStorage.removeItem('coro.firstRun.dismissed')
     }
+    await requestJson('/config', jsonRequest({ setup: null }, { method: 'PUT' }))
   }, [])
 
   /**

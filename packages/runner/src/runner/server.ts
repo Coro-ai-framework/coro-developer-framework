@@ -52,6 +52,12 @@ import {
 import { resolveDashboardDist } from '../dashboard-dist'
 import { formatSseFrame } from './sse'
 import { listBuiltinPluginMetadata, BUILTIN_PLUGIN_IDS_BY_KIND } from '../plugins/builtin'
+import {
+  isRedacted,
+  mergePluginConfig,
+  redactPluginConfig,
+  redactSecret,
+} from '../plugins/redaction'
 import { discoverWorkflows } from '../workflow-discovery'
 import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
@@ -90,75 +96,9 @@ export interface RunnerServerOptions {
   runnerCtx?: RunnerContext
 }
 
-/** Mask a secret for display: show enough prefix/suffix to recognise it, hide the middle. */
-function redactSecret(value: string | undefined | null): string {
-  if (!value) return ''
-  if (value.length <= 16) return `${value.slice(0, 2)}...${value.slice(-2)}`
-  return `${value.slice(0, 12)}...${value.slice(-4)}`
-}
-
-/** The dashboard echoes redacted values back on submit; treat `...` as "unchanged". */
-function isRedacted(value: unknown): boolean {
-  return typeof value === 'string' && value.includes('...')
-}
-
-/**
- * Heuristic: does a plugin-config field name look like a secret?
- *
- * Plugin manifests (`PluginManifest.configSchema`) use arbitrary
- * field names — we don't have a "this is a secret" annotation in the
- * schema today. Rather than force every plugin to declare a secret
- * list, we redact based on common naming conventions. Callers should
- * still treat the heuristic as best-effort and prefer to rotate
- * tokens that ever leaked through the dashboard.
- */
-function isSecretFieldName(name: string): boolean {
-  return /token|apikey|api_key|password|secret|appPassword/i.test(name)
-}
-
-/**
- * Walk a plugin-config object and replace every secret-shaped field
- * with the standard `...`-redaction. Used by GET /config so the
- * dashboard can hint that a value is set without ever shipping the
- * real credential to the browser. The PUT handler reverses the round
- * trip via {@link isRedacted}.
- */
-function redactPluginConfig(cfg: Record<string, unknown> | undefined): Record<string, unknown> {
-  if (!cfg) return {}
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(cfg)) {
-    if (typeof v === 'string' && isSecretFieldName(k)) {
-      out[k] = redactSecret(v)
-    } else {
-      out[k] = v
-    }
-  }
-  return out
-}
-
-/**
- * Per-key merge that preserves on-disk values when the incoming
- * value is the redacted `...` placeholder. Mirrors the round-trip
- * pattern used for git/tracker/anthropic/MCP secrets.
- */
-function mergePluginConfig(
-  existing: Record<string, unknown> | undefined,
-  incoming: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  const prev = existing ?? {}
-  if (!incoming) return { ...prev }
-  const out: Record<string, unknown> = { ...prev }
-  for (const [k, v] of Object.entries(incoming)) {
-    if (v === undefined) continue
-    if (isSecretFieldName(k) && isRedacted(v)) {
-      // keep prior secret
-      if (!(k in out)) continue
-      continue
-    }
-    out[k] = v
-  }
-  return out
-}
+// Secret redaction round-trip lives in `plugins/redaction.ts` so the save
+// path and the probe path can never drift apart again — they previously used
+// different placeholders, which made "Test connection" probe with a mask.
 
 /**
  * Drop `undefined`-valued keys from a partial-update payload before
@@ -962,6 +902,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
               },
             } : {}),
             ...(m.ui ? { ui: m.ui } : {}),
+            // Readiness needs to tell "this plugin has nothing to fill in"
+            // apart from "this plugin has not been filled in yet", and the
+            // auth descriptors are the only generic signal for that.
+            authMethods: m.auth?.methods ?? [],
             configSchema: configSchemaJson,
           },
           installed: configured,
@@ -1014,7 +958,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ plugins: catalog })
     } catch (err) {
       logger.error({ err }, 'GET /config/plugins/catalog failed')
-      res.status(500).json({ error: (err as Error).message })
+      res.status(500).json({
+        error: 'catalog_unavailable',
+        message: (err as Error).message,
+      })
     }
   })
 
@@ -1027,7 +974,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ count: ids.length, ids })
     } catch (err) {
       logger.error({ err }, 'GET /config/mcp/discovered failed')
-      res.status(500).json({ error: (err as Error).message })
+      res.status(500).json({
+        error: 'mcp_discovery_failed',
+        message: (err as Error).message,
+      })
     }
   })
 
@@ -1040,8 +990,9 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         res.status(400).json({ error: 'plugin id is required' })
         return
       }
-      const runtime = plugins?.byId(pluginId)
-      let probeRuntime = runtime
+      // Configured runtime first, then the setup-only shell registered at
+      // boot, then a transient instance for drop-ins that are neither.
+      let probeRuntime = plugins?.byId(pluginId) ?? plugins?.setupRuntime(pluginId)
       if (!probeRuntime) {
         const config = loadLocalConfig()
         const { resolvePluginsConfig } = await import('../config/local-config')
@@ -1053,6 +1004,9 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           logger,
           pluginsConfig: resolved,
           settings: runnerCtx?.settings,
+          // Detection runs before any config exists; a schema rejection
+          // must not become a 500 on the wizard's first render.
+          tolerateInitFailure: true,
         }) ?? undefined
       }
       if (!probeRuntime || typeof probeRuntime.detectCredentials !== 'function') {
@@ -1072,7 +1026,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       })
     } catch (err) {
       logger.warn({ err }, 'POST /config/plugins/:id/auth/detect failed')
-      res.status(500).json({ error: (err as Error).message })
+      res.status(500).json({
+        error: 'detect_failed',
+        message: (err as Error).message,
+      })
     }
   })
 
@@ -1100,6 +1057,10 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         ...(body.overrides ?? {}),
       }
       pluginSavePluginConfig(pluginId, mergedConfig)
+      // Promote the plugin out of the setup-only tier now that it has real
+      // config, otherwise the registry keeps serving the uninitialised shell
+      // and the next job can't resolve it until a restart.
+      await reloadInMemoryState()
       const existing = loadLocalConfig()
       const onDisk = (existing?.plugins?.installed?.[pluginId]?.config ?? {}) as Record<string, unknown>
       const { probePluginConnection } = await import('../plugins/plugin-probe')
@@ -1112,6 +1073,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         logger,
         pluginsConfig: resolved,
         settings: runnerCtx?.settings,
+        // `byId` is configured-only, so a setup-only shell can never be
+        // probed with an uninitialised client.
         existingRuntime: plugins?.byId(pluginId) ?? null,
       })
       res.json(result)
@@ -2771,11 +2734,19 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
               config: mergedCfg,
             }
           }
-          const nextDefaults = incoming.defaults
+          // An empty string means "no default" — the dashboard sends it when
+          // the user disables the plugin a default pointed at. Dropping the
+          // key here is what stops a job resolving to a disabled plugin.
+          const mergedDefaults = incoming.defaults
             ? { ...(existingPlugins.defaults ?? {}), ...incoming.defaults }
             : existingPlugins.defaults
+          const nextDefaults = mergedDefaults
+            ? Object.fromEntries(
+                Object.entries(mergedDefaults).filter(([, v]) => typeof v === 'string' && v.length > 0),
+              )
+            : undefined
           ;(merged as Record<string, unknown>).plugins = {
-            ...(nextDefaults ? { defaults: nextDefaults } : {}),
+            ...(nextDefaults && Object.keys(nextDefaults).length > 0 ? { defaults: nextDefaults } : {}),
             installed: nextInstalled,
           }
         }
@@ -2988,801 +2959,13 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
-  // ── Connection tests (third-party APIs) ─────────────────────────────────
-  //
-  // These endpoints proxy a "ping" call to the configured third-party API
-  // (git provider, issue tracker) so the dashboard never has to hold or
-  // ship the raw credential. They also accept the dashboard's redacted
-  // `...` token form: when the user hasn't re-entered the secret, we
-  // substitute the value from disk before making the upstream call.
-
-  /** Resolve a possibly-redacted secret from the request against on-disk config. */
-  function resolveSecret(provided: unknown, onDisk: string | undefined | null): string {
-    if (typeof provided !== 'string') return onDisk ?? ''
-    if (provided.length === 0) return onDisk ?? ''
-    if (isRedacted(provided)) return onDisk ?? ''
-    return provided
-  }
-
-  /** Trim trailing slash for clean URL joins. */
-  function trimSlash(url: string): string {
-    return url.replace(/\/+$/, '')
-  }
-
-  // ── Git connection-test sub-checks ──────────────────────────────────────
-  //
-  // The legacy implementation just hit `/user` on the provider and
-  // called it a day. That misses the failure modes that actually
-  // break agents at runtime — wrong workspace, missing scopes, and
-  // (for Bitbucket) the asymmetric git-over-HTTPS authentication
-  // requirement where REST accepts the user's email but git requires
-  // `x-bitbucket-api-token-auth` for the same ATATT token. See
-  // `packages/runner/src/plugins/builtin/bitbucket/index.ts`
-  // (`deriveGitUsername`) for the asymmetry rationale.
-  //
-  // The strengthened tests return a structured list of checks so the
-  // dashboard can show the user exactly which step failed and how to
-  // fix it before any job runs and 401s mid-clone or mid-PR-open.
-
-  interface GitTestCheck {
-    name: string
-    ok: boolean
-    message: string
-    hint?: string
-  }
-  interface GitTestResponse {
-    ok: boolean
-    message: string
-    checks: GitTestCheck[]
-  }
-
-  // Express's `Response` is in scope as the route handler's res
-  // parameter; use the global fetch `Response` via this alias so the
-  // helper signatures don't collide.
-  type FetchResponse = globalThis.Response
-
-  /** Short-form HTTP detail for a non-200 response. */
-  async function describeHttpFailure(r: FetchResponse): Promise<string> {
-    const text = await r.text().catch(() => '')
-    const trimmed = text.trim().slice(0, 200)
-    if (trimmed.length > 0) return `${r.status}: ${trimmed}`
-    return `${r.status} ${r.statusText || ''}`.trim()
-  }
-
-  /**
-   * Hit Bitbucket's smart-HTTP info/refs endpoint with Basic auth.
-   * This is the one check that catches the email-vs-x-bitbucket-api-token-auth
-   * asymmetry — REST may return 200 while git-over-HTTPS returns 401
-   * (or vice versa) for the same token. Without this probe the user
-   * discovers the mismatch only when an agent's `git push` fails.
-   */
-  async function probeGitHttps(
-    repoCloneBase: string,
-    gitUsername: string,
-    token: string,
-  ): Promise<{ ok: boolean; detail: string }> {
-    const url = `${trimSlash(repoCloneBase)}/info/refs?service=git-upload-pack`
-    const auth = Buffer.from(`${gitUsername}:${token}`).toString('base64')
-    try {
-      const r = await fetch(url, {
-        headers: {
-          Authorization: `Basic ${auth}`,
-          'User-Agent': 'git/2.40.0',
-          // Required by the smart-HTTP protocol; servers reject the
-          // request otherwise even with valid creds.
-          Accept: 'application/x-git-upload-pack-advertisement',
-        },
-      })
-      if (r.ok) {
-        const ct = r.headers.get('content-type') ?? ''
-        if (!ct.includes('git-upload-pack-advertisement')) {
-          return { ok: false, detail: `${r.status} but unexpected content-type "${ct}"` }
-        }
-        return { ok: true, detail: `${r.status} (git smart-HTTP handshake accepted)` }
-      }
-      return { ok: false, detail: await describeHttpFailure(r) }
-    } catch (err) {
-      return { ok: false, detail: (err as Error).message }
-    }
-  }
-
-  /**
-   * Atlassian API tokens (`ATATT…`) come in two flavours that the
-   * prefix alone cannot distinguish: id.atlassian.com account API
-   * tokens (REST + git want `email`) and Bitbucket-scoped API tokens
-   * (REST + git want `x-bitbucket-api-token-auth`). When the user's
-   * configured username fails the REST probe, try the alternate and
-   * recommend the swap if it works.
-   */
-  async function tryAlternateBitbucketUsername(
-    typedUsername: string,
-    token: string,
-  ): Promise<{ alternate: string; works: boolean } | null> {
-    const isEmail = typedUsername.includes('@')
-    const isSynthetic = /^x-[\w-]+-auth$/.test(typedUsername)
-    // Only swap when the typed value is recognisably one of the two
-    // shapes — random strings get no second chance.
-    let alternate: string | null = null
-    if (isEmail) alternate = 'x-bitbucket-api-token-auth'
-    else if (isSynthetic) {
-      const fromCfg = existingGitUsername()
-      if (fromCfg && fromCfg.includes('@')) alternate = fromCfg
-    }
-    if (!alternate) return null
-    const auth = Buffer.from(`${alternate}:${token}`).toString('base64')
-    try {
-      const r = await fetch('https://api.bitbucket.org/2.0/user', {
-        headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
-      })
-      return { alternate, works: r.ok }
-    } catch {
-      return { alternate, works: false }
-    }
-  }
-
-  /**
-   * Read the saved BitBucket coderUsername from the installed plugin
-   * config. We use it as the alternate-username candidate when the
-   * typed username is the synthetic `x-*-auth` form (we have no other
-   * way to guess the user's email).
-   */
-  function existingGitUsername(): string | undefined {
-    const cfg = loadLocalConfig()
-    const bb = cfg?.plugins?.installed?.['bitbucket']?.config as
-      | { coderUsername?: string }
-      | undefined
-    return bb?.coderUsername || undefined
-  }
-
-  /** Apply `deriveGitUsername` semantics here without importing from the plugin. */
-  function deriveBitbucketGitUsername(typedUsername: string, token: string): string {
-    const isAtlassianApiToken = token.startsWith('ATATT')
-    const isEmail = typedUsername.includes('@')
-    if (isAtlassianApiToken && isEmail) return 'x-bitbucket-api-token-auth'
-    return typedUsername
-  }
-
-  async function runBitbucketTest(args: {
-    username: string
-    token: string
-    workspace: string
-    reviewerUsername?: string
-    reviewerToken?: string
-  }): Promise<GitTestResponse> {
-    const checks: GitTestCheck[] = []
-    const { username, token, workspace } = args
-    if (!username) {
-      return {
-        ok: false,
-        message: 'Bitbucket requires a username for Basic auth.',
-        checks: [{ name: 'inputs', ok: false, message: 'Username is empty.' }],
-      }
-    }
-    if (!workspace) {
-      checks.push({
-        name: 'inputs',
-        ok: false,
-        message: 'Workspace slug is empty — agents will not be able to clone or push.',
-      })
-    }
-
-    // 1. REST auth with the user's typed username.
-    const auth = Buffer.from(`${username}:${token}`).toString('base64')
-    const restR = await fetch('https://api.bitbucket.org/2.0/user', {
-      headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' },
-    })
-    if (restR.ok) {
-      const data = (await restR.json()) as { username?: string; display_name?: string }
-      checks.push({
-        name: 'REST auth (coder)',
-        ok: true,
-        message: `Authenticated as ${data.display_name ?? data.username ?? username}.`,
-      })
-    } else {
-      const detail = await describeHttpFailure(restR)
-      const alt = await tryAlternateBitbucketUsername(username, token)
-      const hint = alt?.works
-        ? `Your token authenticates as "${alt.alternate}", not "${username}". ` +
-          `Change "coderUsername" to "${alt.alternate}" — Atlassian's two ATATT token types share the prefix but accept different usernames.`
-        : 'Verify the token is correct and that it matches the username (email for id.atlassian.com API tokens; `x-bitbucket-api-token-auth` for Bitbucket-scoped tokens).'
-      return {
-        ok: false,
-        message: `Bitbucket REST auth failed (${detail}).`,
-        checks: [
-          ...checks,
-          { name: 'REST auth (coder)', ok: false, message: detail, hint },
-        ],
-      }
-    }
-
-    // 2. Workspace access — agents always scope to this workspace,
-    //    so a 403/404 here breaks every subsequent tool call.
-    if (workspace) {
-      const wsR = await fetch(
-        `https://api.bitbucket.org/2.0/workspaces/${encodeURIComponent(workspace)}`,
-        { headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' } },
-      )
-      checks.push({
-        name: 'Workspace access',
-        ok: wsR.ok,
-        message: wsR.ok
-          ? `Workspace "${workspace}" is reachable.`
-          : `Cannot read workspace "${workspace}" (${await describeHttpFailure(wsR)}).`,
-        hint: wsR.ok
-          ? undefined
-          : 'Check the slug (case-sensitive) and that the token has access to this workspace.',
-      })
-    }
-
-    // 3. Repo listing — confirms the token has at least the repo:read
-    //    scope and gives us a real repo slug to use for the git-HTTPS
-    //    probe below.
-    let sampleRepoSlug: string | undefined
-    if (workspace) {
-      const repoR = await fetch(
-        `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(workspace)}?pagelen=1&fields=values.slug,values.full_name`,
-        { headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'coro-runner' } },
-      )
-      if (repoR.ok) {
-        const data = (await repoR.json()) as { values?: Array<{ slug?: string; full_name?: string }> }
-        sampleRepoSlug = data.values?.[0]?.slug
-        checks.push({
-          name: 'Repository scope',
-          ok: true,
-          message: sampleRepoSlug
-            ? `Token can list repositories (sampled "${data.values?.[0]?.full_name}").`
-            : 'Token can list repositories, but the workspace currently has none.',
-        })
-      } else {
-        checks.push({
-          name: 'Repository scope',
-          ok: false,
-          message: `Cannot list repos in "${workspace}" (${await describeHttpFailure(repoR)}).`,
-          hint: 'The token likely lacks the `repository:read` scope.',
-        })
-      }
-    }
-
-    // 4. Git-over-HTTPS smart-protocol probe — THIS is the check
-    //    that catches the email-vs-x-bitbucket-api-token-auth mismatch
-    //    even when the REST probe passes. Without it, the user
-    //    discovers the mismatch only when an agent's `git push` 401s.
-    if (sampleRepoSlug && workspace) {
-      const gitUsername = deriveBitbucketGitUsername(username, token)
-      const probe = await probeGitHttps(
-        `https://bitbucket.org/${workspace}/${sampleRepoSlug}.git`,
-        gitUsername,
-        token,
-      )
-      checks.push({
-        name: 'Git over HTTPS',
-        ok: probe.ok,
-        message: probe.ok
-          ? `git clone/push will authenticate as "${gitUsername}" (${probe.detail}).`
-          : `git smart-HTTP handshake failed for "${gitUsername}" (${probe.detail}).`,
-        hint: probe.ok
-          ? undefined
-          : gitUsername === username
-            ? 'For Atlassian API tokens, git over HTTPS often needs `x-bitbucket-api-token-auth` as the username even though REST accepted your email.'
-            : 'Coro automatically rewrites the git username for ATATT tokens. If this still fails, the token may be a Bitbucket-scoped token that needs the literal configured username.',
-      })
-    }
-
-    // 5. Reviewer creds (only if separately configured) — agents
-    //    that run the review phase will use these to approve PRs.
-    if (args.reviewerToken && args.reviewerToken !== token) {
-      const revUsername = (args.reviewerUsername ?? '').trim() || username
-      const revAuth = Buffer.from(`${revUsername}:${args.reviewerToken}`).toString('base64')
-      const revR = await fetch('https://api.bitbucket.org/2.0/user', {
-        headers: { Authorization: `Basic ${revAuth}`, 'User-Agent': 'coro-runner' },
-      })
-      if (revR.ok) {
-        const revData = (await revR.json()) as { username?: string; display_name?: string; uuid?: string }
-        // Compare reviewer identity against coder — Bitbucket refuses
-        // self-approval, so configuring the same account for both
-        // silently breaks the review phase.
-        const coderData = restR.ok ? ((await restR.clone().json().catch(() => ({}))) as { uuid?: string }) : {}
-        const sameAccount = revData.uuid && coderData.uuid && revData.uuid === coderData.uuid
-        checks.push({
-          name: 'REST auth (reviewer)',
-          ok: !sameAccount,
-          message: sameAccount
-            ? `Reviewer is the same Bitbucket account as the coder — Bitbucket forbids self-approval, the review phase will hang.`
-            : `Authenticated as ${revData.display_name ?? revData.username ?? revUsername}.`,
-          hint: sameAccount ? 'Use a separate Bitbucket account (or no reviewer at all) for the reviewer credentials.' : undefined,
-        })
-      } else {
-        checks.push({
-          name: 'REST auth (reviewer)',
-          ok: false,
-          message: `Reviewer auth failed (${await describeHttpFailure(revR)}).`,
-          hint: 'Same rules as coder username — see the REST auth hint above.',
-        })
-      }
-    }
-
-    const ok = checks.every(c => c.ok)
-    return {
-      ok,
-      message: ok
-        ? 'Bitbucket credentials are ready for agent use.'
-        : 'Bitbucket credentials have problems — see check details.',
-      checks,
-    }
-  }
-
-  async function runGithubTest(args: { owner: string; token: string; workspace: string }): Promise<GitTestResponse> {
-    const checks: GitTestCheck[] = []
-    const { token } = args
-    const owner = args.owner || args.workspace
-
-    // 1. Auth + scope discovery in one call.
-    const userR = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'coro-runner',
-      },
-    })
-    if (!userR.ok) {
-      const detail = await describeHttpFailure(userR)
-      return {
-        ok: false,
-        message: `GitHub auth failed (${detail}).`,
-        checks: [{ name: 'REST auth', ok: false, message: detail }],
-      }
-    }
-    const userData = (await userR.json()) as { login?: string }
-    checks.push({
-      name: 'REST auth',
-      ok: true,
-      message: `Authenticated as ${userData.login ?? '(unknown)'}.`,
-    })
-
-    // 2. Token scopes — `repo` is required for the agent to push,
-    //    open PRs, and post review comments on private repos.
-    const scopesHeader = userR.headers.get('x-oauth-scopes')
-    if (scopesHeader === null) {
-      // Fine-grained PAT or GitHub App token — scopes aren't reported
-      // via this header. We can't verify; pass through with a note.
-      checks.push({
-        name: 'Token scopes',
-        ok: true,
-        message: 'Fine-grained or app token (scopes not introspectable via REST).',
-      })
-    } else {
-      const scopes = scopesHeader.split(',').map(s => s.trim()).filter(Boolean)
-      const hasRepo = scopes.includes('repo') || scopes.includes('public_repo')
-      checks.push({
-        name: 'Token scopes',
-        ok: hasRepo,
-        message: hasRepo
-          ? `Has scope${scopes.length === 1 ? '' : 's'}: ${scopes.join(', ')}.`
-          : `Missing "repo" scope (got: ${scopes.join(', ') || 'none'}).`,
-        hint: hasRepo
-          ? undefined
-          : 'Agents need the `repo` scope to push branches, open PRs, and post review comments.',
-      })
-    }
-
-    // 3. Owner access — `owner` may be the same as login (user) or an
-    //    org. Probe whichever endpoint matches.
-    if (owner && owner.toLowerCase() !== (userData.login ?? '').toLowerCase()) {
-      const orgR = await fetch(`https://api.github.com/orgs/${encodeURIComponent(owner)}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'coro-runner',
-        },
-      })
-      if (orgR.ok) {
-        checks.push({ name: 'Owner access', ok: true, message: `Org "${owner}" is reachable.` })
-      } else {
-        const detail = await describeHttpFailure(orgR)
-        checks.push({
-          name: 'Owner access',
-          ok: false,
-          message: `Cannot read org/owner "${owner}" (${detail}).`,
-          hint: 'Verify the owner slug and that the token is authorised for the org (SSO may require explicit token approval).',
-        })
-      }
-    }
-
-    // 4. Git-over-HTTPS probe against the user's own profile repos
-    //    endpoint to confirm credential format works for git, not just
-    //    for the REST API. GitHub uses `x-access-token:TOKEN` for
-    //    bearer-style PATs — we mirror what `cloneInfo()` builds.
-    const repoListR = await fetch(
-      `https://api.github.com/users/${encodeURIComponent(owner || userData.login || '')}/repos?per_page=1&type=owner`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'coro-runner',
-        },
-      },
-    )
-    if (repoListR.ok) {
-      const repos = (await repoListR.json()) as Array<{ name?: string; full_name?: string }>
-      const sample = repos[0]?.full_name
-      if (sample) {
-        const probe = await probeGitHttps(`https://github.com/${sample}.git`, 'x-access-token', token)
-        checks.push({
-          name: 'Git over HTTPS',
-          ok: probe.ok,
-          message: probe.ok
-            ? `git clone/push will work for ${sample} (${probe.detail}).`
-            : `git smart-HTTP handshake failed (${probe.detail}).`,
-          hint: probe.ok ? undefined : 'Token likely lacks `repo` scope for git operations.',
-        })
-      }
-    }
-
-    const ok = checks.every(c => c.ok)
-    return {
-      ok,
-      message: ok
-        ? 'GitHub credentials are ready for agent use.'
-        : 'GitHub credentials have problems — see check details.',
-      checks,
-    }
-  }
-
-  async function runGitlabTest(args: { token: string; workspace: string }): Promise<GitTestResponse> {
-    const checks: GitTestCheck[] = []
-    const r = await fetch('https://gitlab.com/api/v4/user', {
-      headers: { 'PRIVATE-TOKEN': args.token, 'User-Agent': 'coro-runner' },
-    })
-    if (!r.ok) {
-      const detail = await describeHttpFailure(r)
-      return {
-        ok: false,
-        message: `GitLab auth failed (${detail}).`,
-        checks: [{ name: 'REST auth', ok: false, message: detail }],
-      }
-    }
-    const data = (await r.json()) as { username?: string; name?: string }
-    checks.push({
-      name: 'REST auth',
-      ok: true,
-      message: `Authenticated as ${data.name ?? data.username ?? '(unknown)'}.`,
-    })
-
-    if (args.workspace) {
-      const gR = await fetch(
-        `https://gitlab.com/api/v4/groups/${encodeURIComponent(args.workspace)}`,
-        { headers: { 'PRIVATE-TOKEN': args.token, 'User-Agent': 'coro-runner' } },
-      )
-      checks.push({
-        name: 'Group access',
-        ok: gR.ok,
-        message: gR.ok
-          ? `Group "${args.workspace}" is reachable.`
-          : `Cannot read group "${args.workspace}" (${await describeHttpFailure(gR)}).`,
-      })
-    }
-
-    const ok = checks.every(c => c.ok)
-    return {
-      ok,
-      message: ok ? 'GitLab credentials are ready for agent use.' : 'GitLab credentials have problems.',
-      checks,
-    }
-  }
-
-  app.post('/test/git', async (req: Request, res: Response) => {
-    try {
-      const body = (req.body ?? {}) as {
-        provider?: string
-        username?: string
-        token?: string
-        workspace?: string
-        reviewerUsername?: string
-        reviewerToken?: string
-      }
-      const provider = body.provider
-      if (provider !== 'github' && provider !== 'bitbucket' && provider !== 'gitlab') {
-        res.status(400).json({ ok: false, message: `Unsupported git provider "${provider}"` })
-        return
-      }
-
-      // Plugin-installed creds are the single source of truth. The
-      // dashboard may send `...`-redacted secrets on round-trip when
-      // the user only changed non-secret fields; in that case we fill
-      // in from the persisted plugin config.
-      const existing = loadLocalConfig()
-      const ghInstalled = existing?.plugins?.installed?.['github']?.config as
-        | { owner?: string; token?: string }
-        | undefined
-      const bbInstalled = existing?.plugins?.installed?.['bitbucket']?.config as
-        | {
-            workspace?: string
-            coderUsername?: string
-            coderToken?: string
-            reviewerUsername?: string
-            reviewerToken?: string
-          }
-        | undefined
-      const glInstalled = existing?.plugins?.installed?.['gitlab']?.config as
-        | { token?: string; workspace?: string }
-        | undefined
-
-      // Per-provider fallback for `username` (BitBucket: coderUsername;
-      // GitHub: the owner is sent as `username` from the wizard since
-      // both REST and git basic-auth use a placeholder username on GitHub).
-      const fallbackUsername =
-        provider === 'bitbucket' ? bbInstalled?.coderUsername
-        : provider === 'github' ? ghInstalled?.owner
-        : ''
-      const fallbackToken =
-        provider === 'bitbucket' ? bbInstalled?.coderToken
-        : provider === 'github' ? ghInstalled?.token
-        : glInstalled?.token
-      const fallbackWorkspace =
-        provider === 'bitbucket' ? bbInstalled?.workspace
-        : provider === 'gitlab' ? glInstalled?.workspace
-        : ''
-
-      const username = (body.username ?? fallbackUsername ?? '').trim()
-      const token = resolveSecret(body.token, fallbackToken)
-      const workspace = (body.workspace ?? fallbackWorkspace ?? '').trim()
-      if (!token) {
-        res.json({ ok: false, message: 'Token is required.', checks: [] })
-        return
-      }
-
-      const result =
-        provider === 'github'
-          ? await runGithubTest({ owner: username, token, workspace })
-          : provider === 'bitbucket'
-            ? await runBitbucketTest({
-                username,
-                token,
-                workspace,
-                reviewerUsername:
-                  ((body.reviewerUsername ?? '').trim() || bbInstalled?.reviewerUsername) || undefined,
-                reviewerToken:
-                  resolveSecret(body.reviewerToken, bbInstalled?.reviewerToken) || undefined,
-              })
-            : await runGitlabTest({ token, workspace })
-
-      res.json(result)
-    } catch (err) {
-      logger.warn({ err }, 'POST /test/git failed')
-      res.json({ ok: false, message: (err as Error).message, checks: [] })
-    }
-  })
-
-  app.post('/test/tracker', async (req: Request, res: Response) => {
-    try {
-      const body = (req.body ?? {}) as {
-        provider?: string
-        jira?: { baseUrl?: string; username?: string; apiToken?: string }
-        linear?: { apiKey?: string; teamKey?: string }
-        git?: { provider?: string; username?: string; token?: string; workspace?: string }
-      }
-      const provider = body.provider
-      const existing = loadLocalConfig()
-      // Plugin-installed creds are the single source of truth. The
-      // dashboard may send `...`-redacted secrets on round-trip when
-      // the user only changed non-secret fields; in that case we fill
-      // in from the persisted plugin config.
-      const jiraInstalled = existing?.plugins?.installed?.['jira']?.config as
-        | { baseUrl?: string; username?: string; apiToken?: string }
-        | undefined
-      const linearInstalled = existing?.plugins?.installed?.['linear']?.config as
-        | { apiKey?: string; teamKey?: string }
-        | undefined
-      const ghIssuesInstalled = existing?.plugins?.installed?.['github-issues']?.config as
-        | { token?: string; defaultOwner?: string }
-        | undefined
-      const ghInstalled = existing?.plugins?.installed?.['github']?.config as
-        | { owner?: string; token?: string }
-        | undefined
-
-      if (provider === 'jira') {
-        const baseUrl = (body.jira?.baseUrl ?? jiraInstalled?.baseUrl ?? '').trim()
-        const username = (body.jira?.username ?? jiraInstalled?.username ?? '').trim()
-        const apiToken = resolveSecret(body.jira?.apiToken, jiraInstalled?.apiToken)
-        if (!baseUrl || !username || !apiToken) {
-          res.json({ ok: false, message: 'Jira requires base URL, username, and API token.' })
-          return
-        }
-        const auth = Buffer.from(`${username}:${apiToken}`).toString('base64')
-        const r = await fetch(`${trimSlash(baseUrl)}/rest/api/3/myself`, {
-          headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
-        })
-        if (!r.ok) {
-          const text = await r.text().catch(() => '')
-          res.json({ ok: false, message: `Jira ${r.status}: ${text.slice(0, 200) || r.statusText}` })
-          return
-        }
-        const data = (await r.json()) as { displayName?: string; emailAddress?: string }
-        res.json({
-          ok: true,
-          message: `Authenticated as ${data.displayName ?? data.emailAddress ?? username}`,
-        })
-        return
-      }
-
-      if (provider === 'linear') {
-        const apiKey = resolveSecret(body.linear?.apiKey, linearInstalled?.apiKey)
-        if (!apiKey) {
-          res.json({ ok: false, message: 'Linear requires an API key.' })
-          return
-        }
-        const r = await fetch('https://api.linear.app/graphql', {
-          method: 'POST',
-          headers: {
-            Authorization: apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ query: '{ viewer { id name email } }' }),
-        })
-        if (!r.ok) {
-          const text = await r.text().catch(() => '')
-          res.json({ ok: false, message: `Linear ${r.status}: ${text.slice(0, 200) || r.statusText}` })
-          return
-        }
-        const data = (await r.json()) as {
-          data?: { viewer?: { name?: string; email?: string } }
-          errors?: Array<{ message?: string }>
-        }
-        if (data.errors?.length) {
-          res.json({ ok: false, message: data.errors[0]?.message ?? 'Linear returned an error.' })
-          return
-        }
-        const viewer = data.data?.viewer
-        res.json({ ok: true, message: `Authenticated as ${viewer?.name ?? viewer?.email ?? '(unknown)'}` })
-        return
-      }
-
-      if (provider === 'github' || provider === 'github-issues') {
-        // GitHub Issues is its own plugin (`github-issues`) carrying
-        // its own token. We accept either an inline `token` field or
-        // the catalogue's `git.{ username, token }` envelope, both of
-        // which the dashboard's tracker-test payload may send during
-        // initial wiring. Credentials fall back to the installed
-        // github-issues plugin config, then to the (also-plugin-shape)
-        // github SCM plugin's token as a last resort.
-        const username = (body.git?.username ?? ghInstalled?.owner ?? ghIssuesInstalled?.defaultOwner ?? '').trim()
-        const token = resolveSecret(
-          body.git?.token ?? (body as { token?: string }).token,
-          ghIssuesInstalled?.token ?? ghInstalled?.token,
-        )
-        if (!token) {
-          res.json({ ok: false, message: 'GitHub token is required (set it in Source control or under GitHub Issues).' })
-          return
-        }
-        const r = await fetch('https://api.github.com/user', {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'User-Agent': 'coro-runner',
-          },
-        })
-        if (!r.ok) {
-          const text = await r.text().catch(() => '')
-          res.json({ ok: false, message: `GitHub ${r.status}: ${text.slice(0, 200) || r.statusText}` })
-          return
-        }
-        const data = (await r.json()) as { login?: string }
-        res.json({
-          ok: true,
-          message: `Authenticated as ${data.login ?? username ?? '(unknown)'}`,
-        })
-        return
-      }
-
-      if (provider === 'none') {
-        res.json({ ok: true, message: 'No tracker configured.' })
-        return
-      }
-
-      res.status(400).json({ ok: false, message: `Unsupported tracker provider "${provider}"` })
-    } catch (err) {
-      logger.warn({ err }, 'POST /test/tracker failed')
-      res.json({ ok: false, message: (err as Error).message })
-    }
-  })
-
-  // POST /test/llm — Live credential probe for executor (LLM) plugins,
-  // used by the Settings page and the FTUE wizard. Pure dispatcher:
-  // the runner core knows nothing about Anthropic / OpenAI / Foundry
-  // auth shapes. Each LLM plugin owns its own probe via the optional
-  // `PluginRuntime.testConnection(config)` method declared on
-  // `@coro-ai/plugin-sdk`. Plugins that don't implement it fall back to
-  // the cheaper `healthcheck()` — the right default for "config-only"
-  // providers whose only check is "is the required field non-empty".
-  //
-  // The dashboard ships a redacted form of any secret it has already
-  // seen (`'…'`). We deep-merge the incoming draft over the on-disk
-  // config so the plugin always receives the real credential to probe
-  // with — without the dashboard ever transporting the real secret.
-  app.post('/test/llm', async (req: Request, res: Response) => {
-    try {
-      const body = (req.body ?? {}) as {
-        provider?: string
-        config?: Record<string, unknown>
-      }
-      const provider = body.provider
-      if (!provider || typeof provider !== 'string') {
-        res.status(400).json({ ok: false, message: 'provider is required' })
-        return
-      }
-      const runtime = plugins?.byId(provider)
-      if (!runtime) {
-        res.status(404).json({ ok: false, message: `Unknown executor plugin "${provider}"` })
-        return
-      }
-      const merged = mergePluginConfigForProbe(provider, body.config ?? {})
-
-      if (typeof runtime.testConnection === 'function') {
-        const result = await runtime.testConnection(merged)
-        res.json(result)
-        return
-      }
-
-      // Plugin hasn't been updated to expose an active probe. Best
-      // effort: surface the shape-only healthcheck as a result so the
-      // dashboard can still render *something* useful.
-      const health = await runtime.healthcheck()
-      res.json({
-        ok: health.ok,
-        message: health.ok
-          ? `${runtime.manifest.displayName} is configured.`
-          : (health.reason ?? `${runtime.manifest.displayName} is not configured.`),
-      })
-    } catch (err) {
-      logger.warn({ err }, 'POST /test/llm failed')
-      res.json({ ok: false, message: (err as Error).message })
-    }
-  })
-
-  /**
-   * Merge an incoming draft plugin config with the on-disk config so
-   * `testConnection` always receives the real secret instead of the
-   * `'…'` redaction the dashboard echoes back. Recursive so nested
-   * objects (Anthropic's `account`, OpenAI's transports) merge too.
-   */
-  function mergePluginConfigForProbe(
-    providerId: string,
-    draft: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const existing = loadLocalConfig()
-    const onDisk = (existing?.plugins?.installed?.[providerId]?.config ?? {}) as Record<string, unknown>
-    return mergeWithRedactionFill(onDisk, draft)
-  }
-
-  function mergeWithRedactionFill(
-    onDisk: Record<string, unknown>,
-    draft: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const out: Record<string, unknown> = { ...onDisk }
-    for (const [key, draftValue] of Object.entries(draft)) {
-      const diskValue = onDisk[key]
-      if (isRedacted(draftValue)) {
-        if (diskValue !== undefined) out[key] = diskValue
-        continue
-      }
-      if (
-        draftValue &&
-        typeof draftValue === 'object' &&
-        !Array.isArray(draftValue) &&
-        diskValue &&
-        typeof diskValue === 'object' &&
-        !Array.isArray(diskValue)
-      ) {
-        out[key] = mergeWithRedactionFill(
-          diskValue as Record<string, unknown>,
-          draftValue as Record<string, unknown>,
-        )
-        continue
-      }
-      out[key] = draftValue
-    }
-    return out
-  }
+  // Connection tests live at `POST /test/plugin/:id`, which asks the plugin
+  // to probe its own credentials. The provider-shaped `/test/git`,
+  // `/test/tracker`, and `/test/llm` endpoints that used to sit here were
+  // deleted: each one carried a `switch` over provider ids and a payload
+  // builder in the dashboard, so adding a plugin meant editing the runner
+  // core. Their diagnostics now live with the plugins that own them, in
+  // `plugins/builtin/*/test-connection.ts`.
 
   // ── Plugin-registered HTTP routes ───────────────────────────────────────
   //
@@ -3797,6 +2980,11 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // place.
   if (plugins) {
     for (const runtime of plugins.all()) {
+      lateMountPlugin(runtime)
+    }
+    // Setup-only plugins mount too — their routes are precisely how a user
+    // gets them configured in the first place.
+    for (const runtime of plugins.allSetupOnly()) {
       lateMountPlugin(runtime)
     }
   }

@@ -9,42 +9,7 @@ import { instantiatePlugin } from './builtin'
 import { buildDropinFactoryMap } from './loader'
 import type { PluginsConfig } from '../config/plugins-config'
 import type { Settings } from '../config/settings'
-
-const REDACTED = '…'
-
-function isRedacted(value: unknown): boolean {
-  return typeof value === 'string' && value.trim() === REDACTED
-}
-
-function mergeWithRedactionFill(
-  onDisk: Record<string, unknown>,
-  draft: Record<string, unknown>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...onDisk }
-  for (const [key, draftValue] of Object.entries(draft)) {
-    const diskValue = onDisk[key]
-    if (isRedacted(draftValue)) {
-      if (diskValue !== undefined) out[key] = diskValue
-      continue
-    }
-    if (
-      draftValue !== null
-      && typeof draftValue === 'object'
-      && !Array.isArray(draftValue)
-      && diskValue !== null
-      && typeof diskValue === 'object'
-      && !Array.isArray(diskValue)
-    ) {
-      out[key] = mergeWithRedactionFill(
-        diskValue as Record<string, unknown>,
-        draftValue as Record<string, unknown>,
-      )
-      continue
-    }
-    out[key] = draftValue
-  }
-  return out
-}
+import { isRedacted, mergeWithRedactionFill } from './redaction'
 
 export async function createTransientPluginRuntime(args: {
   pluginId: string
@@ -53,6 +18,15 @@ export async function createTransientPluginRuntime(args: {
   pluginsConfig: PluginsConfig
   settings?: Settings
   dropinPluginsRoot?: string
+  /**
+   * Skip the hard failure when `init` rejects the config. Credential
+   * detection runs before a plugin has any config, and most plugins parse a
+   * strict schema in `init` — without this the detect endpoint 500s on every
+   * fresh install. Detection needs only the instance, not initialised state.
+   */
+  tolerateInitFailure?: boolean
+  /** Observe a tolerated `init` failure without it becoming a throw. */
+  onInitError?: (err: unknown) => void
 }): Promise<PluginRuntime | null> {
   const dropinFactories = await buildDropinFactoryMap({
     pluginsConfig: args.pluginsConfig,
@@ -67,7 +41,16 @@ export async function createTransientPluginRuntime(args: {
     ...(args.settings ? { settings: args.settings } : {}),
   })
   if (!runtime) return null
-  await runtime.init(args.config, { logger: args.logger, fetch: globalThis.fetch })
+  try {
+    await runtime.init(args.config, { logger: args.logger, fetch: globalThis.fetch })
+  } catch (err) {
+    if (!args.tolerateInitFailure) throw err
+    args.onInitError?.(err)
+    args.logger.debug(
+      { err, pluginId: args.pluginId },
+      'Plugin init rejected the config — continuing with an uninitialised instance for setup-only use',
+    )
+  }
   return runtime
 }
 
@@ -81,6 +64,11 @@ export async function probePluginConnection(args: {
   existingRuntime?: PluginRuntime | null
 }): Promise<PluginTestResult> {
   const merged = mergeWithRedactionFill(args.onDiskConfig, args.draftConfig)
+  // An incomplete draft is the normal case while a user is filling the form,
+  // so a rejected `init` must produce a test result, not a 500. Plugins with
+  // a `testConnection` validate the config themselves and can say which field
+  // is wrong; plugins without one get a generic message below.
+  let initError: unknown
   const runtime =
     args.existingRuntime
     ?? (await createTransientPluginRuntime({
@@ -89,6 +77,8 @@ export async function probePluginConnection(args: {
       logger: args.logger,
       pluginsConfig: args.pluginsConfig,
       ...(args.settings ? { settings: args.settings } : {}),
+      tolerateInitFailure: true,
+      onInitError: err => { initError = err },
     }))
 
   if (!runtime) {
@@ -97,6 +87,14 @@ export async function probePluginConnection(args: {
 
   if (typeof runtime.testConnection === 'function') {
     return runtime.testConnection(merged)
+  }
+
+  if (initError) {
+    return {
+      ok: false,
+      message: `${runtime.manifest.displayName} rejected this configuration.`,
+      hint: initError instanceof Error ? initError.message : String(initError),
+    }
   }
 
   const health = await runtime.healthcheck()

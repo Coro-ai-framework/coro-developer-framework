@@ -92,6 +92,7 @@ export interface PluginRegistryEntry {
 export class PluginRegistry {
   private readonly byIdMap = new Map<string, PluginRegistryEntry>()
   private readonly byKindMap = new Map<PluginKind, PluginRegistryEntry[]>()
+  private readonly setupOnlyMap = new Map<string, PluginRuntime>()
   private readonly defaults: PluginResolutionDefaults
 
   constructor(defaults: PluginResolutionDefaults = {}) {
@@ -119,6 +120,48 @@ export class PluginRegistry {
     const kindBucket = this.byKindMap.get(runtime.manifest.kind) ?? []
     kindBucket.push(entry)
     this.byKindMap.set(runtime.manifest.kind, kindBucket)
+    // A configured registration supersedes the setup-only shell.
+    this.setupOnlyMap.delete(id)
+  }
+
+  /**
+   * Register a plugin that exists but is not configured yet, so the
+   * endpoints that *configure* it are reachable.
+   *
+   * A plugin only enters the main registry once its config slot is enabled,
+   * which is a chicken-and-egg trap during onboarding: `registerHttpRoutes`
+   * never runs, so "Sign in with GitHub" POSTs to a 404, and
+   * `detectCredentials` is unreachable, so the wizard reports "no local
+   * credentials found" on a machine that has them.
+   *
+   * Setup-only runtimes are deliberately excluded from `all()`, `byId()`,
+   * and every `resolve*` path — a job can never be dispatched against one.
+   * They are also NOT initialised: most plugins parse a strict config schema
+   * in `init`, which by definition cannot pass before setup. Route
+   * registration and credential detection both work without it.
+   */
+  registerSetupOnly(runtime: PluginRuntime): void {
+    const id = runtime.manifest.id
+    if (this.byIdMap.has(id) || this.setupOnlyMap.has(id)) return
+    this.setupOnlyMap.set(id, runtime)
+  }
+
+  /**
+   * Drop a plugin from the setup-only tier. Called when the plugin graduates
+   * to a real, configured registration so the two tiers can't both hold it.
+   */
+  clearSetupOnly(id: string): void {
+    this.setupOnlyMap.delete(id)
+  }
+
+  /** Look up a setup-only runtime. Only the setup endpoints should use this. */
+  setupRuntime(id: string): PluginRuntime | undefined {
+    return this.setupOnlyMap.get(id)
+  }
+
+  /** Every setup-only runtime, for HTTP route mounting at boot. */
+  allSetupOnly(): PluginRuntime[] {
+    return Array.from(this.setupOnlyMap.values())
   }
 
   /**

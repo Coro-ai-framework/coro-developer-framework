@@ -154,7 +154,9 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
             setAsDefault: true,
           })
         } catch (err) {
-          setAdvanceError(err instanceof Error ? err.message : String(err))
+          setAdvanceError(
+            `Could not save the step: ${err instanceof Error ? err.message : String(err)}`,
+          )
           setAdvancing(false)
           return
         } finally {
@@ -183,19 +185,27 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
   const finish = useCallback(
     async (target: 'newJob' | 'dashboard' | 'settings') => {
       setFinishing(true)
+      setAdvanceError(null)
       try {
         const skipped: Array<'llm' | 'scm' | 'tracker'> = []
         if (state.steps.llm.status === 'skipped') skipped.push('llm')
         if (state.steps.scm.status === 'skipped') skipped.push('scm')
         if (state.steps.tracker.status === 'skipped') skipped.push('tracker')
         await markFirstRunComplete({ skipped })
-      } finally {
+      } catch (err) {
+        // The wizard stays open: closing it here would claim setup was
+        // recorded while the runner never received it.
+        setAdvanceError(
+          `Could not save setup completion: ${err instanceof Error ? err.message : String(err)}`,
+        )
         setFinishing(false)
-        // `target` is a hint for analytics / navigation. The Link in
-        // SuccessStep handles the actual navigation via react-router.
-        void target
-        onOpenChange(false)
+        return
       }
+      setFinishing(false)
+      // `target` is a hint for analytics / navigation. The Link in
+      // SuccessStep handles the actual navigation via react-router.
+      void target
+      onOpenChange(false)
     },
     [markFirstRunComplete, onOpenChange, state.steps],
   )
@@ -300,7 +310,7 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
           <DialogBody className="flex-1 min-h-0 space-y-5 pt-4">
             {advanceError ? (
               <div className="rounded-xl border border-danger-500/35 bg-danger-500/8 px-3 py-2.5 text-sm text-danger-300">
-                Could not save the step: {advanceError}
+                {advanceError}
               </div>
             ) : null}
             {body}

@@ -20,9 +20,13 @@ import {
 } from '../../lib/plugin-catalog-types'
 import type { TestResult } from './wizard-state'
 
-function isSetupLikeOAuthError(message: string | undefined): boolean {
-  if (!message) return false
-  return /not configured|client id|install the github cli/i.test(message)
+/**
+ * Does this status mean "you must do something outside Coro first" rather
+ * than "the attempt failed"? Driven by the plugin's declared `code`, never by
+ * matching message text — the panel must stay provider-agnostic.
+ */
+function isSetupRequired(status: Pick<NormalizedOAuthStatus, 'code' | 'available'>): boolean {
+  return status.code === 'setup_required' || status.available === false
 }
 
 function applyConfigPatch(
@@ -353,11 +357,7 @@ function OAuthAuthMethod({
   const showSetupNotice =
     !oauthAvailable && availabilityChecked && Boolean(setupMessage)
   const showClientIdField = supportsByoClientId && showSetupNotice
-  const isSetupError =
-    oauth.state === 'error' &&
-    typeof oauth.message === 'string' &&
-    (/not configured|client id|install the github cli/i.test(oauth.message) ||
-      Boolean(showSetupNotice))
+  const isSetupError = oauth.state === 'error' && isSetupRequired(oauth)
 
   useEffect(() => {
     let cancelled = false
@@ -468,12 +468,19 @@ function OAuthAuthMethod({
         window.open(data.authorizeUrl, '_blank', 'noopener,noreferrer')
       }
       if (data.state === 'error') {
-        if (data.available === false || isSetupLikeOAuthError(data.message)) {
-          setError(data.message ?? 'OAuth is not configured on this runner.')
-          setOauth(prev => ({ ...prev, state: 'idle', available: false, message: data.message }))
+        if (isSetupRequired(data)) {
+          setError(data.setupHint ?? data.message ?? 'This sign-in needs setup first.')
+          setOauth(prev => ({
+            ...prev,
+            state: 'idle',
+            available: false,
+            ...(data.code ? { code: data.code } : {}),
+            ...(data.setupHint ? { setupHint: data.setupHint } : {}),
+            ...(data.message ? { message: data.message } : {}),
+          }))
           return
         }
-        throw new Error(data.message ?? 'OAuth failed to start.')
+        throw new Error(data.message ?? 'Sign-in failed to start.')
       }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : String(err))
@@ -512,7 +519,7 @@ function OAuthAuthMethod({
       {showClientIdField ? (
         <Field
           label="OAuth client ID"
-          hint="From your provider's developer console (e.g. developer.atlassian.com → your app → Settings)."
+          hint="From the OAuth app you registered with this provider."
         >
           <Input
             value={oauthClientId}
@@ -591,6 +598,10 @@ function DetectAuthMethod({
   const [candidates, setCandidates] = useState<DetectCandidatePreview[]>([])
   const [loading, setLoading] = useState(true)
   const [applying, setApplying] = useState<string | null>(null)
+  // Applying a candidate writes its account into the draft, so the override
+  // field can't distinguish "what the last click filled in" from "what the
+  // user typed". Only a real edit should win over the candidate's own account.
+  const [accountEdited, setAccountEdited] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -617,10 +628,15 @@ function DetectAuthMethod({
     onBeginTest?.()
     const accountKey = method.accountConfigKey
     try {
+      // Only the one field the detect UI exposes for editing may override the
+      // candidate. Sweeping the whole draft in would let a stale (and
+      // possibly masked) token from a previous provider selection replace the
+      // credential the user just picked.
       const mergedOverrides = { ...overrides }
-      for (const [key, value] of Object.entries(draftConfig)) {
-        if (typeof value === 'string' && value.trim()) {
-          mergedOverrides[key] = value
+      if (accountKey && accountEdited) {
+        const edited = draftConfig[accountKey]
+        if (typeof edited === 'string' && edited.trim()) {
+          mergedOverrides[accountKey] = edited.trim()
         }
       }
       const result = await requestJson<{ ok: boolean; message?: string; hint?: string; checks?: TestResult['checks'] }>(
@@ -659,7 +675,11 @@ function DetectAuthMethod({
 
   return (
     <div className="space-y-2 rounded-xl border border-accent-500/25 bg-accent-500/5 p-3">
-      <div className="text-sm font-medium text-fg">Found existing credentials</div>
+      <div className="text-sm font-medium text-fg">
+        {candidates.length === 1
+          ? 'Found existing credentials'
+          : `Found ${candidates.length} accounts — pick the one to use`}
+      </div>
       {candidates.map(candidate => (
         <div
           key={candidate.id}
@@ -692,7 +712,10 @@ function DetectAuthMethod({
                 ? (draftConfig[method.accountConfigKey] as string)
                 : ''
             }
-            onChange={event => onChange(method.accountConfigKey!, event.target.value)}
+            onChange={event => {
+              setAccountEdited(true)
+              onChange(method.accountConfigKey!, event.target.value)
+            }}
             autoComplete="off"
           />
         </Field>

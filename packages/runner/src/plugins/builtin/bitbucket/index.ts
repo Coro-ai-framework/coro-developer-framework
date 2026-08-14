@@ -32,7 +32,7 @@
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
-import { registerAtlassianOAuthRoutes } from '../atlassian-oauth'
+import { probeBitbucketCredentials } from './test-connection'
 import {
   BitBucketClient,
   type CreatePrOptions,
@@ -43,6 +43,7 @@ import { externalIdString } from '../../refs'
 import type {
   PluginDeps,
   PluginHealth,
+  PluginTestResult,
   PluginManifest,
   ScmCloneInfo,
   ScmCodeSearchHit,
@@ -97,8 +98,6 @@ const bbConfigSchema = z.object({
     .string()
     .optional()
     .describe('Override the Bitbucket Cloud REST base URL (Server/DC installs).'),
-  /** Optional OAuth 2.0 client ID from developer.atlassian.com (BYO app). */
-  oauthClientId: z.string().optional(),
 })
 
 export type BitBucketPluginConfig = z.infer<typeof bbConfigSchema>
@@ -155,15 +154,6 @@ const MANIFEST: PluginManifest = {
   },
   auth: {
     methods: [
-      {
-        kind: 'oauth',
-        id: 'atlassian-oauth',
-        label: 'Sign in with Atlassian',
-        recommended: true,
-        startPath: '/config/plugins/bitbucket/auth/atlassian-oauth/start',
-        statusPath: '/config/plugins/bitbucket/auth/atlassian-oauth/status',
-        clientIdConfigKey: 'oauthClientId',
-      },
       {
         kind: 'form',
         id: 'manual',
@@ -298,12 +288,33 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     }
   }
 
-  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
-    registerAtlassianOAuthRoutes(
-      ctx,
-      'bitbucket',
-      'repository:write pullrequest:write offline_access',
-    )
+  /**
+   * Full credential probe for the dashboard. Broader than
+   * {@link healthcheck}, which is a startup smoke test: this one also checks
+   * workspace access, repo scope, git-over-HTTPS auth, and reviewer
+   * distinctness, because each of those passes a `/user` ping and then breaks
+   * a job. See `test-connection.ts` for why each check exists.
+   */
+  async testConnection(
+    config: BitBucketPluginConfig | Record<string, unknown>,
+  ): Promise<PluginTestResult> {
+    const parsed = bbConfigSchema.safeParse(config)
+    if (!parsed.success) {
+      return {
+        ok: false,
+        message: 'Workspace, username, and app password are all required.',
+        hint: USERNAME_HELP,
+      }
+    }
+    const cfg = parsed.data
+    return probeBitbucketCredentials({
+      username: cfg.coderUsername,
+      token: cfg.coderToken,
+      workspace: cfg.workspace,
+      ...(cfg.reviewerUsername ? { reviewerUsername: cfg.reviewerUsername } : {}),
+      ...(cfg.reviewerToken ? { reviewerToken: cfg.reviewerToken } : {}),
+      ...(this.coderUsername ? { savedUsername: this.coderUsername } : {}),
+    })
   }
 
   async dispose(): Promise<void> {

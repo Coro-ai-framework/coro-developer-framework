@@ -28,8 +28,6 @@ import type {
 } from '../../types'
 import { LinearTrackerClient } from '../../../clients/tracker/linear'
 import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
-import { registerLinearOAuthRoutes } from './oauth-routes'
-
 // ── Config ───────────────────────────────────────────────────────────────────
 
 const linearConfigSchema = z.object({
@@ -85,17 +83,10 @@ const MANIFEST: PluginManifest = {
   auth: {
     methods: [
       {
-        kind: 'oauth',
-        id: 'oauth',
-        label: 'Sign in with Linear',
-        recommended: true,
-        startPath: '/config/plugins/linear/auth/oauth/start',
-        statusPath: '/config/plugins/linear/auth/oauth/status',
-      },
-      {
         kind: 'form',
         id: 'manual',
         label: 'API key',
+        recommended: true,
         fields: [
           {
             key: 'apiKey',
@@ -158,10 +149,6 @@ class LinearTrackerPlugin implements TrackerPluginRuntime<LinearPluginConfig> {
   }
 
   async dispose(): Promise<void> {}
-
-  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
-    registerLinearOAuthRoutes(ctx)
-  }
 
   async testConnection(): Promise<import('../../types').PluginTestResult> {
     const result = await this.trackerClient.searchIssues('', 1)

@@ -57,7 +57,8 @@ import { firstPlaceholder, type PromptTemplate } from '../lib/prompt-templates'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import GenericAuthPanel from '../components/wizard/GenericAuthPanel'
 import { useProviderCatalog } from '../hooks/useProviderCatalog'
-import type { StepKind } from '../lib/plugin-catalog-types'
+import type { PluginRepoRefDescriptor, StepKind } from '../lib/plugin-catalog-types'
+import { resolveRepoRef, validateRepoRef } from '../lib/plugin-catalog-types'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -248,13 +249,23 @@ export default function CreateJob() {
     return null
   }, [mode, pluginsLoaded, scmPlugins.length, trackerPlugins.length])
 
+  // What the active SCM provider calls a repository — a slug for hosted
+  // providers, a filesystem path for local mode. Read from the manifest so
+  // the form asks for the right thing without naming any provider.
+  const repoRef = useMemo(() => {
+    const activeScmId = scmId || scmPlugins[0]?.id
+    return resolveRepoRef(catalogPlugins?.find(p => p.id === activeScmId))
+  }, [scmId, scmPlugins, catalogPlugins])
+
+  const repoError = useMemo(() => validateRepoRef(repoRef, repo), [repoRef, repo])
+
   const formValid = useMemo(() => {
     if (blocker) return false
     if (mode === 'manual') {
-      return Boolean(serviceName.trim() && repo.trim() && description.trim())
+      return Boolean(serviceName.trim() && repo.trim() && description.trim()) && !repoError
     }
     return Boolean(ticketId.trim())
-  }, [blocker, mode, serviceName, repo, description, ticketId])
+  }, [blocker, mode, serviceName, repo, description, ticketId, repoError])
 
   async function handleSubmit(interactiveChoice: boolean) {
     if (!formValid || submitting) return
@@ -519,6 +530,8 @@ export default function CreateJob() {
               scmPlugins={scmPlugins}
               scmId={scmId}
               setScmId={v => patchDraft({ scmId: v })}
+              repoRef={repoRef}
+              repoError={repoError}
               recentRepos={runHistory.recentRepos}
               recentReviewers={runHistory.recentReviewers}
               descriptionRef={descriptionRef}
@@ -903,6 +916,8 @@ interface ManualFieldsProps {
   scmPlugins: PluginManifest[]
   scmId: string
   setScmId: (v: string) => void
+  repoRef: Required<PluginRepoRefDescriptor>
+  repoError: string | null
   recentRepos: string[]
   recentReviewers: string[]
   descriptionRef: React.RefObject<HTMLTextAreaElement | null>
@@ -928,15 +943,16 @@ function ManualFields(props: ManualFieldsProps) {
           />
         </Field>
         <Field
-          label="Repository"
+          label={props.repoRef.label}
           required
-          hint="owner/repo or workspace/repo, depending on your provider."
-          tooltip="The repo Coro clones to implement your change. Must match your SCM provider's slug format."
+          hint={props.repoError ?? props.repoRef.hint}
+          tooltip="The repository Coro works in to implement your change."
         >
           <Input
             value={props.repo}
             onChange={e => props.setRepo(e.target.value)}
-            placeholder="my-org/billing-api"
+            placeholder={props.repoRef.placeholder}
+            aria-invalid={props.repoError ? true : undefined}
             required
           />
           {props.recentRepos.length > 0 ? (

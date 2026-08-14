@@ -2,59 +2,10 @@ import { useMemo } from 'react'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
 import Field from '../../../components/forms/field'
-import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
 import { useSettings, type PluginEntry } from '../SettingsContext'
 import { evaluateReadiness } from '../readiness'
 import PluginConfigCard from './PluginConfigCard'
-import type { TestConnectionResult } from '../../../components/settings/TestConnectionButton'
-
-interface TrackerTestResponse {
-  ok: boolean
-  message?: string
-}
-
-/**
- * Translate the per-plugin draft config into the legacy /test/tracker
- * payload shape so the user gets a real connectivity check for the
- * built-in trackers. Returns null for unknown plugin ids (drop-ins
- * fall through to a soft "no generic test" notice).
- */
-function buildTrackerTestPayload(
-  pluginId: string,
-  config: Record<string, unknown>,
-): Record<string, unknown> | null {
-  if (pluginId === 'jira') {
-    return {
-      provider: 'jira',
-      jira: {
-        baseUrl: String(config['baseUrl'] ?? ''),
-        username: String(config['username'] ?? ''),
-        apiToken: String(config['apiToken'] ?? ''),
-      },
-    }
-  }
-  if (pluginId === 'linear') {
-    return {
-      provider: 'linear',
-      linear: {
-        apiKey: String(config['apiKey'] ?? ''),
-        teamKey: String(config['teamKey'] ?? ''),
-      },
-    }
-  }
-  if (pluginId === 'github-issues') {
-    return {
-      provider: 'github',
-      git: {
-        provider: 'github',
-        username: String(config['defaultOwner'] ?? ''),
-        token: String(config['token'] ?? ''),
-        workspace: String(config['defaultOwner'] ?? ''),
-      },
-    }
-  }
-  return null
-}
+import { testPluginConnection } from '../../../lib/plugin-test'
 
 export default function IssueTrackerSection() {
   const {
@@ -86,32 +37,6 @@ export default function IssueTrackerSection() {
     [trackerPlugins, draft.pluginInstalled],
   )
 
-  async function runTrackerTest(
-    pluginId: string,
-    config: Record<string, unknown>,
-  ): Promise<TestConnectionResult> {
-    const payload = buildTrackerTestPayload(pluginId, config)
-    if (!payload) {
-      return {
-        ok: false,
-        message: 'No generic connection test available for drop-in plugins yet — save and check the plugin healthcheck.',
-      }
-    }
-    try {
-      const response = await requestJson<TrackerTestResponse>(
-        '/test/tracker',
-        jsonRequest(payload, { method: 'POST' }),
-      )
-      return {
-        ok: response.ok,
-        message: response.message ?? (response.ok ? 'Connected.' : 'Connection failed.'),
-      }
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : (err as Error).message
-      return { ok: false, message }
-    }
-  }
-
   return (
     <SettingsSection
       title="Issue tracker"
@@ -135,7 +60,7 @@ export default function IssueTrackerSection() {
             <PluginConfigCard
               key={plugin.manifest.id}
               plugin={plugin}
-              onTest={config => runTrackerTest(plugin.manifest.id, config)}
+              onTest={config => testPluginConnection(plugin.manifest.id, config)}
             />
           ))}
         </div>

@@ -96,16 +96,16 @@ const MANIFEST: PluginManifest = {
       {
         kind: 'detect',
         id: 'gh-cli',
-        label: 'Use existing GitHub CLI session',
+        label: 'Use a GitHub account already on this machine',
         recommended: true,
         accountConfigKey: 'defaultOwner',
       },
       {
         kind: 'oauth',
-        id: 'device-oauth',
+        id: 'gh-cli-web',
         label: 'Sign in with GitHub',
-        startPath: '/config/plugins/github-issues/auth/device-oauth/start',
-        statusPath: '/config/plugins/github-issues/auth/device-oauth/status',
+        startPath: '/config/plugins/github-issues/auth/gh-cli-web/start',
+        statusPath: '/config/plugins/github-issues/auth/gh-cli-web/status',
       },
       {
         kind: 'form',

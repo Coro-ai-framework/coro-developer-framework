@@ -27,6 +27,7 @@ import { externalIdString } from '../../refs'
 import type {
   PluginDeps,
   PluginHealth,
+  PluginTestResult,
   PluginManifest,
   PluginMcpServerConfig,
   TrackerComment,
@@ -34,7 +35,6 @@ import type {
   TrackerIssue,
   TrackerPluginRuntime,
 } from '../../types'
-import { registerAtlassianOAuthRoutes } from '../atlassian-oauth'
 import { JiraTrackerClient } from '../../../clients/tracker/jira'
 import type { TrackerNotConfigured, TrackerResult } from '../../../clients/tracker/types'
 
@@ -44,8 +44,6 @@ const jiraConfigSchema = z.object({
   baseUrl: z.string().min(1),
   username: z.string().min(1),
   apiToken: z.string().min(1),
-  /** Optional OAuth 2.0 client ID from developer.atlassian.com (BYO app). */
-  oauthClientId: z.string().optional(),
 })
 
 export type JiraPluginConfig = z.infer<typeof jiraConfigSchema>
@@ -109,18 +107,10 @@ const MANIFEST: PluginManifest = {
   auth: {
     methods: [
       {
-        kind: 'oauth',
-        id: 'atlassian-oauth',
-        label: 'Sign in with Atlassian',
-        recommended: true,
-        startPath: '/config/plugins/jira/auth/atlassian-oauth/start',
-        statusPath: '/config/plugins/jira/auth/atlassian-oauth/status',
-        clientIdConfigKey: 'oauthClientId',
-      },
-      {
         kind: 'form',
         id: 'manual',
         label: 'API token',
+        recommended: true,
         fields: [
           {
             key: 'baseUrl',
@@ -180,12 +170,47 @@ class JiraTrackerPlugin implements TrackerPluginRuntime<JiraPluginConfig> {
       : { ok: false, reason: 'jira plugin: missing baseUrl/username/apiToken' }
   }
 
-  registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
-    registerAtlassianOAuthRoutes(
-      ctx,
-      'jira',
-      'read:jira-work write:jira-work offline_access',
-    )
+  /**
+   * Real credential probe. `healthcheck` only checks that the three fields
+   * are non-empty, which would pass a typo'd site URL or an expired token —
+   * the dashboard would report success and the first job would fail.
+   */
+  async testConnection(config: JiraPluginConfig | Record<string, unknown>): Promise<PluginTestResult> {
+    const parsed = jiraConfigSchema.safeParse(config)
+    if (!parsed.success) {
+      return { ok: false, message: 'Site URL, e-mail, and API token are all required.' }
+    }
+    const { baseUrl, username, apiToken } = parsed.data
+    const url = `${baseUrl.replace(/\/$/, '')}/rest/api/3/myself`
+    const auth = Buffer.from(`${username}:${apiToken}`).toString('base64')
+    try {
+      const res = await globalThis.fetch(url, {
+        headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+      })
+      if (res.status === 401 || res.status === 403) {
+        return {
+          ok: false,
+          message: `Jira rejected the credentials (${res.status}).`,
+          hint: 'API tokens are created at id.atlassian.com and pair with your account e-mail, not your password.',
+        }
+      }
+      if (!res.ok) {
+        return {
+          ok: false,
+          message: `Jira returned ${res.status}.`,
+          hint: `Check the site URL is correct — it should look like https://your-team.atlassian.net`,
+        }
+      }
+      const body = (await res.json()) as { displayName?: string; emailAddress?: string }
+      const who = body.displayName ?? body.emailAddress ?? username
+      return { ok: true, message: `Connected to Jira as ${who}` }
+    } catch (err) {
+      return {
+        ok: false,
+        message: 'Could not reach Jira.',
+        hint: err instanceof Error ? err.message : String(err),
+      }
+    }
   }
 
   async dispose(): Promise<void> {}

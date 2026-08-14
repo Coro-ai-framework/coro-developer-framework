@@ -21,7 +21,10 @@ import type { PluginRegistry } from '../../src/plugins/registry'
 
 const silentLogger = pino({ level: 'silent' })
 
-const emptyRegistry = { all: () => [] } as unknown as PluginRegistry
+const emptyRegistry = {
+  all: () => [],
+  allSetupOnly: () => [],
+} as unknown as PluginRegistry
 
 describe('GET/PUT /config — upstream contribution section', () => {
   let tmpHome: string

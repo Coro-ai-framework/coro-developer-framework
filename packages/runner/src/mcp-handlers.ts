@@ -322,6 +322,9 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         },
       )
     }
+    // Persisted by `scm_clone_repo`. Providers that host the branch remotely
+    // ignore it; the local provider pushes from it.
+    const sourceCheckoutDir = ctx.job.params['repoCheckoutAbsDir']
     const ref = await r.scm.createPr({
       repoSlug: args.repo,
       title: args.title,
@@ -330,6 +333,9 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       ...(args.sourceOwner ? { sourceOwner: args.sourceOwner } : {}),
       targetBranch,
       reviewers,
+      ...(typeof sourceCheckoutDir === 'string' && sourceCheckoutDir
+        ? { sourceCheckoutDir }
+        : {}),
     })
 
     const prIdNumber = Number(ref.externalId)

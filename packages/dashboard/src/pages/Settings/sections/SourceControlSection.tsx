@@ -2,56 +2,10 @@ import { useMemo } from 'react'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
 import Field from '../../../components/forms/field'
-import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
 import { useSettings, type PluginEntry } from '../SettingsContext'
 import { evaluateReadiness } from '../readiness'
 import PluginConfigCard from './PluginConfigCard'
-import type { TestConnectionCheck, TestConnectionResult } from '../../../components/settings/TestConnectionButton'
-
-interface GitTestResponse {
-  ok: boolean
-  message?: string
-  checks?: TestConnectionCheck[]
-}
-
-/**
- * Translate the per-plugin draft config into the legacy /test/git
- * payload shape so the user gets a real "did this credential work"
- * check for the three built-in SCMs. Drop-in plugins fall through to
- * a soft "no generic test" notice (returns null).
- */
-function buildGitTestPayload(pluginId: string, config: Record<string, unknown>): Record<string, unknown> | null {
-  if (pluginId === 'github') {
-    return {
-      provider: 'github',
-      username: String(config['owner'] ?? ''),
-      token: String(config['token'] ?? ''),
-      workspace: String(config['owner'] ?? ''),
-    }
-  }
-  if (pluginId === 'bitbucket') {
-    return {
-      provider: 'bitbucket',
-      username: String(config['coderUsername'] ?? ''),
-      token: String(config['coderToken'] ?? ''),
-      workspace: String(config['workspace'] ?? ''),
-      // Reviewer creds (optional). The strengthened runner test will
-      // verify the reviewer account works AND that it's not the same
-      // as the coder (Bitbucket forbids self-approval).
-      reviewerUsername: String(config['reviewerUsername'] ?? ''),
-      reviewerToken: String(config['reviewerToken'] ?? ''),
-    }
-  }
-  if (pluginId === 'gitlab') {
-    return {
-      provider: 'gitlab',
-      username: String(config['username'] ?? config['user'] ?? ''),
-      token: String(config['token'] ?? ''),
-      workspace: String(config['workspace'] ?? config['group'] ?? ''),
-    }
-  }
-  return null
-}
+import { testPluginConnection } from '../../../lib/plugin-test'
 
 export default function SourceControlSection() {
   const {
@@ -83,30 +37,6 @@ export default function SourceControlSection() {
     [scmPlugins, draft.pluginInstalled],
   )
 
-  async function runGitTest(pluginId: string, config: Record<string, unknown>): Promise<TestConnectionResult> {
-    const payload = buildGitTestPayload(pluginId, config)
-    if (!payload) {
-      return {
-        ok: false,
-        message: 'No generic connection test available for drop-in plugins yet — save and check the plugin healthcheck.',
-      }
-    }
-    try {
-      const response = await requestJson<GitTestResponse>(
-        '/test/git',
-        jsonRequest(payload, { method: 'POST' }),
-      )
-      return {
-        ok: response.ok,
-        message: response.message ?? (response.ok ? 'Authenticated.' : 'Connection failed.'),
-        checks: response.checks,
-      }
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : (err as Error).message
-      return { ok: false, message }
-    }
-  }
-
   return (
     <SettingsSection
       title="Source control"
@@ -131,7 +61,7 @@ export default function SourceControlSection() {
             <PluginConfigCard
               key={plugin.manifest.id}
               plugin={plugin}
-              onTest={config => runGitTest(plugin.manifest.id, config)}
+              onTest={config => testPluginConnection(plugin.manifest.id, config)}
             />
           ))}
         </div>

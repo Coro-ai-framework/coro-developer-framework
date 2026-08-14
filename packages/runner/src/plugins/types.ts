@@ -163,6 +163,36 @@ export interface PluginAuthDescriptor {
   methods: ReadonlyArray<PluginAuthMethodDescriptor>
 }
 
+/**
+ * Response shape every `oauth` method's `statusPath` must return. The
+ * dashboard renders from these fields alone — it must never need to know
+ * which provider it is talking to.
+ */
+export interface PluginOAuthStatus {
+  state: 'idle' | 'pending' | 'success' | 'error'
+  /** Present while pending: where to send the user. */
+  authorizeUrl?: string
+  /** Present while pending, for device-style flows. */
+  userCode?: string
+  /** Present on success. */
+  account?: { label: string }
+  /** Human-readable detail for `error`, or context for `idle`. */
+  message?: string
+  /**
+   * Machine-readable reason, so the dashboard never has to pattern-match
+   * on `message`. `setup_required` means the flow cannot start until the
+   * user does something outside Coro (install a CLI, register an OAuth
+   * app) — the dashboard renders that as guidance rather than a failure.
+   */
+  code?: 'setup_required'
+  /** False when this flow cannot run on this machine as configured. */
+  available?: boolean
+  /** What the user must do when `code === 'setup_required'`. */
+  setupHint?: string
+  /** Redirect URI to register, for flows that need one. */
+  callbackUrl?: string
+}
+
 export interface CredentialCandidate {
   id: string
   sourceLabel: string
@@ -288,7 +318,22 @@ export interface PluginManifest {
     customPanel?: string
     subtitle?: string
     recommendedForOnboarding?: boolean
+    /**
+     * How this provider names a repository. Drives the Create Job
+     * repository field's label, hint, placeholder, and validation, so the
+     * dashboard can ask for the right thing without knowing which provider
+     * is active. Defaults to `slug` (`owner/repo`) when omitted.
+     */
+    repoRef?: PluginRepoRefDescriptor
   }
+}
+
+export interface PluginRepoRefDescriptor {
+  /** `slug` is `owner/repo`; `path` is an absolute filesystem path. */
+  kind: 'slug' | 'path'
+  label?: string
+  hint?: string
+  placeholder?: string
 }
 
 // ── Plugin runtime — common ──────────────────────────────────────────────────
@@ -409,9 +454,9 @@ export interface PluginRuntime<Config = unknown> {
   registerHttpRoutes?(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void
   /**
    * Optional active credential probe (see SDK mirror for full notes).
-   * Invoked by the runner's `POST /test/llm` / `/test/git` /
-   * `/test/tracker` endpoints so every provider-specific test path
-   * lives in its own plugin package instead of the runner core.
+   * Invoked by the runner's generic `POST /test/plugin/:id` endpoint so
+   * every provider-specific test path lives in its own plugin package
+   * instead of the runner core.
    */
   testConnection?(config: Config): Promise<PluginTestResult>
   /** Optional local credential discovery (see SDK mirror). */
@@ -451,6 +496,15 @@ export interface ScmCreatePrArgs {
   sourceOwner?: string
   targetBranch?: string
   reviewers?: ReadonlyArray<string>
+  /**
+   * Absolute path to the job's checkout of `repoSlug`, when one exists.
+   *
+   * Hosted providers ignore it — the branch is already on their server by
+   * the time a PR is opened. The local provider needs it: "opening a PR"
+   * there means pushing the branch from the job clone into the user's own
+   * repository, which is the only way the work reaches them.
+   */
+  sourceCheckoutDir?: string
 }
 
 export interface ScmAddReviewersArgs {

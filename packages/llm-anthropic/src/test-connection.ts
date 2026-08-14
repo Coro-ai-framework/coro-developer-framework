@@ -1,7 +1,7 @@
 // ── Anthropic credential probe ──────────────────────────────────────────────
 //
 // Active "does this auth actually work?" check, invoked by the dashboard's
-// "Test connection" button (Settings + FTUE) via `POST /test/llm` →
+// "Test connection" button (Settings + FTUE) via `POST /test/plugin/:id` →
 // `AnthropicExecutor.testConnection()`. Distinct from `healthcheck()`,
 // which is a passive shape-only check.
 //

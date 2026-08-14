@@ -6,7 +6,12 @@
 
 import { z } from 'zod'
 import type { Logger } from 'pino'
-import type { PluginAuthMethodDescriptor, PluginManifest, PluginRuntime } from './types'
+import type {
+  PluginAuthMethodDescriptor,
+  PluginManifest,
+  PluginRepoRefDescriptor,
+  PluginRuntime,
+} from './types'
 import { listBuiltinPluginMetadata, instantiatePlugin } from './builtin'
 import { buildDropinFactoryMap } from './loader'
 import type { PluginsConfig } from '../config/plugins-config'
@@ -19,6 +24,7 @@ export interface PluginCatalogEntry {
     customPanel?: string
     subtitle?: string
     recommendedForOnboarding?: boolean
+    repoRef?: PluginRepoRefDescriptor
   }
   capabilities: Record<string, boolean>
   authMethods: ReadonlyArray<PluginAuthMethodDescriptor>

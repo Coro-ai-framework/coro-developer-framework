@@ -32,9 +32,13 @@ function makePlugin(id: string, register: PluginRuntime['registerHttpRoutes']): 
   }
 }
 
-function makeRegistry(plugins: PluginRuntime[]): PluginRegistry {
+function makeRegistry(
+  plugins: PluginRuntime[],
+  setupOnly: PluginRuntime[] = [],
+): PluginRegistry {
   return {
     all: () => plugins,
+    allSetupOnly: () => setupOnly,
   } as unknown as PluginRegistry
 }
 
@@ -55,10 +59,16 @@ describe('createRunnerServer plugin HTTP route registration', () => {
     for (const close of closeFns.splice(0)) await close()
   })
 
-  async function startWithPlugins(plugins: PluginRuntime[]) {
+  async function startWithPlugins(
+    plugins: PluginRuntime[],
+    setupOnly: PluginRuntime[] = [],
+  ) {
     // createRunnerServer already calls server.listen(port) internally;
     // we wait for the `listening` event before reading the bound port.
-    const server = createRunnerServer({ ...baseOpts, plugins: makeRegistry(plugins) })
+    const server = createRunnerServer({
+      ...baseOpts,
+      plugins: makeRegistry(plugins, setupOnly),
+    })
     if (!server.listening) {
       await new Promise<void>(resolve => server.once('listening', () => resolve()))
     }
@@ -106,5 +116,24 @@ describe('createRunnerServer plugin HTTP route registration', () => {
     const { port } = await startWithPlugins([plain])
     const response = await fetch(`http://127.0.0.1:${port}/health`)
     expect(response.status).toBe(200)
+  })
+
+  // Setup-only plugins are the unconfigured ones. Their routes are how a user
+  // configures them in the first place, so they must mount at boot — this is
+  // the regression that made "Sign in with GitHub" 404 on a fresh install.
+  it('mounts routes for setup-only plugins that are not yet configured', async () => {
+    const unconfigured = makePlugin('unconfigured-plugin', ctx => {
+      ctx.app.get('/config/plugins/unconfigured-plugin/auth/status', (..._args: unknown[]) => {
+        const res = _args[1] as { json: (b: unknown) => void }
+        res.json({ state: 'idle' })
+      })
+    })
+
+    const { port } = await startWithPlugins([], [unconfigured])
+    const response = await fetch(
+      `http://127.0.0.1:${port}/config/plugins/unconfigured-plugin/auth/status`,
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ state: 'idle' })
   })
 })

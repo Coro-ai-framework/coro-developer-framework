@@ -121,6 +121,36 @@ export interface PluginAuthDescriptor {
 }
 
 /**
+ * Response shape every `oauth` method's `statusPath` must return. The
+ * dashboard renders from these fields alone — it must never need to know
+ * which provider it is talking to.
+ */
+export interface PluginOAuthStatus {
+  state: 'idle' | 'pending' | 'success' | 'error'
+  /** Present while pending: where to send the user. */
+  authorizeUrl?: string
+  /** Present while pending, for device-style flows. */
+  userCode?: string
+  /** Present on success. */
+  account?: { label: string }
+  /** Human-readable detail for `error`, or context for `idle`. */
+  message?: string
+  /**
+   * Machine-readable reason, so the dashboard never has to pattern-match
+   * on `message`. `setup_required` means the flow cannot start until the
+   * user does something outside Coro (install a CLI, register an OAuth
+   * app) — the dashboard renders that as guidance rather than a failure.
+   */
+  code?: 'setup_required'
+  /** False when this flow cannot run on this machine as configured. */
+  available?: boolean
+  /** What the user must do when `code === 'setup_required'`. */
+  setupHint?: string
+  /** Redirect URI to register, for flows that need one. */
+  callbackUrl?: string
+}
+
+/**
  * One locally-detectable credential bundle. Raw `config` is server-side
  * only — the dashboard sees {@link preview} and applies by {@link id}.
  */
@@ -173,7 +203,22 @@ export interface PluginManifest {
     subtitle?: string
     /** When true, the FTUE wizard renders a "Recommended" pill. */
     recommendedForOnboarding?: boolean
+    /**
+     * How this provider names a repository. Drives the Create Job
+     * repository field's label, hint, placeholder, and validation, so the
+     * dashboard can ask for the right thing without knowing which provider
+     * is active. Defaults to `slug` (`owner/repo`) when omitted.
+     */
+    repoRef?: PluginRepoRefDescriptor
   }
+}
+
+export interface PluginRepoRefDescriptor {
+  /** `slug` is `owner/repo`; `path` is an absolute filesystem path. */
+  kind: 'slug' | 'path'
+  label?: string
+  hint?: string
+  placeholder?: string
 }
 
 // ── Runtime contract ─────────────────────────────────────────────────────────
@@ -274,13 +319,12 @@ export interface PluginRuntime<Config = unknown> {
    */
   registerHttpRoutes?(ctx: PluginHttpRoutesContext): void
   /**
-   * Optional active credential probe. The runner invokes this from
-   * the dashboard's "Test connection" button (`POST /test/llm` for
-   * executors; the equivalent SCM/tracker endpoints in future
-   * refactors). Plugins receive the *merged* config the user is
-   * about to save — redacted secrets (`'…'`) already filled in from
-   * the on-disk config — and reach out to their upstream to verify
-   * the credentials actually work.
+   * Optional active credential probe. The runner invokes this from the
+   * dashboard's "Test connection" button (`POST /test/plugin/:id`).
+   * Plugins receive the *merged* config the user is about to save —
+   * masked secrets (`ghp_abcdefghijkl...wxyz`) already replaced with the
+   * real values from the on-disk config — and reach out to their upstream
+   * to verify the credentials actually work.
    *
    * This is the seam that keeps the runner core provider-agnostic.
    * Without it, every new LLM/SCM/tracker plugin needs a `case`

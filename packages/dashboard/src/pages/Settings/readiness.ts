@@ -31,6 +31,25 @@ function isJsonSchemaObject(schema: unknown): schema is JsonSchemaObject {
   return typeof schema === 'object' && schema !== null && !Array.isArray(schema)
 }
 
+/**
+ * True when the plugin asks the user for nothing: no required schema field,
+ * and an auth method that is a form with zero fields. Enabling such a plugin
+ * *is* configuring it — `local` is the case that matters, since its config is
+ * `{}` by design and would otherwise never count as ready.
+ *
+ * The auth descriptors are the deliberate signal here rather than an empty
+ * `configSchema`: a plugin with no required fields but an OAuth or detect
+ * method still needs the user to complete a flow.
+ */
+function pluginNeedsNoInput(plugin: PluginEntry | undefined): boolean {
+  if (!plugin) return false
+  const schema = plugin.manifest.configSchema
+  if (isJsonSchemaObject(schema) && (schema.required?.length ?? 0) > 0) return false
+  const methods = plugin.manifest.authMethods ?? []
+  if (methods.length === 0) return false
+  return methods.some(m => m.kind === 'form' && m.fields.length === 0)
+}
+
 /** A plugin entry is "configured" when every required-by-schema field
  * is non-empty in the draft. Falls back to "any value" when no schema. */
 function pluginIsConfigured(
@@ -41,6 +60,7 @@ function pluginIsConfigured(
   const entry = draft.pluginInstalled[pluginId]
   if (!entry) return false
   if (entry.enabled === false) return false
+  if (pluginNeedsNoInput(plugin)) return true
   const schema = plugin?.manifest.configSchema
   if (isJsonSchemaObject(schema) && Array.isArray(schema.required)) {
     return schema.required.every(field => {
@@ -51,7 +71,7 @@ function pluginIsConfigured(
   return Object.keys(entry.config).length > 0
 }
 
-const KNOWN_SCM_FALLBACK = ['github', 'bitbucket', 'gitlab']
+const KNOWN_SCM_FALLBACK = ['github', 'bitbucket', 'gitlab', 'local']
 const KNOWN_TRACKER_FALLBACK = ['jira', 'linear', 'github-issues']
 const KNOWN_EXECUTOR_FALLBACK = ['anthropic']
 

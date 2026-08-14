@@ -47,9 +47,11 @@ import type {
   ScmPrStatus,
   ScmReadFileResult,
   CredentialCandidate,
+  PluginTestResult,
 } from '../../types'
 import { detectGitHubCredentials } from './detect'
 import { registerGitHubOAuthRoutes } from './oauth-routes'
+import { probeGitHubCredentials } from './test-connection'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -140,16 +142,16 @@ const MANIFEST: PluginManifest = {
       {
         kind: 'detect',
         id: 'gh-cli',
-        label: 'Use existing GitHub CLI session',
+        label: 'Use a GitHub account already on this machine',
         recommended: true,
         accountConfigKey: 'owner',
       },
       {
         kind: 'oauth',
-        id: 'device-oauth',
+        id: 'gh-cli-web',
         label: 'Sign in with GitHub',
-        startPath: '/config/plugins/github/auth/device-oauth/start',
-        statusPath: '/config/plugins/github/auth/device-oauth/status',
+        startPath: '/config/plugins/github/auth/gh-cli-web/start',
+        statusPath: '/config/plugins/github/auth/gh-cli-web/status',
       },
       {
         kind: 'form',
@@ -205,6 +207,27 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
 
   registerHttpRoutes(ctx: import('@coro-ai/plugin-sdk').PluginHttpRoutesContext): void {
     registerGitHubOAuthRoutes(ctx, { pluginId: 'github', ownerConfigKey: 'owner' })
+  }
+
+  /**
+   * Real credential probe for the dashboard's "Test connection".
+   *
+   * Distinct from {@link healthcheck}, which cannot reach the network (it
+   * runs on paths where a stall would block a job) and so can only ever
+   * answer "configured". Reporting that as a passing connection test made a
+   * revoked or mistyped token look fine until the first job failed to clone.
+   */
+  async testConnection(
+    config: GitHubPluginConfig | Record<string, unknown>,
+  ): Promise<PluginTestResult> {
+    const parsed = ghConfigSchema.safeParse(config)
+    if (!parsed.success) {
+      return { ok: false, message: 'Owner and personal access token are both required.' }
+    }
+    return probeGitHubCredentials({
+      ...parsed.data,
+      fetchFn: this.fetchFn,
+    })
   }
 
   async healthcheck(): Promise<PluginHealth> {

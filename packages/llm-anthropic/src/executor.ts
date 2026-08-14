@@ -441,11 +441,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    * Active credential probe. Distinct from {@link healthcheck} — this
    * one actually rings the Anthropic API to verify the credential is
    * accepted. Called from the dashboard's Test connection button via
-   * the runner's `POST /test/llm` dispatcher.
+   * the runner's `POST /test/plugin/:id` dispatcher.
    *
    * The `config` argument is the merged draft + on-disk config the
-   * user is about to save; redacted secrets ('…') have already been
-   * filled in upstream by the runner. We coerce it through the same
+   * user is about to save; masked secrets have already been replaced
+   * with the real values upstream by the runner. We coerce it through the same
    * Zod schema {@link init} uses so a malformed payload surfaces as a
    * clear failure rather than a thrown exception.
    */

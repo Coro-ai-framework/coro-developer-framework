@@ -104,6 +104,16 @@ export interface PkceLoopbackResult {
   close: () => void
 }
 
+/**
+ * Bind a loopback listener and hand back the redirect URI the provider must
+ * call back on.
+ *
+ * The port is ephemeral by default, so the redirect URI changes between runs.
+ * Providers that require the callback URL to be registered up-front (Atlassian
+ * among them) only accept an exact match, so those flows must pass a fixed
+ * `port` and register that same URL — `http://127.0.0.1/callback` without a
+ * port will never match what this binds.
+ */
 export async function startPkceLoopback(args?: {
   port?: number
   timeoutMs?: number
@@ -115,15 +125,27 @@ export async function startPkceLoopback(args?: {
   let server: Server | null = null
   let resolveWait: ((v: { code: string; state: string }) => void) | null = null
   let rejectWait: ((err: Error) => void) | null = null
+  // The browser can hit the callback more than once (favicon, a reload, a
+  // retry from the provider). Only the first outcome counts; later ones must
+  // not resolve a promise that already settled.
+  let settled = false
 
   const waitPromise = new Promise<{ code: string; state: string }>((resolve, reject) => {
     resolveWait = resolve
     rejectWait = reject
   })
 
-  const timer = setTimeout(() => {
-    rejectWait?.(new Error('OAuth loopback timed out'))
+  const finish = (outcome: { code: string; state: string } | Error): void => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    if (outcome instanceof Error) rejectWait?.(outcome)
+    else resolveWait?.(outcome)
     server?.close()
+  }
+
+  const timer = setTimeout(() => {
+    finish(new Error('OAuth loopback timed out'))
   }, timeoutMs)
 
   const redirectUri = await new Promise<string>((resolve, reject) => {
@@ -132,18 +154,28 @@ export async function startPkceLoopback(args?: {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1')
         const code = url.searchParams.get('code')
         const returnedState = url.searchParams.get('state') ?? ''
+        // A denied consent screen redirects with `error`, no `code`. Without
+        // this the caller waits out the full timeout for an answer that has
+        // already arrived.
+        const error = url.searchParams.get('error')
+        if (error) {
+          const description = url.searchParams.get('error_description')
+          res.writeHead(400, { 'Content-Type': 'text/html' })
+          res.end('<html><body><p>Authorization failed. You can close this tab.</p></body></html>')
+          finish(new Error(description ?? error))
+          return
+        }
         if (!code) {
           res.writeHead(400)
           res.end('Missing code')
+          finish(new Error('OAuth callback arrived without an authorization code'))
           return
         }
         res.writeHead(200, { 'Content-Type': 'text/html' })
         res.end('<html><body><p>Connected. You can close this tab.</p></body></html>')
-        resolveWait?.({ code, state: returnedState })
-        clearTimeout(timer)
-        server?.close()
+        finish({ code, state: returnedState })
       } catch (err) {
-        rejectWait?.(err instanceof Error ? err : new Error(String(err)))
+        finish(err instanceof Error ? err : new Error(String(err)))
       }
     })
     const listenPort = args?.port ?? 0
@@ -232,9 +264,17 @@ export function persistOAuthTokensPatch(tokens: OAuthTokens): Record<string, unk
   }
 }
 
-let inFlightRefresh: Promise<boolean> | null = null
-let lastRefreshFailureAt: number | null = null
 const REFRESH_FAILURE_COOLDOWN_MS = 60_000
+
+interface RefreshState {
+  inFlight: Promise<boolean> | null
+  lastFailureAt: number | null
+}
+
+// Keyed per caller: with a single module-level pair, one plugin's failed
+// refresh put every other plugin into a cooldown, and two plugins refreshing
+// at once shared a promise resolved with the wrong provider's result.
+const refreshStateByScope = new Map<string, RefreshState>()
 
 export async function refreshOAuthTokenIfNeeded(args: {
   expiresAt?: number
@@ -242,31 +282,39 @@ export async function refreshOAuthTokenIfNeeded(args: {
   refresh: (refreshToken: string) => Promise<OAuthTokens>
   save: (tokens: OAuthTokens) => void
   logger?: Logger
+  /** Coalescing/cooldown scope — pass the plugin id (and account, if the
+   * plugin holds several). Callers that omit it share one bucket. */
+  scope?: string
 }): Promise<boolean> {
   if (!args.expiresAt || !args.refreshToken) return false
   if (Date.now() + 60_000 < args.expiresAt) return true
-  if (inFlightRefresh) return inFlightRefresh
+
+  const key = args.scope ?? 'default'
+  const state = refreshStateByScope.get(key) ?? { inFlight: null, lastFailureAt: null }
+  refreshStateByScope.set(key, state)
+
+  if (state.inFlight) return state.inFlight
   if (
-    lastRefreshFailureAt !== null
-    && Date.now() - lastRefreshFailureAt < REFRESH_FAILURE_COOLDOWN_MS
+    state.lastFailureAt !== null
+    && Date.now() - state.lastFailureAt < REFRESH_FAILURE_COOLDOWN_MS
   ) {
     return false
   }
-  inFlightRefresh = args.refresh(args.refreshToken)
+  state.inFlight = args.refresh(args.refreshToken)
     .then(tokens => {
       args.save(tokens)
-      lastRefreshFailureAt = null
+      state.lastFailureAt = null
       return true
     })
     .catch(err => {
-      args.logger?.warn({ err }, 'oauth.refresh failed')
-      lastRefreshFailureAt = Date.now()
+      args.logger?.warn({ err, scope: key }, 'oauth.refresh failed')
+      state.lastFailureAt = Date.now()
       return false
     })
     .finally(() => {
-      inFlightRefresh = null
+      state.inFlight = null
     })
-  return inFlightRefresh
+  return state.inFlight
 }
 
 function sleep(ms: number): Promise<void> {

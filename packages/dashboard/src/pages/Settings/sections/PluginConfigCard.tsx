@@ -106,8 +106,8 @@ interface PluginConfigCardProps {
   /**
    * Optional hook for sections that need a "test connection" button.
    * Receives the current draft config; returns a ConnectionResult.
-   * Sections wire this to /test/git or /test/tracker for built-in
-   * plugins, and skip it for drop-ins (no generic test endpoint yet).
+   * Sections wire this to `testPluginConnection`, which works for every
+   * plugin — built-in or drop-in — because the plugin owns its own probe.
    */
   onTest?: (config: Record<string, unknown>) => Promise<TestConnectionResult>
   /** Optional default-radio for the section (one card per section is the default). */

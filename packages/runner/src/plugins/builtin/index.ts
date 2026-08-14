@@ -237,6 +237,33 @@ export async function buildBuiltinPluginRegistry(
     }
   }
 
+  // The same trap applies to SCM and tracker built-ins, but their config
+  // schemas reject `{}`, so they cannot be auto-loaded the way executors
+  // are. Register them as setup-only instead: instantiated (so
+  // `registerHttpRoutes` and `detectCredentials` work) but never
+  // initialised and never resolvable for a job. Without this, on a fresh
+  // install the GitHub sign-in route 404s and credential detection 500s —
+  // the two features onboarding depends on most.
+  for (const id of [...BUILTIN_PLUGIN_IDS_BY_KIND.scm, ...BUILTIN_PLUGIN_IDS_BY_KIND.tracker]) {
+    if (registry.byId(id)) continue
+    try {
+      const runtime = await instantiatePlugin({
+        id,
+        config: {},
+        logger,
+        dropinFactories,
+        ...(args.settings ? { settings: args.settings } : {}),
+      })
+      if (!runtime) continue
+      registry.registerSetupOnly(runtime)
+    } catch (err) {
+      logger.warn(
+        { err, pluginId: id },
+        'Failed to instantiate built-in plugin for setup-only registration',
+      )
+    }
+  }
+
   // Honour the tenant's chosen default LLM provider when one is
   // configured. The registry's resolveExecutor falls back to "sole
   // installed executor" when this isn't set, which covers the

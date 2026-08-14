@@ -1,7 +1,7 @@
 // ── OpenAI credential probe ─────────────────────────────────────────────────
 //
 // Active "does this auth actually work?" check invoked by the dashboard's
-// "Test connection" button via `POST /test/llm` →
+// "Test connection" button via `POST /test/plugin/:id` →
 // `OpenAiExecutor.testConnection()`. Mirrors the Anthropic plugin's
 // `test-connection.ts` so the runner core can stay provider-agnostic.
 //
