@@ -12,7 +12,7 @@ description: >-
 
 ## Coro job workspace
 
-Run `mvn` / `gradle` and `git` from the repo checkout (`cd <repoCheckoutDir> && …`). See **golang-conventions** for Coro path layout; add Java-specific build recipes here per tenant.
+Run `mvn` / `gradle` from the repo checkout (`cd <repoCheckoutDir> && …`). For git, prefer `git -C <repoCheckoutDir> …` (chained `cd … && git …` only as fallback). See **golang-conventions** for Coro path layout; add Java-specific build recipes here per tenant.
 
 > **Note to tenants:** This is a generic baseline. Override with your team's
 > preferences in your tenant overlay. Agents read this file strictly.

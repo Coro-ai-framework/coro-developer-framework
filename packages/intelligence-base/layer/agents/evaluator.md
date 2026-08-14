@@ -108,7 +108,7 @@ signal is authoritative — respect it, then layer your local re-run on top.
 ### 2. Verify the build
 
 1. Invoke the **`{language}-conventions`** skill (from `params.language`) for build commands.
-2. Run from the repo checkout (`cd <repoCheckoutDir> && …` — paths in **Workspace layout** / `params.repoCheckoutAbsDir`).
+2. Run from the repo checkout (for git: `git -C <repoCheckoutDir> …` preferred; for other commands: `cd <repoCheckoutDir> && …` — paths in **Workspace layout** / `params.repoCheckoutAbsDir`).
 3. Use commands from the implementation plan when specified; otherwise follow the language skill.
 
 Capture stdout/stderr. A build failure on the merged commit is a hard finding — it almost always means the merge surfaced an integration bug the Coder could not see in isolation.

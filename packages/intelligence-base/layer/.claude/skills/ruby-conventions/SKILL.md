@@ -11,7 +11,7 @@ description: >-
 
 ## Coro job workspace
 
-Run `bundle` / `rspec` and `git` from the repo checkout (`cd <repoCheckoutDir> && …`). See **golang-conventions** for Coro path layout; add Ruby-specific build recipes here per tenant.
+Run `bundle` / `rspec` from the repo checkout (`cd <repoCheckoutDir> && …`). For git, prefer `git -C <repoCheckoutDir> …` (chained `cd … && git …` only as fallback). See **golang-conventions** for Coro path layout; add Ruby-specific build recipes here per tenant.
 
 > **Note to tenants:** This is a generic baseline. Override with your team's
 > preferences in your tenant overlay. Agents read this file strictly.

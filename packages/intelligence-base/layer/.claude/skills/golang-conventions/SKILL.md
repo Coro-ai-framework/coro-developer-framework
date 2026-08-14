@@ -17,7 +17,7 @@ Coro clones the target repo into a subdirectory of the job working directory, no
 
 - **Job root:** `working/{jobId}/` — Bash may start here; `go.mod` is usually **not** here.
 - **Repo:** `params.repoCheckoutAbsDir` or `working/{jobId}/{repoCheckoutDir}/` — all `go` and `git` commands run here.
-- Always prefix: `cd <repoCheckoutDir> && …` (relative dir from `scm_clone_repo` or job context).
+- For git, prefer `git -C <repoCheckoutDir> …`; for other commands, use `cd <repoCheckoutDir> && …` (relative dir from `scm_clone_repo` or job context).
 
 ## Build verification (Coro runner)
 

@@ -11,7 +11,7 @@ description: >-
 
 ## Coro job workspace
 
-Run `npm` / `pnpm` / `yarn` and `git` from the repo checkout (`cd <repoCheckoutDir> && …`). See **golang-conventions** for the Coro path layout pattern. Add TypeScript-specific build/test recipes here when your tenant needs them.
+Run `npm` / `pnpm` / `yarn` from the repo checkout (`cd <repoCheckoutDir> && …`). For git, prefer `git -C <repoCheckoutDir> …` (chained `cd … && git …` only as fallback). See **golang-conventions** for the Coro path layout pattern. Add TypeScript-specific build/test recipes here when your tenant needs them.
 
 > **Note to tenants:** This is a generic baseline. Override with your team's
 > preferences in your tenant overlay. Agents read this file strictly — every

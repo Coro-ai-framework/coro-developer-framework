@@ -91,7 +91,7 @@ Follow the implementation plan exactly:
 ### 6. Verify the build
 
 1. Invoke the **`{language}-conventions`** skill (from `params.language`) for build and test commands and Coro runner sandbox env vars.
-2. Run every command from the **repo checkout** — use `cd <repoCheckoutDir> && …` or paths from the **Workspace layout** block in the system prompt / phase kickoff (`params.repoCheckoutAbsDir`). Never run toolchain commands from the job root.
+2. Run every command from the **repo checkout** — for git use `git -C <repoCheckoutDir> …` (preferred); for other commands use `cd <repoCheckoutDir> && …` or paths from the **Workspace layout** block in the system prompt / phase kickoff (`params.repoCheckoutAbsDir`). Never run toolchain commands from the job root.
 3. Follow the implementation plan's package scope when it names a narrower target than the whole repo.
 4. If the build fails, fix the errors before proceeding. If you cannot fix them, call `mcp__coro__escalate` with the full build output.
 5. After **two failed attempts** with the same build goal, call `add_insight` and `escalate` — do not experiment with custom module caches or proxy settings unless tenant memory documents an exception.

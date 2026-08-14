@@ -13,7 +13,7 @@ Coding standards for .NET/C# services. Agents reading or writing .NET code must 
 ## Coro job workspace
 
 - **Job root:** `working/{jobId}/` — executor may start here; the `.sln` is usually in a repo subdirectory.
-- **Repo:** `params.repoCheckoutAbsDir` — run `dotnet` and `git` from this tree via `cd <repoCheckoutDir> && …`.
+- **Repo:** `params.repoCheckoutAbsDir` — run `dotnet` from this tree via `cd <repoCheckoutDir> && …`; for git prefer `git -C <repoCheckoutDir> …` (chained `cd … && git …` only as fallback).
 
 ## Build verification (Coro runner)
 

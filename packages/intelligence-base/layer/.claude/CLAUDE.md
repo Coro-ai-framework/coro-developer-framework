@@ -170,7 +170,7 @@ repository is cloned into a **subdirectory** (typically `params.repoSlug` or
 
 - After clone, `params.repoCheckoutDir` and `params.repoCheckoutAbsDir` are set.
 - The system prompt and phase kickoff include a **Workspace layout** block with paths.
-- Run **git** and **toolchain** commands from the repo tree: `cd <repoCheckoutDir> && …` or `git -C <repoCheckoutDir>`.
+- Run **git** commands as `git -C <repoCheckoutDir> …` (preferred). Run other **toolchain** commands from the repo tree with `cd <repoCheckoutDir> && …`; use chained `cd … && git …` only as fallback.
 - **Build and test commands** are defined in the **`{language}-conventions`** skill for `params.language` — invoke that skill via the Skill tool before compiling or testing. Do not guess language-specific commands from this file.
 
 ### Observability
