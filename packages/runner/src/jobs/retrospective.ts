@@ -34,9 +34,9 @@ export const RETROSPECTIVE_MAX_WINDOW = 100
 export interface RetrospectiveTiers {
   /** Propose to this install's own intelligence layers. */
   tenant: boolean
-  /** Open upstream issues + markdown PRs against the Coro repository. */
+  /** File upstream issues and dispatch contribution jobs for base-intelligence findings. */
   upstreamIntelligence: boolean
-  /** Dispatch implementation jobs that fix runner code upstream. */
+  /** File upstream issues and dispatch contribution jobs for runner-code findings. */
   upstreamCode: boolean
 }
 

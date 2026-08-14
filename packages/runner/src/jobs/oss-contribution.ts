@@ -1,22 +1,47 @@
 // ── Open-source contribution jobs ────────────────────────────────────────────
 //
-// A retrospective finding categorised `runner-code` cannot be fixed by
-// editing markdown: it needs a code change that builds and passes tests.
-// The retrospective does not do that work itself — it dispatches an
-// ordinary implementation job, which already knows how to plan, code,
-// review, and verify.
+// A retrospective finding categorised `base-intelligence` or `runner-code`
+// is a defect in Coro that every install shares. The retrospective does
+// not write the fix: its context is aggregated metrics, it has no build
+// or test loop, and whole-file dumps from that context produced bad PRs.
+// It files the issue, then dispatches an implementation job — which
+// already knows how to plan, code, review, and verify.
 //
 // What makes this job different from any other implementation job is only
 // its geography: it clones a **fork**, and it opens its PR against the
 // **upstream** repository it cannot push to. Both facts travel in `params`
 // so `workflows/oss-contribution/workflow.md` can read them, and this
 // module is the one place that shapes them.
+//
+// One job may carry several findings. Intelligence and runner code live
+// in the same repository, and a runner change plus the agent text that
+// describes it is one reviewable story. Unrelated findings still belong
+// in separate PRs — the planner decides, and the workflow forbids a
+// stack. The briefing is assembled here so every child sees the same
+// shape, not whatever prose the analyst happened to write around the
+// list.
 
 import {
   OSS_CONTRIBUTION_WORKFLOW_PATH,
   type Job,
   type JobInput,
 } from '@coro-ai/cloud-protocol'
+
+/** Categories this workflow will actually implement. Tenant findings stay on `propose_change`. */
+export const OSS_CONTRIBUTION_CATEGORIES = ['base-intelligence', 'runner-code'] as const
+export type OssContributionCategory = (typeof OSS_CONTRIBUTION_CATEGORIES)[number]
+
+/** Finding identity plus the briefing the child inherits. */
+export interface OssContributionFinding {
+  id: string
+  category: OssContributionCategory
+  issueNumber: number
+  issueUrl: string
+  /** One line, problem-first. Becomes a work-item title. */
+  title: string
+  /** What to change and why — already sanitised, since it reaches a public PR. */
+  description: string
+}
 
 export interface OssContributionRequest {
   /** `owner/repo` of the upstream repository the PR targets. */
@@ -27,17 +52,10 @@ export interface OssContributionRequest {
   forkOwner: string
   /** Default branch of the upstream repo; the PR's base. */
   baseBranch: string
-  /** Upstream issue this contribution fixes. */
-  issueNumber: number
-  issueUrl: string
-  /** One line, problem-first. Becomes the job's description and PR title. */
-  title: string
-  /** What to change and why — already sanitised, since it reaches a public PR. */
-  description: string
   /** Retrospective that dispatched this. */
   retrospectiveJobId: string
-  /** Finding id within that retrospective, for outcome reconciliation. */
-  findingId: string
+  /** Approved findings this job is asked to implement. At least one. */
+  findings: OssContributionFinding[]
 }
 
 /**
@@ -52,8 +70,19 @@ export interface OssContributionRequest {
  *   ever sees.
  * - `epicAllowed: false`, so a contribution job cannot promote itself into
  *   a campaign and fan out into an unbounded number of upstream PRs.
+ *
+ * `params.findings` is the source of truth for what to implement.
+ * `upstreamIssueNumber` / `retrospectiveFindingId` mirror the first
+ * finding so anything still reading the original singular fields does
+ * not silently lose the link.
  */
 export function buildOssContributionJobInput(request: OssContributionRequest): JobInput {
+  const findings = request.findings
+  if (findings.length === 0) {
+    throw new Error('An oss-contribution job needs at least one finding.')
+  }
+  const primary = findings[0]!
+
   return {
     type: 'job',
     workflowPath: OSS_CONTRIBUTION_WORKFLOW_PATH,
@@ -62,16 +91,17 @@ export function buildOssContributionJobInput(request: OssContributionRequest): J
       repo: request.forkSlug,
       repoSlug: request.forkSlug,
       serviceName: repoName(request.upstreamSlug),
-      description: request.description,
-      title: request.title,
+      description: buildContributionBriefing(findings),
+      title: contributionJobTitle(findings),
       scm: 'github',
       upstreamRepo: request.upstreamSlug,
-      upstreamIssueNumber: request.issueNumber,
-      upstreamIssueUrl: request.issueUrl,
+      upstreamIssueNumber: primary.issueNumber,
+      upstreamIssueUrl: primary.issueUrl,
       prSourceOwner: request.forkOwner,
       prTargetBranch: request.baseBranch,
       retrospectiveJobId: request.retrospectiveJobId,
-      retrospectiveFindingId: request.findingId,
+      retrospectiveFindingId: primary.id,
+      findings,
       epicAllowed: false,
       // Upstream reviewers are not ours to assign — maintainers pick
       // themselves up. An empty list keeps `scm_create_pr` from defaulting
@@ -84,6 +114,67 @@ export function buildOssContributionJobInput(request: OssContributionRequest): J
 /** Detected from the workflow path, so an overlaid workflow still matches. */
 export function isOssContributionJob(job: Pick<Job, 'workflowPath'>): boolean {
   return job.workflowPath === OSS_CONTRIBUTION_WORKFLOW_PATH
+}
+
+export function isOssContributionCategory(value: string): value is OssContributionCategory {
+  return (OSS_CONTRIBUTION_CATEGORIES as readonly string[]).includes(value)
+}
+
+/**
+ * Which retrospective destination a finding of this category consumes.
+ * Dispatch uses this so an intelligence-only run cannot smuggle a code
+ * fix through, and vice versa.
+ */
+export function contributionTierFor(
+  category: OssContributionCategory,
+): 'upstreamIntelligence' | 'upstreamCode' {
+  return category === 'base-intelligence' ? 'upstreamIntelligence' : 'upstreamCode'
+}
+
+/** Dashboard / job-list title: the first finding, with a remainder count. */
+export function contributionJobTitle(findings: ReadonlyArray<OssContributionFinding>): string {
+  const first = findings[0]
+  if (!first) return 'Upstream contribution'
+  if (findings.length === 1) return first.title
+  return `${first.title} (+${findings.length - 1} more)`
+}
+
+/**
+ * The child job's only briefing. Assembled here so the planner always
+ * sees the same sections, and so a multi-finding dispatch cannot forget
+ * an item the analyst listed.
+ */
+export function buildContributionBriefing(findings: ReadonlyArray<OssContributionFinding>): string {
+  const header = [
+    '# Upstream contribution',
+    '',
+    'Dispatched by a retrospective after a developer approved the findings.',
+    'Implement them as ordinary work items on this fork, then open one pull',
+    'request against upstream.',
+    '',
+    'One reviewable PR. If the findings are one story (they share files, or',
+    'one is the instruction side of the other), they belong in that PR.',
+    'If they are not, implement the coupled subset — or the first finding',
+    'if none couple — and escalate the rest. Do not open a stack of PRs.',
+    '',
+    'Public writing: never name the dispatching install\'s repositories,',
+    'tickets, customers, or people. The briefings below already use aliases.',
+    '',
+  ]
+
+  const sections = findings.map((finding, index) =>
+    [
+      `## ${index + 1}. ${finding.id} — ${finding.title}`,
+      '',
+      `Category: ${finding.category}`,
+      `Issue: ${finding.issueUrl} (#${finding.issueNumber})`,
+      '',
+      finding.description.trim(),
+      '',
+    ].join('\n'),
+  )
+
+  return `${header.join('\n')}${sections.join('\n')}`.trimEnd() + '\n'
 }
 
 function repoName(slug: string): string {

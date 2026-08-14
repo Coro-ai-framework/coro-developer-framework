@@ -81,23 +81,26 @@ Where a finding goes depends on which layer owns the fix:
 | Category | Destination | Tool |
 |----------|-------------|------|
 | `tenant-intelligence` | This install's own layers | `propose_change` |
-| `base-intelligence` | Upstream issue **and** a markdown PR | `upstream_search` → `upstream_create_issue` / `upstream_comment_issue` → `upstream_open_intelligence_pr` |
+| `base-intelligence` | Upstream issue, then a delegated implementation run | `upstream_search` → `upstream_create_issue` / `upstream_comment_issue` → `dispatch_improvement_job` |
 | `runner-code` | Upstream issue, then a delegated implementation run | `upstream_search` → `upstream_create_issue` → `dispatch_improvement_job` |
 
-`runner-code` is delegated rather than written here: a code change has to
-build and pass tests, and this phase has neither a checkout nor a test
-loop. `dispatch_improvement_job` hands the issue to an ordinary
-implementation job on `workflows/oss-contribution/workflow.md`, which
-works on a fork and opens its pull request upstream.
+Both upstream categories are delegated rather than written here. The
+retrospective has neither a writable checkout nor a review loop, and
+whole-file dumps from a metrics context produced bad PRs. Intelligence
+markdown and runner code live in the same repository, so
+`dispatch_improvement_job` can carry several approved findings in one
+call; the child planner keeps them in one PR when they are one story.
+`workflows/oss-contribution/workflow.md` clones a fork and opens the
+pull request upstream.
 
 ## Output
 
 - `working/{job-id}/retrospective-report.md` — the findings, with evidence.
 - One `propose_change` PR per writable layer that had approved findings.
-- Upstream issues, one markdown PR per approved `base-intelligence`
-  finding, and one dispatched implementation run per approved
-  `runner-code` finding — when an upstream destination is configured and
-  the tier is enabled.
+- Upstream issues, and one dispatched contribution job covering the
+  approved `base-intelligence` and `runner-code` findings that still
+  need a fix — when an upstream destination is configured and the
+  matching tier is enabled.
 - `working/{job-id}/retrospective-outcome.md` — where each finding landed.
 
 ## Important rules

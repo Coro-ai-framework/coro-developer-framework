@@ -259,12 +259,14 @@ fork is created and fast-forwarded automatically; branches are pushed to it
 using your ambient git credentials, so make sure `git push` to your own
 GitHub account works from the shell running the runner.
 
-With `upstream-code` enabled, a finding that needs an actual code change is
-handed to a separate implementation job rather than being written by the
-retrospective. That job clones your fork, implements and tests the change,
-and opens a pull request against the Coro repository; it appears in your
-job list like any other run, and its PR is linked from the finding. Cap how
-many of these a single run may start with `maxCodeJobsPerRun`.
+With either contribution tier enabled, an approved finding that still
+needs a change is handed to a separate implementation job rather than
+being written by the retrospective. That job clones your fork, implements
+the change (intelligence markdown, runner code, or both), and opens a
+pull request against the Coro repository; it appears in your job list
+like any other run, and its PR is linked from the finding. Coupled
+findings share one job so they can share one PR. Cap how many of these a
+single run may start with `maxCodeJobsPerRun`.
 
 Three things are worth knowing before you enable it:
 

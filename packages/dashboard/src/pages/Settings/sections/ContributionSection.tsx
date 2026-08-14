@@ -81,8 +81,8 @@ export default function ContributionSection() {
           />
         </Field>
         <Field
-          label="Code runs per run"
-          hint="Cap on implementation jobs one retrospective may dispatch to fix Coro's code. Blank uses the default."
+          label="Contribution jobs per run"
+          hint="Cap on implementation jobs one retrospective may dispatch to fix Coro (intelligence or code). Blank uses the default."
         >
           <Input
             type="number"

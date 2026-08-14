@@ -455,7 +455,7 @@ export function createCoroMcpServer(
 
       tool(
         'upstream_checkout',
-        'Put a read-only snapshot of the upstream Coro repository in your working directory, so you can check a finding against the actual code before reporting it. Call this in the `analysis` phase once you have candidate findings that make a claim about the runner or about base-intelligence files — then grep and read the snapshot to confirm the behaviour, find EVERY file involved, and correct any wrong assumption before it reaches a public issue. It snapshots upstream\'s default branch, which is also how you notice a defect that maintainers have already fixed. Returns the directory, the branch, and the commit sha you verified against — cite that sha. The tree has no `.git` and nothing can be pushed from it; code fixes still go through `dispatch_improvement_job`. This does not lower the evidence bar: a finding still needs two citing jobs from the job history. Retrospective jobs only, and only when a contribution destination is enabled.',
+        'Put a read-only snapshot of the upstream Coro repository in your working directory, so you can check a finding against the actual code before reporting it. Call this in the `analysis` phase once you have candidate findings that make a claim about the runner or about base-intelligence files — then grep and read the snapshot to confirm the behaviour, find EVERY file involved, and correct any wrong assumption before it reaches a public issue. It snapshots upstream\'s default branch, which is also how you notice a defect that maintainers have already fixed. Returns the directory, the branch, and the commit sha you verified against — cite that sha. The tree has no `.git` and nothing can be pushed from it; fixes still go through `dispatch_improvement_job`. This does not lower the evidence bar: a finding still needs two citing jobs from the job history. Retrospective jobs only, and only when a contribution destination is enabled.',
         {},
         h.upstream_checkout,
       ),
@@ -506,34 +506,22 @@ export function createCoroMcpServer(
       ),
 
       tool(
-        'upstream_open_intelligence_pr',
-        'Open a pull request on the upstream Coro repository from this install\'s fork, changing base-intelligence markdown only (paths under packages/intelligence-base/layer/, .md files). Use it when the fix is prose an agent reads — an agent procedure, a skill, a workflow. Supply the FULL new content of each file, not a diff; read the current file first so you preserve everything you are not changing. Requires the issue number the PR fixes. Runner code fixes do not go here — they need an implementation run that builds and tests. Retrospective jobs only.',
-        {
-          issueNumber: z.number().describe('Issue this PR fixes. Open or find it first.'),
-          title: z.string().describe('PR title. No identifiers.'),
-          body: z.string().describe('What changes and why, in terms a maintainer can review without your job history.'),
-          branchSlug: z.string().describe('Short kebab-case slug for the branch name, e.g. "coder-test-scaffolding".'),
-          files: z
-            .array(z.object({
-              path: z.string().describe('Repo-relative path under packages/intelligence-base/layer/, ending in .md.'),
-              content: z.string().describe('Complete file content after the change.'),
-            }))
-            .describe('Every file this PR changes. One call is one PR — bundle them.'),
-        },
-        h.upstream_open_intelligence_pr,
-      ),
-
-      tool(
         'dispatch_improvement_job',
-        'Hand a code-level finding to an implementation job that fixes it upstream. Use this for `runner-code` findings, after filing the issue: the job clones a fork of the Coro repository, implements and tests the change, and opens a pull request against upstream linking your issue. Do not attempt the code change yourself — you have no build or test loop, and your context is aggregated metrics rather than the codebase. The description is the job\'s only briefing, so state the behaviour to change, the files involved, and how to verify the fix. Capped per run. Retrospective jobs only.',
+        'Hand approved upstream findings to one implementation job that writes the fix. Use this for `base-intelligence` and `runner-code` findings after filing their issues — not for tenant findings. Do not write the files yourself: you have no build or review loop, and your context is aggregated metrics. One call is one child job; put coupled findings (a runner change plus the agent text that describes it, or anything sharing files) in the same `items` list so the planner can keep them in one PR. Split into another call only when the groups cannot share a PR. Each item\'s description is that finding\'s only briefing. Capped per run. Retrospective jobs only.',
         {
-          issueNumber: z.number().describe('Upstream issue this job fixes. File it first.'),
-          title: z.string().describe('One line, problem-first. Becomes the PR title. No identifiers.'),
-          description: z.string().describe(
-            'Full briefing for an agent that has never seen your analysis: observed behaviour, ' +
-            'suspected cause, files to look at, and how to verify. Aliases only.',
-          ),
-          findingId: z.string().describe('The finding id this job fixes, e.g. "finding-3".'),
+          items: z
+            .array(z.object({
+              findingId: z.string().describe('Finding id from the report, e.g. "finding-3".'),
+              category: z.enum(['base-intelligence', 'runner-code']).describe('Must match the finding. Gates the destination tier.'),
+              issueNumber: z.number().describe('Upstream issue this item fixes. File it first.'),
+              title: z.string().describe('One line, problem-first. No identifiers.'),
+              description: z.string().describe(
+                'Briefing for an agent that has never seen your analysis: observed behaviour, ' +
+                'suspected cause, files to look at, and how to verify. Aliases only.',
+              ),
+            }))
+            .min(1)
+            .describe('Approved findings that still need a fix. One call is one contribution job.'),
         },
         h.dispatch_improvement_job,
       ),

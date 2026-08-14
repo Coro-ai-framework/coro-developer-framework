@@ -16,7 +16,6 @@ import type {
   DispatchImprovementJobArgs,
   UpstreamCommentIssueArgs,
   UpstreamCreateIssueArgs,
-  UpstreamOpenPrArgs,
   UpstreamSearchArgs,
 } from './tools/upstream'
 
@@ -1166,15 +1165,6 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       const { upstreamCommentIssue } = await import('./tools/upstream')
       try {
         return text(await upstreamCommentIssue(args, ctx))
-      } catch (err) {
-        return error((err as Error).message)
-      }
-    },
-
-    upstream_open_intelligence_pr: async (args: UpstreamOpenPrArgs) => {
-      const { upstreamOpenIntelligencePr } = await import('./tools/upstream')
-      try {
-        return text(await upstreamOpenIntelligencePr(args, ctx))
       } catch (err) {
         return error((err as Error).message)
       }

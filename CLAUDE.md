@@ -301,14 +301,9 @@ public issue. Three details carry weight:
 - **A snapshot, not a checkout.** `.git` is removed once the revision is
   recorded, so nothing can be branched or pushed from it and the
   workspace/diff machinery cannot mistake it for the job's target repo.
-  Code fixes still go out through `dispatch_improvement_job`; a finding
+  Fixes still go out through `dispatch_improvement_job`; a finding
   still needs its two citing jobs, because a problem noticed by reading
   code with no run behind it is a code review, not a retrospective finding.
-- **It also fixes a leak hazard on the prose path.**
-  `upstream_open_intelligence_pr` replaces whole files, and the analyst
-  used to read them from `_intelligence/` — the *merged* tree, where a
-  tenant overlay may have appended to or wholly replaced the base file.
-  Target files are now read from the snapshot instead.
 
 Three properties make this safe to ship:
 
@@ -354,8 +349,8 @@ and `runner-code` belong to the open-source repository.
 **Upstream contribution** (`tools/upstream.ts`) is how the latter two
 leave the machine: `upstream_checkout` (verify) → `upstream_search` →
 `upstream_create_issue` or `upstream_comment_issue` →
-`upstream_open_intelligence_pr` (prose) or `dispatch_improvement_job`
-(code). It is off unless the install sets `upstream.repoUrl` — via
+`dispatch_improvement_job`. The retrospective does not write file
+bodies. It is off unless the install sets `upstream.repoUrl` — via
 **Settings → Coro contribution**, `~/.coro/config.json`, or
 `CORO_UPSTREAM_REPO_URL` — and four constraints bound it:
 
@@ -372,7 +367,7 @@ leave the machine: `upstream_checkout` (verify) → `upstream_search` →
   local destination is gated the same way (`assertTenantTierPermitted` in
   `tools/self-improvement.ts`), and only for retrospectives: ordinary jobs
   carry no tiers, so the evaluator's `propose_change` is untouched.
-- **Fail-closed sanitisation.** Every title, body, and file body is run
+- **Fail-closed sanitisation.** Every title, body, and briefing is run
   through `Sanitizer.findLeaks()` before the request goes out. A leak
   cannot be un-published, so the check refuses rather than scrubs.
 - **Per-run caps.** `upstream.maxIssuesPerRun` / `maxCodeJobsPerRun`,
@@ -380,20 +375,16 @@ leave the machine: `upstream_checkout` (verify) → `upstream_search` →
   reset its own budget. The charge lands before the API call.
 
 PRs go out from a fork: `ensureFork` creates it if needed, `syncFork`
-fast-forwards it to the upstream default branch, and the shared writer
-(`intelligence/writer.ts`) pushes a `coro/retro/*` branch that
-`createPr({ sourceOwner })` turns into a cross-repository PR. Paths are
-restricted to `packages/intelligence-base/layer/**.md` — prose a
-maintainer can review as a diff.
-
-**A `runner-code` finding gets delegated, not written.** The retrospective
-has no build or test loop and its context is aggregated metrics, so
-`dispatch_improvement_job` hands the finding to an ordinary implementation
-job on `workflows/oss-contribution/workflow.md` (planner → coder →
+fast-forwards it to the upstream default branch, and
+`dispatch_improvement_job` starts an implementation job on
+`workflows/oss-contribution/workflow.md` (planner → coder →
 `agents/oss-contributor.md`). That job clones the **fork**
 (`params.repo`), opens its PR against **upstream** (`params.upstreamRepo`
-+ `params.prSourceOwner`), and ends there — nobody here can merge it. The
-shape lives in `jobs/oss-contribution.ts`; dispatch reaches the tool
++ `params.prSourceOwner`), and ends there — nobody here can merge it.
+Intelligence markdown and runner code live in the same repository, so
+one call may carry several approved findings (`params.findings`); the
+child planner keeps them in one PR when they are one reviewable story.
+The shape lives in `jobs/oss-contribution.ts`; dispatch reaches the tool
 through `ToolContext.dispatchJob`, a single-method capability the
 `Dispatcher` passes into `runJob` rather than handing tools the dispatcher
 itself. The child is capped by `upstream.maxCodeJobsPerRun`, cannot promote

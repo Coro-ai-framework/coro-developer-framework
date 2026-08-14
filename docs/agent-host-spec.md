@@ -557,7 +557,7 @@ Tool surface (under the `mcp__coro__` prefix):
 | Job control                    | `set_work_items`, `update_work_item`, `get_work_items`, `request_new_session`, `set_job_params`, `goto_phase`, `await_event`, `escalate`, `log` |
 | Artefacts                      | `post_artifact`, `get_artifacts`                                                                                      |
 | Self-improvement               | `add_insight`, `propose_change`, `list_proposals`, `read_memory`                                                      |
-| Retrospective (type-gated)     | `list_jobs`, `get_job_report`, `get_job_log_excerpts`, `upstream_search`, `upstream_create_issue`, `upstream_comment_issue`, `upstream_open_intelligence_pr`, `dispatch_improvement_job` |
+| Retrospective (type-gated)     | `list_jobs`, `get_job_report`, `get_job_log_excerpts`, `upstream_search`, `upstream_create_issue`, `upstream_comment_issue`, `dispatch_improvement_job` |
 
 The retrospective group is refused for any job whose type is not
 `retrospective`; the upstream tools additionally require an

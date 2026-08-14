@@ -4,7 +4,9 @@
 // is not this install's problem to keep — it is a defect in Coro that every
 // install shares. These tools are how such a finding reaches the upstream
 // repository: search for an existing report, add evidence to it or file a
-// new issue, then open a pull request from the contributor's fork.
+// new issue, then dispatch an implementation job that writes the fix on a
+// fork and opens the pull request. The retrospective does not write file
+// bodies — that path produced whole-file dumps from a metrics context.
 //
 // Four properties are load-bearing, and each one exists because the failure
 // it prevents is unrecoverable once it has happened:
@@ -14,7 +16,7 @@
 //   2. **Tier-gated.** The developer chooses at launch how far findings may
 //      travel; a run scoped to `tenant` cannot publish, whatever the
 //      analyst decides mid-run.
-//   3. **Fail-closed sanitisation.** Titles, bodies, and file contents are
+//   3. **Fail-closed sanitisation.** Titles, bodies, and briefings are
 //      checked for tenant identifiers before any request leaves the
 //      machine. A leak cannot be deleted from a public repository.
 //   4. **Capped per run.** The failure mode is not one wrong issue, it is
@@ -30,10 +32,14 @@ import { createHash } from 'node:crypto'
 import * as path from 'node:path'
 
 import { GitHubClient, type IssueSearchHit, type RepoInfo } from '../clients/github'
-import { defaultWriterCacheRoot } from '../config/local-config'
 import type { UpstreamSettings } from '../config/settings'
-import { commitAndPush, parseRepoUrl, prepareUpstreamWriter } from '../intelligence/writer'
-import { buildOssContributionJobInput } from '../jobs/oss-contribution'
+import { parseRepoUrl } from '../intelligence/writer'
+import {
+  buildOssContributionJobInput,
+  contributionTierFor,
+  isOssContributionCategory,
+  type OssContributionFinding,
+} from '../jobs/oss-contribution'
 import { retrospectiveTiers, type RetrospectiveTiers } from '../jobs/retrospective'
 import { assertRetrospectiveJob } from './retrospective'
 import { buildSanitizer } from './sanitize'
@@ -43,10 +49,6 @@ import type { ToolContext } from './types'
 /** Marker written into issue bodies so a later run can find its own report. */
 export const UPSTREAM_MARKER_PREFIX = 'coro-retro:'
 export const UPSTREAM_ISSUE_LABEL = 'coro-retrospective'
-export const UPSTREAM_BRANCH_PREFIX = 'coro/retro/'
-
-/** Only the base intelligence layer is contributable through this path. */
-export const UPSTREAM_INTELLIGENCE_PREFIX = 'packages/intelligence-base/layer/'
 
 /** Counter params backing `upstream.maxIssuesPerRun` / `maxCodeJobsPerRun`. */
 const ISSUES_OPENED_PARAM = 'upstreamIssuesOpened'
@@ -332,7 +334,7 @@ export async function upstreamSearch(
   args: UpstreamSearchArgs,
   ctx: ToolContext,
 ): Promise<UpstreamSearchResult> {
-  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_search')
+  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_search', CONTRIBUTION_TIERS)
 
   if (!args.finding && !args.query?.trim()) {
     throw new Error('upstream_search needs either a `finding` or a `query`.')
@@ -386,7 +388,7 @@ export async function upstreamCreateIssue(
   args: UpstreamCreateIssueArgs,
   ctx: ToolContext,
 ): Promise<UpstreamIssueResult> {
-  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_create_issue')
+  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_create_issue', CONTRIBUTION_TIERS)
 
   const title = args.title?.trim()
   const body = args.body?.trim()
@@ -437,7 +439,7 @@ export async function upstreamCommentIssue(
   args: UpstreamCommentIssueArgs,
   ctx: ToolContext,
 ): Promise<{ issueNumber: number; url: string }> {
-  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_comment_issue')
+  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_comment_issue', CONTRIBUTION_TIERS)
 
   if (!Number.isInteger(args.number) || args.number <= 0) {
     throw new Error('upstream_comment_issue requires the issue `number` to comment on.')
@@ -464,14 +466,14 @@ export async function upstreamCommentIssue(
 
 /**
  * Make sure the contributor's fork exists and is level with upstream, and
- * report the upstream default branch every caller needs as its PR base.
+ * report the upstream default branch the child job needs as its PR base.
  *
  * Syncing matters more than it looks: a fork made months ago branches off
- * stale code, so both the markdown PR and the code job would be written
- * against a tree the maintainers have moved past. A fork that has diverged
- * cannot be fast-forwarded — that is reported, not fatal, because the PR
- * still diffs correctly and a conflict is a reviewer's problem, not a
- * reason to abandon the finding.
+ * stale code, so the contribution job would be written against a tree the
+ * maintainers have moved past. A fork that has diverged cannot be
+ * fast-forwarded — that is reported, not fatal, because the PR still diffs
+ * correctly and a conflict is a reviewer's problem, not a reason to
+ * abandon the finding.
  */
 async function prepareFork(
   runtime: UpstreamRuntime,
@@ -489,162 +491,19 @@ async function prepareFork(
   return { fork, upstreamRepo, forkInSync }
 }
 
-// ── upstream_open_intelligence_pr ────────────────────────────────────────────
-
-export interface UpstreamPrFile {
-  path: string
-  content: string
-}
-
-export interface UpstreamOpenPrArgs {
-  /** Issue this PR fixes. Linking is required — a fix without a report is unreviewable. */
-  issueNumber: number
-  title: string
-  body: string
-  branchSlug: string
-  files: UpstreamPrFile[]
-}
-
-export interface UpstreamPrResult {
-  prUrl: string
-  prNumber: number
-  branch: string
-  forkSlug: string
-  filesShipped: string[]
-  /** False when the fork could not be fast-forwarded to the upstream default branch. */
-  forkInSync: boolean
-}
-
-/**
- * Open a markdown-only pull request against the upstream repository, from
- * the contributor's fork.
- *
- * Restricted to `packages/intelligence-base/layer/**.md` on purpose. A
- * finding that needs a code change goes through an implementation run,
- * which builds and tests what it writes; this path exists for prose, where
- * the diff is the whole story and a human reviewer can judge it directly.
- */
-export async function upstreamOpenIntelligencePr(
-  args: UpstreamOpenPrArgs,
-  ctx: ToolContext,
-): Promise<UpstreamPrResult> {
-  const runtime = await resolveUpstreamRuntime(ctx, 'upstream_open_intelligence_pr')
-
-  const title = args.title?.trim()
-  const body = args.body?.trim()
-  if (!title) throw new Error('upstream_open_intelligence_pr requires a title.')
-  if (!body) throw new Error('upstream_open_intelligence_pr requires a body.')
-  if (!Number.isInteger(args.issueNumber) || args.issueNumber <= 0) {
-    throw new Error(
-      'upstream_open_intelligence_pr requires the `issueNumber` this PR fixes. Open or find the ' +
-      'issue first with upstream_search / upstream_create_issue.',
-    )
-  }
-
-  const files = normalizeUpstreamFiles(args.files)
-
-  await assertPublishable(ctx, 'upstream_open_intelligence_pr', [
-    { label: 'title', text: title },
-    { label: 'body', text: body },
-    ...files.map(file => ({ label: file.path, text: file.content })),
-  ])
-
-  const { fork, upstreamRepo, forkInSync } = await prepareFork(runtime, ctx)
-
-  const writer = await prepareUpstreamWriter({
-    url: fork.clone_url,
-    ref: upstreamRepo.default_branch,
-    writerCacheRoot: defaultWriterCacheRoot(),
-    logger: ctx.logger,
-  })
-
-  const branch = `${UPSTREAM_BRANCH_PREFIX}${ctx.job.id}-${toSlug(args.branchSlug || title)}`.slice(0, 200)
-
-  await commitAndPush({
-    dir: writer.dir,
-    branch,
-    baseRef: writer.baseRef,
-    files,
-    commitMessage: `docs(intelligence): ${title}\n\nFixes #${args.issueNumber}\n`,
-    logger: ctx.logger,
-  })
-
-  const pr = await runtime.client.createPr({
-    repoSlug: runtime.upstreamSlug,
-    title,
-    description: buildPrBody(body, args.issueNumber, files),
-    sourceBranch: branch,
-    sourceOwner: runtime.forkOwner,
-    targetBranch: upstreamRepo.default_branch,
-  })
-
-  await ctx.stateBackend.appendLog(
-    ctx.job.id,
-    `[upstream] Opened PR #${pr.id} on ${runtime.upstreamSlug} from ${runtime.forkOwner}:${branch} — ${pr.links.html.href}`,
-  )
-
-  return {
-    prUrl: pr.links.html.href,
-    prNumber: pr.id,
-    branch,
-    forkSlug: fork.full_name,
-    filesShipped: files.map(file => file.path),
-    forkInSync,
-  }
-}
-
-/** Validate the payload before anything touches git or the network. */
-export function normalizeUpstreamFiles(files: ReadonlyArray<UpstreamPrFile> | undefined): UpstreamPrFile[] {
-  if (!files || files.length === 0) {
-    throw new Error('upstream_open_intelligence_pr requires at least one file.')
-  }
-
-  return files.map(file => {
-    const filePath = file.path?.replace(/^\.\//, '').trim() ?? ''
-    if (!filePath.startsWith(UPSTREAM_INTELLIGENCE_PREFIX)) {
-      throw new Error(
-        `Upstream path "${file.path}" is not contributable. This tool ships base-intelligence ` +
-        `markdown only, so every path must start with "${UPSTREAM_INTELLIGENCE_PREFIX}". ` +
-        'Code changes go through an implementation run instead.',
-      )
-    }
-    if (!filePath.toLowerCase().endsWith('.md')) {
-      throw new Error(`Upstream path "${file.path}" must end with .md.`)
-    }
-    if (!file.content?.trim()) {
-      throw new Error(`Upstream file "${file.path}" has empty content.`)
-    }
-    return { path: filePath, content: file.content }
-  })
-}
-
-function buildPrBody(body: string, issueNumber: number, files: ReadonlyArray<UpstreamPrFile>): string {
-  const lines = [
-    body,
-    '',
-    `Fixes #${issueNumber}`,
-    '',
-    `**Files (${files.length}):**`,
-    ...files.map(file => `- \`${file.path}\``),
-    '',
-    '---',
-    '_Filed by a Coro retrospective after a developer reviewed the finding. ' +
-    'Evidence is in the linked issue; identifiers are aliased._',
-  ]
-  return lines.join('\n')
-}
-
 // ── dispatch_improvement_job ─────────────────────────────────────────────────
 
-export interface DispatchImprovementJobArgs {
-  /** Upstream issue the contribution fixes. */
-  issueNumber: number
-  /** One line, problem-first. Becomes the child job's title and its PR title. */
-  title: string
-  /** What to change and why. Reaches a public PR, so it is leak-checked. */
-  description: string
-  /** Finding this fixes, for reconciling outcomes later. */
+export interface DispatchImprovementItem {
   findingId: string
+  category: string
+  issueNumber: number
+  title: string
+  description: string
+}
+
+export interface DispatchImprovementJobArgs {
+  /** Approved findings this job should implement. One call is one child. */
+  items: DispatchImprovementItem[]
 }
 
 export interface DispatchImprovementJobResult {
@@ -652,73 +511,67 @@ export interface DispatchImprovementJobResult {
   forkSlug: string
   upstreamRepo: string
   baseBranch: string
-  issueUrl: string
+  findingIds: string[]
+  issues: Array<{ findingId: string; issueNumber: number; issueUrl: string }>
   codeJobsDispatchedThisRun: number
   forkInSync: boolean
 }
 
 /**
- * Hand a `runner-code` finding to an implementation job.
+ * Hand approved upstream findings to one implementation job.
  *
- * The retrospective deliberately does not write code. Its context is a
- * pile of aggregated metrics from other jobs, which is the wrong context
- * for editing a codebase, and it has no build or test loop to check
- * itself with. An implementation job has both, so this tool describes the
- * work and lets that job do it — on a fork, with the PR aimed upstream.
+ * The retrospective deliberately does not write the fix — not for runner
+ * code, and not for base-intelligence markdown. Its context is aggregated
+ * metrics, which is the wrong context for editing a shared repository, and
+ * it has no build or review loop. An implementation job has both, so this
+ * tool describes the work and lets that job do it — on a fork, with the
+ * PR aimed upstream.
  *
- * The child inherits nothing about this install: it is given the upstream
- * issue and a sanitised description, and everything it publishes flows
- * from those.
+ * Several findings may share the call: intelligence and code live in the
+ * same repo, and a runner change plus the agent text that describes it is
+ * one reviewable story. The child planner decides whether they fit one
+ * PR. Each call still counts as one against `maxCodeJobsPerRun`.
+ *
+ * The child inherits nothing about this install: it is given sanitised
+ * per-finding briefings, and everything it publishes flows from those.
  */
 export async function dispatchImprovementJob(
   args: DispatchImprovementJobArgs,
   ctx: ToolContext,
 ): Promise<DispatchImprovementJobResult> {
-  const runtime = await resolveUpstreamRuntime(ctx, 'dispatch_improvement_job', 'upstreamCode')
+  const runtime = await resolveUpstreamRuntime(ctx, 'dispatch_improvement_job', CONTRIBUTION_TIERS)
 
   const dispatch = ctx.dispatchJob
   if (!dispatch) {
     throw new Error(
       'dispatch_improvement_job cannot start jobs in this runtime (no dispatcher available). ' +
-      'Record the finding as not-shipped with reason "job dispatch unavailable" — the upstream ' +
-      'issue you filed is still the useful outcome.',
+      'Record the findings as not-shipped with reason "job dispatch unavailable" — the upstream ' +
+      'issues you filed are still the useful outcome.',
     )
   }
 
-  const title = args.title?.trim()
-  const description = args.description?.trim()
-  const findingId = args.findingId?.trim()
-  if (!title) throw new Error('dispatch_improvement_job requires a title.')
-  if (!description) {
-    throw new Error(
-      'dispatch_improvement_job requires a description: the child job starts with no knowledge ' +
-      'of your analysis, so state the behaviour to change, the files involved, and how to verify it.',
-    )
-  }
-  if (!findingId) {
-    throw new Error('dispatch_improvement_job requires the `findingId` this job fixes.')
-  }
-  if (!Number.isInteger(args.issueNumber) || args.issueNumber <= 0) {
-    throw new Error(
-      'dispatch_improvement_job requires the `issueNumber` this job fixes. File the issue first ' +
-      'with upstream_create_issue — a code PR with no report behind it is unreviewable.',
-    )
-  }
+  const parsed = parseDispatchItems(args.items)
+  assertItemsPermitted(parsed, ctx)
 
-  await assertPublishable(ctx, 'dispatch_improvement_job', [
-    { label: 'title', text: title },
-    { label: 'description', text: description },
-  ])
+  await assertPublishable(ctx, 'dispatch_improvement_job', parsed.flatMap(item => [
+    { label: `${item.id} title`, text: item.title },
+    { label: `${item.id} description`, text: item.description },
+  ]))
 
   const { fork, upstreamRepo, forkInSync } = await prepareFork(runtime, ctx)
-  const issue = await runtime.client.getIssue(runtime.upstreamSlug, args.issueNumber)
+
+  const findings: OssContributionFinding[] = []
+  for (const item of parsed) {
+    const issue = await runtime.client.getIssue(runtime.upstreamSlug, item.issueNumber)
+    findings.push({ ...item, issueUrl: issue.url })
+  }
 
   const dispatched = await consumeBudget(
     ctx,
     CODE_JOBS_PARAM,
     runtime.config.maxCodeJobsPerRun,
     'dispatch_improvement_job',
-    'dispatched an upstream code job',
+    'dispatched an upstream contribution job',
   )
 
   const child = await dispatch(buildOssContributionJobInput({
@@ -726,17 +579,14 @@ export async function dispatchImprovementJob(
     forkSlug: fork.full_name,
     forkOwner: runtime.forkOwner,
     baseBranch: upstreamRepo.default_branch,
-    issueNumber: args.issueNumber,
-    issueUrl: issue.url,
-    title,
-    description,
     retrospectiveJobId: ctx.job.id,
-    findingId,
+    findings,
   }))
 
+  const issueList = findings.map(f => `#${f.issueNumber}`).join(', ')
   await ctx.stateBackend.appendLog(
     ctx.job.id,
-    `[upstream] Dispatched contribution job ${child.id} for issue #${args.issueNumber} ` +
+    `[upstream] Dispatched contribution job ${child.id} for ${issueList} ` +
     `on ${runtime.upstreamSlug} (fork ${fork.full_name})`,
   )
 
@@ -745,16 +595,83 @@ export async function dispatchImprovementJob(
     forkSlug: fork.full_name,
     upstreamRepo: runtime.upstreamSlug,
     baseBranch: upstreamRepo.default_branch,
-    issueUrl: issue.url,
+    findingIds: findings.map(f => f.id),
+    issues: findings.map(f => ({
+      findingId: f.id,
+      issueNumber: f.issueNumber,
+      issueUrl: f.issueUrl,
+    })),
     codeJobsDispatchedThisRun: dispatched,
     forkInSync,
   }
 }
 
-function toSlug(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 60) || 'finding'
+type ParsedDispatchItem = Omit<OssContributionFinding, 'issueUrl'>
+
+function parseDispatchItems(items: DispatchImprovementItem[] | undefined): ParsedDispatchItem[] {
+  if (!items || items.length === 0) {
+    throw new Error(
+      'dispatch_improvement_job requires `items`: one entry per approved finding that needs a ' +
+      'fix, each with findingId, category, issueNumber, title, and description. File each issue ' +
+      'first — a contribution PR with no report behind it is unreviewable.',
+    )
+  }
+
+  const seen = new Set<string>()
+  return items.map((raw, index) => {
+    const id = raw.findingId?.trim() ?? ''
+    const title = raw.title?.trim() ?? ''
+    const description = raw.description?.trim() ?? ''
+    const category = raw.category?.trim() ?? ''
+    const at = `items[${index}]`
+
+    if (!id) throw new Error(`dispatch_improvement_job ${at} requires \`findingId\`.`)
+    if (seen.has(id)) {
+      throw new Error(`dispatch_improvement_job lists finding "${id}" more than once.`)
+    }
+    seen.add(id)
+
+    if (!isOssContributionCategory(category)) {
+      throw new Error(
+        `dispatch_improvement_job ${at} has category "${category || '(empty)'}". Only ` +
+        'base-intelligence or runner-code findings are dispatched; tenant findings go through ' +
+        'propose_change.',
+      )
+    }
+    if (!Number.isInteger(raw.issueNumber) || raw.issueNumber <= 0) {
+      throw new Error(
+        `dispatch_improvement_job ${at} requires the \`issueNumber\` this item fixes. File the ` +
+        'issue first with upstream_create_issue.',
+      )
+    }
+    if (!title) throw new Error(`dispatch_improvement_job ${at} requires a title.`)
+    if (!description) {
+      throw new Error(
+        `dispatch_improvement_job ${at} requires a description: the child job starts with no ` +
+        'knowledge of your analysis, so state the behaviour to change, the files involved, and ' +
+        'how to verify it.',
+      )
+    }
+
+    return {
+      id,
+      category,
+      issueNumber: raw.issueNumber,
+      title,
+      description,
+    }
+  })
+}
+
+function assertItemsPermitted(items: ReadonlyArray<ParsedDispatchItem>, ctx: ToolContext): void {
+  const tiers = retrospectiveTiers(ctx.job)
+  const blocked = items.filter(item => !tiers[contributionTierFor(item.category)])
+  if (blocked.length === 0) return
+
+  const listed = blocked.map(item => `${item.id} (${item.category})`).join(', ')
+  throw new Error(
+    `dispatch_improvement_job is not permitted for ${listed}: the developer launched this run ` +
+    'with that destination disabled. Drop those items — or record them as not-shipped with ' +
+    'reason "destination not enabled for this run" — and dispatch the rest.',
+  )
 }

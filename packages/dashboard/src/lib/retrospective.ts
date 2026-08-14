@@ -57,13 +57,13 @@ export const TIER_META: ReadonlyArray<TierMeta> = [
   {
     key: 'upstreamIntelligence',
     label: 'Coro intelligence',
-    description: 'Open an issue and a markdown pull request against the Coro repository.',
+    description: 'Open an issue and dispatch a contribution job that edits Coro\'s base intelligence.',
     requiresUpstream: true,
   },
   {
     key: 'upstreamCode',
     label: 'Coro code',
-    description: 'Dispatch an implementation run that fixes Coro\u2019s code and opens a pull request upstream.',
+    description: 'Open an issue and dispatch a contribution job that fixes Coro\'s runner code.',
     requiresUpstream: true,
   },
 ]

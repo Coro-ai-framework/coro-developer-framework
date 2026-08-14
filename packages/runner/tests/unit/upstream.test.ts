@@ -29,20 +29,6 @@ vi.mock('../../src/clients/github', () => ({
   GitHubError: class extends Error {},
 }))
 
-const writer = {
-  prepareUpstreamWriter: vi.fn(),
-  commitAndPush: vi.fn(),
-}
-
-vi.mock('../../src/intelligence/writer', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/intelligence/writer')>()
-  return {
-    ...actual,
-    prepareUpstreamWriter: (...args: unknown[]) => writer.prepareUpstreamWriter(...args),
-    commitAndPush: (...args: unknown[]) => writer.commitAndPush(...args),
-  }
-})
-
 // Cloning is exercised against a real filesystem in upstream-source.test.ts;
 // here only the tool's own decisions matter.
 const materialiseUpstreamSource = vi.fn()
@@ -61,11 +47,9 @@ const dispatchJob = vi.fn()
 const {
   dispatchImprovementJob,
   fingerprintFinding,
-  normalizeUpstreamFiles,
   upstreamCheckout,
   upstreamCommentIssue,
   upstreamCreateIssue,
-  upstreamOpenIntelligencePr,
   upstreamSearch,
   UPSTREAM_MARKER_PREFIX,
 } = await import('../../src/tools/upstream')
@@ -136,10 +120,10 @@ beforeEach(() => {
     number: 42, title: 't', url: 'https://github.com/o/r/issues/42',
     state: 'open', isPr: false, body: '', createdAt: '', updatedAt: '',
   })
-  gh.getIssue.mockResolvedValue({
-    number: 42, title: 't', url: 'https://github.com/o/r/issues/42',
+  gh.getIssue.mockImplementation(async (_slug: string, number: number) => ({
+    number, title: 't', url: `https://github.com/o/r/issues/${number}`,
     state: 'open', isPr: false, body: '', createdAt: '', updatedAt: '',
-  })
+  }))
   gh.postComment.mockResolvedValue({ id: 1, content: { raw: '' }, created_on: '', updated_on: '' })
   gh.getRepo.mockResolvedValue({
     full_name: 'coro-ai-framework/coro', default_branch: 'main',
@@ -161,13 +145,6 @@ beforeEach(() => {
     html_url: '', fork: true,
   })
   gh.syncFork.mockResolvedValue(true)
-  gh.createPr.mockResolvedValue({ id: 7, links: { html: { href: 'https://github.com/o/r/pull/7' } } })
-  writer.prepareUpstreamWriter.mockResolvedValue({
-    dir: '/tmp/writers/upstream/contributor-coro',
-    baseRef: 'main',
-    remoteUrl: 'https://github.com/contributor/coro.git',
-  })
-  writer.commitAndPush.mockResolvedValue(undefined)
   dispatchJob.mockResolvedValue({ id: 'coro-child-1' })
 })
 
@@ -368,6 +345,13 @@ describe('upstreamCreateIssue', () => {
     await expect(upstreamCreateIssue({ ...args, body: '' }, makeCtx())).rejects.toThrow(/requires a body/)
   })
 
+  it('is available when only the code destination is enabled', async () => {
+    const ctx = makeCtx({
+      job: { params: { tiers: { tenant: true, upstreamIntelligence: false, upstreamCode: true } } },
+    })
+    await expect(upstreamCreateIssue(args, ctx)).resolves.toMatchObject({ number: 42 })
+  })
+
   it('refuses a finding it cannot fingerprint rather than hashing partial input', async () => {
     await expect(upstreamCreateIssue(
       { ...args, finding: { category: 'base-intelligence', title: '' } },
@@ -394,100 +378,22 @@ describe('upstreamCommentIssue', () => {
   })
 })
 
-describe('normalizeUpstreamFiles', () => {
-  const good = 'packages/intelligence-base/layer/agents/coder.md'
-
-  it('accepts base-layer markdown and strips a leading ./', () => {
-    expect(normalizeUpstreamFiles([{ path: `./${good}`, content: '# x' }]))
-      .toEqual([{ path: good, content: '# x' }])
-  })
-
-  it('rejects paths outside the base intelligence layer', () => {
-    expect(() => normalizeUpstreamFiles([{ path: 'packages/runner/README.md', content: '# x' }]))
-      .toThrow(/not contributable/)
-  })
-
-  it('rejects non-markdown and empty files', () => {
-    expect(() => normalizeUpstreamFiles([
-      { path: 'packages/intelligence-base/layer/src/index.ts', content: 'x' },
-    ])).toThrow(/must end with \.md/)
-    expect(() => normalizeUpstreamFiles([{ path: good, content: '  ' }])).toThrow(/empty content/)
-  })
-
-  it('rejects an empty payload', () => {
-    expect(() => normalizeUpstreamFiles([])).toThrow(/at least one file/)
-  })
-})
-
-describe('upstreamOpenIntelligencePr', () => {
-  const args = {
-    issueNumber: 42,
-    title: 'Tighten the coder test-scaffolding procedure',
-    body: 'Adds an explicit stop condition so the phase does not re-enter.',
-    branchSlug: 'coder-test-scaffolding',
-    files: [{ path: 'packages/intelligence-base/layer/agents/coder.md', content: '# Coder\n' }],
-  }
-
-  it('syncs the fork, pushes a coro/retro branch, and opens a cross-repo PR', async () => {
-    const ctx = makeCtx()
-    const result = await upstreamOpenIntelligencePr(args, ctx)
-
-    expect(gh.ensureFork).toHaveBeenCalledWith('coro-ai-framework/coro', 'contributor')
-    expect(gh.syncFork).toHaveBeenCalledWith('contributor/coro', 'main')
-
-    const push = writer.commitAndPush.mock.calls[0][0]
-    expect(push.branch).toMatch(/^coro\/retro\/retro-1-coder-test-scaffolding$/)
-    expect(push.baseRef).toBe('main')
-    expect(push.commitMessage).toContain('Fixes #42')
-
-    expect(gh.createPr).toHaveBeenCalledWith(expect.objectContaining({
-      repoSlug: 'coro-ai-framework/coro',
-      sourceOwner: 'contributor',
-      targetBranch: 'main',
-      sourceBranch: push.branch,
-    }))
-    expect(result).toMatchObject({
-      prUrl: 'https://github.com/o/r/pull/7',
-      prNumber: 7,
-      forkSlug: 'contributor/coro',
-      forkInSync: true,
-      filesShipped: [args.files[0].path],
-    })
-  })
-
-  it('reports a fork that could not be fast-forwarded instead of failing', async () => {
-    gh.syncFork.mockResolvedValue(false)
-    const result = await upstreamOpenIntelligencePr(args, makeCtx())
-    expect(result.forkInSync).toBe(false)
-    expect(gh.createPr).toHaveBeenCalled()
-  })
-
-  it('requires the issue the PR fixes', async () => {
-    await expect(upstreamOpenIntelligencePr({ ...args, issueNumber: 0 }, makeCtx()))
-      .rejects.toThrow(/requires the `issueNumber`/)
-  })
-
-  it('checks file contents for leaks before cloning anything', async () => {
-    const jobs = [makeMockJob({ id: 'job-1', params: { repoSlug: 'billing-api' } }) as unknown as Job]
-    const ctx = makeCtx({ jobs })
-
-    await expect(upstreamOpenIntelligencePr({
-      ...args,
-      files: [{ ...args.files[0], content: '# Coder\n\nSee billing-api for an example.\n' }],
-    }, ctx)).rejects.toThrow(/still contains identifiers/)
-
-    expect(writer.prepareUpstreamWriter).not.toHaveBeenCalled()
-    expect(gh.ensureFork).not.toHaveBeenCalled()
-  })
-})
-
 describe('dispatchImprovementJob', () => {
-  const args = {
+  const codeItem = {
+    findingId: 'finding-3',
+    category: 'runner-code',
     issueNumber: 42,
     title: 'Phase retry loses the corrective prompt',
     description: 'The corrective prompt is dropped on retry; see packages/runner/src/jobs/runner.ts.',
-    findingId: 'finding-3',
   }
+  const intelItem = {
+    findingId: 'finding-1',
+    category: 'base-intelligence',
+    issueNumber: 46,
+    title: 'Spec writer skips tracker comments',
+    description: 'agents/spec-writer.md only calls tracker_get_issue; comments override the body.',
+  }
+  const args = { items: [codeItem] }
 
   it('dispatches a child job aimed at upstream from the fork', async () => {
     const ctx = makeCtx()
@@ -513,13 +419,50 @@ describe('dispatchImprovementJob', () => {
       epicAllowed: false,
       reviewers: [],
     })
+    expect(input.params.findings).toEqual([
+      expect.objectContaining({
+        id: 'finding-3',
+        category: 'runner-code',
+        issueNumber: 42,
+        issueUrl: 'https://github.com/o/r/issues/42',
+      }),
+    ])
+    expect(input.params.description).toContain('finding-3')
+    expect(input.params.description).toContain(codeItem.description)
 
     expect(result).toMatchObject({
       childJobId: 'coro-child-1',
       forkSlug: 'contributor/coro',
       upstreamRepo: 'coro-ai-framework/coro',
+      findingIds: ['finding-3'],
       codeJobsDispatchedThisRun: 1,
     })
+  })
+
+  it('puts several findings on one child so the planner can keep a coupled story in one PR', async () => {
+    const result = await dispatchImprovementJob({ items: [intelItem, codeItem] }, makeCtx())
+
+    expect(dispatchJob).toHaveBeenCalledTimes(1)
+    const input = dispatchJob.mock.calls[0][0]
+    expect(input.params.title).toBe('Spec writer skips tracker comments (+1 more)')
+    expect(input.params.findings).toEqual([
+      expect.objectContaining({ id: 'finding-1', issueNumber: 46, issueUrl: 'https://github.com/o/r/issues/46' }),
+      expect.objectContaining({ id: 'finding-3', issueNumber: 42, issueUrl: 'https://github.com/o/r/issues/42' }),
+    ])
+    expect(input.params.description).toContain('finding-1')
+    expect(input.params.description).toContain('finding-3')
+    expect(result.findingIds).toEqual(['finding-1', 'finding-3'])
+    expect(result.issues).toEqual([
+      { findingId: 'finding-1', issueNumber: 46, issueUrl: 'https://github.com/o/r/issues/46' },
+      { findingId: 'finding-3', issueNumber: 42, issueUrl: 'https://github.com/o/r/issues/42' },
+    ])
+  })
+
+  it('counts a multi-finding call once against the per-run cap', async () => {
+    const ctx = makeCtx()
+    await dispatchImprovementJob({ items: [intelItem, codeItem] }, ctx)
+    await expect(dispatchImprovementJob(args, ctx)).rejects.toThrow(/configured limit \(1\)/)
+    expect(dispatchJob).toHaveBeenCalledTimes(1)
   })
 
   it('syncs the fork so the child branches from current upstream', async () => {
@@ -528,33 +471,48 @@ describe('dispatchImprovementJob', () => {
     expect(gh.syncFork).toHaveBeenCalledWith('contributor/coro', 'main')
   })
 
-  it('refuses when the run was launched without the code destination', async () => {
+  it('dispatches an intelligence finding when only that destination is enabled', async () => {
     const ctx = makeCtx({
       job: { params: { tiers: { tenant: true, upstreamIntelligence: true, upstreamCode: false } } },
     })
-    await expect(dispatchImprovementJob(args, ctx)).rejects.toThrow(/upstreamCode/)
+    await expect(dispatchImprovementJob({ items: [intelItem] }, ctx))
+      .resolves.toMatchObject({ childJobId: 'coro-child-1' })
+    expect(dispatchJob).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a code item when the run was launched without the code destination', async () => {
+    const ctx = makeCtx({
+      job: { params: { tiers: { tenant: true, upstreamIntelligence: true, upstreamCode: false } } },
+    })
+    await expect(dispatchImprovementJob(args, ctx)).rejects.toThrow(/finding-3 \(runner-code\)/)
     expect(dispatchJob).not.toHaveBeenCalled()
   })
 
-  it('tells the agent the issue is still the outcome when no dispatcher exists', async () => {
+  it('tells the agent the issues are still the outcome when no dispatcher exists', async () => {
     const ctx = makeCtx({ dispatchJob: null })
     await expect(dispatchImprovementJob(args, ctx)).rejects.toThrow(/cannot start jobs/)
   })
 
-  it('requires the issue and a briefing the child can act on', async () => {
-    await expect(dispatchImprovementJob({ ...args, issueNumber: 0 }, makeCtx()))
+  it('requires items the child can act on', async () => {
+    await expect(dispatchImprovementJob({ items: [] }, makeCtx()))
+      .rejects.toThrow(/requires `items`/)
+    await expect(dispatchImprovementJob({ items: [{ ...codeItem, issueNumber: 0 }] }, makeCtx()))
       .rejects.toThrow(/requires the `issueNumber`/)
-    await expect(dispatchImprovementJob({ ...args, description: '' }, makeCtx()))
+    await expect(dispatchImprovementJob({ items: [{ ...codeItem, description: '' }] }, makeCtx()))
       .rejects.toThrow(/requires a description/)
-    await expect(dispatchImprovementJob({ ...args, findingId: '' }, makeCtx()))
-      .rejects.toThrow(/requires the `findingId`/)
+    await expect(dispatchImprovementJob({ items: [{ ...codeItem, findingId: '' }] }, makeCtx()))
+      .rejects.toThrow(/requires `findingId`/)
+    await expect(dispatchImprovementJob({ items: [{ ...codeItem, category: 'tenant-intelligence' }] }, makeCtx()))
+      .rejects.toThrow(/tenant findings go through/)
+    await expect(dispatchImprovementJob({ items: [codeItem, { ...intelItem, findingId: 'finding-3' }] }, makeCtx()))
+      .rejects.toThrow(/more than once/)
     expect(dispatchJob).not.toHaveBeenCalled()
   })
 
   it('refuses a briefing that names this install, before dispatching', async () => {
     const jobs = [makeMockJob({ id: 'job-1', params: { repoSlug: 'billing-api' } }) as unknown as Job]
     await expect(dispatchImprovementJob(
-      { ...args, description: 'Reproduced on billing-api.' },
+      { items: [{ ...codeItem, description: 'Reproduced on billing-api.' }] },
       makeCtx({ jobs }),
     )).rejects.toThrow(/still contains identifiers/)
     expect(dispatchJob).not.toHaveBeenCalled()
@@ -563,7 +521,7 @@ describe('dispatchImprovementJob', () => {
   it('stops at the configured per-run cap', async () => {
     const ctx = makeCtx()
     await dispatchImprovementJob(args, ctx)
-    await expect(dispatchImprovementJob({ ...args, findingId: 'finding-4' }, ctx))
+    await expect(dispatchImprovementJob({ items: [{ ...codeItem, findingId: 'finding-4' }] }, ctx))
       .rejects.toThrow(/configured limit \(1\)/)
     expect(dispatchJob).toHaveBeenCalledTimes(1)
   })

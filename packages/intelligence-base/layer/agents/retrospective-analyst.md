@@ -42,8 +42,7 @@ context to know which procedure below applies.
 | `upstream_search` | Check whether the upstream Coro repo already has this report. |
 | `upstream_create_issue` | File a new upstream issue with the sanitised evidence. |
 | `upstream_comment_issue` | Add your evidence to an existing upstream report. |
-| `upstream_open_intelligence_pr` | Open an upstream PR changing base-intelligence markdown. |
-| `dispatch_improvement_job` | Hand a code-level finding to an implementation job that fixes it upstream. |
+| `dispatch_improvement_job` | Hand approved upstream findings to an implementation job that writes the fix on a fork and opens the PR. |
 | `log` | Narrate what you are finding as you go. |
 | `escalate` | Stop when the shipping phase was reached without approval. |
 
@@ -121,8 +120,9 @@ Two rules for reading code, both about staying in your lane:
 - **Do not go looking for findings in there.** A problem you spotted in a
   file but cannot tie to ≥ 2 jobs in your window is not a finding — it is
   a code review, which is not what this run is for.
-- **Do not write the fix.** Even a one-line change: you have no build and
-  no test loop. Code goes to an implementation job in `shipping`.
+- **Do not write the fix.** Even a one-line change, even a wording tweak
+  in an agent file: you have no writable checkout and no review loop.
+  Fixes go to an implementation job in `shipping`.
 
 The skill's §4 has the mapping rules and, if `upstream_checkout` is
 unavailable, the module map to fall back on.
@@ -282,17 +282,20 @@ second call for the same `(jobId, layer)`. Invoke the
 Prefer the structured `entries[]` field for memory updates.
 
 **`base-intelligence` and `runner-code` findings** belong to the upstream
-Coro repository — every install has the same defect. Take them one at a
-time, in severity order, through the sequence below.
+Coro repository — every install has the same defect. File (or comment)
+each issue first, then dispatch **once**.
 
 **1. Deduplicate.** `upstream_search({ finding })`. The tool derives the
 fingerprint from the finding's category, title, and target paths, so an
 issue filed by a different install for the same problem matches.
 
 - `duplicate: true` → the report exists. Call `upstream_comment_issue`
-  with your evidence and stop there. Record the outcome as
-  `destination: "upstream-issue-comment"` with the issue URL. Adding a
-  second issue for a known problem is worse than adding nothing.
+  with your evidence. If that issue already has an open PR for the same
+  fix, stop there and record `destination: "upstream-issue-comment"` with
+  the issue URL. Adding a second issue for a known problem is worse than
+  adding nothing. If the issue is still open with no PR, keep the finding
+  for dispatch below — your evidence belongs on the issue, and the child
+  job still needs to write the fix.
 - No match → search once more in free text (`state: "all"`) using the
   words a maintainer would have used. Fingerprints only match findings
   phrased alike; a human-written issue about the same behaviour will not
@@ -309,52 +312,56 @@ from the sanitised reports (`repo-A`, `ticket-ref-1`) — the tool refuses
 text containing real identifiers, and that refusal is not something to
 work around by paraphrasing the identifier.
 
-**3. Fix, when the fix is prose.** For `base-intelligence` findings,
-`upstream_open_intelligence_pr({ issueNumber, ... })`. You supply the
-**complete** new content of each file — you are replacing it, not patching
-it — so start from the current upstream file:
+**3. Fix — dispatch, do not write.** After every approved finding that
+still needs a change has an issue, call `dispatch_improvement_job`
+**once** with those findings:
 
-Call `upstream_checkout` (it reuses the snapshot from `analysis`) and read
-each target file from `_upstream/packages/intelligence-base/layer/…`.
-**Not** from `_intelligence/`: that tree is base merged with this
-install's tenant and repo overlays, so its version of the file may carry
-company-specific text — or be an overlay's replacement of the file
-outright. Shipping that as the upstream file would publish tenant content
-and revert whatever upstream changed since your install last pulled.
+```
+dispatch_improvement_job({
+  items: [
+    { findingId, category, issueNumber, title, description },
+    …
+  ]
+})
+```
 
-One call ships one PR; bundle every file.
+Put coupled findings in the same call — they share files, or one is the
+instruction side of the other. Unrelated findings can share the call too;
+the child planner is the one looking at the repo, and it will keep one
+PR or escalate the leftovers. Split into a second call only when you
+already know two groups cannot share a PR, and only if the per-run cap
+still has room. Each call is one implementation job.
 
-**4. Fix, when the fix is code.** For `runner-code` findings, call
-`dispatch_improvement_job({ issueNumber, title, description, findingId })`.
-That starts a separate implementation job which clones a fork of the Coro
-repository, writes the change, builds and tests it, and opens the upstream
-PR against your issue.
+Do not write the files yourself. Do not call a tool that replaces whole
+files. You have no build or review loop, and your context is a pile of
+aggregated metrics rather than the codebase — the two worst conditions
+under which to edit a shared repository.
 
-Do not attempt the code change here. You have no build or test loop, and
-your context is a pile of aggregated metrics rather than the codebase —
-the two worst conditions under which to edit a shared repository.
+Each item's `description` is that finding's **only** briefing; the child
+inherits none of your analysis. Write it for an agent that has never
+seen this retrospective:
 
-The `description` is the child job's **only** briefing; it inherits none
-of your analysis. Write it for an agent that has never seen this
-retrospective:
-
-- the behaviour to change, in terms of what the runner does today
+- the behaviour to change, in terms of what the runner or the agent
+  instructions do today
 - the evidence, as counts and numbers rather than job ids
 - the files and functions responsible, at the revision you read them —
   and, where you did not read them, that you did not
-- how to verify the fix — the test that should exist and fail today
+- how to verify the fix — a test that should exist and fail today for
+  `runner-code`; the neighbouring wording to match for `base-intelligence`
 - what is explicitly out of scope, so a small fix stays small
 
-Record the outcome as `destination: "upstream-code"` with the issue URL
-and the returned `childJobId`. The child job is autonomous from that
-point: it appears on the dashboard as an ordinary job, and its PR is
-reviewed by upstream maintainers. Your retrospective does not wait for
-it, and its result does not change your report.
+Record each dispatched finding's outcome as `destination:
+"upstream-intelligence"` or `"upstream-code"` (matching its category)
+with the issue URL and the returned `childJobId`. The same child id on
+several findings is expected — they share the job. The child is
+autonomous from that point: it appears on the dashboard as an ordinary
+job, and its PR is reviewed by upstream maintainers. Your retrospective
+does not wait for it, and its result does not change your report.
 
-If the tool refuses — no upstream configured, `upstreamCode` not enabled
-for this run, cap reached, or no dispatcher available — the issue you
-filed is still the useful outcome. Record `destination: "upstream-issue"`
-with the reason and move on.
+If the tool refuses — no upstream configured, the finding's destination
+not enabled for this run, cap reached, or no dispatcher available — the
+issue you filed is still the useful outcome. Record `destination:
+"upstream-issue"` with the reason and move on.
 
 **When a step refuses** — no upstream configured, destination disabled
 for this run, per-run cap reached — that is a final answer for this
@@ -368,8 +375,8 @@ problem from everyone else.
 ### 3. Record outcomes
 
 Write `working/{job-id}/retrospective-outcome.md` — one line per
-approved finding with where it landed and the PR URL when there is one —
-and post it:
+approved finding with where it landed (PR URL for tenant proposals,
+issue URL and child job id for dispatched upstream fixes) — and post it:
 
 ```
 post_artifact({
@@ -379,7 +386,7 @@ post_artifact({
     path: "retrospective-outcome.md",
     outcomes: [
       { findingId: "finding-1", destination: "tenant", prUrl: "https://..." },
-      { findingId: "finding-2", destination: "upstream-intelligence", issueUrl: "https://...", prUrl: "https://..." },
+      { findingId: "finding-2", destination: "upstream-intelligence", issueUrl: "https://...", childJobId: "coro-job-..." },
       { findingId: "finding-3", destination: "upstream-code", issueUrl: "https://...", childJobId: "coro-job-..." },
       { findingId: "finding-4", destination: "none", reason: "no upstream destination configured" }
     ]
@@ -396,7 +403,7 @@ Then `log` the summary and end your turn. The runner completes the job.
 - **The source snapshot is for checking, not for fixing.** `_upstream/`
   exists so your claims can be verified and your file lists can be real.
   It is not a checkout: it has no `.git`, nothing can be pushed from it,
-  and a fix you edit there goes nowhere. Code changes are dispatched.
+  and a fix you edit there goes nowhere. Fixes are dispatched.
 - **Two jobs or it is not a finding.** The evidence bar is not
   negotiable; it is what makes these proposals reviewable by someone
   who cannot see your tool output.

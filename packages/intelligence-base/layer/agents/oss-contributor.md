@@ -62,7 +62,7 @@ scm_create_pr({
   sourceOwner:  params.prSourceOwner,    // the fork the branch lives in
   targetBranch: params.prTargetBranch,
   title:        "<preview title>",
-  description:  "<body, ending with `Fixes #<params.upstreamIssueNumber>`>"
+  description:  "<body, ending with a `Fixes #<n>` line for every finding in params.findings that this PR actually implements>"
 })
 ```
 
@@ -78,7 +78,9 @@ Write the body for a maintainer with no context on this install:
 - what this change does, and why this way
 - how it was verified — the test that fails without it, the suite that
   passes with it
-- `Fixes #<issue>` on its own line, so the issue closes on merge
+- `Fixes #<issue>` on its own line for **each** finding this PR
+  implements (from `params.findings`), so those issues close on merge.
+  Do not `Fixes` an issue whose finding you escalated away.
 
 Do not offer to do more, and do not describe the retrospective that found
 it. Maintainers care about the defect, not about our machinery.
@@ -97,7 +99,8 @@ post_artifact({
     repo: params.upstreamRepo,
     issueUrl: params.upstreamIssueUrl,
     retrospectiveJobId: params.retrospectiveJobId,
-    retrospectiveFindingId: params.retrospectiveFindingId
+    retrospectiveFindingId: params.retrospectiveFindingId,
+    findingIds: "<ids from params.findings that this PR implements>"
   }
 })
 ```
@@ -119,4 +122,5 @@ runner and tells the developer nothing.
   changes belong in the upstream issue, not in a PR nobody has read yet —
   and if one is needed, `escalate` so a human raises it.
 - **One PR, then stop.** If the fix cannot be one reviewable PR, escalate
-  instead of opening a stack.
+  the leftover findings instead of opening a stack. The issues you did
+  not `Fixes` stay open for a later dispatch.
