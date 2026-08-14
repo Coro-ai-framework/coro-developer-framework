@@ -42,6 +42,8 @@ export interface RepoInfo {
   clone_url: string
   html_url: string
   fork: boolean
+  /** Present on a fork: the repository it was forked from. */
+  parent?: { full_name: string }
 }
 
 /** One issue or PR as returned by search / issue reads. */
@@ -151,6 +153,12 @@ export class GitHubClient {
    * has to be classified before the request is built, not after. Passing
    * it unconditionally made the documented configuration (`forkOwner` =
    * your own username) fail every time.
+   *
+   * What comes back from the fork's address is checked rather than trusted,
+   * because two things other than the fork can answer there: a same-named
+   * repository, and a redirect left behind by a repository that moved out of
+   * that account. Adopting either would send contribution branches somewhere
+   * they do not belong.
    */
   async ensureFork(
     repoSlug: string,
@@ -158,30 +166,67 @@ export class GitHubClient {
     opts: { attempts?: number; delayMs?: number } = {},
   ): Promise<RepoInfo> {
     const { repo } = this.parseRepo(repoSlug)
+    const upstreamSlug = this.repoPath(repoSlug)
     const owner = forkOwner ?? this.owner
     const forkSlug = `${owner}/${repo}`
 
-    const existing = await this.getRepo(forkSlug).catch(() => null)
-    if (existing) return existing
+    let found = await this.forkAt(forkSlug, upstreamSlug)
+    if (found.kind === 'fork') return found.repo
 
-    await this.request(
-      'POST',
-      `/repos/${this.repoPath(repoSlug)}/forks`,
-      await this.forkTarget(forkOwner),
-    )
+    await this.request('POST', `/repos/${upstreamSlug}/forks`, await this.forkTarget(forkOwner))
 
     const attempts = opts.attempts ?? 10
     const delayMs = opts.delayMs ?? 2000
     for (let attempt = 0; attempt < attempts; attempt++) {
       await sleep(delayMs)
-      const fork = await this.getRepo(forkSlug).catch(() => null)
-      if (fork) return fork
+      found = await this.forkAt(forkSlug, upstreamSlug)
+      if (found.kind === 'fork') return found.repo
+    }
+
+    // A redirect that survived the fork request is a configuration answer,
+    // not a slow fork: GitHub will not put a fork at a path that another
+    // repository still claims.
+    if (found.kind === 'redirect') {
+      throw new GitHubError(
+        422,
+        `${forkSlug} is the former path of ${found.to} and still redirects there, so GitHub ` +
+        'will not create a fork at that address. Set `upstream.forkOwner` (Settings → Coro ' +
+        'contribution) to an account that does not already claim that path — an organisation ' +
+        'you can create repositories in works.',
+      )
     }
 
     throw new GitHubError(
       504,
       `fork ${forkSlug} was requested but did not become available after ${attempts} checks`,
     )
+  }
+
+  /**
+   * What is at the fork's address: the fork, nothing, or a redirect to the
+   * repository that used to live there. A same-named repository that is not
+   * a fork of `upstreamSlug` throws instead of being reported, since no
+   * amount of waiting will turn it into one.
+   */
+  private async forkAt(
+    forkSlug: string,
+    upstreamSlug: string,
+  ): Promise<
+    | { kind: 'fork'; repo: RepoInfo }
+    | { kind: 'absent' }
+    | { kind: 'redirect'; to: string }
+  > {
+    const repo = await this.getRepo(forkSlug).catch(() => null)
+    if (!repo) return { kind: 'absent' }
+
+    // `fetch` follows GitHub's permanent redirect, so a response describing
+    // some other repository means this address is free.
+    if (repo.full_name.toLowerCase() !== forkSlug.toLowerCase()) {
+      return { kind: 'redirect', to: repo.full_name }
+    }
+
+    assertForkOf(repo, upstreamSlug)
+    return { kind: 'fork', repo }
   }
 
   /**
@@ -714,6 +759,29 @@ export function parseGitHubRepo(
     return { owner: parts[0]!, repo: parts[1]!.replace(/\.git$/, '') }
   }
   return { owner: defaultOwner, repo: (parts[0] ?? '').replace(/\.git$/, '') }
+}
+
+/**
+ * Refuse a repository that merely shares the fork's name.
+ *
+ * `ensureFork` treats whatever is at `<forkOwner>/<repo>` as the fork, which
+ * is right for a real fork and dangerous otherwise: contribution branches get
+ * pushed into it, and GitHub then rejects a pull request whose head is
+ * outside the upstream's fork network. Both failures read as unrelated
+ * errors, so the mismatch is named here instead.
+ */
+function assertForkOf(repo: RepoInfo, upstreamSlug: string): void {
+  const parent = repo.parent?.full_name
+  if (repo.fork && (!parent || parent.toLowerCase() === upstreamSlug.toLowerCase())) return
+
+  throw new GitHubError(
+    422,
+    `${repo.html_url} already exists and is not a fork of ${upstreamSlug}` +
+    `${parent ? ` (it is a fork of ${parent})` : ''}, so Coro would be pushing contribution ` +
+    'branches into it. Rename that repository, or set `upstream.forkOwner` (Settings → Coro ' +
+    'contribution) to an account that does not hold one — an organisation you can create ' +
+    'repositories in works.',
+  )
 }
 
 function normalizeGhPr(ghPr: GhPullRequest): PullRequest {

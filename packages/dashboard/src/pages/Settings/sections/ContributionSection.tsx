@@ -50,7 +50,7 @@ export default function ContributionSection() {
 
       <Field
         label="Fork owner"
-        hint="GitHub account the runner pushes branches to. The fork is created for you on first use. Defaults to the owner configured on your GitHub plugin."
+        hint="GitHub username or organisation the runner pushes branches to — not an e-mail address. The fork is created for you on first use. Defaults to the owner configured on your GitHub plugin."
       >
         <Input
           value={draft.upstreamForkOwner}

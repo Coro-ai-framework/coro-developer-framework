@@ -14,13 +14,23 @@ import { GitHubClient } from '../../src/clients/github'
 const UPSTREAM = 'coro-ai-framework/coro'
 const SELF = 'contributor'
 
-function repo(fullName: string) {
+interface RepoFacts {
+  fork?: boolean
+  parent?: string
+  /** Former path of a moved repository: `fetch` follows GitHub's redirect. */
+  redirectTo?: string
+}
+
+function repo(fullName: string, facts: RepoFacts = {}) {
+  const fork = facts.fork ?? true
+  const resolved = facts.redirectTo ?? fullName
   return {
-    full_name: fullName,
+    full_name: resolved,
     default_branch: 'main',
-    clone_url: `https://github.com/${fullName}.git`,
-    html_url: `https://github.com/${fullName}`,
-    fork: fullName !== UPSTREAM,
+    clone_url: `https://github.com/${resolved}.git`,
+    html_url: `https://github.com/${resolved}`,
+    fork,
+    ...(fork ? { parent: { full_name: facts.parent ?? UPSTREAM } } : {}),
   }
 }
 
@@ -31,16 +41,16 @@ interface Recorded {
 
 /**
  * `accounts` maps a login to what `GET /users/<login>` answers with;
- * anything absent 404s. `existingForks` decides whether the fork is already
- * there, which is the short-circuit path.
+ * anything absent 404s. `repos` seeds repositories that already exist —
+ * the short-circuit path, and the one place a name collision shows up.
  */
 function mockFetch(opts: {
   accounts?: Record<string, { type: string }>
-  existingForks?: string[]
+  repos?: Record<string, RepoFacts>
   self?: string | null
 } = {}): Recorded {
   const accounts = opts.accounts ?? {}
-  const existing = new Set(opts.existingForks ?? [])
+  const existing = new Map<string, RepoFacts>(Object.entries(opts.repos ?? {}))
   const self = opts.self === undefined ? SELF : opts.self
   const recorded: Recorded = { paths: [], forkBodies: [] }
 
@@ -64,7 +74,8 @@ function mockFetch(opts: {
       // the fork lands under `organization` when present, the token owner's
       // account when not.
       const created = `${body.organization ?? self ?? SELF}/coro`
-      existing.add(created)
+      // Nothing appears where another repository already claims the path.
+      if (!existing.has(created)) existing.set(created, { fork: true })
       return reply(202, repo(created))
     }
 
@@ -79,8 +90,9 @@ function mockFetch(opts: {
     }
 
     const slug = path.replace(/^\/repos\//, '')
-    if (slug === UPSTREAM) return reply(200, repo(UPSTREAM))
-    if (existing.has(slug)) return reply(200, repo(slug))
+    if (slug === UPSTREAM) return reply(200, repo(UPSTREAM, { fork: false }))
+    const facts = existing.get(slug)
+    if (facts) return reply(200, repo(slug, facts))
     return reply(404, { message: 'Not Found' })
   }))
 
@@ -146,12 +158,45 @@ describe('GitHubClient.ensureFork', () => {
   })
 
   it('short-circuits on an existing fork without classifying the account', async () => {
-    const rec = mockFetch({ existingForks: [`${SELF}/coro`] })
+    const rec = mockFetch({ repos: { [`${SELF}/coro`]: { fork: true } } })
 
     const fork = await client().ensureFork(UPSTREAM, SELF, fast)
 
     expect(fork.full_name).toBe(`${SELF}/coro`)
     expect(rec.forkBodies).toEqual([])
     expect(rec.paths).toEqual([`/repos/${SELF}/coro`])
+  })
+
+  // A same-named repository that is not a fork would otherwise be adopted as
+  // one: contribution branches pushed into it, and a PR GitHub cannot open.
+  it('refuses a same-named repository that is not a fork', async () => {
+    mockFetch({ repos: { [`${SELF}/coro`]: { fork: false } } })
+
+    await expect(client().ensureFork(UPSTREAM, SELF, fast))
+      .rejects.toThrow(/already exists and is not a fork of coro-ai-framework\/coro/)
+  })
+
+  // The upstream maintainer's own install: upstream was transferred out of
+  // their account, so `GET /repos/<them>/<repo>` still redirects to upstream.
+  // Adopting that as the fork would push contribution branches into upstream.
+  it('refuses an address that only redirects to the repository that moved', async () => {
+    const rec = mockFetch({
+      accounts: { [SELF]: { type: 'User' } },
+      repos: { [`${SELF}/coro`]: { fork: false, redirectTo: UPSTREAM } },
+    })
+
+    await expect(client().ensureFork(UPSTREAM, SELF, fast))
+      .rejects.toThrow(/former path of coro-ai-framework\/coro and still redirects there/)
+
+    // The fork was still attempted: a redirect is only terminal once GitHub
+    // has declined to put a fork behind it.
+    expect(rec.forkBodies).toEqual([{}])
+  })
+
+  it('refuses a same-named fork of some other repository', async () => {
+    mockFetch({ repos: { [`${SELF}/coro`]: { fork: true, parent: 'someone-else/coro' } } })
+
+    await expect(client().ensureFork(UPSTREAM, SELF, fast))
+      .rejects.toThrow(/it is a fork of someone-else\/coro/)
   })
 })
