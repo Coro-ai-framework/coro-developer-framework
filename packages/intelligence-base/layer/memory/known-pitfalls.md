@@ -36,7 +36,7 @@ Agents often run compile commands from the Coro **job root** (`working/{jobId}/`
 - The system prompt and phase kickoff include a **Workspace layout** block with absolute and relative paths.
 
 **Prevention:**
-- Read the workspace block; `cd <repoCheckoutDir> && …` before any toolchain command.
+- Read the workspace block. For **git** commands use `git -C <repoCheckoutDir> …` (a host sandbox can deny `cd <repoCheckoutDir> && git …` while allowing bare `git`); for **toolchain** build commands `cd <repoCheckoutDir> && …` is fine. Never run either from the job root.
 - Invoke the **`{language}-conventions`** skill for build/test commands — do not invent env vars from the job root.
 
 ---
