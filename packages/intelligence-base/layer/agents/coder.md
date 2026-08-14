@@ -125,9 +125,23 @@ The subagent is the only convention/plan/test-coverage review this PR will recei
 
 ### 9. Push the branch
 
+Use the normal chained push first:
+
 ```bash
 git push origin <work-item-branch-name>
 ```
+
+If the push is stopped by a host permission prompt, `operation not permitted`,
+`EPERM`, or another sandbox-like denial, retry **exactly once** as an
+unchained command using the repository checkout directory:
+
+```bash
+git -C <repoCheckoutDir> push origin <work-item-branch-name>
+```
+
+Do not wrap the retry in `cd`, `&&`, or another command. If that one retry is
+also blocked, follow the sandbox-recovery skill and escalate if no documented
+SCM-compatible fallback applies. Never use raw HTTP for SCM operations.
 
 ### 10. Post the PR preview (do not open the PR)
 
