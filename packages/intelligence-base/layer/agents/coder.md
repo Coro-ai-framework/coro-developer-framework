@@ -125,7 +125,7 @@ The subagent is the only convention/plan/test-coverage review this PR will recei
 
 ### 9. Push the branch
 
-Use the normal chained push first:
+Use the normal push first:
 
 ```bash
 git push origin <work-item-branch-name>
