@@ -32,8 +32,10 @@ context to know which procedure below applies.
 | Tool | Purpose |
 |------|---------|
 | `list_jobs` | Enumerate the job window (or past retrospectives via `scope: "retrospective"`). |
-| `get_job_report` | Aggregated per-job report: phase run counts, loops, cost, escalation, insights. |
-| `get_job_log_excerpts` | Filtered error/warning lines from one job. |
+| `cluster_window` | Mechanical grouping: error classes, tool failures, insight repeats, cost/token outliers, sibling contrast, prior-remedy scorecard. Call this **before** forming findings. |
+| `get_job_report` | One job's tokens, attribution, tool histogram, provenance. Drill-down after a cluster names it. |
+| `get_job_trace_summary` | Distilled anti-patterns and a capped event skeleton for one job. Not a transcript. |
+| `get_job_log_excerpts` | Filtered error/warning lines. Last resort after the cluster and the trace. |
 | `list_proposals` | Check what has already been proposed before writing anything up. |
 | `read_memory` | Check whether a finding is already documented. |
 | `post_artifact` | Record the findings report and the outcome report. |
@@ -46,10 +48,10 @@ context to know which procedure below applies.
 | `log` | Narrate what you are finding as you go. |
 | `escalate` | Stop when the shipping phase was reached without approval. |
 
-The three history tools are available **only** to this workflow. They
-return identifiers already replaced with stable aliases (`repo-A`,
-`ticket-ref-1`). Pass `raw: true` only when you genuinely need real
-names for a tenant-layer proposal that stays on this machine.
+The history, cluster, and trace tools are available **only** to this
+workflow. They return identifiers already replaced with stable aliases
+(`repo-A`, `ticket-ref-1`). Pass `raw: true` only when you genuinely need
+real names for a tenant-layer proposal that stays on this machine.
 
 ## Phase 1 — `analysis`
 
@@ -68,33 +70,44 @@ names for a tenant-layer proposal that stays on this machine.
 
 ### 2. Read the window
 
-Call `list_jobs({ limit: <params.jobWindow> })`. The rows are compact on
-purpose: status, final phase, cost, escalation flag, work-item loop
-counts, and `reworkPhases` — phases that ran more often than the workflow
-required. A phase that ran once per work item, plus once more per
-approval, is absent from that list because it did nothing wrong.
+Call `cluster_window()` first. It groups the window mechanically and
+returns a `priorRemedies` scorecard for the last few retrospectives.
+Read that scorecard before proposing anything new:
 
-Then be selective. Do **not** call `get_job_report` on all of them
-reflexively — pull reports for the jobs whose summary row already shows
-something (escalated, non-empty `reworkPhases`, high `maxLoopCount`, cost
-far above its neighbours), plus a couple of clean ones as a baseline.
-Reach for `get_job_log_excerpts` only when a report points at a failure
-whose cause you cannot name.
+- `still-firing` / `regressed` — the previous PR did not work. Re-open
+  or rewrite that finding; do not treat the old PR as done.
+- `unverifiable` — the prior finding had no `predictedMetric`. It is
+  **not** evidence that the problem is gone.
+- `gone` / `reduced` — do not re-file it.
 
-Compute the medians you need for outlier comparison from the summary
-rows — that is what they are for.
+Then `list_jobs({ limit: <params.jobWindow> })` for the compact rows
+(status, cost, tokens, `reworkPhases`, `topFailedTool`). A phase that
+ran once per work item, plus once more per approval, is absent from
+`reworkPhases` because it did nothing wrong.
+
+Be selective after that. Pull `get_job_report` / `get_job_trace_summary`
+for jobs the cluster named, plus a couple of clean siblings as contrast.
+`get_job_log_excerpts` is drill-down, not grouping.
+
+A finding that was not visible in the cluster (or in a trace follow-up)
+is a code review, not a retrospective finding.
 
 ### 3. Form findings
 
 Apply the skill's thresholds. For each candidate, write down:
 
 - **What repeats**, stated as a behaviour, not a metric.
-- **Evidence**: ≥ 2 `jobId`s, each with a real number.
+- **Evidence**: ≥ 2 `jobId`s, each with a real number. Exception: an
+  evidence-pipeline defect (the report, ledger, or cluster schema itself
+  is broken) may cite one job and must be `high`.
+- **Counter-evidence**: jobs in the window that did **not** show it.
 - **Category**: `tenant-intelligence` | `base-intelligence` | `runner-code`.
+  Prefer `runner-code` when a test can exist.
 - **Severity**: `high` | `medium` | `low`, with the cost that justifies it.
-- **Proposed remedy**: which files change, and roughly how. **Every** file
-  that states the thing you are changing — search rather than naming the
-  first file that comes to mind.
+- **Proposed remedy**: which files change, and roughly how. Intelligence
+  changes are section-level patches, not whole-file rewrites.
+- **Predicted metric**: `{ name, direction, baseline }` so the next
+  retrospective can score the remedy.
 
 ### 4. Verify each candidate against the code
 
@@ -149,9 +162,13 @@ Write `working/{job-id}/retrospective-report.md`:
 
 **Category:** base-intelligence
 **Severity:** high
+**Verification:** verified
+**Predicted metric:** coding.reworkRuns should decrease (baseline 4)
 **Evidence:**
 - `{jobId}` — coding phase ran 5 times; $3.40 beyond the first run
 - `{jobId}` — coding phase ran 4 times; $2.10 beyond the first run
+**Counter-evidence:**
+- `{jobId}` — same workflow, coding ran once per work item
 
 **Pattern:** {what repeats, in one or two sentences}
 **Proposed remedy:** {which file, what changes}
@@ -195,8 +212,13 @@ post_artifact({
         evidence: [
           { jobId: "...", detail: "coding phase ran 5 times", metrics: { phaseRuns: 5, extraCostUsd: 3.4 } }
         ],
+        counterEvidence: [
+          { jobId: "...", detail: "same workflow; coding ran once per work item" }
+        ],
         proposedRemedy: "...",
-        targetPaths: ["..."]
+        targetPaths: ["..."],
+        verification: "verified",
+        predictedMetric: { name: "coding.reworkRuns", direction: "decrease", baseline: 4 }
       }
     ]
   }
@@ -279,7 +301,9 @@ Process only approved ids, and only into destinations enabled by
 **exactly one** `propose_change` call per layer. The runner rejects a
 second call for the same `(jobId, layer)`. Invoke the
 `self-improvement-guide` skill first for proposal types and path rules.
-Prefer the structured `entries[]` field for memory updates.
+Prefer `deltas[]` for section-level markdown patches and `entries[]` for
+memory updates. Do not ship a rewritten agent file when a heading-level
+insert will do. Include the predicted metric in the PR rationale.
 
 **`base-intelligence` and `runner-code` findings** belong to the upstream
 Coro repository — every install has the same defect. File (or comment)
@@ -319,36 +343,39 @@ still needs a change has an issue, call `dispatch_improvement_job`
 ```
 dispatch_improvement_job({
   items: [
-    { findingId, category, issueNumber, title, description },
+    {
+      findingId, category, issueNumber, title,
+      briefing: {
+        behaviourNow, behaviourWanted, evidence,
+        targetPaths, revisionSha, verified,
+        failingTest,          // required for runner-code
+        neighbouringWording,  // required for base-intelligence
+        outOfScope,
+        predictedMetric
+      },
+      evidencePack: { antiPatterns, toolFailures, grepHits }
+    },
     …
   ]
 })
 ```
 
-Put coupled findings in the same call — they share files, or one is the
-instruction side of the other. Unrelated findings can share the call too;
-the child planner is the one looking at the repo, and it will keep one
-PR or escalate the leftovers. Split into a second call only when you
-already know two groups cannot share a PR, and only if the per-run cap
-still has room. Each call is one implementation job.
+`description` still works as a fallback so an in-flight shipping turn
+does not break, but a structured `briefing` is what the child planner
+and verifier actually consume. Put coupled findings in the same call —
+they share files, or one is the instruction side of the other. Unrelated
+findings can share the call too; the child planner is the one looking at
+the repo, and it will keep one PR or escalate the leftovers. Split into
+a second call only when you already know two groups cannot share a PR,
+and only if the per-run cap still has room. Each call is one
+implementation job.
 
-Do not write the files yourself. Do not call a tool that replaces whole
-files. You have no build or review loop, and your context is a pile of
-aggregated metrics rather than the codebase — the two worst conditions
-under which to edit a shared repository.
+Do not write the files yourself. You have no build or review loop, and
+your context is clustered metrics rather than the codebase.
 
-Each item's `description` is that finding's **only** briefing; the child
-inherits none of your analysis. Write it for an agent that has never
-seen this retrospective:
-
-- the behaviour to change, in terms of what the runner or the agent
-  instructions do today
-- the evidence, as counts and numbers rather than job ids
-- the files and functions responsible, at the revision you read them —
-  and, where you did not read them, that you did not
-- how to verify the fix — a test that should exist and fail today for
-  `runner-code`; the neighbouring wording to match for `base-intelligence`
-- what is explicitly out of scope, so a small fix stays small
+Each item's briefing is that finding's **only** handoff; the child
+inherits none of your analysis. Fill every field for an agent that has
+never seen this retrospective.
 
 Record each dispatched finding's outcome as `destination:
 "upstream-intelligence"` or `"upstream-code"` (matching its category)
@@ -404,9 +431,12 @@ Then `log` the summary and end your turn. The runner completes the job.
   exists so your claims can be verified and your file lists can be real.
   It is not a checkout: it has no `.git`, nothing can be pushed from it,
   and a fix you edit there goes nowhere. Fixes are dispatched.
-- **Two jobs or it is not a finding.** The evidence bar is not
-  negotiable; it is what makes these proposals reviewable by someone
-  who cannot see your tool output.
+- **Two jobs or it is not a finding**, except an evidence-pipeline
+  defect (the thermometer itself is broken), which may cite one job and
+  is always `high`. The bar is what makes proposals reviewable by
+  someone who cannot see your tool output.
+- **Clusters before findings.** Name the behaviour; do not invent the
+  grouping from log tails.
 - **Never publish raw identifiers.** Repo slugs, ticket keys, e-mail
   addresses, and internal service names must not appear in anything
   destined for a public repository. The default (sanitised) tool output

@@ -64,7 +64,11 @@ Each call is **synchronous** and produces exactly **one PR**:
 1. **Validate** — path is in the writable allowlist for the inferred layer; per-type format checks (skill frontmatter, agent headings, etc.).
 2. **Branch** — `coro/proposal/<jobId>-<layer>-<slug>` cut from the layer's default branch.
 3. **Materialise** — the runner resolves the writable source clone for that layer and constructs the final file contents there. This is intentionally separate from the resolver's `_intelligence` tree: `_intelligence` is a read-only, multi-layer view and must never be used as the source of truth for proposal writes.
-4. **Commit** — **only** the paths in your `files: []` / `entries[].file` payload (markdown `.md` files). The runner never runs `git add .` on the repo checkout — build logs, `gocache/`, test output, and other artefacts left in the working directory are **never** included, even if they exist on disk.
+4. **Commit** — **only** the paths in your `files: []` / `deltas: []` /
+   `entries[].file` payload (markdown `.md` files). The runner never runs
+   `git add .` on the repo checkout — build logs, `gocache/`, test output,
+   and other artefacts left in the working directory are **never**
+   included, even if they exist on disk.
 5. **Push** + **open PR** via whichever SCM plugin is active for the layer (GitHub, Bitbucket, GitLab, …).
 6. **Record** in the state backend — surfaces in `list_proposals` and the dashboard.
 7. **Return** the PR URL. A human reviews and merges; the next job's resolver pulls the merged change automatically.
@@ -133,6 +137,40 @@ propose_change({
 ```
 
 You can also combine `entries[]` and `files[]` in the same call — `entries[]` is the recommended shape for new memory additions, `files[]` for skill / agent / workflow changes.
+
+### Section-level deltas (preferred for agent / skill / workflow edits)
+
+Do not rewrite a whole agent file from a metrics context. Pass `deltas[]`
+against the current file in the writer clone:
+
+| Mode | Effect |
+|------|--------|
+| `insert-after` | Insert `content` immediately after the named heading |
+| `replace-section` | Replace the body under that heading (up to the next heading of the same or higher level) |
+| `append` | Append to the file, or to the named section if `heading` is set |
+
+```
+propose_change({
+  type: "skill-update",
+  title: "Name the sandbox HOME recipe in one section",
+  rationale: "Three jobs retried git clone 4+ times; predictedMetric git.clone.retries should decrease from 4.",
+  description: "Adds one procedure step under Cloning.",
+  deltas: [
+    {
+      path: ".claude/skills/sandbox-recovery/SKILL.md",
+      heading: "Cloning",
+      mode: "insert-after",
+      content: "- Set HOME=$PWD before git clone inside the sandbox."
+    }
+  ]
+})
+```
+
+Heading text is the title without hashes and must be unique in the file.
+Deltas still have to land as valid markdown of the proposal type — the
+runner materialises the full file and then runs the same validators as
+`files[]`. You can mix `files[]` and `deltas[]` in one call; they must
+target the same layer.
 
 ### Pre-flight dedupe (mandatory)
 

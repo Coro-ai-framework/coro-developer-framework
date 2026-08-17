@@ -248,6 +248,8 @@ Start looking here:
 | Behaviour | Lives in |
 |---|---|
 | `list_jobs`, `get_job_report`, `get_job_log_excerpts` | `packages/runner/src/tools/job-history.ts` |
+| `cluster_window`, `get_job_trace_summary`, prior-remedy scores | `packages/runner/src/tools/job-trace.ts` |
+| Phase attribution, tool ledgers | `packages/runner/src/jobs/phase-observability.ts` |
 | Alias/leak checking of anything public | `packages/runner/src/tools/sanitize.ts` |
 | `upstream_*`, `dispatch_improvement_job` | `packages/runner/src/tools/upstream.ts`, `upstream-source.ts` |
 | Retrospective dispatch, findings/outcome parsing | `packages/runner/src/jobs/retrospective.ts` |
@@ -301,8 +303,11 @@ findings are about. Two kinds are `high` whatever they cost:
   retrospectives with `list_jobs({ scope: "retrospective" })`, and, for
   anything going upstream, the code in `_upstream/`.
 
-  Seeing the remedy in the code is **not** enough to clear a finding. Two
-  things have to hold as well, and both have been got wrong:
+  Seeing the remedy in the code is **not** enough to clear a finding.
+  `cluster_window.priorRemedies` is the scorecard: `still-firing` and
+  `regressed` mean last month's PR did not work; `unverifiable` means it
+  had no predicted metric and is **not** done. Two further things have
+  to hold as well, and both have been got wrong:
 
   - **The runs have to predate it.** The snapshot cannot tell you when a
     line landed — it is a depth-1 tree with no history — so unless a past

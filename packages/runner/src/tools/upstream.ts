@@ -562,6 +562,7 @@ export async function dispatchImprovementJob(
     { label: `${item.id} title`, text: item.title },
     { label: `${item.id} description`, text: item.description },
     ...(item.briefing ? briefingPublishableFields(item.id, item.briefing) : []),
+    ...(item.evidencePack ? evidencePackPublishableFields(item.id, item.evidencePack) : []),
   ]))
 
   const { fork, upstreamRepo, forkInSync } = await prepareFork(runtime, ctx)
@@ -749,9 +750,25 @@ function briefingPublishableFields(
     { label: `${id} behaviourNow`, text: briefing.behaviourNow },
     { label: `${id} behaviourWanted`, text: briefing.behaviourWanted },
     { label: `${id} evidence`, text: briefing.evidence },
+    ...briefing.targetPaths.map((item, index) => ({ label: `${id} targetPaths[${index}]`, text: item })),
+    ...(briefing.revisionSha ? [{ label: `${id} revisionSha`, text: briefing.revisionSha }] : []),
     ...(briefing.failingTest ? [{ label: `${id} failingTest`, text: briefing.failingTest }] : []),
     ...(briefing.neighbouringWording ? [{ label: `${id} neighbouringWording`, text: briefing.neighbouringWording }] : []),
     ...(briefing.outOfScope ?? []).map((item, index) => ({ label: `${id} outOfScope[${index}]`, text: item })),
+  ]
+}
+
+function evidencePackPublishableFields(
+  id: string,
+  pack: OssContributionEvidencePack,
+): Array<{ label: string; text: string }> {
+  return [
+    ...(pack.antiPatterns ?? []).map((item, index) => ({ label: `${id} antiPatterns[${index}]`, text: item })),
+    ...(pack.grepHits ?? []).map((item, index) => ({ label: `${id} grepHits[${index}]`, text: item })),
+    ...(pack.toolFailures ?? []).flatMap((row, index) => [
+      { label: `${id} toolFailures[${index}].toolName`, text: row.toolName },
+      { label: `${id} toolFailures[${index}].errorClass`, text: row.errorClass },
+    ]),
   ]
 }
 

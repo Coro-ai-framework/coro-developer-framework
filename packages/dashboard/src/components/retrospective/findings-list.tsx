@@ -138,6 +138,11 @@ function FindingCard({
               <Badge variant={categoryTone(finding.category)} title={categoryDescription(finding.category)}>
                 {categoryLabel(finding.category)}
               </Badge>
+              {finding.verification ? (
+                <Badge variant={finding.verification === 'verified' ? 'success' : 'warning'} className="capitalize">
+                  {finding.verification}
+                </Badge>
+              ) : null}
               <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
                 {finding.evidence.length} {finding.evidence.length === 1 ? 'run' : 'runs'}
               </span>
@@ -160,6 +165,19 @@ function FindingCard({
           {finding.proposedRemedy ? (
             <Section title="Proposed fix">
               <p className="whitespace-pre-wrap text-sm leading-6 text-fg">{finding.proposedRemedy}</p>
+            </Section>
+          ) : null}
+
+          {finding.predictedMetric ? (
+            <Section title="Predicted metric">
+              <p className="text-sm leading-6 text-fg-muted">
+                <span className="font-mono text-xs text-fg">{finding.predictedMetric.name}</span>
+                {' should '}
+                {finding.predictedMetric.direction}
+                {finding.predictedMetric.baseline !== undefined
+                  ? ` (baseline ${finding.predictedMetric.baseline})`
+                  : ''}
+              </p>
             </Section>
           ) : null}
 
@@ -197,6 +215,24 @@ function FindingCard({
               </ul>
             )}
           </Section>
+
+          {finding.counterEvidence?.length ? (
+            <Section title="Did not show it">
+              <ul className="space-y-2">
+                {finding.counterEvidence.map(item => (
+                  <li key={`${item.jobId}:${item.detail}`} className="space-y-1">
+                    <Link
+                      to={`/jobs/${item.jobId}`}
+                      className="font-mono text-xs text-accent-300 hover:underline"
+                    >
+                      {item.jobId}
+                    </Link>
+                    {item.detail ? <p className="text-sm leading-6 text-fg-muted">{item.detail}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          ) : null}
 
           {outcome ? <OutcomeSection outcome={outcome} /> : null}
         </div>

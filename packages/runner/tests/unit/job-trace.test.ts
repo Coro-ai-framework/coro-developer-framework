@@ -75,6 +75,14 @@ describe('clusterWindow', () => {
     const cheap = job('job-cheap', {
       tokenUsage: { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: 1 },
     })
+    const cheap2 = job('job-cheap-2', {
+      createdAt: '2026-01-02T00:00:00Z',
+      tokenUsage: { inputTokens: 110, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: 1.1 },
+    })
+    const cheap3 = job('job-cheap-3', {
+      createdAt: '2026-01-03T00:00:00Z',
+      tokenUsage: { inputTokens: 90, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: 0.9 },
+    })
     const expensive = job('job-expensive', {
       createdAt: '2026-02-01T00:00:00Z',
       tokenUsage: { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: 8 },
@@ -88,10 +96,10 @@ describe('clusterWindow', () => {
         }),
       ],
     })
-    const ctx = ctxWithJobs([cheap, expensive])
+    const ctx = ctxWithJobs([cheap, cheap2, cheap3, expensive])
 
     const clustered = await clusterWindow({ limit: 10 }, ctx)
-    expect(clustered.window.jobCount).toBe(2)
+    expect(clustered.window.jobCount).toBe(4)
     expect(clustered.insights[0]).toMatchObject({ key: 'sandbox-quirk', count: 1, jobIds: ['job-expensive'] })
     expect(clustered.toolFailures[0]).toMatchObject({ key: 'Bash|eperm', jobIds: ['job-expensive'] })
     expect(clustered.costOutliers.map(row => row.jobId)).toContain('job-expensive')
@@ -209,7 +217,6 @@ describe('scorePriorRemedies', () => {
     expect(scorePriorRemedies([retro], [job('job-clean')])[0]).toMatchObject({ score: 'gone' })
     expect(metricValue([job('job-loop', {
       phaseUsage: [
-        phaseRun('coding', { workItem: 'wi-1' }),
         phaseRun('coding', { workItem: 'wi-1' }),
         phaseRun('coding', { workItem: 'wi-1' }),
       ],

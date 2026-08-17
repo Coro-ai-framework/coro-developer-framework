@@ -229,6 +229,17 @@ export interface FindingEvidence {
   metrics?: Record<string, unknown>
 }
 
+export interface FindingCounterEvidence {
+  jobId: string
+  detail: string
+}
+
+export interface PredictedMetric {
+  name: string
+  direction: 'decrease' | 'increase' | 'eliminate'
+  baseline?: number
+}
+
 export interface RetrospectiveFinding {
   id: string
   title: string
@@ -237,6 +248,9 @@ export interface RetrospectiveFinding {
   evidence: FindingEvidence[]
   proposedRemedy?: string
   targetPaths?: string[]
+  predictedMetric?: PredictedMetric
+  verification?: 'verified' | 'hypothesis'
+  counterEvidence?: FindingCounterEvidence[]
 }
 
 export interface RetrospectiveOutcome {

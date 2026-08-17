@@ -589,7 +589,7 @@ export function createCoroMcpServer(
 
       tool(
         'propose_change',
-        'Ship a self-improvement as a PR against the tenant intelligence repo or the project repo\'s .coro/ overlay. ONE call per (job, layer) — the runner rejects a second call. Prefer the `entries` field for memory updates: it serialises into the canonical short-form layout and enforces hard line budgets (pitfall ≤ 8 lines, pattern ≤ 10 lines).',
+        'Ship a self-improvement as a PR against the tenant intelligence repo or the project repo\'s .coro/ overlay. ONE call per (job, layer) — the runner rejects a second call. Prefer `deltas` for a section-level markdown patch and `entries` for memory updates (pitfall ≤ 8 lines, pattern ≤ 10 lines). Do not rewrite a whole agent file when a heading-level insert will do.',
         {
           type: z.enum([
             'new-tool', 'modify-tool', 'new-workflow', 'modify-workflow',
@@ -600,14 +600,14 @@ export function createCoroMcpServer(
           rationale: z.string().describe('Why this change is worth merging — drives the PR description and future list_proposals previews. Two sentences max.'),
           description: z.string().describe('Implementation details / what the diff does. Be terse.'),
           files: z.array(z.object({ path: z.string(), content: z.string() })).optional()
-            .describe('Multi-file payload. Paths are relative to the target layer\'s root.'),
+            .describe('Multi-file payload. Paths are relative to the target layer\'s root. Prefer `deltas` for a section-level edit.'),
           deltas: z.array(z.object({
             path: z.string(),
             heading: z.string().optional().describe('Markdown heading text without hashes. Required unless mode is append-to-file.'),
             mode: z.enum(['insert-after', 'replace-section', 'append']),
             content: z.string(),
           })).optional()
-            .describe('Section-level markdown patches applied against the current file in the writer clone. Prefer this over rewriting a whole agent/skill file.'),
+            .describe('Section-level patches applied against the writer clone. Prefer this over shipping a rewritten file.'),
           entries: z.array(z.object({
             file: z.string().describe('Memory file the entry lands in (memory/* or .coro/memory/*).'),
             kind: z.enum(['pitfall', 'pattern']),

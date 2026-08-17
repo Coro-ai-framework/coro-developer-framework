@@ -339,7 +339,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
   try {
     const provenance = await captureIntelligenceProvenance(initialResolved)
-    liveJob = await syncJob(stateBackend, liveJob, { intelligenceProvenance: provenance })
+    liveJob = await stampJob(stateBackend, liveJob, { intelligenceProvenance: provenance })
   } catch (err) {
     logger.warn({ err, jobId: job.id }, 'Could not record intelligence provenance')
   }
@@ -439,7 +439,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         if (resolved.layers.length !== previousLayers) {
           try {
             const provenance = await captureIntelligenceProvenance(resolved)
-            liveJob = await syncJob(stateBackend, liveJob, { intelligenceProvenance: provenance })
+            liveJob = await stampJob(stateBackend, liveJob, { intelligenceProvenance: provenance })
             toolCtx.job = liveJob
           } catch (provErr) {
             logger.warn({ err: provErr, jobId: liveJob.id }, 'Could not refresh intelligence provenance')
@@ -1657,6 +1657,22 @@ async function syncJob(
   patch: Partial<Job>,
 ): Promise<Job> {
   return stateBackend.updateJob(job.id, patch)
+}
+
+/**
+ * Persist a patch without taking the backend row as the new live job.
+ * Provenance is a stamp on the job we are already running; re-reading
+ * the row here would clobber in-memory phase/status if the stored
+ * document was loaded from a different snapshot of the same id.
+ */
+async function stampJob(
+  stateBackend: StateBackend,
+  job: Job,
+  patch: Partial<Job>,
+): Promise<Job> {
+  const next = { ...job, ...patch }
+  await stateBackend.updateJob(job.id, patch)
+  return next
 }
 
 // ── Provider-neutral runner ↔ plugin bridge ─────────────────────────────────
