@@ -90,6 +90,18 @@ be sandboxed while a bare `git -C repo checkout …` is not. If a normally
 exempt command fails with `EPERM`, retry it once in its own un-chained form
 using the tool's own directory flag before concluding it is blocked.
 
+For a push specifically, if `git push origin <branch>` is stopped by an
+unanswerable host permission prompt, `operation not permitted`, `EPERM`, or a
+similar sandbox-like denial, try exactly one un-chained retry:
+
+```bash
+git -C <repoCheckoutDir> push origin <branch>
+```
+
+Do not wrap this retry in `cd`, `&&`, or a command wrapper intended to bypass
+policy. If it fails, continue to escalation or a documented provider-native
+fallback; do not retry it repeatedly.
+
 ## 6. If still blocked
 
 Record `add_insight` with `category: "sandbox-quirk"`, the exact command, the
