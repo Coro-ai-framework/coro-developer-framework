@@ -44,22 +44,14 @@ Quote it — "$11 of avoidable rework across 4 jobs" is what makes a
 maintainer act. If that sum is what puts the finding over the `high`
 severity bar, say the number in the finding, not just in your reasoning.
 
-**The attributions are derived, not recorded — check them before you
-build on them.** A run is labelled `rework` when nothing structural
-explains it, and the only thing the derivation has to reason from is the
-work-item stamp on each run. Two kinds of run carry no usable stamp, so
-they are labelled `rework` when nothing went wrong. Both are visible in
-`phaseRuns[]`:
+**The attributions may be recorded or derived.** New snapshots carry
+`attribution` and `parkReason` stamped at append time (`attributionSource:
+"recorded"`). Older jobs still derive. Prefer recorded values. A
+`parkReason` on a zero-cost run is a park, not a loop — you no longer
+need to grep logs to see that when the field is present.
 
-- **A `rework` run with `costUsd: 0`.** A run that ends by parking — on a
-  PR merge, on developer input — is recorded with no cost. Free rework is
-  a park and a resume, not a loop.
-- **A run with no `workItem`.** Phases that run before work items exist
-  (`spec-writing`, `planning`) have nothing to key on, so all their
-  repeats collide into one bucket. Treat those as unattributed.
-
-Where either applies, confirm the cause in the log before you write the
-finding:
+Where a derived run still looks wrong, confirm in the log before you write
+the finding:
 
 ```
 get_job_log_excerpts({ jobId, pattern: "parked|phase advanced" })
@@ -79,12 +71,11 @@ jobs escalating on "could not resolve reviewer" is one finding.
 
 ### Recurring tool or build failures
 
-`get_job_log_excerpts` defaults to error-ish lines. Normalise each line
-before grouping: strip timestamps, ids, paths, and line numbers, then
-compare. `scm_get_pr_status failed: 404` in six jobs is a finding;
-six differently-worded one-off errors are not.
+`cluster_window` groups tool-ledger failures and normalised error classes
+for you. Do not group errors by eyeballing log tails. Use
+`get_job_log_excerpts` only as drill-down after the cluster names a class.
 
-**Threshold:** same normalised error in ≥ 3 jobs.
+**Threshold:** same cluster key in ≥ 3 jobs.
 
 ### Cost and turn outliers
 
@@ -111,9 +102,28 @@ wall unprompted. Treat a repeat as high severity even at 2 jobs.
 
 ## 2. Evidence requirements
 
+Call **`cluster_window`** before forming any finding. It is the grouping
+step; your job is to name the behaviour and pick a layer. Findings that
+were not visible in the cluster (or in a `get_job_trace_summary` follow-up)
+are code review, not retrospective.
+
 Every finding carries `evidence[]` with **at least two entries**, each
-naming a real `jobId` and a concrete number pulled from a report. No
-number, no finding.
+naming a real `jobId` and a concrete number pulled from a report or
+cluster. No number, no finding.
+
+**Exception — evidence-pipeline defects.** If the report, ledger, or
+cluster schema itself is broken, one citing job is enough and severity is
+`high`. That is the only one-job finding.
+
+Every finding also carries:
+
+- `counterEvidence[]` — jobs in the window that did **not** show it. Empty
+  is allowed only when every job in the window hit it; say so.
+- `verification`: `verified` after a grep against `_intelligence/` /
+  `_upstream/`, otherwise `hypothesis`.
+- `predictedMetric` — `{ name, direction, baseline }` so the next
+  retrospective can score the remedy. Use names like `coding.reworkRuns`,
+  `costUsd`, `escalationCount`.
 
 Write evidence so a reader who cannot see your tool output can still
 check it: "coding reworked 3 times beyond its per-work-item runs, $3.40"
@@ -135,9 +145,11 @@ Two tests that resolve most ambiguity:
 - **Would another company hit this?** No → `tenant-intelligence`.
 - **Could a markdown edit fix it?** No → `runner-code`.
 
-When a finding could plausibly be either intelligence or code, prefer
-intelligence. A markdown change is cheaper to review, faster to land,
-and reversible.
+When a tool error, state transition, or missing capability is involved,
+categorise **`runner-code` first** and name the test that should fail
+today. Intelligence changes are for procedure gaps, and they are
+section-level patches — not a rewritten `coder.md`. A markdown bandaid
+that leaves the bug live will be scored `still-firing` next month.
 
 ## 4. Verify against the code — then name every copy
 

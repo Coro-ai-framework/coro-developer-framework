@@ -18,6 +18,7 @@ import {
   resolveJobIntelligence,
   type ResolvedIntelligence,
 } from '../intelligence/resolver'
+import { captureIntelligenceProvenance } from '../intelligence/provenance'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
 import { buildPrExternalRef } from '../plugins/refs'
@@ -58,7 +59,7 @@ import {
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_AWAITING_RATE_LIMIT,
   TokenUsage,
-  PhaseUsage,
+  type ToolLedgerEntry,
 } from '@coro-ai/cloud-protocol'
 import {
   isCampaignJob,
@@ -78,6 +79,14 @@ import {
   createPhaseIdleWatchdog,
   resolveIdleWatchdogConfig,
 } from './idle-watchdog'
+import {
+  buildPhaseSnapshot,
+  checkpointPhaseSet,
+  recordToolCall,
+  recordToolResult,
+  stampParkReason,
+  type PendingToolCall,
+} from './phase-observability'
 import {
   RateLimitExceededError,
   nextBackoffMs,
@@ -328,6 +337,13 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
   let liveJob: Job = { ...job }
 
+  try {
+    const provenance = await captureIntelligenceProvenance(initialResolved)
+    liveJob = await syncJob(stateBackend, liveJob, { intelligenceProvenance: provenance })
+  } catch (err) {
+    logger.warn({ err, jobId: job.id }, 'Could not record intelligence provenance')
+  }
+
   // Shared mutable context — the MCP server's tool handlers close over these
   const toolCtx: ToolContext = {
     job: liveJob,
@@ -409,7 +425,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // overlay (`<repoCheckout>/.coro/`) once the agent has cloned the
       // target repo in an earlier phase.
       try {
-        await resolveJobIntelligence({
+        const resolved = await resolveJobIntelligence({
           baseLayerDir: settings.paths.baseLayerDir,
           tenantContext,
           jobId: liveJob.id,
@@ -419,6 +435,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           plugins: ctx.plugins,
           logger,
         })
+        const previousLayers = liveJob.intelligenceProvenance?.layers.length ?? 0
+        if (resolved.layers.length !== previousLayers) {
+          try {
+            const provenance = await captureIntelligenceProvenance(resolved)
+            liveJob = await syncJob(stateBackend, liveJob, { intelligenceProvenance: provenance })
+            toolCtx.job = liveJob
+          } catch (provErr) {
+            logger.warn({ err: provErr, jobId: liveJob.id }, 'Could not refresh intelligence provenance')
+          }
+        }
       } catch (err) {
         // A re-resolve failure must NOT crash the phase. Fall back to the
         // last good materialisation already on disk.
@@ -856,6 +882,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       let phaseSnapshotRecorded = false
       let builtinToolUseCount = 0
       let mcpToolUseCount = 0
+      const pendingToolCalls: PendingToolCall[] = []
+      const toolLedger: ToolLedgerEntry[] = []
       let lastReportedCostUsd: number | undefined
       let lastReportedModelUsage: Record<string, {
         inputTokens: number
@@ -965,11 +993,16 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               }
               if (ev.toolName.startsWith('mcp__coro__')) mcpToolUseCount++
               else builtinToolUseCount++
+              recordToolCall(pendingToolCalls, ev.toolName, Date.now())
               break
             }
             case 'tool_result': {
-              // Tool-result surfacing happens via the executor's own log
-              // events (mirrors legacy `tool_use_summary`/`tool_progress`).
+              recordToolResult(pendingToolCalls, toolLedger, {
+                toolName: ev.toolName,
+                isError: ev.isError,
+                output: ev.output,
+                endedAt: Date.now(),
+              })
               break
             }
             case 'usage': {
@@ -1024,17 +1057,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               })
               phaseTokens.totalCostUsd = phaseCostUsd
 
-              const phaseSnapshot: PhaseUsage = {
+              const phaseSnapshot = buildPhaseSnapshot({
                 phase: liveJob.phase,
-                // Stamp the active work item (if any) so the dashboard can
-                // group repeats per item without needing workflow-level
-                // loop metadata. Phases that ran before the planner posted
-                // any items (spec-writing, planning) leave this undefined.
-                ...(liveJob.currentWorkItem ? { workItem: liveJob.currentWorkItem } : {}),
-                inputTokens: phaseTokens.inputTokens,
-                outputTokens: phaseTokens.outputTokens,
-                cacheReadInputTokens: phaseTokens.cacheReadInputTokens,
-                cacheCreationInputTokens: phaseTokens.cacheCreationInputTokens,
+                workItem: liveJob.currentWorkItem,
+                tokens: phaseTokens,
                 costUsd: phaseCostUsd,
                 durationMs: doneMetrics?.durationMs ?? (Date.now() - phaseStartMs),
                 durationApiMs: doneMetrics?.durationApiMs ?? 0,
@@ -1049,7 +1075,12 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
                       }]),
                     )
                   : undefined,
-              }
+                priorUsage: liveJob.phaseUsage ?? [],
+                checkpointPhases: checkpointPhaseSet(workflowConfig?.phases ?? liveJob.workflowPhases),
+                interactive: liveJob.interactive === true,
+                parkReason: signals.awaitingEvent,
+                toolLedger,
+              })
 
               const existingPhaseUsage = liveJob.phaseUsage ?? []
               const jobTotals = mergeTokenUsage(prePhaseUsage, phaseTokens)
@@ -1147,18 +1178,21 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // (goto_phase, await_event, escalate) broke the stream before the
       // SDK's result event was consumed.
       if (!phaseSnapshotRecorded) {
-        const phaseSnapshot: PhaseUsage = {
+        const phaseSnapshot = buildPhaseSnapshot({
           phase: liveJob.phase,
-          inputTokens: phaseTokens.inputTokens,
-          outputTokens: phaseTokens.outputTokens,
-          cacheReadInputTokens: phaseTokens.cacheReadInputTokens,
-          cacheCreationInputTokens: phaseTokens.cacheCreationInputTokens,
+          workItem: liveJob.currentWorkItem,
+          tokens: phaseTokens,
           costUsd: 0,
           durationMs: Date.now() - phaseStartMs,
           durationApiMs: 0,
           numTurns: phaseTurns,
           model,
-        }
+          priorUsage: liveJob.phaseUsage ?? [],
+          checkpointPhases: checkpointPhaseSet(workflowConfig?.phases ?? liveJob.workflowPhases),
+          interactive: liveJob.interactive === true,
+          parkReason: signals.awaitingEvent,
+          toolLedger,
+        })
 
         const existingPhaseUsage = liveJob.phaseUsage ?? []
         const jobTotals = mergeTokenUsage(prePhaseUsage, phaseTokens)
@@ -1223,6 +1257,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         if (shouldStopLoop) break
 
         const evt = signals.awaitingEvent
+        const parkedUsage = stampParkReason(liveJob.phaseUsage ?? [], liveJob.phase, evt)
         const awaitStatus = evt.startsWith('developer-input')
           ? STATUS_AWAITING_DEVELOPER_INPUT
           : evt.includes('plan')
@@ -1241,6 +1276,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           awaitingEvent: evt,
           awaitingPrId: signals.awaitingPrId,
           awaitingNextPhase: approvalCheckpointNextPhase ?? undefined,
+          ...(parkedUsage !== liveJob.phaseUsage ? { phaseUsage: parkedUsage } : {}),
         })
 
         if (signals.awaitingPrId) {

@@ -94,6 +94,30 @@ export interface TokenUsage {
   totalCostUsd: number
 }
 
+/**
+ * Why one execution of a phase happened. Recorded on {@link PhaseUsage}
+ * at append time when the runner knows; derived at read time for jobs
+ * persisted before this field existed.
+ */
+export type PhaseRunAttribution =
+  /** First time this phase saw this work item (or the job's first entry). */
+  | 'work-item'
+  /** The re-entry the runner performs after a developer approves the phase. */
+  | 'checkpoint-resume'
+  /** Same work item, no checkpoint to explain it: a loop back. */
+  | 'rework'
+
+/**
+ * One tool invocation distilled for later analysis. Error text is a short
+ * class (`eperm`, `404`, `timeout`), never a payload or path.
+ */
+export interface ToolLedgerEntry {
+  toolName: string
+  success: boolean
+  durationMs: number
+  errorClass?: string
+}
+
 /** Snapshot of usage for a single completed phase. */
 export interface PhaseUsage {
   phase: string
@@ -116,6 +140,42 @@ export interface PhaseUsage {
   model: string
   /** Per-model breakdown when multiple models were used (e.g. subagents). */
   modelUsage?: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>
+  /**
+   * Recorded at append time. Absent on jobs persisted before this field
+   * existed — readers fall back to deriving it from work-item stamps.
+   */
+  attribution?: PhaseRunAttribution
+  /**
+   * Set when this run ended by parking (`await_event`). Distinguishes a
+   * zero-cost park/resume from a real loop. Absent on older snapshots.
+   */
+  parkReason?: string
+  /**
+   * Distilled tool invocations for this phase. Capped; error classes only.
+   * Absent on older snapshots.
+   */
+  toolLedger?: ToolLedgerEntry[]
+}
+
+/** One intelligence layer that was applied when a job resolved its overlay. */
+export interface IntelligenceProvenanceLayer {
+  name: string
+  /** Directory the layer was copied from — may be a cache path, not a URL. */
+  source: string
+  fileCount: number
+  /** Git SHA when the source is a checkout; otherwise a content digest. */
+  revision?: string
+}
+
+/**
+ * Which intelligence (and runner) a job actually ran against. Optional on
+ * the type for jobs persisted before this field existed.
+ */
+export interface IntelligenceProvenance {
+  recordedAt: string
+  runnerVersion: string
+  baseLayerVersion?: string
+  layers: IntelligenceProvenanceLayer[]
 }
 
 // ── Artefact tracking ────────────────────────────────────────────────────────
@@ -403,6 +463,13 @@ export interface Job {
   tokenUsage: TokenUsage
   /** Per-phase usage snapshots — appended when each phase completes. */
   phaseUsage: PhaseUsage[]
+
+  /**
+   * Overlay + runner identity captured when intelligence was materialised.
+   * Optional for jobs persisted before this field existed. Re-stamped when
+   * a later phase re-resolve picks up a newly-cloned repo overlay.
+   */
+  intelligenceProvenance?: IntelligenceProvenance
 
   /**
    * Full ordered phase list parsed from the workflow front-matter at job

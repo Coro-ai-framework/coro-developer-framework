@@ -354,6 +354,48 @@ describe('buildJobReport', () => {
     expect(report.prs[0].timeToMergeMs).toBe(2 * 60 * 60 * 1000)
   })
 
+  it('passes through token and cache totals that used to be dropped', () => {
+    const report = buildJobReport(historyJob('job-tokens', {
+      phaseUsage: [
+        phaseRun('coding', {
+          inputTokens: 800,
+          outputTokens: 200,
+          cacheReadInputTokens: 4000,
+          cacheCreationInputTokens: 50,
+        }),
+      ],
+    }), sanitizer)
+
+    expect(report.phases[0]).toMatchObject({
+      inputTokens: 800,
+      outputTokens: 200,
+      cacheReadInputTokens: 4000,
+      cacheCreationInputTokens: 50,
+    })
+    expect(report.phaseRuns[0]).toMatchObject({
+      inputTokens: 800,
+      cacheReadInputTokens: 4000,
+      attributionSource: 'derived',
+    })
+  })
+
+  it('prefers recorded attribution over derivation', () => {
+    const report = buildJobReport(historyJob('job-recorded', {
+      interactive: true,
+      workflowPhases: [{ name: 'coding', status: 'coding', interactiveCheckpoint: true }],
+      phaseUsage: [
+        phaseRun('coding', { workItem: 'wi-1', attribution: 'work-item' }),
+        phaseRun('coding', { workItem: 'wi-1', attribution: 'rework', parkReason: 'developer-input: wait' }),
+      ],
+    }), sanitizer)
+
+    expect(report.phaseRuns.map(run => run.attribution)).toEqual(['work-item', 'rework'])
+    expect(report.phaseRuns[1]).toMatchObject({
+      attributionSource: 'recorded',
+      parkReason: 'developer-input: wait',
+    })
+  })
+
   it('prefers user-edited insight text', () => {
     const edited = historyJob('job-b', {
       insights: [{

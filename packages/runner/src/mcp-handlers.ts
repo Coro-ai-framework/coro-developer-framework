@@ -1141,6 +1141,24 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       }
     },
 
+    cluster_window: async (args: { limit?: number; since?: string }) => {
+      const { clusterWindow } = await import('./tools/job-trace')
+      try {
+        return text(await clusterWindow(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    get_job_trace_summary: async (args: { jobId: string; raw?: boolean }) => {
+      const { getJobTraceSummary } = await import('./tools/job-trace')
+      try {
+        return text(await getJobTraceSummary(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
     // Upstream contribution (retrospective jobs only). Implementations live
     // in `tools/upstream.ts`, which owns the tier gate, the sanitisation
     // gate, and the per-run publication caps.
@@ -1199,6 +1217,12 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       rationale: string
       description: string
       files?: Array<{ path: string; content: string }>
+      deltas?: Array<{
+        path: string
+        heading?: string
+        mode: 'insert-after' | 'replace-section' | 'append'
+        content: string
+      }>
       /**
        * Structured short-form memory entries. Preferred for memory-update
        * proposals — the runner serialises each entry into a fixed layout

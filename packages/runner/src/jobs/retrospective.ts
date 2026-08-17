@@ -147,6 +147,19 @@ export interface FindingEvidence {
   metrics?: Record<string, unknown>
 }
 
+/** Metric a shipped finding claims it will move — scored by the next retrospective. */
+export interface PredictedMetric {
+  /** e.g. `coding.reworkRuns`, `costUsd`, `escalationCount`. */
+  name: string
+  direction: 'decrease' | 'increase' | 'eliminate'
+  baseline?: number
+}
+
+export interface FindingCounterEvidence {
+  jobId: string
+  detail: string
+}
+
 export interface RetrospectiveFinding {
   id: string
   title: string
@@ -155,6 +168,11 @@ export interface RetrospectiveFinding {
   evidence: FindingEvidence[]
   proposedRemedy?: string
   targetPaths?: string[]
+  predictedMetric?: PredictedMetric
+  /** `verified` after a code grep; `hypothesis` if the files were not read. */
+  verification?: 'verified' | 'hypothesis'
+  /** Jobs in the window that did *not* show the behaviour. */
+  counterEvidence?: FindingCounterEvidence[]
 }
 
 export interface RetrospectiveOutcome {
@@ -228,6 +246,8 @@ function parseFindings(raw: unknown): RetrospectiveFinding[] {
     const id = stringOr(entry['id'], '')
     const title = stringOr(entry['title'], '')
     if (!id || !title) continue
+    const predictedMetric = parsePredictedMetric(entry['predictedMetric'])
+    const counterEvidence = parseCounterEvidence(entry['counterEvidence'])
     findings.push({
       id,
       title,
@@ -236,6 +256,11 @@ function parseFindings(raw: unknown): RetrospectiveFinding[] {
       evidence: parseEvidence(entry['evidence']),
       ...(stringOr(entry['proposedRemedy'], '') ? { proposedRemedy: stringOr(entry['proposedRemedy'], '') } : {}),
       ...(stringArray(entry['targetPaths']).length ? { targetPaths: stringArray(entry['targetPaths']) } : {}),
+      ...(predictedMetric ? { predictedMetric } : {}),
+      ...(entry['verification'] === 'verified' || entry['verification'] === 'hypothesis'
+        ? { verification: entry['verification'] }
+        : {}),
+      ...(counterEvidence.length ? { counterEvidence } : {}),
     })
   }
   return findings
@@ -255,6 +280,33 @@ function parseEvidence(raw: unknown): FindingEvidence[] {
     })
   }
   return evidence
+}
+
+function parseCounterEvidence(raw: unknown): FindingCounterEvidence[] {
+  if (!Array.isArray(raw)) return []
+  const evidence: FindingCounterEvidence[] = []
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue
+    const jobId = stringOr(entry['jobId'], '')
+    if (!jobId) continue
+    evidence.push({ jobId, detail: stringOr(entry['detail'], '') })
+  }
+  return evidence
+}
+
+const METRIC_DIRECTIONS = ['decrease', 'increase', 'eliminate'] as const
+
+export function parsePredictedMetric(raw: unknown): PredictedMetric | undefined {
+  if (!isRecord(raw)) return undefined
+  const name = stringOr(raw['name'], '')
+  if (!name) return undefined
+  const direction = oneOf(raw['direction'], [...METRIC_DIRECTIONS], 'decrease')
+  const baseline = numberOr(raw['baseline'], undefined)
+  return {
+    name,
+    direction,
+    ...(baseline !== undefined ? { baseline } : {}),
+  }
 }
 
 function parseOutcomes(raw: unknown): RetrospectiveOutcome[] {

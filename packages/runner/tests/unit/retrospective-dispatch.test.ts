@@ -136,6 +136,9 @@ describe('summarizeRetrospective', () => {
             ],
             proposedRemedy: 'Extend golang-conventions',
             targetPaths: ['.claude/skills/golang-conventions/SKILL.md'],
+            predictedMetric: { name: 'coding.reworkRuns', direction: 'decrease', baseline: 4 },
+            verification: 'verified',
+            counterEvidence: [{ jobId: 'job-c', detail: 'one clean Go job in the window' }],
           },
         ],
       }),
@@ -154,7 +157,12 @@ describe('summarizeRetrospective', () => {
       category: 'base-intelligence',
       severity: 'high',
       proposedRemedy: 'Extend golang-conventions',
+      predictedMetric: { name: 'coding.reworkRuns', direction: 'decrease', baseline: 4 },
+      verification: 'verified',
     })
+    expect(summary.findings[0].counterEvidence).toEqual([
+      { jobId: 'job-c', detail: 'one clean Go job in the window' },
+    ])
     expect(summary.findings[0].evidence).toHaveLength(2)
     expect(summary.outcomes[0]).toEqual({
       findingId: 'finding-1', destination: 'tenant', prUrl: 'https://git/pr/1',

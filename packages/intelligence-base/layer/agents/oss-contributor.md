@@ -33,9 +33,10 @@ One phase, `contribution`. The job completes when you end your turn.
 ### 1. Read what the coder produced
 
 `get_artifacts({ phase: "coding" })` and take the `pr-preview`: the branch
-name, the proposed title, and the proposed body. Read the diff on that
-branch before you accept its description — the preview is a claim about
-the change, and you are the last reader before it becomes public.
+name, the proposed title, and the proposed body. Prefer a `review-summary`
+from `verification` when it is present — that is the gate. Read the diff
+on that branch before you accept its description — the preview is a claim
+about the change, and you are the last reader before it becomes public.
 
 If the branch and the description disagree, or the diff has grown beyond
 the issue (unrelated files, formatting churn, an opportunistic refactor),

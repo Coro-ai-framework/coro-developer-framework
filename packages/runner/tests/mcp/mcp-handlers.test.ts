@@ -145,9 +145,15 @@ describe('createMcpToolHandlers — cross-job history', () => {
     return ctx
   }
 
-  it('registers the three history tools', () => {
+  it('registers the history and evidence tools', () => {
     const h = createMcpToolHandlers(makeMockToolContext(), {}) as Record<string, unknown>
-    for (const name of ['list_jobs', 'get_job_report', 'get_job_log_excerpts']) {
+    for (const name of [
+      'list_jobs',
+      'get_job_report',
+      'get_job_log_excerpts',
+      'cluster_window',
+      'get_job_trace_summary',
+    ]) {
       expect(typeof h[name], `${name} should be registered`).toBe('function')
     }
   })
