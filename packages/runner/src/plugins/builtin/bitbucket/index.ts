@@ -347,11 +347,11 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     // deriveGitUsername(). REST continues to use the email via the
     // BitBucketClient instance because Atlassian asymmetrically
     // accepts the email for REST but not for git over HTTPS.
-    const username = encodeURIComponent(this.coderGitUsername)
-    const token = encodeURIComponent(this.coderToken)
     return {
-      url: `https://${username}:${token}@bitbucket.org/${this.workspace}/${args.repo}.git`,
-      envForGit: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
+      url: `https://bitbucket.org/${this.workspace}/${args.repo}.git`,
+      username: this.coderGitUsername,
+      password: this.coderToken,
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
     }
   }
 

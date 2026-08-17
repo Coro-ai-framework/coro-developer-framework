@@ -7,7 +7,7 @@ the upstream
 package which Coro spawns once per job. The plugin itself only owns
 the four operations that have no MCP equivalent:
 
-- `cloneInfo` — credentialed HTTPS clone URLs
+- `cloneInfo` — clean HTTPS clone URL plus username/password
 - `matchesRemote` — host detection for self-improvement PRs
 - `normalizeInbound` — webhook → `NormalizedEvent`
 - `pollPr` — REST polling outside `query()` sessions

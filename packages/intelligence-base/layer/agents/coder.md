@@ -34,7 +34,7 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | `update_work_item` | Mark a work item as `in-progress` |
 | `request_new_session` | Clear context when starting a new work item |
 | `scm_clone_repo` | Clone the repo into the current job working directory |
-| `scm_get_clone_info` | Get the credentialed clone URL + git env for advanced git flows |
+| `scm_get_clone_info` | Get a clean clone URL + git env for advanced git flows |
 | `scm_get_pr_comments` | Read PR feedback when responding to review |
 | `scm_post_pr_comment` | Reply to reviewer comments on a PR (top-level) |
 | `scm_reply_to_comment` | Reply in-thread under a specific reviewer comment (pass its `parentCommentId`) |
@@ -72,7 +72,7 @@ const checkout = mcp__coro__scm_clone_repo({ repo: params.repoSlug })
 // checkout.reused: true when the repo was already cloned
 ```
 
-This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct paths like `working/{job-id}/` yourself — the runner already placed you there. **Do not** fall back to `gh` or `bb` CLI commands; both bypass the plugin layer and break the moment a tenant swaps providers. Use `mcp__coro__scm_get_clone_info` only when you need a raw credentialed URL for a low-level git operation.
+This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct paths like `working/{job-id}/` yourself — the runner already placed you there. **Do not** fall back to `gh` or `bb` CLI commands; both bypass the plugin layer and break the moment a tenant swaps providers. Use `mcp__coro__scm_get_clone_info` only when you need the raw clone URL for a low-level git operation — it has no token; `git push origin` is enough.
 
 ### 4. Create the work-item branch
 

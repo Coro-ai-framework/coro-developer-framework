@@ -24,8 +24,9 @@ generic `scm_*` tools when the active SCM is BitBucket.
 - **Legacy app passwords**: workspace member's own username + the app
   password.
 
-The `scm_get_clone_info` MCP tool returns a fully-credentialed HTTPS URL —
-prefer that over hand-rolling URLs in agent prompts.
+`scm_get_clone_info` returns a clean HTTPS URL. Git authenticates through
+the job credential helper using the username/password above — do not
+paste tokens into remotes.
 
 ## Repo identity in `ExternalRef`
 A BitBucket pull request lives at `bitbucket.org/<workspace>/<slug>/pull-requests/<n>`,

@@ -28,11 +28,13 @@ describe('@coro-ai/plugin-gitlab', () => {
     }
   })
 
-  it('builds a credentialed clone URL', async () => {
+  it('builds a clean clone URL with oauth2 credentials', async () => {
     const plugin = makePlugin()
     await plugin.init({ namespace: 'team', token: 'glpat-xyz' }, { logger, fetch: globalThis.fetch })
     const info = plugin.cloneInfo({ repo: 'svc' })
-    expect(info.url).toBe('https://oauth2:glpat-xyz@gitlab.com/team/svc.git')
+    expect(info.url).toBe('https://gitlab.com/team/svc.git')
+    expect(info.username).toBe('oauth2')
+    expect(info.password).toBe('glpat-xyz')
     expect(info.envForGit).toMatchObject({ GIT_TERMINAL_PROMPT: '0' })
   })
 

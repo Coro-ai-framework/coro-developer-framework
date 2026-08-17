@@ -6,8 +6,8 @@
 // create, status, comments, reply, approve, merge — is served here by the
 // inline `GitHubClient`, alongside the operations MCP structurally cannot do:
 //
-//   - `cloneInfo(...)`        — credentialed HTTPS clone URL. No MCP
-//                               equivalent.
+//   - `cloneInfo(...)`        — clean HTTPS URL + username/password.
+//                               No MCP equivalent.
 //   - `matchesRemote(...)`    — host check for self-improvement remote
 //                               detection. Pure string match.
 //   - `normalizeInbound(...)` — parses GitHub webhook payloads into a
@@ -266,13 +266,13 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
 
   cloneInfo(args: { repo: string }): ScmCloneInfo {
     // GitHub PATs use `x-access-token` as the HTTPS basic-auth username.
-    const token = encodeURIComponent(this.token)
-    // `repo` may carry its own owner (`someone/coro`) — an upstream
-    // contribution clones a fork that is not under the configured org.
+    // The token stays on `password` so `origin` never snapshots it.
     const { owner, repo } = parseGitHubRepo(args.repo, this.owner)
     return {
-      url: `https://x-access-token:${token}@github.com/${owner}/${repo}.git`,
-      envForGit: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
+      url: `https://github.com/${owner}/${repo}.git`,
+      username: 'x-access-token',
+      password: this.token,
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
     }
   }
 

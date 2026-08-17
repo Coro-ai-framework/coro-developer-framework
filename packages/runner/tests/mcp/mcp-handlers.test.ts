@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as fs from 'fs/promises'
 import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
+import { installRepoGitAuth } from '../../src/clients/git-auth'
 import { JobType, STATUS_ESCALATED } from '@coro-ai/cloud-protocol'
 import type { ToolContext } from '../../src/tools/types'
 import {
@@ -15,6 +16,16 @@ vi.mock('fs/promises')
 vi.mock('simple-git', () => ({
   simpleGit: vi.fn(),
 }))
+
+vi.mock('../../src/clients/git-auth', async () => {
+  const actual = await vi.importActual<typeof import('../../src/clients/git-auth')>(
+    '../../src/clients/git-auth',
+  )
+  return {
+    ...actual,
+    installRepoGitAuth: vi.fn().mockResolvedValue(undefined),
+  }
+})
 
 /** Parses JSON from the first text content block returned by handlers. */
 function parseJson(result: { content: Array<{ type: string; text: string }> }): unknown {
@@ -208,6 +219,7 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     readdirMock.mockResolvedValue([])
     rmMock.mockResolvedValue(undefined)
     simpleGitMock.mockReset()
+    vi.mocked(installRepoGitAuth).mockClear()
   })
 
   it('clones via the resolved scm plugin into the job working directory', async () => {
@@ -259,6 +271,10 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     )
     expect(data['repoDir']).toBe('/tmp/work-mcp/job-mcp-test/svc')
     expect(data['reused']).toBe(false)
+    expect(vi.mocked(installRepoGitAuth)).toHaveBeenCalledWith(
+      '/tmp/work-mcp/job-mcp-test/svc',
+      expect.objectContaining({ matchesRemote: expect.any(Function) }),
+    )
   })
 
   it('reuses an existing checkout when .git already exists', async () => {
@@ -283,6 +299,26 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     )
     expect(data['reused']).toBe(true)
     expect(data['relativeDir']).toBe('svc')
+    expect(vi.mocked(installRepoGitAuth)).toHaveBeenCalled()
+  })
+})
+
+describe('createMcpToolHandlers — scm_get_clone_info', () => {
+  it('returns a clean URL and never the plugin password', async () => {
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://bitbucket.org/acme/svc.git',
+      username: 'x-bitbucket-api-token-auth',
+      password: 'super-secret-token',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_get_clone_info({ repo: 'svc' })) as Record<string, unknown>
+    const raw = JSON.stringify(data)
+    expect(data['url']).toBe('https://bitbucket.org/acme/svc.git')
+    expect(raw).not.toContain('super-secret-token')
+    expect(data['password']).toBeUndefined()
+    expect(data['auth']).toMatch(/credential helper/)
   })
 })
 

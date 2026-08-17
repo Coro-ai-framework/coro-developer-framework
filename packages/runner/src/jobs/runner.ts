@@ -4,6 +4,7 @@ import path from 'path'
 import { BitBucketClient } from '../clients/bitbucket'
 import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
+import { prepareJobGitAuth } from '../clients/git-auth'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
 import { Settings } from '../config/settings'
@@ -561,6 +562,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       const workingDir = path.join(settings.paths.workingDir, liveJob.id)
       /** SDK spawns Claude Code with `cwd: workingDir`. Missing dir causes spawn ENOENT, which the SDK misreports as "cli.js not found". */
       mkdirSync(workingDir, { recursive: true })
+      try {
+        await prepareJobGitAuth(workingDir, ctx.plugins)
+      } catch (err) {
+        logger.warn({ err, jobId: liveJob.id }, 'Could not refresh job git credentials from the live SCM plugin')
+      }
 
       // Resolve the executor early so its `capabilities` can drive
       // prompt/subagent assembly (CLAUDE.md injection, etc.). Test

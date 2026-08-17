@@ -24,10 +24,11 @@ The default tool allowlist is curated (~15 tools); operators can extend
 it via `~/.coro/config.json` if a workflow needs a tool not on the list.
 
 ## Tokens
-- Personal access tokens (classic or fine-grained) are sent as the password
-  with `x-access-token` as the username when cloning.
-- The `scm_get_clone_info` MCP tool returns a fully-credentialed HTTPS URL.
-  Prefer that over hand-rolling URLs in agent prompts.
+- Personal access tokens (classic or fine-grained) are supplied to git as
+  the password with `x-access-token` as the username, via the job's
+  credential helper. They are never stored in `origin`.
+- `scm_get_clone_info` returns a clean HTTPS URL. Prefer `git push origin`
+  over hand-rolling credentialed URLs.
 
 ## Repo identity in `ExternalRef`
 A GitHub pull request is identified globally by `<owner>/<repo>#<n>`. The

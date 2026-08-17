@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
+import { createIsolatedGit, installRepoGitAuth, persistableCloneUrl } from './clients/git-auth'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { Artifact, WorkItem, Insight, Job } from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
@@ -560,7 +560,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     const r = resolveScm(ctx, args.pluginId, args.repo)
     if (!r.ok) return r.error
     const info = r.scm.cloneInfo({ repo: args.repo })
-    return text({ pluginId: r.scm.manifest.id, ...info })
+    return text({
+      pluginId: r.scm.manifest.id,
+      url: persistableCloneUrl(info),
+      envForGit: info.envForGit,
+      auth: info.username || info.password
+        ? 'injected by the job git credential helper — do not put tokens in remotes'
+        : 'none',
+    })
   }
 
   const scm_clone_repo = async (args: { pluginId?: string; repo: string }) => {
@@ -581,6 +588,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     await fs.mkdir(jobWorkingDir, { recursive: true })
 
     if (await isGitRepo(repoDir)) {
+      await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
       await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
       await persistRepoCheckoutParams(ctx, repo, repoDir)
       return text({
@@ -605,9 +613,10 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       }
     }
 
-    const git = buildCloneGit(jobWorkingDir, info.envForGit)
+    const persistUrl = persistableCloneUrl(info)
+    const git = createIsolatedGit(jobWorkingDir, info.envForGit)
     // Belt-and-suspenders: even with GIT_CONFIG_GLOBAL/SYSTEM neutered
-    // (see buildCloneGit), an `insteadOf` rule can also live in the
+    // (see createIsolatedGit), an `insteadOf` rule can also live in the
     // repo-local config of a parent worktree we happen to be invoked
     // from. Pass explicit `--config url.https://<host>/.insteadOf=...`
     // for every host we know we issue HTTPS clone URLs against, so any
@@ -620,7 +629,8 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       'url.https://gitlab.com/.insteadOf=ssh://git@gitlab.com/',
       'url.https://gitlab.com/.insteadOf=git@gitlab.com:',
     ].flatMap(rule => ['--config', rule])
-    await git.clone(info.url, repoDir, insteadOfOverrides)
+    await git.clone(persistUrl, repoDir, insteadOfOverrides)
+    await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
     await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
     await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)
     await persistRepoCheckoutParams(ctx, repo, repoDir)
@@ -1420,39 +1430,6 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 async function isGitRepo(dir: string): Promise<boolean> {
   const stat = await fs.stat(path.join(dir, '.git')).catch(() => null)
   return stat?.isDirectory() ?? false
-}
-
-function buildCloneGit(cwd: string, extraEnv: Record<string, string>): SimpleGit {
-  const opts: Partial<SimpleGitOptions> = {
-    baseDir: cwd,
-    // simple-git ≥3.36 ships an env-vulnerability scanner that throws
-    // `Use of "GIT_CONFIG_GLOBAL" is not permitted without enabling
-    // allowUnsafeConfigPaths` whenever it sees `GIT_CONFIG_GLOBAL`,
-    // `GIT_CONFIG_SYSTEM`, or `GIT_CONFIG` in the spawned process env.
-    // We deliberately set `GIT_CONFIG_GLOBAL=/dev/null` below to
-    // neutralise the user's ~/.gitconfig (see comment further down), so
-    // we have to opt in here. The flag only relaxes simple-git's own
-    // pre-spawn check; git itself still treats the value as a normal
-    // (empty) config file.
-    unsafe: {
-      allowUnsafeProtocolOverride: false,
-      allowUnsafeAskPass: true,
-      allowUnsafeConfigPaths: true,
-    } as unknown as SimpleGitOptions['unsafe'],
-  }
-  // Neutralize the user's ~/.gitconfig and /etc/gitconfig so personal
-  // setup (most painfully, an `url.ssh://git@<host>/.insteadOf=https://<host>/`
-  // rewrite) doesn't redirect a credentialed HTTPS clone URL through
-  // SSH — which then fails because the runner has no SSH key. The null
-  // device differs across platforms; on Windows it is `NUL`.
-  const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null'
-  return simpleGit(opts).env({
-    GIT_TERMINAL_PROMPT: '0',
-    GIT_ASKPASS: '',
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: nullDevice,
-    ...extraEnv,
-  })
 }
 
 export type McpToolHandlers = ReturnType<typeof createMcpToolHandlers>

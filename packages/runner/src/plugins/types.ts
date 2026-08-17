@@ -466,9 +466,19 @@ export interface PluginRuntime<Config = unknown> {
 // ── SCM plugin runtime ───────────────────────────────────────────────────────
 
 export interface ScmCloneInfo {
-  /** Clone URL with credentials embedded (or empty if managed by SSH agent). */
+  /**
+   * Persistable clone URL with **no** secrets. Stored as `origin` and
+   * matched by {@link ScmPluginRuntime.matchesRemote}. HTTPS userinfo
+   * belongs in `username` / `password`, never here — a token baked into
+   * the remote outlives a Settings change and is what `git push` then
+   * authenticates as.
+   */
   url: string
-  /** Extra env vars to inject into git operations (e.g. `GIT_ASKPASS`). */
+  /** HTTPS basic-auth username (`x-access-token`, `oauth2`, …). Omit for SSH/local. */
+  username?: string
+  /** HTTPS password or token. Omit for SSH/local. Never put this in `url`. */
+  password?: string
+  /** Isolation env for runner-owned git spawns (`GIT_TERMINAL_PROMPT`, …). Not a password channel. */
   envForGit: Record<string, string>
 }
 
@@ -617,8 +627,8 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
 
   // ── Repo / clone ────────────────────────────────────────────────────────
   // `cloneInfo` and `matchesRemote` stay required — they have no MCP
-  // equivalent (the credentialed clone URL must come from the plugin
-  // itself, and webhook ingress needs a host check). Everything else
+  // equivalent (the persistable clone URL and HTTPS credentials must
+  // come from the plugin itself, and webhook ingress needs a host check). Everything else
   // is optional after the MCP-first pivot: a plugin that exposes an
   // upstream MCP server via `mcpServer()` can omit these methods, and
   // the hybrid `scm_*` proxy will forward calls through the SDK's MCP

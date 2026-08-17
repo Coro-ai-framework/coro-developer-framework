@@ -37,9 +37,9 @@ describe('bitbucket plugin — git clone URL username derivation', () => {
 
     const info = plugin.cloneInfo({ repo: 'svc' })
 
-    expect(info.url).toBe(
-      'https://x-bitbucket-api-token-auth:ATATT3xFfGF0DEADBEEF%3DABCDEF12@bitbucket.org/acme/svc.git',
-    )
+    expect(info.url).toBe('https://bitbucket.org/acme/svc.git')
+    expect(info.username).toBe('x-bitbucket-api-token-auth')
+    expect(info.password).toBe('ATATT3xFfGF0DEADBEEF=ABCDEF12')
     // The user is told this happened so they're not surprised.
     expect((deps.logger.info as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
       expect.objectContaining({ gitUsername: 'x-bitbucket-api-token-auth' }),
@@ -56,9 +56,10 @@ describe('bitbucket plugin — git clone URL username derivation', () => {
       coderToken: 'ATATT3xFfGF0DEADBEEF=ABCDEF12',
     })
 
-    expect(plugin.cloneInfo({ repo: 'svc' }).url).toBe(
-      'https://x-bitbucket-api-token-auth:ATATT3xFfGF0DEADBEEF%3DABCDEF12@bitbucket.org/acme/svc.git',
-    )
+    const info = plugin.cloneInfo({ repo: 'svc' })
+    expect(info.url).toBe('https://bitbucket.org/acme/svc.git')
+    expect(info.username).toBe('x-bitbucket-api-token-auth')
+    expect(info.password).toBe('ATATT3xFfGF0DEADBEEF=ABCDEF12')
   })
 
   it('leaves an email username untouched for a non-ATATT (App Password) token', async () => {
@@ -70,9 +71,10 @@ describe('bitbucket plugin — git clone URL username derivation', () => {
       coderToken: 'ATBBdeadbeef-not-an-api-token',
     })
 
-    expect(plugin.cloneInfo({ repo: 'svc' }).url).toBe(
-      'https://alice%40example.com:ATBBdeadbeef-not-an-api-token@bitbucket.org/acme/svc.git',
-    )
+    const info = plugin.cloneInfo({ repo: 'svc' })
+    expect(info.url).toBe('https://bitbucket.org/acme/svc.git')
+    expect(info.username).toBe('alice@example.com')
+    expect(info.password).toBe('ATBBdeadbeef-not-an-api-token')
     expect(deps.logger.info as ReturnType<typeof vi.fn>).not.toHaveBeenCalled()
   })
 
@@ -83,8 +85,9 @@ describe('bitbucket plugin — git clone URL username derivation', () => {
       coderToken: 'BBDC-some-repository-access-token',
     })
 
-    expect(plugin.cloneInfo({ repo: 'svc' }).url).toBe(
-      'https://x-token-auth:BBDC-some-repository-access-token@bitbucket.org/acme/svc.git',
-    )
+    const info = plugin.cloneInfo({ repo: 'svc' })
+    expect(info.url).toBe('https://bitbucket.org/acme/svc.git')
+    expect(info.username).toBe('x-token-auth')
+    expect(info.password).toBe('BBDC-some-repository-access-token')
   })
 })

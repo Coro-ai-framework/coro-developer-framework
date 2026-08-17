@@ -347,7 +347,19 @@ export interface PluginRuntime<Config = unknown> {
 // ── SCM plugin ───────────────────────────────────────────────────────────────
 
 export interface ScmCloneInfo {
+  /**
+   * Persistable clone URL with **no** secrets. Stored as `origin` and
+   * matched by {@link ScmPluginRuntime.matchesRemote}. HTTPS userinfo
+   * belongs in `username` / `password`, never here — a token baked into
+   * the remote outlives a Settings change and is what `git push` then
+   * authenticates as.
+   */
   url: string
+  /** HTTPS basic-auth username (`x-access-token`, `oauth2`, …). Omit for SSH/local. */
+  username?: string
+  /** HTTPS password or token. Omit for SSH/local. Never put this in `url`. */
+  password?: string
+  /** Isolation env for runner-owned git spawns (`GIT_TERMINAL_PROMPT`, …). Not a password channel. */
   envForGit: Record<string, string>
 }
 
@@ -446,8 +458,8 @@ export interface ScmDirectoryEntry {
 export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config> {
   kind: 'scm'
 
-  // Required even in MCP mode — credentialed clone URLs and host checks
-  // have no MCP equivalent.
+  // Required even in MCP mode — persistable clone URLs, HTTPS
+  // credentials, and host checks have no MCP equivalent.
   cloneInfo(args: { repo: string }): ScmCloneInfo
   matchesRemote(remoteUrl: string): boolean
 

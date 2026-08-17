@@ -21,6 +21,10 @@ export default function ContributionSection() {
   // env vars. It lags the draft until the next save, so it answers "can
   // a retrospective publish right now", not "is this form filled in".
   const configured = meta?.resolved.upstreamConfigured ?? false
+  const githubEntry = draft.pluginInstalled.github
+  const githubOwner = typeof githubEntry?.config.owner === 'string' ? githubEntry.config.owner.trim() : ''
+  const githubConfigured = Boolean(githubEntry && githubEntry.enabled !== false && githubOwner)
+  const tokenOverride = draft.upstreamToken.trim().length > 0
 
   return (
     <SettingsSection
@@ -59,14 +63,30 @@ export default function ContributionSection() {
         />
       </Field>
 
+      {githubConfigured ? (
+        <SettingsNotice tone="accent" title="Uses your GitHub plugin account">
+          Publishing authenticates as {githubOwner} from Settings → GitHub.
+          Clone, push, and the GitHub API in jobs use that same account.
+          Set an override token below only when contribution must use a
+          different GitHub user.
+        </SettingsNotice>
+      ) : null}
+
+      {tokenOverride ? (
+        <SettingsNotice tone="warning" title="Contribution token override is set">
+          Issues and forks opened by a retrospective use this token instead
+          of the GitHub plugin. Job `git push` still uses Settings → GitHub.
+        </SettingsNotice>
+      ) : null}
+
       <Field
-        label="GitHub token"
-        hint="Needs the public_repo scope: fork, push, and open issues and pull requests. Defaults to your GitHub plugin's token."
+        label="GitHub token override"
+        hint="Optional. Leave blank to use the GitHub plugin token. Needs public_repo: fork, push, and open issues and pull requests."
       >
         <SecretInput
           value={draft.upstreamToken}
           onChange={event => setDraft('upstreamToken', event.target.value)}
-          placeholder="ghp_…"
+          placeholder="leave blank to use Settings → GitHub"
         />
       </Field>
 

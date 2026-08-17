@@ -232,11 +232,13 @@ class GitLabScmPlugin extends ScmPluginBase<GitLabPluginConfig> {
 
   cloneInfo(args: { repo: string }): ScmCloneInfo {
     // GitLab PATs use the literal username `oauth2` for HTTPS basic auth.
-    const token = encodeURIComponent(this.token)
+    // The token stays on `password` so `origin` never snapshots it.
     const host = this.gitlabHost()
     return {
-      url: `https://oauth2:${token}@${host}/${this.namespace}/${args.repo}.git`,
-      envForGit: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
+      url: `https://${host}/${this.namespace}/${args.repo}.git`,
+      username: 'oauth2',
+      password: this.token,
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
     }
   }
 

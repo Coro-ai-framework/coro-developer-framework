@@ -95,8 +95,8 @@ export async function probeGitHubCredentials(
       const repos = (await repoRes.json()) as Array<{ full_name?: string }>
       const sample = repos[0]?.full_name
       if (sample) {
-        // `x-access-token` is what `cloneInfo()` puts in the clone URL, so
-        // this probes the exact credential shape jobs will use.
+        // `x-access-token` is the HTTPS username `cloneInfo()` reports, so
+        // this probes the same credential shape the git helper will use.
         const probe = await probeGitHttps(`https://github.com/${sample}.git`, 'x-access-token', token)
         checks.push({
           name: 'Git over HTTPS',
@@ -114,7 +114,7 @@ export async function probeGitHubCredentials(
   return {
     ok,
     message: ok
-      ? `Connected to GitHub as ${login}`
+      ? `Jobs will clone, push, and call GitHub as ${login}. A change applies on the next git operation, including Retry.`
       : 'GitHub credentials have problems — see the checks below.',
     checks,
   }

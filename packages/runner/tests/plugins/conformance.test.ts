@@ -276,6 +276,19 @@ describe.each(SCM_CASES)('SCM plugin contract — $id', (kase) => {
     expect(info.envForGit).not.toBeNull()
   })
 
+  it('cloneInfo() URL has no userinfo', async () => {
+    const r = await init()
+    const info = r.cloneInfo({ repo: kase.id === 'local' ? process.cwd() : 'svc-abc' })
+    expect(info.url).not.toMatch(/^https?:\/\/[^/?#]*@/i)
+    if (kase.id === 'local') {
+      expect(info.username).toBeUndefined()
+      expect(info.password).toBeUndefined()
+    } else {
+      expect(info.username).toBeTruthy()
+      expect(info.password).toBeTruthy()
+    }
+  })
+
   it('cloneInfo() URL embeds the repo slug verbatim', async () => {
     if (kase.id === 'local') return
     const r = await init()

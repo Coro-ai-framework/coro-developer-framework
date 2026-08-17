@@ -14,6 +14,7 @@ import { runnerCommand, startCommand } from './commands/runner'
 import { campaignCommand } from './commands/campaign'
 import { pluginCommand } from './commands/plugin'
 import { retrospectiveCommand } from './commands/retrospective'
+import { gitCredentialCommand } from './commands/git-credential'
 
 const program = new Command()
 
@@ -44,6 +45,7 @@ program.addCommand(runnerCommand)
 program.addCommand(campaignCommand)
 program.addCommand(pluginCommand)
 program.addCommand(retrospectiveCommand)
+program.addCommand(gitCredentialCommand, { hidden: true })
 
 // Desktop shell spawns the runner via ELECTRON_RUN_AS_NODE (argv[0] is the Electron
 // binary, not "node"). Tell Commander to always strip the executable + script path.

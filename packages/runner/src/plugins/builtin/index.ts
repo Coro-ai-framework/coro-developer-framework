@@ -8,7 +8,7 @@
 import type { Logger } from 'pino'
 import type { PluginsConfig } from '../../config/plugins-config'
 import type { Settings } from '../../config/settings'
-import { PluginRegistry } from '../registry'
+import { isScmPlugin, PluginRegistry } from '../registry'
 import type { PluginManifest, PluginRuntime } from '../types'
 import { buildDropinFactoryMap, type DropinPluginFactory } from '../loader'
 import { createBitBucketScmPlugin } from './bitbucket'
@@ -273,6 +273,44 @@ export async function buildBuiltinPluginRegistry(
     registry.setDefaults({ ...registry.getDefaults(), executor: defaultProvider })
   }
 
+  return registry
+}
+
+/**
+ * SCM plugins only, from on-disk config. Used by `coro git-credential`
+ * so a Settings save is visible on the next `git push` without booting
+ * executors or mounting HTTP routes.
+ */
+export async function buildScmPluginRegistry(args: BuildPluginsArgs): Promise<PluginRegistry> {
+  const { pluginsConfig, logger } = args
+  const registry = new PluginRegistry(pluginsConfig.defaults ?? {})
+  const dropinFactoryArgs: Parameters<typeof buildDropinFactoryMap>[0] = {
+    pluginsConfig,
+    logger,
+    ...(args.dropinPluginsRoot ? { pluginsRoot: args.dropinPluginsRoot } : {}),
+  }
+  const dropinFactories = await buildDropinFactoryMap(dropinFactoryArgs)
+
+  for (const [id, slot] of Object.entries(pluginsConfig.installed ?? {})) {
+    if (!slot.enabled) continue
+    const dropinKind = dropinFactories[id]?.manifest.kind
+    const isBuiltinScm = (BUILTIN_PLUGIN_IDS_BY_KIND.scm as readonly string[]).includes(id)
+    if (!isBuiltinScm && dropinKind !== 'scm') continue
+    try {
+      const runtime = await instantiatePlugin({
+        id,
+        config: slot.config ?? {},
+        logger,
+        dropinFactories,
+        ...(args.settings ? { settings: args.settings } : {}),
+      })
+      if (!runtime || !isScmPlugin(runtime)) continue
+      await runtime.init(slot.config ?? {}, { logger, fetch: globalThis.fetch })
+      registry.register(runtime)
+    } catch (err) {
+      logger.error({ err, pluginId: id }, 'Failed to initialise SCM plugin for git credentials — skipping')
+    }
+  }
   return registry
 }
 
