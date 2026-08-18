@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -7,11 +7,14 @@ import { z } from 'zod'
 import { PluginRegistry } from '../../src/plugins/registry'
 import type { PluginManifest, ScmPluginRuntime } from '../../src/plugins/types'
 import {
+  createIsolatedGit,
   fillGitCredential,
   formatGitCredentialResponse,
   gitCredentialHelperCommand,
   httpsCredentialsFromCloneInfo,
   installRepoGitAuth,
+  isolatedGitEnv,
+  isolatedGitUnsafeOptions,
   parseGitCredentialRequest,
   persistableCloneUrl,
   prepareJobGitAuth,
@@ -187,6 +190,56 @@ describe('gitCredentialHelperCommand', () => {
     expect(cmd.startsWith('!')).toBe(true)
     expect(cmd).toContain('git-credential')
     expect(cmd).toContain("'/usr/bin/node'")
+  })
+})
+
+describe('createIsolatedGit / simple-git 3.36 scanner', () => {
+  it('injects the live credential helper through GIT_CONFIG_COUNT', () => {
+    const env = isolatedGitEnv()
+    expect(env.GIT_CONFIG_COUNT).toBe('2')
+    expect(env.GIT_CONFIG_KEY_0).toBe('credential.helper')
+    expect(env.GIT_CONFIG_VALUE_0).toBe('')
+    expect(env.GIT_CONFIG_KEY_1).toBe('credential.helper')
+    expect(env.GIT_CONFIG_VALUE_1).toMatch(/^!/)
+    expect(env.GIT_ASKPASS).toBe('')
+    expect(env.GIT_CONFIG_GLOBAL).toBe(process.platform === 'win32' ? 'NUL' : '/dev/null')
+  })
+
+  it('opts into every scanner class isolatedGitEnv actually uses', () => {
+    expect(isolatedGitUnsafeOptions).toEqual({
+      allowUnsafeProtocolOverride: false,
+      allowUnsafeAskPass: true,
+      allowUnsafeConfigPaths: true,
+      allowUnsafeConfigEnvCount: true,
+      allowUnsafeCredentialHelper: true,
+    })
+  })
+
+  it('can spawn git with that env — the scanner does not throw', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'coro-isolated-git-'))
+    try {
+      const out = await createIsolatedGit(dir).raw(['--version'])
+      expect(out).toMatch(/git version/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('clones a local repository with the live-helper env applied', async () => {
+    const src = mkdtempSync(path.join(os.tmpdir(), 'coro-isolated-src-'))
+    const destRoot = mkdtempSync(path.join(os.tmpdir(), 'coro-isolated-dst-'))
+    try {
+      execFileSync('git', ['init', src], { encoding: 'utf8' })
+      execFileSync('git', ['-C', src, 'config', 'user.email', 't@example.com'])
+      execFileSync('git', ['-C', src, 'config', 'user.name', 't'])
+      execFileSync('git', ['-C', src, 'commit', '--allow-empty', '-m', 'init'])
+      const dest = path.join(destRoot, 'copy')
+      await createIsolatedGit(destRoot).clone(src, dest)
+      expect(existsSync(path.join(dest, '.git'))).toBe(true)
+    } finally {
+      rmSync(src, { recursive: true, force: true })
+      rmSync(destRoot, { recursive: true, force: true })
+    }
   })
 })
 

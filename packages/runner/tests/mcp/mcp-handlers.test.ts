@@ -242,20 +242,32 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
 
     expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({ baseDir: '/tmp/work-mcp/job-mcp-test' }))
-    // Regression: simple-git ≥3.36 ships an env-vulnerability scanner
-    // that throws on `GIT_CONFIG_GLOBAL` unless `allowUnsafeConfigPaths`
-    // is set. We deliberately set `GIT_CONFIG_GLOBAL=/dev/null` to
-    // neutralise the user's ~/.gitconfig, so the unsafe opt-in must
-    // stay flipped on. Drop this and clones break with
-    //   `Use of "GIT_CONFIG_GLOBAL" is not permitted without enabling allowUnsafeConfigPaths`
+    // Regression: simple-git ≥3.36 scans spawn env. isolatedGitEnv sets
+    // GIT_CONFIG_GLOBAL=/dev/null (neutralise ~/.gitconfig) and
+    // GIT_CONFIG_COUNT + credential.helper (live SCM helper, no token
+    // in the URL). Each needs its own unsafe opt-in; dropping any one
+    // makes scm_clone_repo fail before git is spawned:
+    //   GIT_CONFIG_GLOBAL  → allowUnsafeConfigPaths
+    //   GIT_CONFIG_COUNT   → allowUnsafeConfigEnvCount
+    //   credential.helper  → allowUnsafeCredentialHelper
+    //   GIT_ASKPASS=''     → allowUnsafeAskPass
     expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({
-      unsafe: expect.objectContaining({ allowUnsafeConfigPaths: true }),
+      unsafe: expect.objectContaining({
+        allowUnsafeAskPass: true,
+        allowUnsafeConfigPaths: true,
+        allowUnsafeConfigEnvCount: true,
+        allowUnsafeCredentialHelper: true,
+        allowUnsafeProtocolOverride: false,
+      }),
     }))
     expect(env).toHaveBeenCalledWith(expect.objectContaining({
       GIT_TERMINAL_PROMPT: '0',
       GIT_ASKPASS: '',
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_CONFIG_KEY_1: 'credential.helper',
     }))
     expect(clone).toHaveBeenCalledWith(
       'https://example.test/svc.git',

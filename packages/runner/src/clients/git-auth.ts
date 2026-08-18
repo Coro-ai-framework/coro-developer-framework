@@ -203,14 +203,32 @@ export function isolatedGitEnv(extra?: Record<string, string>): Record<string, s
   }
 }
 
+/**
+ * simple-git ≥3.36 scans spawn env / `-c` keys and throws unless each
+ * class of override is opted into. `isolatedGitEnv` uses all of these:
+ *
+ *   GIT_ASKPASS=''                  → allowUnsafeAskPass (clear, not redirect)
+ *   GIT_CONFIG_GLOBAL=/dev/null     → allowUnsafeConfigPaths
+ *   GIT_CONFIG_COUNT + KEY/VALUE    → allowUnsafeConfigEnvCount
+ *   credential.helper via that env  → allowUnsafeCredentialHelper
+ *
+ * Protocol override stays off. Dropping any of the four opt-ins makes
+ * `scm_clone_repo` fail before git is spawned, with
+ * `Use of "GIT_CONFIG_COUNT" is not permitted…` (or the credential.helper
+ * variant) — which looks like a sandbox denial to the agent.
+ */
+export const isolatedGitUnsafeOptions: SimpleGitOptions['unsafe'] = {
+  allowUnsafeProtocolOverride: false,
+  allowUnsafeAskPass: true,
+  allowUnsafeConfigPaths: true,
+  allowUnsafeConfigEnvCount: true,
+  allowUnsafeCredentialHelper: true,
+}
+
 export function createIsolatedGit(cwd: string, extraEnv?: Record<string, string>): SimpleGit {
   const opts: Partial<SimpleGitOptions> = {
     baseDir: cwd,
-    unsafe: {
-      allowUnsafeProtocolOverride: false,
-      allowUnsafeAskPass: true,
-      allowUnsafeConfigPaths: true,
-    } as unknown as SimpleGitOptions['unsafe'],
+    unsafe: isolatedGitUnsafeOptions,
   }
   return simpleGit(opts).env(isolatedGitEnv(extraEnv))
 }
