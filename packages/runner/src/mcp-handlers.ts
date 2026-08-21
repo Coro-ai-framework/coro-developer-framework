@@ -614,7 +614,27 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
 
     const persistUrl = persistableCloneUrl(info)
-    const git = createIsolatedGit(jobWorkingDir, info.envForGit)
+    // `--progress` forces stderr even without a TTY so the stall timeout
+    // resets while bytes are flowing. `--filter=blob:none` keeps full
+    // commit history (git log / old SHAs) without downloading historical
+    // file blobs; HEAD is still checked out. Slow links are also guarded
+    // by http.lowSpeed* + the no-output timeout.
+    const CLONE_STALL_MS = 120_000
+    let lastProgressKey = ''
+    const git = createIsolatedGit(jobWorkingDir, info.envForGit, {
+      timeoutMs: CLONE_STALL_MS,
+      progress: ({ stage, progress }) => {
+        if (typeof progress !== 'number' || !Number.isFinite(progress)) return
+        const bucket = Math.min(100, Math.floor(progress / 25) * 25)
+        const key = `${stage || 'clone'}:${bucket}`
+        if (key === lastProgressKey) return
+        lastProgressKey = key
+        void ctx.stateBackend.appendLog(
+          ctx.job.id,
+          `[repo-clone] ${repo} ${stage || 'clone'} ${bucket}%`,
+        )
+      },
+    })
     // Belt-and-suspenders: even with GIT_CONFIG_GLOBAL/SYSTEM neutered
     // (see createIsolatedGit), an `insteadOf` rule can also live in the
     // repo-local config of a parent worktree we happen to be invoked
@@ -629,7 +649,33 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       'url.https://gitlab.com/.insteadOf=ssh://git@gitlab.com/',
       'url.https://gitlab.com/.insteadOf=git@gitlab.com:',
     ].flatMap(rule => ['--config', rule])
-    await git.clone(persistUrl, repoDir, insteadOfOverrides)
+    const cloneArgs = (filter: boolean) => [
+      ...(filter ? ['--filter=blob:none'] : []),
+      '--progress',
+      ...insteadOfOverrides,
+    ]
+    const failClone = async (msg: string) => {
+      await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
+      await ctx.stateBackend.appendLog(ctx.job.id, `[repo-clone] failed ${repo}: ${msg}`)
+      return error(`Clone of "${repo}" failed: ${msg}`)
+    }
+    await ctx.stateBackend.appendLog(ctx.job.id, `[repo-clone] starting ${repo}`)
+    try {
+      await git.clone(persistUrl, repoDir, cloneArgs(true))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
+      if (!/filter|partial clone/i.test(msg)) return failClone(msg)
+      await ctx.stateBackend.appendLog(
+        ctx.job.id,
+        `[repo-clone] partial clone unsupported, retrying full clone of ${repo}`,
+      )
+      try {
+        await git.clone(persistUrl, repoDir, cloneArgs(false))
+      } catch (retryErr) {
+        return failClone(retryErr instanceof Error ? retryErr.message : String(retryErr))
+      }
+    }
     await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
     await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
     await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)

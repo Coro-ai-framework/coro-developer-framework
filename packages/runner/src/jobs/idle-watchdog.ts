@@ -195,6 +195,16 @@ export function createPhaseIdleWatchdog(deps: PhaseIdleWatchdogDeps): PhaseIdleW
     const job = deps.getJob()
     if (job.status !== deps.getExpectedStatus()) return
 
+    // A long-running MCP tool (scm_clone_repo on a large repo) produces
+    // no agent turns, so lastActivityAt goes stale. Nudging is a no-op
+    // until the tool returns; parking then kills the clone. Treat in-flight
+    // MCP as activity.
+    const inFlightMcp = deps.getController()?.getSteeringState?.()?.inFlightMcpTool
+    if (inFlightMcp) {
+      deps.setLastActivityAt(Date.now())
+      return
+    }
+
     const idleMs = Date.now() - deps.getLastActivityAt()
     if (idleMs < deps.config.idleThresholdMs) return
 

@@ -199,6 +199,15 @@ export function isolatedGitEnv(extra?: Record<string, string>): Record<string, s
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: nullDevice,
     ...gitCredentialHelperSpawnEnv(),
+    // GIT_CONFIG_GLOBAL=/dev/null also drops the operator's http.timeout /
+    // lowSpeed* settings. Without these, a stalled TLS session (large repo
+    // over a slow tunnel) hangs forever and the agent looks stuck on
+    // scm_clone_repo. 1 KiB/s for 60s is "no progress", not "slow but alive".
+    GIT_CONFIG_COUNT: '4',
+    GIT_CONFIG_KEY_2: 'http.lowSpeedLimit',
+    GIT_CONFIG_VALUE_2: '1000',
+    GIT_CONFIG_KEY_3: 'http.lowSpeedTime',
+    GIT_CONFIG_VALUE_3: '60',
     ...extra,
   }
 }
@@ -225,10 +234,22 @@ export const isolatedGitUnsafeOptions: SimpleGitOptions['unsafe'] = {
   allowUnsafeCredentialHelper: true,
 }
 
-export function createIsolatedGit(cwd: string, extraEnv?: Record<string, string>): SimpleGit {
+export interface IsolatedGitSpawnOptions {
+  /** Kill the git child if it emits no stdout/stderr for this many ms. */
+  timeoutMs?: number
+  progress?: SimpleGitOptions['progress']
+}
+
+export function createIsolatedGit(
+  cwd: string,
+  extraEnv?: Record<string, string>,
+  spawn?: IsolatedGitSpawnOptions,
+): SimpleGit {
   const opts: Partial<SimpleGitOptions> = {
     baseDir: cwd,
     unsafe: isolatedGitUnsafeOptions,
+    ...(spawn?.timeoutMs ? { timeout: { block: spawn.timeoutMs } } : {}),
+    ...(spawn?.progress ? { progress: spawn.progress } : {}),
   }
   return simpleGit(opts).env(isolatedGitEnv(extraEnv))
 }

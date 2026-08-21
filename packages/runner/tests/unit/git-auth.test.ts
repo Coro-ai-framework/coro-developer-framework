@@ -196,11 +196,15 @@ describe('gitCredentialHelperCommand', () => {
 describe('createIsolatedGit / simple-git 3.36 scanner', () => {
   it('injects the live credential helper through GIT_CONFIG_COUNT', () => {
     const env = isolatedGitEnv()
-    expect(env.GIT_CONFIG_COUNT).toBe('2')
+    expect(env.GIT_CONFIG_COUNT).toBe('4')
     expect(env.GIT_CONFIG_KEY_0).toBe('credential.helper')
     expect(env.GIT_CONFIG_VALUE_0).toBe('')
     expect(env.GIT_CONFIG_KEY_1).toBe('credential.helper')
     expect(env.GIT_CONFIG_VALUE_1).toMatch(/^!/)
+    expect(env.GIT_CONFIG_KEY_2).toBe('http.lowSpeedLimit')
+    expect(env.GIT_CONFIG_VALUE_2).toBe('1000')
+    expect(env.GIT_CONFIG_KEY_3).toBe('http.lowSpeedTime')
+    expect(env.GIT_CONFIG_VALUE_3).toBe('60')
     expect(env.GIT_ASKPASS).toBe('')
     expect(env.GIT_CONFIG_GLOBAL).toBe(process.platform === 'win32' ? 'NUL' : '/dev/null')
   })
