@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs/promises'
 import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
@@ -228,6 +228,10 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     vi.mocked(installRepoGitAuth).mockClear()
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('clones via the resolved scm plugin into the job working directory', async () => {
     const built = makeMockToolContextWithSpies()
     built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
@@ -273,9 +277,9 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
       GIT_CONFIG_KEY_3: 'http.lowSpeedTime',
       GIT_CONFIG_VALUE_3: '60',
     }))
-    expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({
-      timeout: { block: 120_000 },
-    }))
+    // Inner blob-fetch after a partial clone emits no stdio; a block
+    // timeout would kill a healthy clone. Network stalls use http.lowSpeed*.
+    expect(simpleGitMock.mock.calls[0]?.[0]).not.toHaveProperty('timeout')
     expect(clone).toHaveBeenCalledWith(
       'https://example.test/svc.git',
       '/tmp/work-mcp/job-mcp-test/svc',
@@ -309,6 +313,39 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     )
   })
 
+  it('logs pack growth while a silent blob-fetch is in flight', async () => {
+    vi.useFakeTimers()
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    let finish!: () => void
+    const clone = vi.fn().mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+    readdirMock.mockImplementation(async (dir: unknown) => {
+      if (String(dir).includes('pack')) return ['tmp_pack_x'] as never
+      return [] as never
+    })
+    statMock.mockImplementation(async (filePath: unknown) => {
+      if (String(filePath).includes('tmp_pack_x')) {
+        return { isFile: () => true, size: 50 * 1024 * 1024 } as never
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const pending = h.scm_clone_repo({ repo: 'svc' })
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(built.ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[repo-clone] svc still running (50MB on disk)',
+    )
+    finish()
+    await pending
+  })
+
   it('reuses an existing checkout when .git already exists', async () => {
     const built = makeMockToolContextWithSpies()
     statMock.mockImplementation(async (filePath: any) => {
@@ -332,6 +369,41 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     expect(data['reused']).toBe(true)
     expect(data['relativeDir']).toBe('svc')
     expect(vi.mocked(installRepoGitAuth)).toHaveBeenCalled()
+  })
+
+  it('does not reuse a checkout that still has an in-flight tmp_pack', async () => {
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    const clone = vi.fn().mockResolvedValue(undefined)
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+    statMock.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.endsWith('/svc/.git') || p.endsWith('/svc')) {
+        return { isDirectory: () => true } as never
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+    readdirMock.mockImplementation(async (dir: unknown) => {
+      if (String(dir).includes(`${'pack'}`)) return ['tmp_pack_eEXq0k'] as never
+      return [] as never
+    })
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    await h.scm_clone_repo({ repo: 'svc' })
+
+    expect(rmMock).toHaveBeenCalledWith(
+      '/tmp/work-mcp/job-mcp-test/svc',
+      expect.objectContaining({ recursive: true, force: true }),
+    )
+    expect(built.ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[repo-clone] removing incomplete checkout of svc',
+    )
+    expect(clone).toHaveBeenCalled()
   })
 
   it('removes a partial checkout and returns an error when clone stalls or fails', async () => {

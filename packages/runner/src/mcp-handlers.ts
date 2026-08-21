@@ -61,6 +61,54 @@ export function wrapHandlersSafely<T extends Record<string, (...args: any[]) => 
   return out as T
 }
 
+const CLONE_HEARTBEAT_MS = 15_000
+
+function formatCloneBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`
+  return `${Math.round(bytes / (1024 * 1024))}MB`
+}
+
+/** Size of `.git/objects/pack`, including the in-flight `tmp_pack_*`. */
+async function clonePackBytes(repoDir: string): Promise<number> {
+  const packDir = path.join(repoDir, '.git', 'objects', 'pack')
+  try {
+    const names = await fs.readdir(packDir)
+    let total = 0
+    for (const name of names) {
+      const st = await fs.stat(path.join(packDir, name)).catch(() => null)
+      if (st?.isFile()) total += st.size
+    }
+    return total
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * `git clone --filter=blob:none` finishes the commit/tree pack, then
+ * fetches HEAD blobs with an inner `git fetch` that has no `--progress`.
+ * simple-git therefore sees no stdio and a block timeout looks like a hang.
+ * Log pack growth so the job stream stays alive; network stalls are
+ * already killed by `http.lowSpeed*`.
+ */
+function startCloneHeartbeat(
+  appendLog: (jobId: string, line: string) => Promise<unknown>,
+  jobId: string,
+  repo: string,
+  repoDir: string,
+): () => void {
+  const timer = setInterval(() => {
+    void clonePackBytes(repoDir).then(bytes => {
+      void appendLog(
+        jobId,
+        `[repo-clone] ${repo} still running (${formatCloneBytes(bytes)} on disk)`,
+      )
+    })
+  }, CLONE_HEARTBEAT_MS)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
+
 // ── Plugin resolution helpers ────────────────────────────────────────────────
 //
 // `scm_*` and `tracker_*` handlers all need the same boilerplate: pick
@@ -588,16 +636,24 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     await fs.mkdir(jobWorkingDir, { recursive: true })
 
     if (await isGitRepo(repoDir)) {
-      await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
-      await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
-      await persistRepoCheckoutParams(ctx, repo, repoDir)
-      return text({
-        pluginId: r.scm.manifest.id,
-        repo,
-        repoDir,
-        relativeDir: repo,
-        reused: true,
-      })
+      if (await cloneLooksIncomplete(repoDir)) {
+        await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
+        await ctx.stateBackend.appendLog(
+          ctx.job.id,
+          `[repo-clone] removing incomplete checkout of ${repo}`,
+        )
+      } else {
+        await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
+        await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
+        await persistRepoCheckoutParams(ctx, repo, repoDir)
+        return text({
+          pluginId: r.scm.manifest.id,
+          repo,
+          repoDir,
+          relativeDir: repo,
+          reused: true,
+        })
+      }
     }
 
     const targetStat = await fs.stat(repoDir).catch(() => null)
@@ -614,15 +670,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
 
     const persistUrl = persistableCloneUrl(info)
-    // `--progress` forces stderr even without a TTY so the stall timeout
-    // resets while bytes are flowing. `--filter=blob:none` keeps full
-    // commit history (git log / old SHAs) without downloading historical
-    // file blobs; HEAD is still checked out. Slow links are also guarded
-    // by http.lowSpeed* + the no-output timeout.
-    const CLONE_STALL_MS = 120_000
+    // `--progress` covers the first pack only. `--filter=blob:none` keeps
+    // full commit history without historical blobs; HEAD blobs are then
+    // fetched by an inner `git fetch` that has no `--progress`, so
+    // simple-git's block timeout would kill a healthy clone. Network
+    // stalls are handled by http.lowSpeed*; a disk heartbeat covers the
+    // silent blob-fetch / checkout phase.
     let lastProgressKey = ''
     const git = createIsolatedGit(jobWorkingDir, info.envForGit, {
-      timeoutMs: CLONE_STALL_MS,
       progress: ({ stage, progress }) => {
         if (typeof progress !== 'number' || !Number.isFinite(progress)) return
         const bucket = Math.min(100, Math.floor(progress / 25) * 25)
@@ -633,6 +688,12 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
           ctx.job.id,
           `[repo-clone] ${repo} ${stage || 'clone'} ${bucket}%`,
         )
+        if ((stage || '') === 'resolving' && bucket === 100) {
+          void ctx.stateBackend.appendLog(
+            ctx.job.id,
+            `[repo-clone] ${repo} fetching working-tree blobs (git prints no % for this step)`,
+          )
+        }
       },
     })
     // Belt-and-suspenders: even with GIT_CONFIG_GLOBAL/SYSTEM neutered
@@ -660,21 +721,31 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return error(`Clone of "${repo}" failed: ${msg}`)
     }
     await ctx.stateBackend.appendLog(ctx.job.id, `[repo-clone] starting ${repo}`)
+    const stopHeartbeat = startCloneHeartbeat(
+      (jobId, line) => ctx.stateBackend.appendLog(jobId, line),
+      ctx.job.id,
+      repo,
+      repoDir,
+    )
     try {
-      await git.clone(persistUrl, repoDir, cloneArgs(true))
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
-      if (!/filter|partial clone/i.test(msg)) return failClone(msg)
-      await ctx.stateBackend.appendLog(
-        ctx.job.id,
-        `[repo-clone] partial clone unsupported, retrying full clone of ${repo}`,
-      )
       try {
-        await git.clone(persistUrl, repoDir, cloneArgs(false))
-      } catch (retryErr) {
-        return failClone(retryErr instanceof Error ? retryErr.message : String(retryErr))
+        await git.clone(persistUrl, repoDir, cloneArgs(true))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
+        if (!/filter|partial clone/i.test(msg)) return failClone(msg)
+        await ctx.stateBackend.appendLog(
+          ctx.job.id,
+          `[repo-clone] partial clone unsupported, retrying full clone of ${repo}`,
+        )
+        try {
+          await git.clone(persistUrl, repoDir, cloneArgs(false))
+        } catch (retryErr) {
+          return failClone(retryErr instanceof Error ? retryErr.message : String(retryErr))
+        }
       }
+    } finally {
+      stopHeartbeat()
     }
     await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
     await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
@@ -1500,6 +1571,13 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 async function isGitRepo(dir: string): Promise<boolean> {
   const stat = await fs.stat(path.join(dir, '.git')).catch(() => null)
   return stat?.isDirectory() ?? false
+}
+
+/** Interrupted `git clone` leaves `.git` plus an in-flight `tmp_pack_*`. */
+async function cloneLooksIncomplete(repoDir: string): Promise<boolean> {
+  const packDir = path.join(repoDir, '.git', 'objects', 'pack')
+  const names = await fs.readdir(packDir).catch(() => [] as string[])
+  return names.some(n => n.startsWith('tmp_pack'))
 }
 
 export type McpToolHandlers = ReturnType<typeof createMcpToolHandlers>
