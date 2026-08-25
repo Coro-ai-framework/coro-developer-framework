@@ -26,7 +26,7 @@ import {
   type Job,
   type JobInput,
 } from '@coro-ai/cloud-protocol'
-import type { PredictedMetric } from './retrospective'
+import type { PredictedMetric, RetrospectiveTiers } from './retrospective'
 
 /** Categories this workflow will actually implement. Tenant findings stay on `propose_change`. */
 export const OSS_CONTRIBUTION_CATEGORIES = ['base-intelligence', 'runner-code'] as const
@@ -63,6 +63,12 @@ export interface OssContributionFinding {
   title: string
   /** What to change and why — already sanitised, since it reaches a public PR. */
   description: string
+  /**
+   * Shared with the other findings that describe the same defect. The planner
+   * registers one work item per root cause, so symptoms of one bug become one
+   * change rather than one apiece.
+   */
+  rootCause?: string
   briefing?: ImprovementBriefing
   evidencePack?: OssContributionEvidencePack
 }
@@ -78,6 +84,8 @@ export interface OssContributionRequest {
   baseBranch: string
   /** Retrospective that dispatched this. */
   retrospectiveJobId: string
+  /** Destinations the dispatching run was launched with, carried to the child. */
+  tiers?: RetrospectiveTiers
   /** Approved findings this job is asked to implement. At least one. */
   findings: OssContributionFinding[]
 }
@@ -125,6 +133,11 @@ export function buildOssContributionJobInput(request: OssContributionRequest): J
       prTargetBranch: request.baseBranch,
       retrospectiveJobId: request.retrospectiveJobId,
       retrospectiveFindingId: primary.id,
+      // The developer scoped the dispatching run to certain destinations, and
+      // that scoping has to survive the hop. A child of a run launched with
+      // the tenant destination off must not be able to propose tenant changes
+      // just because it is an ordinary job.
+      ...(request.tiers ? { tiers: request.tiers } : {}),
       findings,
       epicAllowed: false,
       // The coding checkpoint only parks when this is true. Without it
@@ -242,6 +255,9 @@ export function buildContributionBriefing(findings: ReadonlyArray<OssContributio
       '',
       `Category: ${finding.category}`,
       `Issue: ${finding.issueUrl} (#${finding.issueNumber})`,
+      // Named per item rather than as a separate grouping section, so the
+      // planner reads the coupling on the finding it is deciding about.
+      ...(finding.rootCause ? [`Root cause: ${finding.rootCause} — one work item per root cause.`] : []),
       '',
       body,
       ...pack,

@@ -288,6 +288,28 @@ describe('listJobHistory', () => {
     expect(result.total).toBe(1)
   })
 
+  describe('the default page size', () => {
+    const thirty = () => Array.from({ length: 30 }, (_, i) =>
+      historyJob(`job-${i}`, { createdAt: new Date(2026, 0, 1, i).toISOString() }))
+
+    it('follows the window the run was launched with', async () => {
+      // Otherwise a 25-job window is clustered but only 20 jobs can be
+      // drilled into, and the last five silently never appear.
+      const ctx = ctxWithHistory(thirty(), { params: { jobWindow: 25 } })
+      expect((await listJobHistory({}, ctx)).returned).toBe(25)
+    })
+
+    it('falls back to 20 when the run declares no window', async () => {
+      const ctx = ctxWithHistory(thirty())
+      expect((await listJobHistory({}, ctx)).returned).toBe(20)
+    })
+
+    it('still lets an explicit limit win', async () => {
+      const ctx = ctxWithHistory(thirty(), { params: { jobWindow: 25 } })
+      expect((await listJobHistory({ limit: 5 }, ctx)).returned).toBe(5)
+    })
+  })
+
   it('caps the page size and rejects an unparseable since', async () => {
     const jobs = Array.from({ length: 130 }, (_, i) =>
       historyJob(`job-${i}`, { createdAt: new Date(2026, 0, 1, i).toISOString() }),

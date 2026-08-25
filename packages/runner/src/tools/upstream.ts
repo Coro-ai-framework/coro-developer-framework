@@ -63,6 +63,8 @@ export interface FindingIdentity {
   category: string
   title: string
   targetPaths?: string[]
+  /** Set when this finding is one symptom of a defect that has several. */
+  rootCause?: string
 }
 
 /**
@@ -73,10 +75,21 @@ export interface FindingIdentity {
  * installs independently noticing "the coder loops on Go test scaffolding"
  * produce the same hash and land on the same issue, which only holds if
  * the normalisation is done in one place.
+ *
+ * A `rootCause` takes the title's place in the material. Symptoms of one
+ * defect have deliberately different titles — that is why they were written
+ * as separate findings — so hashing titles files one issue per symptom. The
+ * slug is also a better cross-install anchor than a title: it is short and
+ * kebab-cased, where titles run to a sentence and never coincide. Paths stay
+ * in the material either way, so a group's issue should be opened with the
+ * union of its members' paths.
  */
 export function fingerprintFinding(finding: FindingIdentity): string {
   const paths = [...(finding.targetPaths ?? [])].map(p => p.trim()).filter(Boolean).sort()
-  const material = [finding.category.trim(), paths.join(','), normalizeTitle(finding.title)].join('|')
+  const subject = finding.rootCause?.trim()
+    ? normalizeTitle(finding.rootCause)
+    : normalizeTitle(finding.title)
+  const material = [finding.category.trim(), paths.join(','), subject].join('|')
   return createHash('sha256').update(material).digest('hex').slice(0, 16)
 }
 
@@ -502,6 +515,8 @@ export interface DispatchImprovementItem {
   issueNumber: number
   title: string
   description?: string
+  /** Shared by items that are symptoms of one defect — they become one work item. */
+  rootCause?: string
   briefing?: ImprovementBriefing
   evidencePack?: OssContributionEvidencePack
 }
@@ -587,6 +602,7 @@ export async function dispatchImprovementJob(
     forkOwner: runtime.forkOwner,
     baseBranch: upstreamRepo.default_branch,
     retrospectiveJobId: ctx.job.id,
+    tiers: retrospectiveTiers(ctx.job),
     findings,
   }))
 
@@ -686,6 +702,7 @@ function parseDispatchItems(items: DispatchImprovementItem[] | undefined): Parse
       issueNumber: raw.issueNumber,
       title,
       description,
+      ...(raw.rootCause?.trim() ? { rootCause: raw.rootCause.trim() } : {}),
       ...(briefing ? { briefing } : {}),
       ...(evidencePack ? { evidencePack } : {}),
     }

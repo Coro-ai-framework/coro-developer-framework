@@ -4,6 +4,8 @@ import {
   clusterWindow,
   detectAntiPatterns,
   getJobTraceSummary,
+  isSupportedMetricName,
+  metricNameError,
   metricValue,
   scorePriorRemedies,
 } from '../../src/tools/job-trace'
@@ -129,6 +131,28 @@ describe('getJobTraceSummary', () => {
 })
 
 describe('detectAntiPatterns', () => {
+  it('flags a phase that reset its session more than once', () => {
+    const reset = (name: string) => ({ toolName: name, success: true, durationMs: 1 })
+    const thrashing = job('job-a', {
+      phaseUsage: [
+        phaseRun('coding', {
+          toolLedger: [
+            reset('mcp__coro__request_new_session'),
+            { toolName: 'Edit', success: true, durationMs: 1 },
+            reset('mcp__coro__request_new_session'),
+          ],
+        }),
+      ],
+    })
+    expect(detectAntiPatterns(thrashing)).toContain('session-reset')
+
+    // One reset per run is how a work item is meant to start.
+    const normal = job('job-b', {
+      phaseUsage: [phaseRun('coding', { toolLedger: [reset('mcp__coro__request_new_session')] })],
+    })
+    expect(detectAntiPatterns(normal)).not.toContain('session-reset')
+  })
+
   it('flags a coding phase that wrote without running a test', () => {
     const target = job('job-a', {
       phaseUsage: [
@@ -221,5 +245,119 @@ describe('scorePriorRemedies', () => {
         phaseRun('coding', { workItem: 'wi-1' }),
       ],
     })], 'coding.reworkRuns')).toBe(1)
+  })
+
+  it('explains why an invented metric name could not be scored', () => {
+    const retro = makeMockJob({
+      id: 'retro-0',
+      type: JobType.Retrospective,
+      createdAt: '2026-01-01T00:00:00Z',
+      artifacts: [{
+        id: 'art-1',
+        phase: 'analysis',
+        kind: 'retrospective-report',
+        title: 'report',
+        data: {
+          findings: [{
+            id: 'finding-1',
+            title: 'Tracker 404s',
+            category: 'base-intelligence',
+            severity: 'high',
+            evidence: [{ jobId: 'job-a', detail: '404 x4' }],
+            // The shape every metric in the 2026-08-25 run used.
+            predictedMetric: { name: 'tracker.failureFallbackInsights', direction: 'decrease', baseline: 4 },
+          }],
+        },
+        createdBy: 'analysis',
+        createdAt: '2026-01-01T00:00:00Z',
+      }, {
+        id: 'art-2',
+        phase: 'shipping',
+        kind: 'retrospective-outcome',
+        title: 'outcome',
+        data: { outcomes: [{ findingId: 'finding-1', destination: 'upstream-intelligence' }] },
+        createdBy: 'shipping',
+        createdAt: '2026-01-01T01:00:00Z',
+      }],
+    }) as unknown as Job
+
+    const score = scorePriorRemedies([retro], [job('job-a')])[0]
+    expect(score.score).toBe('unverifiable')
+    expect(score.reason).toContain('failureFallbackInsights')
+    expect(score.reason).toContain('not a phase metric')
+  })
+})
+
+describe('metric vocabulary', () => {
+  const windowJobs = [
+    job('job-a', {
+      insights: [
+        { phase: 'coding', category: 'sandbox-quirk', summary: 'EPERM', detail: 'd' },
+        { phase: 'coding', category: 'auth-friction', summary: 'token', detail: 'd' },
+      ],
+      phaseUsage: [
+        phaseRun('coding', {
+          toolLedger: [
+            { toolName: 'tracker_get_issue', success: false, durationMs: 5, errorClass: 'http N' },
+            { toolName: 'tracker_get_issue', success: false, durationMs: 5, errorClass: 'timeout' },
+            { toolName: 'tracker_get_issue', success: true, durationMs: 5 },
+          ],
+        }),
+      ],
+    }),
+    job('job-b', {
+      insights: [{ phase: 'coding', category: 'sandbox-quirk', summary: 'EPERM again', detail: 'd' }],
+      phaseUsage: [
+        phaseRun('coding', {
+          toolLedger: [
+            { toolName: 'tracker_get_issue', success: false, durationMs: 5, errorClass: 'http N' },
+          ],
+        }),
+      ],
+    }),
+  ]
+
+  it('counts insights by category across the window', () => {
+    expect(metricValue(windowJobs, 'insight:sandbox-quirk')).toBe(2)
+    expect(metricValue(windowJobs, 'insight:auth-friction')).toBe(1)
+    // A supported name with no matches is 0, not unscoreable.
+    expect(metricValue(windowJobs, 'insight:provider-bug')).toBe(0)
+  })
+
+  it('counts tool failures by tool and by cluster key', () => {
+    expect(metricValue(windowJobs, 'toolFail:tracker_get_issue')).toBe(3)
+    expect(metricValue(windowJobs, 'toolFail:tracker_get_issue|http N')).toBe(2)
+    expect(metricValue(windowJobs, 'toolFail:tracker_get_issue|timeout')).toBe(1)
+  })
+
+  it('rejects names the scorer cannot compute', () => {
+    for (const name of [
+      'tracker.failureFallbackInsights',
+      'pr.numericParamRejectionInsights',
+      'scmClone.pathMismatchInsights',
+      'portSpec.authAmbiguityRoundTrips',
+      'scmClone.sandboxWriteBlockInsights',
+    ]) {
+      expect(isSupportedMetricName(name)).toBe(false)
+      expect(metricValue(windowJobs, name)).toBeUndefined()
+    }
+    expect(metricNameError('insight:')).toMatch(/needs a key/)
+    expect(metricNameError('bogus:thing')).toMatch(/unknown metric prefix/)
+    expect(metricNameError('nodots')).toMatch(/not a metric name/)
+  })
+
+  it('accepts every documented form', () => {
+    for (const name of [
+      'costUsd',
+      'escalationCount',
+      'coding.runs',
+      'coding.reworkRuns',
+      'coding.reworkCostUsd',
+      'insight:sandbox-quirk',
+      'toolFail:Bash',
+      'toolFail:Bash|eperm',
+    ]) {
+      expect(isSupportedMetricName(name)).toBe(true)
+    }
   })
 })

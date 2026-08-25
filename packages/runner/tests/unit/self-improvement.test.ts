@@ -559,6 +559,52 @@ describe('proposeChange', () => {
     ).resolves.toBeTruthy()
   })
 
+  it('refuses the contribution child of a run that disabled the tenant destination', async () => {
+    // The child is an ordinary `job` by type, so without the dispatch marker
+    // the scoping the developer chose would be undone one hop later.
+    const ctx = makeCtx({
+      job: {
+        type: JobType.Job,
+        workflowPath: 'workflows/oss-contribution/workflow.md',
+        params: {
+          repoSlug: 'my-repo',
+          retrospectiveJobId: 'coro-retrospective-1',
+          tiers: { tenant: false, upstreamIntelligence: false, upstreamCode: true },
+        },
+      },
+    })
+
+    await expect(
+      proposeChange(
+        { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
+          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+        ctx,
+      ),
+    ).rejects.toThrow(/"tenant" destination disabled/)
+  })
+
+  it('allows a contribution child whose parent kept the tenant destination', async () => {
+    const ctx = makeCtx({
+      job: {
+        type: JobType.Job,
+        workflowPath: 'workflows/oss-contribution/workflow.md',
+        params: {
+          repoSlug: 'my-repo',
+          retrospectiveJobId: 'coro-retrospective-1',
+          tiers: { tenant: true, upstreamIntelligence: false, upstreamCode: true },
+        },
+      },
+    })
+
+    await expect(
+      proposeChange(
+        { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
+          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+        ctx,
+      ),
+    ).resolves.toBeTruthy()
+  })
+
   it('leaves ordinary jobs alone, which carry no tiers at all', async () => {
     // The evaluator proposes on every job; a tier default must never gate it.
     const ctx = makeCtx()

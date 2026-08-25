@@ -107,7 +107,24 @@ Apply the skill's thresholds. For each candidate, write down:
 - **Proposed remedy**: which files change, and roughly how. Intelligence
   changes are section-level patches, not whole-file rewrites.
 - **Predicted metric**: `{ name, direction, baseline }` so the next
-  retrospective can score the remedy.
+  retrospective can score the remedy. The name must come from the skill's
+  vocabulary — usually `insight:<category>` or `toolFail:<tool>`, read
+  straight off the cluster row you took the baseline from. An invented
+  name is rejected, because a metric the scorer cannot compute is not a
+  prediction.
+
+Then read your candidates against **each other**. One defect trips several
+of the six signals, so working down the threshold table hands you the same
+bug three times, and filing it three times means three issues and three
+PRs. The skill's "One defect, one finding" has the two shapes and the
+runner enforces them:
+
+- Same defect seen from several angles → merge into one finding, or give
+  the survivors a shared `rootCause` (same `category`, same
+  `predictedMetric`). One root cause is one issue and one work item.
+- Different defects that edit the same file → shared `deliveryGroup`, so
+  they ship in one dispatch instead of colliding.
+- Genuinely coincidental → `independentOf: [{ findingId, reason }]`.
 
 ### 4. Verify each candidate against the code
 
@@ -218,7 +235,12 @@ post_artifact({
         proposedRemedy: "...",
         targetPaths: ["..."],
         verification: "verified",
-        predictedMetric: { name: "coding.reworkRuns", direction: "decrease", baseline: 4 }
+        predictedMetric: { name: "insight:intelligence-gap", direction: "decrease", baseline: 4 },
+
+        // Only when this finding overlaps another. One of the three:
+        rootCause: "go-test-scaffolding",              // same defect, ships as one change
+        deliveryGroup: "coder-md",                     // different defects, same file
+        independentOf: [{ findingId: "finding-2", reason: "different call path" }]
       }
     ]
   }
@@ -228,6 +250,13 @@ post_artifact({
 Keep `id` values stable and sequential (`finding-1`, `finding-2`) — the
 developer's approval names them by id, and `shipping` matches on them
 verbatim.
+
+**The runner validates this artefact and refuses a bad one**, so read the
+error rather than re-posting. It rejects a finding that would be dropped
+silently (no `id`, no `title`), one that cites fewer than two jobs without
+being a high-severity evidence-pipeline defect, a `predictedMetric` name
+the scorer cannot compute, and any overlapping pair that declares no
+relation. All of the problems come back in one message; fix them together.
 
 Every finding goes in `findings[]`, including one whose destination is not
 enabled for this run. The developer can then see it and approve it; the
@@ -309,9 +338,17 @@ insert will do. Include the predicted metric in the PR rationale.
 Coro repository — every install has the same defect. File (or comment)
 each issue first, then dispatch **once**.
 
+**A `rootCause` group is one issue, not one per symptom.** Work group by
+group: search, file, and dispatch once for the group, passing its
+`rootCause` and the **union** of its members' `targetPaths`. Then record
+the same issue URL as the outcome of every member. A finding with no
+`rootCause` is its own group.
+
 **1. Deduplicate.** `upstream_search({ finding })`. The tool derives the
-fingerprint from the finding's category, title, and target paths, so an
-issue filed by a different install for the same problem matches.
+fingerprint from the finding's category, target paths, and either its
+`rootCause` or its title — so an issue filed by a different install for
+the same problem matches, and two symptoms of one defect match each other
+instead of filing twice.
 
 - `duplicate: true` → the report exists. Call `upstream_comment_issue`
   with your evidence. If that issue already has an open PR for the same
@@ -345,6 +382,7 @@ dispatch_improvement_job({
   items: [
     {
       findingId, category, issueNumber, title,
+      rootCause,              // copy from the finding; one work item per root cause
       briefing: {
         behaviourNow, behaviourWanted, evidence,
         targetPaths, revisionSha, verified,

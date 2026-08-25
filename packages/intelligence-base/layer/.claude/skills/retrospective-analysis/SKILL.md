@@ -122,12 +122,74 @@ Every finding also carries:
 - `verification`: `verified` after a grep against `_intelligence/` /
   `_upstream/`, otherwise `hypothesis`.
 - `predictedMetric` — `{ name, direction, baseline }` so the next
-  retrospective can score the remedy. Use names like `coding.reworkRuns`,
-  `costUsd`, `escalationCount`.
+  retrospective can score the remedy. **The name must come from the
+  vocabulary below**; the runner rejects the report otherwise.
 
 Write evidence so a reader who cannot see your tool output can still
 check it: "coding reworked 3 times beyond its per-work-item runs, $3.40"
 — not "looped a lot".
+
+### The predicted-metric vocabulary
+
+An invented metric name is not a prediction — it scores `unverifiable`
+next month and the remedy is never checked. Every name below is a key you
+can read straight off `cluster_window`, so the baseline you record and the
+number the next run computes are the same quantity by construction.
+
+| `name` | Counts |
+|---|---|
+| `costUsd` | Total spend across the window. |
+| `escalationCount` | Jobs that escalated. |
+| `<phase>.runs` | Attributed runs of a phase, e.g. `coding.runs`. |
+| `<phase>.reworkRuns` | Rework runs only — the subtraction in §1. |
+| `<phase>.reworkCostUsd` | Dollars spent on those rework runs. |
+| `insight:<category>` | Insights in a category — the `key` of a `cluster_window.insights` row. |
+| `toolFail:<tool>` | Failed calls of one tool. |
+| `toolFail:<tool>\|<errorClass>` | The `key` of a `cluster_window.toolFailures` row, verbatim. |
+
+Take the `baseline` from the same cluster row's `count`. Most findings are
+one of the last three forms: a finding evidenced by repeated insights
+predicts `insight:<category>`, and one evidenced by a failing tool
+predicts `toolFail:<tool>`. Reach for `<phase>.reworkRuns` only when the
+evidence really was rework arithmetic.
+
+Free-text signals — escalation wording, log lines — have no metric on
+purpose: they are normalised and aliased before you see them, so the same
+failure can group differently between two windows. Use `escalationCount`
+or the tool that failed.
+
+### One defect, one finding
+
+§1 lists six signals, and **one defect usually trips several of them**. A
+tool that keeps failing is a tool-failure cluster, *and* a cost outlier,
+*and* rework on the phase that calls it, *and* a repeated insight. Working
+down the threshold table produces four candidates. Filing four findings
+then produces four upstream issues and four pull requests for one bug.
+
+So before you write the report, look at your candidates against each other.
+Two shapes recur:
+
+- **One defect, several symptoms.** They cite mostly the same jobs, or they
+  point at the same function. Give them a shared `rootCause` slug. They
+  keep their own ids and their own evidence — the developer still sees each
+  symptom — but they ship as one issue, one work item, one PR. A group
+  makes **one** prediction: every member carries the same
+  `predictedMetric`, and every member has the same `category`.
+- **Different defects, same file.** Unrelated problems that happen to edit
+  the same agent or module. Give them a shared `deliveryGroup` and dispatch
+  them together, or two pull requests will collide on one file. They keep
+  separate remedies and separate metrics.
+
+The runner checks this mechanically and refuses a report that ignores it:
+findings in the same category that share target paths, or that draw more
+than half their evidence from the same jobs, must declare which shape they
+are. If neither fits — the overlap really is coincidence — say so in
+`independentOf` with a reason. The check is arithmetic and it cannot tell
+whether two things are one story; that judgement is yours, and it only
+asks that you make it out loud.
+
+When merging is the honest answer, **merge**: write one finding whose
+evidence is the union, rather than two findings wearing the same slug.
 
 ## 3. Categorisation
 

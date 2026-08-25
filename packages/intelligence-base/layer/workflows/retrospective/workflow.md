@@ -57,6 +57,12 @@ not for grouping. It applies the thresholds in the
 scorecard, and posts a `retrospective-report` artefact containing the
 findings — each with counter-evidence and a `predictedMetric`.
 
+The runner validates that artefact rather than storing it unchecked: a
+finding that would be silently dropped, one below the two-job evidence
+bar, a metric name the scorer cannot compute, or an overlapping pair with
+no declared relation all come back as an error to fix. Findings that share
+a `rootCause` are one defect, and ship as one issue and one work item.
+
 Before writing that report it verifies each candidate against the files
 it names: `_intelligence/` for the intelligence layer, and — for anything
 bound upstream — a read-only snapshot of the upstream default branch that

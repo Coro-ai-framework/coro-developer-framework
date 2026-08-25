@@ -42,6 +42,7 @@ import {
   checkpointPhaseSet,
   derivePhaseAttributions,
 } from '../jobs/phase-observability'
+import { normalizeRetrospectiveWindow } from '../jobs/retrospective'
 import { buildSanitizer, type Sanitizer } from './sanitize'
 import { assertRetrospectiveJob } from './retrospective'
 import type { ToolContext } from './types'
@@ -200,7 +201,16 @@ export async function listJobHistory(
     return true
   })
 
-  const limit = clamp(args.limit ?? JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT)
+  // Default to the window the run was launched with, so drilling down covers
+  // the same jobs `cluster_window` grouped. Defaulting to a fixed 20 against a
+  // 25-job window silently hid five jobs from every follow-up read, which is
+  // the kind of gap that makes a real pattern look like it cleared a threshold
+  // in some jobs and not others.
+  const declaredWindow = ctx.job.params?.['jobWindow']
+  const windowDefault = typeof declaredWindow === 'number'
+    ? normalizeRetrospectiveWindow(declaredWindow)
+    : JOB_LIST_DEFAULT_LIMIT
+  const limit = clamp(args.limit ?? windowDefault, 1, JOB_LIST_MAX_LIMIT)
   // `listJobs` returns newest-first from every backend; re-sort defensively
   // so the window is well-defined regardless of implementation.
   const page = matching

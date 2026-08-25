@@ -160,6 +160,12 @@ export interface FindingCounterEvidence {
   detail: string
 }
 
+/** An overlap the analyst was asked about and judged to be coincidental. */
+export interface FindingIndependence {
+  findingId: string
+  reason: string
+}
+
 export interface RetrospectiveFinding {
   id: string
   title: string
@@ -173,6 +179,21 @@ export interface RetrospectiveFinding {
   verification?: 'verified' | 'hypothesis'
   /** Jobs in the window that did *not* show the behaviour. */
   counterEvidence?: FindingCounterEvidence[]
+  /**
+   * Shared defect behind several findings. One root cause ships as one
+   * upstream issue, one work item, and one ballot group — the symptoms keep
+   * their own ids so the human still sees each one and outcomes stay
+   * per-finding.
+   */
+  rootCause?: string
+  /**
+   * Unrelated defects that nevertheless edit the same files. They stay
+   * separate findings but must be dispatched together, or two PRs stack on
+   * one file.
+   */
+  deliveryGroup?: string
+  /** Overlaps the analyst was flagged on and argued are coincidental. */
+  independentOf?: FindingIndependence[]
 }
 
 export interface RetrospectiveOutcome {
@@ -248,6 +269,7 @@ function parseFindings(raw: unknown): RetrospectiveFinding[] {
     if (!id || !title) continue
     const predictedMetric = parsePredictedMetric(entry['predictedMetric'])
     const counterEvidence = parseCounterEvidence(entry['counterEvidence'])
+    const independentOf = parseIndependence(entry['independentOf'])
     findings.push({
       id,
       title,
@@ -261,9 +283,24 @@ function parseFindings(raw: unknown): RetrospectiveFinding[] {
         ? { verification: entry['verification'] }
         : {}),
       ...(counterEvidence.length ? { counterEvidence } : {}),
+      ...(stringOr(entry['rootCause'], '') ? { rootCause: stringOr(entry['rootCause'], '') } : {}),
+      ...(stringOr(entry['deliveryGroup'], '') ? { deliveryGroup: stringOr(entry['deliveryGroup'], '') } : {}),
+      ...(independentOf.length ? { independentOf } : {}),
     })
   }
   return findings
+}
+
+function parseIndependence(raw: unknown): FindingIndependence[] {
+  if (!Array.isArray(raw)) return []
+  const declared: FindingIndependence[] = []
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue
+    const findingId = stringOr(entry['findingId'], '')
+    if (!findingId) continue
+    declared.push({ findingId, reason: stringOr(entry['reason'], '') })
+  }
+  return declared
 }
 
 function parseEvidence(raw: unknown): FindingEvidence[] {

@@ -490,7 +490,8 @@ export function createCoroMcpServer(
             .object({
               category: z.string().describe('Finding category, e.g. "base-intelligence" or "runner-code".'),
               title: z.string().describe('Finding title, exactly as recorded in the findings artefact.'),
-              targetPaths: z.array(z.string()).optional().describe('Repo-relative paths the finding points at.'),
+              targetPaths: z.array(z.string()).optional().describe('Repo-relative paths the finding points at. For a rootCause group, the union across its members.'),
+              rootCause: z.string().optional().describe('Set when the finding shares a rootCause with others — the group files one issue, so search for the group.'),
             })
             .optional()
             .describe('Fingerprint search — preferred. The tool derives the fingerprint; do not invent one.'),
@@ -512,7 +513,8 @@ export function createCoroMcpServer(
             category: z.string(),
             title: z.string(),
             targetPaths: z.array(z.string()).optional(),
-          }).describe('The finding this issue reports — same values you passed to upstream_search.'),
+            rootCause: z.string().optional(),
+          }).describe('The finding this issue reports — same values you passed to upstream_search. One issue per rootCause group, not per symptom.'),
         },
         h.upstream_create_issue,
       ),
@@ -539,6 +541,9 @@ export function createCoroMcpServer(
               title: z.string().describe('One line, problem-first. No identifiers.'),
               description: z.string().optional().describe(
                 'Fallback briefing if `briefing` is omitted. The child job starts with no other analysis.',
+              ),
+              rootCause: z.string().optional().describe(
+                'Copy from the finding. Items sharing a rootCause become one work item and one change.',
               ),
               briefing: z.object({
                 behaviourNow: z.string(),

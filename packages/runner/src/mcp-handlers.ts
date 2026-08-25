@@ -12,6 +12,8 @@ import {
   createGuardrailScmDeps,
 } from './guardrails'
 import { loadLocalConfig } from './config/local-config'
+import { RETROSPECTIVE_REPORT_KIND } from './jobs/retrospective'
+import { validateRetrospectiveReport } from './tools/retrospective-report'
 import type {
   DispatchImprovementJobArgs,
   UpstreamCommentIssueArgs,
@@ -1202,6 +1204,21 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     post_artifact: async ({ phase, kind, title, data }: {
       phase?: string; kind: string; title: string; data?: Record<string, unknown>
     }) => {
+      if (kind === RETROSPECTIVE_REPORT_KIND) {
+        // The findings artefact is the only one a human votes on and the only
+        // one a later run scores, so it is checked on the way in rather than
+        // silently degraded on the way out.
+        const problems = validateRetrospectiveReport(data)
+        if (problems.length > 0) {
+          throw new Error(
+            `This ${RETROSPECTIVE_REPORT_KIND} was not stored — ${problems.length} problem(s) would ` +
+            'have reached the developer ballot uncorrected:\n\n' +
+            problems.map(problem => `- ${problem}`).join('\n') +
+            '\n\nFix them and post the artefact again.',
+          )
+        }
+      }
+
       const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const now = new Date()
       const rand = Math.random().toString(36).slice(2, 8)

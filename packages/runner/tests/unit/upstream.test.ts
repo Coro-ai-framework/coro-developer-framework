@@ -170,6 +170,24 @@ describe('fingerprintFinding', () => {
     expect(fingerprintFinding({ ...FINDING, title: 'Planner under-splits work items' }))
       .not.toBe(fingerprintFinding(FINDING))
   })
+
+  it('collapses the symptoms of one root cause onto a single issue', () => {
+    // Two symptoms of the same defect: different titles by construction, and
+    // without a root cause they would file two near-duplicate issues.
+    const group = { category: 'runner-code', targetPaths: ['packages/runner/src/mcp-handlers.ts'] }
+    const nested = { ...group, title: 'scm_clone_repo nests org-qualified slugs' }
+    const sandbox = { ...group, title: 'scm_clone_repo hook templates hit the sandbox' }
+
+    expect(fingerprintFinding(nested)).not.toBe(fingerprintFinding(sandbox))
+    expect(fingerprintFinding({ ...nested, rootCause: 'scm-clone-unhardened' }))
+      .toBe(fingerprintFinding({ ...sandbox, rootCause: 'scm-clone-unhardened' }))
+  })
+
+  it('still separates different root causes in the same file', () => {
+    const base = { category: 'runner-code', title: 'x', targetPaths: ['a.ts'] }
+    expect(fingerprintFinding({ ...base, rootCause: 'clone-paths' }))
+      .not.toBe(fingerprintFinding({ ...base, rootCause: 'clone-sandbox' }))
+  })
 })
 
 describe('the upstream gates', () => {

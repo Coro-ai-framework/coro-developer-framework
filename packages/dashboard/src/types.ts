@@ -251,6 +251,11 @@ export interface RetrospectiveFinding {
   predictedMetric?: PredictedMetric
   verification?: 'verified' | 'hypothesis'
   counterEvidence?: FindingCounterEvidence[]
+  /** Shared defect behind several findings — they ship as one change. */
+  rootCause?: string
+  /** Separate defects that edit the same files and must ship together. */
+  deliveryGroup?: string
+  independentOf?: Array<{ findingId: string; reason: string }>
 }
 
 export interface RetrospectiveOutcome {

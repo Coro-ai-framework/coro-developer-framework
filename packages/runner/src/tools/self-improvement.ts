@@ -507,17 +507,23 @@ export function validateProposalFiles(
  */
 /**
  * A retrospective launched without the `tenant` destination may not
- * propose to this install's layers.
+ * propose to this install's layers — and neither may the contribution job
+ * it dispatched.
  *
  * The two upstream destinations have always been gated in code, because a
  * public issue cannot be unpublished. The local one was gated by prose
  * alone — so a run the developer deliberately scoped to "look, do not
  * touch" could still open a PR against the intelligence repo, and nothing
- * would say it had happened. Ordinary jobs are unaffected: they carry no
- * tiers, and the default is permissive.
+ * would say it had happened.
+ *
+ * The child job is covered because it is an ordinary `job` by type: without
+ * this, scoping a run to "upstream only" would be undone one hop later by
+ * the very job that run dispatched. Ordinary jobs are unaffected — they
+ * carry neither marker, and the default is permissive.
  */
 function assertTenantTierPermitted(ctx: ToolContext): void {
-  if (ctx.job.type !== JobType.Retrospective) return
+  const dispatchedByRetrospective = Boolean(ctx.job.params?.['retrospectiveJobId'])
+  if (ctx.job.type !== JobType.Retrospective && !dispatchedByRetrospective) return
   if (retrospectiveTiers(ctx.job).tenant) return
 
   throw new Error(

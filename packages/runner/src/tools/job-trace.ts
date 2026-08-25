@@ -232,6 +232,7 @@ export function detectAntiPatterns(job: Job): TraceAntiPattern[] {
     let searchStreak = 0
     let wrote = false
     let tested = false
+    let sessionResets = 0
     for (const entry of snapshot.toolLedger ?? []) {
       if (!entry.success) {
         fails.set(entry.toolName, (fails.get(entry.toolName) ?? 0) + 1)
@@ -241,10 +242,15 @@ export function detectAntiPatterns(job: Job): TraceAntiPattern[] {
       if (searchStreak >= 12) found.add('search-loop')
       if (isWriteTool(entry.toolName)) wrote = true
       if (isVerifyTool(entry.toolName)) tested = true
+      if (isSessionReset(entry.toolName)) sessionResets += 1
     }
     for (const count of fails.values()) {
       if (count >= 3) found.add('same-tool-fail')
     }
+    // One reset per run is the documented way to start a work item with a
+    // clean context. Two in the same run is the agent throwing away its own
+    // progress — the coherence collapse that phase counts cannot show.
+    if (sessionResets >= 2) found.add('session-reset')
     if (snapshot.phase === 'coding' && wrote && !tested) found.add('verify-skip')
     if ((snapshot.costUsd ?? 0) === 0 && snapshot.parkReason) found.add('zero-cost-park')
     if ((snapshot.cacheReadInputTokens ?? 0) > Math.max(1, snapshot.inputTokens ?? 0) * 2) {
@@ -299,13 +305,19 @@ function scoreFinding(
 
   const currentValue = metricValue(currentWindow, metric.name)
   if (currentValue === undefined) {
+    // A computable name with no matches scores 0, so reaching here means the
+    // name itself is one the scorer never understood — say which part, or the
+    // next analyst re-files the finding with the same unscoreable metric.
+    const why = metricNameError(metric.name) ?? 'unrecognised metric name'
     return {
       findingId: finding.id,
       title: finding.title,
       retrospectiveJobId,
       predictedMetric: metric,
       score: 'unverifiable',
-      reason: `Cannot compute ${metric.name} on this window.`,
+      reason:
+        `Cannot compute "${metric.name}" (${why}), so this remedy was never scored. ` +
+        'Treat it as unverified and re-file with a supported metric.',
     }
   }
 
@@ -358,6 +370,80 @@ function scoreFinding(
   }
 }
 
+// ── Metric vocabulary ────────────────────────────────────────────────────────
+//
+// A `predictedMetric` is only worth recording if the next retrospective can
+// compute it. Every name below is a key the analyst can read straight off
+// `cluster_window` output, so the baseline it records and the value the next
+// run scores are the same number by construction — an analyst that invents a
+// name gets `unverifiable` a month later, which is exactly the open loop this
+// vocabulary closes.
+//
+// The prefixed forms count *structural* fields (insight category, tool name,
+// ledger error class). Free-text signals like escalation messages are
+// deliberately absent: `normalizeErrorClass` rewrites paths and digits, and
+// sanitisation aliases repo slugs before that runs, so the same failure can
+// normalise differently between two windows.
+
+export const SCALAR_METRICS = ['costUsd', 'escalationCount'] as const
+export const PHASE_METRIC_FIELDS = ['runs', 'reworkRuns', 'reworkCostUsd'] as const
+export const METRIC_PREFIXES = ['insight', 'toolFail'] as const
+
+export const METRIC_VOCABULARY: ReadonlyArray<{ form: string; describes: string }> = [
+  { form: 'costUsd', describes: 'Total cost across the window.' },
+  { form: 'escalationCount', describes: 'Jobs that escalated.' },
+  { form: '<phase>.runs', describes: 'Attributed runs of a phase, e.g. `coding.runs`.' },
+  { form: '<phase>.reworkRuns', describes: 'Rework runs beyond work-item and checkpoint-resume runs.' },
+  { form: '<phase>.reworkCostUsd', describes: 'Dollars spent on those rework runs.' },
+  { form: 'insight:<category>', describes: 'Insights in a category — the `key` of a `cluster_window.insights` row.' },
+  { form: 'toolFail:<tool>', describes: 'Failed calls of a tool across the window.' },
+  { form: 'toolFail:<tool>|<errorClass>', describes: 'The `key` of a `cluster_window.toolFailures` row, verbatim.' },
+]
+
+/**
+ * Whether `metricValue` can compute this name.
+ *
+ * Shape only: `coding.runs` and `nosuchphase.runs` both pass, because the
+ * phases and categories a future window will contain are not knowable when
+ * the finding is written. What this rejects is a name whose *form* the
+ * scorer has never understood — the failure that made every metric in the
+ * 2026-08-25 run unscoreable.
+ */
+export function isSupportedMetricName(name: string): boolean {
+  return metricNameError(name) === undefined
+}
+
+/** Why this metric name is unusable, or `undefined` when it is fine. */
+export function metricNameError(name: string): string | undefined {
+  const trimmed = name.trim()
+  if (!trimmed) return 'metric name is empty'
+  if ((SCALAR_METRICS as ReadonlyArray<string>).includes(trimmed)) return undefined
+
+  const colon = trimmed.indexOf(':')
+  if (colon > 0) {
+    const prefix = trimmed.slice(0, colon)
+    if (!(METRIC_PREFIXES as ReadonlyArray<string>).includes(prefix)) {
+      return `unknown metric prefix "${prefix}:"`
+    }
+    return trimmed.slice(colon + 1).trim()
+      ? undefined
+      : `"${prefix}:" needs a key after the colon`
+  }
+
+  const dot = trimmed.indexOf('.')
+  if (dot <= 0) return `"${trimmed}" is not a metric name the scorer understands`
+  const field = trimmed.slice(dot + 1)
+  if (!(PHASE_METRIC_FIELDS as ReadonlyArray<string>).includes(field)) {
+    return `"${field}" is not a phase metric — expected one of ${PHASE_METRIC_FIELDS.join(', ')}`
+  }
+  return undefined
+}
+
+/** The vocabulary as prompt-ready lines, so error messages teach the fix. */
+export function describeMetricVocabulary(): string {
+  return METRIC_VOCABULARY.map(entry => `  ${entry.form} — ${entry.describes}`).join('\n')
+}
+
 export function metricValue(jobs: ReadonlyArray<Job>, name: string): number | undefined {
   const trimmed = name.trim()
   if (!trimmed) return undefined
@@ -367,6 +453,17 @@ export function metricValue(jobs: ReadonlyArray<Job>, name: string): number | un
   if (trimmed === 'escalationCount') {
     return jobs.filter(isEscalated).length
   }
+
+  const colon = trimmed.indexOf(':')
+  if (colon > 0) {
+    const prefix = trimmed.slice(0, colon)
+    const key = trimmed.slice(colon + 1).trim()
+    if (!key) return undefined
+    if (prefix === 'insight') return countInsights(jobs, key)
+    if (prefix === 'toolFail') return countToolFailures(jobs, key)
+    return undefined
+  }
+
   const dot = trimmed.indexOf('.')
   if (dot <= 0) return undefined
   const phase = trimmed.slice(0, dot)
@@ -381,6 +478,39 @@ export function metricValue(jobs: ReadonlyArray<Job>, name: string): number | un
     if (field === 'reworkCostUsd') return sum + row.reworkCostUsd
     return sum + row.runs
   }, 0)
+}
+
+/** Counts the same way `cluster_window` does, so a cluster row is a baseline. */
+function countInsights(jobs: ReadonlyArray<Job>, category: string): number {
+  const wanted = category.toLowerCase()
+  let count = 0
+  for (const job of jobs) {
+    for (const insight of job.insights ?? []) {
+      if ((insight.category || 'uncategorised').toLowerCase() === wanted) count += 1
+    }
+  }
+  return count
+}
+
+/** `<tool>` counts every failure of that tool; `<tool>|<errorClass>` narrows it. */
+function countToolFailures(jobs: ReadonlyArray<Job>, key: string): number {
+  const bar = key.indexOf('|')
+  const toolName = (bar >= 0 ? key.slice(0, bar) : key).trim().toLowerCase()
+  const errorClass = bar >= 0 ? key.slice(bar + 1).trim().toLowerCase() : ''
+  if (!toolName) return 0
+
+  let count = 0
+  for (const job of jobs) {
+    for (const usage of job.phaseUsage ?? []) {
+      for (const entry of usage.toolLedger ?? []) {
+        if (entry.success) continue
+        if (entry.toolName.toLowerCase() !== toolName) continue
+        if (errorClass && (entry.errorClass ?? 'error').toLowerCase() !== errorClass) continue
+        count += 1
+      }
+    }
+  }
+  return count
 }
 
 function distillEvents(job: Job, sanitizer: Sanitizer | null): TraceEvent[] {
@@ -464,6 +594,11 @@ function isWriteTool(name: string): boolean {
 
 function isVerifyTool(name: string): boolean {
   return name === 'Bash' || name.startsWith('mcp__coro__') && name.includes('test')
+}
+
+/** Matched on the suffix so the MCP prefix is not load-bearing. */
+function isSessionReset(name: string): boolean {
+  return name === 'request_new_session' || name.endsWith('__request_new_session')
 }
 
 function parseSince(since?: string): number | null {
