@@ -170,6 +170,24 @@ describe('fingerprintFinding', () => {
     expect(fingerprintFinding({ ...FINDING, title: 'Planner under-splits work items' }))
       .not.toBe(fingerprintFinding(FINDING))
   })
+
+  it('collapses the symptoms of one root cause onto a single issue', () => {
+    // Two symptoms of the same defect: different titles by construction, and
+    // without a root cause they would file two near-duplicate issues.
+    const group = { category: 'runner-code', targetPaths: ['packages/runner/src/mcp-handlers.ts'] }
+    const nested = { ...group, title: 'scm_clone_repo nests org-qualified slugs' }
+    const sandbox = { ...group, title: 'scm_clone_repo hook templates hit the sandbox' }
+
+    expect(fingerprintFinding(nested)).not.toBe(fingerprintFinding(sandbox))
+    expect(fingerprintFinding({ ...nested, rootCause: 'scm-clone-unhardened' }))
+      .toBe(fingerprintFinding({ ...sandbox, rootCause: 'scm-clone-unhardened' }))
+  })
+
+  it('still separates different root causes in the same file', () => {
+    const base = { category: 'runner-code', title: 'x', targetPaths: ['a.ts'] }
+    expect(fingerprintFinding({ ...base, rootCause: 'clone-paths' }))
+      .not.toBe(fingerprintFinding({ ...base, rootCause: 'clone-sandbox' }))
+  })
 })
 
 describe('the upstream gates', () => {
@@ -509,12 +527,89 @@ describe('dispatchImprovementJob', () => {
     expect(dispatchJob).not.toHaveBeenCalled()
   })
 
+  it('refuses an evidence pack that names this install, before dispatching', async () => {
+    const jobs = [makeMockJob({ id: 'job-1', params: { repoSlug: 'billing-api' } }) as unknown as Job]
+    await expect(dispatchImprovementJob(
+      {
+        items: [{
+          ...codeItem,
+          briefing: {
+            behaviourNow: 'now',
+            behaviourWanted: 'wanted',
+            evidence: 'two jobs',
+            targetPaths: ['packages/runner/src/jobs/runner.ts'],
+            verified: true,
+            failingTest: 'tests/runner/runner.test.ts',
+          },
+          evidencePack: { grepHits: ['reproduced on billing-api'] },
+        }],
+      },
+      makeCtx({ jobs }),
+    )).rejects.toThrow(/still contains identifiers/)
+    expect(dispatchJob).not.toHaveBeenCalled()
+  })
+
   it('refuses a briefing that names this install, before dispatching', async () => {
     const jobs = [makeMockJob({ id: 'job-1', params: { repoSlug: 'billing-api' } }) as unknown as Job]
     await expect(dispatchImprovementJob(
       { items: [{ ...codeItem, description: 'Reproduced on billing-api.' }] },
       makeCtx({ jobs }),
     )).rejects.toThrow(/still contains identifiers/)
+    expect(dispatchJob).not.toHaveBeenCalled()
+  })
+
+  it('accepts a structured briefing without a free-text description', async () => {
+    await dispatchImprovementJob({
+      items: [{
+        findingId: codeItem.findingId,
+        category: codeItem.category,
+        issueNumber: codeItem.issueNumber,
+        title: codeItem.title,
+        briefing: {
+          behaviourNow: 'Retry drops the corrective prompt.',
+          behaviourWanted: 'Retry reapplies the last developer message.',
+          evidence: 'reworkRuns 4 on two jobs',
+          targetPaths: ['packages/runner/src/jobs/runner.ts'],
+          verified: true,
+          failingTest: 'tests/runner/runner.test.ts',
+        },
+      }],
+    }, makeCtx())
+    const input = dispatchJob.mock.calls[0][0]
+    expect(input.params.interactive).toBe(true)
+    expect(input.params.findings[0].briefing.failingTest).toBe('tests/runner/runner.test.ts')
+    expect(input.params.description).toContain('Failing test:')
+  })
+
+  it('refuses a runner-code briefing with no failing test', async () => {
+    await expect(dispatchImprovementJob({
+      items: [{
+        ...codeItem,
+        briefing: {
+          behaviourNow: 'now',
+          behaviourWanted: 'wanted',
+          evidence: 'two jobs',
+          targetPaths: ['packages/runner/src/jobs/runner.ts'],
+          verified: true,
+        },
+      }],
+    }, makeCtx())).rejects.toThrow(/failingTest/)
+    expect(dispatchJob).not.toHaveBeenCalled()
+  })
+
+  it('refuses a base-intelligence briefing with no neighbouring wording', async () => {
+    await expect(dispatchImprovementJob({
+      items: [{
+        ...intelItem,
+        briefing: {
+          behaviourNow: 'now',
+          behaviourWanted: 'wanted',
+          evidence: 'two jobs',
+          targetPaths: ['packages/intelligence-base/layer/agents/coder.md'],
+          verified: true,
+        },
+      }],
+    }, makeCtx())).rejects.toThrow(/neighbouringWording/)
     expect(dispatchJob).not.toHaveBeenCalled()
   })
 

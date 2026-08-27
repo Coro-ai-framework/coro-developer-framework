@@ -12,6 +12,8 @@ import {
   createGuardrailScmDeps,
 } from './guardrails'
 import { loadLocalConfig } from './config/local-config'
+import { RETROSPECTIVE_REPORT_KIND } from './jobs/retrospective'
+import { validateRetrospectiveReport } from './tools/retrospective-report'
 import type {
   DispatchImprovementJobArgs,
   UpstreamCommentIssueArgs,
@@ -59,6 +61,54 @@ export function wrapHandlersSafely<T extends Record<string, (...args: any[]) => 
     }
   }
   return out as T
+}
+
+const CLONE_HEARTBEAT_MS = 15_000
+
+function formatCloneBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`
+  return `${Math.round(bytes / (1024 * 1024))}MB`
+}
+
+/** Size of `.git/objects/pack`, including the in-flight `tmp_pack_*`. */
+async function clonePackBytes(repoDir: string): Promise<number> {
+  const packDir = path.join(repoDir, '.git', 'objects', 'pack')
+  try {
+    const names = await fs.readdir(packDir)
+    let total = 0
+    for (const name of names) {
+      const st = await fs.stat(path.join(packDir, name)).catch(() => null)
+      if (st?.isFile()) total += st.size
+    }
+    return total
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * `git clone --filter=blob:none` finishes the commit/tree pack, then
+ * fetches HEAD blobs with an inner `git fetch` that has no `--progress`.
+ * simple-git therefore sees no stdio and a block timeout looks like a hang.
+ * Log pack growth so the job stream stays alive; network stalls are
+ * already killed by `http.lowSpeed*`.
+ */
+function startCloneHeartbeat(
+  appendLog: (jobId: string, line: string) => Promise<unknown>,
+  jobId: string,
+  repo: string,
+  repoDir: string,
+): () => void {
+  const timer = setInterval(() => {
+    void clonePackBytes(repoDir).then(bytes => {
+      void appendLog(
+        jobId,
+        `[repo-clone] ${repo} still running (${formatCloneBytes(bytes)} on disk)`,
+      )
+    })
+  }, CLONE_HEARTBEAT_MS)
+  timer.unref?.()
+  return () => clearInterval(timer)
 }
 
 // ── Plugin resolution helpers ────────────────────────────────────────────────
@@ -588,16 +638,24 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     await fs.mkdir(jobWorkingDir, { recursive: true })
 
     if (await isGitRepo(repoDir)) {
-      await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
-      await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
-      await persistRepoCheckoutParams(ctx, repo, repoDir)
-      return text({
-        pluginId: r.scm.manifest.id,
-        repo,
-        repoDir,
-        relativeDir: repo,
-        reused: true,
-      })
+      if (await cloneLooksIncomplete(repoDir)) {
+        await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
+        await ctx.stateBackend.appendLog(
+          ctx.job.id,
+          `[repo-clone] removing incomplete checkout of ${repo}`,
+        )
+      } else {
+        await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
+        await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
+        await persistRepoCheckoutParams(ctx, repo, repoDir)
+        return text({
+          pluginId: r.scm.manifest.id,
+          repo,
+          repoDir,
+          relativeDir: repo,
+          reused: true,
+        })
+      }
     }
 
     const targetStat = await fs.stat(repoDir).catch(() => null)
@@ -614,7 +672,32 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
 
     const persistUrl = persistableCloneUrl(info)
-    const git = createIsolatedGit(jobWorkingDir, info.envForGit)
+    // `--progress` covers the first pack only. `--filter=blob:none` keeps
+    // full commit history without historical blobs; HEAD blobs are then
+    // fetched by an inner `git fetch` that has no `--progress`, so
+    // simple-git's block timeout would kill a healthy clone. Network
+    // stalls are handled by http.lowSpeed*; a disk heartbeat covers the
+    // silent blob-fetch / checkout phase.
+    let lastProgressKey = ''
+    const git = createIsolatedGit(jobWorkingDir, info.envForGit, {
+      progress: ({ stage, progress }) => {
+        if (typeof progress !== 'number' || !Number.isFinite(progress)) return
+        const bucket = Math.min(100, Math.floor(progress / 25) * 25)
+        const key = `${stage || 'clone'}:${bucket}`
+        if (key === lastProgressKey) return
+        lastProgressKey = key
+        void ctx.stateBackend.appendLog(
+          ctx.job.id,
+          `[repo-clone] ${repo} ${stage || 'clone'} ${bucket}%`,
+        )
+        if ((stage || '') === 'resolving' && bucket === 100) {
+          void ctx.stateBackend.appendLog(
+            ctx.job.id,
+            `[repo-clone] ${repo} fetching working-tree blobs (git prints no % for this step)`,
+          )
+        }
+      },
+    })
     // Belt-and-suspenders: even with GIT_CONFIG_GLOBAL/SYSTEM neutered
     // (see createIsolatedGit), an `insteadOf` rule can also live in the
     // repo-local config of a parent worktree we happen to be invoked
@@ -629,7 +712,43 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       'url.https://gitlab.com/.insteadOf=ssh://git@gitlab.com/',
       'url.https://gitlab.com/.insteadOf=git@gitlab.com:',
     ].flatMap(rule => ['--config', rule])
-    await git.clone(persistUrl, repoDir, insteadOfOverrides)
+    const cloneArgs = (filter: boolean) => [
+      ...(filter ? ['--filter=blob:none'] : []),
+      '--progress',
+      ...insteadOfOverrides,
+    ]
+    const failClone = async (msg: string) => {
+      await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
+      await ctx.stateBackend.appendLog(ctx.job.id, `[repo-clone] failed ${repo}: ${msg}`)
+      return error(`Clone of "${repo}" failed: ${msg}`)
+    }
+    await ctx.stateBackend.appendLog(ctx.job.id, `[repo-clone] starting ${repo}`)
+    const stopHeartbeat = startCloneHeartbeat(
+      (jobId, line) => ctx.stateBackend.appendLog(jobId, line),
+      ctx.job.id,
+      repo,
+      repoDir,
+    )
+    try {
+      try {
+        await git.clone(persistUrl, repoDir, cloneArgs(true))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        await fs.rm(repoDir, { recursive: true, force: true }).catch(() => undefined)
+        if (!/filter|partial clone/i.test(msg)) return failClone(msg)
+        await ctx.stateBackend.appendLog(
+          ctx.job.id,
+          `[repo-clone] partial clone unsupported, retrying full clone of ${repo}`,
+        )
+        try {
+          await git.clone(persistUrl, repoDir, cloneArgs(false))
+        } catch (retryErr) {
+          return failClone(retryErr instanceof Error ? retryErr.message : String(retryErr))
+        }
+      }
+    } finally {
+      stopHeartbeat()
+    }
     await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
     await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
     await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)
@@ -1085,6 +1204,21 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     post_artifact: async ({ phase, kind, title, data }: {
       phase?: string; kind: string; title: string; data?: Record<string, unknown>
     }) => {
+      if (kind === RETROSPECTIVE_REPORT_KIND) {
+        // The findings artefact is the only one a human votes on and the only
+        // one a later run scores, so it is checked on the way in rather than
+        // silently degraded on the way out.
+        const problems = validateRetrospectiveReport(data)
+        if (problems.length > 0) {
+          throw new Error(
+            `This ${RETROSPECTIVE_REPORT_KIND} was not stored — ${problems.length} problem(s) would ` +
+            'have reached the developer ballot uncorrected:\n\n' +
+            problems.map(problem => `- ${problem}`).join('\n') +
+            '\n\nFix them and post the artefact again.',
+          )
+        }
+      }
+
       const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       const now = new Date()
       const rand = Math.random().toString(36).slice(2, 8)
@@ -1136,6 +1270,24 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       const { getJobLogExcerpts } = await import('./tools/job-history')
       try {
         return text(await getJobLogExcerpts(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    cluster_window: async (args: { limit?: number; since?: string }) => {
+      const { clusterWindow } = await import('./tools/job-trace')
+      try {
+        return text(await clusterWindow(args, ctx))
+      } catch (err) {
+        return error((err as Error).message)
+      }
+    },
+
+    get_job_trace_summary: async (args: { jobId: string; raw?: boolean }) => {
+      const { getJobTraceSummary } = await import('./tools/job-trace')
+      try {
+        return text(await getJobTraceSummary(args, ctx))
       } catch (err) {
         return error((err as Error).message)
       }
@@ -1199,6 +1351,12 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       rationale: string
       description: string
       files?: Array<{ path: string; content: string }>
+      deltas?: Array<{
+        path: string
+        heading?: string
+        mode: 'insert-after' | 'replace-section' | 'append'
+        content: string
+      }>
       /**
        * Structured short-form memory entries. Preferred for memory-update
        * proposals — the runner serialises each entry into a fixed layout
@@ -1430,6 +1588,13 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 async function isGitRepo(dir: string): Promise<boolean> {
   const stat = await fs.stat(path.join(dir, '.git')).catch(() => null)
   return stat?.isDirectory() ?? false
+}
+
+/** Interrupted `git clone` leaves `.git` plus an in-flight `tmp_pack_*`. */
+async function cloneLooksIncomplete(repoDir: string): Promise<boolean> {
+  const packDir = path.join(repoDir, '.git', 'objects', 'pack')
+  const names = await fs.readdir(packDir).catch(() => [] as string[])
+  return names.some(n => n.startsWith('tmp_pack'))
 }
 
 export type McpToolHandlers = ReturnType<typeof createMcpToolHandlers>

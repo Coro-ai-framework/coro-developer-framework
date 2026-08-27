@@ -35,12 +35,15 @@ import { GitHubClient, type IssueSearchHit, type RepoInfo } from '../clients/git
 import type { UpstreamSettings } from '../config/settings'
 import { parseRepoUrl } from '../intelligence/writer'
 import {
+  assembleBriefingDescription,
   buildOssContributionJobInput,
   contributionTierFor,
   isOssContributionCategory,
+  type ImprovementBriefing,
+  type OssContributionEvidencePack,
   type OssContributionFinding,
 } from '../jobs/oss-contribution'
-import { retrospectiveTiers, type RetrospectiveTiers } from '../jobs/retrospective'
+import { parsePredictedMetric, retrospectiveTiers, type RetrospectiveTiers } from '../jobs/retrospective'
 import { assertRetrospectiveJob } from './retrospective'
 import { buildSanitizer } from './sanitize'
 import { materialiseUpstreamSource, type UpstreamSourceSnapshot } from './upstream-source'
@@ -60,6 +63,8 @@ export interface FindingIdentity {
   category: string
   title: string
   targetPaths?: string[]
+  /** Set when this finding is one symptom of a defect that has several. */
+  rootCause?: string
 }
 
 /**
@@ -70,10 +75,21 @@ export interface FindingIdentity {
  * installs independently noticing "the coder loops on Go test scaffolding"
  * produce the same hash and land on the same issue, which only holds if
  * the normalisation is done in one place.
+ *
+ * A `rootCause` takes the title's place in the material. Symptoms of one
+ * defect have deliberately different titles — that is why they were written
+ * as separate findings — so hashing titles files one issue per symptom. The
+ * slug is also a better cross-install anchor than a title: it is short and
+ * kebab-cased, where titles run to a sentence and never coincide. Paths stay
+ * in the material either way, so a group's issue should be opened with the
+ * union of its members' paths.
  */
 export function fingerprintFinding(finding: FindingIdentity): string {
   const paths = [...(finding.targetPaths ?? [])].map(p => p.trim()).filter(Boolean).sort()
-  const material = [finding.category.trim(), paths.join(','), normalizeTitle(finding.title)].join('|')
+  const subject = finding.rootCause?.trim()
+    ? normalizeTitle(finding.rootCause)
+    : normalizeTitle(finding.title)
+  const material = [finding.category.trim(), paths.join(','), subject].join('|')
   return createHash('sha256').update(material).digest('hex').slice(0, 16)
 }
 
@@ -498,7 +514,11 @@ export interface DispatchImprovementItem {
   category: string
   issueNumber: number
   title: string
-  description: string
+  description?: string
+  /** Shared by items that are symptoms of one defect — they become one work item. */
+  rootCause?: string
+  briefing?: ImprovementBriefing
+  evidencePack?: OssContributionEvidencePack
 }
 
 export interface DispatchImprovementJobArgs {
@@ -556,6 +576,8 @@ export async function dispatchImprovementJob(
   await assertPublishable(ctx, 'dispatch_improvement_job', parsed.flatMap(item => [
     { label: `${item.id} title`, text: item.title },
     { label: `${item.id} description`, text: item.description },
+    ...(item.briefing ? briefingPublishableFields(item.id, item.briefing) : []),
+    ...(item.evidencePack ? evidencePackPublishableFields(item.id, item.evidencePack) : []),
   ]))
 
   const { fork, upstreamRepo, forkInSync } = await prepareFork(runtime, ctx)
@@ -580,6 +602,7 @@ export async function dispatchImprovementJob(
     forkOwner: runtime.forkOwner,
     baseBranch: upstreamRepo.default_branch,
     retrospectiveJobId: ctx.job.id,
+    tiers: retrospectiveTiers(ctx.job),
     findings,
   }))
 
@@ -619,11 +642,13 @@ function parseDispatchItems(items: DispatchImprovementItem[] | undefined): Parse
 
   const seen = new Set<string>()
   return items.map((raw, index) => {
+    const at = `items[${index}]`
     const id = raw.findingId?.trim() ?? ''
     const title = raw.title?.trim() ?? ''
-    const description = raw.description?.trim() ?? ''
     const category = raw.category?.trim() ?? ''
-    const at = `items[${index}]`
+    const briefing = parseBriefing(raw.briefing, at)
+    const description = raw.description?.trim() || (briefing ? assembleBriefingDescription(briefing) : '')
+    const evidencePack = parseEvidencePack(raw.evidencePack)
 
     if (!id) throw new Error(`dispatch_improvement_job ${at} requires \`findingId\`.`)
     if (seen.has(id)) {
@@ -647,10 +672,28 @@ function parseDispatchItems(items: DispatchImprovementItem[] | undefined): Parse
     if (!title) throw new Error(`dispatch_improvement_job ${at} requires a title.`)
     if (!description) {
       throw new Error(
-        `dispatch_improvement_job ${at} requires a description: the child job starts with no ` +
-        'knowledge of your analysis, so state the behaviour to change, the files involved, and ' +
-        'how to verify it.',
+        `dispatch_improvement_job ${at} requires a description or a structured \`briefing\`: ` +
+        'the child job starts with no knowledge of your analysis.',
       )
+    }
+    if (briefing) {
+      if (briefing.targetPaths.length === 0) {
+        throw new Error(
+          `dispatch_improvement_job ${at} briefing.targetPaths must name at least one file.`,
+        )
+      }
+      if (category === 'runner-code' && !briefing.failingTest?.trim()) {
+        throw new Error(
+          `dispatch_improvement_job ${at} is runner-code and needs briefing.failingTest ` +
+          '(the test that should fail today and pass after the fix).',
+        )
+      }
+      if (category === 'base-intelligence' && !briefing.neighbouringWording?.trim()) {
+        throw new Error(
+          `dispatch_improvement_job ${at} is base-intelligence and needs ` +
+          'briefing.neighbouringWording so the child can match the surrounding instruction.',
+        )
+      }
     }
 
     return {
@@ -659,8 +702,91 @@ function parseDispatchItems(items: DispatchImprovementItem[] | undefined): Parse
       issueNumber: raw.issueNumber,
       title,
       description,
+      ...(raw.rootCause?.trim() ? { rootCause: raw.rootCause.trim() } : {}),
+      ...(briefing ? { briefing } : {}),
+      ...(evidencePack ? { evidencePack } : {}),
     }
   })
+}
+
+function parseBriefing(
+  raw: ImprovementBriefing | undefined,
+  at: string,
+): ImprovementBriefing | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const behaviourNow = raw.behaviourNow?.trim() ?? ''
+  const behaviourWanted = raw.behaviourWanted?.trim() ?? ''
+  const evidence = raw.evidence?.trim() ?? ''
+  if (!behaviourNow || !behaviourWanted || !evidence) {
+    throw new Error(
+      `dispatch_improvement_job ${at} briefing needs behaviourNow, behaviourWanted, and evidence.`,
+    )
+  }
+  const targetPaths = (raw.targetPaths ?? []).map(path => path.trim()).filter(Boolean)
+  const predictedMetric = parsePredictedMetric(raw.predictedMetric)
+  return {
+    behaviourNow,
+    behaviourWanted,
+    evidence,
+    targetPaths,
+    verified: raw.verified === true,
+    ...(raw.revisionSha?.trim() ? { revisionSha: raw.revisionSha.trim() } : {}),
+    ...(raw.failingTest?.trim() ? { failingTest: raw.failingTest.trim() } : {}),
+    ...(raw.neighbouringWording?.trim() ? { neighbouringWording: raw.neighbouringWording.trim() } : {}),
+    ...(Array.isArray(raw.outOfScope) && raw.outOfScope.length
+      ? { outOfScope: raw.outOfScope.map(item => item.trim()).filter(Boolean) }
+      : {}),
+    ...(predictedMetric ? { predictedMetric } : {}),
+  }
+}
+
+function parseEvidencePack(raw: OssContributionEvidencePack | undefined): OssContributionEvidencePack | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const antiPatterns = (raw.antiPatterns ?? []).map(item => item.trim()).filter(Boolean)
+  const grepHits = (raw.grepHits ?? []).map(item => item.trim()).filter(Boolean)
+  const toolFailures = (raw.toolFailures ?? [])
+    .filter(row => row && typeof row.toolName === 'string' && typeof row.errorClass === 'string')
+    .map(row => ({
+      toolName: row.toolName.trim(),
+      errorClass: row.errorClass.trim(),
+      count: Number.isFinite(row.count) ? row.count : 1,
+    }))
+  if (antiPatterns.length === 0 && grepHits.length === 0 && toolFailures.length === 0) return undefined
+  return {
+    ...(antiPatterns.length ? { antiPatterns } : {}),
+    ...(grepHits.length ? { grepHits } : {}),
+    ...(toolFailures.length ? { toolFailures } : {}),
+  }
+}
+
+function briefingPublishableFields(
+  id: string,
+  briefing: ImprovementBriefing,
+): Array<{ label: string; text: string }> {
+  return [
+    { label: `${id} behaviourNow`, text: briefing.behaviourNow },
+    { label: `${id} behaviourWanted`, text: briefing.behaviourWanted },
+    { label: `${id} evidence`, text: briefing.evidence },
+    ...briefing.targetPaths.map((item, index) => ({ label: `${id} targetPaths[${index}]`, text: item })),
+    ...(briefing.revisionSha ? [{ label: `${id} revisionSha`, text: briefing.revisionSha }] : []),
+    ...(briefing.failingTest ? [{ label: `${id} failingTest`, text: briefing.failingTest }] : []),
+    ...(briefing.neighbouringWording ? [{ label: `${id} neighbouringWording`, text: briefing.neighbouringWording }] : []),
+    ...(briefing.outOfScope ?? []).map((item, index) => ({ label: `${id} outOfScope[${index}]`, text: item })),
+  ]
+}
+
+function evidencePackPublishableFields(
+  id: string,
+  pack: OssContributionEvidencePack,
+): Array<{ label: string; text: string }> {
+  return [
+    ...(pack.antiPatterns ?? []).map((item, index) => ({ label: `${id} antiPatterns[${index}]`, text: item })),
+    ...(pack.grepHits ?? []).map((item, index) => ({ label: `${id} grepHits[${index}]`, text: item })),
+    ...(pack.toolFailures ?? []).flatMap((row, index) => [
+      { label: `${id} toolFailures[${index}].toolName`, text: row.toolName },
+      { label: `${id} toolFailures[${index}].errorClass`, text: row.errorClass },
+    ]),
+  ]
 }
 
 function assertItemsPermitted(items: ReadonlyArray<ParsedDispatchItem>, ctx: ToolContext): void {

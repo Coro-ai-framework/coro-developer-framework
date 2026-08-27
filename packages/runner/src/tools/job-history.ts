@@ -2,7 +2,8 @@
 //
 // Read-only views over the install's own job records, exposed to the
 // retrospective analyst through `list_jobs`, `get_job_report`, and
-// `get_job_log_excerpts`.
+// `get_job_log_excerpts`. Clustering and trace summaries live in
+// `./job-trace` and reuse the report builders here.
 //
 // Every other agent sees exactly one job — its own. The retrospective needs
 // the opposite: enough shape across many jobs to spot systemic problems
@@ -13,6 +14,8 @@
 //   * `phaseUsage` collapses to one row per phase, with each execution
 //     attributed to a reason (see `attributePhaseRuns`) so an analyst can
 //     tell rework from a workflow doing what it is supposed to do.
+//   * Token and cache totals already stored on each snapshot are passed
+//     through — they used to be dropped, which hid cache blow-ups.
 //   * Logs are filtered to error-ish lines and capped.
 //
 // A raw "this phase ran 6 times" count is not a loop signal, and treating
@@ -22,14 +25,29 @@
 // run per approval because the runner re-enters the departing phase to let
 // the agent finish it. Only what is left after subtracting those is rework.
 //
-// Output is sanitised by default (see `./sanitize`). Callers that need the
-// real identifiers for local-only reasoning pass `raw: true`; anything
-// leaving the machine is re-validated at the publishing boundary.
+// Attribution is recorded on new snapshots and derived for older ones
+// (`jobs/phase-observability.ts`). Output is sanitised by default (see
+// `./sanitize`). Callers that need the real identifiers for local-only
+// reasoning pass `raw: true`; anything leaving the machine is re-validated
+// at the publishing boundary.
 
-import { JobType, type Job, type PhaseUsage } from '@coro-ai/cloud-protocol'
+import {
+  JobType,
+  type IntelligenceProvenance,
+  type Job,
+  type PhaseRunAttribution,
+  type PhaseUsage,
+} from '@coro-ai/cloud-protocol'
+import {
+  checkpointPhaseSet,
+  derivePhaseAttributions,
+} from '../jobs/phase-observability'
+import { normalizeRetrospectiveWindow } from '../jobs/retrospective'
 import { buildSanitizer, type Sanitizer } from './sanitize'
 import { assertRetrospectiveJob } from './retrospective'
 import type { ToolContext } from './types'
+
+export type { PhaseRunAttribution } from '@coro-ai/cloud-protocol'
 
 export const JOB_LIST_DEFAULT_LIMIT = 20
 export const JOB_LIST_MAX_LIMIT = 100
@@ -58,33 +76,44 @@ export interface JobHistoryEntry {
   createdAt: string
   durationMs: number
   costUsd: number
+  inputTokens: number
+  cacheReadInputTokens: number
   escalated: boolean
   workItemCount: number
   /** Highest per-work-item loop count — the evaluator's rework signal. */
   maxLoopCount: number
+  /** Sum of `reworkCostUsd` across phases. */
+  reworkCostUsd: number
   /**
    * Phases that ran more times than the workflow required, with the cost of
    * the excess. Empty for a job that looped a phase per work item and
    * nothing more. This — not a raw run count — is the rework signal.
    */
   reworkPhases: Array<{ phase: string; runs: number; reworkRuns: number; reworkCostUsd: number }>
+  /** Most-failed tool on this job, when a ledger exists. */
+  topFailedTool?: string
 }
-
-/** Why one execution of a phase happened, derived rather than recorded. */
-export type PhaseRunAttribution =
-  /** First time this phase saw this work item (or the job's first entry). */
-  | 'work-item'
-  /** The re-entry the runner performs after a developer approves the phase. */
-  | 'checkpoint-resume'
-  /** Same work item, no checkpoint to explain it: a loop back. */
-  | 'rework'
 
 export interface PhaseRunDetail {
   phase: string
   workItem?: string
   attribution: PhaseRunAttribution
+  /** `recorded` when the snapshot carried `attribution`; otherwise derived. */
+  attributionSource: 'recorded' | 'derived'
   costUsd: number
   turns: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  durationMs: number
+  parkReason?: string
+}
+
+export interface ToolHistogramEntry {
+  toolName: string
+  calls: number
+  failures: number
 }
 
 export interface PhaseRunAggregate {
@@ -94,6 +123,10 @@ export interface PhaseRunAggregate {
   costUsd: number
   durationMs: number
   turns: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
   models: string[]
   /** Distinct work items this phase handled. `runs` scales with this. */
   workItemsHandled: number
@@ -103,6 +136,7 @@ export interface PhaseRunAggregate {
   reworkRuns: number
   /** Cost of the `rework` runs alone. Quote this, not `costUsd`. */
   reworkCostUsd: number
+  topFailedTools: ToolHistogramEntry[]
 }
 
 export interface JobReport {
@@ -133,6 +167,8 @@ export interface JobReport {
   prs: Array<{ workItem: string; openedAt: string; mergedAt?: string; timeToMergeMs?: number }>
   artifacts: Array<{ id: string; phase: string; kind: string; title: string }>
   workflowSwitches: Array<{ from: string; to: string; reason: string }>
+  toolHistogram: ToolHistogramEntry[]
+  provenance?: IntelligenceProvenance
 }
 
 // ── list_jobs ─────────────────────────────────────────────────────────────────
@@ -165,7 +201,16 @@ export async function listJobHistory(
     return true
   })
 
-  const limit = clamp(args.limit ?? JOB_LIST_DEFAULT_LIMIT, 1, JOB_LIST_MAX_LIMIT)
+  // Default to the window the run was launched with, so drilling down covers
+  // the same jobs `cluster_window` grouped. Defaulting to a fixed 20 against a
+  // 25-job window silently hid five jobs from every follow-up read, which is
+  // the kind of gap that makes a real pattern look like it cleared a threshold
+  // in some jobs and not others.
+  const declaredWindow = ctx.job.params?.['jobWindow']
+  const windowDefault = typeof declaredWindow === 'number'
+    ? normalizeRetrospectiveWindow(declaredWindow)
+    : JOB_LIST_DEFAULT_LIMIT
+  const limit = clamp(args.limit ?? windowDefault, 1, JOB_LIST_MAX_LIMIT)
   // `listJobs` returns newest-first from every backend; re-sort defensively
   // so the window is well-defined regardless of implementation.
   const page = matching
@@ -183,6 +228,8 @@ export async function listJobHistory(
 
 export function summarizeJob(job: Job, sanitizer: Sanitizer): JobHistoryEntry {
   const phases = aggregatePhaseRuns(job.phaseUsage ?? [], phaseRunContext(job))
+  const histogram = toolHistogram(job.phaseUsage ?? [])
+  const topFailed = histogram.find(entry => entry.failures > 0)
   return {
     id: job.id,
     status: job.status,
@@ -192,10 +239,15 @@ export function summarizeJob(job: Job, sanitizer: Sanitizer): JobHistoryEntry {
     createdAt: job.createdAt,
     durationMs: elapsedMs(job.createdAt, job.updatedAt),
     costUsd: round(job.tokenUsage?.totalCostUsd ?? 0, 4),
+    inputTokens: job.tokenUsage?.inputTokens ?? sumUsageField(job.phaseUsage ?? [], 'inputTokens'),
+    cacheReadInputTokens: job.tokenUsage?.cacheReadInputTokens
+      ?? sumUsageField(job.phaseUsage ?? [], 'cacheReadInputTokens'),
     escalated: isEscalated(job),
     workItemCount: job.workItems?.length ?? 0,
     maxLoopCount: (job.workItems ?? []).reduce((max, item) => Math.max(max, item.loopCount ?? 0), 0),
+    reworkCostUsd: round(phases.reduce((sum, phase) => sum + phase.reworkCostUsd, 0), 4),
     reworkPhases: reworkPhases(phases),
+    ...(topFailed ? { topFailedTool: topFailed.toolName } : {}),
   }
 }
 
@@ -276,6 +328,10 @@ export function buildJobReport(job: Job, sanitizer: Sanitizer | null): JobReport
       to: entry.to,
       reason: scrub(entry.reason),
     })),
+    toolHistogram: toolHistogram(job.phaseUsage ?? []),
+    ...(job.intelligenceProvenance
+      ? { provenance: scrubProvenance(job.intelligenceProvenance, scrub) }
+      : {}),
   }
 }
 
@@ -345,62 +401,34 @@ export interface PhaseRunContext {
 /**
  * Attribute every phase execution to a reason.
  *
- * `phaseUsage` records one snapshot per execution, in order, each stamped
- * with the work item it was attributed to. That is enough to reconstruct
- * why a phase repeated, because only three things cause it:
- *
- * 1. **A new work item.** `coding → review → coding` is the workflow, not a
- *    loop; the first run a phase gives to each work item is expected.
- * 2. **A checkpoint approval.** When a developer approves a phase, the
- *    runner re-enters that phase so the agent can finish its turn — one
- *    extra run per approval, allowed once per work item here.
- * 3. **Rework.** Whatever is left: the same phase, on the same work item,
- *    with nothing structural to explain it.
- *
- * These are *derived*, not recorded. `job.interactive` is live-mutable, so
- * the approval allowance is an estimate; a run classified `rework` is a
- * candidate to investigate, not a proven fault. What matters is that the
- * classification errs toward calling things expected — it undercounts
- * rework rather than manufacturing it, because a false systemic finding
- * costs a maintainer's time and a missed one only waits for next month.
+ * New snapshots carry `attribution` recorded at append time. Older jobs
+ * do not, so this falls back to the same derivation the runner uses when
+ * stamping: first (phase, work item) is expected, one checkpoint resume
+ * is allowed, the rest is rework. Derivation undercounts rather than
+ * inventing loops. A recorded `parkReason` is passed through so a
+ * zero-cost park is not mistaken for rework.
  */
 export function attributePhaseRuns(
   phaseUsage: ReadonlyArray<PhaseUsage>,
   context: PhaseRunContext = {},
 ): PhaseRunDetail[] {
   const scrub = context.scrub ?? ((text: string) => text)
-  const checkpointPhases = context.interactive ? context.checkpointPhases : undefined
+  const attributions = derivePhaseAttributions(phaseUsage, context)
 
-  const seenWorkItems = new Map<string, Set<string>>()
-  const resumeAllowanceUsed = new Map<string, Set<string>>()
-
-  return phaseUsage.map(usage => {
-    const key = usage.workItem ?? ''
-    const seen = seenWorkItems.get(usage.phase) ?? new Set<string>()
-    const resumed = resumeAllowanceUsed.get(usage.phase) ?? new Set<string>()
-
-    let attribution: PhaseRunAttribution
-    if (!seen.has(key)) {
-      seen.add(key)
-      attribution = 'work-item'
-    } else if (checkpointPhases?.has(usage.phase) && !resumed.has(key)) {
-      resumed.add(key)
-      attribution = 'checkpoint-resume'
-    } else {
-      attribution = 'rework'
-    }
-
-    seenWorkItems.set(usage.phase, seen)
-    resumeAllowanceUsed.set(usage.phase, resumed)
-
-    return {
-      phase: usage.phase,
-      ...(usage.workItem ? { workItem: scrub(usage.workItem) } : {}),
-      attribution,
-      costUsd: round(usage.costUsd ?? 0, 4),
-      turns: usage.numTurns ?? 0,
-    }
-  })
+  return phaseUsage.map((usage, index) => ({
+    phase: usage.phase,
+    ...(usage.workItem ? { workItem: scrub(usage.workItem) } : {}),
+    attribution: attributions[index] ?? 'work-item',
+    attributionSource: usage.attribution ? 'recorded' : 'derived',
+    costUsd: round(usage.costUsd ?? 0, 4),
+    turns: usage.numTurns ?? 0,
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
+    cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+    durationMs: usage.durationMs ?? 0,
+    ...(usage.parkReason ? { parkReason: scrub(usage.parkReason) } : {}),
+  }))
 }
 
 /** One row per phase, with the attributed runs counted per reason. */
@@ -419,16 +447,25 @@ export function aggregatePhaseRuns(
       costUsd: 0,
       durationMs: 0,
       turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
       models: [],
       workItemsHandled: 0,
       checkpointResumeRuns: 0,
       reworkRuns: 0,
       reworkCostUsd: 0,
+      topFailedTools: [],
     }
     entry.runs += 1
     entry.costUsd += usage.costUsd ?? 0
     entry.durationMs += usage.durationMs ?? 0
     entry.turns += usage.numTurns ?? 0
+    entry.inputTokens += usage.inputTokens ?? 0
+    entry.outputTokens += usage.outputTokens ?? 0
+    entry.cacheReadInputTokens += usage.cacheReadInputTokens ?? 0
+    entry.cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0
     if (usage.model && !entry.models.includes(usage.model)) entry.models.push(usage.model)
 
     if (detail.attribution === 'work-item') entry.workItemsHandled += 1
@@ -445,6 +482,9 @@ export function aggregatePhaseRuns(
     ...entry,
     costUsd: round(entry.costUsd, 4),
     reworkCostUsd: round(entry.reworkCostUsd, 4),
+    topFailedTools: toolHistogram(
+      phaseUsage.filter(usage => usage.phase === entry.phase),
+    ).filter(row => row.failures > 0).slice(0, 5),
   }))
 }
 
@@ -463,24 +503,64 @@ function reworkPhases(
 }
 
 /** Checkpoint phases, from the phase list persisted at job creation. */
-function phaseRunContext(job: Job, scrub?: (text: string) => string): PhaseRunContext {
-  const checkpointPhases = new Set(
-    (job.workflowPhases ?? []).filter(phase => phase.interactiveCheckpoint).map(phase => phase.name),
-  )
+export function phaseRunContext(job: Job, scrub?: (text: string) => string): PhaseRunContext {
   return {
-    checkpointPhases,
+    checkpointPhases: checkpointPhaseSet(job.workflowPhases),
     interactive: job.interactive !== false,
     ...(scrub ? { scrub } : {}),
   }
 }
 
-function jobRepo(job: Job): string {
+export function jobRepo(job: Job): string {
   const slug = job.params?.['repoSlug'] ?? job.params?.['repo']
   return typeof slug === 'string' ? slug : ''
 }
 
-function isEscalated(job: Job): boolean {
+export function isEscalated(job: Job): boolean {
   return Boolean(job.escalationMessage) || job.status === 'escalated'
+}
+
+export function toolHistogram(phaseUsage: ReadonlyArray<PhaseUsage>): ToolHistogramEntry[] {
+  const byName = new Map<string, ToolHistogramEntry>()
+  for (const usage of phaseUsage) {
+    for (const entry of usage.toolLedger ?? []) {
+      const row = byName.get(entry.toolName) ?? { toolName: entry.toolName, calls: 0, failures: 0 }
+      row.calls += 1
+      if (!entry.success) row.failures += 1
+      byName.set(entry.toolName, row)
+    }
+  }
+  return Array.from(byName.values()).sort((a, b) => b.failures - a.failures || b.calls - a.calls)
+}
+
+export function median(values: ReadonlyArray<number>): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  const even = sorted.length % 2 === 0
+  const left = sorted[even ? mid - 1 : mid] ?? 0
+  const right = sorted[mid] ?? 0
+  return even ? (left + right) / 2 : left
+}
+
+function sumUsageField(
+  phaseUsage: ReadonlyArray<PhaseUsage>,
+  field: 'inputTokens' | 'cacheReadInputTokens',
+): number {
+  return phaseUsage.reduce((sum, usage) => sum + (usage[field] ?? 0), 0)
+}
+
+function scrubProvenance(
+  provenance: IntelligenceProvenance,
+  scrub: (text: string) => string,
+): IntelligenceProvenance {
+  return {
+    ...provenance,
+    layers: provenance.layers.map(layer => ({
+      ...layer,
+      source: scrub(layer.source),
+    })),
+  }
 }
 
 function elapsedMs(from: string, to: string): number {
@@ -499,7 +579,7 @@ function parseSince(since?: string): number | null {
   return parsed
 }
 
-function clamp(value: number, min: number, max: number): number {
+export function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
   return Math.min(Math.max(Math.trunc(value), min), max)
 }

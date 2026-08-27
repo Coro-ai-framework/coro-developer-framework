@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs/promises'
 import { simpleGit } from 'simple-git'
 import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
@@ -145,9 +145,15 @@ describe('createMcpToolHandlers — cross-job history', () => {
     return ctx
   }
 
-  it('registers the three history tools', () => {
+  it('registers the history and evidence tools', () => {
     const h = createMcpToolHandlers(makeMockToolContext(), {}) as Record<string, unknown>
-    for (const name of ['list_jobs', 'get_job_report', 'get_job_log_excerpts']) {
+    for (const name of [
+      'list_jobs',
+      'get_job_report',
+      'get_job_log_excerpts',
+      'cluster_window',
+      'get_job_trace_summary',
+    ]) {
       expect(typeof h[name], `${name} should be registered`).toBe('function')
     }
   })
@@ -222,6 +228,10 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     vi.mocked(installRepoGitAuth).mockClear()
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('clones via the resolved scm plugin into the job working directory', async () => {
     const built = makeMockToolContextWithSpies()
     built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
@@ -236,28 +246,54 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
 
     expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({ baseDir: '/tmp/work-mcp/job-mcp-test' }))
-    // Regression: simple-git ≥3.36 ships an env-vulnerability scanner
-    // that throws on `GIT_CONFIG_GLOBAL` unless `allowUnsafeConfigPaths`
-    // is set. We deliberately set `GIT_CONFIG_GLOBAL=/dev/null` to
-    // neutralise the user's ~/.gitconfig, so the unsafe opt-in must
-    // stay flipped on. Drop this and clones break with
-    //   `Use of "GIT_CONFIG_GLOBAL" is not permitted without enabling allowUnsafeConfigPaths`
+    // Regression: simple-git ≥3.36 scans spawn env. isolatedGitEnv sets
+    // GIT_CONFIG_GLOBAL=/dev/null (neutralise ~/.gitconfig) and
+    // GIT_CONFIG_COUNT + credential.helper (live SCM helper, no token
+    // in the URL). Each needs its own unsafe opt-in; dropping any one
+    // makes scm_clone_repo fail before git is spawned:
+    //   GIT_CONFIG_GLOBAL  → allowUnsafeConfigPaths
+    //   GIT_CONFIG_COUNT   → allowUnsafeConfigEnvCount
+    //   credential.helper  → allowUnsafeCredentialHelper
+    //   GIT_ASKPASS=''     → allowUnsafeAskPass
     expect(simpleGitMock).toHaveBeenCalledWith(expect.objectContaining({
-      unsafe: expect.objectContaining({ allowUnsafeConfigPaths: true }),
+      unsafe: expect.objectContaining({
+        allowUnsafeAskPass: true,
+        allowUnsafeConfigPaths: true,
+        allowUnsafeConfigEnvCount: true,
+        allowUnsafeCredentialHelper: true,
+        allowUnsafeProtocolOverride: false,
+      }),
     }))
     expect(env).toHaveBeenCalledWith(expect.objectContaining({
       GIT_TERMINAL_PROMPT: '0',
       GIT_ASKPASS: '',
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+      GIT_CONFIG_COUNT: '4',
+      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_CONFIG_KEY_1: 'credential.helper',
+      GIT_CONFIG_KEY_2: 'http.lowSpeedLimit',
+      GIT_CONFIG_VALUE_2: '1000',
+      GIT_CONFIG_KEY_3: 'http.lowSpeedTime',
+      GIT_CONFIG_VALUE_3: '60',
     }))
+    // Inner blob-fetch after a partial clone emits no stdio; a block
+    // timeout would kill a healthy clone. Network stalls use http.lowSpeed*.
+    expect(simpleGitMock.mock.calls[0]?.[0]).not.toHaveProperty('timeout')
     expect(clone).toHaveBeenCalledWith(
       'https://example.test/svc.git',
       '/tmp/work-mcp/job-mcp-test/svc',
       expect.arrayContaining([
+        '--filter=blob:none',
+        '--progress',
         '--config', 'url.https://bitbucket.org/.insteadOf=ssh://git@bitbucket.org/',
         '--config', 'url.https://github.com/.insteadOf=ssh://git@github.com/',
       ]),
+    )
+    expect(clone.mock.calls[0]?.[2]).not.toContain('--depth')
+    expect(built.ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[repo-clone] starting svc',
     )
     expect(built.ctx.stateBackend.mapRepoToJob).toHaveBeenCalledWith('svc', 'job-mcp-test')
     expect(built.ctx.stateBackend.updateJob).toHaveBeenCalledWith(
@@ -275,6 +311,39 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
       '/tmp/work-mcp/job-mcp-test/svc',
       expect.objectContaining({ matchesRemote: expect.any(Function) }),
     )
+  })
+
+  it('logs pack growth while a silent blob-fetch is in flight', async () => {
+    vi.useFakeTimers()
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    let finish!: () => void
+    const clone = vi.fn().mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+    readdirMock.mockImplementation(async (dir: unknown) => {
+      if (String(dir).includes('pack')) return ['tmp_pack_x'] as never
+      return [] as never
+    })
+    statMock.mockImplementation(async (filePath: unknown) => {
+      if (String(filePath).includes('tmp_pack_x')) {
+        return { isFile: () => true, size: 50 * 1024 * 1024 } as never
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const pending = h.scm_clone_repo({ repo: 'svc' })
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(built.ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[repo-clone] svc still running (50MB on disk)',
+    )
+    finish()
+    await pending
   })
 
   it('reuses an existing checkout when .git already exists', async () => {
@@ -299,6 +368,94 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
     )
     expect(data['reused']).toBe(true)
     expect(data['relativeDir']).toBe('svc')
+    expect(vi.mocked(installRepoGitAuth)).toHaveBeenCalled()
+  })
+
+  it('does not reuse a checkout that still has an in-flight tmp_pack', async () => {
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    const clone = vi.fn().mockResolvedValue(undefined)
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+    statMock.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.endsWith('/svc/.git') || p.endsWith('/svc')) {
+        return { isDirectory: () => true } as never
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+    readdirMock.mockImplementation(async (dir: unknown) => {
+      if (String(dir).includes(`${'pack'}`)) return ['tmp_pack_eEXq0k'] as never
+      return [] as never
+    })
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    await h.scm_clone_repo({ repo: 'svc' })
+
+    expect(rmMock).toHaveBeenCalledWith(
+      '/tmp/work-mcp/job-mcp-test/svc',
+      expect.objectContaining({ recursive: true, force: true }),
+    )
+    expect(built.ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[repo-clone] removing incomplete checkout of svc',
+    )
+    expect(clone).toHaveBeenCalled()
+  })
+
+  it('removes a partial checkout and returns an error when clone stalls or fails', async () => {
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    const clone = vi.fn().mockRejectedValue(new Error('killed'))
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const result = await h.scm_clone_repo({ repo: 'svc' })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toContain('Clone of "svc" failed')
+    expect(result.content[0]?.text).toContain('killed')
+    expect(rmMock).toHaveBeenCalledWith(
+      '/tmp/work-mcp/job-mcp-test/svc',
+      expect.objectContaining({ recursive: true, force: true }),
+    )
+    expect(built.ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[repo-clone] failed svc: killed',
+    )
+    expect(built.ctx.stateBackend.mapRepoToJob).not.toHaveBeenCalled()
+  })
+
+  it('retries without blob filter when the remote does not support partial clone', async () => {
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: 'https://example.test/svc.git',
+      envForGit: { GIT_TERMINAL_PROMPT: '0' },
+    })
+    const clone = vi.fn()
+      .mockRejectedValueOnce(new Error('fatal: the remote does not support the filter capability'))
+      .mockResolvedValueOnce(undefined)
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_clone_repo({ repo: 'svc' })) as Record<string, unknown>
+
+    expect(clone).toHaveBeenCalledTimes(2)
+    expect(clone.mock.calls[0]?.[2]).toContain('--filter=blob:none')
+    expect(clone.mock.calls[1]?.[2]).not.toContain('--filter=blob:none')
+    expect(built.ctx.stateBackend.appendLog).toHaveBeenCalledWith(
+      'job-mcp-test',
+      '[repo-clone] partial clone unsupported, retrying full clone of svc',
+    )
+    expect(data['reused']).toBe(false)
     expect(vi.mocked(installRepoGitAuth)).toHaveBeenCalled()
   })
 })

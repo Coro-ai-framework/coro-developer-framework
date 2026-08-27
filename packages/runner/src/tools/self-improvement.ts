@@ -87,6 +87,21 @@ export interface MemoryEntryInput {
   whenToUse?: string
 }
 
+export type ProposalDeltaMode = 'insert-after' | 'replace-section' | 'append'
+
+/**
+ * A surgical edit to one markdown file in a writable intelligence layer.
+ * Applied against the current file in the writer clone, then committed
+ * as a full file — the git PR is still a normal diff.
+ */
+export interface ProposalDelta {
+  path: string
+  /** Heading text without the leading hashes. Required unless mode is append-to-file. */
+  heading?: string
+  mode: ProposalDeltaMode
+  content: string
+}
+
 export interface ProposeChangeInput {
   type: ProposalType
   title: string
@@ -107,6 +122,11 @@ export interface ProposeChangeInput {
    * mechanically enforce the per-entry length budgets.
    */
   entries?: MemoryEntryInput[]
+  /**
+   * Section-level markdown patches applied against the writer clone.
+   * Prefer this over shipping a whole rewritten file. Markdown only.
+   */
+  deltas?: ProposalDelta[]
   /** Single-file legacy shim. Normalised into `files` if present. */
   targetFile?: string
   proposedContent?: string
@@ -349,14 +369,16 @@ const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n/
 
 /** Every shipped proposal path must be markdown — never logs, caches, binaries. */
 export function assertProposalPathsAreMarkdown(files: ProposalFile[]): void {
-  for (const f of files) {
-    const normalised = f.path.replace(/^\.\//, '').trim()
-    if (!normalised.toLowerCase().endsWith('.md')) {
-      throw new Error(
-        `Proposal path "${f.path}" must end with .md. Self-improvement PRs ship markdown only — ` +
-          `do not include build logs (build-*.txt), gocache/, or other artefacts from the job working directory.`,
-      )
-    }
+  for (const f of files) assertMarkdownPath(f.path)
+}
+
+export function assertMarkdownPath(filePath: string): void {
+  const normalised = filePath.replace(/^\.\//, '').trim()
+  if (!normalised.toLowerCase().endsWith('.md')) {
+    throw new Error(
+      `Proposal path "${filePath}" must end with .md. Self-improvement PRs ship markdown only — ` +
+        `do not include build logs (build-*.txt), gocache/, or other artefacts from the job working directory.`,
+    )
   }
 }
 
@@ -485,17 +507,23 @@ export function validateProposalFiles(
  */
 /**
  * A retrospective launched without the `tenant` destination may not
- * propose to this install's layers.
+ * propose to this install's layers — and neither may the contribution job
+ * it dispatched.
  *
  * The two upstream destinations have always been gated in code, because a
  * public issue cannot be unpublished. The local one was gated by prose
  * alone — so a run the developer deliberately scoped to "look, do not
  * touch" could still open a PR against the intelligence repo, and nothing
- * would say it had happened. Ordinary jobs are unaffected: they carry no
- * tiers, and the default is permissive.
+ * would say it had happened.
+ *
+ * The child job is covered because it is an ordinary `job` by type: without
+ * this, scoping a run to "upstream only" would be undone one hop later by
+ * the very job that run dispatched. Ordinary jobs are unaffected — they
+ * carry neither marker, and the default is permissive.
  */
 function assertTenantTierPermitted(ctx: ToolContext): void {
-  if (ctx.job.type !== JobType.Retrospective) return
+  const dispatchedByRetrospective = Boolean(ctx.job.params?.['retrospectiveJobId'])
+  if (ctx.job.type !== JobType.Retrospective && !dispatchedByRetrospective) return
   if (retrospectiveTiers(ctx.job).tenant) return
 
   throw new Error(
@@ -513,16 +541,28 @@ export async function proposeChange(
   assertTenantTierPermitted(ctx)
 
   const requestedFiles = applyMemoryEntries(normaliseFiles(input), input.entries)
-  validateProposalFiles(input.type, requestedFiles)
+  const deltaPaths = (input.deltas ?? []).map(delta => delta.path)
+  if (requestedFiles.length === 0 && deltaPaths.length === 0) {
+    throw new Error(`propose_change of type "${input.type}" requires at least one file or delta.`)
+  }
+  if (requestedFiles.length > 0) {
+    validateProposalFiles(input.type, requestedFiles)
+  }
+  for (const delta of input.deltas ?? []) {
+    assertMarkdownPath(delta.path)
+  }
 
   const strategy = ctx.settings.proposals.routing.strategy
+  const filesForRouting = requestedFiles.length > 0
+    ? requestedFiles
+    : (input.deltas ?? []).map(delta => ({ path: delta.path, content: '#' }))
   // Route every file. If they disagree, we cannot ship them together.
-  const layers = requestedFiles.map(f => routeFile(f.path, strategy, input.targetLayer))
+  const layers = filesForRouting.map(f => routeFile(f.path, strategy, input.targetLayer))
   const targetLayer = layers[0]
   if (!layers.every(l => l === targetLayer)) {
     throw new Error(
       `All files in a single propose_change call must target the same layer. ` +
-        `Got mixed: ${requestedFiles.map((f, i) => `${f.path}=${layers[i]}`).join(', ')}. ` +
+        `Got mixed: ${filesForRouting.map((f, i) => `${f.path}=${layers[i]}`).join(', ')}. ` +
         `Make one call per layer.`,
     )
   }
@@ -585,11 +625,17 @@ export async function proposeChange(
     remoteUrl = writer.remoteUrl
   }
 
-  const files = await materializeProposalFiles({
+  const materialized = await materializeProposalFiles({
     type: input.type,
     files: requestedFiles,
     writerDir,
   })
+  const files = await applyProposalDeltas({
+    files: materialized,
+    deltas: input.deltas ?? [],
+    writerDir,
+  })
+  validateProposalFiles(input.type, files)
 
   // Branch + commit + push.
   const slug = toSlug(input.title)
@@ -782,6 +828,92 @@ async function materializeProposalFiles(args: {
   }
 
   return out
+}
+
+export async function applyProposalDeltas(args: {
+  files: ProposalFile[]
+  deltas: ProposalDelta[]
+  writerDir: string
+}): Promise<ProposalFile[]> {
+  if (args.deltas.length === 0) return args.files
+
+  const byPath = new Map(args.files.map(file => [file.path.replace(/^\.\//, ''), file]))
+  for (const delta of args.deltas) {
+    const pathKey = delta.path.replace(/^\.\//, '')
+    const existing = byPath.get(pathKey)
+    const current = existing?.content ?? await readWriterFile(args.writerDir, pathKey) ?? ''
+    if (!current && delta.mode !== 'append') {
+      throw new Error(
+        `Delta for "${delta.path}" needs the file to exist (mode ${delta.mode}). ` +
+        'Use mode "append" to create it, or pass the full file in `files`.',
+      )
+    }
+    const next = applyMarkdownDelta(current, delta)
+    byPath.set(pathKey, { path: pathKey, content: next })
+  }
+  return [...byPath.values()]
+}
+
+export function applyMarkdownDelta(existing: string, delta: ProposalDelta): string {
+  const insertion = ensureTrailingNewline(normalizeNewlines(delta.content).trimEnd())
+  const base = normalizeNewlines(existing)
+  const heading = delta.heading?.trim()
+
+  if (delta.mode === 'append' && !heading) {
+    if (!base.trim()) return insertion
+    return ensureTrailingNewline(`${base.trimEnd()}\n\n${insertion.trim()}`)
+  }
+
+  if (!heading) {
+    throw new Error(`Delta for "${delta.path}" requires a heading unless mode is append.`)
+  }
+
+  const headingRe = new RegExp(`^(#{1,6})\\s+${escapeRegExp(heading)}\\s*$`, 'gm')
+  const matches = [...base.matchAll(headingRe)]
+  if (matches.length === 0) {
+    throw new Error(`Delta for "${delta.path}": heading "${heading}" was not found.`)
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `Delta for "${delta.path}": heading "${heading}" matches ${matches.length} times. ` +
+      'Make it unique or pass the full file in `files`.',
+    )
+  }
+
+  const match = matches[0]!
+  const hashes = match[1] ?? '#'
+  const headingLevel = hashes.length
+  const headingLineStart = match.index ?? 0
+  const headingLineEnd = headingLineStart + match[0].length
+  let sectionBodyStart = headingLineEnd
+  if (base[sectionBodyStart] === '\n') sectionBodyStart += 1
+
+  const rest = base.slice(sectionBodyStart)
+  const nextHeading = new RegExp(`^#{1,${headingLevel}}\\s+`, 'm').exec(rest)
+  const sectionBodyEnd = nextHeading ? sectionBodyStart + nextHeading.index : base.length
+
+  if (delta.mode === 'insert-after') {
+    return ensureTrailingNewline(
+      base.slice(0, sectionBodyStart) + insertion + base.slice(sectionBodyStart),
+    )
+  }
+  if (delta.mode === 'replace-section') {
+    return ensureTrailingNewline(
+      base.slice(0, sectionBodyStart) + insertion + base.slice(sectionBodyEnd),
+    )
+  }
+  if (delta.mode === 'append') {
+    const before = base.slice(0, sectionBodyEnd).trimEnd()
+    const after = base.slice(sectionBodyEnd)
+    return ensureTrailingNewline(
+      `${before}\n\n${insertion.trim()}${after ? `\n\n${after.trimStart()}` : ''}`,
+    )
+  }
+  throw new Error(`Unknown delta mode "${String(delta.mode)}".`)
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function isAppendOnlyMemoryPath(filePath: string): boolean {

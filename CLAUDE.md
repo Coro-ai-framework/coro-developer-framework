@@ -187,9 +187,17 @@ The system is fully language-agnostic. No language-specific defaults are hardcod
 | `agents/campaign-planner.md` | campaign-planning | campaign |
 | `agents/campaign-evaluator.md` | aggregation | campaign |
 | `agents/retrospective-analyst.md` | analysis + shipping (cross-job self-analysis) | retrospective |
+| `agents/oss-planner.md` | planning (contribution only — no campaign/lanes) | oss-contribution |
+| `agents/oss-coder.md` | coding on the fork | oss-contribution |
+| `agents/oss-verifier.md` | pre-PR test/wording gate | oss-contribution |
 | `agents/oss-contributor.md` | contribution (opens the fork → upstream PR) | oss-contribution |
 
-Agents are workflow-agnostic and language-agnostic. They receive domain-specific expertise by invoking skills on-demand. The same coder agent works for Go, .NET, and TypeScript projects — the invoked skills change, not the agent.
+Generic job agents are workflow-agnostic and language-agnostic. They receive
+domain-specific expertise by invoking skills on-demand. The same coder agent
+works for Go, .NET, and TypeScript projects — the invoked skills change, not
+the agent. The oss-contribution workflow is the exception: it uses dedicated
+agents so a contribution job cannot run campaign promotion, lane switching,
+or a merge-gatekeeper review.
 
 The implementation-job pipeline is intentionally tight: the convention/plan/test-coverage **review** happens once, inside the coding phase, via the `code-reviewer` subagent. The standalone `review` phase is a thin merge gatekeeper that handles human coordination + merge. **Build/test verification and acceptance-criteria checks** are owned by the evaluator (which runs them on the merged commit). Earlier versions had separate `review` and `testing` phases that re-did the same work — that has been consolidated to keep token cost and wall-clock time down without losing any robustness.
 
@@ -377,8 +385,8 @@ bodies. It is off unless the install sets `upstream.repoUrl` — via
 PRs go out from a fork: `ensureFork` creates it if needed, `syncFork`
 fast-forwards it to the upstream default branch, and
 `dispatch_improvement_job` starts an implementation job on
-`workflows/oss-contribution/workflow.md` (planner → coder →
-`agents/oss-contributor.md`). That job clones the **fork**
+`workflows/oss-contribution/workflow.md` (oss-planner → oss-coder →
+verification → `agents/oss-contributor.md`). That job clones the **fork**
 (`params.repo`), opens its PR against **upstream** (`params.upstreamRepo`
 + `params.prSourceOwner`), and ends there — nobody here can merge it.
 Intelligence markdown and runner code live in the same repository, so

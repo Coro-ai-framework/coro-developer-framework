@@ -118,6 +118,51 @@ export function composeApprovalMessage(
   return lines.join('\n')
 }
 
+/** One defect, with the symptoms the analyst wrote up separately. */
+export interface FindingGroup {
+  /** Stable key for React — the root cause, or the lone finding's id. */
+  key: string
+  /** Set only when the group really is a shared root cause. */
+  rootCause?: string
+  findings: RetrospectiveFinding[]
+}
+
+/**
+ * Findings gathered into the units they ship as.
+ *
+ * A root cause becomes one upstream issue and one work item, so it has to be
+ * one decision here too: approving three symptoms and skipping the fourth
+ * would ask the shipping phase for three quarters of a pull request. Findings
+ * with no `rootCause` are their own group, which is the common case.
+ *
+ * Order follows the analyst's, anchored at each group's first member, so the
+ * ballot reads in the order the report was written.
+ */
+export function groupFindings(findings: ReadonlyArray<RetrospectiveFinding>): FindingGroup[] {
+  const groups: FindingGroup[] = []
+  const byRootCause = new Map<string, FindingGroup>()
+
+  for (const finding of findings) {
+    const rootCause = finding.rootCause?.trim()
+    if (!rootCause) {
+      groups.push({ key: finding.id, findings: [finding] })
+      continue
+    }
+
+    const existing = byRootCause.get(rootCause)
+    if (existing) {
+      existing.findings.push(finding)
+      continue
+    }
+
+    const group: FindingGroup = { key: `root:${rootCause}`, rootCause, findings: [finding] }
+    byRootCause.set(rootCause, group)
+    groups.push(group)
+  }
+
+  return groups
+}
+
 interface CategoryMeta {
   label: string
   description: string

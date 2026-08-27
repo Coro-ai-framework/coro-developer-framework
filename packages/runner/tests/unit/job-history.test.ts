@@ -288,6 +288,28 @@ describe('listJobHistory', () => {
     expect(result.total).toBe(1)
   })
 
+  describe('the default page size', () => {
+    const thirty = () => Array.from({ length: 30 }, (_, i) =>
+      historyJob(`job-${i}`, { createdAt: new Date(2026, 0, 1, i).toISOString() }))
+
+    it('follows the window the run was launched with', async () => {
+      // Otherwise a 25-job window is clustered but only 20 jobs can be
+      // drilled into, and the last five silently never appear.
+      const ctx = ctxWithHistory(thirty(), { params: { jobWindow: 25 } })
+      expect((await listJobHistory({}, ctx)).returned).toBe(25)
+    })
+
+    it('falls back to 20 when the run declares no window', async () => {
+      const ctx = ctxWithHistory(thirty())
+      expect((await listJobHistory({}, ctx)).returned).toBe(20)
+    })
+
+    it('still lets an explicit limit win', async () => {
+      const ctx = ctxWithHistory(thirty(), { params: { jobWindow: 25 } })
+      expect((await listJobHistory({ limit: 5 }, ctx)).returned).toBe(5)
+    })
+  })
+
   it('caps the page size and rejects an unparseable since', async () => {
     const jobs = Array.from({ length: 130 }, (_, i) =>
       historyJob(`job-${i}`, { createdAt: new Date(2026, 0, 1, i).toISOString() }),
@@ -352,6 +374,48 @@ describe('buildJobReport', () => {
     expect(report.escalated).toBe(true)
     expect(report.rateLimitRetries).toBe(2)
     expect(report.prs[0].timeToMergeMs).toBe(2 * 60 * 60 * 1000)
+  })
+
+  it('passes through token and cache totals that used to be dropped', () => {
+    const report = buildJobReport(historyJob('job-tokens', {
+      phaseUsage: [
+        phaseRun('coding', {
+          inputTokens: 800,
+          outputTokens: 200,
+          cacheReadInputTokens: 4000,
+          cacheCreationInputTokens: 50,
+        }),
+      ],
+    }), sanitizer)
+
+    expect(report.phases[0]).toMatchObject({
+      inputTokens: 800,
+      outputTokens: 200,
+      cacheReadInputTokens: 4000,
+      cacheCreationInputTokens: 50,
+    })
+    expect(report.phaseRuns[0]).toMatchObject({
+      inputTokens: 800,
+      cacheReadInputTokens: 4000,
+      attributionSource: 'derived',
+    })
+  })
+
+  it('prefers recorded attribution over derivation', () => {
+    const report = buildJobReport(historyJob('job-recorded', {
+      interactive: true,
+      workflowPhases: [{ name: 'coding', status: 'coding', interactiveCheckpoint: true }],
+      phaseUsage: [
+        phaseRun('coding', { workItem: 'wi-1', attribution: 'work-item' }),
+        phaseRun('coding', { workItem: 'wi-1', attribution: 'rework', parkReason: 'developer-input: wait' }),
+      ],
+    }), sanitizer)
+
+    expect(report.phaseRuns.map(run => run.attribution)).toEqual(['work-item', 'rework'])
+    expect(report.phaseRuns[1]).toMatchObject({
+      attributionSource: 'recorded',
+      parkReason: 'developer-input: wait',
+    })
   })
 
   it('prefers user-edited insight text', () => {

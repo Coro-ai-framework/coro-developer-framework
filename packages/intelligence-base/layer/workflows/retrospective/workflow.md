@@ -49,10 +49,19 @@ public artefacts, so a human starts it.
 
 ### `analysis`
 
-The analyst reads the job window through `list_jobs`, `get_job_report`,
-and `get_job_log_excerpts`, applies the thresholds in the
-`retrospective-analysis` skill, and posts a `retrospective-report`
-artefact containing the findings.
+The analyst clusters the job window through `cluster_window` first,
+then drills in with `list_jobs`, `get_job_report`, and
+`get_job_trace_summary`. `get_job_log_excerpts` is for a named failure,
+not for grouping. It applies the thresholds in the
+`retrospective-analysis` skill, scores prior remedies from the cluster
+scorecard, and posts a `retrospective-report` artefact containing the
+findings — each with counter-evidence and a `predictedMetric`.
+
+The runner validates that artefact rather than storing it unchecked: a
+finding that would be silently dropped, one below the two-job evidence
+bar, a metric name the scorer cannot compute, or an overlapping pair with
+no declared relation all come back as an error to fix. Findings that share
+a `rootCause` are one defect, and ship as one issue and one work item.
 
 Before writing that report it verifies each candidate against the files
 it names: `_intelligence/` for the intelligence layer, and — for anything
@@ -89,9 +98,10 @@ retrospective has neither a writable checkout nor a review loop, and
 whole-file dumps from a metrics context produced bad PRs. Intelligence
 markdown and runner code live in the same repository, so
 `dispatch_improvement_job` can carry several approved findings in one
-call; the child planner keeps them in one PR when they are one story.
-`workflows/oss-contribution/workflow.md` clones a fork and opens the
-pull request upstream.
+call, each with a structured briefing. The child planner keeps them in
+one PR when they are one story.
+`workflows/oss-contribution/workflow.md` plans, codes, verifies
+(out-of-band test/wording gate), then opens the pull request upstream.
 
 ## Output
 
@@ -113,9 +123,11 @@ pull request upstream.
   instead of guessing. An approval that names no finding ids is still an
   approval — of the whole report; a missing one is not.
 - **Evidence or it does not ship.** A finding with fewer than two
-  citing jobs is an anecdote; anecdotes stay in the report. Access to the
-  source does not change this: something noticed by reading code, with no
-  run behind it, is a code review and belongs to a different workflow.
+  citing jobs is an anecdote; anecdotes stay in the report. The only
+  exception is an evidence-pipeline defect (the report or cluster schema
+  itself is broken), which may cite one job. Access to the source does
+  not change this: something noticed by reading code, with no run behind
+  it, is a code review and belongs to a different workflow.
 - **Tiers gate where a finding goes, not whether it is reported.** Every
   destination refuses in code when its tier is off — including
   `propose_change` for the local layers. A finding the run cannot ship is

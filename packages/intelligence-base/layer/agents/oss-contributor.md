@@ -33,9 +33,12 @@ One phase, `contribution`. The job completes when you end your turn.
 ### 1. Read what the coder produced
 
 `get_artifacts({ phase: "coding" })` and take the `pr-preview`: the branch
-name, the proposed title, and the proposed body. Read the diff on that
-branch before you accept its description — the preview is a claim about
-the change, and you are the last reader before it becomes public.
+name, the proposed title, and the proposed body. Then
+`get_artifacts({ phase: "verification" })` and take `review-summary` —
+that is the gate. If verification is missing or `verdict` is not `pass`,
+`escalate` rather than opening the PR. Read the diff on that branch
+before you accept its description — the preview is a claim about the
+change, and you are the last reader before it becomes public.
 
 If the branch and the description disagree, or the diff has grown beyond
 the issue (unrelated files, formatting churn, an opportunistic refactor),
@@ -78,6 +81,9 @@ Write the body for a maintainer with no context on this install:
 - what this change does, and why this way
 - how it was verified — the test that fails without it, the suite that
   passes with it
+- the predicted metric from the briefing (`name` should `direction`, with
+  baseline), so a later retrospective can score whether this PR worked
+- what to revert if that scorecard says the metric regressed
 - `Fixes #<issue>` on its own line for **each** finding this PR
   implements (from `params.findings`), so those issues close on merge.
   Do not `Fixes` an issue whose finding you escalated away.

@@ -411,7 +411,7 @@ export function createCoroMcpServer(
 
       tool(
         'list_jobs',
-        'List past jobs for cross-job analysis, newest first. Returns one compact row per job: status, final phase, cost, escalation flag, work-item loop counts, and `reworkPhases` — phases that ran more often than the workflow required, with the cost of the excess. Note that a phase running once per work item, plus once more per approval, is expected and is NOT reported as rework. Pass `scope: "retrospective"` to list past retrospective runs instead (use this to avoid re-proposing findings that were already shipped or rejected). Retrospective jobs only.',
+        'List past jobs for cross-job analysis, newest first. Returns one compact row per job: status, final phase, cost, token/cache totals, escalation flag, work-item loop counts, `reworkCostUsd`, `reworkPhases`, and `topFailedTool` when a ledger exists. A phase running once per work item, plus once more per approval, is expected and is NOT reported as rework. Pass `scope: "retrospective"` to list past retrospective runs (use this to score prior remedies, not just to avoid duplicates). Retrospective jobs only.',
         {
           limit: z.number().optional().describe('How many jobs to return (default 20, max 100).'),
           status: z.string().optional().describe('Filter to one lifecycle status, e.g. "complete" or "escalated".'),
@@ -424,7 +424,7 @@ export function createCoroMcpServer(
 
       tool(
         'get_job_report',
-        'Read an aggregated report for one past job. `phases[]` gives per-phase cost, duration and turns, split into `workItemsHandled` (expected progression), `checkpointResumeRuns` (the re-entry after a developer approval), and `reworkRuns` / `reworkCostUsd` (loops with no structural explanation). `phaseRuns[]` lists every execution in order with the same attribution, so an avoidable-cost claim can name the runs it counted. Also returns work-item loop counts, escalation reason, insights, PR open→merge latency, and artefacts. Attributions are derived from work-item stamps and the workflow\'s checkpoints, not recorded reasons — they deliberately undercount rework rather than invent it. Identifiers are replaced with stable aliases (repo-A, ticket-ref-1) by default; pass `raw: true` only when you need real names for local reasoning — never quote raw values into anything published. Retrospective jobs only.',
+        'Read an aggregated report for one past job. `phases[]` gives per-phase cost, tokens, duration and turns, split into `workItemsHandled` (expected progression), `checkpointResumeRuns` (the re-entry after a developer approval), and `reworkRuns` / `reworkCostUsd` (loops with no structural explanation). `phaseRuns[]` lists every execution with the same attribution (`recorded` when the snapshot was stamped, otherwise derived). Also returns a tool histogram, intelligence provenance, work-item loop counts, escalation reason, insights, PR latency, and artefacts. Identifiers are replaced with stable aliases by default; pass `raw: true` only for local reasoning. Retrospective jobs only.',
         {
           jobId: z.string().describe('Job id from list_jobs.'),
           raw: z.boolean().optional().describe('Return unsanitised identifiers. Default false.'),
@@ -443,6 +443,28 @@ export function createCoroMcpServer(
           raw: z.boolean().optional().describe('Return unsanitised identifiers. Default false.'),
         },
         h.get_job_log_excerpts,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'cluster_window',
+        'Mechanically cluster the job window: repeated error classes, insight categories, tool failures, cost/token outliers versus the median of the same workflow, successful vs failed siblings, and a scorecard of prior retrospective remedies. Call this before forming findings — do not group errors by eyeballing log tails. Retrospective jobs only.',
+        {
+          limit: z.number().optional().describe('Window size. Defaults to params.jobWindow (5–100).'),
+          since: z.string().optional().describe('ISO timestamp; only jobs created at or after this are clustered.'),
+        },
+        h.cluster_window,
+        { annotations: { readOnlyHint: true } },
+      ),
+
+      tool(
+        'get_job_trace_summary',
+        'Distilled trace for one past job: anti-pattern labels (search-loop, same-tool-fail, verify-skip, zero-cost-park, cache-blowup), a capped event skeleton, tool histogram, and intelligence provenance. Use after cluster_window when a candidate needs a cause, not a transcript. Retrospective jobs only.',
+        {
+          jobId: z.string().describe('Job id from list_jobs or cluster_window.'),
+          raw: z.boolean().optional().describe('Return unsanitised identifiers. Default false.'),
+        },
+        h.get_job_trace_summary,
         { annotations: { readOnlyHint: true } },
       ),
 
@@ -468,7 +490,8 @@ export function createCoroMcpServer(
             .object({
               category: z.string().describe('Finding category, e.g. "base-intelligence" or "runner-code".'),
               title: z.string().describe('Finding title, exactly as recorded in the findings artefact.'),
-              targetPaths: z.array(z.string()).optional().describe('Repo-relative paths the finding points at.'),
+              targetPaths: z.array(z.string()).optional().describe('Repo-relative paths the finding points at. For a rootCause group, the union across its members.'),
+              rootCause: z.string().optional().describe('Set when the finding shares a rootCause with others — the group files one issue, so search for the group.'),
             })
             .optional()
             .describe('Fingerprint search — preferred. The tool derives the fingerprint; do not invent one.'),
@@ -490,7 +513,8 @@ export function createCoroMcpServer(
             category: z.string(),
             title: z.string(),
             targetPaths: z.array(z.string()).optional(),
-          }).describe('The finding this issue reports — same values you passed to upstream_search.'),
+            rootCause: z.string().optional(),
+          }).describe('The finding this issue reports — same values you passed to upstream_search. One issue per rootCause group, not per symptom.'),
         },
         h.upstream_create_issue,
       ),
@@ -507,7 +531,7 @@ export function createCoroMcpServer(
 
       tool(
         'dispatch_improvement_job',
-        'Hand approved upstream findings to one implementation job that writes the fix. Use this for `base-intelligence` and `runner-code` findings after filing their issues — not for tenant findings. Do not write the files yourself: you have no build or review loop, and your context is aggregated metrics. One call is one child job; put coupled findings (a runner change plus the agent text that describes it, or anything sharing files) in the same `items` list so the planner can keep them in one PR. Split into another call only when the groups cannot share a PR. Each item\'s description is that finding\'s only briefing. Capped per run. Retrospective jobs only.',
+        'Hand approved upstream findings to one implementation job that writes the fix. Use this for `base-intelligence` and `runner-code` findings after filing their issues — not for tenant findings. Do not write the files yourself. Prefer a structured `briefing` per item (behaviour, files, verification); `description` is the fallback for a child that has never seen this retrospective. One call is one child job. Capped per run. Retrospective jobs only.',
         {
           items: z
             .array(z.object({
@@ -515,10 +539,37 @@ export function createCoroMcpServer(
               category: z.enum(['base-intelligence', 'runner-code']).describe('Must match the finding. Gates the destination tier.'),
               issueNumber: z.number().describe('Upstream issue this item fixes. File it first.'),
               title: z.string().describe('One line, problem-first. No identifiers.'),
-              description: z.string().describe(
-                'Briefing for an agent that has never seen your analysis: observed behaviour, ' +
-                'suspected cause, files to look at, and how to verify. Aliases only.',
+              description: z.string().optional().describe(
+                'Fallback briefing if `briefing` is omitted. The child job starts with no other analysis.',
               ),
+              rootCause: z.string().optional().describe(
+                'Copy from the finding. Items sharing a rootCause become one work item and one change.',
+              ),
+              briefing: z.object({
+                behaviourNow: z.string(),
+                behaviourWanted: z.string(),
+                evidence: z.string(),
+                targetPaths: z.array(z.string()).min(1),
+                revisionSha: z.string().optional(),
+                verified: z.boolean(),
+                failingTest: z.string().optional().describe('Required for runner-code.'),
+                neighbouringWording: z.string().optional().describe('Required for base-intelligence.'),
+                outOfScope: z.array(z.string()).optional(),
+                predictedMetric: z.object({
+                  name: z.string(),
+                  direction: z.enum(['decrease', 'increase', 'eliminate']),
+                  baseline: z.number().optional(),
+                }).optional(),
+              }).optional(),
+              evidencePack: z.object({
+                antiPatterns: z.array(z.string()).optional(),
+                toolFailures: z.array(z.object({
+                  toolName: z.string(),
+                  errorClass: z.string(),
+                  count: z.number(),
+                })).optional(),
+                grepHits: z.array(z.string()).optional(),
+              }).optional(),
             }))
             .min(1)
             .describe('Approved findings that still need a fix. One call is one contribution job.'),
@@ -543,7 +594,7 @@ export function createCoroMcpServer(
 
       tool(
         'propose_change',
-        'Ship a self-improvement as a PR against the tenant intelligence repo or the project repo\'s .coro/ overlay. ONE call per (job, layer) — the runner rejects a second call. Prefer the `entries` field for memory updates: it serialises into the canonical short-form layout and enforces hard line budgets (pitfall ≤ 8 lines, pattern ≤ 10 lines).',
+        'Ship a self-improvement as a PR against the tenant intelligence repo or the project repo\'s .coro/ overlay. ONE call per (job, layer) — the runner rejects a second call. Prefer `deltas` for a section-level markdown patch and `entries` for memory updates (pitfall ≤ 8 lines, pattern ≤ 10 lines). Do not rewrite a whole agent file when a heading-level insert will do.',
         {
           type: z.enum([
             'new-tool', 'modify-tool', 'new-workflow', 'modify-workflow',
@@ -554,7 +605,14 @@ export function createCoroMcpServer(
           rationale: z.string().describe('Why this change is worth merging — drives the PR description and future list_proposals previews. Two sentences max.'),
           description: z.string().describe('Implementation details / what the diff does. Be terse.'),
           files: z.array(z.object({ path: z.string(), content: z.string() })).optional()
-            .describe('Multi-file payload. Paths are relative to the target layer\'s root.'),
+            .describe('Multi-file payload. Paths are relative to the target layer\'s root. Prefer `deltas` for a section-level edit.'),
+          deltas: z.array(z.object({
+            path: z.string(),
+            heading: z.string().optional().describe('Markdown heading text without hashes. Required unless mode is append-to-file.'),
+            mode: z.enum(['insert-after', 'replace-section', 'append']),
+            content: z.string(),
+          })).optional()
+            .describe('Section-level patches applied against the writer clone. Prefer this over shipping a rewritten file.'),
           entries: z.array(z.object({
             file: z.string().describe('Memory file the entry lands in (memory/* or .coro/memory/*).'),
             kind: z.enum(['pitfall', 'pattern']),

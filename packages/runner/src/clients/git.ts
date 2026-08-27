@@ -124,7 +124,13 @@ export class GitClient {
   }
 
   private git(dir: string) {
-    return simpleGit({ baseDir: dir, ...gitEnv() }).env(GIT_SPAWN_ENV)
+    return simpleGit({
+      baseDir: dir,
+      ...gitEnv(),
+      // simple-git ≥3.36 treats GIT_ASKPASS / core.askpass as unsafe.
+      // We only clear them so a missing credential fails fast.
+      unsafe: { allowUnsafeProtocolOverride: false, allowUnsafeAskPass: true },
+    }).env(GIT_SPAWN_ENV)
   }
 }
 

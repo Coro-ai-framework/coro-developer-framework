@@ -10,9 +10,11 @@ import {
   categoryTone,
   destinationLabel,
   destinationTone,
+  groupFindings,
   outcomesByFinding,
   severityTone,
 } from '../../lib/retrospective'
+import type { FindingGroup } from '../../lib/retrospective'
 import type { RetrospectiveFinding, RetrospectiveOutcome } from '../../types'
 
 interface FindingsListProps {
@@ -50,6 +52,7 @@ export default function FindingsList({
     () => new Set(defaultExpandFirst && findings[0] ? [findings[0].id] : []),
   )
   const outcomeFor = outcomesByFinding(outcomes)
+  const groups = groupFindings(findings)
 
   const toggle = (id: string) => {
     setExpanded(prev => {
@@ -60,20 +63,114 @@ export default function FindingsList({
     })
   }
 
+  const cardsFor = (group: FindingGroup, selectable: boolean) =>
+    group.findings.map(finding => (
+      <FindingCard
+        key={finding.id}
+        finding={finding}
+        outcome={outcomeFor.get(finding.id)}
+        expanded={expanded.has(finding.id)}
+        onToggle={() => toggle(finding.id)}
+        approved={selectable && approved ? approved.has(finding.id) : undefined}
+        onToggleApproved={
+          selectable && onToggleApproved ? () => onToggleApproved(finding.id) : undefined
+        }
+        selectionDisabled={selectionDisabled}
+      />
+    ))
+
   return (
     <div className={cn('space-y-2', className)}>
-      {findings.map(finding => (
-        <FindingCard
-          key={finding.id}
-          finding={finding}
-          outcome={outcomeFor.get(finding.id)}
-          expanded={expanded.has(finding.id)}
-          onToggle={() => toggle(finding.id)}
-          approved={approved ? approved.has(finding.id) : undefined}
-          onToggleApproved={onToggleApproved ? () => onToggleApproved(finding.id) : undefined}
-          selectionDisabled={selectionDisabled}
-        />
-      ))}
+      {groups.map(group => {
+        // A lone finding is its own decision; a root-cause group is one
+        // decision covering every symptom under it.
+        if (group.findings.length === 1) return cardsFor(group, true)
+
+        return (
+          <RootCauseGroup
+            key={group.key}
+            group={group}
+            approved={approved}
+            onToggleApproved={onToggleApproved}
+            selectionDisabled={selectionDisabled}
+          >
+            {cardsFor(group, false)}
+          </RootCauseGroup>
+        )
+      })}
+    </div>
+  )
+}
+
+interface RootCauseGroupProps {
+  group: FindingGroup
+  approved?: ReadonlySet<string>
+  onToggleApproved?: (findingId: string) => void
+  selectionDisabled: boolean
+  children: React.ReactNode
+}
+
+/**
+ * The symptoms of one defect, under one switch.
+ *
+ * The switch writes every member id, because the approval message the analyst
+ * reads is still a flat list of finding ids — grouping changes what the
+ * developer decides, not the contract the shipping phase parses.
+ */
+function RootCauseGroup({
+  group,
+  approved,
+  onToggleApproved,
+  selectionDisabled,
+  children,
+}: RootCauseGroupProps) {
+  const selectable = approved !== undefined && onToggleApproved !== undefined
+  const groupApproved = selectable ? group.findings.every(f => approved.has(f.id)) : undefined
+
+  const toggleGroup = () => {
+    if (!onToggleApproved || !approved) return
+    // Any partial state resolves to "approve everything", so the switch is
+    // never a no-op when some members are already on.
+    const turningOn = !group.findings.every(f => approved.has(f.id))
+    for (const finding of group.findings) {
+      if (approved.has(finding.id) !== turningOn) onToggleApproved(finding.id)
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        'rounded-xl border bg-overlay/20 p-2',
+        selectable && !groupApproved ? 'border-line/60 opacity-60' : 'border-line',
+      )}
+    >
+      <div className="flex items-start gap-2 px-1 pb-2 pt-1">
+        {selectable ? (
+          <Switch
+            checked={groupApproved}
+            onCheckedChange={toggleGroup}
+            disabled={selectionDisabled}
+            size="sm"
+            ariaLabel={
+              groupApproved
+                ? `Skip all ${group.findings.length} findings for ${group.rootCause}`
+                : `Approve all ${group.findings.length} findings for ${group.rootCause}`
+            }
+          />
+        ) : null}
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] uppercase tracking-[0.16em] text-fg-subtle">
+              One defect, {group.findings.length} symptoms
+            </span>
+            <span className="font-mono text-[11px] text-fg-muted">{group.rootCause}</span>
+          </div>
+          <p className="text-xs leading-5 text-fg-subtle">
+            These ship as a single change, so they are approved or skipped together.
+          </p>
+        </div>
+      </div>
+      <div className="space-y-2">{children}</div>
     </div>
   )
 }
@@ -138,6 +235,11 @@ function FindingCard({
               <Badge variant={categoryTone(finding.category)} title={categoryDescription(finding.category)}>
                 {categoryLabel(finding.category)}
               </Badge>
+              {finding.verification ? (
+                <Badge variant={finding.verification === 'verified' ? 'success' : 'warning'} className="capitalize">
+                  {finding.verification}
+                </Badge>
+              ) : null}
               <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
                 {finding.evidence.length} {finding.evidence.length === 1 ? 'run' : 'runs'}
               </span>
@@ -160,6 +262,19 @@ function FindingCard({
           {finding.proposedRemedy ? (
             <Section title="Proposed fix">
               <p className="whitespace-pre-wrap text-sm leading-6 text-fg">{finding.proposedRemedy}</p>
+            </Section>
+          ) : null}
+
+          {finding.predictedMetric ? (
+            <Section title="Predicted metric">
+              <p className="text-sm leading-6 text-fg-muted">
+                <span className="font-mono text-xs text-fg">{finding.predictedMetric.name}</span>
+                {' should '}
+                {finding.predictedMetric.direction}
+                {finding.predictedMetric.baseline !== undefined
+                  ? ` (baseline ${finding.predictedMetric.baseline})`
+                  : ''}
+              </p>
             </Section>
           ) : null}
 
@@ -197,6 +312,24 @@ function FindingCard({
               </ul>
             )}
           </Section>
+
+          {finding.counterEvidence?.length ? (
+            <Section title="Did not show it">
+              <ul className="space-y-2">
+                {finding.counterEvidence.map(item => (
+                  <li key={`${item.jobId}:${item.detail}`} className="space-y-1">
+                    <Link
+                      to={`/jobs/${item.jobId}`}
+                      className="font-mono text-xs text-accent-300 hover:underline"
+                    >
+                      {item.jobId}
+                    </Link>
+                    {item.detail ? <p className="text-sm leading-6 text-fg-muted">{item.detail}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          ) : null}
 
           {outcome ? <OutcomeSection outcome={outcome} /> : null}
         </div>

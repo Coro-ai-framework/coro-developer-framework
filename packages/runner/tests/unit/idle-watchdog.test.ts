@@ -215,4 +215,50 @@ describe('createPhaseIdleWatchdog', () => {
 
     watchdog.stop()
   })
+
+  it('does not nudge or park while an MCP tool is in flight', async () => {
+    const job = makeJob()
+    const backend = makeStateBackend(job)
+    const interrupt = vi.fn().mockResolvedValue(undefined)
+    const controller: ExecutorSessionController = {
+      interrupt,
+      getSteeringState: () => ({ inFlightMcpTool: 'mcp__coro__scm_clone_repo' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+    }
+
+    let lastActivityAt = Date.now() - 60_000
+    let nudgeCount = 0
+
+    const watchdog = createPhaseIdleWatchdog({
+      config: {
+        enabled: true,
+        idleThresholdMs: 1_000,
+        maxNudges: 2,
+        checkIntervalMs: 500,
+        stopGraceMs: 30_000,
+      },
+      stateBackend: backend,
+      logger: pino({ level: 'silent' }),
+      getJob: () => backend._job(),
+      getExpectedStatus: () => 'coding',
+      getDeveloperInput: () => ({ push: () => {}, close: () => {} }),
+      getController: () => controller,
+      getLastActivityAt: () => lastActivityAt,
+      setLastActivityAt: (ms) => { lastActivityAt = ms },
+      getNudgeCount: () => nudgeCount,
+      setNudgeCount: (n) => { nudgeCount = n },
+      isActed: () => false,
+      setActed: () => {},
+    })
+
+    watchdog.start()
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(nudgeCount).toBe(0)
+    expect(interrupt).not.toHaveBeenCalled()
+    expect(backend._job().status).toBe('coding')
+    expect(Date.now() - lastActivityAt).toBeLessThan(2_000)
+
+    watchdog.stop()
+  })
 })

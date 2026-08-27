@@ -229,6 +229,17 @@ export interface FindingEvidence {
   metrics?: Record<string, unknown>
 }
 
+export interface FindingCounterEvidence {
+  jobId: string
+  detail: string
+}
+
+export interface PredictedMetric {
+  name: string
+  direction: 'decrease' | 'increase' | 'eliminate'
+  baseline?: number
+}
+
 export interface RetrospectiveFinding {
   id: string
   title: string
@@ -237,6 +248,14 @@ export interface RetrospectiveFinding {
   evidence: FindingEvidence[]
   proposedRemedy?: string
   targetPaths?: string[]
+  predictedMetric?: PredictedMetric
+  verification?: 'verified' | 'hypothesis'
+  counterEvidence?: FindingCounterEvidence[]
+  /** Shared defect behind several findings — they ship as one change. */
+  rootCause?: string
+  /** Separate defects that edit the same files and must ship together. */
+  deliveryGroup?: string
+  independentOf?: Array<{ findingId: string; reason: string }>
 }
 
 export interface RetrospectiveOutcome {

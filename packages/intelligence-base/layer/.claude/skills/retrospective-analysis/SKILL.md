@@ -44,22 +44,14 @@ Quote it — "$11 of avoidable rework across 4 jobs" is what makes a
 maintainer act. If that sum is what puts the finding over the `high`
 severity bar, say the number in the finding, not just in your reasoning.
 
-**The attributions are derived, not recorded — check them before you
-build on them.** A run is labelled `rework` when nothing structural
-explains it, and the only thing the derivation has to reason from is the
-work-item stamp on each run. Two kinds of run carry no usable stamp, so
-they are labelled `rework` when nothing went wrong. Both are visible in
-`phaseRuns[]`:
+**The attributions may be recorded or derived.** New snapshots carry
+`attribution` and `parkReason` stamped at append time (`attributionSource:
+"recorded"`). Older jobs still derive. Prefer recorded values. A
+`parkReason` on a zero-cost run is a park, not a loop — you no longer
+need to grep logs to see that when the field is present.
 
-- **A `rework` run with `costUsd: 0`.** A run that ends by parking — on a
-  PR merge, on developer input — is recorded with no cost. Free rework is
-  a park and a resume, not a loop.
-- **A run with no `workItem`.** Phases that run before work items exist
-  (`spec-writing`, `planning`) have nothing to key on, so all their
-  repeats collide into one bucket. Treat those as unattributed.
-
-Where either applies, confirm the cause in the log before you write the
-finding:
+Where a derived run still looks wrong, confirm in the log before you write
+the finding:
 
 ```
 get_job_log_excerpts({ jobId, pattern: "parked|phase advanced" })
@@ -79,12 +71,11 @@ jobs escalating on "could not resolve reviewer" is one finding.
 
 ### Recurring tool or build failures
 
-`get_job_log_excerpts` defaults to error-ish lines. Normalise each line
-before grouping: strip timestamps, ids, paths, and line numbers, then
-compare. `scm_get_pr_status failed: 404` in six jobs is a finding;
-six differently-worded one-off errors are not.
+`cluster_window` groups tool-ledger failures and normalised error classes
+for you. Do not group errors by eyeballing log tails. Use
+`get_job_log_excerpts` only as drill-down after the cluster names a class.
 
-**Threshold:** same normalised error in ≥ 3 jobs.
+**Threshold:** same cluster key in ≥ 3 jobs.
 
 ### Cost and turn outliers
 
@@ -111,13 +102,94 @@ wall unprompted. Treat a repeat as high severity even at 2 jobs.
 
 ## 2. Evidence requirements
 
+Call **`cluster_window`** before forming any finding. It is the grouping
+step; your job is to name the behaviour and pick a layer. Findings that
+were not visible in the cluster (or in a `get_job_trace_summary` follow-up)
+are code review, not retrospective.
+
 Every finding carries `evidence[]` with **at least two entries**, each
-naming a real `jobId` and a concrete number pulled from a report. No
-number, no finding.
+naming a real `jobId` and a concrete number pulled from a report or
+cluster. No number, no finding.
+
+**Exception — evidence-pipeline defects.** If the report, ledger, or
+cluster schema itself is broken, one citing job is enough and severity is
+`high`. That is the only one-job finding.
+
+Every finding also carries:
+
+- `counterEvidence[]` — jobs in the window that did **not** show it. Empty
+  is allowed only when every job in the window hit it; say so.
+- `verification`: `verified` after a grep against `_intelligence/` /
+  `_upstream/`, otherwise `hypothesis`.
+- `predictedMetric` — `{ name, direction, baseline }` so the next
+  retrospective can score the remedy. **The name must come from the
+  vocabulary below**; the runner rejects the report otherwise.
 
 Write evidence so a reader who cannot see your tool output can still
 check it: "coding reworked 3 times beyond its per-work-item runs, $3.40"
 — not "looped a lot".
+
+### The predicted-metric vocabulary
+
+An invented metric name is not a prediction — it scores `unverifiable`
+next month and the remedy is never checked. Every name below is a key you
+can read straight off `cluster_window`, so the baseline you record and the
+number the next run computes are the same quantity by construction.
+
+| `name` | Counts |
+|---|---|
+| `costUsd` | Total spend across the window. |
+| `escalationCount` | Jobs that escalated. |
+| `<phase>.runs` | Attributed runs of a phase, e.g. `coding.runs`. |
+| `<phase>.reworkRuns` | Rework runs only — the subtraction in §1. |
+| `<phase>.reworkCostUsd` | Dollars spent on those rework runs. |
+| `insight:<category>` | Insights in a category — the `key` of a `cluster_window.insights` row. |
+| `toolFail:<tool>` | Failed calls of one tool. |
+| `toolFail:<tool>\|<errorClass>` | The `key` of a `cluster_window.toolFailures` row, verbatim. |
+
+Take the `baseline` from the same cluster row's `count`. Most findings are
+one of the last three forms: a finding evidenced by repeated insights
+predicts `insight:<category>`, and one evidenced by a failing tool
+predicts `toolFail:<tool>`. Reach for `<phase>.reworkRuns` only when the
+evidence really was rework arithmetic.
+
+Free-text signals — escalation wording, log lines — have no metric on
+purpose: they are normalised and aliased before you see them, so the same
+failure can group differently between two windows. Use `escalationCount`
+or the tool that failed.
+
+### One defect, one finding
+
+§1 lists six signals, and **one defect usually trips several of them**. A
+tool that keeps failing is a tool-failure cluster, *and* a cost outlier,
+*and* rework on the phase that calls it, *and* a repeated insight. Working
+down the threshold table produces four candidates. Filing four findings
+then produces four upstream issues and four pull requests for one bug.
+
+So before you write the report, look at your candidates against each other.
+Two shapes recur:
+
+- **One defect, several symptoms.** They cite mostly the same jobs, or they
+  point at the same function. Give them a shared `rootCause` slug. They
+  keep their own ids and their own evidence — the developer still sees each
+  symptom — but they ship as one issue, one work item, one PR. A group
+  makes **one** prediction: every member carries the same
+  `predictedMetric`, and every member has the same `category`.
+- **Different defects, same file.** Unrelated problems that happen to edit
+  the same agent or module. Give them a shared `deliveryGroup` and dispatch
+  them together, or two pull requests will collide on one file. They keep
+  separate remedies and separate metrics.
+
+The runner checks this mechanically and refuses a report that ignores it:
+findings in the same category that share target paths, or that draw more
+than half their evidence from the same jobs, must declare which shape they
+are. If neither fits — the overlap really is coincidence — say so in
+`independentOf` with a reason. The check is arithmetic and it cannot tell
+whether two things are one story; that judgement is yours, and it only
+asks that you make it out loud.
+
+When merging is the honest answer, **merge**: write one finding whose
+evidence is the union, rather than two findings wearing the same slug.
 
 ## 3. Categorisation
 
@@ -135,9 +207,11 @@ Two tests that resolve most ambiguity:
 - **Would another company hit this?** No → `tenant-intelligence`.
 - **Could a markdown edit fix it?** No → `runner-code`.
 
-When a finding could plausibly be either intelligence or code, prefer
-intelligence. A markdown change is cheaper to review, faster to land,
-and reversible.
+When a tool error, state transition, or missing capability is involved,
+categorise **`runner-code` first** and name the test that should fail
+today. Intelligence changes are for procedure gaps, and they are
+section-level patches — not a rewritten `coder.md`. A markdown bandaid
+that leaves the bug live will be scored `still-firing` next month.
 
 ## 4. Verify against the code — then name every copy
 
@@ -236,6 +310,8 @@ Start looking here:
 | Behaviour | Lives in |
 |---|---|
 | `list_jobs`, `get_job_report`, `get_job_log_excerpts` | `packages/runner/src/tools/job-history.ts` |
+| `cluster_window`, `get_job_trace_summary`, prior-remedy scores | `packages/runner/src/tools/job-trace.ts` |
+| Phase attribution, tool ledgers | `packages/runner/src/jobs/phase-observability.ts` |
 | Alias/leak checking of anything public | `packages/runner/src/tools/sanitize.ts` |
 | `upstream_*`, `dispatch_improvement_job` | `packages/runner/src/tools/upstream.ts`, `upstream-source.ts` |
 | Retrospective dispatch, findings/outcome parsing | `packages/runner/src/jobs/retrospective.ts` |
@@ -289,8 +365,11 @@ findings are about. Two kinds are `high` whatever they cost:
   retrospectives with `list_jobs({ scope: "retrospective" })`, and, for
   anything going upstream, the code in `_upstream/`.
 
-  Seeing the remedy in the code is **not** enough to clear a finding. Two
-  things have to hold as well, and both have been got wrong:
+  Seeing the remedy in the code is **not** enough to clear a finding.
+  `cluster_window.priorRemedies` is the scorecard: `still-firing` and
+  `regressed` mean last month's PR did not work; `unverifiable` means it
+  had no predicted metric and is **not** done. Two further things have
+  to hold as well, and both have been got wrong:
 
   - **The runs have to predate it.** The snapshot cannot tell you when a
     line landed — it is a depth-1 tree with no history — so unless a past

@@ -199,18 +199,57 @@ export function isolatedGitEnv(extra?: Record<string, string>): Record<string, s
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: nullDevice,
     ...gitCredentialHelperSpawnEnv(),
+    // GIT_CONFIG_GLOBAL=/dev/null also drops the operator's http.timeout /
+    // lowSpeed* settings. Without these, a stalled TLS session (large repo
+    // over a slow tunnel) hangs forever and the agent looks stuck on
+    // scm_clone_repo. 1 KiB/s for 60s is "no progress", not "slow but alive".
+    GIT_CONFIG_COUNT: '4',
+    GIT_CONFIG_KEY_2: 'http.lowSpeedLimit',
+    GIT_CONFIG_VALUE_2: '1000',
+    GIT_CONFIG_KEY_3: 'http.lowSpeedTime',
+    GIT_CONFIG_VALUE_3: '60',
     ...extra,
   }
 }
 
-export function createIsolatedGit(cwd: string, extraEnv?: Record<string, string>): SimpleGit {
+/**
+ * simple-git ≥3.36 scans spawn env / `-c` keys and throws unless each
+ * class of override is opted into. `isolatedGitEnv` uses all of these:
+ *
+ *   GIT_ASKPASS=''                  → allowUnsafeAskPass (clear, not redirect)
+ *   GIT_CONFIG_GLOBAL=/dev/null     → allowUnsafeConfigPaths
+ *   GIT_CONFIG_COUNT + KEY/VALUE    → allowUnsafeConfigEnvCount
+ *   credential.helper via that env  → allowUnsafeCredentialHelper
+ *
+ * Protocol override stays off. Dropping any of the four opt-ins makes
+ * `scm_clone_repo` fail before git is spawned, with
+ * `Use of "GIT_CONFIG_COUNT" is not permitted…` (or the credential.helper
+ * variant) — which looks like a sandbox denial to the agent.
+ */
+export const isolatedGitUnsafeOptions: SimpleGitOptions['unsafe'] = {
+  allowUnsafeProtocolOverride: false,
+  allowUnsafeAskPass: true,
+  allowUnsafeConfigPaths: true,
+  allowUnsafeConfigEnvCount: true,
+  allowUnsafeCredentialHelper: true,
+}
+
+export interface IsolatedGitSpawnOptions {
+  /** Kill the git child if it emits no stdout/stderr for this many ms. */
+  timeoutMs?: number
+  progress?: SimpleGitOptions['progress']
+}
+
+export function createIsolatedGit(
+  cwd: string,
+  extraEnv?: Record<string, string>,
+  spawn?: IsolatedGitSpawnOptions,
+): SimpleGit {
   const opts: Partial<SimpleGitOptions> = {
     baseDir: cwd,
-    unsafe: {
-      allowUnsafeProtocolOverride: false,
-      allowUnsafeAskPass: true,
-      allowUnsafeConfigPaths: true,
-    } as unknown as SimpleGitOptions['unsafe'],
+    unsafe: isolatedGitUnsafeOptions,
+    ...(spawn?.timeoutMs ? { timeout: { block: spawn.timeoutMs } } : {}),
+    ...(spawn?.progress ? { progress: spawn.progress } : {}),
   }
   return simpleGit(opts).env(isolatedGitEnv(extraEnv))
 }

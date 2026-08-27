@@ -10,6 +10,7 @@ import {
   routeFile,
   assertProposalPathsAreMarkdown,
   validateProposalFiles,
+  applyMarkdownDelta,
 } from '../../src/tools/self-improvement'
 import { JobType, type Job, type Proposal } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
@@ -558,6 +559,52 @@ describe('proposeChange', () => {
     ).resolves.toBeTruthy()
   })
 
+  it('refuses the contribution child of a run that disabled the tenant destination', async () => {
+    // The child is an ordinary `job` by type, so without the dispatch marker
+    // the scoping the developer chose would be undone one hop later.
+    const ctx = makeCtx({
+      job: {
+        type: JobType.Job,
+        workflowPath: 'workflows/oss-contribution/workflow.md',
+        params: {
+          repoSlug: 'my-repo',
+          retrospectiveJobId: 'coro-retrospective-1',
+          tiers: { tenant: false, upstreamIntelligence: false, upstreamCode: true },
+        },
+      },
+    })
+
+    await expect(
+      proposeChange(
+        { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
+          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+        ctx,
+      ),
+    ).rejects.toThrow(/"tenant" destination disabled/)
+  })
+
+  it('allows a contribution child whose parent kept the tenant destination', async () => {
+    const ctx = makeCtx({
+      job: {
+        type: JobType.Job,
+        workflowPath: 'workflows/oss-contribution/workflow.md',
+        params: {
+          repoSlug: 'my-repo',
+          retrospectiveJobId: 'coro-retrospective-1',
+          tiers: { tenant: true, upstreamIntelligence: false, upstreamCode: true },
+        },
+      },
+    })
+
+    await expect(
+      proposeChange(
+        { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
+          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+        ctx,
+      ),
+    ).resolves.toBeTruthy()
+  })
+
   it('leaves ordinary jobs alone, which carry no tiers at all', async () => {
     // The evaluator proposes on every job; a tier default must never gate it.
     const ctx = makeCtx()
@@ -646,5 +693,79 @@ describe('listProposals', () => {
     const result = await listProposals({}, ctx)
     expect(result.proposals[0].rationalePreview.length).toBeLessThan(longRationale.length)
     expect(result.proposals[0].rationalePreview.endsWith('…')).toBe(true)
+  })
+})
+
+describe('applyMarkdownDelta', () => {
+  const file = [
+    '# Guide',
+    '',
+    '## Cloning',
+    '',
+    'Existing clone step.',
+    '',
+    '## Pushing',
+    '',
+    'Existing push step.',
+    '',
+  ].join('\n')
+
+  it('inserts immediately after the named heading', () => {
+    const next = applyMarkdownDelta(file, {
+      path: 'SKILL.md',
+      heading: 'Cloning',
+      mode: 'insert-after',
+      content: '- Set HOME=$PWD before git clone.',
+    })
+    expect(next).toContain('- Set HOME=$PWD before git clone.')
+    expect(next.indexOf('## Cloning')).toBeLessThan(next.indexOf('- Set HOME=$PWD before git clone.'))
+    expect(next.indexOf('- Set HOME=$PWD before git clone.')).toBeLessThan(next.indexOf('Existing clone step.'))
+  })
+
+  it('replaces only the named section body', () => {
+    const next = applyMarkdownDelta(file, {
+      path: 'SKILL.md',
+      heading: 'Cloning',
+      mode: 'replace-section',
+      content: 'New clone step only.',
+    })
+    expect(next).toMatch(/## Cloning\n+New clone step only\.\n+## Pushing/)
+    expect(next).not.toContain('Existing clone step.')
+    expect(next).toContain('Existing push step.')
+  })
+
+  it('appends to the named section', () => {
+    const next = applyMarkdownDelta(file, {
+      path: 'SKILL.md',
+      heading: 'Pushing',
+      mode: 'append',
+      content: 'Also set GIT_DIR.',
+    })
+    expect(next.trimEnd()).toMatch(/Existing push step\.\n\nAlso set GIT_DIR\.$/)
+  })
+
+  it('appends to the file when no heading is given', () => {
+    const next = applyMarkdownDelta(file, {
+      path: 'SKILL.md',
+      mode: 'append',
+      content: '## Extra\n\nA new section.',
+    })
+    expect(next).toContain('Existing push step.')
+    expect(next).toContain('## Extra\n\nA new section.')
+  })
+
+  it('refuses a missing or duplicated heading', () => {
+    expect(() => applyMarkdownDelta(file, {
+      path: 'SKILL.md',
+      heading: 'Missing',
+      mode: 'replace-section',
+      content: 'x',
+    })).toThrow(/was not found/)
+    expect(() => applyMarkdownDelta('# A\n\n## Dup\n\none\n\n## Dup\n\ntwo\n', {
+      path: 'SKILL.md',
+      heading: 'Dup',
+      mode: 'replace-section',
+      content: 'x',
+    })).toThrow(/matches 2 times/)
   })
 })

@@ -26,10 +26,32 @@ import {
   type Job,
   type JobInput,
 } from '@coro-ai/cloud-protocol'
+import type { PredictedMetric, RetrospectiveTiers } from './retrospective'
 
 /** Categories this workflow will actually implement. Tenant findings stay on `propose_change`. */
 export const OSS_CONTRIBUTION_CATEGORIES = ['base-intelligence', 'runner-code'] as const
 export type OssContributionCategory = (typeof OSS_CONTRIBUTION_CATEGORIES)[number]
+
+/** Structured briefing the child planner/coder inherit. */
+export interface ImprovementBriefing {
+  behaviourNow: string
+  behaviourWanted: string
+  evidence: string
+  targetPaths: string[]
+  revisionSha?: string
+  verified: boolean
+  failingTest?: string
+  neighbouringWording?: string
+  outOfScope?: string[]
+  predictedMetric?: PredictedMetric
+}
+
+/** Distilled evidence from the retrospective — never raw transcripts. */
+export interface OssContributionEvidencePack {
+  antiPatterns?: string[]
+  toolFailures?: Array<{ toolName: string; errorClass: string; count: number }>
+  grepHits?: string[]
+}
 
 /** Finding identity plus the briefing the child inherits. */
 export interface OssContributionFinding {
@@ -41,6 +63,14 @@ export interface OssContributionFinding {
   title: string
   /** What to change and why — already sanitised, since it reaches a public PR. */
   description: string
+  /**
+   * Shared with the other findings that describe the same defect. The planner
+   * registers one work item per root cause, so symptoms of one bug become one
+   * change rather than one apiece.
+   */
+  rootCause?: string
+  briefing?: ImprovementBriefing
+  evidencePack?: OssContributionEvidencePack
 }
 
 export interface OssContributionRequest {
@@ -54,6 +84,8 @@ export interface OssContributionRequest {
   baseBranch: string
   /** Retrospective that dispatched this. */
   retrospectiveJobId: string
+  /** Destinations the dispatching run was launched with, carried to the child. */
+  tiers?: RetrospectiveTiers
   /** Approved findings this job is asked to implement. At least one. */
   findings: OssContributionFinding[]
 }
@@ -101,8 +133,17 @@ export function buildOssContributionJobInput(request: OssContributionRequest): J
       prTargetBranch: request.baseBranch,
       retrospectiveJobId: request.retrospectiveJobId,
       retrospectiveFindingId: primary.id,
+      // The developer scoped the dispatching run to certain destinations, and
+      // that scoping has to survive the hop. A child of a run launched with
+      // the tenant destination off must not be able to propose tenant changes
+      // just because it is an ordinary job.
+      ...(request.tiers ? { tiers: request.tiers } : {}),
       findings,
       epicAllowed: false,
+      // The coding checkpoint only parks when this is true. Without it
+      // the YAML flag is a no-op and the contribution phase opens the
+      // PR with no last look from this install.
+      interactive: true,
       // Upstream reviewers are not ours to assign — maintainers pick
       // themselves up. An empty list keeps `scm_create_pr` from defaulting
       // to this install's reviewers, who have no access to the repository.
@@ -139,6 +180,29 @@ export function contributionJobTitle(findings: ReadonlyArray<OssContributionFind
   return `${first.title} (+${findings.length - 1} more)`
 }
 
+export function assembleBriefingDescription(briefing: ImprovementBriefing): string {
+  const lines = [
+    `Today: ${briefing.behaviourNow.trim()}`,
+    `Wanted: ${briefing.behaviourWanted.trim()}`,
+    `Evidence: ${briefing.evidence.trim()}`,
+    `Files: ${briefing.targetPaths.join(', ')}`,
+    `Verified: ${briefing.verified ? 'yes' : 'no — treat file claims as hypotheses'}`,
+  ]
+  if (briefing.revisionSha) lines.push(`Revision: ${briefing.revisionSha}`)
+  if (briefing.failingTest) lines.push(`Failing test: ${briefing.failingTest}`)
+  if (briefing.neighbouringWording) lines.push(`Neighbouring wording: ${briefing.neighbouringWording}`)
+  if (briefing.outOfScope?.length) lines.push(`Out of scope: ${briefing.outOfScope.join('; ')}`)
+  if (briefing.predictedMetric) {
+    const baseline = briefing.predictedMetric.baseline !== undefined
+      ? `, baseline ${briefing.predictedMetric.baseline}`
+      : ''
+    lines.push(
+      `Predicted metric: ${briefing.predictedMetric.name} should ${briefing.predictedMetric.direction}${baseline}`,
+    )
+  }
+  return lines.join('\n')
+}
+
 /**
  * The child job's only briefing. Assembled here so the planner always
  * sees the same sections, and so a multi-finding dispatch cannot forget
@@ -160,19 +224,46 @@ export function buildContributionBriefing(findings: ReadonlyArray<OssContributio
     'Public writing: never name the dispatching install\'s repositories,',
     'tickets, customers, or people. The briefings below already use aliases.',
     '',
+    'Confirm each defect still exists on the fork before writing. If it does',
+    'not, drop that finding. For runner-code, the test named in the briefing',
+    'must fail on the base SHA and pass on your branch before you hand off.',
+    '',
   ]
 
-  const sections = findings.map((finding, index) =>
-    [
+  const sections = findings.map((finding, index) => {
+    const body = finding.briefing
+      ? assembleBriefingDescription(finding.briefing)
+      : finding.description.trim()
+    const pack = finding.evidencePack
+      ? [
+          '',
+          'Evidence pack:',
+          ...(finding.evidencePack.antiPatterns?.length
+            ? [`- anti-patterns: ${finding.evidencePack.antiPatterns.join(', ')}`]
+            : []),
+          ...(finding.evidencePack.toolFailures?.length
+            ? finding.evidencePack.toolFailures.map(row =>
+              `- tool failure: ${row.toolName} ${row.errorClass} ×${row.count}`)
+            : []),
+          ...(finding.evidencePack.grepHits?.length
+            ? finding.evidencePack.grepHits.map(hit => `- grep: ${hit}`)
+            : []),
+        ]
+      : []
+    return [
       `## ${index + 1}. ${finding.id} — ${finding.title}`,
       '',
       `Category: ${finding.category}`,
       `Issue: ${finding.issueUrl} (#${finding.issueNumber})`,
+      // Named per item rather than as a separate grouping section, so the
+      // planner reads the coupling on the finding it is deciding about.
+      ...(finding.rootCause ? [`Root cause: ${finding.rootCause} — one work item per root cause.`] : []),
       '',
-      finding.description.trim(),
+      body,
+      ...pack,
       '',
-    ].join('\n'),
-  )
+    ].join('\n')
+  })
 
   return `${header.join('\n')}${sections.join('\n')}`.trimEnd() + '\n'
 }

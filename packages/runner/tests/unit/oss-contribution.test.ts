@@ -65,6 +65,7 @@ describe('buildOssContributionJobInput', () => {
       epicAllowed: false,
       reviewers: [],
     })
+    expect(input.params.interactive).toBe(true)
     expect(input.params.description).toContain(CODE.description)
   })
 
@@ -106,6 +107,32 @@ describe('buildContributionBriefing', () => {
     expect(briefing).toContain('Issue: https://github.com/o/r/issues/46 (#46)')
     expect(briefing).toContain(INTEL.description)
     expect(briefing).toContain('## 2. finding-3 —')
+  })
+
+  it('renders a structured briefing and evidence pack when present', () => {
+    const withBriefing: OssContributionFinding = {
+      ...CODE,
+      briefing: {
+        behaviourNow: 'Retry drops the corrective prompt.',
+        behaviourWanted: 'Retry reapplies the last developer message.',
+        evidence: 'coding reworkRuns 4 vs 1 on two jobs',
+        targetPaths: ['packages/runner/src/jobs/runner.ts'],
+        verified: true,
+        failingTest: 'tests/runner/runner.test.ts',
+        predictedMetric: { name: 'coding.reworkRuns', direction: 'decrease', baseline: 4 },
+      },
+      evidencePack: {
+        antiPatterns: ['session-reset'],
+        toolFailures: [{ toolName: 'Bash', errorClass: 'EPERM', count: 6 }],
+      },
+    }
+    const text = buildContributionBriefing([withBriefing])
+    expect(text).toContain('Today: Retry drops the corrective prompt.')
+    expect(text).toContain('Failing test: tests/runner/runner.test.ts')
+    expect(text).toContain('Predicted metric: coding.reworkRuns should decrease, baseline 4')
+    expect(text).toContain('anti-patterns: session-reset')
+    expect(text).toContain('tool failure: Bash EPERM ×6')
+    expect(text).not.toContain(CODE.description)
   })
 })
 
