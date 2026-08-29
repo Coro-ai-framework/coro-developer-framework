@@ -70,6 +70,12 @@ through to `direct`. The equivalent for .NET is an extra `<add key>` source in
 a job-local `NuGet.config` pointing at `~/.nuget/packages`; for npm, an
 offline-first `--prefer-offline` install against the existing cache.
 
+For three further Go-specific recipes this warm-cache fallback doesn't cover —
+vendoring a module that ships a `.gitmodules` file, building a tool CLI from
+inside the target module so `replace` directives apply, and a job-local
+`GIT_CONFIG_GLOBAL` for private vanity-import modules — see the matching
+sections in the `golang-conventions` skill.
+
 ## 4. Fetch what is missing from a host you know is reachable
 
 Your SCM host is nearly always on the allowlist — you cloned through it.
