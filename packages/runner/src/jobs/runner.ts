@@ -70,8 +70,12 @@ import {
 import {
   buildJobCompletionBlockPrompt,
   buildJobCompletionFailureMessage,
+  buildPhaseAdvanceBlockPrompt,
+  buildPhaseAdvanceFailureMessage,
   COMPLETION_GATE_MAX_RETRIES,
   evaluateCompletionGate,
+  evaluatePhaseAdvanceGate,
+  PHASE_ADVANCE_GATE_MAX_RETRIES,
 } from './completion-gate'
 import { buildPhaseKickoffMessage } from './phase-kickoff'
 import { assertJobPluginRequirements } from './plugin-preflight'
@@ -375,6 +379,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   // avoid an infinite loop. The counter is reset to 0 every time the gate
   // passes or the runner makes any other phase transition.
   let completionGateAttempts = 0
+
+  // ── Phase-advance gate state ────────────────────────────────────────────
+  // Tracks consecutive implicit (non-`goto_phase`) advances blocked because
+  // the current work item still has an open PR mapping — see
+  // `evaluatePhaseAdvanceGate` in `./completion-gate`. Reset whenever the
+  // gate passes, an explicit `goto_phase` is used, or any other transition
+  // happens.
+  let phaseAdvanceGateAttempts = 0
 
   logger.info(
     {
@@ -1373,6 +1385,60 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Any non-completion advance resets the gate counter — only
       // consecutive end-of-workflow blocks count toward the cap.
       completionGateAttempts = 0
+
+      // ── Phase-advance PR-merge gate ──────────────────────────────────
+      // Mirrors the completion gate above, but for non-terminal advances.
+      // Only the *implicit* default advance is gated — an explicit
+      // `goto_phase` call (signals.nextPhase set) is the agent's own
+      // intelligence choosing to move on and is treated as a waiver.
+      if (!signals.nextPhase) {
+        const advanceGate = evaluatePhaseAdvanceGate(liveJob)
+        if (!advanceGate.ready) {
+          phaseAdvanceGateAttempts += 1
+          if (phaseAdvanceGateAttempts > PHASE_ADVANCE_GATE_MAX_RETRIES) {
+            const failure = buildPhaseAdvanceFailureMessage(advanceGate)
+            logger.warn(
+              { jobId: liveJob.id, attempts: phaseAdvanceGateAttempts },
+              'Phase-advance gate exhausted retries — failing job',
+            )
+            await stateBackend.appendLog(liveJob.id, `[phase-advance-gate] ${failure}`)
+            liveJob = await syncJob(stateBackend, liveJob, {
+              status: STATUS_FAILED,
+              escalationMessage: failure,
+            })
+            toolCtx.job = liveJob
+            break
+          }
+
+          logger.info(
+            {
+              jobId: liveJob.id,
+              phase: liveJob.phase,
+              nextPhase,
+              attempt: phaseAdvanceGateAttempts,
+              openPrIds: advanceGate.openMappings.map(m => m.prId),
+            },
+            'Phase-advance gate blocked — re-running current phase with corrective prompt',
+          )
+          await stateBackend.appendLog(
+            liveJob.id,
+            `[phase-advance-gate] Blocking advance to '${nextPhase}' ` +
+              `(${advanceGate.openMappings.length} open PR mapping(s)). Re-running phase ` +
+              `'${liveJob.phase}' (attempt ${phaseAdvanceGateAttempts}/${PHASE_ADVANCE_GATE_MAX_RETRIES}).`,
+          )
+          liveJob = await syncJob(stateBackend, liveJob, {
+            pendingPrompt: buildPhaseAdvanceBlockPrompt(
+              liveJob,
+              advanceGate,
+              nextPhase,
+              phaseAdvanceGateAttempts,
+            ),
+          })
+          toolCtx.job = liveJob
+          continue
+        }
+      }
+      phaseAdvanceGateAttempts = 0
 
       // Re-read `interactive` from state right before the boundary check so
       // a dashboard / API toggle that lands mid-phase is honoured on this
