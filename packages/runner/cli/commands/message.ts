@@ -8,7 +8,7 @@ interface MessageResponse {
 }
 
 export const messageCommand = new Command('message')
-  .description('Send a message to a running agent')
+  .description('Send a message to a running, parked, or completed job')
   .requiredOption('--job <id>', 'Job ID')
   .argument('<text>', 'Message text to send to the agent')
   .action(async (text: string, opts: { job: string }) => {

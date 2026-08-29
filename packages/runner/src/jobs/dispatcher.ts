@@ -792,18 +792,25 @@ export class Dispatcher {
   /**
    * Send a developer message to an agent.
    *
-   * Two paths:
+   * Paths:
    *   1. Job is actively running — inject via Query.streamInput() so the live
    *      agent sees the message mid-turn (zero session rebuild).
    *   2. Job is parked waiting for developer input or is escalated — build a
    *      framed prompt, clear the parked/escalated fields, and resume the job.
+   *   3. Job is complete — reopen into planning with a follow-up frame,
+   *      keeping `sessionId` so the planner still has the prior transcript.
    *
-   * Any other status (complete, failed, queued without a live query) throws.
+   * Cancelled jobs, and any other status without a live query, throw.
    */
   async sendMessage(jobId: string, message: string): Promise<void> {
     const job = await this.requireJob(jobId)
     if (job.status === STATUS_CANCELLED) {
       throw new Error(`Cannot send message to cancelled job ${jobId}`)
+    }
+
+    if (job.status === STATUS_COMPLETE) {
+      await this.reopenCompletedJobWithFollowUp(job, message)
+      return
     }
 
     // If the job has been parked (paused or awaiting external input) the
@@ -918,7 +925,7 @@ export class Dispatcher {
     if (!parked && !escalated && !betweenPhases) {
       throw new Error(
         `Cannot send message to job with status "${job.status}" — ` +
-        `only running, parked, escalated, or failed jobs accept messages.`,
+        `only running, parked, escalated, failed, or completed jobs accept messages.`,
       )
     }
 
@@ -987,6 +994,52 @@ export class Dispatcher {
     )
 
     this.fireAndForget(jobId)
+  }
+
+  /**
+   * Reopen a finished job into planning with the developer's follow-up as
+   * `pendingPrompt`. Does **not** clear `sessionId` — unlike {@link resumeJob}
+   * / {@link rerunPhase}, which wipe the transcript when the phase changes.
+   * The planner already wrote the original work items; the framed prompt
+   * tells it to amend rather than re-plan from scratch.
+   */
+  private async reopenCompletedJobWithFollowUp(job: Job, message: string): Promise<void> {
+    const followUpPhase = resolveFollowUpPhase(job)
+    const planningArtifacts = (job.artifacts ?? []).filter(
+      a => a.phase === followUpPhase || a.phase === 'planning',
+    )
+    const framedPrompt = buildFollowUpMessage(
+      message,
+      job.phase,
+      followUpPhase,
+      planningArtifacts,
+    )
+    const mergedPrompt = job.pendingPrompt
+      ? `${job.pendingPrompt}\n\n---\n\n${framedPrompt}`
+      : framedPrompt
+
+    await this.ctx.stateBackend.updateJob(job.id, {
+      status: STATUS_CODING,
+      phase: followUpPhase,
+      escalationMessage: undefined,
+      awaitingEvent: undefined,
+      awaitingPrId: undefined,
+      awaitingNextPhase: undefined,
+      pendingPrompt: mergedPrompt,
+    })
+
+    await this.ctx.stateBackend.appendLog(
+      job.id,
+      `[follow-up] Reopening completed job into phase "${followUpPhase}"` +
+        (job.sessionId ? ' (resuming session)' : ''),
+    )
+    await this.ctx.stateBackend.appendLog(job.id, `[human] ${message}`)
+    this.ctx.logger.info(
+      { jobId: job.id, fromPhase: job.phase, followUpPhase, hasSession: Boolean(job.sessionId) },
+      'Reopening completed job with developer follow-up',
+    )
+
+    this.fireAndForget(job.id)
   }
 
   // ── Campaign coordination ──────────────────────────────────────────────────
@@ -1700,6 +1753,54 @@ export function buildEscalationResponseMessage(
     'escalate again. If this reply contains a reusable pattern or convention, record it via `add_insight` so the ' +
     'evaluator can review it.',
   )
+
+  return lines.join('\n')
+}
+
+/**
+ * Phase a completed-job follow-up re-enters. Prefers a declared `planning`
+ * phase (standard / fast / deep / oss-contribution), then `campaign-planning`.
+ * Legacy jobs without `workflowPhases` default to `planning`.
+ */
+export function resolveFollowUpPhase(job: Job): string {
+  const names = (job.workflowPhases ?? []).map(p => p.name)
+  if (names.includes('planning')) return 'planning'
+  if (names.includes('campaign-planning')) return 'campaign-planning'
+  return 'planning'
+}
+
+/**
+ * Frame a developer message sent to a job that already reached `complete`.
+ * Lands with the planner: amend work items, do not re-plan or replace the
+ * whole WI list (`set_work_items` resets every item to pending).
+ */
+export function buildFollowUpMessage(
+  message: string,
+  lastPhase: string,
+  followUpPhase: string,
+  planningArtifacts: Artifact[],
+): string {
+  const lines = [
+    '[FOLLOW-UP]',
+    '',
+    `This job already completed (last phase: ${lastPhase}). The developer has additional related work.`,
+    `You are back in phase **${followUpPhase}**. The prior conversation is still available — do not re-plan from scratch.`,
+    '',
+    'Rules:',
+    '  - Do not re-run spec-writing, campaign vs task triage, `convert_to_campaign`, or `switch_workflow` unless the new ask is genuinely epic-sized.',
+    '  - Call `get_work_items`. Prefer `update_work_item` to reopen the matching item as `in-progress` (a fix loop). Do **not** call `set_work_items` — it replaces the whole list and resets every item to pending, including work that already shipped.',
+    '  - Patch the existing implementation plan artefact if the delta changes it. Then finish the phase normally so the runner can park at the planning checkpoint (when interactive) before coding.',
+    '',
+    'Developer said:',
+    `"${message}"`,
+  ]
+
+  if (planningArtifacts.length > 0) {
+    lines.push('', 'Existing plan artefacts:')
+    for (const a of planningArtifacts.slice(-10)) {
+      lines.push(`  - ${a.kind}: ${a.title}`)
+    }
+  }
 
   return lines.join('\n')
 }

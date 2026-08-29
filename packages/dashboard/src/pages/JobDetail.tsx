@@ -989,6 +989,7 @@ export default function JobDetail() {
     || (isWaitingStatus(job.status) && job.status !== 'awaiting-developer-input')
     || isDevPaused
   const canReplyToEscalation = job.status === 'escalated'
+  const canSendFollowUp = job.status === 'complete'
 
   return (
     <div className="space-y-6">
@@ -1128,6 +1129,19 @@ export default function JobDetail() {
                   <PendingOutgoingMessages messages={pendingOutgoingMessages} />
                 </CardContent>
               </Card>
+
+              {canSendFollowUp ? (
+                <MessageComposer
+                  title="Follow up"
+                  description="This run is finished. Your message reopens it in planning with the existing conversation so the planner can size the extra work before coding."
+                  submitLabel="Send follow-up"
+                  placeholder="What else needs to happen on this run?"
+                  value={messageText}
+                  onChange={setMessageText}
+                  onSend={handleSendMessage}
+                  error={messageError}
+                />
+              ) : null}
 
               {canSendLiveMessage ? (
                 <MessageComposer
