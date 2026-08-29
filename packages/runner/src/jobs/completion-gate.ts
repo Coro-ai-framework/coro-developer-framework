@@ -137,3 +137,87 @@ export function buildJobCompletionFailureMessage(
     `Resolve via dashboard or new job.`
   )
 }
+
+// ── Phase-advance PR-merge gate ──────────────────────────────────────────────
+//
+// Workflow-agnostic invariant, mirrored from `evaluateCompletionGate` above:
+// the runner must not silently advance away from a phase while the *current*
+// work item still has an open (unmerged) PR mapping. Unlike the completion
+// gate (which only fires at the end of the workflow), this fires on every
+// non-terminal advance — in practice that is only ever the review boundary,
+// because `prMappings` for the current work item is empty until the review
+// phase opens a PR. Only the *implicit* default advance is gated (see
+// `runner.ts`); an explicit `goto_phase` call is treated as an intentional
+// waiver, same as the rest of this file treats agent intelligence as the
+// source of truth over hardcoded phase names.
+
+/** Maximum consecutive phase-advance-gate blocks before failing the job. */
+export const PHASE_ADVANCE_GATE_MAX_RETRIES = 5
+
+export interface PhaseAdvanceGateDecision {
+  /** True when the runner may advance away from the current phase. */
+  ready: boolean
+  /** Open (unmerged) PR mappings for the current work item, if any. */
+  openMappings: PrMapping[]
+}
+
+export function evaluatePhaseAdvanceGate(job: Job): PhaseAdvanceGateDecision {
+  const workItem = job.currentWorkItem
+  if (!workItem || !Array.isArray(job.prMappings) || job.prMappings.length === 0) {
+    return { ready: true, openMappings: [] }
+  }
+  const openMappings = job.prMappings.filter(m => m.workItem === workItem && !m.mergedAt)
+  return { ready: openMappings.length === 0, openMappings }
+}
+
+export function buildPhaseAdvanceBlockPrompt(
+  job: Job,
+  decision: PhaseAdvanceGateDecision,
+  nextPhase: string,
+  attempt: number,
+): string {
+  const lines: string[] = []
+  lines.push('[phase-advance-gate] Cannot leave this phase yet.')
+  lines.push('')
+  lines.push(
+    `The current work item ("${job.currentWorkItem}") still has ` +
+      `${decision.openMappings.length} open (unmerged) PR mapping(s). The runner will ` +
+      `not auto-advance to \`${nextPhase}\` while any of them is open.`,
+  )
+  lines.push('')
+  lines.push('Open PR mappings:')
+  for (const m of decision.openMappings) {
+    lines.push(`  - #${m.prId}`)
+  }
+  lines.push('')
+  lines.push('What to do next:')
+  lines.push('  1. Confirm live PR state with `scm_get_pr_status`.')
+  lines.push(
+    '  2. If human approval is still pending, call `await_event` with ' +
+      '`eventName: "pr:approved"` and the PR id — do NOT end your turn expecting ' +
+      'the runner to advance for you.',
+  )
+  lines.push('  3. Once approved, call `scm_merge_pr` to merge before ending your turn.')
+  lines.push(
+    `  4. If leaving now is intentional, call \`goto_phase("${nextPhase}")\` explicitly — ` +
+      `an explicit call is treated as a waiver of this gate.`,
+  )
+  lines.push('')
+  lines.push(
+    `(attempt ${attempt}/${PHASE_ADVANCE_GATE_MAX_RETRIES} — after the cap the ` +
+      `runner will fail the job to avoid an infinite loop.)`,
+  )
+
+  return lines.join('\n')
+}
+
+export function buildPhaseAdvanceFailureMessage(
+  decision: PhaseAdvanceGateDecision,
+): string {
+  const ids = decision.openMappings.map(m => `#${m.prId}`).join(', ')
+  return (
+    `Job failed: phase-advance gate blocked ${PHASE_ADVANCE_GATE_MAX_RETRIES} consecutive ` +
+    `attempts to leave this phase with an open PR mapping (${ids || '(unknown)'}). ` +
+    `Resolve via dashboard or new job.`
+  )
+}

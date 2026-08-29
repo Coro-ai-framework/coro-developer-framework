@@ -175,6 +175,39 @@ describe('aggregatePhaseRuns', () => {
 
     expect(aggregated[0]).toMatchObject({ workItemsHandled: 2, reworkRuns: 1 })
   })
+
+  it('does not count a zero-cost pr:approved park as rework', () => {
+    // The gatekeeper re-enters review to merge after approval; that resume
+    // carries no attribution allowance (no declared checkpoint phase here)
+    // but is still a park, not a loop the agent made on its own.
+    const aggregated = aggregatePhaseRuns([
+      phaseRun('review', { workItem: 'wi-1', costUsd: 3 }),
+      phaseRun('review', { workItem: 'wi-1', costUsd: 0, parkReason: 'pr:approved' }),
+    ])
+
+    expect(aggregated[0]).toMatchObject({
+      runs: 2,
+      workItemsHandled: 1,
+      checkpointResumeRuns: 1,
+      reworkRuns: 0,
+      reworkCostUsd: 0,
+    })
+  })
+
+  it('does not count a zero-cost developer-input park as rework', () => {
+    const aggregated = aggregatePhaseRuns([
+      phaseRun('coding', { workItem: 'wi-1', costUsd: 2 }),
+      phaseRun('coding', { workItem: 'wi-1', costUsd: 0, parkReason: 'developer-input' }),
+    ])
+
+    expect(aggregated[0]).toMatchObject({
+      runs: 2,
+      workItemsHandled: 1,
+      checkpointResumeRuns: 1,
+      reworkRuns: 0,
+      reworkCostUsd: 0,
+    })
+  })
 })
 
 describe('attributePhaseRuns', () => {
