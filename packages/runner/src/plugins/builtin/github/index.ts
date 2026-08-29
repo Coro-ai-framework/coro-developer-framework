@@ -299,6 +299,15 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
    *
    * Overriding `GITHUB_API_URL` lets the plugin point at GHE servers
    * when `config.baseUrl` is set.
+   *
+   * **This server always holds the plugin's own token, never the
+   * contribution one.** It is one process per job with one token in its
+   * environment, chosen before any repository is named, so it cannot make
+   * the per-repository choice `clientFor` makes. On a contribution job the
+   * agent must reach the fork and upstream through the generic `scm_*`
+   * tools — which run in-process and do route by repository — because
+   * `mcp__github__*` would act as the install's own account. The GitHub
+   * clone snippet tells the agent exactly that.
    */
   mcpServer(): PluginMcpServerConfig {
     const env: Record<string, string> = {

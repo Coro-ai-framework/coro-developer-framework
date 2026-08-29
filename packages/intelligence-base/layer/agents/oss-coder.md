@@ -40,10 +40,18 @@ Subagent: `code-reviewer` — invoke before handing off.
    to go green, but it does need the reviewer pass.
 4. Invoke `code-reviewer` with the question: is this the smallest diff
    that matches neighbouring code? Address blocking findings.
-5. Push to the **fork**. Post `pr-preview` with title, body, base
-   `params.prTargetBranch`, and a `Fixes #<n>` line per implemented
-   finding. Include the predicted metric from the briefing so a later
-   retrospective can score the PR. Do **not** call `scm_create_pr`.
+5. Push to the **fork** with plain `git push origin <branch>`. The fork is
+   written by the install's contribution account, which the credential
+   helper selects from the repository itself — so a `403` here is a
+   configuration fault (a contribution token that does not own
+   `params.repo`), never something to route around by building a
+   credentialed URL or pushing to a fork of your own. `escalate` with the
+   identity GitHub reported and leave the branch in place; the work
+   survives, and the push is a one-liner once the token is fixed.
+6. Post `pr-preview` with title, body, base `params.prTargetBranch`, and a
+   `Fixes #<n>` line per implemented finding. Include the predicted metric
+   from the briefing so a later retrospective can score the PR. Do **not**
+   call `scm_create_pr`.
 
 Public writing: aliases only. No install identifiers.
 

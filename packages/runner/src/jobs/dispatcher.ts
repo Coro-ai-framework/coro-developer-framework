@@ -1480,7 +1480,6 @@ export class Dispatcher {
       bbCoder: this.ctx.bbCoder,
       bbReviewer: this.ctx.bbReviewer,
       ghClient: this.ctx.ghClient,
-      ghGitClient: this.ctx.ghGitClient,
       lokiClient: this.ctx.lokiClient,
       tempoClient: this.ctx.tempoClient,
       plugins: this.ctx.plugins,

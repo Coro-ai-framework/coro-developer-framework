@@ -5,7 +5,7 @@
 //   2. `buildSettingsFromLocal(config)` snapshots into `Settings`.
 //   3. `buildBuiltinPluginRegistry(...)` instantiates each plugin and
 //      calls `runtime.init(slot.config)` once.
-//   4. `createGitClient(settings)` / `createBitBucketClients(settings)` /
+//   4. `createBitBucketClients(settings)` / `createGitHubClient(settings)` /
 //      etc. capture credentials into client instances.
 //
 // All of the above end up on the `RunnerContext` the `Dispatcher`
@@ -53,7 +53,7 @@ import {
 } from '../plugins/builtin'
 import { buildDropinFactoryMap } from '../plugins/loader'
 import { createBitBucketClients } from '../clients/bitbucket'
-import { createGitClient, createGitHubGitClient } from '../clients/git'
+import { createGitClient } from '../clients/git'
 import { createGitHubClient } from '../clients/github'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
@@ -118,11 +118,10 @@ export async function reloadRunnerState(args: {
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(newSettings)
   const newClients = {
     settings: newSettings,
-    gitClient: createGitClient(newSettings),
+    gitClient: createGitClient(),
     bbCoder,
     bbReviewer,
     ghClient: createGitHubClient(newSettings),
-    ghGitClient: createGitHubGitClient(newSettings),
     lokiClient: createLokiClient(newSettings),
     tempoClient: createTempoClient(newSettings),
   }

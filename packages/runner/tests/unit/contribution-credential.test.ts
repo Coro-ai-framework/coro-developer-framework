@@ -13,6 +13,7 @@ import {
   contributionCredentialCovers,
   resolveContributionCredential,
 } from '../../src/config/contribution-credential'
+import { resolveUpstreamConfig, type LocalConfig } from '../../src/config/local-config'
 
 const UPSTREAM = {
   repoUrl: 'https://github.com/Coro-ai-framework/coro-developer-framework',
@@ -57,7 +58,10 @@ describe('resolveContributionCredential', () => {
     expect(resolveContributionCredential({ ...UPSTREAM, token: '  ' })).toBeUndefined()
   })
 
-  it('stays undefined without a fork owner, since the fork is then under the plugin owner', () => {
+  it('refuses to guess a fork owner, leaving that fallback to one place', () => {
+    // Not "there is no fork" — `resolveUpstreamConfig` is what fills a blank
+    // `forkOwner` in, from the same GitHub plugin owner the REST tools use to
+    // create the fork. Guessing here as well is how the two drift apart.
     expect(resolveContributionCredential({ ...UPSTREAM, forkOwner: undefined })).toBeUndefined()
   })
 
@@ -80,6 +84,51 @@ describe('resolveContributionCredential', () => {
       repoUrl: 'https://github.acme-corp.dev/coro/coro',
     })
     expect(credential?.host).toBe('github.acme-corp.dev')
+  })
+})
+
+describe('resolveUpstreamConfig + resolveContributionCredential', () => {
+  // The two halves of the contribution identity have to agree on where the
+  // fork lives. `upstream.ts` creates it at `<forkOwner>/<repo>`; the
+  // credential helper answers for `<forkOwner>/<repo>`. Both read `forkOwner`
+  // from the resolved upstream config, so the fallback has to live there —
+  // when each applied its own, a blank `forkOwner` meant the fork was created
+  // with the contribution token but pushed to with the plugin's.
+  function configWith(upstream: Record<string, unknown>): LocalConfig {
+    return {
+      upstream,
+      plugins: {
+        installed: {
+          github: { enabled: true, config: { owner: 'A5Labs-Prime', token: 'ghp_plugin' } },
+        },
+      },
+    } as unknown as LocalConfig
+  }
+
+  it('falls back to the GitHub plugin owner, so a blank forkOwner still yields an identity', () => {
+    const resolved = resolveUpstreamConfig(
+      configWith({ repoUrl: UPSTREAM.repoUrl, token: UPSTREAM.token }),
+    )
+    expect(resolved?.forkOwner).toBe('A5Labs-Prime')
+
+    const credential = resolveContributionCredential(resolved)
+    expect(credential?.password).toBe(UPSTREAM.token)
+    expect(contributionCredentialCovers(credential, 'A5Labs-Prime/coro-developer-framework'))
+      .toBe(true)
+  })
+
+  it('prefers an explicit forkOwner over the plugin owner', () => {
+    const resolved = resolveUpstreamConfig(configWith(UPSTREAM))
+    expect(resolved?.forkOwner).toBe('kkbrs')
+    expect(contributionCredentialCovers(resolveContributionCredential(resolved), 'kkbrs/coro-developer-framework'))
+      .toBe(true)
+  })
+
+  it('yields no override when only the plugin token is configured', () => {
+    // Both halves are the plugin already: it created the fork and it pushes.
+    const resolved = resolveUpstreamConfig(configWith({ repoUrl: UPSTREAM.repoUrl }))
+    expect(resolved?.forkOwner).toBe('A5Labs-Prime')
+    expect(resolveContributionCredential(resolved)).toBeUndefined()
   })
 })
 

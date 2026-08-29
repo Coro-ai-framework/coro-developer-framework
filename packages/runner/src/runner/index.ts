@@ -82,7 +82,7 @@ import { synthesizeSoloTenant, tenantFromTeamId } from '../intelligence/tenant-c
 import { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
 import { createBitBucketClients } from '../clients/bitbucket'
-import { createGitClient, createGitHubGitClient } from '../clients/git'
+import { createGitClient } from '../clients/git'
 import { createGitHubClient } from '../clients/github'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
@@ -144,9 +144,8 @@ export async function startLocalRunner(
 
   // Build external API clients (run locally on dev machine)
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
-  const gitClient = createGitClient(settings)
+  const gitClient = createGitClient()
   const ghClient = createGitHubClient(settings)
-  const ghGitClient = createGitHubGitClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
 
@@ -197,7 +196,6 @@ export async function startLocalRunner(
     bbCoder,
     bbReviewer,
     ghClient,
-    ghGitClient,
     lokiClient,
     tempoClient,
     plugins,
@@ -306,9 +304,8 @@ export async function startHybridRunner(
 
   // Build external API clients (run locally on dev machine)
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
-  const gitClient = createGitClient(settings)
+  const gitClient = createGitClient()
   const ghClient = createGitHubClient(settings)
-  const ghGitClient = createGitHubGitClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
 
@@ -323,7 +320,6 @@ export async function startHybridRunner(
     bbCoder,
     bbReviewer,
     ghClient,
-    ghGitClient,
     lokiClient,
     tempoClient,
     plugins,

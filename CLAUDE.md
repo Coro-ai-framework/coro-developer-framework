@@ -419,6 +419,18 @@ With no `upstream.token` the resolver returns `undefined` and everything keeps
 using the plugin identity — which is correct, because the fork was then
 created with the plugin's own token.
 
+Both halves must agree on *where the fork lives*, which is why
+`forkOwner`'s fallback to the GitHub plugin's owner happens once, in
+`resolveUpstreamConfig`, and nowhere else. While `upstream.ts` and the
+credential resolver each applied their own, a config with `upstream.token`
+set and `forkOwner` blank created the fork with the contribution token and
+then pushed to it with the plugin's — the same 403, reachable through a
+config shape the first fix did not cover. `mcpServer()` is the one surface
+that cannot honour any of this: it is a single process holding a single
+token chosen before any repository is named, so contribution jobs are told
+(in the GitHub clone snippet and `agents/oss-contributor.md`) to use the
+in-process `scm_*` tools rather than `mcp__github__*`.
+
 **Surfaces.** Three runner endpoints back both triggers —
 `POST /retrospectives` (dispatch; 409 while one is already running),
 `GET /retrospectives` (history with findings parsed out of the artefacts),

@@ -64,11 +64,17 @@ const GITHUB_HTTPS_USERNAME = 'x-access-token'
  * The contribution identity for this install, or `undefined` when writes to
  * the fork should keep using the SCM plugin's credentials.
  *
- * All three inputs are required. A missing `forkOwner` means the fork lives
- * under the GitHub plugin's own owner, and a missing `token` means it was
- * created with the plugin's own token — either way the plugin identity is
- * already correct, and inventing an override would be the bug this module
- * exists to prevent.
+ * All three inputs are required, and each absence means something different.
+ *
+ * A missing `token` means the fork was created with the plugin's own token,
+ * so the plugin identity is already the contribution identity and inventing
+ * an override would be the bug this module exists to prevent.
+ *
+ * A missing `forkOwner` means the caller did not resolve one. It is not a
+ * licence to guess: `resolveUpstreamConfig` applies the fallback to the
+ * GitHub plugin's owner, deliberately in one place, because the REST tools
+ * that *create* the fork read the same field. Deriving it independently here
+ * is how the two halves drift apart.
  */
 export function resolveContributionCredential(
   upstream: ContributionCredentialSource | undefined,

@@ -122,6 +122,12 @@ runner and tells the developer nothing.
   You have no write access upstream and should not act as though you might.
 - **`repoSlug` upstream, `sourceOwner` fork.** The single most damaging
   mistake available to you, and it fails silently.
+- **Open the PR with `scm_create_pr`, not a provider-native tool.** The
+  fork and the upstream repo may authenticate as a different account than
+  the rest of this install, and only the `scm_*` tools know that. A
+  provider-native equivalent (`mcp__github__create_pull_request`) acts as
+  the install's own account and will be refused. If `scm_create_pr` fails,
+  `escalate` — do not reach for the native tool as a workaround.
 - **Nothing internal becomes public.** Identifiers, log excerpts, internal
   service names, and job ids stay out of the PR.
 - **The issue is the conversation.** Questions, disagreements, and scope

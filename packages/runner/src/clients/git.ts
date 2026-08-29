@@ -1,33 +1,23 @@
-import path from 'path'
 import { simpleGit, SimpleGitOptions } from 'simple-git'
-import { Settings } from '../config/settings'
 
 // ── Git client ────────────────────────────────────────────────────────────────
 
 /**
- * Wraps simple-git for all repository operations.
+ * Wraps simple-git for operations on checkouts that already exist — today,
+ * only the intelligence directory (`jobs/runner.ts` pulls it, the hybrid
+ * dispatcher commits and pushes proposals through it).
  *
- * Credentials are injected into clone URLs as `https://user:pass@host/...` and
- * are never written to disk. GIT_TERMINAL_PROMPT is disabled so git never
- * hangs waiting for interactive input.
+ * It holds no credentials. It used to carry a username/token and splice them
+ * into a clone URL, which is the pattern `clients/git-auth.ts` exists to
+ * replace: a token in a remote authenticates as whoever owned it at clone
+ * time, not as whoever Settings names now. Job checkouts go through
+ * `scm_clone_repo`, which persists a clean URL and installs the `coro
+ * git-credential` helper; these operations inherit whatever auth their
+ * checkout was configured with.
+ *
+ * GIT_TERMINAL_PROMPT is disabled so git never hangs waiting for input.
  */
 export class GitClient {
-  constructor(
-    private readonly workingDir: string,
-    private readonly username: string,
-    private readonly appPassword: string,
-    private readonly workspace: string,
-    private readonly host: string = 'bitbucket.org',
-  ) {}
-
-  /** Clone a repo into `targetDir` (relative to workingDir if not absolute). */
-  async clone(repoSlug: string, targetDir: string): Promise<string> {
-    const url = this.repoUrl(repoSlug)
-    const dest = path.isAbsolute(targetDir) ? targetDir : path.join(this.workingDir, targetDir)
-    await this.git(this.workingDir).clone(url, dest)
-    return dest
-  }
-
   /**
    * Pull latest from origin in the given repo directory.
    *
@@ -117,12 +107,6 @@ export class GitClient {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  private repoUrl(repoSlug: string): string {
-    const u = encodeURIComponent(this.username)
-    const p = encodeURIComponent(this.appPassword)
-    return `https://${u}:${p}@${this.host}/${this.workspace}/${repoSlug}.git`
-  }
-
   private git(dir: string) {
     return simpleGit({
       baseDir: dir,
@@ -136,38 +120,17 @@ export class GitClient {
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
-export function createGitClient(settings: Settings): GitClient {
-  const { coderAccount } = settings.bitbucket
-  // Trust the configured username. Bitbucket has three token types
-  // and each requires its own git-HTTPS username (Atlassian email,
-  // `x-token-auth`, or `x-bitbucket-api-token-auth`); the token
-  // prefix cannot disambiguate them. An earlier auto-map of every
-  // `ATATT…` token to `x-bitbucket-api-token-auth` broke plain
-  // Atlassian API tokens (which need the email) — git push appeared
-  // to work but every REST call 401'd. The Bitbucket plugin's init()
-  // validator now rejects malformed usernames at startup, so by the
-  // time we reach this factory the username is safe to use as-is.
-  return new GitClient(
-    settings.paths.workingDir,
-    coderAccount.username,
-    coderAccount.appPassword,
-    settings.bitbucket.workspace,
-    'bitbucket.org',
-  )
+export function createGitClient(): GitClient {
+  return new GitClient()
 }
 
-/** Create a GitClient that clones from GitHub using a PAT. */
-export function createGitHubGitClient(settings: Settings): GitClient | null {
-  if (!settings.github.token) return null
-  // GitHub PATs use x-access-token as the username for HTTPS auth
-  return new GitClient(
-    settings.paths.workingDir,
-    'x-access-token',
-    settings.github.token,
-    settings.github.owner,
-    'github.com',
-  )
-}
+// This factory takes no credentials, and there is deliberately no
+// provider-specific variant of it. Identity for git belongs to the SCM plugin
+// and the `coro git-credential` helper, which resolve it from the repository
+// being written to — the contribution fork and its upstream answer as the
+// contribution account, everything else as the plugin's. A client that fixed a
+// token at construction time could not express that, and a GitHub one would
+// have pushed to the fork as the wrong account.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

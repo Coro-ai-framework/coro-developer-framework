@@ -35,7 +35,7 @@ This file is loaded automatically by the Agent SDK via `settingSources: ['projec
 
 8. **Scope is strict.** Only work on the repos, projects, and features specified in the job context. Do not analyze or touch anything outside scope, even if it looks related.
 
-9. **Credentials are never read from files.** They are injected by the Coro Runner as environment variables and available in the job context. Never ask for or log credentials.
+9. **Credentials are never read from files, and git credentials are never yours to handle.** Provider credentials the runner injects as environment variables exist for direct API calls only. Git authenticates through the job's credential helper, which picks the identity from the *repository* being written to — so passing a token to git yourself does not just duplicate the helper, it can silently authenticate as the wrong account. Never ask for or log credentials.
 
 10. **Use work-item tracking tools for multi-work-item jobs.** Call `get_work_items` to check progress, `update_work_item` to update status, `set_work_items` to register the work-item list, and `request_new_session` when starting a new work item.
 
@@ -358,7 +358,11 @@ const checkout = scm_clone_repo({ repo: "<repo-slug>" })
 
 If you need the raw URL for an advanced git flow, use the clone-info tool —
 it returns a **clean** HTTPS URL (no token). Git authenticates through the
-job's credential helper, which reads the live SCM plugin from Settings.
+job's credential helper, which answers per repository: normally with the live
+SCM plugin from Settings, and with the contribution account for the OSS
+contribution fork and the repository it was forked from. This is why a clean
+URL is not a limitation — the URL alone cannot express which identity a
+repository needs.
 
 ```ts
 const info = scm_get_clone_info({ repo: "<repo-slug>" })

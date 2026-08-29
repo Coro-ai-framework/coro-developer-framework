@@ -112,7 +112,6 @@ export interface RunnerContext {
   bbCoder: BitBucketClient
   bbReviewer: BitBucketClient
   ghClient: GitHubClient | null
-  ghGitClient: GitClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
   /**
@@ -355,7 +354,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     bbCoder: ctx.bbCoder,
     bbReviewer: ctx.bbReviewer,
     ghClient: ctx.ghClient,
-    ghGitClient: ctx.ghGitClient,
     lokiClient: ctx.lokiClient,
     tempoClient: ctx.tempoClient,
     plugins: ctx.plugins,

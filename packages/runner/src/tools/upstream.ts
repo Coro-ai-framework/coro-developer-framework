@@ -181,7 +181,10 @@ async function resolveUpstreamRuntime(
     )
   }
 
-  const forkOwner = config.forkOwner || ctx.settings.github.owner
+  // No fallback to `settings.github.owner` here: `resolveUpstreamConfig`
+  // already applied it. Re-applying it locally is what let this tool create
+  // the fork under an owner the credential helper never learned about.
+  const forkOwner = config.forkOwner
   if (!forkOwner) {
     throw new Error(
       `${toolName} needs to know which account to push branches to. Set \`upstream.forkOwner\` ` +
