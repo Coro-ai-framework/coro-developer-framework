@@ -18,6 +18,10 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { simpleGit, type SimpleGit, type SimpleGitOptions } from 'simple-git'
+import {
+  contributionCredentialCovers,
+  type ContributionCredential,
+} from '../config/contribution-credential'
 import type { ScmCloneInfo, ScmPluginRuntime } from '../plugins/types'
 import type { PluginRegistry } from '../plugins/registry'
 
@@ -128,11 +132,22 @@ export function remoteUrlFromCredentialRequest(req: GitCredentialRequest): strin
  * `null` when no installed SCM plugin claims the host — the helper
  * then prints nothing so git does not fall through to osxkeychain
  * (the repo-local helper list is reset first).
+ *
+ * `contribution` is consulted first, and on purpose. It owns named
+ * repositories rather than a host, so it is the more specific answer; and it
+ * has to work even when no plugin claims the host, which is how an install
+ * whose day-to-day SCM is not GitHub can still push to a GitHub fork.
  */
 export function fillGitCredential(
   req: GitCredentialRequest,
   registry: PluginRegistry,
+  contribution?: ContributionCredential,
 ): GitHttpsCredentials | null {
+  const slug = repoSlugFromRequest(req)
+  if (contribution && slug && contributionCredentialCovers(contribution, slug, req.host)) {
+    return { username: contribution.username, password: contribution.password }
+  }
+
   const remote = remoteUrlFromCredentialRequest(req)
   const scm = registry.resolveByRemote(remote)
   if (!scm) return null
@@ -140,8 +155,13 @@ export function fillGitCredential(
   return httpsCredentialsFromCloneInfo(scm.cloneInfo({ repo: repoHint }))
 }
 
+/** `owner/repo` from the request path, or `''` when git sent no path. */
+function repoSlugFromRequest(req: GitCredentialRequest): string {
+  return (req.path ?? '').replace(/\.git$/i, '').replace(/^\/+/, '')
+}
+
 function repoHintFromRequest(req: GitCredentialRequest, scm: ScmPluginRuntime): string {
-  const raw = (req.path ?? '').replace(/\.git$/i, '').replace(/^\/+/, '')
+  const raw = repoSlugFromRequest(req)
   if (raw) return raw
   return scm.manifest.id
 }
@@ -150,11 +170,12 @@ export async function runGitCredentialHelper(args: {
   operation: string
   stdin: string
   registry: PluginRegistry
+  contribution?: ContributionCredential
 }): Promise<string> {
   if (args.operation !== 'get') return ''
   const req = parseGitCredentialRequest(args.stdin)
   if (!req) return ''
-  const creds = fillGitCredential(req, args.registry)
+  const creds = fillGitCredential(req, args.registry, args.contribution)
   return creds ? formatGitCredentialResponse(creds) : ''
 }
 
@@ -183,11 +204,17 @@ function defaultHelperArgv(): string[] {
 export function gitCredentialHelperSpawnEnv(helperCommand?: string): Record<string, string> {
   const helper = helperCommand ?? gitCredentialHelperCommand()
   return {
-    GIT_CONFIG_COUNT: '2',
+    GIT_CONFIG_COUNT: '3',
     GIT_CONFIG_KEY_0: 'credential.helper',
     GIT_CONFIG_VALUE_0: '',
     GIT_CONFIG_KEY_1: 'credential.helper',
     GIT_CONFIG_VALUE_1: helper,
+    // git sends `protocol` and `host` only unless this is on, which leaves
+    // every repository on a host indistinguishable to the helper. The
+    // contribution fork is then answered with the SCM plugin's token — the
+    // push fails as the wrong account, after the work is already committed.
+    GIT_CONFIG_KEY_2: 'credential.useHttpPath',
+    GIT_CONFIG_VALUE_2: 'true',
   }
 }
 
@@ -203,11 +230,11 @@ export function isolatedGitEnv(extra?: Record<string, string>): Record<string, s
     // lowSpeed* settings. Without these, a stalled TLS session (large repo
     // over a slow tunnel) hangs forever and the agent looks stuck on
     // scm_clone_repo. 1 KiB/s for 60s is "no progress", not "slow but alive".
-    GIT_CONFIG_COUNT: '4',
-    GIT_CONFIG_KEY_2: 'http.lowSpeedLimit',
-    GIT_CONFIG_VALUE_2: '1000',
-    GIT_CONFIG_KEY_3: 'http.lowSpeedTime',
-    GIT_CONFIG_VALUE_3: '60',
+    GIT_CONFIG_COUNT: '5',
+    GIT_CONFIG_KEY_3: 'http.lowSpeedLimit',
+    GIT_CONFIG_VALUE_3: '1000',
+    GIT_CONFIG_KEY_4: 'http.lowSpeedTime',
+    GIT_CONFIG_VALUE_4: '60',
     ...extra,
   }
 }
@@ -220,6 +247,9 @@ export function isolatedGitEnv(extra?: Record<string, string>): Record<string, s
  *   GIT_CONFIG_GLOBAL=/dev/null     → allowUnsafeConfigPaths
  *   GIT_CONFIG_COUNT + KEY/VALUE    → allowUnsafeConfigEnvCount
  *   credential.helper via that env  → allowUnsafeCredentialHelper
+ *
+ * The KEY/VALUE slots are shared with `gitCredentialHelperSpawnEnv`, which
+ * owns 0–2; anything added here starts at 3 and must bump GIT_CONFIG_COUNT.
  *
  * Protocol override stays off. Dropping any of the four opt-ins makes
  * `scm_clone_repo` fail before git is spawned, with
@@ -264,7 +294,9 @@ export interface InstallRepoGitAuthOptions {
 /**
  * Rewrite HTTPS remotes that belong to an installed SCM plugin so they
  * carry no userinfo, then install the repo-local credential helper
- * (empty helper first, so osxkeychain is not consulted).
+ * (empty helper first, so osxkeychain is not consulted) with
+ * `credential.useHttpPath` on so the helper is told which repository it is
+ * answering for.
  */
 export async function installRepoGitAuth(
   repoDir: string,
@@ -284,6 +316,9 @@ export async function installRepoGitAuth(
   await gitOutput(repoDir, ['config', '--local', '--unset-all', 'credential.helper']).catch(() => undefined)
   await gitOutput(repoDir, ['config', '--local', 'credential.helper', ''])
   await gitOutput(repoDir, ['config', '--local', '--add', 'credential.helper', helper])
+  // Off by default in git, which means the helper is asked for a host and
+  // never for a repository — so a per-repository identity cannot be honoured.
+  await gitOutput(repoDir, ['config', '--local', 'credential.useHttpPath', 'true'])
 }
 
 export async function prepareJobGitAuth(

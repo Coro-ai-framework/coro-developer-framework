@@ -255,9 +255,13 @@ requiring config: dispatch refuses a run it cannot honour, so offering the
 choice would only fail later.
 
 The token needs `public_repo` scope (fork, push, open issues and PRs). The
-fork is created and fast-forwarded automatically; branches are pushed to it
-using your ambient git credentials, so make sure `git push` to your own
-GitHub account works from the shell running the runner.
+fork is created and fast-forwarded automatically, and everything Coro does
+with it authenticates as this token — filing the issue, `git push`, and the
+pull request opened against the upstream repository. That applies to the fork
+and the upstream repository only; every other repository a job touches keeps
+using the SCM plugin's credentials. Leave `token` blank to use the GitHub
+plugin's token for contribution as well, in which case the fork lives under
+that account.
 
 With either contribution tier enabled, an approved finding that still
 needs a change is handed to a separate implementation job rather than

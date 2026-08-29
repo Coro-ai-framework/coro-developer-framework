@@ -26,6 +26,7 @@
 import type { Logger } from 'pino'
 import type { ZodTypeAny } from 'zod'
 import type { ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
+import type { ContributionCredential } from '../config/contribution-credential'
 
 // ── External MCP server descriptor ──────────────────────────────────────────
 //
@@ -635,6 +636,20 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   // client instead.
   cloneInfo(args: { repo: string }): ScmCloneInfo
   createRepo?(args: ScmCreateRepoArgs): Promise<ExternalRef>
+
+  /**
+   * Bind a second identity that owns specific repositories — the upstream
+   * contribution fork and the repo it was forked from. A plugin that
+   * implements this must use it for every operation addressed by an
+   * `owner/repo` slug, so writes to the fork authenticate as the account
+   * that created it rather than as the plugin's own.
+   *
+   * Optional, and deliberately not part of the public plugin SDK: only a
+   * plugin serving the host Coro contributes to needs to hold more than one
+   * identity. Called by the runner at registry build and on config reload,
+   * with `undefined` when the install has no separate contribution token.
+   */
+  setContributionCredential?(credential: ContributionCredential | undefined): void
 
   // ── Pull requests ───────────────────────────────────────────────────────
   // Each of the methods below is now optional. Plugins serving the

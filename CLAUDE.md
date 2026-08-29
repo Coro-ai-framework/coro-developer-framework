@@ -399,6 +399,26 @@ itself. The child is capped by `upstream.maxCodeJobsPerRun`, cannot promote
 itself into a campaign (`epicAllowed: false`), and is linked from the
 finding's outcome as `childJobId`. The retrospective does not wait for it.
 
+**One identity owns the fork and writes to it.** `upstream.token` used to
+authenticate only the retrospective's own REST calls, so the child job pushed
+and opened its PR as the SCM plugin instead — a different account whenever the
+two are configured separately, which GitHub refused only after the work was
+committed. `config/contribution-credential.ts` closes that by making the
+contribution identity a property of *repositories* rather than of a job type:
+it claims the fork and the upstream repo, and nothing else. That keying is
+forced rather than chosen — the git credential helper runs as a separate
+process (`coro git-credential`) that receives only protocol/host/path from
+git, so a rule carried in `job.params` could never reach it, while one derived
+from config reaches both the helper and the in-process plugin. Two consumers:
+`fillGitCredential` (checked before plugin resolution, so it answers even when
+no plugin claims the host) and the GitHub plugin's `clientFor` / `tokenFor`,
+which route every `owner/repo`-addressed call. It is applied out-of-band via
+`applyContributionCredential` rather than merged into the plugin's config slot,
+since `GET /config` only knows to redact the token where it already lives.
+With no `upstream.token` the resolver returns `undefined` and everything keeps
+using the plugin identity — which is correct, because the fork was then
+created with the plugin's own token.
+
 **Surfaces.** Three runner endpoints back both triggers —
 `POST /retrospectives` (dispatch; 409 while one is already running),
 `GET /retrospectives` (history with findings parsed out of the artefacts),

@@ -45,7 +45,9 @@ import {
   resolvePluginsConfig,
   type LocalConfig,
 } from '../config/local-config'
+import { resolveContributionCredential } from '../config/contribution-credential'
 import {
+  applyContributionCredential,
   BUILTIN_PLUGIN_IDS_BY_KIND,
   instantiatePlugin,
 } from '../plugins/builtin'
@@ -214,6 +216,15 @@ export async function reloadRunnerState(args: {
       )
     }
   }
+
+  // Re-bind the contribution identity on every SCM plugin. `init()` above
+  // rotates the plugin's own credentials but knows nothing about this one, so
+  // without this an edit to Settings → Coro contribution would not reach a
+  // running runner — including clearing the token, which passes `undefined`.
+  applyContributionCredential(
+    ctx.plugins,
+    resolveContributionCredential(newSettings.upstream),
+  )
 
   // ── 5. Update registry defaults + alias seeds ───────────────────────────
   //
