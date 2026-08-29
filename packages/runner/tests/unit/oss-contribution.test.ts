@@ -98,10 +98,12 @@ describe('buildOssContributionJobInput', () => {
 })
 
 describe('buildContributionBriefing', () => {
-  it('tells the planner to keep one PR and escalate the rest if they do not couple', () => {
+  it('tells the planner to keep one PR and defer — not escalate — what does not couple', () => {
     const briefing = buildContributionBriefing([INTEL, CODE])
     expect(briefing).toContain('One reviewable PR')
     expect(briefing).toContain('Do not open a stack of PRs')
+    // Escalating a leftover ends the job and loses the coupled set's PR.
+    expect(briefing).toContain('do not `escalate` a leftover')
     expect(briefing).toContain('## 1. finding-1 — Spec writer skips tracker comments')
     expect(briefing).toContain('Category: base-intelligence')
     expect(briefing).toContain('Issue: https://github.com/o/r/issues/46 (#46)')

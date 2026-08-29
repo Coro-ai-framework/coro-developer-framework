@@ -86,7 +86,8 @@ Write the body for a maintainer with no context on this install:
 - what to revert if that scorecard says the metric regressed
 - `Fixes #<issue>` on its own line for **each** finding this PR
   implements (from `params.findings`), so those issues close on merge.
-  Do not `Fixes` an issue whose finding you escalated away.
+  Never `Fixes` an issue this PR does not actually fix — it would close a
+  live defect on merge.
 
 Do not offer to do more, and do not describe the retrospective that found
 it. Maintainers care about the defect, not about our machinery.
@@ -106,10 +107,17 @@ post_artifact({
     issueUrl: params.upstreamIssueUrl,
     retrospectiveJobId: params.retrospectiveJobId,
     retrospectiveFindingId: params.retrospectiveFindingId,
-    findingIds: "<ids from params.findings that this PR implements>"
+    findingIds: ["finding-1", "finding-2"]   // from params.findings — only the ones this PR implements
   }
 })
 ```
+
+`findingIds` is an **array of ids**, and it is read by the runner, not just
+by people: it is compared against `params.findings` to work out which
+dispatched findings never reached a PR. List exactly what the PR
+implements. Padding it hides an unfixed defect; omitting it leaves the
+runner to fall back on the issue number, which only works when there was
+one finding.
 
 Then `log` the PR URL and end your turn. Do not call `await_event` waiting
 for a review, and do not park the job: an open contribution is a finished
@@ -133,6 +141,8 @@ runner and tells the developer nothing.
 - **The issue is the conversation.** Questions, disagreements, and scope
   changes belong in the upstream issue, not in a PR nobody has read yet —
   and if one is needed, `escalate` so a human raises it.
-- **One PR, then stop.** If the fix cannot be one reviewable PR, escalate
-  the leftover findings instead of opening a stack. The issues you did
-  not `Fixes` stay open for a later dispatch.
+- **One PR, then stop.** If the planner shipped a subset, open the PR for
+  that subset and stop — do not open a stack, and do not `escalate` the
+  remainder. `escalate` ends the job, and the leftovers are not a reason to
+  discard a good PR. Record what you implemented in `findingIds` and end
+  your turn; the runner raises the remainder for a developer from there.

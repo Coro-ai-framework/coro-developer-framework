@@ -399,6 +399,35 @@ itself. The child is capped by `upstream.maxCodeJobsPerRun`, cannot promote
 itself into a campaign (`epicAllowed: false`), and is linked from the
 finding's outcome as `childJobId`. The retrospective does not wait for it.
 
+**A child may ship fewer findings than it was dispatched, and the
+remainder has to survive that.** The planner is the first party in the
+chain to read the repository, so findings that clustered in the analyst's
+metrics can turn out to be unrelated edits a maintainer would ask to
+split — declining them is the correct call. What the workflow could not
+express was the leftovers: `escalate` is the only tool that records "a
+human must act" and it *terminates the job*, so escalating them would
+discard the PR the coupled set had just earned. Asked to do something
+that costs more than it saves, the planner wrote its deferral into the
+plan artefact and a log line, and pointed at the coding checkpoint as the
+place a developer would see it. Nothing reads a log line, and the
+checkpoint had been switched off mid-run — `interactive` is live-mutable —
+so the job reported `complete` with two confirmed defects, two open
+upstream issues, and no owner.
+
+`jobs/contribution-coverage.ts` closes that by **deriving** coverage at
+the completion boundary: `params.findings` is what was dispatched, the
+`findingIds` on the `pr-link` artefacts are what a PR claims, and the
+difference is raised as `STATUS_ESCALATED` naming the issues that still
+need a job. Derivation is the point — a hand-off the agent has to
+remember is one it can forget, and this one had no working channel to
+remember it into. It runs after the PR exists, so a correct scope
+decision keeps its PR and still reaches a developer; the `pr-link`
+`issueUrl` is a fallback for single-finding jobs whose artefact omits
+`findingIds`, while `retrospectiveFindingId` is deliberately ignored
+because dispatch mirrors the first finding into it either way. The
+corollary for the analyst is that `childJobId` on a finding's outcome
+records which job was *asked*, not what shipped.
+
 **One identity owns the fork and writes to it.** `upstream.token` used to
 authenticate only the retrospective's own REST calls, so the child job pushed
 and opened its PR as the SCM plugin instead — a different account whenever the

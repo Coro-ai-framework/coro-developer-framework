@@ -52,6 +52,7 @@ import {
   Job,
   STATUS_CANCELLED,
   STATUS_COMPLETE,
+  STATUS_ESCALATED,
   STATUS_FAILED,
   STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_PLAN_APPROVAL,
@@ -77,6 +78,11 @@ import {
   evaluatePhaseAdvanceGate,
   PHASE_ADVANCE_GATE_MAX_RETRIES,
 } from './completion-gate'
+import {
+  buildContributionCoverageMessage,
+  evaluateContributionCoverage,
+  uncoveredIssueNumbers,
+} from './contribution-coverage'
 import { buildPhaseKickoffMessage } from './phase-kickoff'
 import { assertJobPluginRequirements } from './plugin-preflight'
 import {
@@ -1374,6 +1380,35 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
 
         completionGateAttempts = 0
+
+        // ── Contribution coverage ──────────────────────────────────────
+        // A contribution job may legitimately ship a subset of the
+        // findings it was dispatched with, but the remainder has to reach
+        // a human: their upstream issues are open and no other job will
+        // pick them up. Derived from the `pr-link` artefacts rather than
+        // reported by the agent, and only once the PR exists, so the
+        // scope decision keeps its PR and still gets a hand-off.
+        const coverage = evaluateContributionCoverage(liveJob)
+        if (coverage && coverage.uncovered.length > 0) {
+          const message = buildContributionCoverageMessage(coverage)
+          logger.warn(
+            {
+              jobId: liveJob.id,
+              implemented: coverage.implemented.map(f => f.id),
+              uncovered: coverage.uncovered.map(f => f.id),
+              openIssues: uncoveredIssueNumbers(coverage),
+            },
+            'Contribution job shipped fewer findings than dispatched — escalating',
+          )
+          await stateBackend.appendLog(liveJob.id, `[contribution-coverage] ${message}`)
+          liveJob = await syncJob(stateBackend, liveJob, {
+            status: STATUS_ESCALATED,
+            escalationMessage: message,
+          })
+          toolCtx.job = liveJob
+          break
+        }
+
         liveJob = await syncJob(stateBackend, liveJob, { status: STATUS_COMPLETE })
         await stateBackend.appendLog(liveJob.id, 'All phases complete — job finished successfully')
         logger.info({ jobId: liveJob.id }, 'Job completed')
