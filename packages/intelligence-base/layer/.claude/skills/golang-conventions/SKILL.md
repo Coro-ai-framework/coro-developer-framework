@@ -78,7 +78,7 @@ imports from `raw.githubusercontent.com` instead of letting Go clone the repo:
 
 ```bash
 mkdir -p "$REL/internal/vendored"
-curl -sSL "https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>" \
+curl -fsSL "https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>" \
   -o "$REL/internal/vendored/<name>"
 ```
 
@@ -112,7 +112,7 @@ cat > "$JOB/.git-config-job" <<'EOF'
 [url "https://<scm-host>/<org>/"]
     insteadOf = https://<vanity-host>/<org>/
 EOF
-cd "$REL" && GIT_CONFIG_GLOBAL="$JOB/.git-config-job" go get <vanity-host>/<org>/<module>@<version>
+cd "$REL" && GIT_CONFIG_GLOBAL="$JOB/.git-config-job" GOPRIVATE='<vanity-host>/<org>/*' GONOSUMDB='<vanity-host>/<org>/*' go get <vanity-host>/<org>/<module>@<version>
 ```
 
 ## Project Layout
