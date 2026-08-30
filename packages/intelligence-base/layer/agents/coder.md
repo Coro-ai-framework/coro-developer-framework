@@ -76,7 +76,7 @@ This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct
 
 ### 4. Create the work-item branch
 
-Before running `git checkout -b`, explicitly check out the integration branch — do not rely on the clone's default HEAD, which is not always `main`: `git checkout <params.baseBranch or job.baseBranch>` when either is set. If neither is set and the clone's default HEAD looks scaffold-only or otherwise divergent from where the plan expects work to land, do not assume `main` — call `mcp__coro__escalate` (or `await_event({ eventName: "developer-input: which branch is the integration branch" })`) and wait for the developer to name it.
+Before running `git checkout -b`, explicitly check out the integration branch — do not assume the clone's default HEAD is it; HEAD is frequently `main` even when the plan's real base branch is not: `git checkout <params.baseBranch or job.baseBranch>` when either is set. If neither is set and the clone's default HEAD looks scaffold-only or otherwise divergent from where the plan expects work to land, do not assume `main` — call `await_event({ eventName: "developer-input: which branch is the integration branch" })` and wait for the developer to name it; reserve `mcp__coro__escalate` for when no human is available to answer.
 
 Follow the git conventions (branch naming, commit format) from your always-loaded context. Branch from the base branch you just checked out.
 
