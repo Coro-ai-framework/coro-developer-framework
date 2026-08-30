@@ -77,6 +77,7 @@ has one (e.g. `github.com/swaggo/files`). Fetch only the file(s) your code
 imports from `raw.githubusercontent.com` instead of letting Go clone the repo:
 
 ```bash
+mkdir -p "$REL/internal/vendored"
 curl -sSL "https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>" \
   -o "$REL/internal/vendored/<name>"
 ```
@@ -91,7 +92,7 @@ generated-code tool (e.g. `protoc-gen-go`) against a `replace`d fork, build it
 **from inside the target module** instead:
 
 ```bash
-cd "$REL" && GOCACHE="$JOB/.cache/go-build" \
+cd "$REL" && mkdir -p "$JOB/.cache/bin" && GOCACHE="$JOB/.cache/go-build" \
   go build -o "$JOB/.cache/bin/<tool>" <tool-import-path>
 ```
 
@@ -111,7 +112,7 @@ cat > "$JOB/.git-config-job" <<'EOF'
 [url "https://<scm-host>/<org>/"]
     insteadOf = https://<vanity-host>/<org>/
 EOF
-GIT_CONFIG_GLOBAL="$JOB/.git-config-job" go get <vanity-host>/<org>/<module>@<version>
+cd "$REL" && GIT_CONFIG_GLOBAL="$JOB/.git-config-job" go get <vanity-host>/<org>/<module>@<version>
 ```
 
 ## Project Layout
