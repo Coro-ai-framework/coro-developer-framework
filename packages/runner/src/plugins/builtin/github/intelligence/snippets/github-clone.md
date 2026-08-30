@@ -29,6 +29,20 @@ it via `~/.coro/config.json` if a workflow needs a tool not on the list.
   credential helper. They are never stored in `origin`.
 - `scm_get_clone_info` returns a clean HTTPS URL. Prefer `git push origin`
   over hand-rolling credentialed URLs.
+- **Two accounts can be in play.** When the install configures a
+  contribution token (Settings → Coro contribution), the OSS contribution
+  fork and the repository it was forked from authenticate as that account
+  instead of this plugin's — for `git push` and for the `scm_*` tools
+  alike. Every other repository on `github.com` uses the plugin token.
+  Nothing selects this per job: it follows the `owner/repo` you address, so
+  a hand-built credentialed URL bypasses the choice and pushes as the
+  wrong account.
+- **On a contribution job, prefer `scm_*` over `mcp__github__*`.** The
+  `mcp__github__*` server is one process holding one token, fixed before
+  any repository is named, so it always acts as this plugin's account. For
+  the fork and the upstream repo that is the wrong identity — use
+  `scm_create_pr`, `scm_get_pr_status`, and friends, which choose per
+  repository. Everywhere else the two are interchangeable.
 
 ## Repo identity in `ExternalRef`
 A GitHub pull request is identified globally by `<owner>/<repo>#<n>`. The

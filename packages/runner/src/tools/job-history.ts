@@ -470,7 +470,12 @@ export function aggregatePhaseRuns(
 
     if (detail.attribution === 'work-item') entry.workItemsHandled += 1
     else if (detail.attribution === 'checkpoint-resume') entry.checkpointResumeRuns += 1
-    else {
+    else if (detail.parkReason) {
+      // A recorded parkReason (e.g. `pr:approved`, `developer-input`) means
+      // this run was a zero-cost parked re-entry, not a loop the agent made
+      // on its own — bucket it with the other resumes, same as above.
+      entry.checkpointResumeRuns += 1
+    } else {
       entry.reworkRuns += 1
       entry.reworkCostUsd += usage.costUsd ?? 0
     }

@@ -347,8 +347,14 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
     // deriveGitUsername(). REST continues to use the email via the
     // BitBucketClient instance because Atlassian asymmetrically
     // accepts the email for REST but not for git over HTTPS.
+    //
+    // `repo` may arrive as a bare slug or as a full `workspace/repo` — the
+    // credential helper passes whatever git named in the URL path. Take the
+    // last segment, as `readFile`/`searchCode` do, so a full slug does not
+    // become `bitbucket.org/<workspace>/<workspace>/<repo>`.
+    const repoSlug = args.repo.includes('/') ? args.repo.split('/').pop()! : args.repo
     return {
-      url: `https://bitbucket.org/${this.workspace}/${args.repo}.git`,
+      url: `https://bitbucket.org/${this.workspace}/${repoSlug}.git`,
       username: this.coderGitUsername,
       password: this.coderToken,
       envForGit: { GIT_TERMINAL_PROMPT: '0' },

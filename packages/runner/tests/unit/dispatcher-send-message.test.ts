@@ -4,6 +4,7 @@ import {
   JobType,
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_CODING,
+  STATUS_COMPLETE,
   type Job,
 } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
@@ -132,5 +133,75 @@ describe('Dispatcher.sendMessage', () => {
     expect(patch.pendingPrompt).toContain('first message')
     expect(patch.pendingPrompt).toContain('second message')
     expect(patch.pendingPrompt).toContain('---')
+  })
+
+  it('reopens a completed job into planning with a follow-up frame and keeps the session', async () => {
+    const job = {
+      ...makeJob(),
+      status: STATUS_COMPLETE,
+      phase: 'evaluation',
+      awaitingEvent: undefined,
+      awaitingNextPhase: undefined,
+      workflowPhases: [
+        { name: 'spec-writing', status: 'spec-writing' },
+        { name: 'planning', status: 'planning' },
+        { name: 'coding', status: 'coding' },
+        { name: 'review', status: 'reviewing' },
+        { name: 'evaluation', status: 'evaluating' },
+      ],
+    }
+    const getJob = vi.fn(async () => job)
+    const updateJob = vi.fn(async (_jobId: string, patch: Partial<Job>) => ({ ...job, ...patch }))
+    const appendLog = vi.fn(async () => undefined)
+
+    const dispatcher = new Dispatcher({
+      stateBackend: { getJob, updateJob, appendLog },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    } as never)
+
+    await dispatcher.sendMessage(job.id, 'also handle the empty-list case')
+
+    const patch = updateJob.mock.calls[0]?.[1] as Partial<Job>
+    expect(patch).toMatchObject({
+      status: STATUS_CODING,
+      phase: 'planning',
+      awaitingEvent: undefined,
+      pendingPrompt: expect.stringContaining('[FOLLOW-UP]'),
+    })
+    expect(patch).not.toHaveProperty('sessionId')
+    expect(patch.pendingPrompt).toContain('also handle the empty-list case')
+    expect(appendLog).toHaveBeenCalledWith(
+      job.id,
+      expect.stringContaining('[follow-up] Reopening completed job into phase "planning"'),
+    )
+  })
+
+  it('reopens a completed campaign into campaign-planning when that is the declared planner phase', async () => {
+    const job = {
+      ...makeJob(),
+      status: STATUS_COMPLETE,
+      phase: 'aggregation',
+      awaitingEvent: undefined,
+      awaitingNextPhase: undefined,
+      workflowPhases: [
+        { name: 'campaign-planning', status: 'campaign-planning' },
+        { name: 'coordinating', status: 'coordinating' },
+        { name: 'aggregation', status: 'aggregating' },
+      ],
+    }
+    const getJob = vi.fn(async () => job)
+    const updateJob = vi.fn(async (_jobId: string, patch: Partial<Job>) => ({ ...job, ...patch }))
+
+    const dispatcher = new Dispatcher({
+      stateBackend: { getJob, updateJob, appendLog: vi.fn(async () => undefined) },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    } as never)
+
+    await dispatcher.sendMessage(job.id, 'add a fourth child for the UI')
+
+    expect(updateJob.mock.calls[0]?.[1]).toMatchObject({
+      phase: 'campaign-planning',
+      pendingPrompt: expect.stringContaining('[FOLLOW-UP]'),
+    })
   })
 })

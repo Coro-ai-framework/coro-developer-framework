@@ -28,6 +28,10 @@
 import { z } from 'zod'
 import path from 'node:path'
 import type { Logger } from 'pino'
+import {
+  contributionCredentialCovers,
+  type ContributionCredential,
+} from '../../../config/contribution-credential'
 import { GitHubClient, parseGitHubRepo, type PrComment } from '../../../clients/github'
 import type { ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
 import { externalIdString } from '../../refs'
@@ -192,6 +196,14 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
   private baseUrl?: string
   private fetchFn: typeof fetch = globalThis.fetch
 
+  // A second identity, for the handful of repositories that belong to it: the
+  // contribution fork and the upstream repo it was forked from. Set
+  // out-of-band by the runner (see `applyContributionCredential`) rather than
+  // read from plugin config, so the token never lands in a config slot the
+  // dashboard serves back.
+  private contribution?: ContributionCredential
+  private contributionClient?: GitHubClient
+
   async init(rawConfig: GitHubPluginConfig | Record<string, unknown>, deps: PluginDeps): Promise<void> {
     const cfg = ghConfigSchema.parse(rawConfig)
     this.owner = cfg.owner
@@ -199,6 +211,45 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     this.baseUrl = cfg.baseUrl
     this.fetchFn = deps.fetch
     this.client = new GitHubClient(cfg.owner, cfg.token, cfg.baseUrl)
+    // Credential rotation goes through `init`, so the derived client has to
+    // go with it or a rotated contribution token would be ignored until the
+    // next restart.
+    this.contributionClient = undefined
+  }
+
+  setContributionCredential(credential: ContributionCredential | undefined): void {
+    this.contribution = credential
+    this.contributionClient = undefined
+  }
+
+  /**
+   * The credential that owns `repoSlug`. Everything addressed by an
+   * `owner/repo` slug routes through here, so the fork and the upstream repo
+   * are reached as the contribution account while every other repository
+   * stays on the plugin's own account.
+   *
+   * Bare repo names (webhook refs carry one) never match, which is correct:
+   * they resolve against `this.owner`.
+   */
+  private tokenFor(repoSlug: string): string {
+    const credential = this.contribution
+    if (credential && contributionCredentialCovers(credential, repoSlug)) {
+      return credential.password
+    }
+    return this.token
+  }
+
+  private clientFor(repoSlug: string): GitHubClient {
+    const credential = this.contribution
+    if (!credential || !contributionCredentialCovers(credential, repoSlug)) {
+      return this.client
+    }
+    this.contributionClient ??= new GitHubClient(
+      credential.owner,
+      credential.password,
+      this.baseUrl,
+    )
+    return this.contributionClient
   }
 
   async detectCredentials(): Promise<ReadonlyArray<CredentialCandidate>> {
@@ -248,6 +299,15 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
    *
    * Overriding `GITHUB_API_URL` lets the plugin point at GHE servers
    * when `config.baseUrl` is set.
+   *
+   * **This server always holds the plugin's own token, never the
+   * contribution one.** It is one process per job with one token in its
+   * environment, chosen before any repository is named, so it cannot make
+   * the per-repository choice `clientFor` makes. On a contribution job the
+   * agent must reach the fork and upstream through the generic `scm_*`
+   * tools — which run in-process and do route by repository — because
+   * `mcp__github__*` would act as the install's own account. The GitHub
+   * clone snippet tells the agent exactly that.
    */
   mcpServer(): PluginMcpServerConfig {
     const env: Record<string, string> = {
@@ -271,7 +331,7 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     return {
       url: `https://github.com/${owner}/${repo}.git`,
       username: 'x-access-token',
-      password: this.token,
+      password: this.tokenFor(`${owner}/${repo}`),
       envForGit: { GIT_TERMINAL_PROMPT: '0' },
     }
   }
@@ -284,9 +344,10 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
    */
   async pollPr(ref: ExternalRefShape): Promise<ScmPollSnapshot> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    const client = this.clientFor(repoSlug)
     const [status, comments] = await Promise.all([
-      this.client.getPrStatus(repoSlug, prId),
-      this.client.getComments(repoSlug, prId),
+      client.getPrStatus(repoSlug, prId),
+      client.getComments(repoSlug, prId),
     ])
     const normalisedComments: ScmPrComment[] = comments.map(toScmComment)
     return {
@@ -302,20 +363,20 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
   }
 
   async readFile(args: { repo: string; path: string; ref?: string }): Promise<ScmReadFileResult> {
-    return this.client.getFileContent(args.repo, args.path, args.ref ?? 'HEAD')
+    return this.clientFor(args.repo).getFileContent(args.repo, args.path, args.ref ?? 'HEAD')
   }
 
   async searchCode(args: { repo: string; query: string; maxResults?: number }): Promise<ScmCodeSearchHit[]> {
-    return this.client.searchCode(args.repo, args.query, args.maxResults ?? 20)
+    return this.clientFor(args.repo).searchCode(args.repo, args.query, args.maxResults ?? 20)
   }
 
   async listFiles(args: { repo: string; path?: string; ref?: string }): Promise<ScmDirectoryEntry[]> {
-    return this.client.listFiles(args.repo, args.path ?? '', args.ref ?? 'HEAD')
+    return this.clientFor(args.repo).listFiles(args.repo, args.path ?? '', args.ref ?? 'HEAD')
   }
 
   async createPr(args: ScmCreatePrArgs): Promise<ExternalRef> {
     const reviewers = args.reviewers ? Array.from(args.reviewers) : undefined
-    const pr = await this.client.createPr({
+    const pr = await this.clientFor(args.repoSlug).createPr({
       repoSlug: args.repoSlug,
       title: args.title,
       ...(args.description !== undefined ? { description: args.description } : {}),
@@ -357,7 +418,7 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
 
   async getPrStatus(ref: ExternalRef): Promise<ScmPrStatus> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
-    const status = await this.client.getPrStatus(repoSlug, prId)
+    const status = await this.clientFor(repoSlug).getPrStatus(repoSlug, prId)
     return {
       state: normalisePrState(status.state),
       approvalCount: status.approvalCount,
@@ -366,13 +427,13 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
 
   async listPrComments(ref: ExternalRef): Promise<ScmPrComment[]> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
-    const comments = await this.client.getComments(repoSlug, prId)
+    const comments = await this.clientFor(repoSlug).getComments(repoSlug, prId)
     return comments.map(toScmComment)
   }
 
   async postPrComment(ref: ExternalRef, body: string): Promise<ScmPrComment> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
-    return toScmComment(await this.client.postComment(repoSlug, prId, body))
+    return toScmComment(await this.clientFor(repoSlug).postComment(repoSlug, prId, body))
   }
 
   async replyToComment(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment> {
@@ -381,17 +442,17 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     if (!Number.isFinite(parent)) {
       throw new Error(`github plugin: parentCommentId "${parentId}" is not a number`)
     }
-    return toScmComment(await this.client.replyToComment(repoSlug, prId, parent, body))
+    return toScmComment(await this.clientFor(repoSlug).replyToComment(repoSlug, prId, parent, body))
   }
 
   async approvePr(ref: ExternalRef): Promise<void> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
-    await this.client.approvePr(repoSlug, prId)
+    await this.clientFor(repoSlug).approvePr(repoSlug, prId)
   }
 
   async mergePr(ref: ExternalRef, opts?: ScmMergeOptions): Promise<void> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
-    await this.client.mergePr(repoSlug, prId, opts?.message)
+    await this.clientFor(repoSlug).mergePr(repoSlug, prId, opts?.message)
   }
 
   normalizeInbound(req: { headers: Record<string, string | string[] | undefined>; rawBody: Buffer }): NormalizedEvent | null {

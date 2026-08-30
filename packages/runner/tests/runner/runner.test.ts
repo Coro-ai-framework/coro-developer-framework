@@ -178,7 +178,6 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
     bbCoder: {} as RunnerContext['bbCoder'],
     bbReviewer: {} as RunnerContext['bbReviewer'],
     ghClient: null,
-    ghGitClient: null,
     lokiClient: {} as RunnerContext['lokiClient'],
     tempoClient: {} as RunnerContext['tempoClient'],
     plugins,

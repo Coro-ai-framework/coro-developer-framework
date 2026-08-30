@@ -399,6 +399,67 @@ itself. The child is capped by `upstream.maxCodeJobsPerRun`, cannot promote
 itself into a campaign (`epicAllowed: false`), and is linked from the
 finding's outcome as `childJobId`. The retrospective does not wait for it.
 
+**A child may ship fewer findings than it was dispatched, and the
+remainder has to survive that.** The planner is the first party in the
+chain to read the repository, so findings that clustered in the analyst's
+metrics can turn out to be unrelated edits a maintainer would ask to
+split — declining them is the correct call. What the workflow could not
+express was the leftovers: `escalate` is the only tool that records "a
+human must act" and it *terminates the job*, so escalating them would
+discard the PR the coupled set had just earned. Asked to do something
+that costs more than it saves, the planner wrote its deferral into the
+plan artefact and a log line, and pointed at the coding checkpoint as the
+place a developer would see it. Nothing reads a log line, and the
+checkpoint had been switched off mid-run — `interactive` is live-mutable —
+so the job reported `complete` with two confirmed defects, two open
+upstream issues, and no owner.
+
+`jobs/contribution-coverage.ts` closes that by **deriving** coverage at
+the completion boundary: `params.findings` is what was dispatched, the
+`findingIds` on the `pr-link` artefacts are what a PR claims, and the
+difference is raised as `STATUS_ESCALATED` naming the issues that still
+need a job. Derivation is the point — a hand-off the agent has to
+remember is one it can forget, and this one had no working channel to
+remember it into. It runs after the PR exists, so a correct scope
+decision keeps its PR and still reaches a developer; the `pr-link`
+`issueUrl` is a fallback for single-finding jobs whose artefact omits
+`findingIds`, while `retrospectiveFindingId` is deliberately ignored
+because dispatch mirrors the first finding into it either way. The
+corollary for the analyst is that `childJobId` on a finding's outcome
+records which job was *asked*, not what shipped.
+
+**One identity owns the fork and writes to it.** `upstream.token` used to
+authenticate only the retrospective's own REST calls, so the child job pushed
+and opened its PR as the SCM plugin instead — a different account whenever the
+two are configured separately, which GitHub refused only after the work was
+committed. `config/contribution-credential.ts` closes that by making the
+contribution identity a property of *repositories* rather than of a job type:
+it claims the fork and the upstream repo, and nothing else. That keying is
+forced rather than chosen — the git credential helper runs as a separate
+process (`coro git-credential`) that receives only protocol/host/path from
+git, so a rule carried in `job.params` could never reach it, while one derived
+from config reaches both the helper and the in-process plugin. Two consumers:
+`fillGitCredential` (checked before plugin resolution, so it answers even when
+no plugin claims the host) and the GitHub plugin's `clientFor` / `tokenFor`,
+which route every `owner/repo`-addressed call. It is applied out-of-band via
+`applyContributionCredential` rather than merged into the plugin's config slot,
+since `GET /config` only knows to redact the token where it already lives.
+With no `upstream.token` the resolver returns `undefined` and everything keeps
+using the plugin identity — which is correct, because the fork was then
+created with the plugin's own token.
+
+Both halves must agree on *where the fork lives*, which is why
+`forkOwner`'s fallback to the GitHub plugin's owner happens once, in
+`resolveUpstreamConfig`, and nowhere else. While `upstream.ts` and the
+credential resolver each applied their own, a config with `upstream.token`
+set and `forkOwner` blank created the fork with the contribution token and
+then pushed to it with the plugin's — the same 403, reachable through a
+config shape the first fix did not cover. `mcpServer()` is the one surface
+that cannot honour any of this: it is a single process holding a single
+token chosen before any repository is named, so contribution jobs are told
+(in the GitHub clone snippet and `agents/oss-contributor.md`) to use the
+in-process `scm_*` tools rather than `mcp__github__*`.
+
 **Surfaces.** Three runner endpoints back both triggers —
 `POST /retrospectives` (dispatch; 409 while one is already running),
 `GET /retrospectives` (history with findings parsed out of the artefacts),

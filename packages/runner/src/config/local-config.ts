@@ -603,6 +603,15 @@ export interface ResolvedUpstreamConfig {
  * Resolve the upstream contribution target, or `undefined` when this
  * install has not opted in. `repoUrl` is the switch: without it there is
  * nowhere to publish and the retrospective's upstream tools stay closed.
+ *
+ * `forkOwner` is resolved here rather than left to consumers, and that
+ * matters: the fork's owner is what decides which identity may write to
+ * it. When each consumer applied its own fallback, a config with
+ * `upstream.token` set and `forkOwner` blank had the REST tools create the
+ * fork with the contribution token while the git credential helper — which
+ * saw no `forkOwner` and so derived no contribution identity — pushed to it
+ * with the plugin's. That is a 403 discovered only after the work is
+ * committed, so the fallback belongs in one place.
  */
 export function resolveUpstreamConfig(config: LocalConfig | null): ResolvedUpstreamConfig | undefined {
   const upstream = config?.upstream
@@ -610,7 +619,10 @@ export function resolveUpstreamConfig(config: LocalConfig | null): ResolvedUpstr
   if (!repoUrl) return undefined
 
   const token = upstream?.token?.trim() || process.env.CORO_UPSTREAM_TOKEN?.trim() || ''
-  const forkOwner = upstream?.forkOwner?.trim() || process.env.CORO_UPSTREAM_FORK_OWNER?.trim() || ''
+  const forkOwner =
+    upstream?.forkOwner?.trim() ||
+    process.env.CORO_UPSTREAM_FORK_OWNER?.trim() ||
+    githubPluginOwner(config)
 
   return {
     repoUrl,
@@ -619,6 +631,19 @@ export function resolveUpstreamConfig(config: LocalConfig | null): ResolvedUpstr
     maxIssuesPerRun: upstream?.maxIssuesPerRun ?? UPSTREAM_DEFAULT_MAX_ISSUES_PER_RUN,
     maxCodeJobsPerRun: upstream?.maxCodeJobsPerRun ?? UPSTREAM_DEFAULT_MAX_CODE_JOBS_PER_RUN,
   }
+}
+
+/**
+ * The GitHub plugin's configured account, read the same way
+ * `buildSettingsFromLocal` reads it into `settings.github.owner`. Kept in
+ * sync with that reader: a fork owner resolved from a different source than
+ * the one the REST tools use would recreate the split it exists to prevent.
+ */
+function githubPluginOwner(config: LocalConfig | null): string {
+  const slot = config?.plugins?.installed?.['github']?.config as Record<string, unknown> | undefined
+  const owner = slot?.['owner']
+  const fromSlot = typeof owner === 'string' ? owner.trim() : ''
+  return fromSlot || process.env.GITHUB_OWNER?.trim() || ''
 }
 
 /**

@@ -22,7 +22,7 @@ are the spec.
 | `set_work_items` | One work item per root cause you will actually ship |
 | `post_artifact` | Record the plan |
 | `scm_clone_repo` | Clone the fork |
-| `escalate` | None of the defects exist, or they cannot share one PR |
+| `escalate` | None of the defects exist any more — nothing left to ship |
 
 Do **not** call `convert_to_campaign` or `switch_workflow`. `params.epicAllowed` is false.
 
@@ -39,8 +39,17 @@ Do **not** call `convert_to_campaign` or `switch_workflow`. `params.epicAllowed`
    Findings that share a `rootCause` are one defect the analyst wrote up
    from several symptoms; implementing them separately produces two half
    fixes of the same bug. A finding with no `rootCause` is its own work
-   item. Escalate leftovers rather than stacking PRs.
-5. Write `implementation-plan.md` and post it as `implementation-plan-md`.
+   item.
+5. Leave the rest out, and say so in the plan. Findings that do not belong
+   in this PR get a **Deferred** section naming each one, its issue, and
+   why it does not couple — one line each is enough. Do **not** `escalate`
+   them: `escalate` ends the job, so it would throw away the PR the
+   coupled set has earned. You do not have to arrange the follow-up
+   either. The runner compares what you were dispatched against what a PR
+   actually claims, and raises the remainder for a developer once the PR
+   is open, quoting nothing but the finding ids and issues — your
+   **Deferred** section is where the reason is read.
+6. Write `implementation-plan.md` and post it as `implementation-plan-md`.
    The plan must name, per work item: files (the union across the root
    cause's findings), the failing test (runner-code) or neighbouring
    wording (intelligence), and what is out of scope.

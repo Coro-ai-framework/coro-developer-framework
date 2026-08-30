@@ -78,6 +78,19 @@ describe('bitbucket plugin — git clone URL username derivation', () => {
     expect(deps.logger.info as ReturnType<typeof vi.fn>).not.toHaveBeenCalled()
   })
 
+  it('does not repeat the workspace when repo already carries it', async () => {
+    // The credential helper asks with whatever path git had in the remote
+    // URL, so `repo` arrives as `acme/svc` rather than `svc` once
+    // `credential.useHttpPath` is on.
+    const { plugin } = await init({
+      workspace: 'acme',
+      coderUsername: 'x-token-auth',
+      coderToken: 'BBDC-token',
+    })
+
+    expect(plugin.cloneInfo({ repo: 'acme/svc' }).url).toBe('https://bitbucket.org/acme/svc.git')
+  })
+
   it('leaves x-token-auth untouched (legacy repository access token)', async () => {
     const { plugin } = await init({
       workspace: 'acme',

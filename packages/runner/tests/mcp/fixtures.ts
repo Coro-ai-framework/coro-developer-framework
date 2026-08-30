@@ -265,7 +265,6 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
     bbCoder,
     bbReviewer,
     ghClient: null,
-    ghGitClient: null,
     lokiClient,
     tempoClient,
     plugins: new PluginRegistry(),

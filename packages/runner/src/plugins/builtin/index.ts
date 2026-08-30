@@ -6,10 +6,14 @@
 // here plus the runtime file.
 
 import type { Logger } from 'pino'
+import {
+  resolveContributionCredential,
+  type ContributionCredential,
+} from '../../config/contribution-credential'
 import type { PluginsConfig } from '../../config/plugins-config'
 import type { Settings } from '../../config/settings'
 import { isScmPlugin, PluginRegistry } from '../registry'
-import type { PluginManifest, PluginRuntime } from '../types'
+import type { PluginManifest, PluginRuntime, ScmPluginRuntime } from '../types'
 import { buildDropinFactoryMap, type DropinPluginFactory } from '../loader'
 import { createBitBucketScmPlugin } from './bitbucket'
 import { createGitHubScmPlugin } from './github'
@@ -153,6 +157,31 @@ export interface BuildPluginsArgs {
    * uses the user's home dir.
    */
   dropinPluginsRoot?: string
+  /**
+   * The install's contribution identity, when it configured a token separate
+   * from its SCM plugin. Defaults to whatever `settings.upstream` resolves
+   * to; passed explicitly by `coro git-credential`, which builds no settings.
+   */
+  contributionCredential?: ContributionCredential
+}
+
+/**
+ * Hand the contribution identity to every SCM plugin that can hold one.
+ *
+ * Passed out-of-band rather than merged into the plugin's config slot: the
+ * dashboard reads those slots back over HTTP, and `GET /config` only knows to
+ * redact `upstream.token` where it already lives.
+ *
+ * `undefined` clears, so removing the token in Settings takes effect on the
+ * next reload instead of surviving until a restart.
+ */
+export function applyContributionCredential(
+  registry: PluginRegistry,
+  credential: ContributionCredential | undefined,
+): void {
+  for (const runtime of registry.byKind<ScmPluginRuntime>('scm')) {
+    runtime.setContributionCredential?.(credential)
+  }
 }
 
 /**
@@ -273,6 +302,11 @@ export async function buildBuiltinPluginRegistry(
     registry.setDefaults({ ...registry.getDefaults(), executor: defaultProvider })
   }
 
+  applyContributionCredential(
+    registry,
+    args.contributionCredential ?? resolveContributionCredential(args.settings?.upstream),
+  )
+
   return registry
 }
 
@@ -311,6 +345,12 @@ export async function buildScmPluginRegistry(args: BuildPluginsArgs): Promise<Pl
       logger.error({ err, pluginId: id }, 'Failed to initialise SCM plugin for git credentials — skipping')
     }
   }
+
+  applyContributionCredential(
+    registry,
+    args.contributionCredential ?? resolveContributionCredential(args.settings?.upstream),
+  )
+
   return registry
 }
 

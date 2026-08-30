@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildDeveloperInputMessage, buildEscalationResponseMessage } from '../../src/jobs/dispatcher'
-import type { Artifact } from '@coro-ai/cloud-protocol'
+import { buildDeveloperInputMessage, buildEscalationResponseMessage, buildFollowUpMessage, resolveFollowUpPhase } from '../../src/jobs/dispatcher'
+import type { Artifact, Job } from '@coro-ai/cloud-protocol'
 
 function art(partial: Partial<Artifact> = {}): Artifact {
   return {
@@ -74,6 +74,47 @@ describe('buildDeveloperInputMessage (developer-input resumes)', () => {
   it('instructs agent to record reusable guidance via add_insight', () => {
     const prompt = buildDeveloperInputMessage('x', 'planning', undefined, [])
     expect(prompt).toContain('add_insight')
+  })
+})
+
+describe('buildFollowUpMessage (completed-job follow-up)', () => {
+  it('frames the developer ask for the planner and forbids set_work_items', () => {
+    const prompt = buildFollowUpMessage(
+      'also handle the empty-list case',
+      'evaluation',
+      'planning',
+      [art()],
+    )
+
+    expect(prompt).toContain('[FOLLOW-UP]')
+    expect(prompt).toContain('last phase: evaluation')
+    expect(prompt).toContain('phase **planning**')
+    expect(prompt).toContain('also handle the empty-list case')
+    expect(prompt).toContain('update_work_item')
+    expect(prompt).toContain('Do **not** call `set_work_items`')
+    expect(prompt).toContain('plan-md: Migration plan')
+    expect(prompt).not.toContain('[DEVELOPER RESPONSE]')
+  })
+})
+
+describe('resolveFollowUpPhase', () => {
+  it('prefers planning when the workflow declares it', () => {
+    expect(resolveFollowUpPhase({
+      workflowPhases: [
+        { name: 'spec-writing', status: 'spec-writing' },
+        { name: 'planning', status: 'planning' },
+      ],
+    } as Job)).toBe('planning')
+  })
+
+  it('uses campaign-planning when that is the only planner phase', () => {
+    expect(resolveFollowUpPhase({
+      workflowPhases: [{ name: 'campaign-planning', status: 'campaign-planning' }],
+    } as Job)).toBe('campaign-planning')
+  })
+
+  it('defaults to planning when workflowPhases is missing', () => {
+    expect(resolveFollowUpPhase({} as Job)).toBe('planning')
   })
 })
 

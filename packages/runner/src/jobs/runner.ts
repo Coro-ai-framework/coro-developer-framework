@@ -52,6 +52,7 @@ import {
   Job,
   STATUS_CANCELLED,
   STATUS_COMPLETE,
+  STATUS_ESCALATED,
   STATUS_FAILED,
   STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_PLAN_APPROVAL,
@@ -70,9 +71,18 @@ import {
 import {
   buildJobCompletionBlockPrompt,
   buildJobCompletionFailureMessage,
+  buildPhaseAdvanceBlockPrompt,
+  buildPhaseAdvanceFailureMessage,
   COMPLETION_GATE_MAX_RETRIES,
   evaluateCompletionGate,
+  evaluatePhaseAdvanceGate,
+  PHASE_ADVANCE_GATE_MAX_RETRIES,
 } from './completion-gate'
+import {
+  buildContributionCoverageMessage,
+  evaluateContributionCoverage,
+  uncoveredIssueNumbers,
+} from './contribution-coverage'
 import { buildPhaseKickoffMessage } from './phase-kickoff'
 import { assertJobPluginRequirements } from './plugin-preflight'
 import {
@@ -112,7 +122,6 @@ export interface RunnerContext {
   bbCoder: BitBucketClient
   bbReviewer: BitBucketClient
   ghClient: GitHubClient | null
-  ghGitClient: GitClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
   /**
@@ -355,7 +364,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     bbCoder: ctx.bbCoder,
     bbReviewer: ctx.bbReviewer,
     ghClient: ctx.ghClient,
-    ghGitClient: ctx.ghGitClient,
     lokiClient: ctx.lokiClient,
     tempoClient: ctx.tempoClient,
     plugins: ctx.plugins,
@@ -375,6 +383,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   // avoid an infinite loop. The counter is reset to 0 every time the gate
   // passes or the runner makes any other phase transition.
   let completionGateAttempts = 0
+
+  // ── Phase-advance gate state ────────────────────────────────────────────
+  // Tracks consecutive implicit (non-`goto_phase`) advances blocked because
+  // the current work item still has an open PR mapping — see
+  // `evaluatePhaseAdvanceGate` in `./completion-gate`. Reset whenever the
+  // gate passes, an explicit `goto_phase` is used, or any other transition
+  // happens.
+  let phaseAdvanceGateAttempts = 0
 
   logger.info(
     {
@@ -1364,6 +1380,35 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         }
 
         completionGateAttempts = 0
+
+        // ── Contribution coverage ──────────────────────────────────────
+        // A contribution job may legitimately ship a subset of the
+        // findings it was dispatched with, but the remainder has to reach
+        // a human: their upstream issues are open and no other job will
+        // pick them up. Derived from the `pr-link` artefacts rather than
+        // reported by the agent, and only once the PR exists, so the
+        // scope decision keeps its PR and still gets a hand-off.
+        const coverage = evaluateContributionCoverage(liveJob)
+        if (coverage && coverage.uncovered.length > 0) {
+          const message = buildContributionCoverageMessage(coverage)
+          logger.warn(
+            {
+              jobId: liveJob.id,
+              implemented: coverage.implemented.map(f => f.id),
+              uncovered: coverage.uncovered.map(f => f.id),
+              openIssues: uncoveredIssueNumbers(coverage),
+            },
+            'Contribution job shipped fewer findings than dispatched — escalating',
+          )
+          await stateBackend.appendLog(liveJob.id, `[contribution-coverage] ${message}`)
+          liveJob = await syncJob(stateBackend, liveJob, {
+            status: STATUS_ESCALATED,
+            escalationMessage: message,
+          })
+          toolCtx.job = liveJob
+          break
+        }
+
         liveJob = await syncJob(stateBackend, liveJob, { status: STATUS_COMPLETE })
         await stateBackend.appendLog(liveJob.id, 'All phases complete — job finished successfully')
         logger.info({ jobId: liveJob.id }, 'Job completed')
@@ -1373,6 +1418,60 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // Any non-completion advance resets the gate counter — only
       // consecutive end-of-workflow blocks count toward the cap.
       completionGateAttempts = 0
+
+      // ── Phase-advance PR-merge gate ──────────────────────────────────
+      // Mirrors the completion gate above, but for non-terminal advances.
+      // Only the *implicit* default advance is gated — an explicit
+      // `goto_phase` call (signals.nextPhase set) is the agent's own
+      // intelligence choosing to move on and is treated as a waiver.
+      if (!signals.nextPhase) {
+        const advanceGate = evaluatePhaseAdvanceGate(liveJob)
+        if (!advanceGate.ready) {
+          phaseAdvanceGateAttempts += 1
+          if (phaseAdvanceGateAttempts > PHASE_ADVANCE_GATE_MAX_RETRIES) {
+            const failure = buildPhaseAdvanceFailureMessage(advanceGate)
+            logger.warn(
+              { jobId: liveJob.id, attempts: phaseAdvanceGateAttempts },
+              'Phase-advance gate exhausted retries — failing job',
+            )
+            await stateBackend.appendLog(liveJob.id, `[phase-advance-gate] ${failure}`)
+            liveJob = await syncJob(stateBackend, liveJob, {
+              status: STATUS_FAILED,
+              escalationMessage: failure,
+            })
+            toolCtx.job = liveJob
+            break
+          }
+
+          logger.info(
+            {
+              jobId: liveJob.id,
+              phase: liveJob.phase,
+              nextPhase,
+              attempt: phaseAdvanceGateAttempts,
+              openPrIds: advanceGate.openMappings.map(m => m.prId),
+            },
+            'Phase-advance gate blocked — re-running current phase with corrective prompt',
+          )
+          await stateBackend.appendLog(
+            liveJob.id,
+            `[phase-advance-gate] Blocking advance to '${nextPhase}' ` +
+              `(${advanceGate.openMappings.length} open PR mapping(s)). Re-running phase ` +
+              `'${liveJob.phase}' (attempt ${phaseAdvanceGateAttempts}/${PHASE_ADVANCE_GATE_MAX_RETRIES}).`,
+          )
+          liveJob = await syncJob(stateBackend, liveJob, {
+            pendingPrompt: buildPhaseAdvanceBlockPrompt(
+              liveJob,
+              advanceGate,
+              nextPhase,
+              phaseAdvanceGateAttempts,
+            ),
+          })
+          toolCtx.job = liveJob
+          continue
+        }
+      }
+      phaseAdvanceGateAttempts = 0
 
       // Re-read `interactive` from state right before the boundary check so
       // a dashboard / API toggle that lands mid-phase is honoured on this
