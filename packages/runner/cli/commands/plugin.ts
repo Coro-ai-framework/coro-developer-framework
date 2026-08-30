@@ -300,9 +300,14 @@ class ${capitalize(id)}Plugin extends ScmPluginBase<Config> {
   }
 
   cloneInfo(args: { repo: string }): ScmCloneInfo {
-    const token = encodeURIComponent(this.token)
+    // Keep the token off the URL. Coro stores this URL as \`origin\` and hands
+    // \`username\`/\`password\` to git through its own credential helper, so a
+    // credentialed URL would persist a secret in every checkout's config and
+    // pin the remote to whichever token was live at clone time.
     return {
-      url: \`https://oauth2:\${token}@\${this.host}/\${args.repo}.git\`,
+      url: \`https://\${this.host}/\${args.repo}.git\`,
+      username: 'oauth2',
+      password: this.token,
       envForGit: { GIT_TERMINAL_PROMPT: '0' },
     }
   }

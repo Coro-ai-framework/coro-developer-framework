@@ -118,7 +118,6 @@ function makeCtx(opts: MakeCtxOpts = {}): ToolContext {
     bbCoder: {} as ToolContext['bbCoder'],
     bbReviewer: {} as ToolContext['bbReviewer'],
     ghClient: {} as unknown as ToolContext['ghClient'],
-    ghGitClient: null,
     lokiClient: {} as ToolContext['lokiClient'],
     tempoClient: {} as ToolContext['tempoClient'],
     plugins: new PluginRegistry(),

@@ -233,9 +233,14 @@ class GitLabScmPlugin extends ScmPluginBase<GitLabPluginConfig> {
   cloneInfo(args: { repo: string }): ScmCloneInfo {
     // GitLab PATs use the literal username `oauth2` for HTTPS basic auth.
     // The token stays on `password` so `origin` never snapshots it.
+    //
+    // `repo` may already carry the namespace: the runner's credential helper
+    // asks with whatever path git had in the URL. Only prefix `namespace`
+    // when it is missing, or the URL gains a duplicate segment.
     const host = this.gitlabHost()
+    const project = args.repo.includes('/') ? args.repo : `${this.namespace}/${args.repo}`
     return {
-      url: `https://${host}/${this.namespace}/${args.repo}.git`,
+      url: `https://${host}/${project}.git`,
       username: 'oauth2',
       password: this.token,
       envForGit: { GIT_TERMINAL_PROMPT: '0' },

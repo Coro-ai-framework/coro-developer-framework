@@ -43,7 +43,6 @@ export interface ToolContext {
   bbCoder: BitBucketClient
   bbReviewer: BitBucketClient
   ghClient: GitHubClient | null
-  ghGitClient: GitClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
   /**

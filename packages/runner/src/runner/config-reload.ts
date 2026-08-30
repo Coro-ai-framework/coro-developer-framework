@@ -5,7 +5,7 @@
 //   2. `buildSettingsFromLocal(config)` snapshots into `Settings`.
 //   3. `buildBuiltinPluginRegistry(...)` instantiates each plugin and
 //      calls `runtime.init(slot.config)` once.
-//   4. `createGitClient(settings)` / `createBitBucketClients(settings)` /
+//   4. `createBitBucketClients(settings)` / `createGitHubClient(settings)` /
 //      etc. capture credentials into client instances.
 //
 // All of the above end up on the `RunnerContext` the `Dispatcher`
@@ -45,13 +45,15 @@ import {
   resolvePluginsConfig,
   type LocalConfig,
 } from '../config/local-config'
+import { resolveContributionCredential } from '../config/contribution-credential'
 import {
+  applyContributionCredential,
   BUILTIN_PLUGIN_IDS_BY_KIND,
   instantiatePlugin,
 } from '../plugins/builtin'
 import { buildDropinFactoryMap } from '../plugins/loader'
 import { createBitBucketClients } from '../clients/bitbucket'
-import { createGitClient, createGitHubGitClient } from '../clients/git'
+import { createGitClient } from '../clients/git'
 import { createGitHubClient } from '../clients/github'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
@@ -116,11 +118,10 @@ export async function reloadRunnerState(args: {
   const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(newSettings)
   const newClients = {
     settings: newSettings,
-    gitClient: createGitClient(newSettings),
+    gitClient: createGitClient(),
     bbCoder,
     bbReviewer,
     ghClient: createGitHubClient(newSettings),
-    ghGitClient: createGitHubGitClient(newSettings),
     lokiClient: createLokiClient(newSettings),
     tempoClient: createTempoClient(newSettings),
   }
@@ -214,6 +215,15 @@ export async function reloadRunnerState(args: {
       )
     }
   }
+
+  // Re-bind the contribution identity on every SCM plugin. `init()` above
+  // rotates the plugin's own credentials but knows nothing about this one, so
+  // without this an edit to Settings → Coro contribution would not reach a
+  // running runner — including clearing the token, which passes `undefined`.
+  applyContributionCredential(
+    ctx.plugins,
+    resolveContributionCredential(newSettings.upstream),
+  )
 
   // ── 5. Update registry defaults + alias seeds ───────────────────────────
   //

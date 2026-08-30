@@ -221,9 +221,9 @@ describe('Dispatcher cloud control events', () => {
       )
     })
 
-    it('does not crash the transport when sendMessage throws', async () => {
+    it('reopens a completed job with a follow-up instead of warning', async () => {
       const job = makeJob({ status: 'complete' })
-      const { deliver, logger } = buildDispatcher(job)
+      const { deliver, updateJob, appendLog, logger, getStored } = buildDispatcher(job)
 
       await expect(deliver({
         source: 'cloud',
@@ -232,10 +232,20 @@ describe('Dispatcher cloud control events', () => {
         receivedAt: new Date().toISOString(),
       })).resolves.toBeUndefined()
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId: job.id }),
-        expect.stringContaining('Cloud message injection failed'),
+      expect(logger.warn).not.toHaveBeenCalled()
+      expect(updateJob).toHaveBeenCalledWith(
+        job.id,
+        expect.objectContaining({
+          status: STATUS_CODING,
+          phase: 'planning',
+          pendingPrompt: expect.stringContaining('[FOLLOW-UP]'),
+        }),
       )
+      expect(appendLog).toHaveBeenCalledWith(
+        job.id,
+        expect.stringContaining('[follow-up] Reopening completed job into phase "planning"'),
+      )
+      expect(getStored()).toMatchObject({ status: STATUS_CODING, phase: 'planning' })
     })
   })
 

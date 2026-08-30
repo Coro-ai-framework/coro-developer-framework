@@ -73,9 +73,10 @@ export default function ContributionSection() {
       ) : null}
 
       {tokenOverride ? (
-        <SettingsNotice tone="warning" title="Contribution token override is set">
-          Issues and forks opened by a retrospective use this token instead
-          of the GitHub plugin. Job `git push` still uses Settings → GitHub.
+        <SettingsNotice tone="accent" title="Contribution uses this token throughout">
+          Issues, the fork, `git push`, and the pull request all authenticate
+          as this token — but only for the fork and the repository above. Every
+          other repository a job touches keeps using Settings → GitHub.
         </SettingsNotice>
       ) : null}
 

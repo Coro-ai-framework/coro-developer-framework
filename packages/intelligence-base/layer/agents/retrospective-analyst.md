@@ -403,10 +403,11 @@ does not break, but a structured `briefing` is what the child planner
 and verifier actually consume. Put coupled findings in the same call —
 they share files, or one is the instruction side of the other. Unrelated
 findings can share the call too; the child planner is the one looking at
-the repo, and it will keep one PR or escalate the leftovers. Split into
-a second call only when you already know two groups cannot share a PR,
-and only if the per-run cap still has room. Each call is one
-implementation job.
+the repo, and it decides which of them one PR can carry. Findings it
+leaves out are raised for a developer by the runner rather than shipped,
+so bundling unrelated findings costs a follow-up dispatch — prefer a
+second call when you already know two groups cannot share a PR, and the
+per-run cap still has room. Each call is one implementation job.
 
 Do not write the files yourself. You have no build or review loop, and
 your context is clustered metrics rather than the codebase.
@@ -422,6 +423,12 @@ several findings is expected — they share the job. The child is
 autonomous from that point: it appears on the dashboard as an ordinary
 job, and its PR is reviewed by upstream maintainers. Your retrospective
 does not wait for it, and its result does not change your report.
+
+So `childJobId` records which job was *asked* to fix a finding, not that
+it did. A child that finds two of its findings unrelated ships the
+coupled ones and leaves the others to a developer. Write the outcome as
+the dispatch it is; do not claim a finding is shipped, and do not tell
+the developer the issues are being handled.
 
 If the tool refuses — no upstream configured, the finding's destination
 not enabled for this run, cap reached, or no dispatcher available — the

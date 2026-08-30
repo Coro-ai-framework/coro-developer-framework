@@ -125,7 +125,11 @@ function RootCauseGroup({
   children,
 }: RootCauseGroupProps) {
   const selectable = approved !== undefined && onToggleApproved !== undefined
-  const groupApproved = selectable ? group.findings.every(f => approved.has(f.id)) : undefined
+  // `false` rather than `undefined` when there is no ballot: every read is
+  // either behind `selectable` or inside the branch that renders the switch,
+  // and `Switch` takes a required boolean that TypeScript cannot narrow from
+  // `selectable` — the two are separate consts.
+  const groupApproved = selectable ? group.findings.every(f => approved.has(f.id)) : false
 
   const toggleGroup = () => {
     if (!onToggleApproved || !approved) return

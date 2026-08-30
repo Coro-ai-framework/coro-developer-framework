@@ -269,13 +269,15 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
       GIT_ASKPASS: '',
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
-      GIT_CONFIG_COUNT: '4',
+      GIT_CONFIG_COUNT: '5',
       GIT_CONFIG_KEY_0: 'credential.helper',
       GIT_CONFIG_KEY_1: 'credential.helper',
-      GIT_CONFIG_KEY_2: 'http.lowSpeedLimit',
-      GIT_CONFIG_VALUE_2: '1000',
-      GIT_CONFIG_KEY_3: 'http.lowSpeedTime',
-      GIT_CONFIG_VALUE_3: '60',
+      GIT_CONFIG_KEY_2: 'credential.useHttpPath',
+      GIT_CONFIG_VALUE_2: 'true',
+      GIT_CONFIG_KEY_3: 'http.lowSpeedLimit',
+      GIT_CONFIG_VALUE_3: '1000',
+      GIT_CONFIG_KEY_4: 'http.lowSpeedTime',
+      GIT_CONFIG_VALUE_4: '60',
     }))
     // Inner blob-fetch after a partial clone emits no stdio; a block
     // timeout would kill a healthy clone. Network stalls use http.lowSpeed*.

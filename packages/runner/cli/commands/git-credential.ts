@@ -9,7 +9,12 @@
 
 import { Command } from 'commander'
 import pino from 'pino'
-import { loadLocalConfig, resolvePluginsConfig } from '../../src/config/local-config'
+import { resolveContributionCredential } from '../../src/config/contribution-credential'
+import {
+  loadLocalConfig,
+  resolvePluginsConfig,
+  resolveUpstreamConfig,
+} from '../../src/config/local-config'
 import { buildScmPluginRegistry } from '../../src/plugins/builtin'
 import { runGitCredentialHelper } from '../../src/clients/git-auth'
 
@@ -19,11 +24,21 @@ async function handle(operation: string): Promise<void> {
     const stdin = await readStdin()
     const logger = pino({ level: 'silent' })
     const config = loadLocalConfig()
+    // Writes to the contribution fork authenticate as the account that
+    // created it, which is not the SCM plugin's account whenever the install
+    // configured a separate `upstream.token`.
+    const contribution = resolveContributionCredential(resolveUpstreamConfig(config))
     const registry = await buildScmPluginRegistry({
       pluginsConfig: resolvePluginsConfig(config),
       logger,
+      ...(contribution ? { contributionCredential: contribution } : {}),
     })
-    const body = await runGitCredentialHelper({ operation, stdin, registry })
+    const body = await runGitCredentialHelper({
+      operation,
+      stdin,
+      registry,
+      ...(contribution ? { contribution } : {}),
+    })
     if (body) process.stdout.write(body)
   } catch {
     // Fail closed: print nothing so git does not learn a host helper

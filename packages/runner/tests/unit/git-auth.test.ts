@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+import { resolveContributionCredential } from '../../src/config/contribution-credential'
 import { PluginRegistry } from '../../src/plugins/registry'
 import type { PluginManifest, ScmPluginRuntime } from '../../src/plugins/types'
 import {
@@ -184,6 +185,83 @@ describe('git credential protocol', () => {
   })
 })
 
+// A retrospective creates the contribution fork with `upstream.token`, then
+// dispatches a job to write the fix on it. Before this, the job's push
+// authenticated as the SCM plugin instead — a different account, which GitHub
+// refused only after the work was committed.
+describe('git credentials for the contribution fork', () => {
+  const contribution = resolveContributionCredential({
+    repoUrl: 'https://github.com/Coro-ai-framework/coro-developer-framework',
+    forkOwner: 'kkbrs',
+    token: 'ghp_contribution',
+  })!
+
+  function registryWithPluginToken(): PluginRegistry {
+    const registry = new PluginRegistry()
+    registry.register(makeScm({
+      id: 'github',
+      url: 'https://github.com/acme/svc.git',
+      username: 'x-access-token',
+      password: 'gho_plugin',
+      matches: remote => remote.includes('github.com'),
+    }))
+    return registry
+  }
+
+  it('answers for the fork with the account that created it', () => {
+    expect(fillGitCredential(
+      { protocol: 'https', host: 'github.com', path: 'kkbrs/coro-developer-framework.git' },
+      registryWithPluginToken(),
+      contribution,
+    )).toEqual({ username: 'x-access-token', password: 'ghp_contribution' })
+  })
+
+  it('leaves every other repository on the same host with the plugin token', () => {
+    expect(fillGitCredential(
+      { protocol: 'https', host: 'github.com', path: 'A5Labs-Prime/some-service.git' },
+      registryWithPluginToken(),
+      contribution,
+    )).toEqual({ username: 'x-access-token', password: 'gho_plugin' })
+  })
+
+  it('answers for the fork even when no plugin claims the host', () => {
+    // A Bitbucket-only install contributing to a project on GitHub: the
+    // contribution identity owns named repositories, so it does not depend on
+    // a GitHub plugin being installed.
+    expect(fillGitCredential(
+      { protocol: 'https', host: 'github.com', path: 'kkbrs/coro-developer-framework.git' },
+      new PluginRegistry(),
+      contribution,
+    )).toEqual({ username: 'x-access-token', password: 'ghp_contribution' })
+  })
+
+  it('keeps the plugin token when the install has no separate contribution token', () => {
+    expect(fillGitCredential(
+      { protocol: 'https', host: 'github.com', path: 'kkbrs/coro-developer-framework.git' },
+      registryWithPluginToken(),
+      undefined,
+    )).toEqual({ username: 'x-access-token', password: 'gho_plugin' })
+  })
+
+  it('does not answer for a same-named repo under another account', () => {
+    expect(fillGitCredential(
+      { protocol: 'https', host: 'github.com', path: 'someone-else/coro-developer-framework.git' },
+      registryWithPluginToken(),
+      contribution,
+    )).toEqual({ username: 'x-access-token', password: 'gho_plugin' })
+  })
+
+  it('reaches the helper protocol end to end', async () => {
+    const body = await runGitCredentialHelper({
+      operation: 'get',
+      stdin: 'protocol=https\nhost=github.com\npath=kkbrs/coro-developer-framework.git\n',
+      registry: registryWithPluginToken(),
+      contribution,
+    })
+    expect(body).toBe('username=x-access-token\npassword=ghp_contribution\n')
+  })
+})
+
 describe('gitCredentialHelperCommand', () => {
   it('emits a !-form helper that resets via a quoted argv', () => {
     const cmd = gitCredentialHelperCommand({ argv: ['/usr/bin/node', '/app/cli/index.js', 'git-credential'] })
@@ -196,17 +274,32 @@ describe('gitCredentialHelperCommand', () => {
 describe('createIsolatedGit / simple-git 3.36 scanner', () => {
   it('injects the live credential helper through GIT_CONFIG_COUNT', () => {
     const env = isolatedGitEnv()
-    expect(env.GIT_CONFIG_COUNT).toBe('4')
+    expect(env.GIT_CONFIG_COUNT).toBe('5')
     expect(env.GIT_CONFIG_KEY_0).toBe('credential.helper')
     expect(env.GIT_CONFIG_VALUE_0).toBe('')
     expect(env.GIT_CONFIG_KEY_1).toBe('credential.helper')
     expect(env.GIT_CONFIG_VALUE_1).toMatch(/^!/)
-    expect(env.GIT_CONFIG_KEY_2).toBe('http.lowSpeedLimit')
-    expect(env.GIT_CONFIG_VALUE_2).toBe('1000')
-    expect(env.GIT_CONFIG_KEY_3).toBe('http.lowSpeedTime')
-    expect(env.GIT_CONFIG_VALUE_3).toBe('60')
+    // Without this the helper is asked for a host and never for a repository,
+    // so a per-repository identity can never be honoured.
+    expect(env.GIT_CONFIG_KEY_2).toBe('credential.useHttpPath')
+    expect(env.GIT_CONFIG_VALUE_2).toBe('true')
+    expect(env.GIT_CONFIG_KEY_3).toBe('http.lowSpeedLimit')
+    expect(env.GIT_CONFIG_VALUE_3).toBe('1000')
+    expect(env.GIT_CONFIG_KEY_4).toBe('http.lowSpeedTime')
+    expect(env.GIT_CONFIG_VALUE_4).toBe('60')
     expect(env.GIT_ASKPASS).toBe('')
     expect(env.GIT_CONFIG_GLOBAL).toBe(process.platform === 'win32' ? 'NUL' : '/dev/null')
+  })
+
+  it('keeps every credential slot inside the declared count', () => {
+    // A stale GIT_CONFIG_COUNT silently drops the trailing pairs, and the one
+    // most likely to be dropped is whichever was added last.
+    const env = isolatedGitEnv()
+    const declared = Number(env.GIT_CONFIG_COUNT)
+    for (let i = 0; i < declared; i++) {
+      expect(env[`GIT_CONFIG_KEY_${i}`], `slot ${i}`).toBeTruthy()
+    }
+    expect(env[`GIT_CONFIG_KEY_${declared}`]).toBeUndefined()
   })
 
   it('opts into every scanner class isolatedGitEnv actually uses', () => {
@@ -286,6 +379,9 @@ describe('installRepoGitAuth / prepareJobGitAuth', () => {
     }).split('\n')
     expect(all[0]).toBe('')
     expect(all[1]).toBe('!/bin/echo git-credential')
+    // Without this git asks the helper about a host, never about a repo, so
+    // the contribution fork cannot be told apart from any other GitHub repo.
+    expect(git(repo, 'config', '--local', '--get', 'credential.useHttpPath')).toBe('true')
   })
 
   it('does not rewrite a remote the plugin does not claim', async () => {
@@ -340,4 +436,79 @@ describe('github plugin cloneInfo', () => {
     expect(info.password).toBe('gho_live')
     expect(info.url).not.toContain('gho_live')
   })
+
+  it('reports the contribution token for the fork and the plugin token elsewhere', async () => {
+    const plugin = await contributionPlugin()
+
+    expect(plugin.cloneInfo({ repo: 'kkbrs/coro-developer-framework' }).password)
+      .toBe('ghp_contribution')
+    expect(plugin.cloneInfo({ repo: 'acme/svc' }).password).toBe('gho_live')
+    // A bare name resolves against the plugin's own owner, so it is never the
+    // contribution fork even when the repo name matches.
+    expect(plugin.cloneInfo({ repo: 'coro-developer-framework' }).password).toBe('gho_live')
+  })
+
+  it('drops the contribution identity when Settings clears the token', async () => {
+    const plugin = await contributionPlugin()
+    plugin.setContributionCredential?.(undefined)
+    expect(plugin.cloneInfo({ repo: 'kkbrs/coro-developer-framework' }).password).toBe('gho_live')
+  })
 })
+
+// The other half of the same identity: a cross-repository PR is created
+// against upstream with a head branch on the fork, and GitHub attributes that
+// call to whoever owns the head. Authenticating it as the SCM plugin is the
+// failure that lands one phase after the push.
+describe('github plugin createPr identity', () => {
+  it('opens the contribution PR as the account that owns the fork', async () => {
+    const seen: string[] = []
+    const fetchMock = vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+      seen.push(String(init?.headers?.['Authorization'] ?? ''))
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          number: 7,
+          title: 't',
+          state: 'open',
+          head: { ref: 'fix/x' },
+          base: { ref: 'main' },
+          user: { login: 'kkbrs' },
+          html_url: 'https://github.com/Coro-ai-framework/coro-developer-framework/pull/7',
+        }),
+        text: async () => '{}',
+        headers: new Headers(),
+      } as unknown as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const plugin = await contributionPlugin()
+    await plugin.createPr?.({
+      repoSlug: 'Coro-ai-framework/coro-developer-framework',
+      title: 'Fix the thing',
+      sourceBranch: 'fix/x',
+      sourceOwner: 'kkbrs',
+      targetBranch: 'main',
+    })
+
+    expect(seen.some(header => header.includes('ghp_contribution'))).toBe(true)
+    expect(seen.some(header => header.includes('gho_live'))).toBe(false)
+  })
+})
+
+/** GitHub SCM plugin with the plugin token `gho_live` and a contribution fork under `kkbrs`. */
+async function contributionPlugin(): Promise<ScmPluginRuntime> {
+  const { createGitHubScmPlugin } = await import('../../src/plugins/builtin/github')
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as never
+  const plugin = createGitHubScmPlugin({ config: {}, logger })
+  await plugin.init(
+    { owner: 'acme', token: 'gho_live' },
+    { logger, fetch: globalThis.fetch } as never,
+  )
+  plugin.setContributionCredential?.(resolveContributionCredential({
+    repoUrl: 'https://github.com/Coro-ai-framework/coro-developer-framework',
+    forkOwner: 'kkbrs',
+    token: 'ghp_contribution',
+  }))
+  return plugin
+}

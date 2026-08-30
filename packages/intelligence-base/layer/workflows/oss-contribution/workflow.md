@@ -108,8 +108,14 @@ that owes it nothing. That constrains the work more than any internal job:
   tickets, customers, or people — the briefing already uses aliases, and
   the diff should need none of them.
 - **One PR.** If the findings do not fit one reviewable story, implement
-  the coupled subset (or the first finding if none couple) and escalate
-  the rest. Do not open a stack of PRs a stranger has to sequence.
+  the coupled subset (or the first finding if none couple) and leave the
+  rest out. Do not open a stack of PRs a stranger has to sequence, and do
+  not `escalate` the leftovers — that ends the job and loses the PR too.
+  Name them in the plan's **Deferred** section instead. The runner
+  reconciles `params.findings` against the `findingIds` on the `pr-link`
+  artefact at the end of the job and raises whatever never shipped, so a
+  deferral reaches a developer without any phase having to hold the job
+  open for it.
 
 ## Phases
 
@@ -131,7 +137,10 @@ switching.
 
 Follow that agent's procedure. The interactive checkpoint here is the
 last point at which a human on this install sees the change before it
-becomes public (`params.interactive` is always true on this job).
+becomes public. Dispatch sets `params.interactive` true for exactly that
+reason, but a developer can switch it off while the job runs — so the
+checkpoint is where a human *may* look, never a channel to leave a
+message on. Anything that must reach a developer belongs in an artefact.
 
 ---
 
