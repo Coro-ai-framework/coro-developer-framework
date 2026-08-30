@@ -76,7 +76,9 @@ This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct
 
 ### 4. Create the work-item branch
 
-Follow the git conventions (branch naming, commit format) from your always-loaded context. Branch from `main` (or the base branch specified in the plan).
+Before running `git checkout -b`, explicitly check out the integration branch — do not assume the clone's default HEAD is it; HEAD is frequently `main` even when the plan's real base branch is not: `git checkout <params.targetBranch or params.baseBranch>` when either is set. If neither is set and the clone's default HEAD looks scaffold-only or otherwise divergent from where the plan expects work to land, do not assume `main` — call `await_event({ eventName: "developer-input: which branch is the integration branch" })` and wait for the developer to name it; reserve `mcp__coro__escalate` for when no human is available to answer.
+
+Follow the git conventions (branch naming, commit format) from your always-loaded context. Branch from the base branch you just checked out.
 
 **Campaign children**: when this job has `params.trackerRef` set (the campaign-planner created a tracker issue for this child), incorporate the issue key into the branch suffix so the branch is correlated with the tracker. Example: `coro/payments-v2/PROJ-123-db-schema`. If `params.branchName` is supplied, prefer that verbatim — the campaign-planner already chose a sensible name.
 
