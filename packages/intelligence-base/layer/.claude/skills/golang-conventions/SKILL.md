@@ -69,6 +69,52 @@ above — so apply it once before you count attempts. If it also fails, escalate
 with both errors. Never bump or unpin a dependency to get around a cache or
 network restriction.
 
+### Vendoring a module that ships a `.gitmodules` file
+
+The host sandbox refuses to write any file named `.gitmodules` (`operation not
+permitted`), which breaks `go get` / `go mod download` for a module whose repo
+has one (e.g. `github.com/swaggo/files`). Fetch only the file(s) your code
+imports from `raw.githubusercontent.com` instead of letting Go clone the repo:
+
+```bash
+mkdir -p "$REL/internal/vendored"
+curl -fsSL "https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>" \
+  -o "$REL/internal/vendored/<name>"
+```
+
+Do not add the module as a normal `go.mod` dependency once it needs this.
+
+### Building a tool CLI so `replace` directives apply
+
+`go install pkg@version` resolves at a pinned version and ignores any
+`replace` in your `go.mod` — it always builds the upstream code. To build a
+generated-code tool (e.g. `protoc-gen-go`) against a `replace`d fork, build it
+**from inside the target module** instead:
+
+```bash
+cd "$REL" && mkdir -p "$JOB/.cache/bin" && GOCACHE="$JOB/.cache/go-build" \
+  go build -o "$JOB/.cache/bin/<tool>" <tool-import-path>
+```
+
+This resolves the tool through the module's own `go.mod`, so local `replace`
+entries apply.
+
+### Job-local Git config for private vanity-import modules
+
+A stale `osxkeychain` credential helper can hang or fail silently on `go get`
+auth probes for a private, vanity-import module. Blank it and add a scoped
+`insteadOf` via a job-local config file rather than touching `~/.gitconfig`:
+
+```bash
+cat > "$JOB/.git-config-job" <<'EOF'
+[credential]
+    helper =
+[url "https://<scm-host>/<org>/"]
+    insteadOf = https://<vanity-host>/<org>/
+EOF
+cd "$REL" && GIT_CONFIG_GLOBAL="$JOB/.git-config-job" GOPRIVATE='<vanity-host>/<org>/*' GONOSUMDB='<vanity-host>/<org>/*' go get <vanity-host>/<org>/<module>@<version>
+```
+
 ## Project Layout
 
 ```
