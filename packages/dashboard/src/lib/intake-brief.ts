@@ -2,7 +2,7 @@ export interface BriefDraft {
   repo: string
   serviceName: string
   description: string
-  /** Comma-separated reviewer names as typed in the Run brief form. Parsed at dispatch time. */
+  /** Comma-separated reviewer names as typed on the Run brief card. Parsed at dispatch time. */
   reviewers: string
   workflowPath: string
   interactive: boolean

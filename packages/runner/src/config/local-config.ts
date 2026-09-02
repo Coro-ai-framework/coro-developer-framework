@@ -222,9 +222,8 @@ const coachModeConfigSchema = z.object({
   graduatedAt: z.string().optional(),
 }).optional()
 
-/** New-run intake surface preference (AI chat vs classic form). */
+/** Plan-mode intake preferences. */
 const intakeConfigSchema = z.object({
-  mode: z.enum(['ai', 'form', 'ask-each-time']).optional(),
   /** When true (default), plan mode may read trackers and repos via read-only tools. */
   toolsEnabled: z.boolean().optional(),
 }).optional()

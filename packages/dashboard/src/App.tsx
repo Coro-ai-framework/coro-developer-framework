@@ -4,7 +4,7 @@ import Home from './pages/Home'
 import History from './pages/History'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
-import CreateJob from './pages/CreateJob'
+import NewRun from './pages/NewRun'
 import Intelligence from './pages/Intelligence'
 import Retrospective from './pages/Retrospective'
 import Settings from './pages/Settings'
@@ -25,7 +25,7 @@ export default function App() {
         <Route path="/jobs" element={<JobList />} />
         <Route path="/campaigns" element={<Navigate to="/jobs?workflow=campaign" replace />} />
         <Route path="/history" element={<History />} />
-        <Route path="/jobs/new" element={<CreateJob />} />
+        <Route path="/jobs/new" element={<NewRun />} />
         <Route path="/jobs/:jobId" element={<JobDetail />} />
         <Route path="/campaigns/:jobId" element={<RedirectToJobDetail />} />
         <Route path="/intelligence" element={<Intelligence />} />

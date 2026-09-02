@@ -2816,8 +2816,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           const next: NonNullable<LocalConfig['intake']> = {
             ...(existing.intake ?? {}),
           }
-          if (incoming.mode === 'ai' || incoming.mode === 'form' || incoming.mode === 'ask-each-time') {
-            next.mode = incoming.mode
+          if (typeof incoming.toolsEnabled === 'boolean') {
+            next.toolsEnabled = incoming.toolsEnabled
           }
           ;(merged as Record<string, unknown>).intake = next
         }

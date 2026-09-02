@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { MoreHorizontal, PanelTopClose, X } from 'lucide-react'
-import { clearNewRunDraftStorage } from '../../lib/new-run-draft'
+import { usePlanSession } from '../../providers/plan-session'
 import { useWorkspaceTabs } from '../../providers/workspace-tabs'
 import { useJobs } from '../../hooks/useJobs'
 import { getStatusMeta, isPausedStatus, toneDotClasses, type Tone } from '../../lib/status'
@@ -61,6 +61,7 @@ export default function WorkspaceTabsBar() {
   const navigate = useNavigate()
   const { tabs, activePath, closeTab, clearTabs } = useWorkspaceTabs()
   const { jobs } = useJobs(5000)
+  const session = usePlanSession()
 
   const jobsById = useMemo(() => {
     const map = new Map<string, Job>()
@@ -129,7 +130,13 @@ export default function WorkspaceTabsBar() {
                     type="button"
                     onClick={() => {
                       const wasActive = activePath === tab.path
-                      if (tab.path === '/jobs/new') clearNewRunDraftStorage()
+                      if (tab.path === '/jobs/new') {
+                        if (session.busy) {
+                          const ok = window.confirm('Coro is still working. Close and discard this conversation?')
+                          if (!ok) return
+                        }
+                        session.reset()
+                      }
                       closeTab(tab.path)
                       if (wasActive) navigate(fallbackRoute())
                     }}
@@ -159,7 +166,11 @@ export default function WorkspaceTabsBar() {
             <DropdownMenuContent align="end">
               <DropdownMenuItem
                 onClick={() => {
-                  clearNewRunDraftStorage()
+                  if (session.busy) {
+                    const ok = window.confirm('Coro is still working. Close and discard this conversation?')
+                    if (!ok) return
+                  }
+                  session.reset()
                   clearTabs()
                   navigate('/jobs')
                 }}

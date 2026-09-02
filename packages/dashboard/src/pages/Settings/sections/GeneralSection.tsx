@@ -1,9 +1,7 @@
 import { Switch } from '../../../components/ui/switch'
-import { Select } from '../../../components/ui/select'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import { useSettings } from '../SettingsContext'
 import { jsonRequest, requestJson } from '../../../lib/http'
-import type { IntakeMode } from '../../../lib/coach-mode'
 
 export default function GeneralSection() {
   const { preferences, reload } = useSettings()
@@ -12,7 +10,6 @@ export default function GeneralSection() {
 
   const coachEnabled = coach?.enabled ?? true
   const graduateAfter = coach?.graduateAfterRuns ?? 5
-  const intakeMode: IntakeMode = intake?.mode ?? (coachEnabled ? 'ai' : 'form')
 
   async function patchConfig(patch: Record<string, unknown>) {
     await requestJson('/config', jsonRequest(patch, { method: 'PUT' }))
@@ -41,26 +38,10 @@ export default function GeneralSection() {
       </SettingsSection>
 
       <SettingsSection
-        title="Coro plan mode"
-        description="Choose how the New Run page starts — plan mode conversation or the classic form."
+        title="Plan mode"
+        description="Coro shapes a run brief in conversation before dispatching. Control what it may read here."
       >
-        <div className="space-y-2">
-          <label className="text-[11px] font-medium uppercase tracking-[0.16em] text-fg-subtle">
-            Default new-run mode
-          </label>
-          <Select
-            value={intakeMode}
-            onChange={e => void patchConfig({ intake: { ...intake, mode: e.target.value as IntakeMode } })}
-          >
-            <option value="ai">Coro plan mode (recommended with coach mode)</option>
-            <option value="form">Classic form</option>
-            <option value="ask-each-time">Ask each time</option>
-          </Select>
-          <p className="text-xs text-fg-muted">
-            Coro plan mode uses your configured LLM to help shape a run brief before dispatch.
-          </p>
-        </div>
-        <label className="mt-4 flex items-center justify-between gap-4 rounded-xl border border-line bg-overlay/30 p-4">
+        <label className="flex items-center justify-between gap-4 rounded-xl border border-line bg-overlay/30 p-4">
           <div>
             <div className="text-sm font-medium text-fg">Allow read-only lookups</div>
             <p className="mt-0.5 text-xs text-fg-muted">

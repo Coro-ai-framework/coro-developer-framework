@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { LogLine, LogLineType } from '../hooks/useJobStream'
+import { useStickToBottom } from './activity/use-stick-to-bottom'
 import SegmentedControl from './ui/segmented-control'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
@@ -181,20 +182,6 @@ function LineContent({ line }: { line: LogLine }) {
   )
 }
 
-/** Scroll only the log container — never use scrollIntoView on inner nodes, or the window scrolls too. */
-function scrollLogContainerToBottom(
-  el: HTMLDivElement | null,
-  behavior: ScrollBehavior = 'auto',
-): void {
-  if (!el) return
-  el.scrollTo({ top: el.scrollHeight, behavior })
-}
-
-function isScrolledToBottom(el: HTMLDivElement, thresholdPx = 64): boolean {
-  const { scrollTop, scrollHeight, clientHeight } = el
-  return scrollHeight - scrollTop - clientHeight <= thresholdPx
-}
-
 const FILTER_OPTIONS = [
   { value: 'all', label: 'All' },
   { value: 'main', label: 'Agent' },
@@ -204,50 +191,8 @@ const FILTER_OPTIONS = [
 type LogFilter = (typeof FILTER_OPTIONS)[number]['value']
 
 export default function LogViewer({ lines, className = '' }: LogViewerProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [autoScroll, setAutoScroll] = useState(true)
-  const autoScrollRef = useRef(true)
   const [filter, setFilter] = useState<LogFilter>('all')
-  /** Skip one scroll-handler sync right after we programmatically scroll (some browsers coalesce events). */
-  const programmaticScrollRef = useRef(false)
-
-  useEffect(() => {
-    autoScrollRef.current = autoScroll
-  }, [autoScroll])
-
-  const updateAutoScrollFromScroll = () => {
-    const el = containerRef.current
-    if (!el) return
-    if (programmaticScrollRef.current) {
-      programmaticScrollRef.current = false
-      return
-    }
-    const atBottom = isScrolledToBottom(el)
-    autoScrollRef.current = atBottom
-    setAutoScroll(atBottom)
-  }
-
-  useEffect(() => {
-    if (!autoScroll) return
-    const id = requestAnimationFrame(() => {
-      if (!autoScrollRef.current || !containerRef.current) return
-      programmaticScrollRef.current = true
-      scrollLogContainerToBottom(containerRef.current, 'auto')
-    })
-    return () => { cancelAnimationFrame(id) }
-  }, [lines, autoScroll, filter])
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el || !autoScroll) return
-    const ro = new ResizeObserver(() => {
-      if (!containerRef.current || !autoScrollRef.current) return
-      programmaticScrollRef.current = true
-      scrollLogContainerToBottom(containerRef.current, 'auto')
-    })
-    ro.observe(el)
-    return () => { ro.disconnect() }
-  }, [autoScroll])
+  const stick = useStickToBottom<HTMLDivElement>([lines, filter])
 
   const TOOL_TYPES: LogLineType[] = ['tool_use', 'tool_summary', 'tool_progress', 'thinking', 'system']
   const MAIN_TYPES: LogLineType[] = [
@@ -277,19 +222,12 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
             {filteredLines.length} / {lines.length} lines
           </span>
 
-          {!autoScroll ? (
+          {!stick.stuck ? (
             <Button
               type="button"
               size="sm"
               variant="secondary"
-              onClick={() => {
-                autoScrollRef.current = true
-                setAutoScroll(true)
-                if (containerRef.current) {
-                  programmaticScrollRef.current = true
-                  scrollLogContainerToBottom(containerRef.current, 'smooth')
-                }
-              }}
+              onClick={stick.scrollToBottom}
             >
               <ArrowDownToLine />
               Follow
@@ -299,8 +237,8 @@ export default function LogViewer({ lines, className = '' }: LogViewerProps) {
       </div>
 
       <div
-        ref={containerRef}
-        onScroll={updateAutoScrollFromScroll}
+        ref={stick.ref}
+        onScroll={stick.onScroll}
         className="min-h-[280px] max-h-[calc(100vh-320px)] flex-1 overflow-y-auto p-4 font-mono text-[12.5px] leading-relaxed"
       >
         {filteredLines.length === 0 ? (

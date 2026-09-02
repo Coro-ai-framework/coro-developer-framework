@@ -239,4 +239,9 @@ select {
   .animate-border-travel {
     border-color: color-mix(in srgb, var(--color-accent-500) 30%, transparent);
   }
+
+  .animate-spin,
+  .animate-pulse-dot {
+    animation: none;
+  }
 }

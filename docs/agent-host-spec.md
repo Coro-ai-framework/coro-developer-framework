@@ -210,11 +210,10 @@ lookups while tools are enabled), `done` (optional usage), `error`.
 
 The assistant is instructed to emit a final `<brief>{…json…}</brief>` block
 parsed client-side (`packages/dashboard/src/lib/intake-brief.ts`). Dispatch
-uses the same `POST /jobs` path as the classic form once the operator approves
-the preview card.
+uses the same `POST /jobs` path used by the CLI once the operator approves
+the brief card.
 
 Related config keys: `coachMode` (interactive defaults, graduation counter),
-`intake.mode` (`ai` | `form` | `ask-each-time`),
 `intake.toolsEnabled` (default `true` — read-only tracker/SCM lookups in plan
 mode). See `packages/runner/src/config/local-config.ts`.
 

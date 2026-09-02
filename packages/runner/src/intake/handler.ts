@@ -168,17 +168,28 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     'intake: stream invoked',
   )
 
+  const hasUserTurn = options.messages.some(
+    m => m.role === 'user' && typeof m.content === 'string' && m.content.trim().length > 0,
+  )
+  if (!hasUserTurn) {
+    yield {
+      type: 'error',
+      message: 'Plan mode did not receive a user message. Try sending again.',
+    }
+    return
+  }
+
   if (budget.turns >= MAX_TURNS_PER_SESSION) {
     yield {
       type: 'error',
-      message: 'Session turn limit reached. Please review the brief or switch to the form.',
+      message: 'Session turn limit reached. Start a new conversation, or dispatch the brief you have.',
     }
     return
   }
   if (budget.tokens >= tokenCap) {
     yield {
       type: 'error',
-      message: 'Session token budget exhausted. Please review the brief or switch to the form.',
+      message: 'Session token budget exhausted. Start a new conversation, or dispatch the brief you have.',
     }
     return
   }

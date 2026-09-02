@@ -83,7 +83,17 @@ describe('runIntakeStream', () => {
     expect(events).toEqual([
       {
         type: 'error',
-        message: 'Session turn limit reached. Please review the brief or switch to the form.',
+        message: 'Session turn limit reached. Start a new conversation, or dispatch the brief you have.',
+      },
+    ])
+  })
+
+  it('rejects a turn with no user message instead of synthesizing a greeting', async () => {
+    const events = await collectEvents('session-empty', [])
+    expect(events).toEqual([
+      {
+        type: 'error',
+        message: 'Plan mode did not receive a user message. Try sending again.',
       },
     ])
   })
