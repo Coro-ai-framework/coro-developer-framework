@@ -1,4 +1,4 @@
-import { appendEntry, groupForTool, settleEntry } from '../group'
+import { appendEntry, groupForTool, namesMatchTool, settleEntry, settleRunningEntries, toolLeafName } from '../group'
 import type { ActivityEntry, ActivityItem } from '../types'
 
 /** Mirrors the payloads written by POST /intake/stream (server.ts 1392-1415). */
@@ -33,13 +33,14 @@ function readField(input: unknown, field: string): string | null {
 }
 
 export function runningLabelFor(name: string, input: unknown): string {
-  switch (name) {
+  const leaf = toolLeafName(name)
+  switch (leaf) {
     case 'tracker_get_issue': {
-      const key = readField(input, 'key')
+      const key = issueKeyFrom(input)
       return key ? `Reading ${clip(key)}` : 'Reading a ticket'
     }
     case 'tracker_get_comments': {
-      const key = readField(input, 'key')
+      const key = issueKeyFrom(input)
       return key ? `Reading comments on ${clip(key)}` : 'Reading comments'
     }
     case 'tracker_search_issues': {
@@ -59,11 +60,38 @@ export function runningLabelFor(name: string, input: unknown): string {
       return query ? `Searching code for "${clip(query)}"` : 'Searching code'
     }
     default: {
-      const m = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name)
-      if (m) return `${m[1]}: ${m[2]}`
-      return 'Working'
+      const key = issueKeyFrom(input)
+      if (/jira|ticket|issue|atlassian|linear/i.test(name) || /jira|issue|ticket/i.test(leaf)) {
+        return key ? `Reading ${clip(key)}` : 'Reading a ticket'
+      }
+      return humanizeToolName(leaf || name)
     }
   }
+}
+
+function looksLikeIssueKey(value: string): boolean {
+  return /^[A-Z][A-Z0-9]+-\d+$/i.test(value.trim())
+}
+
+function issueKeyFrom(input: unknown): string | null {
+  const preferred =
+    readField(input, 'key') ?? readField(input, 'issueKey') ?? readField(input, 'issue_key')
+  if (preferred) return preferred
+  const issueId = readField(input, 'issueId') ?? readField(input, 'id')
+  if (issueId && looksLikeIssueKey(issueId)) return issueId
+  return null
+}
+
+function humanizeToolName(raw: string): string {
+  const spaced = raw
+    .replace(/[/_.-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!spaced) return 'Working'
+  const titled = spaced.charAt(0).toUpperCase() + spaced.slice(1)
+  if (/^get /i.test(titled)) return `Reading ${titled.slice(4)}`
+  return titled
 }
 
 /**
@@ -77,7 +105,34 @@ function findLastRunning(items: ActivityItem[], sourceName: string): ActivityEnt
     if (item.kind !== 'activity') continue
     for (let j = item.entries.length - 1; j >= 0; j--) {
       const entry = item.entries[j]
-      if (entry.sourceName === sourceName && entry.status === 'running') return entry
+      if (entry.status === 'running' && namesMatchTool(entry.sourceName, sourceName)) return entry
+    }
+  }
+  return undefined
+}
+
+function inputsMatch(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+  } catch {
+    return a === b
+  }
+}
+
+function findDuplicateStart(
+  items: ActivityItem[],
+  sourceName: string,
+  input: unknown,
+): ActivityEntry | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item.kind !== 'activity') continue
+    for (let j = item.entries.length - 1; j >= 0; j--) {
+      const entry = item.entries[j]
+      if (entry.status !== 'running' || !namesMatchTool(entry.sourceName, sourceName)) continue
+      // mcp__coro__scm_list_files and scm_list_files are the same call observed
+      // twice. Parallel calls of the same tool use different inputs.
+      if (entry.sourceName !== sourceName || inputsMatch(entry.detail, input)) return entry
     }
   }
   return undefined
@@ -86,11 +141,21 @@ function findLastRunning(items: ActivityItem[], sourceName: string): ActivityEnt
 export function applyIntakeEvent(items: ActivityItem[], event: IntakeEvent): ActivityItem[] {
   switch (event.type) {
     case 'tool_start': {
+      const duplicate = findDuplicateStart(items, event.name, event.input)
+      if (duplicate) {
+        const label = runningLabelFor(event.name, event.input)
+        const richer = label.length > duplicate.runningLabel.length
+        if (!richer && duplicate.detail !== undefined) return items
+        return settleEntry(items, duplicate.id, {
+          runningLabel: richer ? label : duplicate.runningLabel,
+          detail: event.input ?? duplicate.detail,
+        })
+      }
       const { group, externalId } = groupForTool(event.name)
       const entry: ActivityEntry = {
         id: nextEntryId(),
         group,
-        sourceName: event.name,
+        sourceName: toolLeafName(event.name),
         ...(externalId ? { externalId } : {}),
         status: 'running',
         runningLabel: runningLabelFor(event.name, event.input),
@@ -112,8 +177,9 @@ export function applyIntakeEvent(items: ActivityItem[], event: IntakeEvent): Act
     // in this reducer — appending per-token would rewrite the item array
     // 24 characters at a time.
     case 'token':
+      return items
     case 'done':
     case 'error':
-      return items
+      return settleRunningEntries(items)
   }
 }

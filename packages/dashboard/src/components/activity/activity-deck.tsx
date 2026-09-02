@@ -47,14 +47,15 @@ export default function ActivityDeck({ group, entries }: ActivityDeckProps) {
 
   if (expanded) {
     return (
-      <div className="mr-2 space-y-1.5">
+      <div className="block w-fit max-w-full space-y-1.5 pr-2">
         <button
           type="button"
           aria-expanded
           aria-label={`${frontLabel} — ${count} step${count === 1 ? '' : 's'}. Activate to collapse.`}
           onClick={toggle}
-          className="font-mono text-[11.5px] leading-[1.6] text-fg-subtle hover:text-fg-muted"
+          className="inline-flex max-w-full items-center gap-1.5 font-mono text-[10px] leading-[1.5] text-fg-subtle hover:text-fg-muted"
         >
+          <Icon className="size-3 shrink-0" />
           ▾ {frontLabel}
         </button>
         <div className="space-y-1.5">
@@ -65,7 +66,7 @@ export default function ActivityDeck({ group, entries }: ActivityDeckProps) {
         <button
           type="button"
           onClick={toggle}
-          className="font-mono text-[11.5px] text-fg-subtle hover:text-fg-muted"
+          className="font-mono text-[10px] text-fg-subtle hover:text-fg-muted"
         >
           Collapse
         </button>
@@ -74,34 +75,32 @@ export default function ActivityDeck({ group, entries }: ActivityDeckProps) {
   }
 
   return (
-    <div className="relative mr-2 inline-block max-w-full">
+    <div className="relative block w-fit max-w-full pb-1.5 pr-2.5">
       {depth >= 1 ? (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-0 -z-10 translate-x-[3px] translate-y-[2px] rounded-full border border-line bg-overlay/30 opacity-60"
+          className="pointer-events-none absolute inset-0 z-0 rounded-full border border-line bg-overlay/35 opacity-70 translate-x-[4px] translate-y-[3px]"
         />
       ) : null}
       {depth >= 2 ? (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-0 -z-20 translate-x-[6px] translate-y-[4px] rounded-full border border-line bg-overlay/20 opacity-35"
+          className="pointer-events-none absolute inset-0 z-0 rounded-full border border-line bg-overlay/25 opacity-50 translate-x-[8px] translate-y-[6px]"
         />
       ) : null}
       <button
         type="button"
         aria-expanded={false}
+        aria-busy={running}
         aria-label={`${frontLabel} — ${count} step${count === 1 ? '' : 's'}. Activate to expand.`}
         onClick={toggle}
         className={cn(
-          'relative inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-overlay/40 px-2.5 py-1 font-mono text-[11.5px] text-fg-subtle transition-colors hover:border-line-strong hover:text-fg-muted',
+          'relative z-10 inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-overlay/40 px-2 py-0.5 font-mono text-[10px] leading-[1.4] text-fg-subtle transition-colors hover:border-line-strong hover:text-fg-muted',
           failed && 'border-danger-500/30 text-danger-200',
         )}
       >
-        {running ? (
-          <Loader2 className="size-3 shrink-0 animate-spin" />
-        ) : (
-          <Icon className="size-3 shrink-0" />
-        )}
+        <Icon className="size-3 shrink-0" />
+        {running ? <Loader2 className="size-2.5 shrink-0 animate-spin" aria-hidden /> : null}
         <span className="min-w-0 truncate">{frontLabel}</span>
         {count > 1 ? <span className="ml-0.5 tabular-nums text-fg-subtle/70">×{count}</span> : null}
       </button>

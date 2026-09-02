@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   applyIntakeEvent,
   resetIntakeEntryCounterForTests,
+  runningLabelFor,
   type IntakeEvent,
 } from '../src/components/activity/adapters/intake'
 import type { ActivityItem } from '../src/components/activity/types'
@@ -67,12 +68,70 @@ describe('applyIntakeEvent', () => {
     })
   })
 
-  it('leaves items referentially unchanged for token events', () => {
+  it('leaves items referentially unchanged for token events and empty done/error', () => {
     const items: ActivityItem[] = []
     expect(applyIntakeEvent(items, { type: 'token', text: 'hi' })).toBe(items)
     expect(applyIntakeEvent(items, { type: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } })).toBe(
       items,
     )
     expect(applyIntakeEvent(items, { type: 'error', message: 'nope' })).toBe(items)
+  })
+
+  it('settles leftover running entries when the turn ends without tool_end', () => {
+    let items: ActivityItem[] = []
+    items = applyIntakeEvent(items, start('mcp__claude_ai_Atlassian__getJiraIssue', { issueId: 'WS-5144' }))
+    expect(items[0]).toMatchObject({ kind: 'activity', group: 'tracker-read' })
+    if (items[0].kind !== 'activity') throw new Error('expected activity')
+    expect(items[0].entries[0]).toMatchObject({ status: 'running', runningLabel: 'Reading WS-5144' })
+    items = applyIntakeEvent(items, { type: 'done' })
+    if (items[0].kind !== 'activity') throw new Error('expected activity')
+    expect(items[0].entries[0]).toMatchObject({
+      status: 'done',
+      settledLabel: 'Reading WS-5144',
+    })
+  })
+
+  it('matches tool_end by MCP leaf name when the start used the full mcp__ name', () => {
+    let items: ActivityItem[] = []
+    items = applyIntakeEvent(items, start('mcp__claude_ai_Atlassian__getJiraIssue'))
+    items = applyIntakeEvent(items, end('getJiraIssue', { summary: 'Read WS-5144' }))
+    if (items[0].kind !== 'activity') throw new Error('expected activity')
+    expect(items[0].entries[0]).toMatchObject({ status: 'done', settledLabel: 'Read WS-5144' })
+  })
+
+  it('stacks duplicate mcp__coro__ and canonical starts into one deck, and a different group starts a new line', () => {
+    let items: ActivityItem[] = []
+    items = applyIntakeEvent(items, start('mcp__coro__scm_list_files', { path: 'internal/platform' }))
+    items = applyIntakeEvent(items, start('scm_list_files', { path: 'internal/platform' }))
+    items = applyIntakeEvent(items, end('scm_list_files', { summary: 'Listed 14 entries in internal/platform' }))
+    items = applyIntakeEvent(items, start('mcp__coro__scm_list_files', { path: 'internal/platform/db' }))
+    items = applyIntakeEvent(items, start('scm_list_files', { path: 'internal/platform/db' }))
+    items = applyIntakeEvent(items, end('scm_list_files', { summary: 'Listed 2 entries in internal/platform/db' }))
+    items = applyIntakeEvent(items, start('mcp__coro__scm_read_file', { path: 'internal/platform/db/db.go' }))
+    items = applyIntakeEvent(items, start('scm_read_file', { path: 'internal/platform/db/db.go' }))
+    items = applyIntakeEvent(items, end('scm_read_file', { summary: 'Read internal/platform/db/db.go' }))
+    items = applyIntakeEvent(items, start('scm_read_file', { path: 'internal/platform/outbox/dispatcher.go' }))
+    items = applyIntakeEvent(items, end('scm_read_file', { summary: 'Read internal/platform/outbox/dispatcher.go' }))
+
+    expect(items.map(i => (i.kind === 'activity' ? i.group : i.kind))).toEqual(['repo-browse', 'repo-read'])
+    if (items[0].kind !== 'activity' || items[1].kind !== 'activity') throw new Error('expected activity')
+    expect(items[0].entries).toHaveLength(2)
+    expect(items[0].entries.map(e => e.settledLabel)).toEqual([
+      'Listed 14 entries in internal/platform',
+      'Listed 2 entries in internal/platform/db',
+    ])
+    expect(items[1].entries).toHaveLength(2)
+    expect(items[1].entries.every(e => e.status === 'done')).toBe(true)
+  })
+})
+
+describe('runningLabelFor', () => {
+  it('humanizes MCP Atlassian tools instead of dumping the server id', () => {
+    expect(runningLabelFor('mcp__claude_ai_Atlassian__getJiraIssue', { issueId: 'WS-5144' })).toBe('Reading WS-5144')
+    expect(runningLabelFor('mcp__claude_ai_Atlassian__getJiraIssue', { cloudId: 'abc' })).toBe('Reading a ticket')
+    expect(runningLabelFor('mcp__coro__scm_list_files', { path: 'internal/platform' })).toBe(
+      'Browsing internal/platform',
+    )
+    expect(runningLabelFor('Bash', { command: 'ls' })).toBe('Bash')
   })
 })

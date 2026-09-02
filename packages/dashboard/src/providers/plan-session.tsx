@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { applyIntakeEvent } from '../components/activity/adapters/intake'
+import { settleRunningEntries } from '../components/activity/group'
 import type { ActivityItem } from '../components/activity/types'
 import { parseBrief } from '../lib/intake-brief'
 import { runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
@@ -264,16 +265,20 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
             setPartialText(prev => prev + event.text)
           } else if (event.type === 'tool_start' || event.type === 'tool_end') {
             commitItems(prev => applyIntakeEvent(prev, event))
-          } else if (event.type === 'done' && event.usage?.totalTokens) {
-            setTotalTokens(prev => prev + event.usage!.totalTokens)
-          } else if (event.type === 'error' && event.message) {
-            if (event.reason === 'no-llm') setNoLlm(true)
-            if (isLimitMessage(event.message)) setLimitReached(true)
-            setError(event.message)
-            commitItems(prev => [
-              ...prev,
-              { kind: 'notice', id: nextId('notice'), tone: 'error', text: event.message ?? 'Plan mode failed' },
-            ])
+          } else if (event.type === 'done') {
+            commitItems(prev => applyIntakeEvent(prev, event))
+            if (event.usage?.totalTokens) setTotalTokens(prev => prev + event.usage!.totalTokens)
+          } else if (event.type === 'error') {
+            commitItems(prev => applyIntakeEvent(prev, event))
+            if (event.message) {
+              if (event.reason === 'no-llm') setNoLlm(true)
+              if (isLimitMessage(event.message)) setLimitReached(true)
+              setError(event.message)
+              commitItems(prev => [
+                ...prev,
+                { kind: 'notice', id: nextId('notice'), tone: 'error', text: event.message ?? 'Plan mode failed' },
+              ])
+            }
           }
         },
       })
@@ -292,33 +297,33 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       }
     } finally {
       const committed = assistantText.trim()
-      if (committed) {
-        commitItems(prev => {
-          const withMessage: ActivityItem[] = [
-            ...prev,
-            { kind: 'message', id: nextId('msg'), role: 'assistant', text: committed },
-          ]
-          const parsed = parseBrief(
-            committed,
-            workflowsRef.current.map(w => w.workflowPath),
-          )
-          if (!parsed) return withMessage
-          const superseded = withMessage.map(item => {
-            if (item.kind !== 'card' || item.card.type !== 'brief') return item
-            const data = item.card.data as { state?: string }
-            if (data.state !== 'draft') return item
-            return { ...item, card: { ...item.card, data: { ...data, state: 'superseded' } } }
-          })
-          return [
-            ...superseded,
-            {
-              kind: 'card',
-              id: nextId('card'),
-              card: { type: 'brief', data: { brief: parsed, state: 'draft' } },
-            },
-          ]
+      commitItems(prev => {
+        const settled = settleRunningEntries(prev)
+        if (!committed) return settled
+        const withMessage: ActivityItem[] = [
+          ...settled,
+          { kind: 'message', id: nextId('msg'), role: 'assistant', text: committed },
+        ]
+        const parsed = parseBrief(
+          committed,
+          workflowsRef.current.map(w => w.workflowPath),
+        )
+        if (!parsed) return withMessage
+        const superseded = withMessage.map(item => {
+          if (item.kind !== 'card' || item.card.type !== 'brief') return item
+          const data = item.card.data as { state?: string }
+          if (data.state !== 'draft') return item
+          return { ...item, card: { ...item.card, data: { ...data, state: 'superseded' } } }
         })
-      }
+        return [
+          ...superseded,
+          {
+            kind: 'card',
+            id: nextId('card'),
+            card: { type: 'brief', data: { brief: parsed, state: 'draft' } },
+          },
+        ]
+      })
       setPartialText('')
       setTurnCount(c => c + 1)
       busyRef.current = false

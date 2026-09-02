@@ -79,7 +79,7 @@ export default function ActivityFeed({
           })}
           {partialText ? <MessageBlock role="assistant" text={partialText} streaming /> : null}
           {showThinking ? (
-            <div className="flex items-center gap-2 font-mono text-[11.5px] leading-[1.6] text-fg-subtle">
+            <div className="flex items-center gap-2 font-mono text-[10px] leading-[1.5] text-fg-subtle">
               <Loader2 className="size-3 animate-spin" />
               Thinking…
             </div>

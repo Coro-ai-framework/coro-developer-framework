@@ -1,5 +1,12 @@
+import { Sparkles, Terminal, Ticket, Wrench } from 'lucide-react'
 import { describe, expect, it } from 'vitest'
-import { appendEntry, groupForTool, settleEntry } from '../src/components/activity/group'
+import {
+  appendEntry,
+  groupForTool,
+  iconForActivity,
+  settleEntry,
+  settleRunningEntries,
+} from '../src/components/activity/group'
 import type { ActivityEntry, ActivityItem } from '../src/components/activity/types'
 
 function entry(over: Partial<ActivityEntry> & Pick<ActivityEntry, 'id' | 'group'>): ActivityEntry {
@@ -21,7 +28,19 @@ describe('groupForTool', () => {
     expect(groupForTool('scm_search_code')).toEqual({ group: 'repo-search' })
     expect(groupForTool('mcp__catalog__lookup')).toEqual({ group: 'external', externalId: 'catalog' })
     expect(groupForTool('mcp__my_server__search')).toEqual({ group: 'external', externalId: 'my_server' })
+    expect(groupForTool('mcp__coro__scm_list_files')).toEqual({ group: 'repo-browse' })
+    expect(groupForTool('mcp__coro__scm_read_file')).toEqual({ group: 'repo-read' })
+    expect(groupForTool('mcp__claude_ai_Atlassian__getJiraIssue')).toEqual({ group: 'tracker-read' })
     expect(groupForTool('totally_unknown')).toEqual({ group: 'working' })
+  })
+})
+
+describe('iconForActivity', () => {
+  it('picks a ticket glyph for Atlassian MCP tools even before grouping', () => {
+    expect(iconForActivity('tracker-read', 'mcp__claude_ai_Atlassian__getJiraIssue')).toBe(Ticket)
+    expect(iconForActivity('working', 'Bash')).toBe(Terminal)
+    expect(iconForActivity('working', 'Skill')).toBe(Sparkles)
+    expect(iconForActivity('working')).toBe(Wrench)
   })
 })
 
@@ -81,5 +100,19 @@ describe('settleEntry', () => {
       durationMs: 12,
     })
     expect(settled[0].entries[1]).toMatchObject({ id: '2', status: 'running' })
+  })
+})
+
+describe('settleRunningEntries', () => {
+  it('marks leftover running entries done and is a no-op when nothing is in flight', () => {
+    const a = entry({ id: '1', group: 'working', sourceName: 'Skill', runningLabel: 'Skill' })
+    const items = appendEntry([], a)
+    const settled = settleRunningEntries(items)
+    if (settled[0].kind !== 'activity') throw new Error('expected activity')
+    expect(settled[0].entries[0]).toMatchObject({
+      status: 'done',
+      settledLabel: 'Skill',
+    })
+    expect(settleRunningEntries(settled)).toBe(settled)
   })
 })

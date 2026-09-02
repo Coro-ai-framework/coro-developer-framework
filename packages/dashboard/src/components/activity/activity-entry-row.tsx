@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, Loader2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { iconForActivity } from './group'
 import type { ActivityEntry } from './types'
 
 function formatDuration(ms: number): string {
@@ -12,20 +13,18 @@ export default function ActivityEntryRow({ entry }: { entry: ActivityEntry }) {
   const [open, setOpen] = useState(false)
   const label = entry.settledLabel ?? entry.runningLabel
   const failed = entry.status === 'failed'
+  const running = entry.status === 'running'
   const hasDetail = entry.detail !== undefined
+  const Icon = iconForActivity(entry.group, entry.sourceName)
 
   return (
-    <div className="font-mono text-[11.5px] leading-[1.6] text-fg-subtle">
+    <div className="font-mono text-[10px] leading-[1.5] text-fg-subtle">
       <div className="flex items-start gap-2">
-        <span className="mt-[0.55em] size-1 shrink-0 rounded-full bg-fg-subtle/50" aria-hidden />
+        <Icon className="mt-0.5 size-3 shrink-0" aria-hidden />
+        {running ? <Loader2 className="mt-0.5 size-2.5 shrink-0 animate-spin" aria-hidden /> : null}
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-2">
-            <span className={cn('min-w-0 flex-1 break-words', failed && 'text-danger-300')}>
-              {entry.status === 'running' ? (
-                <Loader2 className="mr-1.5 inline size-3 animate-spin align-[-2px]" />
-              ) : null}
-              {label}
-            </span>
+            <span className={cn('min-w-0 flex-1 break-words', failed && 'text-danger-300')}>{label}</span>
             {entry.durationMs !== undefined ? (
               <span className="shrink-0 tabular-nums text-fg-subtle/70">{formatDuration(entry.durationMs)}</span>
             ) : null}
@@ -43,7 +42,7 @@ export default function ActivityEntryRow({ entry }: { entry: ActivityEntry }) {
           </div>
           {failed && entry.error ? <div className="mt-0.5 text-danger-300">{entry.error}</div> : null}
           {open && hasDetail ? (
-            <pre className="mt-1 max-h-40 overflow-auto rounded-lg border border-line bg-canvas/80 p-2 font-mono text-[10.5px] leading-[1.55] text-fg-muted">
+            <pre className="mt-1 max-h-40 overflow-auto rounded-lg border border-line bg-canvas/80 p-2 font-mono text-[10px] leading-[1.5] text-fg-muted">
               {JSON.stringify(entry.detail, null, 2)}
             </pre>
           ) : null}

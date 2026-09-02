@@ -176,8 +176,15 @@ export async function chatViaAgentSdk(
     } else if (event.type === 'usage') {
       usage = event.tokens
     } else if (event.type === 'tool_call') {
-      req.onToolStart?.({ name: event.toolName, input: event.input })
+      // In-process coro MCP tools already fire onToolStart from the wrapper
+      // in buildChatMcpServer (canonical name `scm_list_files`). The SDK also
+      // yields `mcp__coro__scm_list_files` here — emitting both makes the
+      // dashboard open a new chip per alias instead of stacking the deck.
+      if (!event.toolName.startsWith('mcp__coro__')) {
+        req.onToolStart?.({ name: event.toolName, input: event.input })
+      }
     } else if (event.type === 'tool_result') {
+      if (event.toolName.startsWith('mcp__coro__')) continue
       req.onToolEnd?.({
         name: event.toolName,
         input: {},
