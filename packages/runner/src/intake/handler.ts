@@ -1,5 +1,4 @@
 import type { ChatRequest, ChatResult } from '@coro-ai/plugin-sdk'
-import { chatHasTools } from '@coro-ai/plugin-sdk'
 import { createSdkMcpServer } from '@coro-ai/plugin-sdk'
 import type { PhaseExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { Logger } from 'pino'
@@ -20,22 +19,28 @@ import {
   type IntakeContext,
   type IntakeMessage,
 } from './system-prompt'
+import {
+  buildIntakeMessages,
+  getIntakeSession,
+  recordIntakeTurn,
+  renderIntakeEvidence,
+  seedIntakeSession,
+  resetIntakeSessionsForTests,
+  type IntakeEvidence,
+} from './session-store'
 
-const MAX_TURNS_PER_SESSION = 8
-const MAX_TOKENS_PER_SESSION = 30_000
-const MAX_TOKENS_PER_SESSION_WITH_TOOLS = 60_000
-
-interface SessionBudget {
-  turns: number
-  tokens: number
-}
-
-const sessionBudgets = new Map<string, SessionBudget>()
+export { resetIntakeSessionsForTests }
 
 export interface IntakeStreamEvent {
-  type: 'token' | 'done' | 'error' | 'tool_start' | 'tool_end'
+  type: 'token' | 'thinking' | 'done' | 'error' | 'tool_start' | 'tool_end'
   text?: string
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
+  /** Tokens resident in the model's context after this turn. */
+  contextTokens?: number
+  /** Cumulative billed tokens across the whole session. */
+  sessionTokens?: number
+  /** Completed turns in this session, including this one. */
+  turns?: number
   message?: string
   name?: string
   input?: unknown
@@ -47,7 +52,13 @@ export interface IntakeStreamEvent {
 
 export interface RunIntakeOptions {
   sessionId: string
-  messages: IntakeMessage[]
+  /** The new developer message. Prior turns live in the server-side session. */
+  message: string
+  /**
+   * Transcript from a client that predates server-side session state.
+   * Used only to seed an empty session; ignored once turns exist.
+   */
+  seedMessages?: IntakeMessage[]
   context: IntakeContext
   registry: PluginRegistry
   settings: Settings
@@ -68,24 +79,35 @@ function resolveIntakeAssignment(options: RunIntakeOptions): { model: string; pr
   return { model: selectModel({ tier: 'planning' }, options.settings) }
 }
 
-function getBudget(sessionId: string): SessionBudget {
-  const existing = sessionBudgets.get(sessionId)
-  if (existing) return existing
-  const fresh = { turns: 0, tokens: 0 }
-  sessionBudgets.set(sessionId, fresh)
-  return fresh
-}
-
 function intakeToolsEnabled(settings: Settings): boolean {
   return settings.intake?.toolsEnabled !== false
 }
 
 /**
- * Wraps `executor.chat()` so the runner can stream `tool_start` /
- * `tool_end` SSE frames as the model invokes tools. The executor
- * itself only emits a single final `ChatResult`; we bridge to a
- * stream by attaching `onToolStart` / `onToolEnd` hooks that push
- * events into a queue and wake the generator loop via `notify`.
+ * An investigative turn reports findings, lists open questions, and may carry
+ * a full run payload — well past the executors' 1–2k defaults, which would
+ * truncate mid-JSON and leave the dashboard with nothing to parse.
+ */
+const INTAKE_MAX_OUTPUT_TOKENS = 4096
+
+/**
+ * Splits into fixed-width pieces for the token stream. Deliberately not a
+ * `/.{1,24}/g` match: `.` does not match newlines, so a regex chunker
+ * silently strips every line break out of a multi-paragraph finding.
+ */
+function chunkForStream(text: string, size = 24): string[] {
+  const chunks: string[] = []
+  for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size))
+  return chunks
+}
+
+/**
+ * Wraps `executor.chat()` so the runner can stream live SSE frames as
+ * the model thinks, speaks, and invokes tools. The executor itself
+ * only resolves a single final `ChatResult`; we bridge to a stream by
+ * attaching `onText` / `onThinking` / `onToolStart` / `onToolEnd`
+ * hooks that push events into a queue and wake the generator loop via
+ * `notify`.
  *
  * Invariants:
  *   - The hooks fire synchronously inside the executor's tool loop,
@@ -93,24 +115,42 @@ function intakeToolsEnabled(settings: Settings): boolean {
  *   - When the chat task resolves/rejects, the awaited `Promise.race`
  *     unblocks and we drain any remaining queued events before
  *     returning the final ChatResult (or throwing).
- *   - Caller must only invoke this with `chatReq.tools?.length > 0`
- *     (no-tools is a single awaited call; no streaming needed).
  */
 async function* streamChatTurn(
   executor: { chat: (req: ChatRequest) => Promise<ChatResult> },
   chatReq: ChatRequest,
-): AsyncGenerator<IntakeStreamEvent, ChatResult> {
+): AsyncGenerator<IntakeStreamEvent, { result: ChatResult; streamedText: boolean }> {
   let notify: (() => void) | null = null
   const queue: IntakeStreamEvent[] = []
+  let streamedText = false
+
+  const wake = (): void => {
+    notify?.()
+    notify = null
+  }
 
   const reqWithHooks: ChatRequest = {
     ...chatReq,
+    onText: content => {
+      if (!content) return
+      streamedText = true
+      chatReq.onText?.(content)
+      queue.push({ type: 'token', text: content })
+      wake()
+    },
+    onThinking: content => {
+      if (!content) return
+      chatReq.onThinking?.(content)
+      queue.push({ type: 'thinking', text: content })
+      wake()
+    },
     onToolStart: info => {
+      chatReq.onToolStart?.(info)
       queue.push({ type: 'tool_start', name: info.name, input: info.input })
-      notify?.()
-      notify = null
+      wake()
     },
     onToolEnd: record => {
+      chatReq.onToolEnd?.(record)
       queue.push({
         type: 'tool_end',
         name: record.name,
@@ -119,8 +159,7 @@ async function* streamChatTurn(
         summary: record.error ?? summarizeToolCall(record.name, record.input, record.output),
         ...(record.error ? { error: record.error } : {}),
       })
-      notify?.()
-      notify = null
+      wake()
     },
   }
 
@@ -145,21 +184,38 @@ async function* streamChatTurn(
   }
 
   if (chatError) throw chatError
-  return done!
+  return { result: done!, streamedText }
 }
 
 export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerator<IntakeStreamEvent> {
   const baseLogger = options.logger ?? pino({ level: 'silent' })
   const log = baseLogger.child({ component: 'intake-handler', sessionId: options.sessionId })
-  const budget = getBudget(options.sessionId)
   const toolsOn = intakeToolsEnabled(options.settings)
-  const tokenCap = toolsOn ? MAX_TOKENS_PER_SESSION_WITH_TOOLS : MAX_TOKENS_PER_SESSION
 
+  const userMessage = typeof options.message === 'string' ? options.message.trim() : ''
+  if (!userMessage) {
+    yield {
+      type: 'error',
+      message: 'Plan mode did not receive a user message. Try sending again.',
+    }
+    return
+  }
+
+  const session = options.seedMessages?.length
+    ? seedIntakeSession(options.sessionId, options.seedMessages)
+    : getIntakeSession(options.sessionId)
+
+  // Plan mode is deliberately uncapped: every turn is developer-initiated,
+  // so there is no autonomous loop for a turn or token ceiling to protect
+  // against — and an investigation is exactly the session a ceiling would
+  // kill halfway. The only unattended spend is the per-turn tool loop,
+  // bounded by INTAKE_MAX_TOOL_ROUNDS. Counters below are reported to the
+  // dashboard for visibility, never enforced.
   log?.debug(
     {
-      sessionTurns: budget.turns,
-      sessionTokens: budget.tokens,
-      messageCount: options.messages.length,
+      sessionTurns: session.turns.length,
+      sessionTokens: session.tokens,
+      contextTokens: session.contextTokens,
       overrideModel: options.model ?? null,
       overrideProvider: options.provider ?? null,
       toolsOn,
@@ -168,34 +224,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     'intake: stream invoked',
   )
 
-  const hasUserTurn = options.messages.some(
-    m => m.role === 'user' && typeof m.content === 'string' && m.content.trim().length > 0,
-  )
-  if (!hasUserTurn) {
-    yield {
-      type: 'error',
-      message: 'Plan mode did not receive a user message. Try sending again.',
-    }
-    return
-  }
-
-  if (budget.turns >= MAX_TURNS_PER_SESSION) {
-    yield {
-      type: 'error',
-      message: 'Session turn limit reached. Start a new conversation, or dispatch the brief you have.',
-    }
-    return
-  }
-  if (budget.tokens >= tokenCap) {
-    yield {
-      type: 'error',
-      message: 'Session token budget exhausted. Start a new conversation, or dispatch the brief you have.',
-    }
-    return
-  }
-
-  budget.turns += 1
-
+  const conversation = buildIntakeMessages(session, userMessage)
   const assignment = resolveIntakeAssignment(options)
 
   let executor
@@ -254,9 +283,10 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       const startedAt = Date.now()
 
       const chatReq: ChatRequest = {
-        messages: options.messages.map(m => ({ role: m.role, content: m.content })),
+        messages: conversation,
         systemPrompt,
         model,
+        maxOutputTokens: INTAKE_MAX_OUTPUT_TOKENS,
         signal: options.signal,
         ...(Object.keys(planModeMcpServers).length > 0 ? { pluginMcpServers: planModeMcpServers } : {}),
         ...(tools.length > 0
@@ -269,20 +299,19 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       }
 
       let result: ChatResult
-      if (chatHasTools(chatReq)) {
-        const chatGen = streamChatTurn(
-          executor as { chat: (req: ChatRequest) => Promise<ChatResult> },
-          chatReq,
-        )
-        let next = await chatGen.next()
-        while (!next.done) {
-          yield next.value
-          next = await chatGen.next()
-        }
-        result = next.value
-      } else {
-        result = await executor.chat(chatReq)
+      let streamedText = false
+      const chatGen = streamChatTurn(
+        executor as { chat: (req: ChatRequest) => Promise<ChatResult> },
+        chatReq,
+      )
+      let next = await chatGen.next()
+      while (!next.done) {
+        if (next.value.type === 'token') streamedText = true
+        yield next.value
+        next = await chatGen.next()
       }
+      result = next.value.result
+      streamedText = streamedText || next.value.streamedText
 
       log?.debug(
         {
@@ -297,7 +326,6 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       )
 
       const tokens = result.usage.inputTokens + result.usage.outputTokens
-      budget.tokens += tokens
 
       const trimmed = result.output.trim()
       if (!trimmed) {
@@ -308,9 +336,28 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         return
       }
 
-      const chunks = trimmed.match(/.{1,24}/g) ?? [trimmed]
-      for (const chunk of chunks) {
-        yield { type: 'token', text: chunk }
+      const evidence: IntakeEvidence[] = (result.toolCalls ?? []).map(call =>
+        renderIntakeEvidence({
+          name: call.name,
+          input: call.input,
+          output: call.output,
+          ...(call.error ? { error: call.error } : {}),
+        }),
+      )
+      const updated = recordIntakeTurn(options.sessionId, {
+        user: userMessage,
+        assistant: trimmed,
+        evidence,
+        usage: result.usage,
+      })
+
+      // Live onText already streamed the reply. A plugin that never
+      // called the hook still needs the dump so the dashboard is not
+      // left with an empty bubble.
+      if (!streamedText) {
+        for (const chunk of chunkForStream(trimmed)) {
+          yield { type: 'token', text: chunk }
+        }
       }
       yield {
         type: 'done',
@@ -319,11 +366,14 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
           outputTokens: result.usage.outputTokens,
           totalTokens: tokens,
         },
+        contextTokens: updated.contextTokens,
+        sessionTokens: updated.tokens,
+        turns: updated.turns.length,
       }
       return
     }
 
-    const userPrompt = formatIntakeUserPrompt(options.messages)
+    const userPrompt = formatIntakeUserPrompt(conversation)
     if (typeof executor.runSubagent === 'function') {
       const result = await executor.runSubagent({
         name: 'intake',
@@ -341,10 +391,14 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       })
 
       const tokens = result.usage.inputTokens + result.usage.outputTokens
-      budget.tokens += tokens
+      const updated = recordIntakeTurn(options.sessionId, {
+        user: userMessage,
+        assistant: result.output.trim(),
+        evidence: [],
+        usage: result.usage,
+      })
 
-      const chunks = result.output.match(/.{1,24}/g) ?? [result.output]
-      for (const chunk of chunks) {
+      for (const chunk of chunkForStream(result.output)) {
         yield { type: 'token', text: chunk }
       }
       yield {
@@ -354,6 +408,9 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
           outputTokens: result.usage.outputTokens,
           totalTokens: tokens,
         },
+        contextTokens: updated.contextTokens,
+        sessionTokens: updated.tokens,
+        turns: updated.turns.length,
       }
       return
     }
@@ -375,10 +432,14 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
 
     let inputTokens = 0
     let outputTokens = 0
+    let assistantText = ''
 
     for await (const event of executor.executePhase(req)) {
       if (event.type === 'text' && event.content) {
+        assistantText += event.content
         yield { type: 'token', text: event.content }
+      } else if (event.type === 'thinking' && event.content) {
+        yield { type: 'thinking', text: event.content }
       } else if (event.type === 'usage') {
         inputTokens = event.tokens.inputTokens
         outputTokens = event.tokens.outputTokens
@@ -386,11 +447,19 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     }
 
     const totalTokens = inputTokens + outputTokens
-    budget.tokens += totalTokens
+    const updated = recordIntakeTurn(options.sessionId, {
+      user: userMessage,
+      assistant: assistantText.trim(),
+      evidence: [],
+      usage: { inputTokens, outputTokens },
+    })
 
     yield {
       type: 'done',
       usage: { inputTokens, outputTokens, totalTokens },
+      contextTokens: updated.contextTokens,
+      sessionTokens: updated.tokens,
+      turns: updated.turns.length,
     }
   } catch (err) {
     log?.error(
@@ -404,8 +473,4 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     )
     yield { type: 'error', message: (err as Error).message }
   }
-}
-
-export function resetIntakeSessionBudgetsForTests(): void {
-  sessionBudgets.clear()
 }

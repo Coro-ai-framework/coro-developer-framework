@@ -29,19 +29,26 @@ export interface IntakeModelChoice {
 
 export async function runIntakeStream(options: {
   sessionId: string
-  messages: IntakeStreamMessage[]
+  /** The new developer message. Prior turns live in the runner's session. */
+  message: string
+  /**
+   * The browser's copy of the earlier turns. Only used if the runner has no
+   * session for this id (e.g. it restarted mid-investigation).
+   */
+  transcript: IntakeStreamMessage[]
   context: IntakeStreamContext
   modelChoice?: IntakeModelChoice
   signal: AbortSignal
   onEvent: (event: IntakeEvent) => void
 }): Promise<{ noLlm?: boolean; error?: string }> {
-  const { sessionId, messages, context, modelChoice, signal, onEvent } = options
+  const { sessionId, message, transcript, context, modelChoice, signal, onEvent } = options
 
   const response = await fetch('/intake/stream', {
     ...jsonRequest(
       {
         sessionId,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
+        message,
+        transcript: transcript.map(m => ({ role: m.role, content: m.content })),
         ...(modelChoice?.model?.trim()
           ? {
               model: modelChoice.model.trim(),
@@ -103,4 +110,11 @@ export async function runIntakeStream(options: {
   }
 
   return {}
+}
+
+/** Discards the runner-side conversation for an abandoned or dispatched session. */
+export function discardIntakeSession(sessionId: string): void {
+  void fetch(`/intake/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).catch(() => {
+    // The runner sweeps idle sessions anyway; a failed cleanup is not worth surfacing.
+  })
 }

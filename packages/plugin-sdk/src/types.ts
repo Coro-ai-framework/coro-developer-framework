@@ -1162,6 +1162,18 @@ export interface ChatRequest {
   /** Fired after each tool invocation completes. */
   onToolEnd?: (record: ChatToolCallRecord) => void
   /**
+   * Fired as assistant text is produced, including between tool rounds.
+   * Plan mode streams this to the dashboard so the investigation is not
+   * a silent tool loop.
+   */
+  onText?: (content: string) => void
+  /**
+   * Fired as model reasoning is produced. Same live-UI purpose as
+   * {@link ChatRequest.onText}; omitted by executors that have no
+   * thinking channel.
+   */
+  onThinking?: (content: string) => void
+  /**
    * BYO MCP servers enabled for plan mode (`planMode: true` in config).
    * Attached alongside built-in intake tools; agents call them as
    * `mcp__<id>__*`.

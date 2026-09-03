@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import pino from 'pino'
 import { createAnthropicExecutor } from '../src/executor'
-import { chatViaAgentSdk, shouldChatViaAgentSdk } from '../src/chat-via-sdk'
+import { chatViaAgentSdk, shouldChatViaAgentSdk, type AnthropicChatHost } from '../src/chat-via-sdk'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from '../src/types'
 
 let querySteps: Array<() => IteratorResult<unknown>> = []
@@ -152,6 +152,42 @@ describe('AnthropicExecutor.chat routing', () => {
     })
 
     expect(result.output).toBe('Brief ready.')
+  })
+})
+
+describe('chatViaAgentSdk live callbacks', () => {
+  it('forwards executePhase text and thinking to ChatRequest hooks', async () => {
+    const onText = vi.fn()
+    const onThinking = vi.fn()
+    const host: AnthropicChatHost = {
+      async *executePhase() {
+        yield { type: 'thinking', content: 'I should look at the handler.' }
+        yield { type: 'text', content: 'Checking the auth path.' }
+        yield {
+          type: 'usage',
+          tokens: {
+            inputTokens: 8,
+            outputTokens: 4,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+          },
+        }
+      },
+    }
+
+    const result = await chatViaAgentSdk(host, {
+      messages: [{ role: 'user', content: 'What does login do?' }],
+      systemPrompt: 'You are plan mode.',
+      model: 'claude-sonnet-4-6',
+      signal: new AbortController().signal,
+      onText,
+      onThinking,
+    })
+
+    expect(onThinking).toHaveBeenCalledWith('I should look at the handler.')
+    expect(onText).toHaveBeenCalledWith('Checking the auth path.')
+    expect(result.output).toBe('Checking the auth path.')
+    expect(result.usage.inputTokens).toBe(8)
   })
 })
 

@@ -39,13 +39,13 @@ export default function GeneralSection() {
 
       <SettingsSection
         title="Plan mode"
-        description="Coro shapes a run brief in conversation before dispatching. Control what it may read here."
+        description="Coro investigates the work with you in conversation before any run starts. Control what it may read here."
       >
         <label className="flex items-center justify-between gap-4 rounded-xl border border-line bg-overlay/30 p-4">
           <div>
             <div className="text-sm font-medium text-fg">Allow read-only lookups</div>
             <p className="mt-0.5 text-xs text-fg-muted">
-              Let plan mode read tracker tickets and repository files to shape better briefs. Never writes.
+              Let plan mode read tracker tickets and repository files while it investigates. Never writes.
             </p>
           </div>
           <Switch

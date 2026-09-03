@@ -2,8 +2,8 @@
 // Source-agnostic activity model.
 //
 // RULE: nothing in components/activity/** may import from components/plan/**,
-// hooks/useIntakeStream.ts, or lib/intake-brief.ts. This layer knows about
-// messages, activity entries, notices and OPAQUE cards — never about briefs,
+// hooks/useIntakeStream.ts, or lib/intake-run.ts. This layer knows about
+// messages, activity entries, notices and OPAQUE cards — never about runs,
 // jobs, or a specific SSE wire format. Each event source gets an adapter in
 // ./adapters that maps its own events onto ActivityItem[].
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,6 +44,7 @@ export interface ActivityEntry {
 
 export type ActivityItem =
   | { kind: 'message'; id: string; role: 'user' | 'assistant'; text: string }
+  | { kind: 'thought'; id: string; text: string }
   | { kind: 'activity'; id: string; group: ActivityGroup; externalId?: string; entries: ActivityEntry[] }
   | { kind: 'card'; id: string; card: ActivityCard }
   | { kind: 'notice'; id: string; tone: 'info' | 'warning' | 'error'; text: string; action?: NoticeAction }

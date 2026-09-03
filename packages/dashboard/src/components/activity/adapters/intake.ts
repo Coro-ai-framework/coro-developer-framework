@@ -4,9 +4,16 @@ import type { ActivityEntry, ActivityItem } from '../types'
 /** Mirrors the payloads written by POST /intake/stream (server.ts 1392-1415). */
 export type IntakeEvent =
   | { type: 'token'; text: string }
+  | { type: 'thinking'; text: string }
   | { type: 'tool_start'; name: string; input?: unknown }
   | { type: 'tool_end'; name: string; durationMs?: number; ok?: boolean; summary?: string; error?: string }
-  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; totalTokens: number } }
+  | {
+      type: 'done'
+      usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
+      contextTokens?: number
+      sessionTokens?: number
+      turns?: number
+    }
   | { type: 'error'; message: string; reason?: string }
 
 let entrySeq = 0
@@ -173,10 +180,12 @@ export function applyIntakeEvent(items: ActivityItem[], event: IntakeEvent): Act
         ...(event.error ? { error: event.error } : {}),
       })
     }
-    // Streaming text and turn lifecycle live on the session provider, not
+    // Streaming text and thinking live on the session provider, not
     // in this reducer — appending per-token would rewrite the item array
-    // 24 characters at a time.
+    // 24 characters at a time. Thoughts are committed into items when
+    // a tool starts or the turn ends, so they sit in chronological order.
     case 'token':
+    case 'thinking':
       return items
     case 'done':
     case 'error':

@@ -11,8 +11,9 @@ import {
 import { applyIntakeEvent } from '../components/activity/adapters/intake'
 import { settleRunningEntries } from '../components/activity/group'
 import type { ActivityItem } from '../components/activity/types'
-import { parseBrief } from '../lib/intake-brief'
-import { runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
+import { parseReadiness, type Readiness } from '../lib/intake-readiness'
+import { parseRun } from '../lib/intake-run'
+import { discardIntakeSession, runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
 import {
   clearNewRunDraftStorage,
   clearOrphanedIntakeKeys,
@@ -27,12 +28,17 @@ import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import type { Job } from '../types'
 import type { WorkflowOption } from '../workflows'
 
+/**
+ * What the "Generate run" control sends. Plan mode investigates until the
+ * work is clear rather than racing to a run, so asking for one is an
+ * explicit developer act — and it stays a request, not a command, because
+ * the agent is told to name what it had to assume.
+ */
+const GENERATE_RUN_REQUEST =
+  'Generate the run now from what we have. If anything is still unresolved, say in one line what it is and what you assumed.'
+
 function nextId(prefix: string): string {
   return `${prefix}-${mintSessionId()}`
-}
-
-function isLimitMessage(message: string): boolean {
-  return message.startsWith('Session turn limit') || message.startsWith('Session token budget')
 }
 
 interface PlanSessionState {
@@ -40,15 +46,18 @@ interface PlanSessionState {
   items: ActivityItem[]
   busy: boolean
   partialText: string
+  partialThinking: string
   error: string | null
   noLlm: boolean
   turnCount: number
   totalTokens: number
+  contextUsed: number
+  readiness: Readiness | null
   modelChoice: { provider: string; model: string }
 }
 
 export interface PlanSessionApi extends PlanSessionState {
-  send: (text: string, opts?: { forceBrief?: boolean }) => Promise<void>
+  send: (text: string, opts?: { generateRun?: boolean }) => Promise<void>
   cancel: () => void
   reset: () => void
   setModelChoice: (next: { provider: string; model: string }) => void
@@ -61,7 +70,6 @@ export interface PlanSessionApi extends PlanSessionState {
   workflows: WorkflowOption[]
   jobs: Job[]
   scmConnected: boolean
-  limitReached: boolean
   hasProgress: boolean
 }
 
@@ -74,10 +82,13 @@ function initialState(): PlanSessionState {
     items: draft?.items ?? [],
     busy: false,
     partialText: '',
+    partialThinking: '',
     error: null,
     noLlm: false,
     turnCount: draft?.turnCount ?? 0,
     totalTokens: draft?.totalTokens ?? 0,
+    contextUsed: draft?.contextUsed ?? 0,
+    readiness: draft?.readiness ?? null,
     modelChoice: draft?.modelChoice ?? { provider: '', model: '' },
   }
 }
@@ -94,12 +105,14 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ActivityItem[]>(() => bootState().items)
   const [busy, setBusy] = useState(false)
   const [partialText, setPartialText] = useState('')
+  const [partialThinking, setPartialThinking] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [noLlm, setNoLlm] = useState(false)
   const [turnCount, setTurnCount] = useState(() => bootState().turnCount)
   const [totalTokens, setTotalTokens] = useState(() => bootState().totalTokens)
+  const [contextUsed, setContextUsed] = useState(() => bootState().contextUsed)
+  const [readiness, setReadiness] = useState<Readiness | null>(() => bootState().readiness)
   const [modelChoice, setModelChoice] = useState(() => bootState().modelChoice)
-  const [limitReached, setLimitReached] = useState(false)
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [scmConnected, setScmConnected] = useState(true)
@@ -133,19 +146,21 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const draft: NewRunDraft = {
-      version: 2,
+      version: 3,
       sessionId,
       items,
       modelChoice,
       turnCount,
       totalTokens,
+      contextUsed,
+      readiness,
     }
     if (busy) {
       const timer = window.setTimeout(() => saveNewRunDraft(draft), 250)
       return () => window.clearTimeout(timer)
     }
     saveNewRunDraft(draft)
-  }, [sessionId, items, modelChoice, turnCount, totalTokens, busy])
+  }, [sessionId, items, modelChoice, turnCount, totalTokens, contextUsed, readiness, busy])
 
   const commitItems = useCallback((updater: (prev: ActivityItem[]) => ActivityItem[]) => {
     const next = updater(itemsRef.current)
@@ -165,16 +180,20 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     abortRef.current?.abort()
     abortRef.current = null
     busyRef.current = false
+    discardIntakeSession(sessionIdRef.current)
     const next = mintSessionId()
     boot = {
       sessionId: next,
       items: [],
       busy: false,
       partialText: '',
+      partialThinking: '',
       error: null,
       noLlm: false,
       turnCount: 0,
       totalTokens: 0,
+      contextUsed: 0,
+      readiness: null,
       modelChoice: modelChoiceRef.current,
     }
     sessionIdRef.current = next
@@ -183,11 +202,13 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setItems([])
     setBusy(false)
     setPartialText('')
+    setPartialThinking('')
     setError(null)
     setNoLlm(false)
     setTurnCount(0)
     setTotalTokens(0)
-    setLimitReached(false)
+    setContextUsed(0)
+    setReadiness(null)
     clearNewRunDraftStorage()
   }, [])
 
@@ -207,38 +228,26 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     [commitItems],
   )
 
-  const send = useCallback(async (text: string, opts?: { forceBrief?: boolean }) => {
+  const send = useCallback(async (text: string, opts?: { generateRun?: boolean }) => {
     if (busyRef.current) return
     const trimmed = text.trim()
-    if (!trimmed && !opts?.forceBrief) return
+    if (!trimmed && !opts?.generateRun) return
 
     busyRef.current = true
     setBusy(true)
     setPartialText('')
+    setPartialThinking('')
     setError(null)
 
-    const additions: ActivityItem[] = []
-    if (trimmed) {
-      additions.push({ kind: 'message', id: nextId('msg'), role: 'user', text: trimmed })
-    }
-    if (opts?.forceBrief) {
-      additions.push({
-        kind: 'message',
-        id: nextId('msg'),
-        role: 'user',
-        text: 'Please emit your best <brief> now with what we have so far.',
-      })
-    }
+    // One outgoing message per turn, so the browser transcript and the
+    // runner's session stay in step even when the developer types something
+    // and clicks Generate run in the same breath.
+    const outgoing = opts?.generateRun
+      ? [trimmed, GENERATE_RUN_REQUEST].filter(Boolean).join('\n\n')
+      : trimmed
 
-    const snapshot = commitItems(prev => [...prev, ...additions])
-
-    const messages = toIntakeMessages(snapshot)
-    if (!messages.some(m => m.role === 'user' && m.content.trim())) {
-      busyRef.current = false
-      setBusy(false)
-      setError('Nothing to send.')
-      return
-    }
+    const transcript = toIntakeMessages(itemsRef.current)
+    commitItems(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'user', text: outgoing }])
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -246,11 +255,30 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
     const history = deriveRunHistoryHints(jobsRef.current)
     let assistantText = ''
+    let committedAssistantLength = 0
+    let thinkingBuffer = ''
+
+    const flushThinking = () => {
+      const thought = thinkingBuffer.trim()
+      thinkingBuffer = ''
+      setPartialThinking('')
+      if (!thought) return
+      commitItems(prev => [...prev, { kind: 'thought', id: nextId('thought'), text: thought }])
+    }
+
+    const flushAssistantBubble = () => {
+      const pending = assistantText.slice(committedAssistantLength).trim()
+      committedAssistantLength = assistantText.length
+      setPartialText('')
+      if (!pending) return
+      commitItems(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }])
+    }
 
     try {
       const result = await runIntakeStream({
         sessionId: sessionIdRef.current,
-        messages,
+        message: outgoing,
+        transcript,
         context: {
           recentRepos: history.recentRepos,
           recentReviewers: history.recentReviewers,
@@ -260,19 +288,28 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         modelChoice: modelChoiceRef.current.model ? modelChoiceRef.current : undefined,
         signal: controller.signal,
         onEvent: event => {
-          if (event.type === 'token' && event.text) {
+          if (event.type === 'thinking' && event.text) {
+            flushAssistantBubble()
+            thinkingBuffer += event.text
+            setPartialThinking(thinkingBuffer)
+          } else if (event.type === 'token' && event.text) {
+            flushThinking()
             assistantText += event.text
-            setPartialText(prev => prev + event.text)
+            setPartialText(assistantText.slice(committedAssistantLength))
           } else if (event.type === 'tool_start' || event.type === 'tool_end') {
+            if (event.type === 'tool_start') {
+              flushThinking()
+              flushAssistantBubble()
+            }
             commitItems(prev => applyIntakeEvent(prev, event))
           } else if (event.type === 'done') {
             commitItems(prev => applyIntakeEvent(prev, event))
             if (event.usage?.totalTokens) setTotalTokens(prev => prev + event.usage!.totalTokens)
+            if (event.contextTokens != null) setContextUsed(event.contextTokens)
           } else if (event.type === 'error') {
             commitItems(prev => applyIntakeEvent(prev, event))
             if (event.message) {
               if (event.reason === 'no-llm') setNoLlm(true)
-              if (isLimitMessage(event.message)) setLimitReached(true)
               setError(event.message)
               commitItems(prev => [
                 ...prev,
@@ -296,21 +333,44 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         commitItems(prev => [...prev, { kind: 'notice', id: nextId('notice'), tone: 'error', text: message }])
       }
     } finally {
+      flushThinking()
       const committed = assistantText.trim()
+      const turnReadiness = committed ? parseReadiness(committed) : null
+      setReadiness(turnReadiness)
       commitItems(prev => {
         const settled = settleRunningEntries(prev)
-        if (!committed) return settled
-        const withMessage: ActivityItem[] = [
-          ...settled,
-          { kind: 'message', id: nextId('msg'), role: 'assistant', text: committed },
-        ]
-        const parsed = parseBrief(
+        const pending = assistantText.slice(committedAssistantLength).trim()
+        const withMessage: ActivityItem[] = pending
+          ? [...settled, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }]
+          : settled
+        if (!committed) return withMessage
+        const parsed = parseRun(
           committed,
           workflowsRef.current.map(w => w.workflowPath),
         )
         if (!parsed) return withMessage
+
+        // The whole point of the investigation is that a run arrives when the
+        // work is understood. An unrequested run emitted mid-investigation is
+        // the behaviour we removed, so hold it back and say why — asking again
+        // is one click.
+        if (!opts?.generateRun && turnReadiness?.state === 'investigating') {
+          const open = turnReadiness.openQuestions[0]
+          return [
+            ...withMessage,
+            {
+              kind: 'notice',
+              id: nextId('notice'),
+              tone: 'info',
+              text: open
+                ? `Held back a run — still unresolved: ${open}. Use "Generate run" to get one anyway.`
+                : 'Held back a run — the investigation is not finished. Use "Generate run" to get one anyway.',
+            },
+          ]
+        }
+
         const superseded = withMessage.map(item => {
-          if (item.kind !== 'card' || item.card.type !== 'brief') return item
+          if (item.kind !== 'card' || item.card.type !== 'run') return item
           const data = item.card.data as { state?: string }
           if (data.state !== 'draft') return item
           return { ...item, card: { ...item.card, data: { ...data, state: 'superseded' } } }
@@ -320,11 +380,12 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           {
             kind: 'card',
             id: nextId('card'),
-            card: { type: 'brief', data: { brief: parsed, state: 'draft' } },
+            card: { type: 'run', data: { run: parsed, state: 'draft' } },
           },
         ]
       })
       setPartialText('')
+      setPartialThinking('')
       setTurnCount(c => c + 1)
       busyRef.current = false
       setBusy(false)
@@ -358,10 +419,13 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       items,
       busy,
       partialText,
+      partialThinking,
       error,
       noLlm,
       turnCount,
       totalTokens,
+      contextUsed,
+      readiness,
       modelChoice,
       send,
       cancel,
@@ -376,7 +440,6 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       workflows,
       jobs,
       scmConnected,
-      limitReached,
       hasProgress,
     }),
     [
@@ -384,10 +447,13 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       items,
       busy,
       partialText,
+      partialThinking,
       error,
       noLlm,
       turnCount,
       totalTokens,
+      contextUsed,
+      readiness,
       modelChoice,
       send,
       cancel,
@@ -398,7 +464,6 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       workflows,
       jobs,
       scmConnected,
-      limitReached,
       hasProgress,
     ],
   )

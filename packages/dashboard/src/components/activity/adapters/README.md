@@ -15,17 +15,18 @@ Responsibilities:
 Two rules keep the activity layer reusable:
 
 1. Nothing in `components/activity/**` may import from `components/plan/**`,
-   `hooks/useIntakeStream.ts`, or `lib/intake-brief.ts`.
+   `hooks/useIntakeStream.ts`, or `lib/intake-run.ts`.
 2. Card renderers are injected via `cardRenderers` — adapters may emit
    `{ kind: 'card', card: { type, data } }` but must not import a renderer.
 
 ## `intake.ts` (built)
 
-Consumes `POST /intake/stream` SSE frames (`token` / `tool_start` / `tool_end` /
-`done` / `error`). Tool start/end mutate the item list; `done` and `error` mark
-any leftover `running` entries as `done` so a turn that never emitted `tool_end`
-(common for BYO MCP tools) does not leave a spinner up. Token text stays on
-the plan-session provider.
+Consumes `POST /intake/stream` SSE frames (`token` / `thinking` / `tool_start` /
+`tool_end` / `done` / `error`). Tool start/end mutate the item list; `done` and
+`error` mark any leftover `running` entries as `done` so a turn that never
+emitted `tool_end` (common for BYO MCP tools) does not leave a spinner up.
+Token text and thinking stay on the plan-session provider, which commits them
+into `message` / `thought` items in chronological order around the tools.
 
 ## `job-log.ts` (not built yet)
 

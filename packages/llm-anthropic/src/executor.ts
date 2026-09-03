@@ -521,6 +521,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
 
     const data = await this.postAnthropicMessages(headers, body, req)
     const output = extractAnthropicText(data.content ?? [])
+    if (output) req.onText?.(output)
 
     return {
       output,
@@ -569,7 +570,10 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       const content = data.content ?? []
       const stopReason = data.stop_reason ?? 'end_turn'
       const textParts = extractAnthropicText(content)
-      if (textParts) output = textParts
+      if (textParts) {
+        output = output ? `${output}\n\n${textParts}` : textParts
+        req.onText?.(textParts)
+      }
 
       const toolUses = content.filter(
         (block): block is { type: 'tool_use'; id: string; name: string; input: unknown } =>

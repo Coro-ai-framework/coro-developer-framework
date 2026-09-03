@@ -7,6 +7,7 @@ import ActivityDeck from './activity-deck'
 import CardHost from './cards/registry'
 import type { CardRendererMap } from './cards/types'
 import MessageBlock from './message-block'
+import ThoughtBlock from './thought-block'
 import type { ActivityItem } from './types'
 import { useStickToBottom } from './use-stick-to-bottom'
 
@@ -14,6 +15,8 @@ interface ActivityFeedProps {
   items: ActivityItem[]
   /** In-flight assistant text, rendered as a trailing streaming message. */
   partialText?: string
+  /** In-flight model reasoning, rendered as a trailing thought block. */
+  partialThinking?: string
   /** True while a turn is in flight — drives the Thinking state and the caret. */
   busy?: boolean
   /** Card type → renderer. Injected, never imported. See activity layer Rule 2. */
@@ -51,14 +54,15 @@ function NoticeBlock({ item }: { item: Extract<ActivityItem, { kind: 'notice' }>
 export default function ActivityFeed({
   items,
   partialText,
+  partialThinking,
   busy = false,
   cardRenderers,
   emptyState,
   className,
 }: ActivityFeedProps) {
-  const stick = useStickToBottom<HTMLDivElement>([items.length, partialText, busy])
-  const showThinking = busy && !partialText && !lastItemIsRunningDeck(items)
-  const empty = items.length === 0 && !partialText && !busy
+  const stick = useStickToBottom<HTMLDivElement>([items.length, partialText, partialThinking, busy])
+  const showThinking = busy && !partialText && !partialThinking && !lastItemIsRunningDeck(items)
+  const empty = items.length === 0 && !partialText && !partialThinking && !busy
 
   return (
     <div className={cn('relative flex min-h-0 flex-1 flex-col', className)}>
@@ -69,6 +73,9 @@ export default function ActivityFeed({
             if (item.kind === 'message') {
               return <MessageBlock key={item.id} role={item.role} text={item.text} />
             }
+            if (item.kind === 'thought') {
+              return <ThoughtBlock key={item.id} text={item.text} />
+            }
             if (item.kind === 'activity') {
               return <ActivityDeck key={item.id} group={item.group} entries={item.entries} />
             }
@@ -77,6 +84,7 @@ export default function ActivityFeed({
             }
             return <NoticeBlock key={item.id} item={item} />
           })}
+          {partialThinking ? <ThoughtBlock text={partialThinking} streaming /> : null}
           {partialText ? <MessageBlock role="assistant" text={partialText} streaming /> : null}
           {showThinking ? (
             <div className="flex items-center gap-2 font-mono text-[10px] leading-[1.5] text-fg-subtle">

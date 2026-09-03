@@ -16,10 +16,10 @@ import {
   fetchLaunchableWorkflows,
   type WorkflowOption,
 } from '../workflows'
-import type { BriefCardData } from '../components/plan/cards/brief-card'
+import type { RunCardData } from '../components/plan/cards/run-card'
 
 const GREETING =
-  "Hi — tell me what you'd like Coro to work on. I'll ask a few questions if needed, then propose a run brief you can edit before dispatching."
+  "Hi — tell me what you'd like Coro to work on. I'll dig into the repo and the ticket, ask whatever I need to, and tell you what I find. When the work is genuinely clear, we'll turn it into a run — and if it turns out nothing needs building, I'll say that instead."
 
 interface PluginManifest {
   id: string
@@ -40,9 +40,9 @@ interface PluginsResponse {
 function tabSubtitle(session: ReturnType<typeof usePlanSession>): string {
   for (let i = session.items.length - 1; i >= 0; i--) {
     const item = session.items[i]
-    if (item.kind === 'card' && item.card.type === 'brief') {
-      const data = item.card.data as BriefCardData
-      if (data.brief.serviceName.trim()) return data.brief.serviceName
+    if (item.kind === 'card' && item.card.type === 'run') {
+      const data = item.card.data as RunCardData
+      if (data.run.serviceName.trim()) return data.run.serviceName
     }
   }
   const firstUser = session.items.find(i => i.kind === 'message' && i.role === 'user')
@@ -118,7 +118,7 @@ export default function NewRun() {
     session.reset()
   }
 
-  const composerBlocked = session.noLlm || session.limitReached
+  const composerBlocked = session.noLlm
 
   return (
     <div
@@ -148,6 +148,7 @@ export default function NewRun() {
         <ActivityFeed
           items={session.items}
           partialText={session.partialText}
+          partialThinking={session.partialThinking}
           busy={session.busy}
           cardRenderers={PLAN_CARD_RENDERERS}
           emptyState={<p className="text-[13.5px] leading-[1.7] text-fg">{GREETING}</p>}
@@ -172,13 +173,6 @@ export default function NewRun() {
             <Button asChild className="mt-3">
               <Link to="/settings#llm-provider">Open settings</Link>
             </Button>
-          </div>
-        ) : null}
-
-        {session.limitReached && !session.noLlm ? (
-          <div className="mb-3 rounded-xl border border-danger-500/25 bg-danger-500/8 px-3.5 py-2.5 text-[12.5px] text-danger-200">
-            This conversation has reached its limit. Start a new conversation, or dispatch the brief
-            you have.
           </div>
         ) : null}
 

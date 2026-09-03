@@ -39,6 +39,7 @@ import { detectEditors, openInEditor, revealFolder } from './open-editor'
 import { assertJobPluginRequirements, PluginPreflightError } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { runIntakeStream } from '../intake/handler'
+import { deleteIntakeSession } from '../intake/session-store'
 import { JobType, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
 import {
@@ -1334,6 +1335,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
     const body = req.body as {
       sessionId?: string
+      message?: string
+      transcript?: Array<{ role: 'user' | 'assistant'; content: string }>
       messages?: Array<{ role: 'user' | 'assistant'; content: string }>
       model?: string
       provider?: string
@@ -1349,8 +1352,30 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.status(400).json({ error: 'sessionId is required' })
       return
     }
-    if (!Array.isArray(body.messages)) {
-      res.status(400).json({ error: 'messages array is required' })
+
+    // The conversation lives in the runner's session store, so the dashboard
+    // posts only `message`. It also sends `transcript` — its own copy of the
+    // prior turns — which seeds the session when the runner has none: a
+    // restart mid-investigation would otherwise silently drop the history the
+    // browser is still showing. Seeding is ignored once turns exist, so the
+    // normal path never re-bills the conversation.
+    const explicitMessage = typeof body.message === 'string' ? body.message.trim() : ''
+    const legacyTranscript = Array.isArray(body.messages) ? body.messages : []
+    let message = explicitMessage
+    let seedMessages = Array.isArray(body.transcript) ? body.transcript : []
+    if (!message) {
+      const lastUserIndex = legacyTranscript.reduce(
+        (found, m, i) => (m?.role === 'user' && m.content?.trim() ? i : found),
+        -1,
+      )
+      if (lastUserIndex >= 0) {
+        message = legacyTranscript[lastUserIndex]!.content.trim()
+        seedMessages = legacyTranscript.slice(0, lastUserIndex)
+      }
+    }
+
+    if (!message) {
+      res.status(400).json({ error: 'message is required' })
       return
     }
 
@@ -1374,7 +1399,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     try {
       for await (const event of runIntakeStream({
         sessionId: body.sessionId.trim(),
-        messages: body.messages,
+        message,
+        ...(seedMessages.length > 0 ? { seedMessages } : {}),
         ...(typeof body.model === 'string' && body.model.trim()
           ? { model: body.model.trim(), provider: typeof body.provider === 'string' ? body.provider.trim() : undefined }
           : {}),
@@ -1391,6 +1417,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       })) {
         if (event.type === 'token') {
           res.write(formatSseFrame(JSON.stringify({ type: 'token', text: event.text }), 'message'))
+        } else if (event.type === 'thinking') {
+          res.write(formatSseFrame(JSON.stringify({ type: 'thinking', text: event.text }), 'message'))
         } else if (event.type === 'tool_start') {
           res.write(formatSseFrame(JSON.stringify({
             type: 'tool_start',
@@ -1407,7 +1435,13 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             ...(event.error ? { error: event.error } : {}),
           }), 'message'))
         } else if (event.type === 'done') {
-          res.write(formatSseFrame(JSON.stringify({ type: 'done', usage: event.usage }), 'message'))
+          res.write(formatSseFrame(JSON.stringify({
+            type: 'done',
+            usage: event.usage,
+            ...(event.contextTokens != null ? { contextTokens: event.contextTokens } : {}),
+            ...(event.sessionTokens != null ? { sessionTokens: event.sessionTokens } : {}),
+            ...(event.turns != null ? { turns: event.turns } : {}),
+          }), 'message'))
         } else if (event.type === 'error') {
           const payload: Record<string, unknown> = { type: 'error', message: event.message }
           if ((event as { reason?: string }).reason) payload['reason'] = (event as { reason?: string }).reason
@@ -1421,6 +1455,20 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     } finally {
       res.end()
     }
+  })
+
+  /**
+   * Discards a plan-mode conversation. The dashboard calls this when the
+   * developer starts a new conversation or dispatches a run, so an
+   * abandoned investigation's evidence is not held until the idle sweep.
+   */
+  app.delete('/intake/sessions/:sessionId', (req: Request, res: Response) => {
+    const sessionId = String(req.params['sessionId'] ?? '').trim()
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId is required' })
+      return
+    }
+    res.json({ deleted: deleteIntakeSession(sessionId) })
   })
 
   // ── Job CRUD ────────────────────────────────────────────────────────────

@@ -4,10 +4,7 @@ import path from 'path'
 import fs from 'fs'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { Settings } from '../../src/config/settings'
-import {
-  resetIntakeSessionBudgetsForTests,
-  runIntakeStream,
-} from '../../src/intake/handler'
+import { resetIntakeSessionsForTests, runIntakeStream } from '../../src/intake/handler'
 
 const settings = { intake: { toolsEnabled: true } } as Settings
 
@@ -19,7 +16,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmpHome, '.coro'), { recursive: true })
   savedHome = process.env['HOME']
   process.env['HOME'] = tmpHome
-  resetIntakeSessionBudgetsForTests()
+  resetIntakeSessionsForTests()
 })
 
 afterEach(() => {
@@ -49,11 +46,11 @@ function mockRegistry(output: string, onResolve?: (req: { model?: string; provid
   } as unknown as PluginRegistry
 }
 
-async function collectEvents(sessionId: string, messages: Parameters<typeof runIntakeStream>[0]['messages']) {
+async function collectEvents(sessionId: string, message: string) {
   const events = []
   for await (const event of runIntakeStream({
     sessionId,
-    messages,
+    message,
     context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
     registry: mockRegistry('Hello from intake'),
     settings,
@@ -66,30 +63,47 @@ async function collectEvents(sessionId: string, messages: Parameters<typeof runI
 
 describe('runIntakeStream', () => {
   it('streams tokens and completes with usage', async () => {
-    const events = await collectEvents('session-a', [{ role: 'user', content: 'Add logging' }])
+    const events = await collectEvents('session-a', 'Add logging')
     expect(events.some(e => e.type === 'token')).toBe(true)
     expect(events.at(-1)).toMatchObject({
       type: 'done',
       usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+      turns: 1,
     })
   })
 
-  it('enforces the per-session turn limit', async () => {
-    for (let i = 0; i < 8; i++) {
-      await collectEvents('session-b', [{ role: 'user', content: `turn ${i}` }])
+  it('does not cap turns or tokens — an investigation runs as long as it needs', async () => {
+    for (let i = 0; i < 12; i++) {
+      const events = await collectEvents('session-b', `turn ${i}`)
+      expect(events.at(-1)).toMatchObject({ type: 'done', turns: i + 1 })
     }
+    const events = await collectEvents('session-b', 'still going')
+    expect(events.some(e => e.type === 'error')).toBe(false)
+    expect(events.at(-1)).toMatchObject({ type: 'done', turns: 13, sessionTokens: 13 * 150 })
+  })
 
-    const events = await collectEvents('session-b', [{ role: 'user', content: 'one more' }])
-    expect(events).toEqual([
-      {
-        type: 'error',
-        message: 'Session turn limit reached. Start a new conversation, or dispatch the brief you have.',
-      },
-    ])
+  it('preserves line breaks in the streamed reply', async () => {
+    const reply = 'Findings:\n\n- The handler is stateless\n- Tool results are dropped\n\n<readiness>\n{"state":"investigating"}\n</readiness>'
+    const events = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-multiline',
+      message: 'What did you find?',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry: mockRegistry(reply),
+      settings,
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+    const streamed = events
+      .filter((e): e is { type: 'token'; text: string } => e.type === 'token')
+      .map(e => e.text)
+      .join('')
+    expect(streamed).toBe(reply)
   })
 
   it('rejects a turn with no user message instead of synthesizing a greeting', async () => {
-    const events = await collectEvents('session-empty', [])
+    const events = await collectEvents('session-empty', '   ')
     expect(events).toEqual([
       {
         type: 'error',
@@ -109,7 +123,7 @@ describe('runIntakeStream', () => {
     const events = []
     for await (const event of runIntakeStream({
       sessionId: 'session-c',
-      messages: [{ role: 'user', content: 'Hi' }],
+      message: 'Hi',
       context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
       registry,
       settings,
@@ -129,7 +143,7 @@ describe('runIntakeStream', () => {
     const events = []
     for await (const event of runIntakeStream({
       sessionId: 'session-d',
-      messages: [{ role: 'user', content: 'Add logging' }],
+      message: 'Add logging',
       context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
       registry: mockRegistry('Hello', req => resolved.push(req)),
       settings,
@@ -163,7 +177,7 @@ describe('runIntakeStream', () => {
     const events = []
     for await (const event of runIntakeStream({
       sessionId: 'session-e',
-      messages: [{ role: 'user', content: 'Hello' }],
+      message: 'Hello',
       context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
       registry,
       settings,
@@ -176,7 +190,95 @@ describe('runIntakeStream', () => {
     expect(events.at(-1)).toMatchObject({
       type: 'done',
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      contextTokens: 15,
     })
+  })
+
+  it('carries prior turns and their tool evidence into the next turn', async () => {
+    const seen: Array<ReadonlyArray<{ role: string; content: string }>> = []
+    let turn = 0
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        chat: async (req: { messages: ReadonlyArray<{ role: string; content: string }> }) => {
+          seen.push(req.messages)
+          turn += 1
+          return {
+            output: `reply ${turn}`,
+            usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls:
+              turn === 1
+                ? [{
+                    name: 'scm_read_file',
+                    input: { repo: 'org/x', path: 'src/api.ts' },
+                    output: 'export const rateLimit = 100',
+                    durationMs: 3,
+                  }]
+                : [],
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    for (const message of ['what is in src/api.ts?', 'so where is the limit set?']) {
+      for await (const _event of runIntakeStream({
+        sessionId: 'session-evidence',
+        message,
+        context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+        registry,
+        settings,
+        signal: new AbortController().signal,
+      })) {
+        // drain
+      }
+    }
+
+    expect(seen[0]).toEqual([{ role: 'user', content: 'what is in src/api.ts?' }])
+    expect(seen[1]).toHaveLength(3)
+    expect(seen[1]![0]).toEqual({ role: 'user', content: 'what is in src/api.ts?' })
+    expect(seen[1]![1]!.role).toBe('assistant')
+    expect(seen[1]![1]!.content).toContain('reply 1')
+    expect(seen[1]![1]!.content).toContain('<evidence>')
+    expect(seen[1]![1]!.content).toContain('export const rateLimit = 100')
+    expect(seen[1]![2]).toEqual({ role: 'user', content: 'so where is the limit set?' })
+  })
+
+  it('seeds a session from a client transcript when the runner has no state', async () => {
+    const seen: Array<ReadonlyArray<{ role: string; content: string }>> = []
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        chat: async (req: { messages: ReadonlyArray<{ role: string; content: string }> }) => {
+          seen.push(req.messages)
+          return {
+            output: 'ok',
+            usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [],
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    for await (const _event of runIntakeStream({
+      sessionId: 'session-seeded',
+      message: 'and the retries?',
+      seedMessages: [
+        { role: 'user', content: 'how does the client time out?' },
+        { role: 'assistant', content: 'It uses a 5s deadline.' },
+      ],
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+    })) {
+      // drain
+    }
+
+    expect(seen[0]).toEqual([
+      { role: 'user', content: 'how does the client time out?' },
+      { role: 'assistant', content: 'It uses a 5s deadline.' },
+      { role: 'user', content: 'and the retries?' },
+    ])
   })
 
   it('streams tool_start/tool_end with rich summaries when the executor invokes a tool', async () => {
@@ -212,7 +314,7 @@ describe('runIntakeStream', () => {
     const events: Array<Record<string, unknown>> = []
     for await (const event of runIntakeStream({
       sessionId: 'session-tool',
-      messages: [{ role: 'user', content: 'What is PROJ-42 about?' }],
+      message: 'What is PROJ-42 about?',
       context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
       registry,
       settings,
@@ -237,6 +339,76 @@ describe('runIntakeStream', () => {
     expect(events.at(-1)).toMatchObject({ type: 'done' })
   })
 
+  it('streams thinking and text while chat() is still running, and does not dump them again at the end', async () => {
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        chat: async (req: {
+          onText?: (content: string) => void
+          onThinking?: (content: string) => void
+          onToolStart?: (info: { name: string; input: unknown }) => void
+          onToolEnd?: (record: { name: string; input: unknown; output: unknown; durationMs: number }) => void
+        }) => {
+          req.onThinking?.('The handler looks stateless.')
+          req.onText?.('I am going to read the intake handler.\n')
+          req.onToolStart?.({ name: 'scm_read_file', input: { path: 'handler.ts' } })
+          req.onToolEnd?.({
+            name: 'scm_read_file',
+            input: { path: 'handler.ts' },
+            output: 'async function* runIntakeStream',
+            durationMs: 4,
+          })
+          req.onText?.('Tool results are dropped at the turn boundary.')
+          return {
+            output: 'I am going to read the intake handler.\nTool results are dropped at the turn boundary.',
+            usage: { inputTokens: 20, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [{
+              name: 'scm_read_file',
+              input: { path: 'handler.ts' },
+              output: 'async function* runIntakeStream',
+              durationMs: 4,
+            }],
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    const events: Array<Record<string, unknown>> = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-live-text',
+      message: 'Why is plan mode silent?',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+
+    const types = events.map(e => e.type)
+    expect(types.filter(t => t === 'thinking')).toEqual(['thinking'])
+    expect(events.find(e => e.type === 'thinking')).toMatchObject({
+      type: 'thinking',
+      text: 'The handler looks stateless.',
+    })
+    expect(events.find(e => e.type === 'tool_start')).toMatchObject({
+      type: 'tool_start',
+      name: 'scm_read_file',
+    })
+    const streamed = events
+      .filter((e): e is { type: 'token'; text: string } => e.type === 'token')
+      .map(e => e.text)
+      .join('')
+    expect(streamed).toBe(
+      'I am going to read the intake handler.\nTool results are dropped at the turn boundary.',
+    )
+    // Live onText already carried the reply — dumping result.output would double it.
+    expect(types.filter(t => t === 'token').length).toBe(2)
+    expect(types.at(-1)).toBe('done')
+    expect(types.indexOf('thinking')).toBeLessThan(types.indexOf('token'))
+    expect(types.indexOf('token')).toBeLessThan(types.indexOf('tool_start'))
+  })
+
   it('passes planMode BYO MCP servers to executor.chat() even without built-in tools', async () => {
     writeMcpConfig({
       catalog: {
@@ -254,7 +426,7 @@ describe('runIntakeStream', () => {
         chat: async (req: { pluginMcpServers?: Record<string, unknown> }) => {
           captured = req
           return {
-            output: 'Brief ready.',
+            output: 'Run ready.',
             usage: { inputTokens: 5, outputTokens: 3, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
             toolCalls: [],
           }
@@ -265,7 +437,7 @@ describe('runIntakeStream', () => {
     const events = []
     for await (const event of runIntakeStream({
       sessionId: 'session-plan-mcp',
-      messages: [{ role: 'user', content: 'Who calls world?' }],
+      message: 'Who calls world?',
       context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
       registry,
       settings,

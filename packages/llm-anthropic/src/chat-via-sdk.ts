@@ -173,6 +173,9 @@ export async function chatViaAgentSdk(
   for await (const event of executor.executePhase(phaseReq)) {
     if (event.type === 'text' && event.content) {
       textParts.push(event.content)
+      req.onText?.(event.content)
+    } else if (event.type === 'thinking' && event.content) {
+      req.onThinking?.(event.content)
     } else if (event.type === 'usage') {
       usage = event.tokens
     } else if (event.type === 'tool_call') {

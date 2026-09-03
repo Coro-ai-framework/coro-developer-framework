@@ -148,7 +148,8 @@ the `coro` CLI.
 | GET    | `/jobs/:jobId`                                  | Get a single job's full state                                                     |
 | GET    | `/jobs/:jobId/stream`                           | Server-Sent Events stream of live logs                                            |
 | GET    | `/jobs/:jobId/artifacts/:artifactId/content`    | Download an artefact body                                                         |
-| POST   | `/intake/stream`                                | Coro plan mode — SSE conversational brief (see §5.1)                              |
+| POST   | `/intake/stream`                                | Coro plan mode — SSE investigative intake (see §5.1)                              |
+| DELETE | `/intake/sessions/:sessionId`                   | Discard a plan-mode conversation                                                  |
 | POST   | `/jobs/:jobId/resume`                           | Resume a parked or failed job                                                     |
 | POST   | `/jobs/:jobId/message`                          | Send a mid-flight developer message into the running job                          |
 | GET    | `/config`                                       | Read current `LocalConfig` (secrets redacted)                                     |
@@ -180,38 +181,54 @@ not the runner's process-wide intelligence dir.
 
 ### 5.1 `POST /intake/stream` (Coro plan mode)
 
-Lightweight intake path for the dashboard **New Run** chat. Implemented in
+Investigative intake path for the dashboard **New Run** chat. Implemented in
 `packages/runner/src/intake/handler.ts` with system instructions from
-`packages/runner/src/intake/system-prompt.ts`.
+`packages/runner/src/intake/system-prompt.ts` and conversation state in
+`packages/runner/src/intake/session-store.ts`.
 
 - **Transport:** Server-Sent Events (`text/event-stream`).
 - **Auth:** Same local runner surface as other dashboard routes (no separate token).
 - **Executor path:** Prefer `PhaseExecutorRuntime.chat()` when implemented
   (direct Anthropic `/v1/messages` or OpenAI Responses). When
   `settings.intake.toolsEnabled !== false` (default) and installed plugins
-  expose read helpers, `chat()` runs a bounded tool-use loop (max 5 rounds)
-  with a curated read-only set: `tracker_get_issue`, `tracker_search_issues`,
-  `scm_read_file`, `scm_search_code`. No write tools, no MCP subprocess.
-  Falls back to `runSubagent` / `executePhase` only when `chat` is absent.
+  expose read helpers, `chat()` runs a bounded tool-use loop
+  (`INTAKE_MAX_TOOL_ROUNDS`) with a curated read-only set:
+  `tracker_get_issue`, `tracker_get_comments`, `tracker_search_issues`,
+  `scm_read_file`, `scm_search_code`, `scm_list_files`. No write tools, no MCP
+  subprocess. Falls back to `runSubagent` / `executePhase` only when `chat`
+  is absent.
 - **Model resolution:** Optional per-request `{ model, provider }` from the
   dashboard picker; otherwise `selectModel({ tier: 'planning' }, settings)`.
-- **Session budgets:** 8 turns; 30k tokens/session without tools, 60k with
-  tools enabled (in-memory map keyed by `sessionId`).
+- **Session state:** The runner owns the conversation, keyed by `sessionId`,
+  including each turn's tool results — replayed to the model as `<evidence>`
+  blocks so a multi-turn investigation does not lose what it read. In-memory,
+  swept after `INTAKE_SESSION_TTL_MS` idle, and dropped explicitly by
+  `DELETE /intake/sessions/:sessionId`.
+- **Budgets:** None on turns or session tokens. Every turn is
+  developer-initiated, so there is no autonomous loop to bound; the only
+  unattended spend is the per-turn tool loop above. The `done` frame reports
+  `contextTokens` / `sessionTokens` / `turns` for display, never enforcement.
 - **Abort behaviour:** Plan-mode streams do **not** wire `AbortSignal` to
   `req.on('close')` — Express 4 on Node 20 fires `close` immediately after
   `express.json()` finishes, which previously aborted every LLM call.
 
-Request body requires `sessionId` (string) and `messages` (user/assistant
-array). Optional `context` carries `recentRepos`, `recentReviewers`,
+Request body requires `sessionId` (string) and `message` (the new developer
+turn). Optional `transcript` is the browser's copy of the earlier turns, used
+only to seed a session the runner does not have — a restart mid-investigation
+would otherwise silently drop the history the dashboard is still showing.
+Optional `context` carries `recentRepos`, `recentReviewers`,
 `availableWorkflows`, and `userLocale` for prompt grounding.
 
-SSE payload types: `token` (text delta), `tool_start` / `tool_end` (read-only
-lookups while tools are enabled), `done` (optional usage), `error`.
+SSE payload types: `token` (text delta), `thinking` (model reasoning),
+`tool_start` / `tool_end` (read-only lookups while tools are enabled), `done`
+(optional usage plus the counters above), `error`.
 
-The assistant is instructed to emit a final `<brief>{…json…}</brief>` block
-parsed client-side (`packages/dashboard/src/lib/intake-brief.ts`). Dispatch
-uses the same `POST /jobs` path used by the CLI once the operator approves
-the brief card.
+Every assistant turn ends with a `<readiness>{…}</readiness>` block
+(`investigating` / `ready` / `no-run-needed`, plus open questions) that the
+dashboard renders above the composer. The `<run>{…json…}</run>` payload comes
+only when the developer asks for it or readiness is `ready`; it is parsed
+client-side (`packages/dashboard/src/lib/intake-run.ts`) into an editable Run
+card. Dispatch uses the same `POST /jobs` path used by the CLI.
 
 Related config keys: `coachMode` (interactive defaults, graduation counter),
 `intake.toolsEnabled` (default `true` — read-only tracker/SCM lookups in plan

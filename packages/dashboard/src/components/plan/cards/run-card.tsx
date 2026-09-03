@@ -11,33 +11,33 @@ import { Select } from '../../ui/select'
 import { Textarea } from '../../ui/textarea'
 import PhaseTimeline from '../../workflow/phase-timeline'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
-import { parseReviewersList, type BriefDraft } from '../../../lib/intake-brief'
+import { parseReviewersList, type RunDraft } from '../../../lib/intake-run'
 import { findSimilarRuns } from '../../../lib/run-history'
 import { usePlanSession } from '../../../providers/plan-session'
 import { useWorkspaceTabs } from '../../../providers/workspace-tabs'
 import { durationBandFor } from '../../../workflows'
 
-export interface BriefCardData {
-  brief: BriefDraft
+export interface RunCardData {
+  run: RunDraft
   state: 'draft' | 'superseded' | 'dispatched'
   jobId?: string
 }
 
-export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardData>) {
-  const { brief, state, jobId } = data
+export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) {
+  const { run, state, jobId } = data
   const session = usePlanSession()
   const navigate = useNavigate()
   const { closeTab } = useWorkspaceTabs()
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const workflow = session.workflows.find(w => w.workflowPath === brief.workflowPath) ?? session.workflows[0]
-  const similar = findSimilarRuns(session.jobs, brief.description, brief.repo)
-  const formValid = Boolean(brief.repo.trim() && brief.serviceName.trim() && brief.description.trim())
+  const workflow = session.workflows.find(w => w.workflowPath === run.workflowPath) ?? session.workflows[0]
+  const similar = findSimilarRuns(session.jobs, run.description, run.repo)
+  const formValid = Boolean(run.repo.trim() && run.serviceName.trim() && run.description.trim())
   const startBlocked = state !== 'draft' || session.busy || submitting || !formValid || !session.scmConnected
 
-  function patchBrief(patch: Partial<BriefDraft>) {
-    session.updateCard(itemId, { ...data, brief: { ...brief, ...patch } })
+  function patchRun(patch: Partial<RunDraft>) {
+    session.updateCard(itemId, { ...data, run: { ...run, ...patch } })
   }
 
   async function dispatch() {
@@ -47,12 +47,12 @@ export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardDat
     try {
       const body = {
         type: 'job',
-        workflowPath: brief.workflowPath,
-        repo: brief.repo.trim(),
-        serviceName: brief.serviceName.trim(),
-        description: brief.description.trim(),
-        reviewers: parseReviewersList(brief.reviewers),
-        interactive: brief.interactive,
+        workflowPath: run.workflowPath,
+        repo: run.repo.trim(),
+        serviceName: run.serviceName.trim(),
+        description: run.description.trim(),
+        reviewers: parseReviewersList(run.reviewers),
+        interactive: run.interactive,
       }
       const result = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
       session.markCardDispatched(itemId, result.jobId)
@@ -81,25 +81,25 @@ export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardDat
   }
 
   const firstPhase = workflow?.phases?.[0]?.name ?? 'the first phase'
-  const firstStop = brief.interactive
+  const firstStop = run.interactive
     ? `Coro starts at ${firstPhase} and pauses at every checkpoint for your approval.`
     : 'Coro runs end-to-end and opens a PR. You can pause or message it mid-run.'
 
   const summary = (
     <div className="space-y-0.5">
       <div>
-        {brief.serviceName} · {brief.repo}
+        {run.serviceName} · {run.repo}
       </div>
       <div>
-        {workflow?.name ?? 'Workflow'} · {durationBandFor(brief.workflowPath, workflow?.phases?.length ?? 0)}
+        {workflow?.name ?? 'Workflow'} · {durationBandFor(run.workflowPath, workflow?.phases?.length ?? 0)}
       </div>
     </div>
   )
 
   const badges = (
     <>
-      <Badge variant={brief.interactive ? 'accent' : 'neutral'}>
-        {brief.interactive ? 'Interactive' : 'Autonomous'}
+      <Badge variant={run.interactive ? 'accent' : 'neutral'}>
+        {run.interactive ? 'Interactive' : 'Autonomous'}
       </Badge>
       {state === 'superseded' ? <Badge variant="neutral">Superseded</Badge> : null}
     </>
@@ -108,7 +108,7 @@ export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardDat
   const startTitle = !session.scmConnected
     ? 'Connect a source-control provider in Settings before starting a run.'
     : state === 'superseded'
-      ? 'A newer brief replaced this one.'
+      ? 'A newer run replaced this one.'
       : undefined
 
   const action =
@@ -133,7 +133,7 @@ export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardDat
   return (
     <CardShell
       icon={ClipboardList}
-      title="Run brief"
+      title="Run"
       summary={summary}
       badges={badges}
       action={action}
@@ -142,38 +142,38 @@ export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardDat
     >
       <Field label="Repository" required>
         <Input
-          value={brief.repo}
-          onChange={e => patchBrief({ repo: e.target.value })}
+          value={run.repo}
+          onChange={e => patchRun({ repo: e.target.value })}
           disabled={state !== 'draft'}
         />
       </Field>
       <Field label="Service name" required>
         <Input
-          value={brief.serviceName}
-          onChange={e => patchBrief({ serviceName: e.target.value })}
+          value={run.serviceName}
+          onChange={e => patchRun({ serviceName: e.target.value })}
           disabled={state !== 'draft'}
         />
       </Field>
       <Field label="Description" required>
         <Textarea
           rows={6}
-          value={brief.description}
-          onChange={e => patchBrief({ description: e.target.value })}
+          value={run.description}
+          onChange={e => patchRun({ description: e.target.value })}
           disabled={state !== 'draft'}
         />
       </Field>
       <Field label="Reviewers">
         <Input
-          value={brief.reviewers}
-          onChange={e => patchBrief({ reviewers: e.target.value })}
+          value={run.reviewers}
+          onChange={e => patchRun({ reviewers: e.target.value })}
           placeholder="alice, bob"
           disabled={state !== 'draft'}
         />
       </Field>
       <Field label="Workflow">
         <Select
-          value={brief.workflowPath}
-          onChange={e => patchBrief({ workflowPath: e.target.value })}
+          value={run.workflowPath}
+          onChange={e => patchRun({ workflowPath: e.target.value })}
           disabled={state !== 'draft'}
         >
           {session.workflows.map(w => (
@@ -186,8 +186,8 @@ export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardDat
       <label className="flex items-center gap-2 text-[13px] text-fg">
         <input
           type="checkbox"
-          checked={brief.interactive}
-          onChange={e => patchBrief({ interactive: e.target.checked })}
+          checked={run.interactive}
+          onChange={e => patchRun({ interactive: e.target.checked })}
           disabled={state !== 'draft'}
         />
         Interactive — pause at each checkpoint for approval
@@ -199,7 +199,7 @@ export default function BriefCard({ data, itemId }: CardRenderProps<BriefCardDat
           <PhaseTimeline workflow={workflow} compact />
           <p className="text-[13px] leading-[1.6] text-fg-muted">{firstStop}</p>
           <p className="text-[12px] text-fg-subtle">
-            {durationBandFor(brief.workflowPath, workflow.phases?.length ?? 0)}
+            {durationBandFor(run.workflowPath, workflow.phases?.length ?? 0)}
           </p>
         </div>
       ) : null}

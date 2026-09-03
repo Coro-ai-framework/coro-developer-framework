@@ -10,7 +10,13 @@ import type { ScmPluginRuntime, TrackerComment, TrackerIssue, TrackerPluginRunti
 export const INTAKE_MAX_FILE_BYTES = 64 * 1024
 export const INTAKE_MAX_SEARCH_RESULTS = 20
 export const INTAKE_TOOL_TIMEOUT_MS = 15_000
-export const INTAKE_MAX_TOOL_ROUNDS = 10
+/**
+ * The per-turn tool loop is the only place plan mode spends without a
+ * developer between steps, so this ceiling stays even though the session
+ * turn/token caps are gone. Sized for an investigation that has to walk a
+ * repo it has never seen rather than for a three-question intake.
+ */
+export const INTAKE_MAX_TOOL_ROUNDS = 25
 /** Hard cap on a single tracker description we hand back to the LLM. */
 export const INTAKE_MAX_TRACKER_DESCRIPTION_CHARS = 8 * 1024
 /** Hard cap on how many comments a single tracker_get_comments call returns. */

@@ -566,8 +566,10 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       if (info) throw new RateLimitExceededError(OPENAI_PLUGIN_ID, info, { cause: err })
       throw err
     }
+    const output = extractOutputText(response)
+    if (output) req.onText?.(output)
     return {
-      output: extractOutputText(response),
+      output,
       usage: normalizeUsage(response.usage),
       toolCalls: [],
     }
@@ -644,7 +646,10 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
         inputItems.push(...sanitizeOutputItemsForReplay(outputItems))
 
         const text = extractOutputText(response)
-        if (text.trim()) output = text
+        if (text.trim()) {
+          output = output ? `${output}\n\n${text}` : text
+          req.onText?.(text)
+        }
 
         const turnUsage = normalizeUsage(response.usage)
         usage = {

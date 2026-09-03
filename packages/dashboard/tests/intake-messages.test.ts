@@ -12,12 +12,12 @@ describe('toIntakeMessages', () => {
         group: 'tracker-read',
         entries: [],
       },
-      { kind: 'message', id: '3', role: 'assistant', text: '<brief>{"repo":"x"}</brief>' },
+      { kind: 'message', id: '3', role: 'assistant', text: '<run>{"repo":"x"}</run>' },
       { kind: 'notice', id: '4', tone: 'error', text: 'nope' },
     ]
     expect(toIntakeMessages(items)).toEqual([
       { role: 'user', content: 'https://example.atlassian.net/browse/WS-5144' },
-      { role: 'assistant', content: '<brief>{"repo":"x"}</brief>' },
+      { role: 'assistant', content: '<run>{"repo":"x"}</run>' },
     ])
   })
 

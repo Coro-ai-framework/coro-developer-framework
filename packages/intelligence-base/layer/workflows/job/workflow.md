@@ -98,7 +98,7 @@ The job pipeline is intentionally tight: each phase has a distinct decision to m
 
 | Phase | Who | What is unique to this phase |
 |---|---|---|
-| `spec-writing` | spec-writer | Translate the ticket (or CLI/plan-mode brief) into a concrete, testable spec the Planner can act on |
+| `spec-writing` | spec-writer | Translate the ticket (or the CLI / plan-mode run description) into a concrete, testable spec the Planner can act on |
 | `planning` | planner | Decide scope, sequence, language; produce work items |
 | `coding` | coder + `code-reviewer` subagent | Implement, build, test locally, self-review the diff against conventions/plan, push the branch and post a PR preview (does **not** open the PR) |
 | `review` | pr-reviewer (PR opener + merge gatekeeper) | Open the PR(s) for the work item, coordinate with humans, route fix requests back to coder, merge when approved |
@@ -118,7 +118,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 **Agent:** Spec Writer (`agents/spec-writer.md`)
 
-1. **Tracker-triggered jobs:** read the ticket via `tracker_get_issue({ trackerRef: params.trackerRef })`: title, description, acceptance criteria, components. **CLI / plan-mode jobs:** work directly from `params.description` (the brief produced by Coro plan mode is already structured).
+1. **Tracker-triggered jobs:** read the ticket via `tracker_get_issue({ trackerRef: params.trackerRef })`: title, description, acceptance criteria, components. **CLI / plan-mode jobs:** work directly from `params.description` (a plan-mode description carries the conclusions of an investigation the developer already ran with Coro — acceptance criteria, constraints, edge cases — so build on it rather than re-deriving scope).
 2. Infer: repo, affected files/services, reviewers, and test plan
 3. Output: write `feature-spec.md` in the job working directory and register it via `post_artifact({ kind: "spec-md", … })` so it shows up on the dashboard
 4. Tracker-triggered jobs only: post a comment on the tracker ticket confirming receipt

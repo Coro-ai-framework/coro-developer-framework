@@ -68,9 +68,10 @@ describe('applyIntakeEvent', () => {
     })
   })
 
-  it('leaves items referentially unchanged for token events and empty done/error', () => {
+  it('leaves items referentially unchanged for token, thinking, and empty done/error', () => {
     const items: ActivityItem[] = []
     expect(applyIntakeEvent(items, { type: 'token', text: 'hi' })).toBe(items)
+    expect(applyIntakeEvent(items, { type: 'thinking', text: 'hmm' })).toBe(items)
     expect(applyIntakeEvent(items, { type: 'done', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } })).toBe(
       items,
     )
