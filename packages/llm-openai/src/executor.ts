@@ -537,11 +537,11 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
 
   private async chatSingleShot(req: ChatRequest): Promise<ChatResult> {
     const client = this.getClient()
-    const input = req.messages.map(m => ({ role: m.role, content: m.content }))
+    const { inputItems, history } = beginChatTurn(req)
 
     const params: Record<string, unknown> = {
       model: req.model,
-      input,
+      input: inputItems,
       store: false,
     }
     if (req.systemPrompt) params.instructions = req.systemPrompt
@@ -568,10 +568,14 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     }
     const output = extractOutputText(response)
     if (output) req.onText?.(output)
+    history.push({ role: 'assistant', content: output })
     return {
       output,
       usage: normalizeUsage(response.usage),
       toolCalls: [],
+      sessionState: {
+        conversationHistory: mergeConversationHistory(req.sessionState?.conversationHistory, history),
+      },
     }
   }
 
@@ -616,7 +620,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       ...(bridge?.listTools() ?? []),
     ]
 
-    const inputItems: unknown[] = req.messages.map(m => ({ role: m.role, content: m.content }))
+    const { inputItems, history } = beginChatTurn(req)
 
     try {
       for (let round = 0; round < maxRounds; round++) {
@@ -643,7 +647,8 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
         }
 
         const outputItems = Array.isArray(response.output) ? response.output : []
-        inputItems.push(...sanitizeOutputItemsForReplay(outputItems))
+        const replayItems = sanitizeOutputItemsForReplay(outputItems)
+        inputItems.push(...replayItems)
 
         const text = extractOutputText(response)
         if (text.trim()) {
@@ -660,8 +665,24 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
         }
 
         const functionCalls = extractFunctionCalls(outputItems)
+        history.push({
+          role: 'assistant',
+          content: text,
+          ...(functionCalls.length > 0
+            ? {
+                toolCalls: functionCalls.map(call => ({
+                  id: call.callId,
+                  name: call.name,
+                  input: safeJson(call.argumentsJson),
+                })),
+              }
+            : {}),
+          meta: { openaiItems: replayItems },
+        })
         if (functionCalls.length === 0) break
 
+        const toolOutputItems: unknown[] = []
+        const toolResults: Array<{ toolCallId: string; output: unknown; isError?: boolean }> = []
         for (const call of functionCalls) {
           const input = safeJson(call.argumentsJson)
           req.onToolStart?.({ name: call.name, input })
@@ -671,6 +692,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
             let result: unknown
             if (bridge?.hasTool(call.name)) {
               const bridged = await bridge.call(call)
+              toolOutputItems.push(bridged.item)
               inputItems.push(bridged.item)
               result = safeJson(bridged.item.output)
             } else {
@@ -678,11 +700,13 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
                 throw new Error(`Plan-mode tool ${call.name} is not available.`)
               }
               result = await runTool(call.name, input)
-              inputItems.push({
+              const item = {
                 type: 'function_call_output',
                 call_id: call.callId,
                 output: stringifyUnknown(result),
-              })
+              }
+              toolOutputItems.push(item)
+              inputItems.push(item)
             }
             record = {
               name: call.name,
@@ -690,6 +714,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
               output: result,
               durationMs: Date.now() - startedAt,
             }
+            toolResults.push({ toolCallId: call.callId, output: result })
           } catch (err) {
             const message = (err as Error).message
             record = {
@@ -700,19 +725,40 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
               error: message,
             }
             if (!bridge?.hasTool(call.name)) {
-              inputItems.push({
+              const item = {
                 type: 'function_call_output',
                 call_id: call.callId,
                 output: JSON.stringify({ error: message }),
-              })
+              }
+              toolOutputItems.push(item)
+              inputItems.push(item)
             }
+            toolResults.push({ toolCallId: call.callId, output: { error: message }, isError: true })
           }
           toolCalls.push(record)
           req.onToolEnd?.(record)
         }
+        if (toolOutputItems.length > 0) {
+          history.push({
+            role: 'tool',
+            content: toolResults.map(r => stringifyUnknown(r.output)).join('\n'),
+            toolResults,
+            meta: { openaiItems: toolOutputItems },
+          })
+        }
       }
 
-      return { output: output.trim(), usage, toolCalls }
+      return {
+        output: output.trim(),
+        usage,
+        toolCalls,
+        sessionState: {
+          conversationHistory: mergeConversationHistory(
+            req.sessionState?.conversationHistory,
+            history,
+          ),
+        },
+      }
     } finally {
       await bridge?.dispose()
     }
@@ -747,6 +793,43 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
 
 export function createOpenAiExecutor(opts: OpenAiExecutorOptions): OpenAiExecutor {
   return new OpenAiExecutor(opts)
+}
+
+function lastChatUserContent(messages: ChatRequest['messages']): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message?.role === 'user') return message.content
+  }
+  return ''
+}
+
+/**
+ * Prefer native `conversationHistory` when the runner has one; otherwise
+ * replay the textual `messages` fallback (seed after restart / provider switch).
+ */
+function beginChatTurn(req: ChatRequest): { inputItems: unknown[]; history: ConversationMessage[] } {
+  const lastUser = lastChatUserContent(req.messages)
+  const userItem = { role: 'user' as const, content: lastUser }
+  const userMessage: ConversationMessage = {
+    role: 'user',
+    content: lastUser,
+    meta: { openaiItems: [userItem] },
+  }
+  const prior = req.sessionState?.conversationHistory
+  if (prior && prior.length > 0) {
+    return {
+      inputItems: [...conversationToOpenAiItems(prior), userItem],
+      history: [userMessage],
+    }
+  }
+  const prefix = req.messages.slice(0, -1)
+  return {
+    inputItems: [...prefix.map(m => ({ role: m.role, content: m.content })), userItem],
+    history: [
+      ...prefix.map((m): ConversationMessage => ({ role: m.role, content: m.content })),
+      userMessage,
+    ],
+  }
 }
 
 function conversationToOpenAiItems(history: ReadonlyArray<ConversationMessage> | undefined): unknown[] {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import pino from 'pino'
 import { createAnthropicExecutor } from '../src/executor'
-import { chatViaAgentSdk, shouldChatViaAgentSdk, type AnthropicChatHost } from '../src/chat-via-sdk'
+import { chatViaAgentSdk, formatChatUserPrompt, shouldChatViaAgentSdk, type AnthropicChatHost } from '../src/chat-via-sdk'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from '../src/types'
 
 let querySteps: Array<() => IteratorResult<unknown>> = []
@@ -188,6 +188,107 @@ describe('chatViaAgentSdk live callbacks', () => {
     expect(onText).toHaveBeenCalledWith('Checking the auth path.')
     expect(result.output).toBe('Checking the auth path.')
     expect(result.usage.inputTokens).toBe(8)
+  })
+})
+
+describe('formatChatUserPrompt', () => {
+  it('returns the lone user message as-is', () => {
+    expect(formatChatUserPrompt([{ role: 'user', content: 'Hello' }])).toBe('Hello')
+  })
+
+  it('flattens a multi-turn transcript when there is no session to resume', () => {
+    expect(formatChatUserPrompt([
+      { role: 'user', content: 'Look at auth' },
+      { role: 'assistant', content: 'It uses JWT.' },
+      { role: 'user', content: 'And refresh?' },
+    ])).toBe('User: Look at auth\n\nAssistant: It uses JWT.\n\nUser: And refresh?')
+  })
+
+  it('sends only the new user message when resuming a Claude Code session', () => {
+    expect(formatChatUserPrompt([
+      { role: 'user', content: 'Look at auth' },
+      { role: 'assistant', content: 'It uses JWT.' },
+      { role: 'user', content: 'And refresh?' },
+    ], 'sess-1')).toBe('And refresh?')
+  })
+})
+
+describe('chatViaAgentSdk session resume', () => {
+  it('resumes the prior sessionId and reuses the caller cwd', async () => {
+    const seen: Array<{ userPrompt: string; sessionId?: string; cwd: string }> = []
+    const host: AnthropicChatHost = {
+      async *executePhase(req) {
+        seen.push({
+          userPrompt: req.userPrompt,
+          sessionId: req.sessionState.sessionId,
+          cwd: req.cwd,
+        })
+        yield { type: 'session_start', sessionId: 'sess-1' }
+        yield { type: 'text', content: 'Still JWT.' }
+        yield {
+          type: 'done',
+          stopReason: 'end_turn',
+          sessionState: { sessionId: 'sess-1' },
+        }
+      },
+    }
+
+    const result = await chatViaAgentSdk(host, {
+      messages: [
+        { role: 'user', content: 'Look at auth' },
+        { role: 'assistant', content: 'It uses JWT.' },
+        { role: 'user', content: 'And refresh?' },
+      ],
+      sessionState: { sessionId: 'sess-1' },
+      cwd: '/tmp/coro-plan-stable',
+      model: 'claude-sonnet-4-6',
+      signal: new AbortController().signal,
+    })
+
+    expect(seen).toEqual([{
+      userPrompt: 'And refresh?',
+      sessionId: 'sess-1',
+      cwd: '/tmp/coro-plan-stable',
+    }])
+    expect(result.sessionState).toEqual({ sessionId: 'sess-1' })
+  })
+
+  it('replays the textual transcript when resume is stale', async () => {
+    const prompts: string[] = []
+    let attempt = 0
+    const host: AnthropicChatHost = {
+      async *executePhase(req) {
+        prompts.push(req.userPrompt)
+        attempt += 1
+        if (attempt === 1) {
+          throw new Error('Claude Code returned an error result: previous_message_id not found')
+        }
+        yield { type: 'session_start', sessionId: 'sess-fresh' }
+        yield { type: 'text', content: 'Starting over from the transcript.' }
+        yield {
+          type: 'done',
+          stopReason: 'end_turn',
+          sessionState: { sessionId: 'sess-fresh' },
+        }
+      },
+    }
+
+    const result = await chatViaAgentSdk(host, {
+      messages: [
+        { role: 'user', content: 'Look at auth' },
+        { role: 'assistant', content: 'It uses JWT.' },
+        { role: 'user', content: 'And refresh?' },
+      ],
+      sessionState: { sessionId: 'sess-stale' },
+      model: 'claude-sonnet-4-6',
+      signal: new AbortController().signal,
+    })
+
+    expect(prompts).toHaveLength(2)
+    expect(prompts[0]).toBe('And refresh?')
+    expect(prompts[1]).toContain('User: Look at auth')
+    expect(result.sessionState).toEqual({ sessionId: 'sess-fresh' })
+    expect(result.output).toBe('Starting over from the transcript.')
   })
 })
 

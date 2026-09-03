@@ -360,6 +360,49 @@ describe('OpenAiExecutor — executePhase', () => {
   })
 })
 
+describe('OpenAiExecutor — chat session replay', () => {
+  it('returns conversationHistory and replays it instead of the textual transcript', async () => {
+    const inputs: unknown[][] = []
+    const client = {
+      responses: {
+        create: async (params: Record<string, unknown>) => {
+          inputs.push(params.input as unknown[])
+          return {
+            output_text: inputs.length === 1 ? 'first' : 'second',
+            usage: { input_tokens: 4, output_tokens: 2 },
+            output: [{ type: 'message', content: [{ type: 'output_text', text: inputs.length === 1 ? 'first' : 'second' }] }],
+          }
+        },
+      },
+    }
+    const ex = createOpenAiExecutor({ auth: { apiKey: 'sk-test' }, logger: silentLogger, client })
+    const first = await ex.chat({
+      messages: [{ role: 'user', content: 'What does login do?' }],
+      model: 'gpt-5.4',
+      signal: new AbortController().signal,
+    })
+    expect(first.output).toBe('first')
+    expect(first.sessionState?.conversationHistory?.length).toBeGreaterThan(0)
+
+    const second = await ex.chat({
+      messages: [
+        { role: 'user', content: 'What does login do?' },
+        { role: 'assistant', content: 'first' },
+        { role: 'user', content: 'And logout?' },
+      ],
+      sessionState: first.sessionState,
+      model: 'gpt-5.4',
+      signal: new AbortController().signal,
+    })
+    expect(second.output).toBe('second')
+    expect(inputs[1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: 'What does login do?' }),
+      expect.objectContaining({ role: 'user', content: 'And logout?' }),
+    ]))
+    expect(inputs[1]?.some(item => item && typeof item === 'object' && (item as { content?: string }).content === 'first')).toBe(true)
+  })
+})
+
 describe('OpenAiExecutor — class identity', () => {
   it('factory returns an instance of OpenAiExecutor', () => {
     expect(makeExecutor()).toBeInstanceOf(OpenAiExecutor)

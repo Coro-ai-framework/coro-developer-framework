@@ -188,22 +188,30 @@ Investigative intake path for the dashboard **New Run** chat. Implemented in
 
 - **Transport:** Server-Sent Events (`text/event-stream`).
 - **Auth:** Same local runner surface as other dashboard routes (no separate token).
-- **Executor path:** Prefer `PhaseExecutorRuntime.chat()` when implemented
-  (direct Anthropic `/v1/messages` or OpenAI Responses). When
-  `settings.intake.toolsEnabled !== false` (default) and installed plugins
-  expose read helpers, `chat()` runs a bounded tool-use loop
+- **Executor path:** Prefer `PhaseExecutorRuntime.chat()` when implemented.
+  Subscription Anthropic (`claudeLogin` / `oauth`) routes `chat()` through
+  the Claude Code subprocess so plan mode is the same session model as a
+  job. API-key Anthropic uses `/v1/messages`; OpenAI uses Responses.
+  When `settings.intake.toolsEnabled !== false` (default) and installed
+  plugins expose read helpers, `chat()` runs a bounded tool-use loop
   (`INTAKE_MAX_TOOL_ROUNDS`) with a curated read-only set:
   `tracker_get_issue`, `tracker_get_comments`, `tracker_search_issues`,
-  `scm_read_file`, `scm_search_code`, `scm_list_files`. No write tools, no MCP
-  subprocess. Falls back to `runSubagent` / `executePhase` only when `chat`
-  is absent.
+  `scm_read_file`, `scm_search_code`, `scm_list_files`. No write tools.
+  Falls back to `runSubagent` / `executePhase` only when `chat` is absent.
 - **Model resolution:** Optional per-request `{ model, provider }` from the
   dashboard picker; otherwise `selectModel({ tier: 'planning' }, settings)`.
-- **Session state:** The runner owns the conversation, keyed by `sessionId`,
-  including each turn's tool results — replayed to the model as `<evidence>`
-  blocks so a multi-turn investigation does not lose what it read. In-memory,
-  swept after `INTAKE_SESSION_TTL_MS` idle, and dropped explicitly by
-  `DELETE /intake/sessions/:sessionId`.
+- **Session state:** One dashboard conversation is one session until the
+  developer closes it (`DELETE /intake/sessions/:sessionId`, idle TTL, or
+  runner restart). Findings / a generated run / a rate-limit do **not**
+  end it. The runner holds a dual-shape resume blob from `chat()` — the
+  same `ExecutorSessionState` jobs use:
+  - Claude Code: persist `sessionId` + a stable work root and resume the
+    subprocess session on the next turn (new user message only).
+  - OpenAI and other replay executors: persist `conversationHistory`
+    (native tool calls included) and replay it.
+  `messages` (with clamped `<evidence>` tool results) is the fallback
+  after a restart, a provider switch, or a stale Claude resume. In-memory,
+  swept after `INTAKE_SESSION_TTL_MS` idle.
 - **Budgets:** None on turns or session tokens. Every turn is
   developer-initiated, so there is no autonomous loop to bound; the only
   unattended spend is the per-turn tool loop above. The `done` frame reports
@@ -213,10 +221,10 @@ Investigative intake path for the dashboard **New Run** chat. Implemented in
   `express.json()` finishes, which previously aborted every LLM call.
 
 Request body requires `sessionId` (string) and `message` (the new developer
-turn). Optional `transcript` is the browser's copy of the earlier turns, used
-only to seed a session the runner does not have — a restart mid-investigation
-would otherwise silently drop the history the dashboard is still showing.
-Optional `context` carries `recentRepos`, `recentReviewers`,
+turn). Optional `transcript` is the browser's copy of the earlier turns.
+It seeds a session the runner does not have (restart mid-investigation)
+and fills in turns the server never recorded (rate-limit, empty output,
+abort). Optional `context` carries `recentRepos`, `recentReviewers`,
 `availableWorkflows`, and `userLocale` for prompt grounding.
 
 SSE payload types: `token` (text delta), `thinking` (model reasoning),
@@ -307,10 +315,12 @@ OpenAI Responses, etc.) and the full tool-use loop. The runner's
 outer loop advances phases based on `PhaseSignals` set by MCP tool
 handlers.
 
-Executors may also implement **`chat()`** — a stateless conversational
-completion used exclusively by Coro plan mode (`POST /intake/stream`).
-It bypasses MCP bridges, hooks, working directories, and subprocess
-agents. When `intake.toolsEnabled` is true, `ChatRequest` may include
+Executors may also implement **`chat()`** — the plan-mode conversation
+path (`POST /intake/stream`). It has no workflow or job signals, but
+session continuity is the same dual-shape `ExecutorSessionState` as
+`executePhase`: Claude Code persists `sessionId` and resumes it; OpenAI
+persists `conversationHistory` and replays it. `messages` is the textual
+fallback. When `intake.toolsEnabled` is true, `ChatRequest` may include
 optional read-only tools (`tools`, `runTool`, `maxToolRounds`) and
 returns `ChatResult.toolCalls` for audit/UI. See `@coro-ai/plugin-sdk`
 `ChatRequest` / `ChatResult` / `ChatTool`.

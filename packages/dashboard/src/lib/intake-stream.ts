@@ -2,17 +2,53 @@ import { jsonRequest } from './http'
 import type { IntakeEvent } from '../components/activity/adapters/intake'
 import type { ActivityItem } from '../components/activity/types'
 import type { WorkflowOption } from '../workflows'
+import { parseReviewersList, type RunDraft } from './intake-run'
 
 export interface IntakeStreamMessage {
   role: 'user' | 'assistant'
   content: string
 }
 
+function cardToAssistantContent(card: { type: string; data: unknown }): string | null {
+  if (card.type === 'findings') {
+    const markdown = (card.data as { markdown?: string } | undefined)?.markdown
+    if (!markdown?.trim()) return null
+    return `<findings>\n${markdown}\n</findings>`
+  }
+  if (card.type === 'run') {
+    const run = (card.data as { run?: RunDraft } | undefined)?.run
+    if (!run) return null
+    return `<run>\n${JSON.stringify({
+      repo: run.repo,
+      serviceName: run.serviceName,
+      description: run.description,
+      reviewers: parseReviewersList(run.reviewers),
+      workflowPath: run.workflowPath,
+      interactive: run.interactive,
+    })}\n</run>`
+  }
+  return null
+}
+
 /** Flatten transcript items into the POST /intake/stream wire format. */
 export function toIntakeMessages(items: ActivityItem[]): IntakeStreamMessage[] {
-  return items
-    .filter((item): item is Extract<ActivityItem, { kind: 'message' }> => item.kind === 'message')
-    .map(item => ({ role: item.role, content: item.text }))
+  const messages: IntakeStreamMessage[] = []
+  for (const item of items) {
+    if (item.kind === 'message') {
+      messages.push({ role: item.role, content: item.text })
+      continue
+    }
+    if (item.kind !== 'card') continue
+    const payload = cardToAssistantContent(item.card)
+    if (!payload) continue
+    const last = messages[messages.length - 1]
+    if (last?.role === 'assistant') {
+      last.content = `${last.content}\n\n${payload}`
+    } else {
+      messages.push({ role: 'assistant', content: payload })
+    }
+  }
+  return messages
 }
 
 export interface IntakeStreamContext {
@@ -32,8 +68,9 @@ export async function runIntakeStream(options: {
   /** The new developer message. Prior turns live in the runner's session. */
   message: string
   /**
-   * The browser's copy of the earlier turns. Only used if the runner has no
-   * session for this id (e.g. it restarted mid-investigation).
+   * The browser's copy of the earlier turns. Seeds a session the runner
+   * does not have, and fills in turns the server never recorded
+   * (rate-limit, empty output, abort).
    */
   transcript: IntakeStreamMessage[]
   context: IntakeStreamContext

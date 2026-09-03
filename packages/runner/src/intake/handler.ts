@@ -1,5 +1,5 @@
 import type { ChatRequest, ChatResult } from '@coro-ai/plugin-sdk'
-import { createSdkMcpServer } from '@coro-ai/plugin-sdk'
+import { createSdkMcpServer, RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import type { PhaseExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { Logger } from 'pino'
 import pino from 'pino'
@@ -24,7 +24,10 @@ import {
   getIntakeSession,
   recordIntakeTurn,
   renderIntakeEvidence,
-  seedIntakeSession,
+  reconcileIntakeSession,
+  bindIntakeExecutor,
+  persistIntakeExecutorSession,
+  ensureIntakeWorkRoot,
   resetIntakeSessionsForTests,
   type IntakeEvidence,
 } from './session-store'
@@ -55,8 +58,9 @@ export interface RunIntakeOptions {
   /** The new developer message. Prior turns live in the server-side session. */
   message: string
   /**
-   * Transcript from a client that predates server-side session state.
-   * Used only to seed an empty session; ignored once turns exist.
+   * Transcript from the browser. Seeds an empty session (runner restart)
+   * and fills in turns the server never recorded (rate-limit, empty
+   * output, abort). Ignored when it matches what the runner already has.
    */
   seedMessages?: IntakeMessage[]
   context: IntakeContext
@@ -99,6 +103,15 @@ function chunkForStream(text: string, size = 24): string[] {
   const chunks: string[] = []
   for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size))
   return chunks
+}
+
+function describeIntakeChatError(err: unknown): string {
+  if (err instanceof RateLimitExceededError) {
+    const waitSec = Math.max(1, Math.round(err.info.retryAfterMs / 1000))
+    const kind = err.info.kind === 'overloaded' ? 'capacity limit' : 'rate limit'
+    return `The model hit a ${kind}. Wait about ${waitSec}s and send again — this conversation is still open.`
+  }
+  return err instanceof Error ? err.message : String(err)
 }
 
 /**
@@ -202,7 +215,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
   }
 
   const session = options.seedMessages?.length
-    ? seedIntakeSession(options.sessionId, options.seedMessages)
+    ? reconcileIntakeSession(options.sessionId, options.seedMessages)
     : getIntakeSession(options.sessionId)
 
   // Plan mode is deliberately uncapped: every turn is developer-initiated,
@@ -243,6 +256,10 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     yield { type: 'error', message }
     return
   }
+
+  bindIntakeExecutor(options.sessionId, executor.manifest?.id)
+  const liveSession = getIntakeSession(options.sessionId)
+  const workRoot = ensureIntakeWorkRoot(options.sessionId)
 
   log?.debug(
     {
@@ -288,6 +305,8 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         model,
         maxOutputTokens: INTAKE_MAX_OUTPUT_TOKENS,
         signal: options.signal,
+        cwd: workRoot,
+        ...(liveSession.executorSession ? { sessionState: liveSession.executorSession } : {}),
         ...(Object.keys(planModeMcpServers).length > 0 ? { pluginMcpServers: planModeMcpServers } : {}),
         ...(tools.length > 0
           ? {
@@ -350,6 +369,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         evidence,
         usage: result.usage,
       })
+      persistIntakeExecutorSession(options.sessionId, result.sessionState)
 
       // Live onText already streamed the reply. A plugin that never
       // called the hook still needs the dump so the dashboard is not
@@ -424,7 +444,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       mcpServer: { kind: 'sdk-instance', id: 'coro', instance: emptyMcp },
       pluginMcpServers: planModeMcpServers,
       hookPolicy,
-      sessionState: { conversationHistory: [] },
+      sessionState: liveSession.executorSession ?? { conversationHistory: [] },
       maxTurns: 1,
       phase: 'intake',
       signal: options.signal,
@@ -471,6 +491,6 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       },
       'intake: stream threw',
     )
-    yield { type: 'error', message: (err as Error).message }
+    yield { type: 'error', message: describeIntakeChatError(err) }
   }
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
+import { RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { Settings } from '../../src/config/settings'
 import { resetIntakeSessionsForTests, runIntakeStream } from '../../src/intake/handler'
@@ -450,5 +451,95 @@ describe('runIntakeStream', () => {
       catalog: { type: 'stdio', command: 'node', args: ['server.js'] },
     })
     expect(events.at(-1)).toMatchObject({ type: 'done' })
+  })
+
+  it('round-trips executor sessionState and a stable work root across turns', async () => {
+    const seen: Array<{ sessionState?: unknown; cwd?: string }> = []
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        manifest: { id: 'anthropic' },
+        chat: async (req: { sessionState?: unknown; cwd?: string }) => {
+          seen.push({ sessionState: req.sessionState, cwd: req.cwd })
+          return {
+            output: 'ok',
+            usage: { inputTokens: 2, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [],
+            sessionState: { sessionId: 'claude-plan-1' },
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    for (const message of ['look at auth', 'and the refresh path?']) {
+      for await (const _event of runIntakeStream({
+        sessionId: 'session-resume',
+        message,
+        context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+        registry,
+        settings,
+        signal: new AbortController().signal,
+      })) {
+        // drain
+      }
+    }
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0]?.sessionState).toBeUndefined()
+    expect(seen[1]?.sessionState).toEqual({ sessionId: 'claude-plan-1' })
+    expect(seen[0]?.cwd).toBeTruthy()
+    expect(seen[1]?.cwd).toBe(seen[0]?.cwd)
+  })
+
+  it('keeps the conversation after a rate-limit and tells the developer to send again', async () => {
+    let turn = 0
+    const seen: Array<unknown> = []
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        manifest: { id: 'anthropic' },
+        chat: async (req: { sessionState?: unknown }) => {
+          seen.push(req.sessionState)
+          turn += 1
+          if (turn === 2) {
+            throw new RateLimitExceededError('anthropic', {
+              kind: 'rate-limit',
+              retryAfterMs: 5000,
+              source: 'fallback',
+            })
+          }
+          return {
+            output: `ok ${turn}`,
+            usage: { inputTokens: 2, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [],
+            sessionState: { sessionId: 'claude-plan-1' },
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    const drain = async (message: string) => {
+      const events = []
+      for await (const event of runIntakeStream({
+        sessionId: 'session-rate-limit',
+        message,
+        context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+        registry,
+        settings,
+        signal: new AbortController().signal,
+      })) {
+        events.push(event)
+      }
+      return events
+    }
+
+    expect((await drain('first')).at(-1)).toMatchObject({ type: 'done' })
+    const limited = await drain('second')
+    expect(limited.some(e => e.type === 'error')).toBe(true)
+    expect(limited.find(e => e.type === 'error')?.message).toMatch(/still open/)
+    const resumed = await drain('third')
+    expect(resumed.at(-1)).toMatchObject({ type: 'done' })
+    expect(seen[1]).toEqual({ sessionId: 'claude-plan-1' })
+    expect(seen[2]).toEqual({ sessionId: 'claude-plan-1' })
   })
 })

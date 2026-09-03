@@ -35,6 +35,7 @@ import type {
   PhaseExecutorEvent,
 } from '@coro-ai/plugin-sdk'
 import type { ClaudeAuthConfig } from './types'
+import { isStaleSessionResumeError } from './session-errors'
 
 /** Minimal surface {@link chatViaAgentSdk} needs from {@link AnthropicExecutor}. */
 export interface AnthropicChatHost {
@@ -51,10 +52,26 @@ export function shouldRouteChatViaAgentSdk(auth: ClaudeAuthConfig, req: ChatRequ
   return shouldChatViaAgentSdk(auth) || chatPluginMcpServerIds(req).length > 0
 }
 
-function formatChatUserPrompt(messages: ChatRequest['messages']): string {
+/**
+ * Build the `userPrompt` for a Claude Code chat turn.
+ *
+ * A resumed session already holds the transcript (and tool results)
+ * inside Claude Code. Sending the flattened history again would look
+ * like a new one-shot task. Only the new user message goes on resume.
+ */
+export function formatChatUserPrompt(
+  messages: ChatRequest['messages'],
+  resumeSessionId?: string,
+): string {
+  if (resumeSessionId) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+      if (message?.role === 'user') return message.content
+    }
+  }
   if (messages.length === 0) return 'Hello.'
-  if (messages.length === 1 && messages[0].role === 'user') {
-    return messages[0].content
+  if (messages.length === 1 && messages[0]!.role === 'user') {
+    return messages[0]!.content
   }
   return messages
     .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
@@ -130,38 +147,77 @@ function buildChatMcpServer(
   return createSdkMcpServer({ name: 'coro', tools: mcpTools })
 }
 
+function resolveChatWorkRoot(req: ChatRequest): { cwd: string; intelligenceDir: string } {
+  if (req.cwd) {
+    const intelligenceDir = join(req.cwd, '_intelligence')
+    mkdirSync(intelligenceDir, { recursive: true })
+    return { cwd: req.cwd, intelligenceDir }
+  }
+  const cwd = mkdtempSync(join(tmpdir(), 'coro-chat-'))
+  const intelligenceDir = join(cwd, '_intelligence')
+  mkdirSync(intelligenceDir, { recursive: true })
+  return { cwd, intelligenceDir }
+}
+
 export async function chatViaAgentSdk(
   executor: AnthropicChatHost,
   req: ChatRequest,
 ): Promise<ChatResult> {
-  const workRoot = mkdtempSync(join(tmpdir(), 'coro-chat-'))
-  const intelligenceDir = join(workRoot, '_intelligence')
-  mkdirSync(intelligenceDir, { recursive: true })
+  const { cwd, intelligenceDir } = resolveChatWorkRoot(req)
 
   const toolCalls: ChatToolCallRecord[] = []
   const mcpInstance = buildChatMcpServer(req, toolCalls)
   const { hookAllowedTools, checkToolAllowed } = buildChatToolAllowPolicy(req)
   const pluginMcpServers = req.pluginMcpServers ?? {}
+  const resumeSessionId = req.sessionState?.sessionId
 
   const phaseReq: PhaseExecutionRequest = {
     systemPrompt: req.systemPrompt ?? '',
-    userPrompt: formatChatUserPrompt(req.messages),
+    userPrompt: formatChatUserPrompt(req.messages, resumeSessionId),
     model: req.model,
-    cwd: workRoot,
+    cwd,
     intelligenceDir,
     mcpServer: { kind: 'sdk-instance', id: 'coro', instance: mcpInstance },
     pluginMcpServers,
     hookPolicy: {
       allowedTools: hookAllowedTools,
-      writeRoots: [workRoot],
+      writeRoots: [cwd],
       onPreToolUse: (toolName) => checkToolAllowed(toolName),
     },
-    sessionState: {},
+    sessionState: { sessionId: resumeSessionId },
     maxTurns: computeChatMaxTurns(req),
     phase: 'chat',
     signal: req.signal,
   }
 
+  try {
+    return await runChatPhase(executor, req, phaseReq, toolCalls, resumeSessionId)
+  } catch (err) {
+    if (!resumeSessionId || !isStaleSessionResumeError(err)) throw err
+    // Claude Code can no longer resume (expired session, provider reset
+    // after a long pause / rate-limit). Replay the textual transcript
+    // as a fresh session — the same fallback jobs use.
+    return runChatPhase(
+      executor,
+      req,
+      {
+        ...phaseReq,
+        userPrompt: formatChatUserPrompt(req.messages),
+        sessionState: {},
+      },
+      toolCalls,
+      undefined,
+    )
+  }
+}
+
+async function runChatPhase(
+  executor: AnthropicChatHost,
+  req: ChatRequest,
+  phaseReq: PhaseExecutionRequest,
+  toolCalls: ChatToolCallRecord[],
+  resumeSessionId: string | undefined,
+): Promise<ChatResult> {
   const textParts: string[] = []
   let usage: ChatResult['usage'] = {
     inputTokens: 0,
@@ -169,9 +225,14 @@ export async function chatViaAgentSdk(
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
   }
+  let sessionId = resumeSessionId
 
   for await (const event of executor.executePhase(phaseReq)) {
-    if (event.type === 'text' && event.content) {
+    if (event.type === 'session_start' && event.sessionId) {
+      sessionId = event.sessionId
+    } else if (event.type === 'done' && event.sessionState?.sessionId) {
+      sessionId = event.sessionState.sessionId
+    } else if (event.type === 'text' && event.content) {
       textParts.push(event.content)
       req.onText?.(event.content)
     } else if (event.type === 'thinking' && event.content) {
@@ -202,5 +263,6 @@ export async function chatViaAgentSdk(
     output: textParts.join('').trim(),
     usage,
     toolCalls,
+    ...(sessionId ? { sessionState: { sessionId } } : {}),
   }
 }

@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   INTAKE_EVIDENCE_MAX_RESULT_CHARS,
+  bindIntakeExecutor,
   buildIntakeMessages,
   deleteIntakeSession,
   getIntakeSession,
+  persistIntakeExecutorSession,
   recordIntakeTurn,
+  reconcileIntakeSession,
   renderIntakeEvidence,
   resetIntakeSessionsForTests,
   seedIntakeSession,
@@ -87,13 +90,45 @@ describe('seedIntakeSession', () => {
     ])
   })
 
-  it('leaves an established session alone', () => {
-    recordIntakeTurn('s', { user: 'real', assistant: 'real reply', evidence: [], usage })
+  it('records a trailing user message that never got a reply', () => {
     const session = seedIntakeSession('s', [
-      { role: 'user', content: 'stale' },
-      { role: 'assistant', content: 'stale reply' },
+      { role: 'user', content: 'look at auth' },
     ])
-    expect(session.turns).toEqual([{ user: 'real', assistant: 'real reply', evidence: [] }])
+    expect(session.turns).toEqual([
+      { user: 'look at auth', assistant: '(no reply recorded)', evidence: [] },
+    ])
+  })
+})
+
+describe('reconcileIntakeSession', () => {
+  it('appends turns the client has that the server never recorded', () => {
+    recordIntakeTurn('s', { user: 'first', assistant: 'reply one', evidence: [], usage })
+    persistIntakeExecutorSession('s', { sessionId: 'claude-1' })
+
+    const session = reconcileIntakeSession('s', [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply one' },
+      { role: 'user', content: 'look at auth' },
+    ])
+
+    expect(session.turns).toHaveLength(2)
+    expect(session.turns[1]).toEqual({
+      user: 'look at auth',
+      assistant: '(no reply recorded)',
+      evidence: [],
+    })
+    expect(session.executorSession).toBeUndefined()
+  })
+})
+
+describe('bindIntakeExecutor', () => {
+  it('drops resume state when the provider changes', () => {
+    persistIntakeExecutorSession('s', { sessionId: 'claude-1' })
+    bindIntakeExecutor('s', 'anthropic')
+    expect(getIntakeSession('s').executorSession).toEqual({ sessionId: 'claude-1' })
+    bindIntakeExecutor('s', 'openai')
+    expect(getIntakeSession('s').executorSession).toBeUndefined()
+    expect(getIntakeSession('s').executorId).toBe('openai')
   })
 })
 

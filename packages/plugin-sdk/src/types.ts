@@ -1110,11 +1110,22 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
   runSubagent?(req: SubagentExecutionRequest): Promise<SubagentResult>
 
   /**
-   * Optional simple chat completion path. Bypasses workflow tools, MCP
-   * bridges, hooks, working dirs, and subagent orchestration — intended
-   * for surfaces that just need a conversational response (e.g. Coro
-   * plan mode intake). Implementations should call the provider's HTTP
-   * API directly, without spawning subprocess agents.
+   * Conversational path used by Coro plan mode (`POST /intake/stream`).
+   * Unlike {@link executePhase}, there is no workflow, no job signals,
+   * and no phase kickoff prompt — but session continuity is the same
+   * contract. Honor {@link ChatRequest.sessionState} with the strategy
+   * advertised in {@link ExecutorCapabilities}:
+   *
+   *   - `supportsSessionResume` (Claude Code) — persist a `sessionId`
+   *     and resume it on the next turn so the whole plan-mode
+   *     conversation is one agent session until the dashboard closes it.
+   *   - `supportsConversationReplay` (OpenAI, …) — persist
+   *     `conversationHistory` (including native tool calls) and replay
+   *     it on the next turn.
+   *
+   * `messages` is always the runner's textual fallback (seed after a
+   * restart, provider switch, stale resume). Prefer `sessionState` when
+   * it is populated; fall back to `messages` when it is not.
    */
   chat?(req: ChatRequest): Promise<ChatResult>
 }
@@ -1137,12 +1148,28 @@ export interface ChatToolCallRecord {
 }
 
 /**
- * Per-call request for {@link PhaseExecutorRuntime.chat}. Stateless by
- * default; optional tools + `runTool` enable a bounded tool-use loop.
+ * Per-call request for {@link PhaseExecutorRuntime.chat}.
+ *
+ * Session continuity uses the same dual-shape {@link ExecutorSessionState}
+ * as {@link PhaseExecutionRequest}: Claude-style executors resume
+ * `sessionId`, stateless executors replay `conversationHistory`. The
+ * runner holds that blob for the life of a plan-mode conversation.
  */
 export interface ChatRequest {
   /** Conversation messages (alternating user/assistant). */
   messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>
+  /**
+   * Resume state from the previous plan-mode turn. Omit on the first
+   * turn and after the dashboard closes the conversation.
+   */
+  sessionState?: ExecutorSessionState
+  /**
+   * Stable working directory for subprocess-backed chat (Claude Code).
+   * The runner keeps this path for the whole plan-mode conversation so
+   * `persistSession` / `resume` can find the same project. Executors
+   * that do not spawn a subprocess ignore it.
+   */
+  cwd?: string
   /** Optional system instructions. */
   systemPrompt?: string
   /** Concrete model id. */
@@ -1189,6 +1216,12 @@ export interface ChatResult {
   usage: NormalizedTokenUsage
   /** Tool calls executed during this chat turn (empty when no tools). */
   toolCalls: ReadonlyArray<ChatToolCallRecord>
+  /**
+   * Next resume blob for this plan-mode conversation. The runner stores
+   * it and passes it back as {@link ChatRequest.sessionState} on the
+   * following turn. Omit when the executor has nothing to persist.
+   */
+  sessionState?: ExecutorSessionState
 }
 
 /**
