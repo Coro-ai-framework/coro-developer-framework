@@ -225,7 +225,8 @@ SSE payload types: `token` (text delta), `thinking` (model reasoning),
 
 Every assistant turn ends with a `<readiness>{…}</readiness>` block
 (`investigating` / `ready` / `no-run-needed`, plus open questions) that the
-dashboard renders above the composer. The `<run>{…json…}</run>` payload comes
+dashboard renders above the composer. A markdown `<findings>…</findings>`
+write-up becomes a Findings card. The `<run>{…json…}</run>` payload comes
 only when the developer asks for it or readiness is `ready`; it is parsed
 client-side (`packages/dashboard/src/lib/intake-run.ts`) into an editable Run
 card. Dispatch uses the same `POST /jobs` path used by the CLI.

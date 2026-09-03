@@ -10,7 +10,9 @@ import {
 } from 'react'
 import { applyIntakeEvent } from '../components/activity/adapters/intake'
 import { settleRunningEntries } from '../components/activity/group'
+import { displayContent } from '../components/activity/message-block'
 import type { ActivityItem } from '../components/activity/types'
+import { parseFindings, looksLikeFindingsReport } from '../lib/intake-findings'
 import { parseReadiness, type Readiness } from '../lib/intake-readiness'
 import { parseRun } from '../lib/intake-run'
 import { discardIntakeSession, runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
@@ -271,6 +273,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       committedAssistantLength = assistantText.length
       setPartialText('')
       if (!pending) return
+      if (!displayContent('assistant', pending)) return
       commitItems(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }])
     }
 
@@ -340,15 +343,39 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       commitItems(prev => {
         const settled = settleRunningEntries(prev)
         const pending = assistantText.slice(committedAssistantLength).trim()
-        const withMessage: ActivityItem[] = pending
-          ? [...settled, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }]
-          : settled
-        if (!committed) return withMessage
+        const visible = pending ? displayContent('assistant', pending) : ''
+        const tagged = committed ? parseFindings(committed) : null
+        const heuristic = !tagged && visible && looksLikeFindingsReport(visible) ? visible : null
+        const findingsMarkdown = tagged ?? heuristic
+
+        let next: ActivityItem[] =
+          visible && !heuristic
+            ? [...settled, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }]
+            : settled
+
+        if (findingsMarkdown) {
+          next = next.map(item => {
+            if (item.kind !== 'card' || item.card.type !== 'findings') return item
+            const data = item.card.data as { state?: string }
+            if (data.state !== 'current') return item
+            return { ...item, card: { ...item.card, data: { ...data, state: 'superseded' } } }
+          })
+          next = [
+            ...next,
+            {
+              kind: 'card',
+              id: nextId('card'),
+              card: { type: 'findings', data: { markdown: findingsMarkdown, state: 'current' } },
+            },
+          ]
+        }
+
+        if (!committed) return next
         const parsed = parseRun(
           committed,
           workflowsRef.current.map(w => w.workflowPath),
         )
-        if (!parsed) return withMessage
+        if (!parsed) return next
 
         // The whole point of the investigation is that a run arrives when the
         // work is understood. An unrequested run emitted mid-investigation is
@@ -357,7 +384,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         if (!opts?.generateRun && turnReadiness?.state === 'investigating') {
           const open = turnReadiness.openQuestions[0]
           return [
-            ...withMessage,
+            ...next,
             {
               kind: 'notice',
               id: nextId('notice'),
@@ -369,7 +396,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           ]
         }
 
-        const superseded = withMessage.map(item => {
+        const superseded = next.map(item => {
           if (item.kind !== 'card' || item.card.type !== 'run') return item
           const data = item.card.data as { state?: string }
           if (data.state !== 'draft') return item

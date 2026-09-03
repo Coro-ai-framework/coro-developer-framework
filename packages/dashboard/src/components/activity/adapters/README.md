@@ -26,7 +26,9 @@ Consumes `POST /intake/stream` SSE frames (`token` / `thinking` / `tool_start` /
 `error` mark any leftover `running` entries as `done` so a turn that never
 emitted `tool_end` (common for BYO MCP tools) does not leave a spinner up.
 Token text and thinking stay on the plan-session provider, which commits them
-into `message` / `thought` items in chronological order around the tools.
+into `message` / `thought` items in chronological order around the tools, and
+promotes an investigation write-up into a `findings` card (tagged `<findings>`
+or a headed markdown fallback). Run cards are still emitted from `<run>`.
 
 ## `job-log.ts` (not built yet)
 

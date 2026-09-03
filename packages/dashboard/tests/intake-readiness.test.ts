@@ -41,8 +41,12 @@ describe('parseReadiness', () => {
 })
 
 describe('displayContent', () => {
-  it('hides run and readiness payloads from the assistant bubble', () => {
+  it('hides run, readiness, and findings payloads from the assistant bubble', () => {
     const message = `Here is what I found.
+<findings>
+## Decode path
+Stateless.
+</findings>
 <run>{"repo":"org/x"}</run>
 <readiness>{"state":"ready","openQuestions":[]}</readiness>`
     expect(displayContent('assistant', message)).toBe('Here is what I found.')
@@ -53,8 +57,14 @@ describe('displayContent', () => {
     expect(displayed).toContain('below')
   })
 
-  it('renders nothing for a readiness-only turn', () => {
+  it('renders nothing for a findings-only or readiness-only turn', () => {
     expect(displayContent('assistant', '<readiness>{"state":"ready"}</readiness>')).toBe('')
+    expect(
+      displayContent(
+        'assistant',
+        '<findings>\n## Decode path\nStateless.\n</findings>\n<readiness>{"state":"ready"}</readiness>',
+      ),
+    ).toBe('')
   })
 
   it('hides a payload block that is still streaming in', () => {
@@ -62,6 +72,7 @@ describe('displayContent', () => {
       'Checking the repo.',
     )
     expect(displayContent('assistant', 'Checking the repo.\n<readi')).toBe('Checking the repo.')
+    expect(displayContent('assistant', 'Checking the repo.\n<findi')).toBe('Checking the repo.')
   })
 
   it('leaves user messages untouched', () => {
