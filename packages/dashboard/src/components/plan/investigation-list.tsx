@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { X } from 'lucide-react'
 import { formatRelativeTime } from '../../lib/format'
 import type { InvestigationSummary } from '../../lib/intake-investigation'
 import { Badge } from '../ui/badge'
@@ -33,7 +35,10 @@ export function InvestigationList({
   total,
   onSelect,
   onLoadMore,
+  onRemove,
+  busy,
   disabled,
+  revealRemoveOnHover = true,
 }: {
   rows: InvestigationSummary[]
   currentId: string
@@ -42,9 +47,14 @@ export function InvestigationList({
   total: number
   onSelect: (id: string) => void
   onLoadMore: () => void
+  onRemove: (id: string) => void | Promise<void>
+  busy?: boolean
   disabled?: boolean
+  /** Desktop rail hides the control until hover; dialogs keep it visible. */
+  revealRemoveOnHover?: boolean
 }) {
   const hasMore = rows.length < total
+  const [pendingId, setPendingId] = useState<string | null>(null)
 
   if (loading) {
     return (
@@ -64,39 +74,75 @@ export function InvestigationList({
     )
   }
 
+  async function handleRemove(row: InvestigationSummary) {
+    const label = row.title.trim() || 'this conversation'
+    const ok = window.confirm(
+      busy && row.id === currentId
+        ? `Coro is still working. Remove “${label}” from history?`
+        : `Remove “${label}” from history?`,
+    )
+    if (!ok) return
+    setPendingId(row.id)
+    try {
+      await onRemove(row.id)
+    } finally {
+      setPendingId(null)
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <ul className="space-y-1 pr-2">
           {rows.map(row => {
             const active = row.id === currentId
+            const removing = pendingId === row.id
             return (
               <li key={row.id}>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => onSelect(row.id)}
+                <div
                   className={cn(
-                    'group flex w-full flex-col gap-1.5 rounded-xl border px-3 py-2.5 text-left transition-colors',
+                    'group relative flex rounded-xl border transition-colors',
                     active
                       ? 'border-accent-500/30 bg-accent-500/10'
                       : 'border-transparent bg-transparent hover:border-line hover:bg-overlay/60',
-                    disabled && 'opacity-60',
+                    (disabled || removing) && 'opacity-60',
                   )}
                 >
-                  <div className="flex items-start justify-between gap-2">
+                  {active ? (
+                    <span
+                      className="absolute left-0 top-2.5 h-4 w-0.5 rounded-full bg-accent-400"
+                      aria-hidden
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={disabled || removing}
+                    onClick={() => onSelect(row.id)}
+                    className="flex min-w-0 flex-1 flex-col gap-1.5 py-2.5 pl-3 pr-8 text-left"
+                  >
                     <span className={cn('line-clamp-2 text-[13px] font-medium leading-5', active ? 'text-fg' : 'text-fg-muted')}>
                       {row.title || 'Draft'}
                     </span>
-                    {active ? (
-                      <span className="mt-1 h-4 w-0.5 shrink-0 rounded-full bg-accent-400" aria-hidden />
-                    ) : null}
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] text-fg-subtle">{formatRelativeTime(row.updatedAt)}</span>
-                    {statusBadge(row)}
-                  </div>
-                </button>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-fg-subtle">{formatRelativeTime(row.updatedAt)}</span>
+                      {statusBadge(row)}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={disabled || removing}
+                    onClick={() => void handleRemove(row)}
+                    className={cn(
+                      'absolute right-1.5 top-1.5 rounded-full p-0.5 text-fg-subtle transition-colors hover:bg-overlay hover:text-fg',
+                      revealRemoveOnHover
+                        ? 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100'
+                        : 'opacity-70 hover:opacity-100',
+                    )}
+                    aria-label={`Remove ${row.title || 'conversation'}`}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
               </li>
             )
           })}

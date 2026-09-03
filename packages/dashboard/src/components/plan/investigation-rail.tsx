@@ -47,7 +47,9 @@ export default function InvestigationRail({
         loading={session.investigationsLoading && !session.hydrated}
         loadingMore={session.investigationsLoadingMore}
         total={session.investigationsTotal}
+        busy={session.busy}
         onSelect={id => void handleSelect(id)}
+        onRemove={id => session.removeInvestigation(id)}
         onLoadMore={() => void session.loadMoreInvestigations()}
       />
     </aside>

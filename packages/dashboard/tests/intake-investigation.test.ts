@@ -4,6 +4,7 @@ import {
   investigationHasProgress,
   investigationTitleFromItems,
   mergeInvestigationSummaries,
+  dropInvestigationSummary,
   truncateInvestigationTitle,
 } from '../src/lib/intake-investigation'
 
@@ -49,5 +50,14 @@ describe('investigationTitleFromItems', () => {
     )
     expect(merged.map(row => row.id)).toEqual(['a', 'b'])
     expect(merged[0]?.title).toBe('A2')
+  })
+
+  it('drops a summary from the rail list', () => {
+    const list = [
+      { id: 'a', title: 'A', status: 'active' as const, readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'b', title: 'B', status: 'active' as const, readiness: null, turnCount: 1, updatedAt: '2026-01-02T00:00:00.000Z' },
+    ]
+    expect(dropInvestigationSummary(list, 'a').map(row => row.id)).toEqual(['b'])
+    expect(dropInvestigationSummary(list, 'missing')).toEqual(list)
   })
 })

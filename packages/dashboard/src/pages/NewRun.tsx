@@ -231,7 +231,10 @@ export default function NewRun() {
               loading={session.investigationsLoading && !session.hydrated}
               loadingMore={session.investigationsLoadingMore}
               total={session.investigationsTotal}
+              busy={session.busy}
+              revealRemoveOnHover={false}
               onSelect={id => void handleSelectHistory(id)}
+              onRemove={id => session.removeInvestigation(id)}
               onLoadMore={() => void session.loadMoreInvestigations()}
             />
           </DialogBody>

@@ -1,6 +1,6 @@
 import type { ActivityItem } from '../components/activity/types'
 import type { Readiness } from './intake-readiness'
-import { jsonRequest, requestJson } from './http'
+import { ApiError, jsonRequest, requestJson } from './http'
 
 export const INVESTIGATION_LIST_PAGE_SIZE = 5
 export const INVESTIGATION_TITLE_MAX = 40
@@ -101,6 +101,13 @@ export function mergeInvestigationSummaries(
   )
 }
 
+export function dropInvestigationSummary(
+  list: InvestigationSummary[],
+  id: string,
+): InvestigationSummary[] {
+  return list.filter(item => item.id !== id)
+}
+
 export async function listInvestigations(options?: {
   limit?: number
   offset?: number
@@ -123,6 +130,15 @@ export async function putInvestigation(
   body: InvestigationPutBody,
 ): Promise<{ persisted: boolean; session: InvestigationRecord | null }> {
   return requestJson(`/intake/sessions/${encodeURIComponent(id)}`, jsonRequest(body, { method: 'PUT' }))
+}
+
+export async function deleteInvestigation(id: string): Promise<void> {
+  try {
+    await requestJson(`/intake/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return
+    throw err
+  }
 }
 
 export function toInvestigationSummary(record: InvestigationRecord): InvestigationSummary {

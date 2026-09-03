@@ -15,6 +15,8 @@ import type { ActivityItem } from '../components/activity/types'
 import { parseFindings, looksLikeFindingsReport } from '../lib/intake-findings'
 import {
   asActivityItems,
+  deleteInvestigation,
+  dropInvestigationSummary,
   getInvestigation,
   investigationHasProgress,
   investigationTitleFromItems,
@@ -83,6 +85,7 @@ export interface PlanSessionApi extends PlanSessionState {
     dispatchedJobId?: string
   }) => Promise<void>
   openInvestigation: (id: string) => Promise<void>
+  removeInvestigation: (id: string) => Promise<void>
   loadMoreInvestigations: () => Promise<void>
   setModelChoice: (next: { provider: string; model: string }) => void
   updateCard: (itemId: string, data: unknown) => void
@@ -139,6 +142,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const contextUsedRef = useRef(contextUsed)
   const investigationsRef = useRef(investigations)
   const persistChainRef = useRef(Promise.resolve())
+  const deletedIdsRef = useRef(new Set<string>())
   workflowsRef.current = workflows
   jobsRef.current = jobs
   modelChoiceRef.current = modelChoice
@@ -158,6 +162,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const rememberSummary = useCallback((summary: InvestigationSummary) => {
+    if (deletedIdsRef.current.has(summary.id)) return
     const existed = investigationsRef.current.some(row => row.id === summary.id)
     const next = mergeInvestigationSummaries(investigationsRef.current, summary)
     investigationsRef.current = next
@@ -170,6 +175,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     dispatchedJobId?: string
   }) => {
     const id = sessionIdRef.current
+    if (deletedIdsRef.current.has(id)) return
     const currentItems = itemsRef.current
     if (!investigationHasProgress(currentItems) && opts?.status !== 'dispatched') return
     try {
@@ -184,6 +190,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         status: opts?.status ?? 'active',
         ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
       })
+      if (deletedIdsRef.current.has(id)) {
+        await deleteInvestigation(id).catch(() => undefined)
+        return
+      }
       if (result.session) rememberSummary(toInvestigationSummary(result.session))
     } catch {
       // Persistence must not block chatting; the next turn retries.
@@ -340,6 +350,40 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     const full = await getInvestigation(id)
     applyRecord(full)
   }, [applyRecord, enqueuePersist])
+
+  const removeInvestigation = useCallback(async (id: string) => {
+    deletedIdsRef.current.add(id)
+    const isCurrent = id === sessionIdRef.current
+    if (isCurrent) {
+      abortRef.current?.abort()
+      abortRef.current = null
+    }
+    try {
+      await deleteInvestigation(id)
+    } catch (err) {
+      deletedIdsRef.current.delete(id)
+      throw err
+    }
+    const remaining = dropInvestigationSummary(investigationsRef.current, id)
+    investigationsRef.current = remaining
+    setInvestigations(remaining)
+    setInvestigationsTotal(total => Math.max(0, total - 1))
+    if (isCurrent) mintEmpty()
+    if (remaining.length >= INVESTIGATION_LIST_PAGE_SIZE) return
+    try {
+      const page = await listInvestigations({
+        limit: INVESTIGATION_LIST_PAGE_SIZE,
+        offset: remaining.length,
+      })
+      const seen = new Set(remaining.map(row => row.id))
+      const next = [...remaining, ...page.sessions.filter(row => !seen.has(row.id))]
+      investigationsRef.current = next
+      setInvestigations(next)
+      setInvestigationsTotal(page.total)
+    } catch {
+      // The row is already gone from the rail.
+    }
+  }, [mintEmpty])
 
   const loadMoreInvestigations = useCallback(async () => {
     if (investigationsRef.current.length >= investigationsTotal) return
@@ -603,6 +647,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       cancel,
       startNewConversation,
       openInvestigation,
+      removeInvestigation,
       loadMoreInvestigations,
       setModelChoice,
       updateCard,
@@ -638,6 +683,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       cancel,
       startNewConversation,
       openInvestigation,
+      removeInvestigation,
       loadMoreInvestigations,
       updateCard,
       markCardDispatched,
