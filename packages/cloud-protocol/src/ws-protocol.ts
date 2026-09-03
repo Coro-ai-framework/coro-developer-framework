@@ -7,6 +7,7 @@
 // Fire-and-forget messages omit `messageId`.
 
 import type { JobInput, Job, Proposal, ProposalStatus, PrMapping } from './job-types'
+import type { InvestigationListQuery, InvestigationPatch } from './investigation'
 import type { InboundEvent } from './events'
 
 // ── Runner → Cloud messages ──────────────────────────────────────────────────
@@ -217,6 +218,30 @@ export interface WsJobListChildren {
   parentJobId: string
 }
 
+export interface WsInvestigationUpsert {
+  type: 'investigation:upsert'
+  messageId: string
+  data: InvestigationPatch
+}
+
+export interface WsInvestigationGet {
+  type: 'investigation:get'
+  messageId: string
+  investigationId: string
+}
+
+export interface WsInvestigationList {
+  type: 'investigation:list'
+  messageId: string
+  query: InvestigationListQuery
+}
+
+export interface WsInvestigationDelete {
+  type: 'investigation:delete'
+  messageId: string
+  investigationId: string
+}
+
 /** Union of all runner → cloud messages */
 export type RunnerMessage =
   | WsRunnerRegister
@@ -246,6 +271,10 @@ export type RunnerMessage =
   | WsProposalList
   | WsProposalGet
   | WsProposalUpdate
+  | WsInvestigationUpsert
+  | WsInvestigationGet
+  | WsInvestigationList
+  | WsInvestigationDelete
 
 // ── Cloud → Runner messages ──────────────────────────────────────────────────
 

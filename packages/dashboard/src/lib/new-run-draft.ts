@@ -48,15 +48,6 @@ export function loadNewRunDraft(): NewRunDraft | null {
   }
 }
 
-export function saveNewRunDraft(draft: NewRunDraft): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(NEW_RUN_DRAFT_KEY, JSON.stringify(draft))
-  } catch {
-    // Ignore storage quota and serialization failures.
-  }
-}
-
 export function clearNewRunDraftStorage(): void {
   if (typeof window === 'undefined') return
   try {

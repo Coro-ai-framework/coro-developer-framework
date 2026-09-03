@@ -417,4 +417,57 @@ describe('SqliteStateBackend', () => {
       expect(updated.reviewedBy).toBe('admin')
     })
   })
+
+  describe('investigations', () => {
+    function patch(id: string, title: string): Parameters<SqliteStateBackend['upsertInvestigation']>[0] {
+      return {
+        id,
+        title,
+        status: 'active',
+        items: [{ kind: 'message', role: 'user', text: title }],
+        turns: [{ user: title, assistant: 'ok', evidence: [] }],
+        modelChoice: { provider: '', model: '' },
+        readiness: null,
+        turnCount: 1,
+        tokens: 10,
+        contextUsed: 10,
+      }
+    }
+
+    it('upserts, lists newest first, and paginates', async () => {
+      for (let i = 0; i < 7; i++) {
+        await backend.upsertInvestigation(patch(`inv-${i}`, `Task ${i}`))
+      }
+      const first = await backend.listInvestigations({ limit: 5, offset: 0 })
+      expect(first.total).toBe(7)
+      expect(first.sessions).toHaveLength(5)
+      expect(first.sessions[0]?.id).toBe('inv-6')
+      const rest = await backend.listInvestigations({ limit: 5, offset: 5 })
+      expect(rest.sessions).toHaveLength(2)
+      expect(rest.sessions.map(s => s.id)).toEqual(['inv-1', 'inv-0'])
+    })
+
+    it('merges stream turns without wiping items', async () => {
+      await backend.upsertInvestigation({
+        id: 'inv-merge',
+        items: [{ kind: 'message', role: 'user', text: 'hello' }],
+        title: 'hello',
+      })
+      await backend.upsertInvestigation({
+        id: 'inv-merge',
+        turns: [{ user: 'hello', assistant: 'hi', evidence: [] }],
+        tokens: 12,
+      })
+      const loaded = await backend.getInvestigation('inv-merge')
+      expect(loaded?.items).toEqual([{ kind: 'message', role: 'user', text: 'hello' }])
+      expect(loaded?.turns).toHaveLength(1)
+      expect(loaded?.tokens).toBe(12)
+    })
+
+    it('deletes a row', async () => {
+      await backend.upsertInvestigation(patch('inv-del', 'gone'))
+      await backend.deleteInvestigation('inv-del')
+      expect(await backend.getInvestigation('inv-del')).toBeNull()
+    })
+  })
 })

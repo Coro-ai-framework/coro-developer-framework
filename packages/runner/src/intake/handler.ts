@@ -5,6 +5,7 @@ import type { Logger } from 'pino'
 import pino from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
 import type { Settings } from '../config/settings'
+import type { StateBackend } from '../state/backend'
 import { selectModel, collectPlanModeMcpServers } from '../jobs/runner'
 import { resolveIntelligenceDir, resolveWorkingDir } from '../config/local-config'
 import {
@@ -31,6 +32,7 @@ import {
   resetIntakeSessionsForTests,
   type IntakeEvidence,
 } from './session-store'
+import { persistLiveIntakeSession } from './persist'
 
 export { resetIntakeSessionsForTests }
 
@@ -70,6 +72,8 @@ export interface RunIntakeOptions {
   model?: string
   provider?: string
   logger?: Logger
+  /** When set, successful turns are upserted to the investigations table. */
+  stateBackend?: StateBackend
 }
 
 function resolveIntakeAssignment(options: RunIntakeOptions): { model: string; provider?: string } {
@@ -112,6 +116,23 @@ function describeIntakeChatError(err: unknown): string {
     return `The model hit a ${kind}. Wait about ${waitSec}s and send again — this conversation is still open.`
   }
   return err instanceof Error ? err.message : String(err)
+}
+
+async function persistTurn(options: RunIntakeOptions): Promise<void> {
+  if (!options.stateBackend) return
+  try {
+    await persistLiveIntakeSession(options.stateBackend, options.sessionId, {
+      modelChoice: {
+        provider: options.provider ?? '',
+        model: options.model ?? '',
+      },
+    })
+  } catch (err) {
+    options.logger?.warn(
+      { err, sessionId: options.sessionId },
+      'intake: failed to persist investigation',
+    )
+  }
 }
 
 /**
@@ -370,6 +391,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         usage: result.usage,
       })
       persistIntakeExecutorSession(options.sessionId, result.sessionState)
+      await persistTurn(options)
 
       // Live onText already streamed the reply. A plugin that never
       // called the hook still needs the dump so the dashboard is not
@@ -417,6 +439,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         evidence: [],
         usage: result.usage,
       })
+      await persistTurn(options)
 
       for (const chunk of chunkForStream(result.output)) {
         yield { type: 'token', text: chunk }
@@ -473,6 +496,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       evidence: [],
       usage: { inputTokens, outputTokens },
     })
+    await persistTurn(options)
 
     yield {
       type: 'done',

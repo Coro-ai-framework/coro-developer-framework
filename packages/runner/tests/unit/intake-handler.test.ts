@@ -6,6 +6,9 @@ import { RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { Settings } from '../../src/config/settings'
 import { resetIntakeSessionsForTests, runIntakeStream } from '../../src/intake/handler'
+import { getIntakeSession } from '../../src/intake/session-store'
+import type { StateBackend } from '../../src/state/backend'
+import type { Investigation, InvestigationPatch } from '@coro-ai/cloud-protocol'
 
 const settings = { intake: { toolsEnabled: true } } as Settings
 
@@ -71,6 +74,33 @@ describe('runIntakeStream', () => {
       usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
       turns: 1,
     })
+  })
+
+  it('persists turns to StateBackend after a successful turn', async () => {
+    const upserts: InvestigationPatch[] = []
+    const backend = {
+      upsertInvestigation: async (patch: InvestigationPatch) => {
+        upserts.push(patch)
+        return { id: patch.id } as Investigation
+      },
+    } as unknown as StateBackend
+
+    const events = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-persist',
+      message: 'Add logging',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry: mockRegistry('Hello from intake'),
+      settings,
+      signal: new AbortController().signal,
+      stateBackend: backend,
+    })) {
+      events.push(event)
+    }
+    expect(events.at(-1)?.type).toBe('done')
+    expect(upserts).toHaveLength(1)
+    expect(upserts[0]?.turns?.[0]?.user).toBe('Add logging')
+    expect(getIntakeSession('session-persist').turns).toHaveLength(1)
   })
 
   it('does not cap turns or tokens — an investigation runs as long as it needs', async () => {

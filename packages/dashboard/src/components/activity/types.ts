@@ -52,6 +52,6 @@ export type ActivityItem =
 export interface NoticeAction {
   label: string
   /** Router path or absolute URL. The feed renders a link, never a callback, so
-   *  notices stay serialisable into localStorage. */
+   *  notices stay serialisable. */
   to: string
 }

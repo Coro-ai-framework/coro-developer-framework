@@ -25,6 +25,7 @@ export default defineConfig({
       '/webhook': apiProxy,
       '/config': apiProxy,
       '/retrospectives': apiProxy,
+      '/intake': apiProxy,
     },
   },
 })

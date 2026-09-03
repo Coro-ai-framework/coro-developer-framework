@@ -148,10 +148,3 @@ export async function runIntakeStream(options: {
 
   return {}
 }
-
-/** Discards the runner-side conversation for an abandoned or dispatched session. */
-export function discardIntakeSession(sessionId: string): void {
-  void fetch(`/intake/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).catch(() => {
-    // The runner sweeps idle sessions anyway; a failed cleanup is not worth surfacing.
-  })
-}

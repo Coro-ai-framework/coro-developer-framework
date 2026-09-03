@@ -342,6 +342,30 @@ export class WsGateway {
         return
       }
 
+      case 'investigation:upsert': {
+        const record = await backend.upsertInvestigation(msg.data)
+        this.reply(ws, msg.messageId, record)
+        return
+      }
+
+      case 'investigation:get': {
+        const record = await backend.getInvestigation(msg.investigationId)
+        this.reply(ws, msg.messageId, record)
+        return
+      }
+
+      case 'investigation:list': {
+        const result = await backend.listInvestigations(msg.query)
+        this.reply(ws, msg.messageId, result)
+        return
+      }
+
+      case 'investigation:delete': {
+        await backend.deleteInvestigation(msg.investigationId)
+        this.reply(ws, msg.messageId, { ok: true })
+        return
+      }
+
       default:
         this.ctx.logger.warn({ type: (msg as { type: string }).type }, 'Unknown WS message type')
     }

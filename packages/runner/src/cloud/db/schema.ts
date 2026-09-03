@@ -163,6 +163,23 @@ export const proposals = pgTable('proposals', {
   index('proposals_tenant_status_idx').on(t.tenantId, t.status),
 ])
 
+// ── Plan-mode investigations ──────────────────────────────────────────────────
+//
+// Durable New Run conversations. `data` is the full Investigation JSON;
+// `status` / `updated_at` exist so listing does not have to unpack every blob
+// for sort, and `team_id` scopes hybrid installs the same way jobs do.
+
+export const investigations = pgTable('investigations', {
+  id: text('id').primaryKey(),
+  teamId: text('team_id').notNull().references(() => teams.id, { onDelete: 'cascade' }),
+  data: jsonb('data').notNull().$type<Record<string, unknown>>(),
+  status: text('status').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('investigations_team_updated_idx').on(t.teamId, t.updatedAt),
+])
+
 // ── PR mappings ───────────────────────────────────────────────────────────────
 //
 // Primary key is composite `(teamId, prId)` so two teams sharing the cloud

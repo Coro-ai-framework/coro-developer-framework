@@ -132,10 +132,11 @@ export default function WorkspaceTabsBar() {
                       const wasActive = activePath === tab.path
                       if (tab.path === '/jobs/new') {
                         if (session.busy) {
-                          const ok = window.confirm('Coro is still working. Close and discard this conversation?')
+                          const ok = window.confirm(
+                            'Coro is still working in the background. Close this tab? The conversation stays in history.',
+                          )
                           if (!ok) return
                         }
-                        session.reset()
                       }
                       closeTab(tab.path)
                       if (wasActive) navigate(fallbackRoute())
@@ -167,10 +168,11 @@ export default function WorkspaceTabsBar() {
               <DropdownMenuItem
                 onClick={() => {
                   if (session.busy) {
-                    const ok = window.confirm('Coro is still working. Close and discard this conversation?')
+                    const ok = window.confirm(
+                      'Coro is still working in the background. Close all tabs? The conversation stays in history.',
+                    )
                     if (!ok) return
                   }
-                  session.reset()
                   clearTabs()
                   navigate('/jobs')
                 }}

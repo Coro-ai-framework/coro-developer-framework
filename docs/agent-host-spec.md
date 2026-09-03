@@ -149,7 +149,10 @@ the `coro` CLI.
 | GET    | `/jobs/:jobId/stream`                           | Server-Sent Events stream of live logs                                            |
 | GET    | `/jobs/:jobId/artifacts/:artifactId/content`    | Download an artefact body                                                         |
 | POST   | `/intake/stream`                                | Coro plan mode — SSE investigative intake (see §5.1)                              |
-| DELETE | `/intake/sessions/:sessionId`                   | Discard a plan-mode conversation                                                  |
+| GET    | `/intake/sessions`                              | List plan-mode investigations (summaries, `limit`/`offset`)                       |
+| GET    | `/intake/sessions/:sessionId`                   | Load a full investigation and rehydrate the in-memory LLM cache                   |
+| PUT    | `/intake/sessions/:sessionId`                   | Persist the dashboard transcript snapshot                                         |
+| DELETE | `/intake/sessions/:sessionId`                   | Discard a plan-mode conversation (memory + durable row)                           |
 | POST   | `/jobs/:jobId/resume`                           | Resume a parked or failed job                                                     |
 | POST   | `/jobs/:jobId/message`                          | Send a mid-flight developer message into the running job                          |
 | GET    | `/config`                                       | Read current `LocalConfig` (secrets redacted)                                     |
@@ -200,18 +203,22 @@ Investigative intake path for the dashboard **New Run** chat. Implemented in
   Falls back to `runSubagent` / `executePhase` only when `chat` is absent.
 - **Model resolution:** Optional per-request `{ model, provider }` from the
   dashboard picker; otherwise `selectModel({ tier: 'planning' }, settings)`.
-- **Session state:** One dashboard conversation is one session until the
-  developer closes it (`DELETE /intake/sessions/:sessionId`, idle TTL, or
-  runner restart). Findings / a generated run / a rate-limit do **not**
-  end it. The runner holds a dual-shape resume blob from `chat()` — the
-  same `ExecutorSessionState` jobs use:
+- **Session state:** One dashboard conversation is one investigation until
+  the developer starts a new one, dispatches a run, or explicitly `DELETE`s
+  it. Findings / a generated run / a rate-limit do **not** end it. The
+  runner holds a dual-shape resume blob from `chat()` — the same
+  `ExecutorSessionState` jobs use:
   - Claude Code: persist `sessionId` + a stable work root and resume the
     subprocess session on the next turn (new user message only).
   - OpenAI and other replay executors: persist `conversationHistory`
     (native tool calls included) and replay it.
   `messages` (with clamped `<evidence>` tool results) is the fallback
-  after a restart, a provider switch, or a stale Claude resume. In-memory,
-  swept after `INTAKE_SESSION_TTL_MS` idle.
+  after a restart, a provider switch, or a stale Claude resume. The live
+  Map is a hot cache (swept after `INTAKE_SESSION_TTL_MS` idle); the
+  durable copy is an `investigations` row on `StateBackend` (SQLite
+  locally, Postgres in hybrid). `GET /intake/sessions/:id` rehydrates the
+  cache. `transcript` on `POST /intake/stream` remains a restart fallback,
+  not the store. Empty chats (no user message) are never inserted.
 - **Budgets:** None on turns or session tokens. Every turn is
   developer-initiated, so there is no autonomous loop to bound; the only
   unattended spend is the per-turn tool loop above. The `done` frame reports

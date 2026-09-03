@@ -19,6 +19,7 @@
 
 export * from './refs'
 export * from './job-types'
+export * from './investigation'
 export * from './events'
 export * from './ws-protocol'
 export * from './rest'

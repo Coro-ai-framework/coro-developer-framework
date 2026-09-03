@@ -5,6 +5,8 @@ import {
   buildIntakeMessages,
   deleteIntakeSession,
   getIntakeSession,
+  hydrateIntakeSession,
+  peekIntakeSession,
   persistIntakeExecutorSession,
   recordIntakeTurn,
   reconcileIntakeSession,
@@ -137,5 +139,22 @@ describe('deleteIntakeSession', () => {
     recordIntakeTurn('s', { user: 'hello', assistant: 'hi', evidence: [], usage })
     expect(deleteIntakeSession('s')).toBe(true)
     expect(getIntakeSession('s').turns).toEqual([])
+  })
+})
+
+describe('hydrateIntakeSession', () => {
+  it('restores turns into the hot cache without creating a duplicate empty session first', () => {
+    expect(peekIntakeSession('restored')).toBeUndefined()
+    hydrateIntakeSession({
+      id: 'restored',
+      turns: [{ user: 'hello', assistant: 'hi', evidence: [] }],
+      tokens: 20,
+      contextTokens: 12,
+      executorId: 'anthropic',
+    })
+    const session = peekIntakeSession('restored')
+    expect(session?.turns).toEqual([{ user: 'hello', assistant: 'hi', evidence: [] }])
+    expect(session?.tokens).toBe(20)
+    expect(session?.executorId).toBe('anthropic')
   })
 })

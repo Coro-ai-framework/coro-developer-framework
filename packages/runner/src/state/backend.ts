@@ -1,4 +1,15 @@
-import { Job, JobInput, JobType, PrMapping, Proposal, ProposalStatus } from '@coro-ai/cloud-protocol'
+import {
+  Job,
+  JobInput,
+  JobType,
+  PrMapping,
+  Proposal,
+  ProposalStatus,
+  type Investigation,
+  type InvestigationListQuery,
+  type InvestigationListResult,
+  type InvestigationPatch,
+} from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 
 // ── State backend interface ───────────────────────────────────────────────────
@@ -92,4 +103,16 @@ export interface StateBackend {
   listProposals(tenantId: string, status?: ProposalStatus): Promise<Proposal[]>
   getProposal(tenantId: string, id: string): Promise<Proposal | null>
   updateProposal(tenantId: string, id: string, updates: Partial<Proposal>): Promise<Proposal>
+
+  // ── Plan-mode investigations (New Run chat) ────────────────────────────────
+  //
+  // Durable record of a dashboard plan-mode conversation. The in-memory
+  // intake session is the hot LLM cache; this is what survives restart
+  // and powers the New Run history rail. Implementations merge patches
+  // so a stream turn cannot wipe `items` and a UI PUT cannot wipe `turns`.
+
+  upsertInvestigation(record: InvestigationPatch): Promise<Investigation>
+  getInvestigation(id: string): Promise<Investigation | null>
+  listInvestigations(query: InvestigationListQuery): Promise<InvestigationListResult>
+  deleteInvestigation(id: string): Promise<void>
 }

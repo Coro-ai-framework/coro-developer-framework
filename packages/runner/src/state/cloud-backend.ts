@@ -13,6 +13,10 @@ import type {
   PrMapping,
   Proposal,
   ProposalStatus,
+  Investigation,
+  InvestigationListQuery,
+  InvestigationListResult,
+  InvestigationPatch,
 } from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
@@ -156,6 +160,24 @@ export class CloudStateBackend implements StateBackend {
 
   async updateProposal(tenantId: string, id: string, updates: Partial<Proposal>): Promise<Proposal> {
     return await this.call('proposal:update', { tenantId, proposalId: id, updates }) as Proposal
+  }
+
+  // ── Investigations ─────────────────────────────────────────────────────────
+
+  async upsertInvestigation(record: InvestigationPatch): Promise<Investigation> {
+    return await this.call('investigation:upsert', { data: record }) as Investigation
+  }
+
+  async getInvestigation(id: string): Promise<Investigation | null> {
+    return await this.call('investigation:get', { investigationId: id }) as Investigation | null
+  }
+
+  async listInvestigations(query: InvestigationListQuery): Promise<InvestigationListResult> {
+    return await this.call('investigation:list', { query }) as InvestigationListResult
+  }
+
+  async deleteInvestigation(id: string): Promise<void> {
+    await this.call('investigation:delete', { investigationId: id })
   }
 
   // ── RPC helper ─────────────────────────────────────────────────────────────

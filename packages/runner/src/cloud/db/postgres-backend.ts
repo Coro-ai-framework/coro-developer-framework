@@ -17,11 +17,20 @@ import {
   PhaseUsage,
   Artifact,
   CampaignChild,
+  type Investigation,
+  type InvestigationListQuery,
+  type InvestigationListResult,
+  type InvestigationPatch,
 } from '@coro-ai/cloud-protocol'
 import { defaultWorkflowPath } from '../../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../../jobs/creation'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../../plugins/refs'
+import {
+  clampInvestigationListQuery,
+  mergeInvestigation,
+  toInvestigationSummary,
+} from '../../state/investigation'
 
 // ── Row ↔ Job mapping ─────────────────────────────────────────────────────────
 
@@ -141,8 +150,7 @@ export class PostgresStateBackend implements StateBackend {
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
-    // Drizzle migrations are handled externally (drizzle-kit push/migrate).
-    // Nothing to do here at runtime.
+    await ensureInvestigationsTable(this.db)
   }
 
   // ── Job CRUD ──────────────────────────────────────────────────────────────
@@ -589,4 +597,105 @@ export class PostgresStateBackend implements StateBackend {
 
     return { ...existing, ...updates, updatedAt: new Date().toISOString() }
   }
+
+  // ── Investigations ────────────────────────────────────────────────────────
+
+  async upsertInvestigation(patch: InvestigationPatch): Promise<Investigation> {
+    const existing = await this.getInvestigation(patch.id)
+    const now = new Date()
+    const merged = mergeInvestigation(existing, patch, now.toISOString())
+    const data = merged as unknown as Record<string, unknown>
+
+    if (existing) {
+      await this.db
+        .update(schema.investigations)
+        .set({
+          data,
+          status: merged.status,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(schema.investigations.id, merged.id),
+          eq(schema.investigations.teamId, this.teamId),
+        ))
+    } else {
+      await this.db.insert(schema.investigations).values({
+        id: merged.id,
+        teamId: this.teamId,
+        data,
+        status: merged.status,
+        createdAt: new Date(merged.createdAt),
+        updatedAt: now,
+      })
+    }
+
+    return merged
+  }
+
+  async getInvestigation(id: string): Promise<Investigation | null> {
+    const rows = await this.db
+      .select()
+      .from(schema.investigations)
+      .where(and(
+        eq(schema.investigations.id, id),
+        eq(schema.investigations.teamId, this.teamId),
+      ))
+      .limit(1)
+    const row = rows[0]
+    if (!row) return null
+    return row.data as unknown as Investigation
+  }
+
+  async listInvestigations(query: InvestigationListQuery): Promise<InvestigationListResult> {
+    const { limit, offset } = clampInvestigationListQuery(query)
+    const countRows = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.investigations)
+      .where(eq(schema.investigations.teamId, this.teamId))
+    const rows = await this.db
+      .select()
+      .from(schema.investigations)
+      .where(eq(schema.investigations.teamId, this.teamId))
+      .orderBy(desc(schema.investigations.updatedAt))
+      .limit(limit)
+      .offset(offset)
+
+    return {
+      sessions: rows.map(row => toInvestigationSummary(row.data as unknown as Investigation)),
+      total: Number(countRows[0]?.count ?? 0),
+      limit,
+      offset,
+    }
+  }
+
+  async deleteInvestigation(id: string): Promise<void> {
+    await this.db
+      .delete(schema.investigations)
+      .where(and(
+        eq(schema.investigations.id, id),
+        eq(schema.investigations.teamId, this.teamId),
+      ))
+  }
+}
+
+/**
+ * Additive table for existing cloud DBs that were created before investigations.
+ * drizzle-kit push also creates it from schema.ts; this keeps runtime deployable
+ * without a separate migrate step.
+ */
+export async function ensureInvestigationsTable(db: CloudDb): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS investigations (
+      id text PRIMARY KEY,
+      team_id text NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      data jsonb NOT NULL,
+      status text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `)
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS investigations_team_updated_idx
+      ON investigations (team_id, updated_at DESC)
+  `)
 }

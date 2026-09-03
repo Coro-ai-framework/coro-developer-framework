@@ -15,12 +15,21 @@ import {
   PrMapping,
   Proposal,
   ProposalStatus,
+  type Investigation,
+  type InvestigationListQuery,
+  type InvestigationListResult,
+  type InvestigationPatch,
 } from '@coro-ai/cloud-protocol'
 import { defaultWorkflowPath, inputToJobType } from '../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
+import {
+  clampInvestigationListQuery,
+  mergeInvestigation,
+  toInvestigationSummary,
+} from './investigation'
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -91,6 +100,16 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_proposals_tenant ON proposals(tenant_id);
   CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+
+  CREATE TABLE IF NOT EXISTS investigations (
+    id          TEXT PRIMARY KEY,
+    data        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_investigations_updated ON investigations(updated_at);
 `;
 
 // ── Implementation ────────────────────────────────────────────────────────────
@@ -444,6 +463,52 @@ export class SqliteStateBackend implements StateBackend {
     `).run(JSON.stringify(updated), updated.status, now, id, tenantId)
 
     return updated
+  }
+
+  // ── Investigations ─────────────────────────────────────────────────────────
+
+  async upsertInvestigation(patch: InvestigationPatch): Promise<Investigation> {
+    const existing = await this.getInvestigation(patch.id)
+    const now = new Date().toISOString()
+    const merged = mergeInvestigation(existing, patch, now)
+
+    this.db.prepare(`
+      INSERT INTO investigations (id, data, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        data = excluded.data,
+        status = excluded.status,
+        updated_at = excluded.updated_at
+    `).run(merged.id, JSON.stringify(merged), merged.status, merged.createdAt, merged.updatedAt)
+
+    return merged
+  }
+
+  async getInvestigation(id: string): Promise<Investigation | null> {
+    const row = this.db.prepare('SELECT data FROM investigations WHERE id = ?')
+      .get(id) as { data: string } | undefined
+    if (!row) return null
+    return JSON.parse(row.data) as Investigation
+  }
+
+  async listInvestigations(query: InvestigationListQuery): Promise<InvestigationListResult> {
+    const { limit, offset } = clampInvestigationListQuery(query)
+    const totalRow = this.db.prepare('SELECT COUNT(*) AS n FROM investigations')
+      .get() as { n: number }
+    const rows = this.db.prepare(
+      'SELECT data FROM investigations ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?',
+    ).all(limit, offset) as Array<{ data: string }>
+
+    return {
+      sessions: rows.map(row => toInvestigationSummary(JSON.parse(row.data) as Investigation)),
+      total: totalRow.n,
+      limit,
+      offset,
+    }
+  }
+
+  async deleteInvestigation(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM investigations WHERE id = ?').run(id)
   }
 }
 

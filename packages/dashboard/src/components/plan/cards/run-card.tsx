@@ -56,8 +56,8 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
       }
       const result = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
       session.markCardDispatched(itemId, result.jobId)
+      await session.startNewConversation({ status: 'dispatched', dispatchedJobId: result.jobId })
       navigate(`/jobs/${result.jobId}`)
-      session.reset()
       closeTab('/jobs/new')
     } catch (err) {
       if (

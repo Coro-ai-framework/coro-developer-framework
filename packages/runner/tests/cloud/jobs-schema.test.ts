@@ -6,7 +6,7 @@
 // cloud control plane.
 
 import { describe, it, expect } from 'vitest'
-import { jobs } from '../../src/cloud/db/schema'
+import { jobs, investigations } from '../../src/cloud/db/schema'
 
 describe('cloud jobs schema (Phase 8.1)', () => {
   it('declares conversation_history alongside session_id', () => {
@@ -21,5 +21,16 @@ describe('cloud jobs schema (Phase 8.1)', () => {
     // history and resume by sessionId) write null.
     expect(jobs.conversationHistory.notNull).toBe(false)
     expect(jobs.conversationHistory.dataType).toBe('json')
+  })
+})
+
+describe('cloud investigations schema', () => {
+  it('stores the investigation JSON blob team-scoped with an updated_at index column', () => {
+    expect(investigations.id.name).toBe('id')
+    expect(investigations.teamId.name).toBe('team_id')
+    expect(investigations.data.name).toBe('data')
+    expect(investigations.status.name).toBe('status')
+    expect(investigations.updatedAt.name).toBe('updated_at')
+    expect(investigations.data.dataType).toBe('json')
   })
 })

@@ -13,16 +13,27 @@ import { settleRunningEntries } from '../components/activity/group'
 import { displayContent } from '../components/activity/message-block'
 import type { ActivityItem } from '../components/activity/types'
 import { parseFindings, looksLikeFindingsReport } from '../lib/intake-findings'
+import {
+  asActivityItems,
+  getInvestigation,
+  investigationHasProgress,
+  investigationTitleFromItems,
+  INVESTIGATION_LIST_PAGE_SIZE,
+  listInvestigations,
+  mergeInvestigationSummaries,
+  putInvestigation,
+  toInvestigationSummary,
+  type InvestigationStatus,
+  type InvestigationSummary,
+} from '../lib/intake-investigation'
 import { parseReadiness, type Readiness } from '../lib/intake-readiness'
 import { parseRun } from '../lib/intake-run'
-import { discardIntakeSession, runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
+import { runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
 import {
   clearNewRunDraftStorage,
   clearOrphanedIntakeKeys,
   loadNewRunDraft,
   mintSessionId,
-  saveNewRunDraft,
-  type NewRunDraft,
 } from '../lib/new-run-draft'
 import { deriveRunHistoryHints } from '../lib/run-history'
 import { requestJson } from '../lib/http'
@@ -43,6 +54,12 @@ function nextId(prefix: string): string {
   return `${prefix}-${mintSessionId()}`
 }
 
+let bootSessionId: string | null = null
+function initialSessionId(): string {
+  if (!bootSessionId) bootSessionId = mintSessionId()
+  return bootSessionId
+}
+
 interface PlanSessionState {
   sessionId: string
   items: ActivityItem[]
@@ -61,7 +78,12 @@ interface PlanSessionState {
 export interface PlanSessionApi extends PlanSessionState {
   send: (text: string, opts?: { generateRun?: boolean }) => Promise<void>
   cancel: () => void
-  reset: () => void
+  startNewConversation: (opts?: {
+    status?: InvestigationStatus
+    dispatchedJobId?: string
+  }) => Promise<void>
+  openInvestigation: (id: string) => Promise<void>
+  loadMoreInvestigations: () => Promise<void>
   setModelChoice: (next: { provider: string; model: string }) => void
   updateCard: (itemId: string, data: unknown) => void
   markCardDispatched: (itemId: string, jobId: string) => void
@@ -73,51 +95,36 @@ export interface PlanSessionApi extends PlanSessionState {
   jobs: Job[]
   scmConnected: boolean
   hasProgress: boolean
+  hydrated: boolean
+  investigations: InvestigationSummary[]
+  investigationsTotal: number
+  investigationsLoading: boolean
+  investigationsLoadingMore: boolean
 }
 
 const PlanSessionContext = createContext<PlanSessionApi | null>(null)
 
-function initialState(): PlanSessionState {
-  const draft = loadNewRunDraft()
-  return {
-    sessionId: draft?.sessionId ?? mintSessionId(),
-    items: draft?.items ?? [],
-    busy: false,
-    partialText: '',
-    partialThinking: '',
-    error: null,
-    noLlm: false,
-    turnCount: draft?.turnCount ?? 0,
-    totalTokens: draft?.totalTokens ?? 0,
-    contextUsed: draft?.contextUsed ?? 0,
-    readiness: draft?.readiness ?? null,
-    modelChoice: draft?.modelChoice ?? { provider: '', model: '' },
-  }
-}
-
-let boot: PlanSessionState | null = null
-
-function bootState(): PlanSessionState {
-  if (!boot) boot = initialState()
-  return boot
-}
-
 export function PlanSessionProvider({ children }: { children: ReactNode }) {
-  const [sessionId, setSessionId] = useState(() => bootState().sessionId)
-  const [items, setItems] = useState<ActivityItem[]>(() => bootState().items)
+  const [sessionId, setSessionId] = useState(initialSessionId)
+  const [items, setItems] = useState<ActivityItem[]>([])
   const [busy, setBusy] = useState(false)
   const [partialText, setPartialText] = useState('')
   const [partialThinking, setPartialThinking] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [noLlm, setNoLlm] = useState(false)
-  const [turnCount, setTurnCount] = useState(() => bootState().turnCount)
-  const [totalTokens, setTotalTokens] = useState(() => bootState().totalTokens)
-  const [contextUsed, setContextUsed] = useState(() => bootState().contextUsed)
-  const [readiness, setReadiness] = useState<Readiness | null>(() => bootState().readiness)
-  const [modelChoice, setModelChoice] = useState(() => bootState().modelChoice)
+  const [turnCount, setTurnCount] = useState(0)
+  const [totalTokens, setTotalTokens] = useState(0)
+  const [contextUsed, setContextUsed] = useState(0)
+  const [readiness, setReadiness] = useState<Readiness | null>(null)
+  const [modelChoice, setModelChoice] = useState({ provider: '', model: '' })
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [scmConnected, setScmConnected] = useState(true)
+  const [hydrated, setHydrated] = useState(false)
+  const [investigations, setInvestigations] = useState<InvestigationSummary[]>([])
+  const [investigationsTotal, setInvestigationsTotal] = useState(0)
+  const [investigationsLoading, setInvestigationsLoading] = useState(true)
+  const [investigationsLoadingMore, setInvestigationsLoadingMore] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const busyRef = useRef(false)
@@ -126,10 +133,116 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const jobsRef = useRef(jobs)
   const modelChoiceRef = useRef(modelChoice)
   const sessionIdRef = useRef(sessionId)
+  const readinessRef = useRef(readiness)
+  const turnCountRef = useRef(turnCount)
+  const tokensRef = useRef(totalTokens)
+  const contextUsedRef = useRef(contextUsed)
+  const investigationsRef = useRef(investigations)
+  const persistChainRef = useRef(Promise.resolve())
   workflowsRef.current = workflows
   jobsRef.current = jobs
   modelChoiceRef.current = modelChoice
   sessionIdRef.current = sessionId
+  itemsRef.current = items
+  readinessRef.current = readiness
+  turnCountRef.current = turnCount
+  tokensRef.current = totalTokens
+  contextUsedRef.current = contextUsed
+  investigationsRef.current = investigations
+
+  const commitItems = useCallback((updater: (prev: ActivityItem[]) => ActivityItem[]) => {
+    const next = updater(itemsRef.current)
+    itemsRef.current = next
+    setItems(next)
+    return next
+  }, [])
+
+  const rememberSummary = useCallback((summary: InvestigationSummary) => {
+    const existed = investigationsRef.current.some(row => row.id === summary.id)
+    const next = mergeInvestigationSummaries(investigationsRef.current, summary)
+    investigationsRef.current = next
+    setInvestigations(next)
+    if (!existed) setInvestigationsTotal(total => total + 1)
+  }, [])
+
+  const persistNow = useCallback(async (opts?: {
+    status?: InvestigationStatus
+    dispatchedJobId?: string
+  }) => {
+    const id = sessionIdRef.current
+    const currentItems = itemsRef.current
+    if (!investigationHasProgress(currentItems) && opts?.status !== 'dispatched') return
+    try {
+      const result = await putInvestigation(id, {
+        items: currentItems,
+        readiness: readinessRef.current,
+        modelChoice: modelChoiceRef.current,
+        turnCount: turnCountRef.current,
+        tokens: tokensRef.current,
+        contextUsed: contextUsedRef.current,
+        title: investigationTitleFromItems(currentItems),
+        status: opts?.status ?? 'active',
+        ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
+      })
+      if (result.session) rememberSummary(toInvestigationSummary(result.session))
+    } catch {
+      // Persistence must not block chatting; the next turn retries.
+    }
+  }, [rememberSummary])
+
+  const enqueuePersist = useCallback((opts?: {
+    status?: InvestigationStatus
+    dispatchedJobId?: string
+  }) => {
+    persistChainRef.current = persistChainRef.current.then(() => persistNow(opts)).catch(() => undefined)
+    return persistChainRef.current
+  }, [persistNow])
+
+  const applyRecord = useCallback((record: {
+    id: string
+    items: unknown[]
+    turnCount: number
+    tokens: number
+    contextUsed: number
+    readiness: Readiness | null
+    modelChoice?: { provider: string; model: string }
+  }) => {
+    const nextItems = asActivityItems(record.items)
+    sessionIdRef.current = record.id
+    itemsRef.current = nextItems
+    bootSessionId = record.id
+    setSessionId(record.id)
+    setItems(nextItems)
+    setTurnCount(record.turnCount)
+    setTotalTokens(record.tokens)
+    setContextUsed(record.contextUsed)
+    setReadiness(record.readiness)
+    if (record.modelChoice?.model) setModelChoice(record.modelChoice)
+    busyRef.current = false
+    setBusy(false)
+    setPartialText('')
+    setPartialThinking('')
+    setError(null)
+  }, [])
+
+  const mintEmpty = useCallback(() => {
+    const next = mintSessionId()
+    sessionIdRef.current = next
+    itemsRef.current = []
+    bootSessionId = next
+    setSessionId(next)
+    setItems([])
+    busyRef.current = false
+    setBusy(false)
+    setPartialText('')
+    setPartialThinking('')
+    setError(null)
+    setNoLlm(false)
+    setTurnCount(0)
+    setTotalTokens(0)
+    setContextUsed(0)
+    setReadiness(null)
+  }, [])
 
   useEffect(() => {
     clearOrphanedIntakeKeys()
@@ -147,29 +260,60 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    const draft: NewRunDraft = {
-      version: 3,
-      sessionId,
-      items,
-      modelChoice,
-      turnCount,
-      totalTokens,
-      contextUsed,
-      readiness,
+    let cancelled = false
+    async function hydrateFromServer() {
+      setInvestigationsLoading(true)
+      try {
+        const draft = loadNewRunDraft()
+        let list = await listInvestigations({ limit: INVESTIGATION_LIST_PAGE_SIZE, offset: 0 })
+        if (cancelled) return
+        if (draft && investigationHasProgress(draft.items) && list.total === 0) {
+          await putInvestigation(draft.sessionId, {
+            items: draft.items,
+            readiness: draft.readiness,
+            modelChoice: draft.modelChoice,
+            turnCount: draft.turnCount,
+            tokens: draft.totalTokens,
+            contextUsed: draft.contextUsed,
+            title: investigationTitleFromItems(draft.items),
+            status: 'active',
+          })
+          list = await listInvestigations({ limit: INVESTIGATION_LIST_PAGE_SIZE, offset: 0 })
+        }
+        clearNewRunDraftStorage()
+        if (cancelled) return
+        setInvestigations(list.sessions)
+        investigationsRef.current = list.sessions
+        setInvestigationsTotal(list.total)
+        const recentActive = list.sessions.find(row => row.status === 'active')
+        if (recentActive) {
+          const full = await getInvestigation(recentActive.id)
+          if (cancelled) return
+          applyRecord(full)
+        }
+      } catch {
+        clearNewRunDraftStorage()
+      } finally {
+        if (!cancelled) {
+          setInvestigationsLoading(false)
+          setHydrated(true)
+        }
+      }
     }
-    if (busy) {
-      const timer = window.setTimeout(() => saveNewRunDraft(draft), 250)
-      return () => window.clearTimeout(timer)
+    void hydrateFromServer()
+    return () => {
+      cancelled = true
     }
-    saveNewRunDraft(draft)
-  }, [sessionId, items, modelChoice, turnCount, totalTokens, contextUsed, readiness, busy])
+  }, [applyRecord])
 
-  const commitItems = useCallback((updater: (prev: ActivityItem[]) => ActivityItem[]) => {
-    const next = updater(itemsRef.current)
-    itemsRef.current = next
-    setItems(next)
-    return next
-  }, [])
+  useEffect(() => {
+    if (!hydrated) return
+    if (!investigationHasProgress(items)) return
+    const timer = window.setTimeout(() => {
+      void enqueuePersist()
+    }, busy ? 250 : 0)
+    return () => window.clearTimeout(timer)
+  }, [hydrated, sessionId, items, modelChoice, turnCount, totalTokens, contextUsed, readiness, busy, enqueuePersist])
 
   const cancel = useCallback(() => {
     abortRef.current?.abort()
@@ -178,41 +322,42 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setBusy(false)
   }, [])
 
-  const reset = useCallback(() => {
+  const startNewConversation = useCallback(async (opts?: {
+    status?: InvestigationStatus
+    dispatchedJobId?: string
+  }) => {
     abortRef.current?.abort()
     abortRef.current = null
-    busyRef.current = false
-    discardIntakeSession(sessionIdRef.current)
-    const next = mintSessionId()
-    boot = {
-      sessionId: next,
-      items: [],
-      busy: false,
-      partialText: '',
-      partialThinking: '',
-      error: null,
-      noLlm: false,
-      turnCount: 0,
-      totalTokens: 0,
-      contextUsed: 0,
-      readiness: null,
-      modelChoice: modelChoiceRef.current,
+    await enqueuePersist(opts)
+    mintEmpty()
+  }, [enqueuePersist, mintEmpty])
+
+  const openInvestigation = useCallback(async (id: string) => {
+    if (id === sessionIdRef.current) return
+    abortRef.current?.abort()
+    abortRef.current = null
+    if (investigationHasProgress(itemsRef.current)) await enqueuePersist()
+    const full = await getInvestigation(id)
+    applyRecord(full)
+  }, [applyRecord, enqueuePersist])
+
+  const loadMoreInvestigations = useCallback(async () => {
+    if (investigationsRef.current.length >= investigationsTotal) return
+    setInvestigationsLoadingMore(true)
+    try {
+      const page = await listInvestigations({
+        limit: INVESTIGATION_LIST_PAGE_SIZE,
+        offset: investigationsRef.current.length,
+      })
+      const seen = new Set(investigationsRef.current.map(row => row.id))
+      const next = [...investigationsRef.current, ...page.sessions.filter(row => !seen.has(row.id))]
+      investigationsRef.current = next
+      setInvestigations(next)
+      setInvestigationsTotal(page.total)
+    } finally {
+      setInvestigationsLoadingMore(false)
     }
-    sessionIdRef.current = next
-    itemsRef.current = []
-    setSessionId(next)
-    setItems([])
-    setBusy(false)
-    setPartialText('')
-    setPartialThinking('')
-    setError(null)
-    setNoLlm(false)
-    setTurnCount(0)
-    setTotalTokens(0)
-    setContextUsed(0)
-    setReadiness(null)
-    clearNewRunDraftStorage()
-  }, [])
+  }, [investigationsTotal])
 
   const appendNotice = useCallback(
     (notice: { tone: 'info' | 'warning' | 'error'; text: string; action?: { label: string; to: string } }) => {
@@ -438,7 +583,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     )
   }, [commitItems])
 
-  const hasProgress = items.some(i => i.kind === 'message' && i.role === 'user') || items.some(i => i.kind === 'card')
+  const hasProgress = investigationHasProgress(items)
 
   const value = useMemo<PlanSessionApi>(
     () => ({
@@ -456,7 +601,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       modelChoice,
       send,
       cancel,
-      reset,
+      startNewConversation,
+      openInvestigation,
+      loadMoreInvestigations,
       setModelChoice,
       updateCard,
       markCardDispatched,
@@ -468,6 +615,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       jobs,
       scmConnected,
       hasProgress,
+      hydrated,
+      investigations,
+      investigationsTotal,
+      investigationsLoading,
+      investigationsLoadingMore,
     }),
     [
       sessionId,
@@ -484,7 +636,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       modelChoice,
       send,
       cancel,
-      reset,
+      startNewConversation,
+      openInvestigation,
+      loadMoreInvestigations,
       updateCard,
       markCardDispatched,
       appendNotice,
@@ -492,6 +646,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       jobs,
       scmConnected,
       hasProgress,
+      hydrated,
+      investigations,
+      investigationsTotal,
+      investigationsLoading,
+      investigationsLoadingMore,
     ],
   )
 

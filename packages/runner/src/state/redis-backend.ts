@@ -6,12 +6,22 @@ import {
   PrMapping,
   Proposal,
   ProposalStatus,
+  type Investigation,
+  type InvestigationListQuery,
+  type InvestigationListResult,
+  type InvestigationPatch,
+  type InvestigationSummary,
 } from '@coro-ai/cloud-protocol'
 import { defaultWorkflowPath, inputToJobType } from '../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
 import type { StateBackend } from './backend'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
+import {
+  clampInvestigationListQuery,
+  mergeInvestigation,
+  toInvestigationSummary,
+} from './investigation'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
 
@@ -22,6 +32,8 @@ function keyJira(ticketId: string): string      { return `jira:${ticketId}:job` 
 function keyRepo(repoSlug: string): string      { return `repo:${repoSlug}:jobs` }
 function keyAllJobs(): string                   { return 'jobs:all' }
 function keyJobsByType(type: JobType): string   { return `jobs:type:${type}` }
+function keyInvestigation(id: string): string   { return `investigation:${id}` }
+function keyInvestigationsIndex(): string       { return 'investigations:updated' }
 
 /**
  * Composite key for the new plugin-aware ref index. Uses the same
@@ -280,6 +292,48 @@ export class RedisStateBackend implements StateBackend {
     const updated = { ...existing, ...updates, id: existing.id, tenantId: existing.tenantId, updatedAt: new Date().toISOString() }
     this.proposals.set(id, updated)
     return updated
+  }
+
+  // ── Investigations ────────────────────────────────────────────────────────
+
+  async upsertInvestigation(patch: InvestigationPatch): Promise<Investigation> {
+    const existing = await this.getInvestigation(patch.id)
+    const now = new Date().toISOString()
+    const merged = mergeInvestigation(existing, patch, now)
+    const score = Date.parse(merged.updatedAt) || Date.now()
+    await this.redis.set(keyInvestigation(merged.id), JSON.stringify(merged))
+    await this.redis.zadd(keyInvestigationsIndex(), score, merged.id)
+    return merged
+  }
+
+  async getInvestigation(id: string): Promise<Investigation | null> {
+    const raw = await this.redis.get(keyInvestigation(id))
+    if (!raw) return null
+    return JSON.parse(raw) as Investigation
+  }
+
+  async listInvestigations(query: InvestigationListQuery): Promise<InvestigationListResult> {
+    const { limit, offset } = clampInvestigationListQuery(query)
+    const total = await this.redis.zcard(keyInvestigationsIndex())
+    const ids = await this.redis.zrevrange(
+      keyInvestigationsIndex(),
+      offset,
+      offset + limit - 1,
+    )
+    const sessions: InvestigationSummary[] = []
+    if (ids.length > 0) {
+      const raws = await this.redis.mget(ids.map(id => keyInvestigation(id)))
+      for (const raw of raws) {
+        if (!raw) continue
+        sessions.push(toInvestigationSummary(JSON.parse(raw) as Investigation))
+      }
+    }
+    return { sessions, total, limit, offset }
+  }
+
+  async deleteInvestigation(id: string): Promise<void> {
+    await this.redis.del(keyInvestigation(id))
+    await this.redis.zrem(keyInvestigationsIndex(), id)
   }
 
   // ── Internal helpers ──────────────────────────────────────────────────────

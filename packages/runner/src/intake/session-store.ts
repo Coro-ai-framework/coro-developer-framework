@@ -22,8 +22,9 @@ import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
 // folded into those messages as `<evidence>` so the fallback is not
 // empty of what was read.
 //
-// This is deliberately in-memory: a plan-mode session is a single
-// developer's live browser tab, not durable state.
+// This Map is the hot cache for the live LLM session (workRoot, resume
+// blob). The durable copy lives on StateBackend (`investigations`).
+// GET /intake/sessions/:id hydrates this Map from that row.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Idle lifetime of a session before the sweeper drops it. */
@@ -117,6 +118,48 @@ export function deleteIntakeSession(sessionId: string): boolean {
   const existing = sessions.get(sessionId)
   if (existing) removeWorkRoot(existing)
   return sessions.delete(sessionId)
+}
+
+/** Existing session only — does not create an empty one. */
+export function peekIntakeSession(sessionId: string): IntakeSession | undefined {
+  sweep(Date.now())
+  return sessions.get(sessionId)
+}
+
+/**
+ * Restore LLM cache from a durable investigation. Keeps an existing
+ * `workRoot` so a Claude resume that is still warm is not discarded.
+ */
+export function hydrateIntakeSession(record: {
+  id: string
+  turns: IntakeTurn[]
+  tokens: number
+  contextTokens: number
+  executorSession?: ExecutorSessionState
+  executorId?: string
+}): IntakeSession {
+  const now = Date.now()
+  sweep(now)
+  const existing = sessions.get(record.id)
+  const session: IntakeSession = existing ?? {
+    id: record.id,
+    turns: [],
+    tokens: 0,
+    contextTokens: 0,
+    updatedAt: now,
+  }
+  session.turns = record.turns.map(turn => ({
+    user: turn.user,
+    assistant: turn.assistant,
+    evidence: Array.isArray(turn.evidence) ? turn.evidence : [],
+  }))
+  session.tokens = record.tokens
+  session.contextTokens = record.contextTokens
+  session.executorSession = record.executorSession
+  session.executorId = record.executorId
+  session.updatedAt = now
+  sessions.set(record.id, session)
+  return session
 }
 
 const NO_REPLY = '(no reply recorded)'
