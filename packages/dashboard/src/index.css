@@ -196,6 +196,20 @@ select {
   animation: pulse-slow 2.7s ease-in-out infinite;
 }
 
+@keyframes pulse-accent {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent-500) 42%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 8px color-mix(in srgb, var(--color-accent-500) 0%, transparent);
+  }
+}
+
+.animate-pulse-accent {
+  animation: pulse-accent 1.8s ease-in-out infinite;
+}
+
 @property --coro-angle {
   syntax: '<angle>';
   initial-value: 0deg;
@@ -241,7 +255,9 @@ select {
   }
 
   .animate-spin,
-  .animate-pulse-dot {
+  .animate-pulse-dot,
+  .animate-pulse-slow,
+  .animate-pulse-accent {
     animation: none;
   }
 }

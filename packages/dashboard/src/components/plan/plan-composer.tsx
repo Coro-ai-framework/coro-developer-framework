@@ -16,6 +16,7 @@ import { useProviderModels, type ProviderModelDescriptor } from '../llm/useProvi
 import { cn } from '../../lib/utils'
 import type { Readiness } from '../../lib/intake-readiness'
 import { usePlanSession } from '../../providers/plan-session'
+import GenerateRunButton from './generate-run-button'
 
 function PlanModeModelSelect({
   value,
@@ -176,10 +177,6 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
     void session.send(text, { generateRun: true })
   }, [input, session])
 
-  const ready = session.readiness?.state === 'ready'
-  const noRunNeeded = session.readiness?.state === 'no-run-needed'
-  const openCount = session.readiness?.openQuestions.length ?? 0
-
   return (
     <div className="shrink-0 pb-1 pt-3">
       {session.readiness && session.hasProgress ? (
@@ -233,31 +230,11 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
               Stop
             </button>
           ) : null}
-          <button
-            type="button"
+          <GenerateRunButton
+            readiness={session.readiness}
             disabled={disabled}
             onClick={generateRun}
-            title={
-              ready
-                ? 'Coro has what it needs — generate the run.'
-                : noRunNeeded
-                  ? 'Coro concluded no run is needed. Generate one anyway if you disagree.'
-                  : openCount > 0
-                    ? `${openCount} question${openCount === 1 ? '' : 's'} still open — generate anyway and Coro will say what it assumed.`
-                    : 'Generate the run from the conversation so far.'
-            }
-            className={cn(
-              'rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors disabled:opacity-50',
-              ready
-                ? 'border-accent-500/50 bg-accent-500/10 text-accent-300 hover:border-accent-400 hover:bg-accent-500/15'
-                : 'border-line-strong text-fg-subtle hover:border-line-strong hover:text-fg-muted',
-            )}
-          >
-            Generate run
-            {!ready && openCount > 0 ? (
-              <span className="ml-1 text-fg-subtle/70">· {openCount} open</span>
-            ) : null}
-          </button>
+          />
         </div>
       </div>
     </div>
