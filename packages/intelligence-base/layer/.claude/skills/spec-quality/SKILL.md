@@ -19,34 +19,44 @@ This skill defines the quality bar.
 
 ## Two modes
 
-The Spec Writer runs in two modes today:
+The mode is decided by **how much the inputs already settle**, not by what
+triggered the job. The Spec Writer picks it in step 2 of its procedure by
+testing whether the ticket, `params.description`, and
+`{planContextDir}/findings.md` — taken together — settle the target repo, a
+concrete change, criteria-shaped conditions, and every open question that
+changes what gets built.
 
-1. **Tracker-triggered**: a Jira / Linear / GitHub Issues ticket fired the job.
-   Read the ticket via `tracker_get_issue` and translate it into the spec.
-2. **CLI-triggered (STANDARD or DEEP lane)**: a developer ran `coro job` with
-   a free-form description. There is no ticket; the spec is built from the
-   description, the repo, and the lane router's reasoning.
+1. **`derive`** — they do not. A bare `coro job` one-liner, a thin ticket, or
+   a plan-mode investigation that stalled before reaching a conclusion. This
+   is a short PRD-writing pass: the spec has to *construct* the scope.
+2. **`verify`** — they do. A plan-mode investigation that reached `ready`, or
+   a brief detailed enough to stand on its own. Scope is established, so the
+   spec must not re-derive or restate it. The work moves to the repository:
+   what will reject this change, and what proves each criterion.
 
-The quality bar is the same in both modes. The work to **reach** that bar
-differs: tracker mode is a translation pass; CLI mode is closer to a short
-PRD-writing pass.
+The quality bar is the same in both. What differs is where the budget goes —
+and in `verify` mode, restating the brief is a **failure**, not thoroughness.
+A `verify` spec is usually shorter than the brief it builds on.
 
 ## Mandatory sections
 
 Every spec must have, at minimum:
 
-| Section | Bar |
-|---|---|
-| Title | One sentence, action-verb led. |
-| Description | A reader who has never seen the ticket understands what is changing and why in 30 seconds. |
-| Acceptance criteria | Numbered, **independently testable**, no compound criteria (`and` is a smell). |
-| Test plan | At least one test idea per acceptance criterion. |
-| Affected areas | Concrete module / service / file paths where possible. |
-| Risk & rollout notes | One sentence each. "Low risk, deploy directly" is fine when true. |
-| Notes / open questions | Use this **liberally**. Empty Notes on a non-trivial spec is suspicious. |
+| Section | Bar | Mode |
+|---|---|---|
+| Title | One sentence, action-verb led. | both |
+| Scope source | Which inputs settled scope, and whether it was established or derived here. | both |
+| Description | `derive`: a reader who has never seen the ticket understands what is changing and why in 30 seconds. `verify`: two to four sentences plus a pointer to the brief — **not** a copy of it. | both |
+| Repo contract | The gates, conventions, and out-of-repo prerequisites found by reading the clone. Each item cites the file or precedent it came from; machine-checked ones give the command. "Nothing found in the tree" is a valid entry; an invented rule is not. | both |
+| Acceptance criteria | Numbered, **independently testable**, no compound criteria (`and` is a smell). Each ends in the check that proves it. | both |
+| Test plan | At least one concrete check per acceptance criterion — a command, a grep, a test name, an exit code. | both |
+| Affected areas | Concrete module / service / file paths where possible. | both |
+| Corrections to the brief | Where the repo contradicts the inputs, or answers a question the investigation left open. One line saying you found no divergence is fine; omitting the heading is not. | `verify` |
+| Risk & rollout notes | One sentence each. "Low risk, deploy directly" is fine when true. | both |
+| Notes / open questions | Use this **liberally**. Empty Notes on a non-trivial spec is suspicious. | both |
 
-Tracker mode adds: Tracker reference, suggested reviewers (from assignee /
-reporter / component owners), linked tickets.
+Tracker-triggered jobs add: tracker reference, suggested reviewers (from
+assignee / reporter / component owners), linked tickets.
 
 ## Acceptance-criteria rules
 
@@ -87,6 +97,19 @@ Tick every box. Any unticked box → fix the spec, do not hand off.
 - [ ] No vague verbs (`support`, `handle`, `improve`).
 - [ ] Each criterion has at least one test idea in the Test plan.
 - [ ] Affected areas names actual paths, not abstract concepts.
+- [ ] Repo contract exists, and every line of it came from a file you read in
+      the clone — no rule asserted from habit or from another repo.
+- [ ] Every gate that can fail the change is named with its command, or its
+      absence is stated explicitly.
+- [ ] **`verify` mode:** the spec cites `plan/findings.md` /
+      `params.description` rather than reproducing their content. No schema
+      dump, endpoint list, or file quote copied across.
+- [ ] **`verify` mode:** the spec is shorter than the brief it builds on. If
+      not, find the restatement and cut it.
+- [ ] **`verify` mode:** "reproduce the brief faithfully" is one criterion,
+      not one criterion per fact in the brief.
+- [ ] **`verify` mode:** Corrections to the brief is present, even if it says
+      only that nothing diverged.
 - [ ] If the work touches a public surface (API, schema, message format,
       CLI flag, config key), the new shape is explicit in the description
       or in a contract sub-section.

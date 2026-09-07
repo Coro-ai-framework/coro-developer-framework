@@ -100,10 +100,16 @@ The Planner (or an explicit `switch_workflow` call) sets
 **Agent:** Spec Writer (`agents/spec-writer.md`)
 
 DEEP runs the spec-writer for **CLI-triggered jobs too**, not only tracker-
-triggered ones. The analysis phase that follows needs a concrete spec; the
-typical free-form CLI description is not enough. When `params.planContextDir`
-is set, read `{planContextDir}/findings.md` first — it is the plan-mode
-investigation this run came from.
+triggered ones. The analysis phase that follows needs a concrete spec, and the
+typical free-form CLI description is not enough.
+
+The agent picks its own mode from the inputs (see `agents/spec-writer.md` step
+2): `derive` when the ticket / `params.description` /
+`{planContextDir}/findings.md` do not settle scope between them, `verify` when
+they do. On DEEP the mode matters less than on STANDARD, because `analysis`
+runs next either way and re-reasons the architecture — what analysis cannot do
+for itself is discover the repo's own gates, so the Repo contract section is
+required in both modes.
 
 Output: `working/{job-id}/feature-spec.md`.
 
