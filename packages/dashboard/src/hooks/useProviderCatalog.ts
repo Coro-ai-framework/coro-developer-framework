@@ -88,6 +88,15 @@ export function getProvidersForStep(
   return plugins.filter(p => p.kind === kind)
 }
 
+/** Recommended first, catalog order otherwise, `local` always last. */
+export function sortForOnboarding(list: PluginCatalogEntry[]): PluginCatalogEntry[] {
+  return [...list].sort((a, b) => {
+    const rank = (p: PluginCatalogEntry) =>
+      p.id === 'local' ? 2 : p.ui?.recommendedForOnboarding ? 0 : 1
+    return rank(a) - rank(b)
+  })
+}
+
 /**
  * Drop the cached catalog and re-fetch for every mounted consumer. Call after
  * anything that changes which plugins exist or how they are configured

@@ -71,6 +71,7 @@ export interface PluginManifestSummary {
     customPanel?: string
     subtitle?: string
     recommendedForOnboarding?: boolean
+    limitations?: string[]
     repoRef?: { kind: 'slug' | 'path'; label?: string; hint?: string; placeholder?: string }
   }
 }

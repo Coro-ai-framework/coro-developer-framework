@@ -320,6 +320,11 @@ export interface PluginManifest {
     subtitle?: string
     recommendedForOnboarding?: boolean
     /**
+     * Honest limits the FTUE wizard shows when this provider is selected.
+     * Used so the dashboard can warn without knowing the plugin id.
+     */
+    limitations?: string[]
+    /**
      * How this provider names a repository. Drives the Create Job
      * repository field's label, hint, placeholder, and validation, so the
      * dashboard can ask for the right thing without knowing which provider

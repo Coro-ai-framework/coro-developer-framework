@@ -108,7 +108,7 @@ function SetupBanner({ setup, onLaunchWizard }: { setup: SetupSummary; onLaunchW
   const isFirstRun = setup.state === 'not-configured'
   const title = isFirstRun ? 'Welcome to Coro — finish setup' : 'Runner setup is incomplete'
   const description = isFirstRun
-    ? 'Connect your model and code host. The setup wizard walks through each step.'
+    ? 'Connect a model and a code host — two steps, about a minute.'
     : `One or more essentials are missing. Finish configuration so ${RUN_NOUN.pluralLower} can run cleanly.`
 
   return (
@@ -143,7 +143,21 @@ function SetupBanner({ setup, onLaunchWizard }: { setup: SetupSummary; onLaunchW
   )
 }
 
-function ReadyChip() {
+function ReadyChip({ localOnly }: { localOnly?: boolean }) {
+  if (localOnly) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border border-success-500/30 bg-success-500/8 px-4 py-2.5 text-sm text-success-300">
+        <CheckCircle2 className="size-4 shrink-0" />
+        <span>Runner is ready in local mode. Connect a code host in Settings for hosted pull requests.</span>
+        <Link
+          to="/settings#source-control"
+          className="text-accent-300 underline-offset-2 hover:underline"
+        >
+          Source control
+        </Link>
+      </div>
+    )
+  }
   return (
     <div className="flex items-center gap-2 rounded-2xl border border-success-500/30 bg-success-500/8 px-4 py-2.5 text-sm text-success-300">
       <CheckCircle2 className="size-4" />
@@ -203,16 +217,19 @@ function HomeInner() {
   // field check that diverged from the wizard's source of truth and
   // gave users a misleading "Runner is ready" pill even when only
   // legacy keys were filled.
-  const setup: SetupSummary = useMemo(() => {
-    if (settingsLoading) return { state: 'loading', missing: [] }
-    if (!pluginsCatalogue) return { state: 'loading', missing: [] }
+  const { setup, scmLocalOnly } = useMemo(() => {
+    if (settingsLoading || !pluginsCatalogue) {
+      return { setup: { state: 'loading' as const, missing: [] }, scmLocalOnly: false }
+    }
     const readiness = evaluateReadiness({ draft, pluginsCatalogue })
     const llmReady = readiness.byId['llm-provider'].status === 'ok'
     const scmReady = readiness.byId['source-control'].status === 'ok'
     const missing: string[] = []
     if (!llmReady) missing.push('LLM provider')
     if (!scmReady) missing.push('Source control')
-    if (missing.length === 0) return { state: 'configured', missing }
+    if (missing.length === 0) {
+      return { setup: { state: 'configured' as const, missing }, scmLocalOnly: readiness.scmLocalOnly }
+    }
     // If nothing at all is set, prefer "not-configured" so the banner
     // copy reads "Welcome to Coro — finish setup" instead of the
     // generic "incomplete" message.
@@ -222,8 +239,11 @@ function HomeInner() {
           (entry.enabled !== false) && Object.keys(entry.config ?? {}).length > 0,
       ) || !!draft.llmDefaultProvider
     return {
-      state: anyConfigured ? 'partial' : 'not-configured',
-      missing,
+      setup: {
+        state: anyConfigured ? ('partial' as const) : ('not-configured' as const),
+        missing,
+      },
+      scmLocalOnly: readiness.scmLocalOnly,
     }
   }, [draft, pluginsCatalogue, settingsLoading])
 
@@ -276,7 +296,7 @@ function HomeInner() {
       {setup.state !== 'configured' && setup.state !== 'loading' ? (
         <SetupBanner setup={setup} onLaunchWizard={() => setWizardOpen(true)} />
       ) : null}
-      {setup.state === 'configured' ? <ReadyChip /> : null}
+      {setup.state === 'configured' ? <ReadyChip localOnly={scmLocalOnly} /> : null}
       {shouldShowGraduationCard(preferences?.coachMode) ? (
         <GraduationCard
           totalRuns={preferences?.coachMode?.totalRuns ?? 0}

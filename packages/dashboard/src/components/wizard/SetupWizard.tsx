@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react'
-import type { WizardState } from './wizard-state'
 import { ArrowLeft, ArrowRight, Loader2 } from 'lucide-react'
 import {
   Dialog,
@@ -12,48 +11,41 @@ import {
 import { Button } from '../ui/button'
 import { cn } from '../../lib/utils'
 import { useSettings } from '../../pages/Settings/SettingsContext'
-import WelcomeStep from './steps/WelcomeStep'
 import LlmStep from './steps/LlmStep'
 import ScmStep from './steps/ScmStep'
-import TrackerStep from './steps/TrackerStep'
 import SuccessStep from './steps/SuccessStep'
 import CustomPluginDrawer from './panels/CustomPluginDrawer'
 import {
   INITIAL_WIZARD_STATE,
   hasSkippedRequiredStep,
+  isLocalOnlyScm,
   wizardReducer,
+  type StepKind,
+  type WizardState,
   type WizardStepId,
 } from './wizard-state'
-import type { StepKind } from '../../lib/plugin-catalog-types'
 
 interface SetupWizardProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-const STEP_ORDER: WizardStepId[] = ['welcome', 'llm', 'scm', 'tracker', 'success']
+const STEP_ORDER: WizardStepId[] = ['llm', 'scm', 'success']
 
 /**
- * First-time-user setup wizard. The legacy implementation embedded
- * full Settings sections (with their own card chrome, dirty-tracking,
- * and aliases editor) into a modal — overwhelming on first run.
- *
- * This rewrite is purpose-built:
- *   - Local state machine (`wizardReducer`) holds per-step selection,
- *     draft, and last test result. No coupling to the global draft
- *     except at commit time.
- *   - Each config step (LLM / SCM / tracker) has its own dedicated
- *     component with a single question, provider radio cards, the
- *     minimum field set, and a "Test & Continue" button that pings
- *     the runner for live verification.
- *   - Every step is skippable; the success step warns when a
- *     required step was skipped.
- *   - A custom-plugin drawer slides in over the step body so the user
- *     can install drop-in plugins (GitLab, etc.) without leaving the
- *     wizard.
+ * First-time-user setup wizard. Two real steps — a model and a code
+ * host — plus a recap. Tracker, MCP, and drop-in plugins live in
+ * Settings; the Local card is the SCM skip, not a footer button.
  */
 export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
-  const { markFirstRunComplete, commitWizardStep, reloadPlugins, draft, pluginsCatalogue } = useSettings()
+  const {
+    markFirstRunComplete,
+    commitWizardStep,
+    reloadPlugins,
+    draft,
+    pluginsCatalogue,
+    firstRunCompleted,
+  } = useSettings()
   const [state, dispatch] = useReducer(wizardReducer, INITIAL_WIZARD_STATE)
   const [advancing, setAdvancing] = useState(false)
   const [advanceError, setAdvanceError] = useState<string | null>(null)
@@ -64,6 +56,9 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
   // is also reachable from Settings → "Run setup wizard"). This means
   // a returning user sees their existing GitHub / Anthropic choice
   // already filled in instead of an empty picker.
+  //
+  // Do not pre-select `local` on a true first run — it auto-passes
+  // with an empty form and would steal the recommended GitHub card.
   useEffect(() => {
     if (!open) {
       hydratedRef.current = false
@@ -85,37 +80,26 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
         e.enabled !== false &&
         pluginsCatalogue.plugins.find(p => p.manifest.id === id)?.manifest.kind === 'scm',
     )
-    const scm = scmIds.find(([id]) => id === draft.pluginDefaultScm) ?? scmIds[0]
+    const hostedScm = scmIds.filter(([id]) => id !== 'local')
+    const scm =
+      hostedScm.find(([id]) => id === draft.pluginDefaultScm) ??
+      hostedScm[0] ??
+      (firstRunCompleted ? scmIds.find(([id]) => id === 'local') : undefined)
     if (scm) {
       dispatch({ type: 'selectProvider', step: 'scm', providerId: scm[0] })
       for (const [k, v] of Object.entries(scm[1].config)) {
         dispatch({ type: 'setField', step: 'scm', key: k, value: v })
       }
     }
-    const trackerIds = Object.entries(draft.pluginInstalled).filter(
-      ([id, e]) =>
-        e.enabled !== false &&
-        pluginsCatalogue.plugins.find(p => p.manifest.id === id)?.manifest.kind === 'tracker',
-    )
-    const tracker = trackerIds.find(([id]) => id === draft.pluginDefaultTracker) ?? trackerIds[0]
-    if (tracker) {
-      dispatch({ type: 'selectProvider', step: 'tracker', providerId: tracker[0] })
-      for (const [k, v] of Object.entries(tracker[1].config)) {
-        dispatch({ type: 'setField', step: 'tracker', key: k, value: v })
-      }
-    }
-  }, [open, draft, pluginsCatalogue])
+  }, [open, draft, pluginsCatalogue, firstRunCompleted])
 
   const currentIndex = STEP_ORDER.indexOf(state.currentStep)
   const isFinal = state.currentStep === 'success'
 
-  const advanceTo = useCallback(
-    (next: WizardStepId) => {
-      setAdvanceError(null)
-      dispatch({ type: 'goto', step: next })
-    },
-    [],
-  )
+  const advanceTo = useCallback((next: WizardStepId) => {
+    setAdvanceError(null)
+    dispatch({ type: 'goto', step: next })
+  }, [])
 
   const handleBack = useCallback(() => {
     setAdvanceError(null)
@@ -140,11 +124,11 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
     setAdvanceError(null)
     const step = state.currentStep
     const stepKind: StepKind | null =
-      step === 'llm' ? 'llm' : step === 'scm' ? 'scm' : step === 'tracker' ? 'tracker' : null
+      step === 'llm' ? 'llm' : step === 'scm' ? 'scm' : null
 
     if (stepKind && state.steps[stepKind].status === 'passed') {
       const providerId = state.steps[stepKind].selectedProviderId
-      if (providerId && providerId !== '__skip__') {
+      if (providerId) {
         setAdvancing(true)
         try {
           await commitWizardStep({
@@ -165,18 +149,14 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
       }
     }
 
-    // Welcome → llm → scm → tracker → success. Tracker auto-advances
-    // to success even if the user skipped via the "I don't use a tracker"
-    // card (the TrackerStep dispatches `skip` before we get here).
     const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
     advanceTo(next)
   }, [state, currentIndex, advanceTo, commitWizardStep])
 
   const handleSkip = useCallback(() => {
     setAdvanceError(null)
-    const step = state.currentStep
-    if (step === 'llm' || step === 'scm' || step === 'tracker') {
-      dispatch({ type: 'skip', step })
+    if (state.currentStep === 'llm') {
+      dispatch({ type: 'skip', step: 'llm' })
     }
     const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
     advanceTo(next)
@@ -189,8 +169,6 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
       try {
         const skipped: Array<'llm' | 'scm' | 'tracker'> = []
         if (state.steps.llm.status === 'skipped') skipped.push('llm')
-        if (state.steps.scm.status === 'skipped') skipped.push('scm')
-        if (state.steps.tracker.status === 'skipped') skipped.push('tracker')
         await markFirstRunComplete({ skipped })
       } catch (err) {
         // The wizard stays open: closing it here would claim setup was
@@ -216,10 +194,7 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
 
   // ── Footer compute ─────────────────────────────────────────────────────
   const currentStepKind: StepKind | null =
-    state.currentStep === 'llm' ? 'llm' :
-    state.currentStep === 'scm' ? 'scm' :
-    state.currentStep === 'tracker' ? 'tracker' :
-    null
+    state.currentStep === 'llm' ? 'llm' : state.currentStep === 'scm' ? 'scm' : null
   const currentStepState = currentStepKind ? state.steps[currentStepKind] : null
   const canAdvance = currentStepState ? currentStepState.status === 'passed' : true
 
@@ -237,9 +212,6 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
     )
   } else {
     switch (state.currentStep) {
-      case 'welcome':
-        body = <WelcomeStep />
-        break
       case 'llm':
         body = (
           <LlmStep
@@ -258,70 +230,69 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
           />
         )
         break
-      case 'tracker':
+      case 'success':
         body = (
-          <TrackerStep
-            state={state.steps.tracker}
-            dispatch={dispatch}
-            onSkip={() => {
-              const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
-              advanceTo(next)
-            }}
-            onOpenDrawer={() => dispatch({ type: 'openDrawer', step: 'tracker' })}
+          <SuccessStep
+            wizardState={state}
+            onFinish={finish}
+            onOpenScmStep={() => advanceTo('scm')}
           />
         )
-        break
-      case 'success':
-        body = <SuccessStep wizardState={state} onFinish={finish} />
         break
     }
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────
-  const isWelcome = state.currentStep === 'welcome'
+  const headerCopy =
+    state.currentStep === 'llm'
+      ? {
+          title: 'Welcome to Coro',
+          description:
+            'Two steps — a model and a code host. About a minute. Anything else lives in Settings.',
+        }
+      : state.currentStep === 'scm'
+        ? {
+            title: 'First-time setup',
+            description: 'Connect the code host Coro will clone from and open pull requests on.',
+          }
+        : {
+            title: 'You are set!',
+            description: 'Recap of what you just configured and what to do next.',
+          }
+
+  const successHint = finishing
+    ? 'Saving your setup…'
+    : hasSkippedRequiredStep(state)
+      ? 'Click "Finish setup in Settings" to wrap up the remaining required pieces.'
+      : isLocalOnlyScm(state)
+        ? 'Your first run will point at a git checkout on this machine.'
+        : 'Click "Create my first job" to dispatch a run.'
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex flex-col gap-0 max-h-[min(760px,calc(100vh-2rem))]">
-        {isWelcome ? (
-          <DialogHeader className="sr-only">
-            <DialogTitle>Welcome to Coro</DialogTitle>
-            <DialogDescription>First-time setup</DialogDescription>
-          </DialogHeader>
-        ) : (
-          <DialogHeader className="shrink-0">
-            <div className="flex items-start justify-between gap-3 pr-10">
-              <div className="space-y-1">
-                <DialogTitle>{isFinal ? 'You are set!' : 'First-time setup'}</DialogTitle>
-                <DialogDescription>
-                  {isFinal
-                    ? 'Recap of what you just configured and what to do next.'
-                    : 'Configure the essentials — one minute, three steps.'}
-                </DialogDescription>
-              </div>
+        <DialogHeader className="shrink-0">
+          <div className="flex items-start justify-between gap-3 pr-10">
+            <div className="space-y-1">
+              <DialogTitle>{headerCopy.title}</DialogTitle>
+              <DialogDescription>{headerCopy.description}</DialogDescription>
             </div>
-            <Stepper currentStep={state.currentStep} wizardState={state} />
-          </DialogHeader>
-        )}
+          </div>
+          <Stepper currentStep={state.currentStep} wizardState={state} />
+        </DialogHeader>
 
-        {isWelcome ? (
-          <div className="flex-1 min-h-0 overflow-y-auto">{body}</div>
-        ) : (
-          <DialogBody className="flex-1 min-h-0 space-y-5 pt-4">
-            {advanceError ? (
-              <div className="rounded-xl border border-danger-500/35 bg-danger-500/8 px-3 py-2.5 text-sm text-danger-300">
-                {advanceError}
-              </div>
-            ) : null}
-            {body}
-          </DialogBody>
-        )}
+        <DialogBody className="flex-1 min-h-0 space-y-5 pt-4">
+          {advanceError ? (
+            <div className="rounded-xl border border-danger-500/35 bg-danger-500/8 px-3 py-2.5 text-sm text-danger-300">
+              {advanceError}
+            </div>
+          ) : null}
+          {body}
+        </DialogBody>
 
-        {/* ── Footer ───────────────────────────────────────────────── */}
         {!isFinal && !drawerOpen ? (
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-overlay/30 px-6 py-4">
             <div className="flex items-center gap-2">
-              {!isWelcome && currentStepKind ? (
+              {currentStepKind === 'llm' ? (
                 <Button type="button" variant="ghost" size="sm" onClick={handleSkip} disabled={advancing}>
                   Skip for now
                 </Button>
@@ -333,22 +304,20 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
                 type="button"
                 variant="outline"
                 onClick={handleBack}
-                disabled={isWelcome || advancing}
+                disabled={currentIndex === 0 || advancing}
               >
                 <ArrowLeft />
                 Back
               </Button>
-              {!isWelcome ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleClose}
-                  disabled={advancing}
-                >
-                  Close — finish later
-                </Button>
-              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleClose}
+                disabled={advancing}
+              >
+                Close — finish later
+              </Button>
               <Button
                 type="button"
                 onClick={() => void handleContinue()}
@@ -357,10 +326,6 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
                 {advancing ? (
                   <>
                     <Loader2 className="animate-spin" /> Saving…
-                  </>
-                ) : isWelcome ? (
-                  <>
-                    Let's get started <ArrowRight />
                   </>
                 ) : (
                   <>
@@ -374,17 +339,13 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
 
         {isFinal ? (
           <div className="shrink-0 border-t border-line bg-overlay/30 px-6 py-4 text-[12px] text-fg-subtle">
-            {finishing ? 'Saving your setup…' : hasSkippedRequiredStep(state)
-              ? 'Click "Finish setup in Settings" to wrap up the remaining required pieces.'
-              : 'Click "Create my first job" to dispatch a run.'}
+            {successHint}
           </div>
         ) : null}
       </DialogContent>
     </Dialog>
   )
 }
-
-// ── Stepper pills ───────────────────────────────────────────────────────────
 
 function Stepper({
   currentStep,
@@ -396,15 +357,13 @@ function Stepper({
   const labels: Array<{ id: WizardStepId; label: string; kind?: StepKind }> = [
     { id: 'llm', label: 'Model', kind: 'llm' },
     { id: 'scm', label: 'Code host', kind: 'scm' },
-    { id: 'tracker', label: 'Tracker', kind: 'tracker' },
   ]
-  const order = STEP_ORDER
-  const currentIdx = order.indexOf(currentStep)
+  const currentIdx = STEP_ORDER.indexOf(currentStep)
 
   return (
     <ol className="mt-4 flex flex-wrap items-center gap-1.5 text-[11px] text-fg-subtle">
       {labels.map(({ id, label, kind }) => {
-        const idx = order.indexOf(id)
+        const idx = STEP_ORDER.indexOf(id)
         const current = idx === currentIdx
         const passed = kind ? wizardState.steps[kind].status === 'passed' : idx < currentIdx
         const skipped = kind ? wizardState.steps[kind].status === 'skipped' : false

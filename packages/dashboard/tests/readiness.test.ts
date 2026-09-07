@@ -113,7 +113,9 @@ describe('evaluateReadiness', () => {
 
     expect(summary.missingRequired).toEqual([])
     expect(summary.ready).toBe(true)
+    expect(summary.scmLocalOnly).toBe(true)
     expect(summary.byId['source-control'].status).toBe('ok')
+    expect(summary.byId['source-control'].label).toBe('Local mode')
     expect(summary.byId['llm-provider'].status).toBe('ok')
   })
 
@@ -178,5 +180,23 @@ describe('evaluateReadiness', () => {
     })
 
     expect(summary.byId['source-control'].status).toBe('ok')
+  })
+
+  it('does not flag local-only when a hosted SCM plugin is configured', () => {
+    const summary = evaluateReadiness({
+      draft: makeDraft({
+        llmDefaultProvider: 'anthropic',
+        pluginDefaultScm: 'github',
+        pluginInstalled: {
+          anthropic: { enabled: true, config: { authMode: 'claudeLogin' } },
+          github: { enabled: true, config: { owner: 'acme', token: 'ghp_test' } },
+        },
+      }),
+      pluginsCatalogue: catalogue(ANTHROPIC, GITHUB_SCM, LOCAL_SCM),
+    })
+
+    expect(summary.ready).toBe(true)
+    expect(summary.scmLocalOnly).toBe(false)
+    expect(summary.byId['source-control'].label).toBe('Connected')
   })
 })

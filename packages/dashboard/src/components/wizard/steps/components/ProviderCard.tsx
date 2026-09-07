@@ -7,13 +7,13 @@ interface ProviderCardProps {
   title: string
   subtitle: string
   selected: boolean
-  recommended?: boolean
+  badge?: 'recommended' | 'limited'
   onSelect: () => void
 }
 
 /**
  * Selectable radio-style card with the provider's brand logo, name,
- * one-line subtitle, optional "Recommended" pill, and a selection
+ * one-line subtitle, optional status pill, and a selection
  * indicator on the right. Used everywhere the wizard asks the user
  * to pick exactly one provider.
  */
@@ -22,7 +22,7 @@ export default function ProviderCard({
   title,
   subtitle,
   selected,
-  recommended,
+  badge,
   onSelect,
 }: ProviderCardProps) {
   return (
@@ -53,9 +53,14 @@ export default function ProviderCard({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[15px] font-medium text-fg">{title}</span>
-          {recommended ? (
+          {badge === 'recommended' ? (
             <span className="inline-flex items-center rounded-full border border-accent-500/30 bg-accent-500/12 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-accent-200">
               Recommended
+            </span>
+          ) : null}
+          {badge === 'limited' ? (
+            <span className="inline-flex items-center rounded-full border border-line-strong bg-overlay/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-fg-subtle">
+              Limited
             </span>
           ) : null}
         </div>

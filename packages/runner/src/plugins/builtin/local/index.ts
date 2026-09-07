@@ -65,8 +65,12 @@ const MANIFEST: PluginManifest = {
     ],
   },
   ui: {
-    subtitle: 'Work on local repositories — no account needed.',
-    recommendedForOnboarding: true,
+    subtitle: 'No account needed. Coro leaves a branch in a checkout on this machine.',
+    limitations: [
+      'No pull request is opened — the deliverable is a branch you merge yourself.',
+      'Plan mode cannot read the repository before a run.',
+      'Nobody is notified; review comments live in a local file.',
+    ],
     // Jobs name a filesystem path here, not an `owner/repo` slug. The Create
     // Job form reads this to label and validate the field correctly without
     // the dashboard having to know this plugin exists.

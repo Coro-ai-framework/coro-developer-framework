@@ -55,6 +55,7 @@ export interface PluginCatalogEntry {
     customPanel?: string
     subtitle?: string
     recommendedForOnboarding?: boolean
+    limitations?: string[]
     /**
      * How the active provider names a repository. Lets the Create Job form
      * ask for a path or a slug without hardcoding which provider is which.

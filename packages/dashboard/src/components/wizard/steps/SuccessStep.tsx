@@ -1,10 +1,7 @@
-import { useEffect, useState } from 'react'
-import { AlertTriangle, ArrowRight, Bot, CheckCircle2, FileStack, GitBranch, KanbanSquare, Layers, PlayCircle, Settings2, Sparkles } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Bot, CheckCircle2, FileStack, GitBranch, Layers, PlayCircle, Settings2, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '../../ui/button'
-import { Switch } from '../../ui/switch'
 import { cn } from '../../../lib/utils'
-import { jsonRequest, requestJson } from '../../../lib/http'
 import { useSettings } from '../../../pages/Settings/SettingsContext'
 import type { WizardState } from '../wizard-state'
 import { hasSkippedRequiredStep } from '../wizard-state'
@@ -12,6 +9,7 @@ import { hasSkippedRequiredStep } from '../wizard-state'
 interface SuccessStepProps {
   wizardState: WizardState
   onFinish: (target: 'newJob' | 'dashboard' | 'settings') => void
+  onOpenScmStep: () => void
 }
 
 const STATUS_PILL = {
@@ -42,47 +40,33 @@ const STATUS_PILL = {
   },
 } as const
 
+const LATER_CHIPS = [
+  { label: 'Issue tracker', to: '/settings#issue-tracker' },
+  { label: 'MCP servers', to: '/settings#mcp' },
+  { label: 'Guardrails', to: '/settings#guardrails' },
+] as const
+
 /**
  * Final step. Recaps what was configured (and what was skipped),
  * gives the user a short Coro explainer so they leave with a mental
  * model, and points them at "Create my first job".
  */
-export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps) {
+export default function SuccessStep({ wizardState, onFinish, onOpenScmStep }: SuccessStepProps) {
   const skippedRequired = hasSkippedRequiredStep(wizardState)
-  const { draft, reload } = useSettings()
-  const [mcpDiscovered, setMcpDiscovered] = useState<{ count: number; ids: string[] } | null>(null)
-  // Mirrors the saved value rather than starting at false, so a user who
-  // already enabled inheritance doesn't see the switch off and turn it back.
-  const [inheritMcps, setInheritMcps] = useState(draft.inheritClaudeCodeMcps)
-  const [mcpError, setMcpError] = useState<string | null>(null)
+  const { pluginsCatalogue } = useSettings()
+  const localMode = wizardState.steps.scm.selectedProviderId === 'local'
 
-  useEffect(() => {
-    setInheritMcps(draft.inheritClaudeCodeMcps)
-  }, [draft.inheritClaudeCodeMcps])
-
-  useEffect(() => {
-    void requestJson<{ count: number; ids: string[] }>('/config/mcp/discovered')
-      .then(setMcpDiscovered)
-      .catch(() => setMcpDiscovered(null))
-  }, [])
-
-  async function toggleInheritMcps(enabled: boolean) {
-    const previous = inheritMcps
-    setInheritMcps(enabled)
-    setMcpError(null)
-    try {
-      await requestJson('/config', jsonRequest({ inheritClaudeCodeMcps: enabled }, { method: 'PUT' }))
-      await reload()
-    } catch (err) {
-      setInheritMcps(previous)
-      setMcpError(err instanceof Error ? err.message : String(err))
-    }
+  function displayName(pluginId: string | null): string {
+    if (!pluginId) return 'Not configured'
+    return (
+      pluginsCatalogue?.plugins.find(p => p.manifest.id === pluginId)?.manifest.displayName ??
+      pluginId
+    )
   }
 
   const rows = [
     { id: 'llm' as const, icon: Bot, label: 'LLM provider' },
     { id: 'scm' as const, icon: GitBranch, label: 'Code host' },
-    { id: 'tracker' as const, icon: KanbanSquare, label: 'Issue tracker (optional)' },
   ]
 
   return (
@@ -102,7 +86,6 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
         </p>
       </div>
 
-      {/* ── Configured summary ─────────────────────────────────────── */}
       <div className="space-y-2">
         {rows.map(row => {
           const step = wizardState.steps[row.id]
@@ -121,9 +104,7 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
                 <div className="min-w-0">
                   <div className="text-sm font-medium text-fg">{row.label}</div>
                   <div className="truncate text-[12px] text-fg-muted">
-                    {step.selectedProviderId && step.selectedProviderId !== '__skip__'
-                      ? step.selectedProviderId
-                      : 'Not configured'}
+                    {displayName(step.selectedProviderId)}
                   </div>
                 </div>
               </div>
@@ -141,24 +122,34 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
         })}
       </div>
 
-      {mcpDiscovered && mcpDiscovered.count > 0 ? (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-fg">
-              Reuse {mcpDiscovered.count} MCP server{mcpDiscovered.count === 1 ? '' : 's'} from Claude Code
-            </div>
-            <div className="text-[12px] text-fg-muted truncate">
-              {mcpDiscovered.ids.join(', ')}
-            </div>
-            {mcpError ? (
-              <div className="text-[12px] text-danger-300">Could not save: {mcpError}</div>
-            ) : null}
-          </div>
-          <Switch checked={inheritMcps} onCheckedChange={v => void toggleInheritMcps(v)} />
+      {localMode ? (
+        <div className="rounded-2xl border border-accent-500/25 bg-accent-500/5 px-4 py-3.5 text-sm">
+          <div className="font-medium text-fg">You are in local mode</div>
+          <p className="mt-1 text-fg-muted">
+            Your first run will work on a git checkout on this machine and leave a branch for you to merge. To get real pull requests, connect a code host.
+          </p>
+          <Button type="button" variant="outline" size="sm" className="mt-2.5" onClick={onOpenScmStep}>
+            Connect GitHub or Bitbucket
+          </Button>
         </div>
       ) : null}
 
-      {/* ── How Coro works (mini explainer) ───────────────────────── */}
+      <div className="space-y-2">
+        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-fg-subtle">Add later</div>
+        <div className="flex flex-wrap gap-2">
+          {LATER_CHIPS.map(chip => (
+            <Link
+              key={chip.to}
+              to={chip.to}
+              onClick={() => onFinish('settings')}
+              className="rounded-full border border-line bg-overlay/40 px-3 py-1.5 text-[12px] text-fg-muted hover:text-fg"
+            >
+              {chip.label}
+            </Link>
+          ))}
+        </div>
+      </div>
+
       <div className="space-y-3 rounded-2xl border border-line bg-overlay/30 p-5">
         <div className="text-sm font-semibold text-fg">How Coro works</div>
         <div className="grid gap-4 sm:grid-cols-3">
@@ -170,7 +161,7 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
           <ExplainerCard
             icon={Layers}
             title="Layered intelligence"
-            body="Out of the box you get the base intelligence. Add tenant- and repo-specific knowledge later from Settings → Intelligence."
+            body="Out of the box you get the base intelligence. Add tenant- and repo-specific knowledge later from Settings → Paths."
           />
           <ExplainerCard
             icon={FileStack}
@@ -180,7 +171,6 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
         </div>
       </div>
 
-      {/* ── Primary CTA ────────────────────────────────────────────── */}
       {skippedRequired ? (
         <div className="rounded-2xl border border-warning-500/30 bg-warning-500/8 p-5">
           <div className="flex items-start gap-3">
@@ -188,7 +178,7 @@ export default function SuccessStep({ wizardState, onFinish }: SuccessStepProps)
             <div className="space-y-3">
               <div className="text-sm font-medium text-fg">Finish the required setup to run jobs</div>
               <p className="text-sm text-fg-muted">
-                Jobs need an LLM and a code host to do their work. Finish the steps you skipped in Settings, then come back to dispatch your first job.
+                Jobs need a model to run. Finish that in Settings, then come back to dispatch your first job.
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <Button asChild>

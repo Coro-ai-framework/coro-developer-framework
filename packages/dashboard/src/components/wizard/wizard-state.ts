@@ -13,7 +13,7 @@
 // SettingsContext when a step's "Test & Continue" passes (or the
 // user explicitly skips).
 
-export type StepKind = 'llm' | 'scm' | 'tracker'
+export type StepKind = 'llm' | 'scm'
 
 export type StepStatus = 'idle' | 'testing' | 'passed' | 'failed' | 'skipped'
 
@@ -42,7 +42,7 @@ export interface StepState {
   lastResult: TestResult | null
 }
 
-export type WizardStepId = 'welcome' | 'llm' | 'scm' | 'tracker' | 'success'
+export type WizardStepId = 'llm' | 'scm' | 'success'
 
 export interface WizardState {
   currentStep: WizardStepId
@@ -61,11 +61,10 @@ const EMPTY_STEP: StepState = {
 }
 
 export const INITIAL_WIZARD_STATE: WizardState = {
-  currentStep: 'welcome',
+  currentStep: 'llm',
   steps: {
     llm: { ...EMPTY_STEP, draftConfig: {} },
     scm: { ...EMPTY_STEP, draftConfig: {} },
-    tracker: { ...EMPTY_STEP, draftConfig: {} },
   },
   drawerOpen: false,
   drawerForStep: null,
@@ -185,7 +184,8 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
 
 /**
  * Required steps for the success screen's "you skipped a required
- * step" warning. `tracker` is always optional.
+ * step" warning. After the two-step rewrite, only LLM can be skipped
+ * from the footer; the Local card *is* the SCM skip.
  */
 export const REQUIRED_STEPS: ReadonlyArray<StepKind> = ['llm', 'scm']
 
@@ -199,4 +199,8 @@ export function allStepsAddressed(state: WizardState): boolean {
   return REQUIRED_STEPS.every(
     s => state.steps[s].status === 'passed' || state.steps[s].status === 'skipped',
   )
+}
+
+export function isLocalOnlyScm(state: WizardState): boolean {
+  return state.steps.scm.selectedProviderId === 'local' && state.steps.scm.status === 'passed'
 }

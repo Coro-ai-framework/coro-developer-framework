@@ -20,6 +20,8 @@ export interface ReadinessSummary {
   ready: boolean
   /** Section ids that are required and not yet satisfied. */
   missingRequired: SettingsSectionId[]
+  /** True when the only configured SCM plugin is `local`. */
+  scmLocalOnly: boolean
 }
 
 interface JsonSchemaObject {
@@ -149,11 +151,14 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
     })
     .map(([id]) => id)
   const gitConfigured = configuredScm.length > 0
-  const gitDetail = gitConfigured
-    ? configuredScm.length === 1
-      ? `${configuredScm[0]} configured`
-      : `${configuredScm.length} SCM plugins configured (default: ${draft.pluginDefaultScm || configuredScm[0]})`
-    : 'No source-control plugin enabled'
+  const scmLocalOnly = gitConfigured && configuredScm.length === 1 && configuredScm[0] === 'local'
+  const gitDetail = !gitConfigured
+    ? 'No source-control plugin enabled'
+    : scmLocalOnly
+      ? 'Local repositories only — connect a code host for hosted pull requests'
+      : configuredScm.length === 1
+        ? `${configuredScm[0]} configured`
+        : `${configuredScm.length} SCM plugins configured (default: ${draft.pluginDefaultScm || configuredScm[0]})`
 
   const configuredTrackers = Object.entries(draft.pluginInstalled)
     .filter(([id, entry]) => {
@@ -210,7 +215,7 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
     },
     'source-control': {
       status: gitConfigured ? 'ok' : 'warn',
-      label: gitConfigured ? 'Connected' : 'Needs setup',
+      label: gitConfigured ? (scmLocalOnly ? 'Local mode' : 'Connected') : 'Needs setup',
       detail: gitDetail,
     },
     'issue-tracker': {
@@ -255,5 +260,6 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
     byId,
     ready: missingRequired.length === 0,
     missingRequired,
+    scmLocalOnly,
   }
 }

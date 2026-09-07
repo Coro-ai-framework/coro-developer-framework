@@ -21,7 +21,7 @@ export default function LlmStep({ state, dispatch, onOpenDrawer }: LlmStepProps)
 
   return (
     <StepShell
-      eyebrow="Step 1 of 3"
+      eyebrow="Step 1 of 2"
       title="Which model should power Coro?"
       description="Coro uses an LLM to plan, write code, and review changes. Pick one to start — you can switch or add more later in Settings."
     >
@@ -34,22 +34,13 @@ export default function LlmStep({ state, dispatch, onOpenDrawer }: LlmStepProps)
             pluginId={provider.id}
             title={provider.displayName}
             subtitle={provider.ui?.subtitle ?? ''}
-            recommended={provider.ui?.recommendedForOnboarding}
+            badge={provider.ui?.recommendedForOnboarding ? 'recommended' : undefined}
             selected={selectedId === provider.id}
             onSelect={() =>
               dispatch({ type: 'selectProvider', step: 'llm', providerId: provider.id })
             }
           />
         ))}
-
-        <button
-          type="button"
-          onClick={onOpenDrawer}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-line bg-transparent px-4 py-3 text-sm text-fg-muted hover:border-accent-500/30 hover:bg-overlay/40 hover:text-fg"
-        >
-          <Plug className="size-4" />
-          Need something else? Browse custom executor plugins
-        </button>
       </div>
 
       {selected ? (
@@ -68,10 +59,15 @@ export default function LlmStep({ state, dispatch, onOpenDrawer }: LlmStepProps)
       ) : null}
 
       <LiveTestPanel status={state.status} result={state.lastResult} />
+
+      <button
+        type="button"
+        onClick={onOpenDrawer}
+        className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-line bg-transparent px-4 py-2.5 text-[12px] text-fg-subtle hover:border-accent-500/30 hover:bg-overlay/40 hover:text-fg-muted"
+      >
+        <Plug className="size-3.5" />
+        Using a different provider? Browse executor plugins
+      </button>
     </StepShell>
   )
-}
-
-export function llmStepCanContinue(state: StepState): boolean {
-  return state.status === 'passed' || state.status === 'skipped'
 }

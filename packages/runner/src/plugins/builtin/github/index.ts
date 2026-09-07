@@ -140,6 +140,7 @@ const MANIFEST: PluginManifest = {
   },
   ui: {
     subtitle: 'github.com or GitHub Enterprise. Personal or fine-grained PAT.',
+    recommendedForOnboarding: true,
   },
   auth: {
     methods: [

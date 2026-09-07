@@ -24,6 +24,7 @@ export interface PluginCatalogEntry {
     customPanel?: string
     subtitle?: string
     recommendedForOnboarding?: boolean
+    limitations?: string[]
     repoRef?: PluginRepoRefDescriptor
   }
   capabilities: Record<string, boolean>

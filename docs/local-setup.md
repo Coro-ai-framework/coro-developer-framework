@@ -133,7 +133,7 @@ and **drop-in** plugins from `~/.coro/plugins/<id>/` (with `coro-plugin.json`).
 
 | Kind | Built-in IDs | Notes |
 | ---- | ------------ | ----- |
-| **SCM** | `github`, `bitbucket` | Configure via Settings → Git |
+| **SCM** | `github`, `bitbucket`, `local` | Configure via Settings → Source control. `local` is the zero-account fallback. |
 | **Tracker** | `jira`, `linear`, `github-issues` | Enable in `plugins.installed` |
 | **Executor (LLM)** | `anthropic`, `openai` | Anthropic required for default workflows |
 
