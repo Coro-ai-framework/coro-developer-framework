@@ -62,6 +62,8 @@ describe('campaign context materialisation', () => {
     await fs.mkdir(path.join(parentDir, '_intelligence'), { recursive: true })
     await fs.writeFile(path.join(parentDir, '_intelligence', 'x.md'), 'skip', 'utf8')
     await fs.writeFile(path.join(parentDir, 'notes.txt'), 'skip', 'utf8')
+    await fs.mkdir(path.join(parentDir, 'plan'), { recursive: true })
+    await fs.writeFile(path.join(parentDir, 'plan', 'findings.md'), 'plan findings', 'utf8')
 
     const { copied } = await materializeCampaignContext({
       parentJob: makeParentJob(),
@@ -73,6 +75,8 @@ describe('campaign context materialisation', () => {
     await expect(fs.readFile(path.join(childDir, CAMPAIGN_CONTEXT_DIR, 'decisions.md'), 'utf8'))
       .resolves.toBe('# ADR\n')
     await expect(fs.access(path.join(childDir, CAMPAIGN_CONTEXT_DIR, 'my-service', 'README.md')))
+      .rejects.toThrow()
+    await expect(fs.access(path.join(childDir, CAMPAIGN_CONTEXT_DIR, 'plan', 'findings.md')))
       .rejects.toThrow()
   })
 

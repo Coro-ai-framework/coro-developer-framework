@@ -61,6 +61,16 @@ describe('resolveJobWorkspaceLayout', () => {
     const block = buildWorkspaceLayoutPromptBlock(layout)
     expect(block).toContain('Campaign context: `campaign/`')
   })
+
+  it('surfaces planContextDir when set from a plan-mode dispatch', () => {
+    const layout = resolveJobWorkspaceLayout(
+      makeJob({ params: { repoSlug: 'svc', planContextDir: 'plan' } }),
+      '/work/ws-job',
+    )
+    expect(layout.planContextDir).toBe('plan')
+    const block = buildWorkspaceLayoutPromptBlock(layout)
+    expect(block).toContain('Plan findings: `plan/findings.md`')
+  })
 })
 
 describe('buildPrimaryRepoCandidates', () => {
@@ -132,5 +142,6 @@ describe('buildWorkspaceLayoutPromptBlock', () => {
     expect(block).toContain('{language}-conventions')
     expect(block).not.toMatch(/\bgo build\b/)
     expect(block).not.toMatch(/\bdotnet build\b/)
+    expect(block).not.toContain('Plan findings:')
   })
 })

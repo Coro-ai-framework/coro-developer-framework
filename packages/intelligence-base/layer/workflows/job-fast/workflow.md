@@ -76,7 +76,9 @@ workflow. Its job here is reduced to:
 
 1. Confirm the change still fits the FAST-lane criteria (re-check after reading
    the repo). If it has grown, call `switch_workflow` to move back to STANDARD
-   or DEEP and end the turn.
+   or DEEP and end the turn. When `params.planContextDir` is set, read
+   `{planContextDir}/findings.md` first — it is the plan-mode investigation
+   this run came from.
 2. Detect the language and call `set_job_params({ language })`.
 3. Register a single work item via `set_work_items` (no decomposition).
 4. Skip the long-form implementation-plan artefact — a one-paragraph rationale

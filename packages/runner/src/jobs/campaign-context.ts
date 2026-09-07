@@ -14,6 +14,7 @@ import path from 'node:path'
 import type { Job } from '@coro-ai/cloud-protocol'
 import { isPathInside } from '@coro-ai/plugin-sdk'
 import { UPSTREAM_SOURCE_SUBDIR } from '../tools/upstream-source'
+import { PLAN_CONTEXT_DIR } from './plan-context'
 import { buildPrimaryRepoCandidates } from './workspace-layout'
 
 /** Subdirectory under each campaign child job root for copied parent context. */
@@ -31,6 +32,7 @@ const RUNTIME_TOP_LEVEL_DIRS = new Set([
   '.claude',
   UPSTREAM_SOURCE_SUBDIR,
   CAMPAIGN_CONTEXT_DIR,
+  PLAN_CONTEXT_DIR,
 ])
 
 export function buildCampaignContextSkipDirs(job: Job): Set<string> {

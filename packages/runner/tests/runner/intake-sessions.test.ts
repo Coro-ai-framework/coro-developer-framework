@@ -113,6 +113,38 @@ describe('intake session HTTP', () => {
     expect(list.sessions[0]?.items).toBeUndefined()
   })
 
+  it('puts findings and preserves them when a later PUT omits the field', async () => {
+    const base = await start()
+    const id = 'inv-findings-1'
+    const put = await fetch(`${base}/intake/sessions/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [{ kind: 'card', id: 'c1', card: { type: 'findings', data: { markdown: '## Decode path', state: 'current' } } }],
+        title: 'Decode path',
+        findings: '## Decode path\nThe handler is stateless.',
+        readiness: { state: 'ready', openQuestions: [], note: 'clear' },
+      }),
+    })
+    const putBody = await put.json() as { persisted: boolean; session: { findings: string | null } }
+    expect(putBody.persisted).toBe(true)
+    expect(putBody.session.findings).toBe('## Decode path\nThe handler is stateless.')
+
+    const later = await fetch(`${base}/intake/sessions/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [{ kind: 'message', id: '1', role: 'user', text: 'ok' }],
+        title: 'Decode path',
+      }),
+    })
+    const laterBody = await later.json() as { session: { findings: string | null } }
+    expect(laterBody.session.findings).toBe('## Decode path\nThe handler is stateless.')
+
+    const loaded = await fetch(`${base}/intake/sessions/${id}`).then(r => r.json()) as { findings: string | null }
+    expect(loaded.findings).toBe('## Decode path\nThe handler is stateless.')
+  })
+
   it('deletes both the map and the row', async () => {
     const base = await start()
     const id = 'inv-del'

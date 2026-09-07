@@ -1,3 +1,5 @@
+import type { ActivityItem } from '../components/activity/types'
+
 // Plan mode's investigation write-up is a markdown document, not a chat
 // sentence. The agent emits it in <findings>…</findings>; the dashboard
 // hides the tag and renders a Findings card. A conservative heading-based
@@ -34,4 +36,15 @@ export function looksLikeFindingsReport(text: string): boolean {
   const t = text.trim()
   if (t.length < 80) return false
   return /^#{1,6}\s+\S/m.test(t)
+}
+
+/** The live investigation write-up: the last findings card still marked current. */
+export function currentFindingsMarkdown(items: ActivityItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item?.kind !== 'card' || item.card.type !== 'findings') continue
+    const data = item.card.data as { markdown?: string; state?: string }
+    if (data.state === 'current' && data.markdown?.trim()) return data.markdown.trim()
+  }
+  return null
 }

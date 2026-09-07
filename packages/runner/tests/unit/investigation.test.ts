@@ -18,6 +18,7 @@ function base(overrides: Partial<Investigation> = {}): Investigation {
     turns: [{ user: 'Add logging', assistant: 'Looking.', evidence: [] }],
     modelChoice: { provider: 'anthropic', model: 'claude' },
     readiness: { state: 'investigating', openQuestions: ['which repo?'], note: '' },
+    findings: null,
     turnCount: 1,
     tokens: 40,
     contextUsed: 40,
@@ -59,6 +60,31 @@ describe('mergeInvestigation', () => {
     }, '2026-01-01T01:00:00.000Z')
     expect(merged.executorSession).toBeUndefined()
     expect(merged.executorId).toBeUndefined()
+  })
+
+  it('keeps findings when a stream turn omits them', () => {
+    const existing = base({ findings: '## Decode path\nThe handler is stateless.' })
+    const merged = mergeInvestigation(existing, {
+      id: 'inv-1',
+      turns: [{ user: 'Add logging', assistant: 'Done.', evidence: [] }],
+    }, '2026-01-01T01:00:00.000Z')
+    expect(merged.findings).toBe('## Decode path\nThe handler is stateless.')
+  })
+
+  it('clears findings when the patch sends null', () => {
+    const existing = base({ findings: '## Decode path' })
+    const merged = mergeInvestigation(existing, {
+      id: 'inv-1',
+      findings: null,
+    }, '2026-01-01T01:00:00.000Z')
+    expect(merged.findings).toBeNull()
+  })
+
+  it('treats a legacy row without findings as null', () => {
+    const existing = base()
+    delete (existing as { findings?: string | null }).findings
+    const merged = mergeInvestigation(existing, { id: 'inv-1' }, '2026-01-01T01:00:00.000Z')
+    expect(merged.findings).toBeNull()
   })
 })
 

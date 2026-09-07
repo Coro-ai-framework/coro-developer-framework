@@ -90,7 +90,7 @@ If only the legacy `params.jiraTicketId` is set, build the ref yourself:
 const trackerRef = { kind: "ticket", pluginId: "jira", externalId: params.jiraTicketId }
 ```
 
-If neither is set (CLI-triggered job), skip this step and move to step 2 — the source material is `params.description` plus the repo state.
+If neither is set (CLI-triggered job), skip this step and move to step 2 — the source material is `params.description` plus the repo state. When `params.planContextDir` is set, read `{planContextDir}/findings.md` first: it is the write-up from the plan-mode investigation this run was created from. Formalise that conclusion rather than re-deriving scope. Its file quotes are a snapshot — re-read any file you intend to change.
 
 ### 2. Infer scope
 
@@ -98,6 +98,8 @@ From the ticket content, determine:
 - Which repository this work belongs to (from components, labels, or description)
 - Which areas of the codebase are affected
 - Whether this is a new feature, enhancement, or bug fix
+
+If `params.planContextDir` is set, the findings write-up already names the repo and affected areas — use that instead of re-inferring from a ticket or a free-form description.
 
 If the repository cannot be determined from the ticket, check `config/repos.md` for the service registry and match by component or service name.
 

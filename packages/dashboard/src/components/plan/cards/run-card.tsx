@@ -45,6 +45,7 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
     setSubmitting(true)
     setSubmitError(null)
     try {
+      await session.persistSnapshot()
       const body = {
         type: 'job',
         workflowPath: run.workflowPath,
@@ -53,6 +54,7 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
         description: run.description.trim(),
         reviewers: parseReviewersList(run.reviewers),
         interactive: run.interactive,
+        params: { investigationId: session.sessionId },
       }
       const result = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
       session.markCardDispatched(itemId, result.jobId)

@@ -217,6 +217,9 @@ export function registerIntakeRoutes(
       const result = await persistIntakeSnapshot(stateBackend, sessionId, {
         ...(Array.isArray(body['items']) ? { items: body['items'] } : {}),
         ...(body['readiness'] !== undefined ? { readiness: body['readiness'] as IntakeSnapshotReadiness } : {}),
+        ...(body['findings'] === null || typeof body['findings'] === 'string'
+          ? { findings: body['findings'] as string | null }
+          : {}),
         ...(isModelChoice(body['modelChoice']) ? { modelChoice: body['modelChoice'] } : {}),
         ...(typeof body['turnCount'] === 'number' ? { turnCount: body['turnCount'] } : {}),
         ...(typeof body['tokens'] === 'number' ? { tokens: body['tokens'] } : {}),

@@ -104,6 +104,10 @@ export function mergeInvestigation(
     ? (patch.readiness ?? null)
     : (existing?.readiness ?? null)
 
+  const findings = hasOwn(patch, 'findings')
+    ? (patch.findings ?? null)
+    : (existing?.findings ?? null)
+
   return {
     id: patch.id,
     title: title.trim() ? title : 'Draft',
@@ -114,6 +118,7 @@ export function mergeInvestigation(
     ...(executorId ? { executorId } : {}),
     modelChoice: patch.modelChoice ?? existing?.modelChoice ?? { provider: '', model: '' },
     readiness,
+    findings,
     turnCount: patch.turnCount ?? existing?.turnCount ?? turns.length,
     tokens: patch.tokens ?? existing?.tokens ?? 0,
     contextUsed: patch.contextUsed ?? existing?.contextUsed ?? 0,

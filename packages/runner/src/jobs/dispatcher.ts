@@ -47,6 +47,7 @@ import {
   prepareCampaignChildParams,
   syncCampaignContextToParent,
 } from './campaign-context'
+import { materializePlanContext, PLAN_CONTEXT_DIR } from './plan-context'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
 const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
@@ -123,9 +124,55 @@ export class Dispatcher {
 
   async dispatch(input: JobInput) {
     const job = await this.ctx.stateBackend.createJob(input)
-    this.ctx.logger.info({ jobId: job.id, type: job.type }, 'Job dispatched')
-    this.fireAndForget(job.id)
-    return job
+    const attached = await this.attachPlanContext(job)
+    this.ctx.logger.info({ jobId: attached.id, type: attached.type }, 'Job dispatched')
+    this.fireAndForget(attached.id)
+    return attached
+  }
+
+  /**
+   * Copy the plan-mode investigation write-up into the job working dir.
+   * Findings are an enhancement — a missing row or a write failure must
+   * never fail the job.
+   */
+  private async attachPlanContext(job: Job): Promise<Job> {
+    const investigationId = typeof job.params['investigationId'] === 'string'
+      ? job.params['investigationId'].trim()
+      : ''
+    if (!investigationId) return job
+
+    const workingDir = path.join(this.ctx.settings.paths.workingDir, job.id)
+    try {
+      await fs.mkdir(workingDir, { recursive: true })
+      const result = await materializePlanContext({
+        investigationId,
+        jobWorkingDir: workingDir,
+        stateBackend: this.ctx.stateBackend,
+      })
+      if (!result) return job
+
+      const now = new Date()
+      const rand = Math.random().toString(36).slice(2, 8)
+      const artifact: Artifact = {
+        id: `art-${now.getTime()}-${rand}`,
+        phase: job.phase,
+        kind: 'plan-findings-md',
+        title: 'Plan-mode investigation findings',
+        data: { path: result.relativePath, investigationId },
+        createdBy: 'plan-mode',
+        createdAt: now.toISOString(),
+      }
+      return await this.ctx.stateBackend.updateJob(job.id, {
+        params: { ...job.params, planContextDir: PLAN_CONTEXT_DIR },
+        artifacts: [...(job.artifacts ?? []), artifact],
+      })
+    } catch (err) {
+      this.ctx.logger.warn(
+        { err, jobId: job.id, investigationId },
+        'Failed to materialize plan-mode findings — job continues without them',
+      )
+      return job
+    }
   }
 
   async cancelJob(jobId: string, reason?: string): Promise<Job> {
@@ -1291,7 +1338,7 @@ export class Dispatcher {
     // forward common scoping fields the planner agent expects on every
     // job (repoSlug, reviewers, gitProvider).
     const inherited: Record<string, unknown> = {}
-    for (const key of ['repoSlug', 'repo', 'reviewers', 'gitProvider']) {
+    for (const key of ['repoSlug', 'repo', 'reviewers', 'gitProvider', 'investigationId']) {
       if (parent.params[key] !== undefined) inherited[key] = parent.params[key]
     }
 
@@ -1342,6 +1389,8 @@ export class Dispatcher {
         copiedRelativePaths: copied,
       })
       await this.ctx.stateBackend.updateJob(child.id, { params: childParams })
+      const refreshedChild = (await this.ctx.stateBackend.getJob(child.id)) ?? child
+      await this.attachPlanContext(refreshedChild)
     } catch (err) {
       this.ctx.logger.error(
         { err, parentId: parent.id, childId: child.id, childName: spec.name },

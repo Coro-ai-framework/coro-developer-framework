@@ -181,6 +181,7 @@ Use `mcp__coro__scm_clone_repo({ repo: params.repoSlug })` when you need a local
 ### 4. Analyze inputs
 - Read the workflow instructions first and identify which artifacts, specs, and domain skills this workflow expects in the planning phase.
 - Read every workflow-required upstream artifact before deciding scope or sequencing.
+- If `params.planContextDir` is set, read `{planContextDir}/findings.md` before the spec. It is the plan-mode investigation this run came from — what the code does today, why this approach, what the developer ruled out, and what was still open at dispatch. Treat its conclusions as established; do not re-derive them. Its file quotes are a snapshot, so re-read any file you intend to change.
 - Read the job description/spec and understand the scope, acceptance criteria, and constraints.
 
 ### 5. Detect the target language
@@ -192,7 +193,7 @@ Inspect the target repository to determine the language:
 - `Cargo.toml` → `rust`
 - `requirements.txt` or `pyproject.toml` → `python`
 
-This is the language that downstream implementation and review phases should use. If the workflow distinguishes between source and target languages, follow that workflow-specific rule.
+This is the language that downstream implementation and review phases should use. If the workflow distinguishes between source and target languages, follow that workflow-specific rule. Plan-mode findings may already name the language — still confirm from the repo manifest.
 
 Call `mcp__coro__set_job_params` with `{ language: "<detected-language>" }` so downstream phases load the correct conventions automatically.
 

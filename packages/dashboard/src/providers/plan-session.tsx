@@ -12,7 +12,7 @@ import { applyIntakeEvent } from '../components/activity/adapters/intake'
 import { settleRunningEntries } from '../components/activity/group'
 import { displayContent } from '../components/activity/message-block'
 import type { ActivityItem } from '../components/activity/types'
-import { parseFindings, looksLikeFindingsReport } from '../lib/intake-findings'
+import { parseFindings, looksLikeFindingsReport, currentFindingsMarkdown } from '../lib/intake-findings'
 import {
   asActivityItems,
   deleteInvestigation,
@@ -90,6 +90,7 @@ export interface PlanSessionApi extends PlanSessionState {
   setModelChoice: (next: { provider: string; model: string }) => void
   updateCard: (itemId: string, data: unknown) => void
   markCardDispatched: (itemId: string, jobId: string) => void
+  persistSnapshot: () => Promise<void>
   appendNotice: (notice: { tone: 'info' | 'warning' | 'error'; text: string; action?: { label: string; to: string } }) => void
   setKnownWorkflows: (workflows: WorkflowOption[]) => void
   setJobs: (jobs: Job[]) => void
@@ -182,6 +183,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       const result = await putInvestigation(id, {
         items: currentItems,
         readiness: readinessRef.current,
+        findings: currentFindingsMarkdown(currentItems),
         modelChoice: modelChoiceRef.current,
         turnCount: turnCountRef.current,
         tokens: tokensRef.current,
@@ -207,6 +209,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     persistChainRef.current = persistChainRef.current.then(() => persistNow(opts)).catch(() => undefined)
     return persistChainRef.current
   }, [persistNow])
+
+  const persistSnapshot = useCallback(() => enqueuePersist(), [enqueuePersist])
 
   const applyRecord = useCallback((record: {
     id: string
@@ -281,6 +285,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           await putInvestigation(draft.sessionId, {
             items: draft.items,
             readiness: draft.readiness,
+            findings: currentFindingsMarkdown(draft.items),
             modelChoice: draft.modelChoice,
             turnCount: draft.turnCount,
             tokens: draft.totalTokens,
@@ -652,6 +657,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       setModelChoice,
       updateCard,
       markCardDispatched,
+      persistSnapshot,
       appendNotice,
       setKnownWorkflows: setWorkflows,
       setJobs,
@@ -687,6 +693,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       loadMoreInvestigations,
       updateCard,
       markCardDispatched,
+      persistSnapshot,
       appendNotice,
       workflows,
       jobs,

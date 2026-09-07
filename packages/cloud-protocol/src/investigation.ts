@@ -53,6 +53,8 @@ export interface Investigation {
   executorId?: string | null
   modelChoice: InvestigationModelChoice
   readiness: InvestigationReadiness | null
+  /** Current investigation write-up, projected from the findings card in `items`. */
+  findings: string | null
   turnCount: number
   tokens: number
   contextUsed: number

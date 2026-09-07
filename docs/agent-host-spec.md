@@ -241,10 +241,15 @@ SSE payload types: `token` (text delta), `thinking` (model reasoning),
 Every assistant turn ends with a `<readiness>{…}</readiness>` block
 (`investigating` / `ready` / `no-run-needed`, plus open questions) that the
 dashboard renders above the composer. A markdown `<findings>…</findings>`
-write-up becomes a Findings card. The `<run>{…json…}</run>` payload comes
-only when the developer asks for it or readiness is `ready`; it is parsed
+write-up becomes a Findings card. The dashboard PUT snapshot also stores that
+write-up as typed `Investigation.findings`. The `<run>{…json…}</run>` payload
+comes only when the developer asks for it or readiness is `ready`; it is parsed
 client-side (`packages/dashboard/src/lib/intake-run.ts`) into an editable Run
-card. Dispatch uses the same `POST /jobs` path used by the CLI.
+card. Dispatch uses the same `POST /jobs` path used by the CLI, with
+`params.investigationId` pointing at the investigation. At dispatch the runner
+materialises `plan/findings.md` under the job working directory, sets
+`params.planContextDir = "plan"`, and registers a `plan-findings-md` artefact
+so the spec-writer and planner can read the investigation write-up.
 
 Related config keys: `coachMode` (interactive defaults, graduation counter),
 `intake.toolsEnabled` (default `true` — read-only tracker/SCM lookups in plan

@@ -13,6 +13,8 @@ export interface JobWorkspaceLayout {
   repoCheckoutAbsDir?: string
   /** Present on campaign child jobs — relative path to copied parent context. */
   campaignContextDir?: string
+  /** Present on jobs created from plan mode — relative path to investigation findings. */
+  planContextDir?: string
 }
 
 export function resolveJobWorkspaceLayout(job: Job, jobWorkingDir: string): JobWorkspaceLayout {
@@ -28,8 +30,9 @@ export function resolveJobWorkspaceLayout(job: Job, jobWorkingDir: string): JobW
     : rel ? path.join(jobWorkingDir, rel) : undefined
 
   const campaignContextDir = paramString(params, 'campaignContextDir')
+  const planContextDir = paramString(params, 'planContextDir')
 
-  return { jobWorkingDir, repoCheckoutDir: rel, repoCheckoutAbsDir: abs, campaignContextDir }
+  return { jobWorkingDir, repoCheckoutDir: rel, repoCheckoutAbsDir: abs, campaignContextDir, planContextDir }
 }
 
 function paramString(params: Record<string, unknown>, key: string): string | undefined {
@@ -121,6 +124,16 @@ export function buildWorkspaceLayoutPromptBlock(layout: JobWorkspaceLayout): str
       `Campaign context: \`${layout.campaignContextDir}/\` under the job root — markdown/json copied from the parent campaign at dispatch. ` +
         'Read parent campaign inputs here; write campaign outputs here (the runner syncs this folder back to the parent when you finish). ' +
         'Path refs in `params` (e.g. `campaignDecisionsRef`) are already rewritten to this directory.',
+    )
+  }
+
+  if (layout.planContextDir) {
+    lines.push(
+      '',
+      `Plan findings: \`${layout.planContextDir}/findings.md\` under the job root — the write-up from the ` +
+        'plan-mode investigation this run was created from. Read it before deriving scope: it records what the ' +
+        'code does today, what the developer decided, and what was still open. Its file quotes are a snapshot — ' +
+        're-read any file you intend to change.',
     )
   }
 

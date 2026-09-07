@@ -118,7 +118,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 **Agent:** Spec Writer (`agents/spec-writer.md`)
 
-1. **Tracker-triggered jobs:** read the ticket via `tracker_get_issue({ trackerRef: params.trackerRef })`: title, description, acceptance criteria, components. **CLI / plan-mode jobs:** work directly from `params.description` (a plan-mode description carries the conclusions of an investigation the developer already ran with Coro — acceptance criteria, constraints, edge cases — so build on it rather than re-deriving scope).
+1. **Tracker-triggered jobs:** read the ticket via `tracker_get_issue({ trackerRef: params.trackerRef })`: title, description, acceptance criteria, components. **CLI / plan-mode jobs:** work directly from `params.description` (a plan-mode description carries the conclusions of an investigation the developer already ran with Coro — acceptance criteria, constraints, edge cases — so build on it rather than re-deriving scope). When `params.planContextDir` is set, read `{planContextDir}/findings.md` first — it is that investigation's write-up.
 2. Infer: repo, affected files/services, reviewers, and test plan
 3. Output: write `feature-spec.md` in the job working directory and register it via `post_artifact({ kind: "spec-md", … })` so it shows up on the dashboard
 4. Tracker-triggered jobs only: post a comment on the tracker ticket confirming receipt
@@ -130,7 +130,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 **Agent:** Planner (`agents/planner.md`)
 **Skills:** Agent invokes `feature-planning` for domain heuristics that translate a prose change request into a sequenced implementation plan
 
-1. Read the job spec (or CLI description)
+1. Read the job spec (or CLI description). When `params.planContextDir` is set, read `{planContextDir}/findings.md` before the spec — it is the plan-mode investigation this run came from.
 2. Analyze the existing codebase to understand language, structure, and patterns
 3. Call `set_job_params({ language: "<detected-language>" })` to set the language
 4. Produce an implementation plan with work items and acceptance criteria

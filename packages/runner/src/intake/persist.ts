@@ -35,6 +35,7 @@ export async function persistLiveIntakeSession(
 export interface IntakeSnapshotBody {
   items?: unknown[]
   readiness?: Investigation['readiness']
+  findings?: string | null
   modelChoice?: Investigation['modelChoice']
   turnCount?: number
   tokens?: number
@@ -58,6 +59,7 @@ export async function persistIntakeSnapshot(
     id: sessionId,
     ...(body.items !== undefined ? { items: body.items } : {}),
     ...(body.readiness !== undefined ? { readiness: body.readiness } : {}),
+    ...(body.findings !== undefined ? { findings: body.findings } : {}),
     ...(body.modelChoice !== undefined ? { modelChoice: body.modelChoice } : {}),
     ...(body.turnCount !== undefined ? { turnCount: body.turnCount } : {}),
     ...(body.tokens !== undefined ? { tokens: body.tokens } : {}),

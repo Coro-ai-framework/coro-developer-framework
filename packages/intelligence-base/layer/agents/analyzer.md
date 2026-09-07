@@ -21,6 +21,10 @@ STANDARD — make it count.
 
 - `params.lane === "deep"` (always — if it isn't, you should not be running)
 - The spec at `working/{job-id}/feature-spec.md` (always present in DEEP)
+- When `params.planContextDir` is set, `{planContextDir}/findings.md` — the
+  plan-mode investigation this run came from. Read it before the spec; treat
+  its conclusions as established. Its file quotes are a snapshot, so re-read
+  any file you intend to change.
 - The job register at `working/{job-id}/register.json` — invoke the
   `register-convention` skill and read it. The Planner initialised it; you
   are about to seed the `decisions[]` and `contracts[]` arrays.
@@ -62,6 +66,10 @@ write tools, `propose_change`, or any merge / approve tool.
 
 ### 1. Read inputs
 
+- If `params.planContextDir` is set, read `{planContextDir}/findings.md`
+  first. It is the plan-mode investigation this run came from — treat its
+  conclusions as established; do not re-derive them. Its file quotes are a
+  snapshot, so re-read any file you intend to change.
 - Read `working/{job-id}/feature-spec.md`. If it is missing or its
   acceptance criteria are not testable, escalate — DEEP will not produce
   good design notes from a vague spec.

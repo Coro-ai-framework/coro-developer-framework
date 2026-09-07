@@ -101,7 +101,9 @@ The Planner (or an explicit `switch_workflow` call) sets
 
 DEEP runs the spec-writer for **CLI-triggered jobs too**, not only tracker-
 triggered ones. The analysis phase that follows needs a concrete spec; the
-typical free-form CLI description is not enough.
+typical free-form CLI description is not enough. When `params.planContextDir`
+is set, read `{planContextDir}/findings.md` first — it is the plan-mode
+investigation this run came from.
 
 Output: `working/{job-id}/feature-spec.md`.
 
@@ -113,7 +115,9 @@ the Planner running in analysis mode.
 the relevant language conventions skill, and `cross-cutting-review` at
 the design level.
 
-Goal: produce **design notes** before any work item is sequenced. Output:
+Goal: produce **design notes** before any work item is sequenced. When
+`params.planContextDir` is set, read `{planContextDir}/findings.md` before
+the spec. Output:
 `working/{job-id}/design-notes.md` containing at minimum:
 
 - Architecture decisions (ADR-style: context, decision, alternatives,
@@ -137,7 +141,8 @@ with design-notes as input.
 Same as the standard job's planning phase, but the planner reads
 `design-notes.md` first and treats its decisions as load-bearing — the
 work-item sequence must respect the contracts and risk register that came out
-of analysis.
+of analysis. When `params.planContextDir` is set, also read
+`{planContextDir}/findings.md` before the spec.
 
 ### Phase 3: Coding
 

@@ -30,6 +30,7 @@ export interface InvestigationRecord {
   turns: unknown[]
   modelChoice: InvestigationModelChoice
   readiness: Readiness | null
+  findings: string | null
   turnCount: number
   tokens: number
   contextUsed: number
@@ -48,6 +49,7 @@ export interface InvestigationListResult {
 export interface InvestigationPutBody {
   items: ActivityItem[]
   readiness: Readiness | null
+  findings: string | null
   modelChoice: InvestigationModelChoice
   turnCount: number
   tokens: number
