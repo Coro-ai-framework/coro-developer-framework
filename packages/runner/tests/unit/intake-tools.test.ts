@@ -82,7 +82,13 @@ describe('buildIntakeTools', () => {
     const withJobs = buildIntakeTools(empty, {
       stateBackend: { listJobs: async () => [], getJob: async () => null } as never,
     })
-    expect(withJobs.map(t => t.name)).toEqual(['list_past_jobs', 'get_past_job'])
+    expect(withJobs.map(t => t.name)).toEqual([
+      'list_past_jobs',
+      'get_past_job',
+      'read_past_job_artifact',
+      'list_past_job_files',
+      'read_past_job_file',
+    ])
   })
 })
 
@@ -202,8 +208,9 @@ describe('createIntakeRunTool', () => {
     })
     const listedOut = await runTool('list_past_jobs', { repo: 'svc' }) as { jobs: Array<{ id: string }> }
     expect(listedOut.jobs.map(j => j.id)).toEqual(['job-a'])
-    const got = await runTool('get_past_job', { jobId: 'job-a', includeContent: false }) as { summary: { id: string } }
+    const got = await runTool('get_past_job', { jobId: 'job-a' }) as { summary: { id: string }; artifacts: unknown[] }
     expect(got.summary.id).toBe('job-a')
+    expect(got.artifacts).toEqual([])
     expect(stateBackend.getJob).toHaveBeenCalledWith('job-a')
   })
 })
@@ -243,7 +250,10 @@ describe('summarizeToolCall', () => {
   it('summarises past-job tools', () => {
     expect(summarizeToolCall('list_past_jobs', {}, { jobs: [{}, {}] })).toBe('Listed 2 past jobs')
     expect(summarizeToolCall('list_past_jobs', {}, { jobs: [{}] })).toBe('Listed 1 past job')
-    expect(summarizeToolCall('get_past_job', { jobId: 'job-abc' }, {})).toBe('Read past job job-abc')
-    expect(summarizeToolCall('get_past_job', {}, {})).toBe('Read past job')
+    expect(summarizeToolCall('get_past_job', { jobId: 'job-abc' }, {})).toBe('Opened past job job-abc')
+    expect(summarizeToolCall('get_past_job', {}, {})).toBe('Opened past job')
+    expect(summarizeToolCall('read_past_job_artifact', { artifactId: 'art-1' }, {})).toBe('Read artefact art-1')
+    expect(summarizeToolCall('list_past_job_files', { path: 'src' }, { entries: [{}, {}] })).toBe('Listed 2 job entries in src')
+    expect(summarizeToolCall('read_past_job_file', { path: 'plan.md' }, {})).toBe('Read job file plan.md')
   })
 })

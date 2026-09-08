@@ -9,9 +9,14 @@ import type { ScmPluginRuntime, TrackerComment, TrackerIssue, TrackerPluginRunti
 import type { StateBackend } from '../state/backend'
 import {
   getPastJob,
+  listPastJobFiles,
   listPastJobs,
   PAST_JOB_LIST_DEFAULT_LIMIT,
   PAST_JOB_LIST_MAX_LIMIT,
+  PAST_JOB_READ_DEFAULT_CHARS,
+  PAST_JOB_READ_MAX_CHARS,
+  readPastJobArtifact,
+  readPastJobFile,
 } from './past-jobs'
 
 export const INTAKE_MAX_FILE_BYTES = 64 * 1024
@@ -209,26 +214,77 @@ export function buildIntakeTools(
     tools.push({
       name: 'get_past_job',
       description:
-        'Load one past job by id: summary, artefacts, and artefact file contents ' +
-        '(plans, evaluations, reports, PR links). Read-only. Fold useful conclusions ' +
-        'into the eventual run description — the autonomous agent will not see these ' +
-        'tool results. Old workspaces may be gone; missing files are flagged rather than errors.',
+        'Open one past job by id. Returns a short summary plus an artefact catalog ' +
+        '(id, kind, title, path) — not file bodies. Then call read_past_job_artifact ' +
+        'or list_past_job_files / read_past_job_file to crawl. Read-only.',
       inputSchema: {
         type: 'object',
         properties: {
           jobId: { type: 'string', description: 'Job id from list_past_jobs or the developer.' },
-          artifactKinds: {
-            type: 'array',
-            items: { type: 'string' },
-            description:
-              'Only load content for these artefact kinds. Defaults to plan/evaluation/report/PR kinds.',
+        },
+        required: ['jobId'],
+      },
+    })
+    tools.push({
+      name: 'read_past_job_artifact',
+      description:
+        'Read one artefact from a past job by artefact id (from get_past_job). ' +
+        'Use offset/nextOffset to page through large files. Do not dump every artefact.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'Job id.' },
+          artifactId: { type: 'string', description: 'Artefact id from get_past_job.' },
+          offset: {
+            type: 'number',
+            description: 'Character offset into the artefact text (from nextOffset on a truncated read).',
           },
-          includeContent: {
-            type: 'boolean',
-            description: 'When false, return summary + artefact metadata only (default true).',
+          limit: {
+            type: 'number',
+            description: `Max characters to return (default ${PAST_JOB_READ_DEFAULT_CHARS}, cap ${PAST_JOB_READ_MAX_CHARS}).`,
+          },
+        },
+        required: ['jobId', 'artifactId'],
+      },
+    })
+    tools.push({
+      name: 'list_past_job_files',
+      description:
+        'List one directory in a past job\'s working directory (checkout, plans, reports). ' +
+        'Same pattern as scm_list_files: call on the root (omit path), then descend. ' +
+        '.git is omitted. Read-only. Missing workspace → missing: true.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'Job id.' },
+          path: {
+            type: 'string',
+            description: 'Directory relative to the job working dir. Omit or "" / "." for the root.',
           },
         },
         required: ['jobId'],
+      },
+    })
+    tools.push({
+      name: 'read_past_job_file',
+      description:
+        'Read one file from a past job\'s working directory. Confirm the path with ' +
+        'list_past_job_files (or an artefact path) first. Page with offset/nextOffset.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'Job id.' },
+          path: { type: 'string', description: 'File path relative to the job working directory.' },
+          offset: {
+            type: 'number',
+            description: 'Character offset into the file (from nextOffset on a truncated read).',
+          },
+          limit: {
+            type: 'number',
+            description: `Max characters to return (default ${PAST_JOB_READ_DEFAULT_CHARS}, cap ${PAST_JOB_READ_MAX_CHARS}).`,
+          },
+        },
+        required: ['jobId', 'path'],
       },
     })
   }
@@ -308,7 +364,20 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
   }
   if (name === 'get_past_job') {
     const id = readField(input, 'jobId')
-    return id ? `Read past job ${id}` : 'Read past job'
+    return id ? `Opened past job ${id}` : 'Opened past job'
+  }
+  if (name === 'read_past_job_artifact') {
+    const id = readField(input, 'artifactId')
+    return id ? `Read artefact ${id}` : 'Read artefact'
+  }
+  if (name === 'list_past_job_files') {
+    const count = readEntriesCount(output)
+    const where = readField(input, 'path')
+    return `Listed ${count} job ${count === 1 ? 'entry' : 'entries'}${where ? ` in ${where}` : ''}`
+  }
+  if (name === 'read_past_job_file') {
+    const filePath = readField(input, 'path')
+    return filePath ? `Read job file ${filePath}` : 'Read job file'
   }
   const mcp = parseMcpToolName(name)
   if (mcp) {
@@ -323,6 +392,14 @@ function readField(input: unknown, field: string): string | null {
     return v == null ? null : String(v)
   }
   return null
+}
+
+function readEntriesCount(output: unknown): number {
+  if (output && typeof output === 'object' && 'entries' in output) {
+    const entries = (output as { entries: unknown }).entries
+    if (Array.isArray(entries)) return entries.length
+  }
+  return Array.isArray(output) ? output.length : 0
 }
 
 function parseArgs(input: unknown): Record<string, unknown> {
@@ -451,19 +528,64 @@ async function dispatchIntakeTool(
       if (!deps.stateBackend) throw new Error('get_past_job requires job history (state backend unavailable)')
       const jobId = String(args.jobId ?? '').trim()
       if (!jobId) throw new Error('get_past_job requires jobId')
-      const artifactKinds = Array.isArray(args.artifactKinds)
-        ? args.artifactKinds.filter((k): k is string => typeof k === 'string')
-        : undefined
       return getPastJob(
+        { jobId },
+        {
+          stateBackend: deps.stateBackend,
+          ...(deps.workingDir ? { workingDir: deps.workingDir } : {}),
+        },
+      )
+    }
+    case 'read_past_job_artifact': {
+      if (!deps.stateBackend) throw new Error('read_past_job_artifact requires job history (state backend unavailable)')
+      const jobId = String(args.jobId ?? '').trim()
+      const artifactId = String(args.artifactId ?? '').trim()
+      if (!jobId) throw new Error('read_past_job_artifact requires jobId')
+      if (!artifactId) throw new Error('read_past_job_artifact requires artifactId')
+      return readPastJobArtifact(
         {
           jobId,
-          ...(artifactKinds ? { artifactKinds } : {}),
-          ...(typeof args.includeContent === 'boolean' ? { includeContent: args.includeContent } : {}),
+          artifactId,
+          ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+          ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
         },
         {
           stateBackend: deps.stateBackend,
           ...(deps.workingDir ? { workingDir: deps.workingDir } : {}),
-          maxContentBytes: INTAKE_MAX_FILE_BYTES,
+        },
+      )
+    }
+    case 'list_past_job_files': {
+      if (!deps.stateBackend) throw new Error('list_past_job_files requires job history (state backend unavailable)')
+      const jobId = String(args.jobId ?? '').trim()
+      if (!jobId) throw new Error('list_past_job_files requires jobId')
+      return listPastJobFiles(
+        {
+          jobId,
+          ...(typeof args.path === 'string' ? { path: args.path } : {}),
+        },
+        {
+          stateBackend: deps.stateBackend,
+          ...(deps.workingDir ? { workingDir: deps.workingDir } : {}),
+        },
+      )
+    }
+    case 'read_past_job_file': {
+      if (!deps.stateBackend) throw new Error('read_past_job_file requires job history (state backend unavailable)')
+      const jobId = String(args.jobId ?? '').trim()
+      const filePath = String(args.path ?? '').trim()
+      if (!jobId) throw new Error('read_past_job_file requires jobId')
+      if (!filePath) throw new Error('read_past_job_file requires path')
+      return readPastJobFile(
+        {
+          jobId,
+          path: filePath,
+          ...(typeof args.offset === 'number' ? { offset: args.offset } : {}),
+          ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+        },
+        {
+          stateBackend: deps.stateBackend,
+          ...(deps.workingDir ? { workingDir: deps.workingDir } : {}),
         },
       )
     }

@@ -28,6 +28,11 @@ describe('resolveJobArtifactPath', () => {
     expect(() => resolveJobArtifactPath(tmp, 'job-1', '../secret.txt')).toThrow(ArtifactPathEscapeError)
   })
 
+  it('does not treat a leading slash as the filesystem root', () => {
+    const resolved = resolveJobArtifactPath(tmp, 'job-1', '/plan.md')
+    expect(resolved).toBe(path.join(tmp, 'job-1', 'plan.md'))
+  })
+
   it('reads a confined file as utf-8', async () => {
     const jobDir = path.join(tmp, 'job-1')
     await fs.mkdir(jobDir, { recursive: true })

@@ -15,12 +15,15 @@ describe('buildIntakeSystemPrompt', () => {
     })
     expect(prompt).toContain('list_past_jobs')
     expect(prompt).toContain('get_past_job')
-    expect(prompt).toContain('past jobs')
+    expect(prompt).toContain('read_past_job_artifact')
+    expect(prompt).toContain('list_past_job_files')
+    expect(prompt).toContain('read_past_job_file')
   })
 
   it('omits past-job tools when they are not available', () => {
     const prompt = buildIntakeSystemPrompt(emptyContext, { toolsEnabled: true })
     expect(prompt).not.toContain('list_past_jobs')
     expect(prompt).not.toContain('get_past_job')
+    expect(prompt).not.toContain('read_past_job_artifact')
   })
 })

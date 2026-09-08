@@ -200,8 +200,10 @@ Investigative intake path for the dashboard **New Run** chat. Implemented in
   (`INTAKE_MAX_TOOL_ROUNDS`) with a curated read-only set:
   `tracker_get_issue`, `tracker_get_comments`, `tracker_search_issues`,
   `scm_read_file`, `scm_search_code`, `scm_list_files`, and — when a
-  `StateBackend` is attached — `list_past_jobs` / `get_past_job` (job
-  summary plus artefact bodies; not the retrospective history MCP
+  `StateBackend` is attached — `list_past_jobs` (index), `get_past_job`
+  (slim summary + artefact catalog), `read_past_job_artifact`,
+  `list_past_job_files`, `read_past_job_file` (pageable reads of one
+  artefact or workspace file; not the retrospective history MCP
   surface). No write tools.
   Falls back to `runSubagent` / `executePhase` only when `chat` is absent.
 - **Model resolution:** Optional per-request `{ model, provider }` from the

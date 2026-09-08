@@ -37,7 +37,10 @@ ${planModeMcpIds.map(id => `- ${id}: use when the user asks about service owners
 
   const pastJobsSection = options.pastJobsEnabled
     ? `- list_past_jobs: when the developer references a prior run, or when earlier work on the same repo likely shapes this investigation. Filter by repo when you know it. Do not guess job ids — list first.
-- get_past_job: after you have a job id, to read that run's summary, artefacts, and artefact file contents (plans, evaluations, reports, PR links). Fold useful conclusions into the eventual run description — the autonomous agent will not see these tool results.
+- get_past_job: after you have a job id. Catalog only: short summary + artefact list (id, kind, title, path). It does NOT include file bodies.
+- read_past_job_artifact: read one artefact by id from that catalog. If truncated is true, call again with offset = nextOffset until you have what you need.
+- list_past_job_files: list one directory in that job's working directory (the checkout and written plans/reports). Omit path for the root, then descend — same pattern as scm_list_files.
+- read_past_job_file: read one file from that working directory after listing (or from an artefact path). Page with offset/nextOffset.
 `
     : ''
 
@@ -55,7 +58,7 @@ Tool rules:
 - Read as much as the investigation genuinely needs. Depth is the point of this conversation — you are not rationing calls. What you must not do is read aimlessly: every call should be answering a question you can name.
 - Prefer one scm_list_files call over multiple scm_search_code guesses when you don't know the layout.
 - Never call scm_read_file with a path you haven't verified via scm_list_files (or that the user gave you literally).
-${options.pastJobsEnabled ? '- Call list_past_jobs before guessing a job id. After get_past_job, fold what you learned into the run description — the autonomous agent does not get these tool results.\n' : ''}- These tools never write — no comments, transitions, commits, or PRs from plan mode.
+${options.pastJobsEnabled ? '- Call list_past_jobs before guessing a job id. get_past_job is a catalog — never expect file bodies from it. Read artefacts one at a time with read_past_job_artifact; crawl the workspace with list_past_job_files / read_past_job_file. If a read is truncated, continue from nextOffset. Fold what you learned into the run description — the autonomous agent does not get these tool results. Do not abandon a past job for the live repo until the workspace is missing.\n' : ''}- These tools never write — no comments, transitions, commits, or PRs from plan mode.
 - If a tool errors, summarise the failure to the user and proceed with what you have.
 - Your own prior tool results are replayed to you inside <evidence> blocks on your earlier turns. Read them before calling anything — re-reading a file that is already in your evidence wastes the developer's money and tells you nothing new.
 - When the developer names a ticket, read it (and its comments when the thread looks load-bearing) and fold the substance into your investigation. The autonomous agent that runs later does NOT get the ticket — only the run description you eventually write. Never write "see PROJ-123" and stop there.
