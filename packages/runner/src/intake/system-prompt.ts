@@ -17,6 +17,7 @@ export interface IntakeContext {
 
 export interface IntakePromptOptions {
   toolsEnabled?: boolean
+  pastJobsEnabled?: boolean
   planModeMcpServerIds?: string[]
 }
 
@@ -34,6 +35,12 @@ ${planModeMcpIds.map(id => `- ${id}: use when the user asks about service owners
 `
     : ''
 
+  const pastJobsSection = options.pastJobsEnabled
+    ? `- list_past_jobs: when the developer references a prior run, or when earlier work on the same repo likely shapes this investigation. Filter by repo when you know it. Do not guess job ids — list first.
+- get_past_job: after you have a job id, to read that run's summary, artefacts, and artefact file contents (plans, evaluations, reports, PR links). Fold useful conclusions into the eventual run description — the autonomous agent will not see these tool results.
+`
+    : ''
+
   const toolsSection = options.toolsEnabled
     ? `
 Tools (read-only — this is how you investigate):
@@ -43,12 +50,12 @@ Tools (read-only — this is how you investigate):
 - scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directories that look relevant.
 - scm_read_file: when you need a file's contents. Confirm the path with scm_list_files first; do not guess paths.
 - scm_search_code: when the user names a symbol or string and you want to find it. On Bitbucket Cloud this can legitimately return 0 hits even when the symbol exists (workspaces below Standard plan are not in the search index), so do not retry the same search more than once — switch to scm_list_files instead.
-${planModeMcpSection}
+${pastJobsSection}${planModeMcpSection}
 Tool rules:
 - Read as much as the investigation genuinely needs. Depth is the point of this conversation — you are not rationing calls. What you must not do is read aimlessly: every call should be answering a question you can name.
 - Prefer one scm_list_files call over multiple scm_search_code guesses when you don't know the layout.
 - Never call scm_read_file with a path you haven't verified via scm_list_files (or that the user gave you literally).
-- These tools never write — no comments, transitions, commits, or PRs from plan mode.
+${options.pastJobsEnabled ? '- Call list_past_jobs before guessing a job id. After get_past_job, fold what you learned into the run description — the autonomous agent does not get these tool results.\n' : ''}- These tools never write — no comments, transitions, commits, or PRs from plan mode.
 - If a tool errors, summarise the failure to the user and proceed with what you have.
 - Your own prior tool results are replayed to you inside <evidence> blocks on your earlier turns. Read them before calling anything — re-reading a file that is already in your evidence wastes the developer's money and tells you nothing new.
 - When the developer names a ticket, read it (and its comments when the thread looks load-bearing) and fold the substance into your investigation. The autonomous agent that runs later does NOT get the ticket — only the run description you eventually write. Never write "see PROJ-123" and stop there.
@@ -67,7 +74,7 @@ You CAN:
 - Disagree. If the request rests on a wrong premise, say so and show the evidence.
 - Conclude that no run is needed at all.
 - Suggest a workflow from the provided list, reviewers from the developer's history, and acceptance criteria.
-- Respond in the developer's language. Always mirror the language they used.${options.toolsEnabled ? '\n- Look up tracker tickets and read repository files throughout the conversation.' : ''}
+- Respond in the developer's language. Always mirror the language they used.${options.toolsEnabled ? `\n- Look up tracker tickets${options.pastJobsEnabled ? ', past jobs,' : ''} and read repository files throughout the conversation.` : ''}
 
 You CANNOT:
 - Make claims about repo contents you have not read${options.toolsEnabled ? ' (use scm_list_files / scm_read_file / scm_search_code)' : ''}. Say "I haven't checked yet" instead of guessing.

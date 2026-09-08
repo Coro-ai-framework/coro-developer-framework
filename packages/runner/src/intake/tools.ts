@@ -6,6 +6,13 @@ import {
   type PluginRegistry,
 } from '../plugins/registry'
 import type { ScmPluginRuntime, TrackerComment, TrackerIssue, TrackerPluginRuntime } from '../plugins/types'
+import type { StateBackend } from '../state/backend'
+import {
+  getPastJob,
+  listPastJobs,
+  PAST_JOB_LIST_DEFAULT_LIMIT,
+  PAST_JOB_LIST_MAX_LIMIT,
+} from './past-jobs'
 
 export const INTAKE_MAX_FILE_BYTES = 64 * 1024
 export const INTAKE_MAX_SEARCH_RESULTS = 20
@@ -46,7 +53,15 @@ function hasScmMethod(
 /** Hard cap on entries returned to the LLM in a single list_files call. */
 export const INTAKE_MAX_LIST_FILES = 200
 
-export function buildIntakeTools(registry: PluginRegistry): ChatTool[] {
+export interface IntakeToolDeps {
+  stateBackend?: StateBackend
+  workingDir?: string
+}
+
+export function buildIntakeTools(
+  registry: PluginRegistry,
+  deps?: Pick<IntakeToolDeps, 'stateBackend'>,
+): ChatTool[] {
   const tools: ChatTool[] = []
 
   if (hasTrackerMethod(registry, 'getIssue')) {
@@ -161,6 +176,63 @@ export function buildIntakeTools(registry: PluginRegistry): ChatTool[] {
     })
   }
 
+  if (deps?.stateBackend) {
+    tools.push({
+      name: 'list_past_jobs',
+      description:
+        'List recent implementation jobs on this install. Read-only. ' +
+        'Use when the developer references a prior run, or when earlier work ' +
+        'on the same repo likely shapes this investigation. Filter by repo ' +
+        'when you know it. Do not guess job ids — list first, then call get_past_job.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: {
+            type: 'string',
+            description: 'Repository slug or owner/repo. Matches repoSlug / repo on the job.',
+          },
+          status: {
+            type: 'string',
+            description: 'Exact job status filter (e.g. "complete", "escalated").',
+          },
+          limit: {
+            type: 'number',
+            description: `Max jobs to return (default ${PAST_JOB_LIST_DEFAULT_LIMIT}, cap ${PAST_JOB_LIST_MAX_LIMIT}).`,
+          },
+          since: {
+            type: 'string',
+            description: 'ISO timestamp; only jobs created at or after this are returned.',
+          },
+        },
+      },
+    })
+    tools.push({
+      name: 'get_past_job',
+      description:
+        'Load one past job by id: summary, artefacts, and artefact file contents ' +
+        '(plans, evaluations, reports, PR links). Read-only. Fold useful conclusions ' +
+        'into the eventual run description — the autonomous agent will not see these ' +
+        'tool results. Old workspaces may be gone; missing files are flagged rather than errors.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobId: { type: 'string', description: 'Job id from list_past_jobs or the developer.' },
+          artifactKinds: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Only load content for these artefact kinds. Defaults to plan/evaluation/report/PR kinds.',
+          },
+          includeContent: {
+            type: 'boolean',
+            description: 'When false, return summary + artefact metadata only (default true).',
+          },
+        },
+        required: ['jobId'],
+      },
+    })
+  }
+
   return tools
 }
 
@@ -227,6 +299,17 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
     const where = path ? ` in ${path}` : ''
     return `Listed ${count} entr${count === 1 ? 'y' : 'ies'}${where}`
   }
+  if (name === 'list_past_jobs') {
+    const jobs = output && typeof output === 'object' && 'jobs' in output
+      ? (output as { jobs: unknown }).jobs
+      : null
+    const count = Array.isArray(jobs) ? jobs.length : 0
+    return `Listed ${count} past job${count === 1 ? '' : 's'}`
+  }
+  if (name === 'get_past_job') {
+    const id = readField(input, 'jobId')
+    return id ? `Read past job ${id}` : 'Read past job'
+  }
   const mcp = parseMcpToolName(name)
   if (mcp) {
     return `${mcp.serverId}: ${mcp.toolName}`
@@ -252,11 +335,12 @@ function parseArgs(input: unknown): Record<string, unknown> {
 export function createIntakeRunTool(
   registry: PluginRegistry,
   signal: AbortSignal,
+  deps: IntakeToolDeps = {},
 ): (name: string, input: unknown) => Promise<unknown> {
   return async (name: string, input: unknown) => {
     const args = parseArgs(input)
     return withTimeout(
-      dispatchIntakeTool(registry, name, args),
+      dispatchIntakeTool(registry, name, args, deps),
       INTAKE_TOOL_TIMEOUT_MS,
       signal,
     )
@@ -267,6 +351,7 @@ async function dispatchIntakeTool(
   registry: PluginRegistry,
   name: string,
   args: Record<string, unknown>,
+  deps: IntakeToolDeps,
 ): Promise<unknown> {
   switch (name) {
     case 'tracker_get_issue': {
@@ -348,6 +433,39 @@ async function dispatchIntakeTool(
       // token budget. The plugin already caps its own paging (BB:
       // 200), but a single page from GitHub can return up to 1000.
       return entries.slice(0, INTAKE_MAX_LIST_FILES)
+    }
+    case 'list_past_jobs': {
+      if (!deps.stateBackend) throw new Error('list_past_jobs requires job history (state backend unavailable)')
+      const limit = typeof args.limit === 'number' ? args.limit : undefined
+      return listPastJobs(
+        {
+          ...(typeof args.repo === 'string' ? { repo: args.repo } : {}),
+          ...(typeof args.status === 'string' ? { status: args.status } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+          ...(typeof args.since === 'string' ? { since: args.since } : {}),
+        },
+        { stateBackend: deps.stateBackend },
+      )
+    }
+    case 'get_past_job': {
+      if (!deps.stateBackend) throw new Error('get_past_job requires job history (state backend unavailable)')
+      const jobId = String(args.jobId ?? '').trim()
+      if (!jobId) throw new Error('get_past_job requires jobId')
+      const artifactKinds = Array.isArray(args.artifactKinds)
+        ? args.artifactKinds.filter((k): k is string => typeof k === 'string')
+        : undefined
+      return getPastJob(
+        {
+          jobId,
+          ...(artifactKinds ? { artifactKinds } : {}),
+          ...(typeof args.includeContent === 'boolean' ? { includeContent: args.includeContent } : {}),
+        },
+        {
+          stateBackend: deps.stateBackend,
+          ...(deps.workingDir ? { workingDir: deps.workingDir } : {}),
+          maxContentBytes: INTAKE_MAX_FILE_BYTES,
+        },
+      )
     }
     default:
       throw new Error(`Unknown plan-mode tool: ${name}`)

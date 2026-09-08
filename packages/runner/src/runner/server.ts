@@ -35,6 +35,7 @@ import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
 import { computeJobDiff, emptyJobDiff, resolveDiffBase } from '../jobs/job-diff'
+import { ArtifactPathEscapeError, resolveJobArtifactPath } from '../jobs/artifact-content'
 import { detectEditors, openInEditor, revealFolder } from './open-editor'
 import { assertJobPluginRequirements, PluginPreflightError } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
@@ -1629,13 +1630,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
       const config = loadLocalConfig()
       const workingDir = resolveLocalWorkingDir(config)
-      const jobWorkingDir = path.resolve(workingDir, jobId)
-      const resolved = path.resolve(jobWorkingDir, rawPath)
-
-      if (!resolved.startsWith(jobWorkingDir + path.sep) && resolved !== jobWorkingDir) {
-        logger.warn({ jobId, artifactId, rawPath, resolved }, 'Artifact path escape attempt blocked')
-        res.status(400).json({ error: 'Artifact path is outside the job working directory' })
-        return
+      let resolved: string
+      try {
+        resolved = resolveJobArtifactPath(workingDir, jobId, rawPath)
+      } catch (err) {
+        if (err instanceof ArtifactPathEscapeError) {
+          logger.warn({ jobId, artifactId, rawPath }, 'Artifact path escape attempt blocked')
+          res.status(400).json({ error: err.message })
+          return
+        }
+        throw err
       }
 
       const content = await fs.promises.readFile(resolved, 'utf-8')
@@ -1829,13 +1833,16 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
       const config = loadLocalConfig()
       const workingDir = resolveLocalWorkingDir(config)
-      const jobWorkingDir = path.resolve(workingDir, jobId)
-      const resolved = path.resolve(jobWorkingDir, rawPath)
-
-      if (!resolved.startsWith(jobWorkingDir + path.sep) && resolved !== jobWorkingDir) {
-        logger.warn({ jobId, artifactId, rawPath, resolved }, 'Artifact edit path escape attempt blocked')
-        res.status(400).json({ error: 'Artifact path is outside the job working directory' })
-        return
+      let resolved: string
+      try {
+        resolved = resolveJobArtifactPath(workingDir, jobId, rawPath)
+      } catch (err) {
+        if (err instanceof ArtifactPathEscapeError) {
+          logger.warn({ jobId, artifactId, rawPath }, 'Artifact edit path escape attempt blocked')
+          res.status(400).json({ error: err.message })
+          return
+        }
+        throw err
       }
 
       // Make sure the file the agent registered actually exists before we

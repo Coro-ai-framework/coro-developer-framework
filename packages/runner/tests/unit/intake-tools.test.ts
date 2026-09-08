@@ -8,6 +8,7 @@ import {
 } from '../../src/intake/tools'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from '../../src/plugins/types'
+import { makeMockJob } from '../mcp/fixtures'
 
 function mockRegistry(parts: {
   trackers?: Partial<TrackerPluginRuntime>[]
@@ -56,6 +57,8 @@ describe('buildIntakeTools', () => {
     expect(names).not.toContain('tracker_search_issues')
     expect(names).not.toContain('scm_search_code')
     expect(names).not.toContain('scm_list_files')
+    expect(names).not.toContain('list_past_jobs')
+    expect(names).not.toContain('get_past_job')
   })
 
   it('exposes scm_list_files when a plugin implements listFiles', () => {
@@ -71,6 +74,15 @@ describe('buildIntakeTools', () => {
     const listFiles = tools.find(t => t.name === 'scm_list_files')
     expect(listFiles).toBeDefined()
     expect(listFiles!.inputSchema).toMatchObject({ required: ['repo'] })
+  })
+
+  it('exposes past-job tools only when a state backend is provided', () => {
+    const empty = mockRegistry({})
+    expect(buildIntakeTools(empty).map(t => t.name)).not.toContain('list_past_jobs')
+    const withJobs = buildIntakeTools(empty, {
+      stateBackend: { listJobs: async () => [], getJob: async () => null } as never,
+    })
+    expect(withJobs.map(t => t.name)).toEqual(['list_past_jobs', 'get_past_job'])
   })
 })
 
@@ -174,6 +186,26 @@ describe('createIntakeRunTool', () => {
     expect(out[0]!.description!.endsWith('…[truncated]')).toBe(true)
     expect(out[1]!.description).toBe('short one')
   })
+
+  it('dispatches list_past_jobs and get_past_job through the state backend', async () => {
+    const listed = makeMockJob({
+      id: 'job-a',
+      status: 'complete',
+      params: { repoSlug: 'svc', description: 'shipped' },
+    })
+    const stateBackend = {
+      listJobs: vi.fn().mockResolvedValue([listed]),
+      getJob: vi.fn().mockResolvedValue(listed),
+    }
+    const runTool = createIntakeRunTool(mockRegistry({}), new AbortController().signal, {
+      stateBackend: stateBackend as never,
+    })
+    const listedOut = await runTool('list_past_jobs', { repo: 'svc' }) as { jobs: Array<{ id: string }> }
+    expect(listedOut.jobs.map(j => j.id)).toEqual(['job-a'])
+    const got = await runTool('get_past_job', { jobId: 'job-a', includeContent: false }) as { summary: { id: string } }
+    expect(got.summary.id).toBe('job-a')
+    expect(stateBackend.getJob).toHaveBeenCalledWith('job-a')
+  })
 })
 
 describe('summarizeToolCall', () => {
@@ -206,5 +238,12 @@ describe('summarizeToolCall', () => {
 
   it('falls back to a generic label for unknown tools', () => {
     expect(summarizeToolCall('something_unknown', {}, {})).toBe('Done')
+  })
+
+  it('summarises past-job tools', () => {
+    expect(summarizeToolCall('list_past_jobs', {}, { jobs: [{}, {}] })).toBe('Listed 2 past jobs')
+    expect(summarizeToolCall('list_past_jobs', {}, { jobs: [{}] })).toBe('Listed 1 past job')
+    expect(summarizeToolCall('get_past_job', { jobId: 'job-abc' }, {})).toBe('Read past job job-abc')
+    expect(summarizeToolCall('get_past_job', {}, {})).toBe('Read past job')
   })
 })

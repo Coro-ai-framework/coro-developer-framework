@@ -293,16 +293,18 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     'intake: executor resolved',
   )
 
-  const tools = toolsOn ? buildIntakeTools(options.registry) : []
+  const cwd = resolveWorkingDir(null)
+  const intelligenceDir = resolveIntelligenceDir(null)
+  const tools = toolsOn ? buildIntakeTools(options.registry, { stateBackend: options.stateBackend }) : []
   const planModeMcpServers = toolsOn ? collectPlanModeMcpServers({ logger: baseLogger }) : {}
   const planModeMcpServerIds = Object.keys(planModeMcpServers)
   const hasTools = tools.length > 0 || planModeMcpServerIds.length > 0
+  const pastJobsEnabled = tools.some(t => t.name === 'list_past_jobs')
   const systemPrompt = buildIntakeSystemPrompt(options.context, {
     toolsEnabled: hasTools,
+    pastJobsEnabled,
     planModeMcpServerIds,
   })
-  const cwd = resolveWorkingDir(null)
-  const intelligenceDir = resolveIntelligenceDir(null)
   const emptyMcp = createSdkMcpServer({ name: 'coro', tools: [] })
   const model = assignment.model
   const hookPolicy = { allowedTools: [] as string[], writeRoots: [] as string[] }
@@ -333,7 +335,10 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
           ? {
               tools,
               maxToolRounds: INTAKE_MAX_TOOL_ROUNDS,
-              runTool: createIntakeRunTool(options.registry, options.signal),
+              runTool: createIntakeRunTool(options.registry, options.signal, {
+                stateBackend: options.stateBackend,
+                workingDir: cwd,
+              }),
             }
           : {}),
       }

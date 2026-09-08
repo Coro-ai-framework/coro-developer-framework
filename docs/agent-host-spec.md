@@ -199,7 +199,10 @@ Investigative intake path for the dashboard **New Run** chat. Implemented in
   plugins expose read helpers, `chat()` runs a bounded tool-use loop
   (`INTAKE_MAX_TOOL_ROUNDS`) with a curated read-only set:
   `tracker_get_issue`, `tracker_get_comments`, `tracker_search_issues`,
-  `scm_read_file`, `scm_search_code`, `scm_list_files`. No write tools.
+  `scm_read_file`, `scm_search_code`, `scm_list_files`, and — when a
+  `StateBackend` is attached — `list_past_jobs` / `get_past_job` (job
+  summary plus artefact bodies; not the retrospective history MCP
+  surface). No write tools.
   Falls back to `runSubagent` / `executePhase` only when `chat` is absent.
 - **Model resolution:** Optional per-request `{ model, provider }` from the
   dashboard picker; otherwise `selectModel({ tier: 'planning' }, settings)`.
@@ -252,7 +255,7 @@ materialises `plan/findings.md` under the job working directory, sets
 so the spec-writer and planner can read the investigation write-up.
 
 Related config keys: `coachMode` (interactive defaults, graduation counter),
-`intake.toolsEnabled` (default `true` — read-only tracker/SCM lookups in plan
+`intake.toolsEnabled` (default `true` — read-only tracker/SCM/past-job lookups in plan
 mode). See `packages/runner/src/config/local-config.ts`.
 
 ---
