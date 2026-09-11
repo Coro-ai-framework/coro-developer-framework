@@ -362,6 +362,41 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
   })
 
+  it('does not fail resume when params.tracker names an uninstalled plugin', async () => {
+    await runWithStubExecutor(
+      makeJob({
+        phase: 'only',
+        params: {
+          serviceName: 'svc',
+          repoSlug: 'svc',
+          tracker: 'jira',
+          trackerRef: { pluginId: 'jira', externalId: 'WS-5539' },
+        },
+      }),
+      ctx,
+      () => yieldEmptyPhase('sess-tracker-resume'),
+      { workflowConfigOverride: workflowSingle },
+    )
+
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.escalationMessage).toBeUndefined()
+  })
+
+  it('does not fail resume when no SCM plugin is currently installed', async () => {
+    const plugins = new PluginRegistry()
+    const ctxNoScm: RunnerContext = { ...ctx, plugins }
+
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctxNoScm,
+      () => yieldEmptyPhase('sess-no-scm'),
+      { workflowConfigOverride: workflowSingle },
+    )
+
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.escalationMessage).toBeUndefined()
+  })
+
   describe('completion gate', () => {
     it('completes immediately when all work items are complete', async () => {
       stateBackend = createMockStateBackend(makeJob({

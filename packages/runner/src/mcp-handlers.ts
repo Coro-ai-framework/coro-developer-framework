@@ -6,6 +6,7 @@ import { Artifact, WorkItem, Insight, Job } from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
+import { getIncomingPluginSelectionIssues } from './jobs/plugin-preflight'
 import {
   buildGuardrailContext,
   createGuardrailEngine,
@@ -1129,11 +1130,16 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     },
 
     set_job_params: async ({ params }: { params: Record<string, unknown> }) => {
+      const incoming = (params ?? {}) as Record<string, unknown>
+      const pluginIssues = getIncomingPluginSelectionIssues(incoming, ctx.plugins)
+      if (pluginIssues.length > 0) {
+        return mcpError(pluginIssues.map(issue => issue.message).join(' '))
+      }
       const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-      const merged = { ...job.params, ...params }
+      const merged = { ...job.params, ...incoming }
       await ctx.stateBackend.updateJob(ctx.job.id, { params: merged })
       ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-      return text({ updated: Object.keys(params) })
+      return text({ updated: Object.keys(incoming) })
     },
 
     // Job control

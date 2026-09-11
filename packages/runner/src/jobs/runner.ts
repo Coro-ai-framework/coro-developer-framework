@@ -84,7 +84,6 @@ import {
   uncoveredIssueNumbers,
 } from './contribution-coverage'
 import { buildPhaseKickoffMessage } from './phase-kickoff'
-import { assertJobPluginRequirements } from './plugin-preflight'
 import {
   createPhaseIdleWatchdog,
   resolveIdleWatchdogConfig,
@@ -404,15 +403,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     'Job runner started',
   )
 
-  try {
-    assertJobPluginRequirements(liveJob, ctx.plugins)
-  } catch (err) {
-    const message = (err as Error).message
-    logger.error({ jobId: liveJob.id, phase: liveJob.phase }, message)
-    await stateBackend.appendLog(liveJob.id, `[error] ${message}`)
-    await stateBackend.updateJob(liveJob.id, { status: STATUS_FAILED, escalationMessage: message })
-    return
-  }
+  // Plugin requirements are a dispatch-time clone gate (POST /jobs → 409),
+  // not a resume gate. A mid-job `set_job_params({ tracker })` must not
+  // fail the next `runJob` entry — the agent already has
+  // `tracker.available` / `scm.available` in the prompt.
 
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)

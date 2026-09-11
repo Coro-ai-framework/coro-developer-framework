@@ -612,6 +612,51 @@ describe('createMcpToolHandlers — work-item tracking', () => {
       expect.objectContaining({ params: { repoSlug: 'svc', reviewers: ['r'], language: 'golang' } }),
     )
   })
+
+  it('set_job_params still merges language when the job already has an uninstalled tracker', async () => {
+    const jobWithParams = makeMockJob({
+      params: { repoSlug: 'svc', tracker: 'jira', trackerRef: { pluginId: 'jira' } },
+    })
+    ;(ctx.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithParams)
+
+    const h = createMcpToolHandlers(ctx, {})
+    const result = await h.set_job_params({ params: { language: 'golang' } })
+    expect(result.isError).toBeUndefined()
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith(
+      'job-mcp-test',
+      expect.objectContaining({
+        params: expect.objectContaining({ language: 'golang', tracker: 'jira' }),
+      }),
+    )
+  })
+
+  it('set_job_params refuses an uninstalled tracker plugin without writing params', async () => {
+    const h = createMcpToolHandlers(ctx, {})
+    const result = await h.set_job_params({
+      params: {
+        tracker: 'jira',
+        trackerRef: { kind: 'ticket', pluginId: 'jira', externalId: 'WS-5539' },
+      },
+    })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toMatch(/Cannot set params\.tracker to "jira"/)
+    expect(ctx.stateBackend.updateJob).not.toHaveBeenCalled()
+  })
+
+  it('set_job_params accepts an installed tracker plugin', async () => {
+    const { ctx: ctxWithPlugins } = makeMockToolContextWithSpies()
+    const jobWithParams = makeMockJob({ params: { repoSlug: 'svc' } })
+    ;(ctxWithPlugins.stateBackend.getJob as ReturnType<typeof vi.fn>).mockResolvedValue(jobWithParams)
+
+    const h = createMcpToolHandlers(ctxWithPlugins, {})
+    const data = parseJson(await h.set_job_params({
+      params: { tracker: 'jira', trackerRef: { pluginId: 'jira', externalId: 'WS-1' } },
+    })) as Record<string, unknown>
+
+    expect(data['updated']).toEqual(['tracker', 'trackerRef'])
+    expect(ctxWithPlugins.stateBackend.updateJob).toHaveBeenCalled()
+  })
 })
 
 describe('createMcpToolHandlers — add_insight', () => {

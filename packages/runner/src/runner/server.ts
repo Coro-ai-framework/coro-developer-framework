@@ -1302,6 +1302,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       }
 
       const input = createJobInput(body as CreateJobRequest)
+      // Clone gate only: a new repo job cannot start without SCM.
+      // Tracker is optional. Do not re-run this on resume (`runJob`).
       if (plugins) {
         assertJobPluginRequirements(input, plugins)
       }

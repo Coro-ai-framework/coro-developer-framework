@@ -342,7 +342,7 @@ export function createCoroMcpServer(
 
       tool(
         'set_job_params',
-        'Merge key-value pairs into job.params. Use to set language, build commands, or other dynamic context for downstream phases.',
+        'Merge key-value pairs into job.params. Use to set language, build commands, or other dynamic context for downstream phases. params.scm / params.tracker (and trackerRef.pluginId) must name an enabled plugin — the call is rejected otherwise, and the rest of the job continues.',
         { params: z.record(z.string(), z.unknown()) },
         h.set_job_params,
       ),

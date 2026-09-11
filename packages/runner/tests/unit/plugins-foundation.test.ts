@@ -21,7 +21,7 @@ import {
   resolvePluginsConfig,
   type LocalConfig,
 } from '../../src/config/local-config'
-import { getJobPluginRequirementIssues } from '../../src/jobs/plugin-preflight'
+import { getJobPluginRequirementIssues, getIncomingPluginSelectionIssues } from '../../src/jobs/plugin-preflight'
 import { BUILTIN_PLUGIN_IDS_BY_KIND } from '../../src/plugins/builtin'
 
 // ── Fake plugin runtimes ─────────────────────────────────────────────────────
@@ -304,11 +304,22 @@ describe('getJobPluginRequirementIssues', () => {
     expect(issues[0]?.message).toMatch(/Settings > Git/)
   })
 
-  it('reports missing tracker setup before a tracker-driven job starts', () => {
-    const issues = getJobPluginRequirementIssues({ params: { jiraTicketId: 'ENG-1234' } }, new PluginRegistry())
-    expect(issues).toHaveLength(1)
-    expect(issues[0]?.message).toMatch(/Tracker setup incomplete/)
-    expect(issues[0]?.message).toMatch(/Settings > Tracker/)
+  it('does not require a tracker plugin at dispatch, even with a ticket id', () => {
+    const issues = getJobPluginRequirementIssues(
+      { params: { jiraTicketId: 'ENG-1234', tracker: 'jira' } },
+      new PluginRegistry(),
+    )
+    expect(issues).toEqual([])
+  })
+
+  it('passes a repo+ticket job when SCM resolves and tracker does not', () => {
+    const registry = new PluginRegistry()
+    registry.register(fakeScm('github'))
+    const issues = getJobPluginRequirementIssues(
+      { params: { repoSlug: 'weather-service', tracker: 'jira', jiraTicketId: 'ENG-1234' } },
+      registry,
+    )
+    expect(issues).toEqual([])
   })
 
   it('passes when the required scm plugin can be resolved', () => {
@@ -316,5 +327,84 @@ describe('getJobPluginRequirementIssues', () => {
     registry.register(fakeScm('github'))
     const issues = getJobPluginRequirementIssues({ params: { repoSlug: 'weather-service' } }, registry)
     expect(issues).toEqual([])
+  })
+})
+
+describe('getIncomingPluginSelectionIssues', () => {
+  it('rejects params.tracker when the plugin is not installed', () => {
+    const issues = getIncomingPluginSelectionIssues({ tracker: 'jira' }, new PluginRegistry())
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.kind).toBe('tracker')
+    expect(issues[0]?.message).toMatch(/Cannot set params\.tracker to "jira"/)
+    expect(issues[0]?.message).toMatch(/Enable it in Settings > Tracker/)
+    expect(issues[0]?.message).not.toMatch(/restart/)
+  })
+
+  it('rejects params.scm when the plugin is not installed', () => {
+    const issues = getIncomingPluginSelectionIssues({ scm: 'gitlab' }, new PluginRegistry())
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.kind).toBe('scm')
+    expect(issues[0]?.message).toMatch(/Cannot set params\.scm to "gitlab"/)
+  })
+
+  it('rejects trackerRef.pluginId when that tracker is not installed', () => {
+    const issues = getIncomingPluginSelectionIssues(
+      { trackerRef: { kind: 'ticket', pluginId: 'jira', externalId: 'WS-5539' } },
+      new PluginRegistry(),
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.message).toMatch(/Cannot set params\.trackerRef\.pluginId to "jira"/)
+  })
+
+  it('does not double-report when tracker and trackerRef name the same missing plugin', () => {
+    const issues = getIncomingPluginSelectionIssues(
+      { tracker: 'jira', trackerRef: { pluginId: 'jira' } },
+      new PluginRegistry(),
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.message).toMatch(/params\.tracker/)
+  })
+
+  it('reports trackerRef separately when it names a different missing plugin', () => {
+    const registry = new PluginRegistry()
+    registry.register(fakeTracker('jira'))
+    const issues = getIncomingPluginSelectionIssues(
+      { tracker: 'jira', trackerRef: { pluginId: 'linear' } },
+      registry,
+    )
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.message).toMatch(/params\.trackerRef\.pluginId to "linear"/)
+  })
+
+  it('allows setting an installed tracker and scm', () => {
+    const registry = new PluginRegistry()
+    registry.register(fakeScm('github'))
+    registry.register(fakeTracker('jira'))
+    expect(getIncomingPluginSelectionIssues(
+      { scm: 'github', tracker: 'jira', trackerRef: { pluginId: 'jira' } },
+      registry,
+    )).toEqual([])
+  })
+
+  it('ignores empty plugin ids so a selection can be cleared', () => {
+    expect(getIncomingPluginSelectionIssues(
+      { tracker: '  ', scm: '', trackerRef: { pluginId: '' } },
+      new PluginRegistry(),
+    )).toEqual([])
+  })
+
+  it('does not inspect keys other than scm / tracker / trackerRef', () => {
+    expect(getIncomingPluginSelectionIssues(
+      { language: 'golang', jiraTicketId: 'WS-5539' },
+      new PluginRegistry(),
+    )).toEqual([])
+  })
+
+  it('rejects a plugin id registered as the wrong kind', () => {
+    const registry = new PluginRegistry()
+    registry.register(fakeScm('github'))
+    const issues = getIncomingPluginSelectionIssues({ tracker: 'github' }, registry)
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.message).toMatch(/registered as kind "scm"/)
   })
 })
