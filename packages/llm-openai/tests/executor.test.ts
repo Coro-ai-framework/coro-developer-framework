@@ -40,7 +40,7 @@ describe('OpenAiExecutor — capabilities', () => {
       supportsConversationReplay: true,
       supportsThinking: true,
       supportsImageInput: true,
-      maxContextTokens: 400_000,
+      maxContextTokens: 1_050_000,
     })
   })
 })
@@ -51,9 +51,21 @@ describe('OpenAiExecutor — models', () => {
     expect(ids).toContain('gpt-5.6-sol')
     expect(ids).toContain('gpt-5.6-terra')
     expect(ids).toContain('gpt-5.6-luna')
+    expect(ids).toContain('gpt-6-astra')
     expect(ids).toContain('gpt-5.5')
-    expect(ids).toContain('gpt-5.3-codex')
-    expect(ids).toContain('gpt-5.4-mini')
+    expect(ids).toContain('gpt-5.4')
+    expect(ids).not.toContain('gpt-5.3-codex')
+    expect(ids).not.toContain('gpt-5.4-mini')
+    expect(ids).not.toContain('gpt-5.5-pro')
+    expect(ids).not.toContain('gpt-5.4-nano')
+  })
+
+  it('seeds planning to Sol, coding to Terra, mini to Luna', () => {
+    const aliases = makeExecutor().defaultAliases()
+    expect(aliases['tier:planning']).toEqual({ provider: 'openai', model: 'gpt-5.6-sol' })
+    expect(aliases['tier:coding']).toEqual({ provider: 'openai', model: 'gpt-5.6-terra' })
+    expect(aliases['tier:mini']).toEqual({ provider: 'openai', model: 'gpt-5.6-luna' })
+    expect(aliases.openaiPlanning).toEqual({ provider: 'openai', model: 'gpt-5.6-sol' })
   })
 
   it('supports OpenAI-family model ids defensively', () => {
@@ -73,6 +85,17 @@ describe('OpenAiExecutor — models', () => {
       cacheCreationInputTokens: 0,
     })
     expect(cost).toBeCloseTo(35.5, 5)
+  })
+
+  it('prices GPT-5.6 Luna at the published $0.20 / $1.20 rates', () => {
+    const cost = calculateOpenAiCostUsd('gpt-5.6-luna', {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+      cacheCreationInputTokens: 1_000_000,
+    })
+    // 0.20 + 1.20 + 0.02 + 0.25 = 1.67
+    expect(cost).toBeCloseTo(1.67, 5)
   })
 })
 

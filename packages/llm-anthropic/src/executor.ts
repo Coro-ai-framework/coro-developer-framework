@@ -191,23 +191,35 @@ const ANTHROPIC_CLASSIFY_OPTIONS: ClassifyOptions = {
  */
 const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
   // Current generation — dateless IDs are pinned snapshots, not evergreen
-  // pointers. Source: platform.claude.com/docs models overview.
+  // pointers. Source: platform.claude.com/docs models overview + pricing.
+  // There is no current-gen Haiku; `tier:mini` aliases remap to Sonnet 5
+  // in {@link AnthropicExecutor.defaultAliases} until a successor ships.
   {
-    id: 'claude-fable-5',
-    displayName: 'Claude Fable 5',
+    id: 'claude-fable-5-1',
+    displayName: 'Claude Fable 5.1',
     contextTokens: 1_000_000,
     tier: 'planning',
     supportsThinking: true,
-    pricing: { inputPerMTokens: 10, outputPerMTokens: 50, cacheReadPerMTokens: 1 },
+    pricing: {
+      inputPerMTokens: 10,
+      outputPerMTokens: 50,
+      cacheReadPerMTokens: 0.25,
+      cacheCreationPerMTokens: 12.5,
+    },
   },
   {
-    id: 'claude-opus-4-8',
-    displayName: 'Claude Opus 4.8',
+    id: 'claude-opus-5',
+    displayName: 'Claude Opus 5',
     contextTokens: 1_000_000,
     tier: 'planning',
     isDefault: true,
     supportsThinking: true,
-    pricing: { inputPerMTokens: 5, outputPerMTokens: 25, cacheReadPerMTokens: 0.5 },
+    pricing: {
+      inputPerMTokens: 5,
+      outputPerMTokens: 25,
+      cacheReadPerMTokens: 0.5,
+      cacheCreationPerMTokens: 6.25,
+    },
   },
   {
     id: 'claude-sonnet-5',
@@ -216,42 +228,55 @@ const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
     tier: 'coding',
     isDefault: true,
     supportsThinking: true,
-    pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
+    pricing: {
+      inputPerMTokens: 2,
+      outputPerMTokens: 10,
+      cacheReadPerMTokens: 0.2,
+      cacheCreationPerMTokens: 2.5,
+    },
+  },
+  // Previous generation — kept for cost/latency tuning and for tenants
+  // that have pinned older IDs. Models whose first-party retirement
+  // window is already open (Sonnet 4.5, Haiku 4.5) are omitted from
+  // the picker; `supports()` still accepts any `claude-*` id.
+  {
+    id: 'claude-fable-5',
+    displayName: 'Claude Fable 5',
+    contextTokens: 1_000_000,
+    tier: 'planning',
+    supportsThinking: true,
+    pricing: {
+      inputPerMTokens: 10,
+      outputPerMTokens: 50,
+      cacheReadPerMTokens: 1,
+      cacheCreationPerMTokens: 12.5,
+    },
   },
   {
-    id: 'claude-haiku-4-5',
-    displayName: 'Claude Haiku 4.5',
-    contextTokens: 200_000,
-    tier: 'mini',
-    isDefault: true,
+    id: 'claude-opus-4-8',
+    displayName: 'Claude Opus 4.8',
+    contextTokens: 1_000_000,
+    tier: 'planning',
     supportsThinking: true,
-    pricing: { inputPerMTokens: 0.8, outputPerMTokens: 4, cacheReadPerMTokens: 0.08 },
+    pricing: {
+      inputPerMTokens: 5,
+      outputPerMTokens: 25,
+      cacheReadPerMTokens: 0.5,
+      cacheCreationPerMTokens: 6.25,
+    },
   },
-  // Previous generation — kept available for cost/latency tuning and
-  // for tenants that have pinned older IDs in their workflow front matter.
   {
     id: 'claude-sonnet-4-6',
     displayName: 'Claude Sonnet 4.6',
     contextTokens: 1_000_000,
     tier: 'coding',
     supportsThinking: true,
-    pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
-  },
-  {
-    id: 'claude-sonnet-4-5',
-    displayName: 'Claude Sonnet 4.5',
-    contextTokens: 200_000,
-    tier: 'coding',
-    supportsThinking: true,
-    pricing: { inputPerMTokens: 3, outputPerMTokens: 15, cacheReadPerMTokens: 0.3 },
-  },
-  {
-    id: 'claude-opus-4-7',
-    displayName: 'Claude Opus 4.7',
-    contextTokens: 1_000_000,
-    tier: 'planning',
-    supportsThinking: true,
-    pricing: { inputPerMTokens: 15, outputPerMTokens: 75, cacheReadPerMTokens: 1.5 },
+    pricing: {
+      inputPerMTokens: 3,
+      outputPerMTokens: 15,
+      cacheReadPerMTokens: 0.3,
+      cacheCreationPerMTokens: 3.75,
+    },
   },
 ]
 
@@ -787,17 +812,23 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     // configs and custom workflows using `model: planning` keep working.
     const planning = tiers['tier:planning']
     const coding = tiers['tier:coding']
+    // No current-gen Haiku: Haiku 4.5's first-party retirement window
+    // opens 15 Oct 2026 and there is no successor yet. Mini phases
+    // (review, code-reviewer, fast-lane) bind to Sonnet 5 — the
+    // cheapest remaining current Claude — until a real mini ships.
+    const mini = coding
     return {
       ...tiers,
       ...(planning ? { planning } : {}),
       ...(coding ? { coding } : {}),
+      ...(mini ? { 'tier:mini': mini, mini } : {}),
     }
   }
 
   /**
    * True for any model id that starts with `claude-`. We deliberately
    * accept models not listed in {@link listModels} (e.g. dated snapshots
-   * like `claude-sonnet-4-5-20251022`) so workflow YAML can pin to a
+   * like `claude-opus-4-6`) so workflow YAML can pin to a
    * specific revision without us having to ship a release of the
    * runner every time Anthropic publishes a new snapshot.
    */
@@ -976,7 +1007,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         // In production this has caused phases to run with ZERO MCP
         // tool calls: the model loads schemas via ToolSearch but the
         // deferred tools never become invocable (observed on
-        // haiku-tier campaign phases — the agent could not even call
+        // mini-tier campaign phases — the agent could not even call
         // `escalate` and burned the whole phase writing workaround
         // files). Coro's MCP tools are the agent's only channel for
         // state updates, artifacts, and escalation, so they must be

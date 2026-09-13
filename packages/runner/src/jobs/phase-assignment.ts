@@ -1,7 +1,7 @@
 // ── Phase → executor + model assignment ──────────────────────────────────────
 //
 // Single resolution point that bridges the workflow YAML's `model:` field
-// (which may be a literal model id like `claude-sonnet-4-5` OR an alias key
+// (which may be a literal model id like `claude-sonnet-5` OR an alias key
 // like `planning`/`coding` defined in `Settings.llm.aliases`) to the
 // concrete `{ executor runtime, model id, modelHints }` triple the runner
 // hands to {@link PhaseExecutorRuntime.executePhase}.

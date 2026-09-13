@@ -128,7 +128,7 @@ describe('AnthropicExecutor.chat routing', () => {
     const result = await ex.chat({
       messages: [{ role: 'user', content: 'Add logging to the API' }],
       systemPrompt: 'You are plan mode.',
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
       signal: new AbortController().signal,
     })
 
@@ -344,7 +344,7 @@ describe('AnthropicExecutor.chat apiKey REST path', () => {
 
     const result = await ex.chat({
       messages: [{ role: 'user', content: 'Hi' }],
-      model: 'claude-haiku-4-5',
+      model: 'claude-sonnet-5',
       signal: new AbortController().signal,
     })
 

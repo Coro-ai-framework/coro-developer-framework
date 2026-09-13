@@ -1088,7 +1088,7 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    * via {@link tierDefaultAliases} so the model catalogue stays the
    * single source of truth — the tier defaults fall out of each
    * descriptor's `tier` + `isDefault` tags. Anthropic returns
-   * `{ 'tier:planning': { provider: 'anthropic', model: 'claude-opus-4-8' },
+   * `{ 'tier:planning': { provider: 'anthropic', model: 'claude-opus-5' },
    *    'tier:coding':   { provider: 'anthropic', model: 'claude-sonnet-5' }, … }`.
    *
    * The runner never writes these defaults back to disk — they only

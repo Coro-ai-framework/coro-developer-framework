@@ -109,18 +109,18 @@ describe('resolvePhaseAssignment', () => {
     const reg = buildRegistry()
     const settings = makeSettings({})
 
-    const r = resolvePhaseAssignment({ model: 'claude-sonnet-4-5' }, settings, reg)
+    const r = resolvePhaseAssignment({ model: 'claude-sonnet-5' }, settings, reg)
 
     expect(r.resolvedFromAlias).toBe(false)
     expect(r.provider).toBe('anthropic')
-    expect(r.model).toBe('claude-sonnet-4-5')
+    expect(r.model).toBe('claude-sonnet-5')
   })
 
   it('lets an explicit phase `provider:` override the alias provider', () => {
     const reg = buildRegistry()
     const settings = makeSettings({
       // Alias points at openai, but the workflow author wrote provider: anthropic.
-      aliases: { coding: { provider: 'openai', model: 'claude-sonnet-4-5' } },
+      aliases: { coding: { provider: 'openai', model: 'claude-sonnet-5' } },
     })
 
     const r = resolvePhaseAssignment(
@@ -133,14 +133,14 @@ describe('resolvePhaseAssignment', () => {
     // Workflow override wins over alias.provider.
     expect(r.provider).toBe('anthropic')
     // But the alias's `model` is preserved.
-    expect(r.model).toBe('claude-sonnet-4-5')
+    expect(r.model).toBe('claude-sonnet-5')
   })
 
   it('returns the executor capabilities snapshot for the prompt builder', () => {
     const reg = buildRegistry()
     const settings = makeSettings({})
 
-    const r = resolvePhaseAssignment({ model: 'claude-sonnet-4-5' }, settings, reg)
+    const r = resolvePhaseAssignment({ model: 'claude-sonnet-5' }, settings, reg)
 
     expect(r.capabilities).toBe(r.runtime.capabilities)
     expect(r.capabilities.supportsNativeSubagents).toBe(false)
@@ -149,7 +149,7 @@ describe('resolvePhaseAssignment', () => {
 
 describe('resolveModelAlias (shared resolution core)', () => {
   const aliases = {
-    'tier:planning': { provider: 'anthropic', model: 'claude-opus-4-8' },
+    'tier:planning': { provider: 'anthropic', model: 'claude-opus-5' },
     'tier:coding': { provider: 'openai', model: 'gpt-5.6-terra', reasoningEffort: 'high' as const },
     coding: { provider: 'anthropic', model: 'legacy-coding' },
   }
@@ -166,14 +166,14 @@ describe('resolveModelAlias (shared resolution core)', () => {
   })
 
   it('defaults an undeclared phase to the planning tier', () => {
-    expect(resolveModelAlias({}, aliases).model).toBe('claude-opus-4-8')
+    expect(resolveModelAlias({}, aliases).model).toBe('claude-opus-5')
     expect(resolveModelAlias(null, aliases).aliasKey).toBe('tier:planning')
   })
 
   it('treats an explicit model as an alias key first, then a literal', () => {
     expect(resolveModelAlias({ model: 'coding' }, aliases).aliasKey).toBe('coding')
-    const literal = resolveModelAlias({ model: 'claude-haiku-4-5' }, aliases)
-    expect(literal).toMatchObject({ model: 'claude-haiku-4-5', resolvedFromAlias: false })
+    const literal = resolveModelAlias({ model: 'claude-sonnet-5' }, aliases)
+    expect(literal).toMatchObject({ model: 'claude-sonnet-5', resolvedFromAlias: false })
     expect(literal.reasoningEffort).toBeUndefined()
   })
 

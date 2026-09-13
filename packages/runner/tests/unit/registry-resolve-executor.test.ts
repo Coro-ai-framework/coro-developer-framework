@@ -122,8 +122,8 @@ describe('PluginRegistry.resolveExecutor', () => {
     reg.register(makeFakeExecutor({ id: 'anthropic-a', prefix: 'claude-' }))
     reg.register(makeFakeExecutor({ id: 'anthropic-b', prefix: 'claude-' }))
 
-    expect(() => reg.resolveExecutor({ model: 'claude-sonnet-4-5' })).toThrow(
-      /Multiple executor plugins support model "claude-sonnet-4-5"/,
+    expect(() => reg.resolveExecutor({ model: 'claude-sonnet-5' })).toThrow(
+      /Multiple executor plugins support model "claude-sonnet-5"/,
     )
   })
 

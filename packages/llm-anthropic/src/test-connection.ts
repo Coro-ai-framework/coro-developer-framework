@@ -42,8 +42,8 @@ const OAUTH_BETA_HEADER = 'oauth-2025-04-20'
 /** Anthropic API base. */
 const ANTHROPIC_API = 'https://api.anthropic.com'
 
-/** Cheapest available current model — pings cost ~1 token. */
-const PROBE_MODEL = 'claude-haiku-4-5'
+/** Cheapest remaining current-gen model — pings cost ~1 token. */
+const PROBE_MODEL = 'claude-sonnet-5'
 
 /**
  * Run a live credential probe against Anthropic and return a structured

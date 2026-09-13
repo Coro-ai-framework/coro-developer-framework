@@ -106,7 +106,7 @@ const OPENAI_CAPABILITIES: ExecutorCapabilities = {
   supportsConversationReplay: true,
   supportsThinking: true,
   supportsImageInput: true,
-  maxContextTokens: 400_000,
+  maxContextTokens: 1_050_000,
 }
 
 export const OPENAI_MANIFEST: PluginManifest = {
@@ -120,7 +120,7 @@ export const OPENAI_MANIFEST: PluginManifest = {
     supportsResponsesApi: true,
   },
   ui: {
-    subtitle: 'GPT-4 / GPT-5 family via the OpenAI API.',
+    subtitle: 'GPT-5.6 / GPT-6 family via the OpenAI API.',
   },
   auth: {
     methods: [
