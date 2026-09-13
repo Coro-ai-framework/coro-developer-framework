@@ -2,6 +2,7 @@ import { AlertTriangle, ArrowRight, Bot, CheckCircle2, FileStack, GitBranch, Lay
 import { Link } from 'react-router-dom'
 import { Button } from '../../ui/button'
 import { cn } from '../../../lib/utils'
+import { HOME_PATH, PAGE_TITLES } from '../../../lib/run-labels'
 import { useSettings } from '../../../pages/Settings/SettingsContext'
 import type { WizardState } from '../wizard-state'
 import { hasSkippedRequiredStep } from '../wizard-state'
@@ -189,7 +190,7 @@ export default function SuccessStep({ wizardState, onFinish, onOpenScmStep }: Su
                   </Link>
                 </Button>
                 <Button asChild variant="ghost" onClick={() => onFinish('dashboard')}>
-                  <Link to="/">Go to dashboard</Link>
+                  <Link to={HOME_PATH}>{PAGE_TITLES.newRun}</Link>
                 </Button>
               </div>
             </div>
@@ -198,12 +199,12 @@ export default function SuccessStep({ wizardState, onFinish, onOpenScmStep }: Su
       ) : (
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button asChild variant="ghost" onClick={() => onFinish('dashboard')}>
-            <Link to="/">Go to dashboard</Link>
+            <Link to={HOME_PATH}>{PAGE_TITLES.newRun}</Link>
           </Button>
           <Button asChild onClick={() => onFinish('newJob')}>
-            <Link to="/jobs/new">
+            <Link to={HOME_PATH}>
               <PlayCircle />
-              Create my first job
+              Start a conversation
               <ArrowRight />
             </Link>
           </Button>

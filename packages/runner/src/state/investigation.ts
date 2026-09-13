@@ -108,7 +108,7 @@ export function mergeInvestigation(
     ? (patch.findings ?? null)
     : (existing?.findings ?? null)
 
-  return {
+  const merged: Investigation = {
     id: patch.id,
     title: title.trim() ? title : 'Draft',
     status: patch.status ?? existing?.status ?? 'active',
@@ -126,4 +126,25 @@ export function mergeInvestigation(
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   }
+
+  if (existing && investigationUnchanged(existing, merged)) {
+    merged.updatedAt = existing.updatedAt
+  }
+  return merged
+}
+
+function investigationUnchanged(existing: Investigation, next: Investigation): boolean {
+  return (
+    existing.title === next.title
+    && existing.status === next.status
+    && existing.turnCount === next.turnCount
+    && existing.tokens === next.tokens
+    && existing.contextUsed === next.contextUsed
+    && (existing.dispatchedJobId ?? null) === (next.dispatchedJobId ?? null)
+    && (existing.findings ?? null) === (next.findings ?? null)
+    && JSON.stringify(existing.items) === JSON.stringify(next.items)
+    && JSON.stringify(existing.turns) === JSON.stringify(next.turns)
+    && JSON.stringify(existing.readiness) === JSON.stringify(next.readiness)
+    && JSON.stringify(existing.modelChoice) === JSON.stringify(next.modelChoice)
+  )
 }

@@ -143,6 +143,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const contextUsedRef = useRef(contextUsed)
   const investigationsRef = useRef(investigations)
   const persistChainRef = useRef(Promise.resolve())
+  const skipNextPersistRef = useRef(false)
   const deletedIdsRef = useRef(new Set<string>())
   workflowsRef.current = workflows
   jobsRef.current = jobs
@@ -221,6 +222,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     readiness: Readiness | null
     modelChoice?: { provider: string; model: string }
   }) => {
+    skipNextPersistRef.current = true
     const nextItems = asActivityItems(record.items)
     sessionIdRef.current = record.id
     itemsRef.current = nextItems
@@ -323,6 +325,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false
+      return
+    }
     if (!investigationHasProgress(items)) return
     const timer = window.setTimeout(() => {
       void enqueuePersist()

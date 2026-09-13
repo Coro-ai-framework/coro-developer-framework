@@ -1,31 +1,27 @@
 import { Navigate, Route, Routes, useParams } from 'react-router-dom'
 import Layout from './components/Layout'
-import Home from './pages/Home'
-import History from './pages/History'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
 import NewRun from './pages/NewRun'
 import Intelligence from './pages/Intelligence'
 import Retrospective from './pages/Retrospective'
 import Settings from './pages/Settings'
+import { HOME_PATH, RUNS_LIST_PATH } from './lib/run-labels'
 
 function RedirectToJobDetail() {
   const { jobId } = useParams<{ jobId: string }>()
-  return <Navigate to={`/jobs/${jobId ?? ''}`} replace />
+  return <Navigate to={`${RUNS_LIST_PATH}/${jobId ?? ''}`} replace />
 }
 
-// Legacy /campaigns paths are preserved as deep-link aliases. Lists redirect
-// into the unified Runs view with a workflow filter; detail pages redirect
-// to the canonical /jobs/:id detail surface.
 export default function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route path="/" element={<Home />} />
-        <Route path="/jobs" element={<JobList />} />
-        <Route path="/campaigns" element={<Navigate to="/jobs?workflow=campaign" replace />} />
-        <Route path="/history" element={<History />} />
-        <Route path="/jobs/new" element={<NewRun />} />
+        <Route index element={<NewRun />} />
+        <Route path={RUNS_LIST_PATH} element={<JobList />} />
+        <Route path="/campaigns" element={<Navigate to={`${RUNS_LIST_PATH}?workflow=campaign`} replace />} />
+        <Route path="/history" element={<Navigate to={`${RUNS_LIST_PATH}?status=terminal`} replace />} />
+        <Route path="/jobs/new" element={<Navigate to={HOME_PATH} replace />} />
         <Route path="/jobs/:jobId" element={<JobDetail />} />
         <Route path="/campaigns/:jobId" element={<RedirectToJobDetail />} />
         <Route path="/intelligence" element={<Intelligence />} />

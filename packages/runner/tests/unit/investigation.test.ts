@@ -86,6 +86,23 @@ describe('mergeInvestigation', () => {
     const merged = mergeInvestigation(existing, { id: 'inv-1' }, '2026-01-01T01:00:00.000Z')
     expect(merged.findings).toBeNull()
   })
+
+  it('does not bump updatedAt when the dashboard PUT is a no-op', () => {
+    const existing = base()
+    const merged = mergeInvestigation(existing, {
+      id: 'inv-1',
+      items: existing.items,
+      title: existing.title,
+      status: existing.status,
+      readiness: existing.readiness,
+      findings: existing.findings,
+      turnCount: existing.turnCount,
+      tokens: existing.tokens,
+      contextUsed: existing.contextUsed,
+      modelChoice: existing.modelChoice,
+    }, '2026-01-01T01:00:00.000Z')
+    expect(merged.updatedAt).toBe(existing.updatedAt)
+  })
 })
 
 describe('investigation helpers', () => {

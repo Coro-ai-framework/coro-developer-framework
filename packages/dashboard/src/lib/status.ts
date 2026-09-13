@@ -28,7 +28,7 @@ export interface StatusMeta {
 }
 
 const STATUS_MAP: Record<string, StatusMeta> = {
-  queued: { label: 'Queued', category: 'running', tone: 'neutral', pulse: true },
+  queued: { label: 'Starting', category: 'running', tone: 'neutral', pulse: true },
   planning: { label: 'Planning', category: 'running', tone: 'accent', pulse: true },
   coding: { label: 'Coding', category: 'running', tone: 'accent', pulse: true },
   reviewing: { label: 'Reviewing', category: 'running', tone: 'accent', pulse: true },
@@ -44,17 +44,33 @@ const STATUS_MAP: Record<string, StatusMeta> = {
   coordinating: { label: 'Coordinating', category: 'running', tone: 'accent', pulse: true },
   integrating: { label: 'Integrating', category: 'running', tone: 'accent', pulse: true },
   aggregating: { label: 'Aggregating', category: 'running', tone: 'accent', pulse: true },
-  'awaiting-plan-approval': { label: 'Awaiting Plan Approval', category: 'waiting', tone: 'warning' },
-  'awaiting-pr-merge': { label: 'Awaiting PR Merge', category: 'waiting', tone: 'warning' },
-  'awaiting-developer-input': { label: 'Awaiting Input', category: 'waiting', tone: 'warning', pulse: true },
-  'awaiting-children': { label: 'Awaiting Children', category: 'waiting', tone: 'warning' },
-  'awaiting-rate-limit': { label: 'Rate Limited', category: 'waiting', tone: 'warning', pulse: true },
-  complete: { label: 'Complete', category: 'terminal', tone: 'success' },
+  'awaiting-plan-approval': { label: 'Needs you', category: 'waiting', tone: 'warning', pulse: true },
+  'awaiting-pr-merge': { label: 'Waiting on PR', category: 'waiting', tone: 'warning' },
+  'awaiting-developer-input': { label: 'Needs you', category: 'waiting', tone: 'warning', pulse: true },
+  'awaiting-children': { label: 'Waiting on sub-runs', category: 'waiting', tone: 'warning' },
+  'awaiting-rate-limit': { label: 'Slowed', category: 'waiting', tone: 'warning' },
+  complete: { label: 'Done', category: 'terminal', tone: 'success' },
   cancelled: { label: 'Cancelled', category: 'terminal', tone: 'neutral' },
   canceled: { label: 'Cancelled', category: 'terminal', tone: 'neutral' },
   failed: { label: 'Failed', category: 'terminal', tone: 'danger' },
-  escalated: { label: 'Escalated', category: 'terminal', tone: 'danger' },
+  escalated: { label: 'Needs escalation', category: 'terminal', tone: 'danger' },
+  // Coordinator states for sub-runs. Live job status wins when the child
+  // has been started; these are the fallbacks before that.
+  pending: { label: 'Starting', category: 'running', tone: 'neutral', pulse: true },
+  ready: { label: 'Waiting to start', category: 'waiting', tone: 'warning' },
+  dispatched: { label: 'Working', category: 'running', tone: 'accent', pulse: true },
+  skipped: { label: 'Skipped', category: 'terminal', tone: 'neutral' },
 }
+
+/** Plan-mode conversation — not a job yet. */
+export const READINESS_META = {
+  investigating: { label: 'Investigating', category: 'running', tone: 'warning' },
+  ready: { label: 'Ready to start', category: 'idle', tone: 'accent' },
+  'no-run-needed': { label: 'No run needed', category: 'idle', tone: 'neutral' },
+} as const satisfies Record<string, StatusMeta>
+
+export const PAUSED_META: StatusMeta = { label: 'Paused', category: 'waiting', tone: 'warning' }
+export const CLOSED_META: StatusMeta = { label: 'Closed', category: 'idle', tone: 'neutral' }
 
 const CONNECTION_MAP: Record<ConnectionStatus, StatusMeta> = {
   connecting: { label: 'Connecting', category: 'waiting', tone: 'warning', pulse: true },
@@ -114,11 +130,70 @@ export const PAUSED_AWAITING_EVENT = 'developer-input: paused by developer'
 /**
  * A job is "developer-paused" when the runner parked it via the Pause
  * button (status `awaiting-developer-input` + the marker awaitingEvent).
- * Distinct from agent-initiated `await_event('developer-input: …')` parks,
- * which the dashboard renders as "Awaiting Input".
+ * Distinct from agent-initiated parks, which render as "Needs you".
  */
 export function isPausedStatus(status: string, awaitingEvent?: string | null): boolean {
   return status === 'awaiting-developer-input' && awaitingEvent === PAUSED_AWAITING_EVENT
+}
+
+export interface StatusSource {
+  status: string
+  awaitingEvent?: string | null
+}
+
+/** User-facing status for a job, including the Pause overlay. */
+export function getJobDisplayStatus(job: StatusSource): StatusMeta {
+  if (isPausedStatus(job.status, job.awaitingEvent)) return PAUSED_META
+  return getStatusMeta(job.status)
+}
+
+export function getReadinessMeta(state?: string | null): StatusMeta {
+  if (state === 'ready') return READINESS_META.ready
+  if (state === 'no-run-needed') return READINESS_META['no-run-needed']
+  return READINESS_META.investigating
+}
+
+/**
+ * Recents-rail status. A linked live job wins; otherwise this is still a
+ * conversation (investigating / ready to start / closed).
+ */
+export function getConversationDisplayStatus(
+  row: {
+    status: string
+    readiness?: { state: string } | null
+    dispatchedJobId?: string | null
+  },
+  job?: StatusSource | null,
+): StatusMeta {
+  if (job) return getJobDisplayStatus(job)
+  if (row.status === 'dispatched') return getStatusMeta('dispatched')
+  if (row.status === 'closed') return CLOSED_META
+  return getReadinessMeta(row.readiness?.state)
+}
+
+export interface TabStatusSignal {
+  label: string
+  tone: Tone
+  pulse: boolean
+  attention: boolean
+}
+
+/** Compact signal for an open-run tab. Same labels as StatusBadge. */
+export function getTabStatus(job: StatusSource): TabStatusSignal {
+  const meta = getJobDisplayStatus(job)
+  const paused = isPausedStatus(job.status, job.awaitingEvent)
+  const attention =
+    paused
+    || job.status === 'awaiting-developer-input'
+    || job.status === 'awaiting-plan-approval'
+    || job.status === 'escalated'
+  const calm = paused || job.status === 'awaiting-rate-limit'
+  return {
+    label: meta.label,
+    tone: meta.tone,
+    pulse: !calm && ((meta.pulse ?? false) || attention),
+    attention,
+  }
 }
 
 /**

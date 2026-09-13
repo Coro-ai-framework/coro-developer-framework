@@ -25,6 +25,7 @@ import {
   PAGE_TITLES,
   RUN_NOUN,
   SUB_RUN_NOUN,
+  HOME_PATH,
   deriveWorkflowFilterOptions,
   getParentRunId,
   getRunWorkflowTag,
@@ -37,13 +38,33 @@ import { useJobs } from '../hooks/useJobs'
 import type { Job } from '../types'
 
 type StatusFilter = 'active' | 'waiting' | 'all' | 'terminal'
+type OutcomeFilter = 'all' | 'cancelled' | 'complete' | 'failed' | 'escalated'
 
-const STATUS_FILTERS = [
-  { value: 'active' as const, label: 'Active' },
-  { value: 'waiting' as const, label: 'Awaiting' },
-  { value: 'terminal' as const, label: 'Finished' },
-  { value: 'all' as const, label: 'All' },
+const STATUS_FILTERS: Array<{ value: StatusFilter; label: string }> = [
+  { value: 'active', label: 'Active' },
+  { value: 'waiting', label: 'Waiting' },
+  { value: 'terminal', label: 'Finished' },
+  { value: 'all', label: 'All' },
 ]
+
+const OUTCOME_FILTERS: Array<{ value: OutcomeFilter; label: string }> = [
+  { value: 'all', label: 'All outcomes' },
+  { value: 'complete', label: 'Done' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'escalated', label: 'Needs escalation' },
+]
+
+function parseStatusFilter(raw: string | null): StatusFilter {
+  if (raw === 'waiting' || raw === 'terminal' || raw === 'all' || raw === 'active') return raw
+  if (raw === 'finished') return 'terminal'
+  return 'active'
+}
+
+function parseOutcomeFilter(raw: string | null): OutcomeFilter {
+  if (raw === 'cancelled' || raw === 'complete' || raw === 'failed' || raw === 'escalated') return raw
+  return 'all'
+}
 
 interface SubRunProgress {
   total: number
@@ -93,34 +114,35 @@ export default function JobList() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { jobs, loading, error } = useJobs()
   const [query, setQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
 
   const runs = useMemo(() => sortJobsByUpdatedAt(jobs), [jobs])
   const workflowOptions = useMemo(() => deriveWorkflowFilterOptions(runs), [runs])
 
-  const initialWorkflow = searchParams.get('workflow') ?? 'all'
-  const [workflowFilter, setWorkflowFilter] = useState<string>(initialWorkflow)
+  const [workflowFilter, setWorkflowFilter] = useState(() => searchParams.get('workflow') ?? 'all')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => parseStatusFilter(searchParams.get('status')))
+  const [outcome, setOutcome] = useState<OutcomeFilter>(() => parseOutcomeFilter(searchParams.get('outcome')))
 
-  // Sync the workflow filter into the URL so /campaigns redirect targets
-  // (?workflow=campaign) and external deep-links keep working without UI
-  // duplication.
   useEffect(() => {
-    const current = searchParams.get('workflow') ?? 'all'
-    if (current !== workflowFilter) {
-      const next = new URLSearchParams(searchParams)
-      if (workflowFilter === 'all') next.delete('workflow')
-      else next.set('workflow', workflowFilter)
+    const next = new URLSearchParams(searchParams)
+    if (workflowFilter === 'all') next.delete('workflow')
+    else next.set('workflow', workflowFilter)
+    if (statusFilter === 'active') next.delete('status')
+    else next.set('status', statusFilter)
+    if (statusFilter !== 'terminal' || outcome === 'all') next.delete('outcome')
+    else next.set('outcome', outcome)
+    if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true })
     }
-  }, [workflowFilter, searchParams, setSearchParams])
+  }, [workflowFilter, statusFilter, outcome, searchParams, setSearchParams])
 
-  // If the URL changes (e.g. via /campaigns alias redirect), reflect it.
   useEffect(() => {
-    const current = searchParams.get('workflow') ?? 'all'
-    if (current !== workflowFilter) {
-      setWorkflowFilter(current)
-    }
+    const workflow = searchParams.get('workflow') ?? 'all'
+    const status = parseStatusFilter(searchParams.get('status'))
+    const nextOutcome = parseOutcomeFilter(searchParams.get('outcome'))
+    if (workflow !== workflowFilter) setWorkflowFilter(workflow)
+    if (status !== statusFilter) setStatusFilter(status)
+    if (nextOutcome !== outcome) setOutcome(nextOutcome)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
@@ -133,6 +155,7 @@ export default function JobList() {
       if (statusFilter === 'active' && isTerminalStatus(job.status)) return false
       if (statusFilter === 'waiting' && !isWaitingStatus(job.status)) return false
       if (statusFilter === 'terminal' && !isTerminalStatus(job.status)) return false
+      if (statusFilter === 'terminal' && outcome !== 'all' && job.status !== outcome) return false
       if (!search) return true
 
       const haystack = [
@@ -151,7 +174,7 @@ export default function JobList() {
 
       return haystack.includes(search)
     }
-  }, [query, statusFilter, workflowFilter])
+  }, [query, statusFilter, workflowFilter, outcome])
 
   const idSet = useMemo(() => new Set(runs.map(j => j.id)), [runs])
 
@@ -211,7 +234,7 @@ export default function JobList() {
         description={PAGE_TITLES.runsListDescription}
         actions={
           <Button asChild>
-            <Link to="/jobs/new">
+            <Link to={HOME_PATH}>
               {PAGE_TITLES.newRun}
               <ArrowRight />
             </Link>
@@ -236,6 +259,15 @@ export default function JobList() {
               size="sm"
               ariaLabel="Filter by status"
             />
+            {statusFilter === 'terminal' ? (
+              <SegmentedControl<OutcomeFilter>
+                options={OUTCOME_FILTERS}
+                value={outcome}
+                onChange={setOutcome}
+                size="sm"
+                ariaLabel="Filter by outcome"
+              />
+            ) : null}
           </div>
 
           <div className="flex items-center gap-3">
@@ -251,7 +283,7 @@ export default function JobList() {
             <span className="hidden whitespace-nowrap text-[11px] uppercase tracking-[0.14em] text-fg-subtle sm:inline">
               {visibleCount} / {runs.length}
               <span className="ml-2 text-fg-subtle/70">
-                · {activeCount} active · {waitingCount} awaiting
+                · {activeCount} active · {waitingCount} waiting
               </span>
             </span>
           </div>
@@ -276,7 +308,7 @@ export default function JobList() {
                 description={`Create a ${RUN_NOUN.singularLower} or widen the filters to bring more work into view.`}
                 action={
                   <Button asChild>
-                    <Link to="/jobs/new">{`Create ${RUN_NOUN.singularLower}`}</Link>
+                    <Link to={HOME_PATH}>{`Create ${RUN_NOUN.singularLower}`}</Link>
                   </Button>
                 }
               />
@@ -413,7 +445,7 @@ function ParentRunRow({ job, subRunCount, isCollapsed, onToggle }: ParentRunRowP
         </span>
       </td>
       <td className="px-4 py-3 align-top">
-        <StatusBadge status={job.status} />
+        <StatusBadge status={job.status} awaitingEvent={job.awaitingEvent} />
       </td>
       <td className="px-4 py-3 align-top text-fg-muted">
         <div className="line-clamp-1 text-[13px]">{getRunFocus(job)}</div>
@@ -462,7 +494,7 @@ function SubRunRow({ job }: { job: Job }) {
         </span>
       </td>
       <td className="px-4 py-2.5 align-top">
-        <StatusBadge status={job.status} />
+        <StatusBadge status={job.status} awaitingEvent={job.awaitingEvent} />
       </td>
       <td className="px-4 py-2.5 align-top text-fg-muted">
         <div className="line-clamp-1 text-[13px]">{getCurrentWorkItem(job)}</div>

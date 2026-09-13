@@ -68,7 +68,7 @@ export function truncateInvestigationTitle(
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed
 }
 
-/** Shared by the workspace tab subtitle, PUT title, and history rail. */
+/** Shared by the workspace tab subtitle, PUT title, and Recents rail. */
 export function investigationTitleFromItems(items: ActivityItem[]): string {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
@@ -93,14 +93,19 @@ export function asActivityItems(value: unknown): ActivityItem[] {
   return Array.isArray(value) ? (value as ActivityItem[]) : []
 }
 
+/**
+ * Upsert a summary without promoting it unless `updatedAt` actually moved
+ * it. Replacing in place (then sorting) keeps click-to-open from jumping
+ * the row to the top.
+ */
 export function mergeInvestigationSummaries(
   list: InvestigationSummary[],
   summary: InvestigationSummary,
 ): InvestigationSummary[] {
-  const rest = list.filter(item => item.id !== summary.id)
-  return [summary, ...rest].sort(
-    (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
-  )
+  const index = list.findIndex(item => item.id === summary.id)
+  const next = index >= 0 ? list.slice() : [summary, ...list]
+  if (index >= 0) next[index] = summary
+  return next.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
 }
 
 export function dropInvestigationSummary(

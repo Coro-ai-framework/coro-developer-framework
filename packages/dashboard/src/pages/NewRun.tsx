@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, History } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { History } from 'lucide-react'
 import ActivityFeed from '../components/activity/activity-feed'
 import PageHeader from '../components/common/page-header'
 import PlanComposer from '../components/plan/plan-composer'
 import { PLAN_CARD_RENDERERS } from '../components/plan/cards'
 import InvestigationRail from '../components/plan/investigation-rail'
 import { InvestigationList } from '../components/plan/investigation-list'
+import RunnerSetupAlerts from '../components/setup/runner-setup-alerts'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
 import {
@@ -18,11 +19,11 @@ import {
   DialogTitle,
 } from '../components/ui/dialog'
 import { requestJson } from '../lib/http'
-import { investigationTitleFromItems } from '../lib/intake-investigation'
 import { cn } from '../lib/utils'
+import { CONVERSATION_COPY, PAGE_TITLES } from '../lib/run-labels'
 import { useJobs } from '../hooks/useJobs'
 import { usePlanSession } from '../providers/plan-session'
-import { useRegisterWorkspaceTab, useWorkspaceTabs } from '../providers/workspace-tabs'
+import { useWorkspaceTabs } from '../providers/workspace-tabs'
 import {
   FALLBACK_JOB_WORKFLOW,
   fetchLaunchableWorkflows,
@@ -49,13 +50,12 @@ interface PluginsResponse {
 }
 
 export default function NewRun() {
-  const navigate = useNavigate()
   const session = usePlanSession()
   const { tabs } = useWorkspaceTabs()
   const { jobs } = useJobs(30_000)
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([FALLBACK_JOB_WORKFLOW])
   const [scmWarning, setScmWarning] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
+  const [recentsOpen, setRecentsOpen] = useState(false)
 
   useEffect(() => {
     void fetchLaunchableWorkflows()
@@ -88,49 +88,31 @@ export default function NewRun() {
       })
   }, [session.setScmConnected])
 
-  const hasProgress = session.hasProgress
-  const subtitle = useMemo(
-    () => investigationTitleFromItems(session.items),
-    [session.items],
-  )
-
-  useRegisterWorkspaceTab(
-    hasProgress
-      ? {
-          id: 'new-run',
-          kind: 'run',
-          path: '/jobs/new',
-          title: 'New run',
-          subtitle,
-        }
-      : null,
-  )
-
   async function handleNewConversation() {
     if (session.busy || session.hasProgress) {
       const ok = window.confirm(
         session.busy
-          ? 'Coro is still working. Start a new conversation? This one stays in history.'
-          : 'Start a new conversation? This one stays in history.',
+          ? CONVERSATION_COPY.newBusy
+          : CONVERSATION_COPY.newConfirm,
       )
       if (!ok) return
     }
     await session.startNewConversation()
   }
 
-  async function handleSelectHistory(id: string) {
+  async function handleSelectRecent(id: string) {
     if (id === session.sessionId) {
-      setHistoryOpen(false)
+      setRecentsOpen(false)
       return
     }
     if (session.busy) {
       const ok = window.confirm(
-        'Coro is still working. Switch conversations? The current one stays in history.',
+        CONVERSATION_COPY.switchBusy,
       )
       if (!ok) return
     }
     await session.openInvestigation(id)
-    setHistoryOpen(false)
+    setRecentsOpen(false)
   }
 
   const composerBlocked = session.noLlm
@@ -144,8 +126,11 @@ export default function NewRun() {
         'min-h-[520px]',
       )}
     >
+      <div className="shrink-0">
+        <RunnerSetupAlerts />
+      </div>
       <PageHeader
-        title="New run"
+        title={PAGE_TITLES.newRun}
         className="shrink-0"
         actions={
           <div className="flex items-center gap-2">
@@ -153,17 +138,13 @@ export default function NewRun() {
               type="button"
               variant="ghost"
               className="lg:hidden"
-              onClick={() => setHistoryOpen(true)}
+              onClick={() => setRecentsOpen(true)}
             >
               <History />
-              History
+              {PAGE_TITLES.recents}
             </Button>
-            <Button type="button" variant="ghost" onClick={() => void handleNewConversation()}>
-              New conversation
-            </Button>
-            <Button variant="outline" onClick={() => navigate('/jobs')}>
-              <ArrowLeft />
-              Back
+            <Button type="button" variant="secondary" onClick={() => void handleNewConversation()}>
+              {PAGE_TITLES.newConversation}
             </Button>
           </div>
         }
@@ -218,22 +199,23 @@ export default function NewRun() {
         </div>
       </div>
 
-      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+      <Dialog open={recentsOpen} onOpenChange={setRecentsOpen}>
         <DialogContent className="flex max-w-md flex-col gap-0 min-h-[28rem] max-h-[min(720px,calc(100vh-2rem))]">
           <DialogHeader className="shrink-0">
-            <DialogTitle>Investigations</DialogTitle>
-            <DialogDescription>Open a previous conversation on this runner.</DialogDescription>
+            <DialogTitle>{PAGE_TITLES.recents}</DialogTitle>
+            <DialogDescription>{PAGE_TITLES.recentsDescription}</DialogDescription>
           </DialogHeader>
           <DialogBody className="flex min-h-0 flex-1 flex-col">
             <InvestigationList
               rows={session.investigations}
+              jobs={session.jobs}
               currentId={session.sessionId}
               loading={session.investigationsLoading && !session.hydrated}
               loadingMore={session.investigationsLoadingMore}
               total={session.investigationsTotal}
               busy={session.busy}
               revealRemoveOnHover={false}
-              onSelect={id => void handleSelectHistory(id)}
+              onSelect={id => void handleSelectRecent(id)}
               onRemove={id => session.removeInvestigation(id)}
               onLoadMore={() => void session.loadMoreInvestigations()}
             />

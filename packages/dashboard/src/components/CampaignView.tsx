@@ -17,7 +17,7 @@ import { requestJson, jsonRequest } from '../lib/http'
 import { formatCompactNumber, formatPreciseCurrency, formatRelativeTime } from '../lib/format'
 import { cn } from '../lib/utils'
 import { SUB_RUN_NOUN } from '../lib/run-labels'
-import { getStatusMeta, toneClasses, toneDotClasses } from '../lib/status'
+import { getJobDisplayStatus, toneClasses, toneDotClasses } from '../lib/status'
 
 /**
  * The status surfaced to the user for a campaign child should reflect
@@ -40,12 +40,14 @@ function isHaltedStatus(status: string): boolean {
 
 function ChildStatusPill({
   status,
+  awaitingEvent,
   rateLimitInfo,
 }: {
   status: string
+  awaitingEvent?: string | null
   rateLimitInfo?: NonNullable<CampaignChild['summary']>['rateLimitInfo']
 }) {
-  const meta = getStatusMeta(status)
+  const meta = getJobDisplayStatus({ status, awaitingEvent })
   const countdown = useRateLimitCountdown(
     status === 'awaiting-rate-limit' ? rateLimitInfo?.resumeAt : undefined,
   )
@@ -168,7 +170,10 @@ function DependencyGraph({ children }: DependencyGraphProps) {
           <div className="flex flex-wrap gap-2">
             {layer.map(c => {
               const liveStatus = effectiveStatus(c)
-              const meta = getStatusMeta(liveStatus)
+              const meta = getJobDisplayStatus({
+                status: liveStatus,
+                awaitingEvent: c.summary?.awaitingEvent,
+              })
               return (
                 <div
                   key={c.name}
@@ -177,7 +182,11 @@ function DependencyGraph({ children }: DependencyGraphProps) {
                     toneClasses(meta.tone),
                   )}
                 >
-                  <ChildStatusPill status={liveStatus} rateLimitInfo={c.summary?.rateLimitInfo} />
+                  <ChildStatusPill
+                    status={liveStatus}
+                    awaitingEvent={c.summary?.awaitingEvent}
+                    rateLimitInfo={c.summary?.rateLimitInfo}
+                  />
                   <span className="font-medium">{c.name}</span>
                   {c.dependsOn.length > 0 ? (
                     <span className="text-[10px] text-fg-subtle">
@@ -686,6 +695,7 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
                     <td className="px-3 py-2.5">
                       <ChildStatusPill
                         status={effectiveStatus(c)}
+                        awaitingEvent={c.summary?.awaitingEvent}
                         rateLimitInfo={c.summary?.rateLimitInfo}
                       />
                     </td>

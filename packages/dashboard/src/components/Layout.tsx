@@ -1,6 +1,4 @@
 import {
-  Gauge,
-  History,
   Layers,
   Microscope,
   Plus,
@@ -12,26 +10,19 @@ import { NavLink, Outlet } from 'react-router-dom'
 import BrandMark from './layout/brand-mark'
 import WorkspaceTabsBar from './layout/workspace-tabs-bar'
 import { cn } from '../lib/utils'
+import { HOME_PATH, PAGE_TITLES, RUNS_LIST_PATH } from '../lib/run-labels'
 
 interface NavigationItem {
   label: string
   to: string
   icon: LucideIcon
   group: 'primary' | 'secondary'
+  end?: boolean
 }
 
-/**
- * Single-source navigation. The previous Layout split this into two visual
- * sections in the sidebar and ALSO duplicated the
- * secondary actions in the page-level header. We now show every entry once,
- * grouped only by a subtle divider in the sidebar, and never repeat them
- * in the header.
- */
 const NAV: NavigationItem[] = [
-  { label: 'Overview', to: '/', icon: Gauge, group: 'primary' },
-  { label: 'Runs', to: '/jobs', icon: Workflow, group: 'primary' },
-  { label: 'History', to: '/history', icon: History, group: 'primary' },
-  { label: 'New Run', to: '/jobs/new', icon: Plus, group: 'secondary' },
+  { label: PAGE_TITLES.newRun, to: HOME_PATH, icon: Plus, group: 'primary', end: true },
+  { label: PAGE_TITLES.runsList, to: RUNS_LIST_PATH, icon: Workflow, group: 'primary' },
   { label: 'Intelligence', to: '/intelligence', icon: Layers, group: 'secondary' },
   { label: 'Retrospective', to: '/retrospectives', icon: Microscope, group: 'secondary' },
   { label: 'Settings', to: '/settings', icon: Settings2, group: 'secondary' },
@@ -40,7 +31,7 @@ const NAV: NavigationItem[] = [
 function SidebarLink({ item }: { item: NavigationItem }) {
   return (
     <NavLink
-      end={item.to === '/'}
+      end={item.end ?? item.to === HOME_PATH}
       to={item.to}
       className={({ isActive }) =>
         cn(
@@ -76,7 +67,7 @@ function SidebarLink({ item }: { item: NavigationItem }) {
 function MobileNavLink({ item }: { item: NavigationItem }) {
   return (
     <NavLink
-      end={item.to === '/'}
+      end={item.end ?? item.to === HOME_PATH}
       to={item.to}
       className={({ isActive }) =>
         cn(
@@ -100,7 +91,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
       <aside className="hidden border-r border-line bg-panel/60 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col lg:gap-6 lg:pt-8">
-        <NavLink to="/" className="px-2">
+        <NavLink to={HOME_PATH} className="px-2">
           <BrandMark />
         </NavLink>
 
@@ -120,11 +111,9 @@ export default function Layout() {
       </aside>
 
       <div className="flex min-h-screen min-w-0 flex-col lg:pt-4">
-        {/* Mobile-only top bar. Desktop has the full sidebar so it doesn't
-            need a second chrome row above content. */}
         <header className="sticky top-0 z-40 border-b border-line bg-canvas/85 backdrop-blur-xl lg:hidden">
           <div className="flex items-center justify-between gap-3 px-4 py-3">
-            <NavLink to="/">
+            <NavLink to={HOME_PATH}>
               <BrandMark />
             </NavLink>
           </div>

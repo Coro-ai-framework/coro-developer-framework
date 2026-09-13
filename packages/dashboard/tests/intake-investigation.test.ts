@@ -40,7 +40,7 @@ describe('investigationTitleFromItems', () => {
     ])).toBe(true)
   })
 
-  it('promotes a persisted summary to the top of the rail list', () => {
+  it('promotes a summary only when its updatedAt is newer', () => {
     const merged = mergeInvestigationSummaries(
       [
         { id: 'a', title: 'A', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
@@ -50,6 +50,18 @@ describe('investigationTitleFromItems', () => {
     )
     expect(merged.map(row => row.id)).toEqual(['a', 'b'])
     expect(merged[0]?.title).toBe('A2')
+  })
+
+  it('does not jump a row to the top on a same-timestamp update', () => {
+    const merged = mergeInvestigationSummaries(
+      [
+        { id: 'a', title: 'A', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'b', title: 'B', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-02T00:00:00.000Z' },
+      ],
+      { id: 'a', title: 'A viewed', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
+    )
+    expect(merged.map(row => row.id)).toEqual(['b', 'a'])
+    expect(merged[1]?.title).toBe('A viewed')
   })
 
   it('drops a summary from the rail list', () => {

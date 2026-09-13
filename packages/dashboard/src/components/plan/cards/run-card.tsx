@@ -14,7 +14,7 @@ import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
 import { parseReviewersList, type RunDraft } from '../../../lib/intake-run'
 import { findSimilarRuns } from '../../../lib/run-history'
 import { usePlanSession } from '../../../providers/plan-session'
-import { useWorkspaceTabs } from '../../../providers/workspace-tabs'
+import { PAGE_TITLES } from '../../../lib/run-labels'
 import { durationBandFor } from '../../../workflows'
 
 export interface RunCardData {
@@ -27,7 +27,6 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
   const { run, state, jobId } = data
   const session = usePlanSession()
   const navigate = useNavigate()
-  const { closeTab } = useWorkspaceTabs()
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -60,7 +59,6 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
       session.markCardDispatched(itemId, result.jobId)
       await session.startNewConversation({ status: 'dispatched', dispatchedJobId: result.jobId })
       navigate(`/jobs/${result.jobId}`)
-      closeTab('/jobs/new')
     } catch (err) {
       if (
         err instanceof ApiError &&
@@ -116,7 +114,7 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
   const action =
     state === 'dispatched' && jobId ? (
       <Button asChild size="lg" className="w-full">
-        <Link to={`/jobs/${jobId}`}>View run</Link>
+        <Link to={`/jobs/${jobId}`}>{PAGE_TITLES.viewRun}</Link>
       </Button>
     ) : (
       <Button
@@ -128,7 +126,7 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
         onClick={() => void dispatch()}
       >
         {submitting ? <Loader2 className="animate-spin" /> : null}
-        {submitting ? 'Starting run…' : 'Start run'}
+        {submitting ? 'Starting run…' : PAGE_TITLES.startRun}
       </Button>
     )
 
@@ -139,7 +137,7 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
       summary={summary}
       badges={badges}
       action={action}
-      dimmed={state !== 'draft'}
+      dimmed={state === 'superseded'}
       defaultExpanded={false}
     >
       <Field label="Repository" required>

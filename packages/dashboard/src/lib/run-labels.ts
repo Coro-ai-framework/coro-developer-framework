@@ -26,23 +26,28 @@ export const SUB_RUN_NOUN = {
 
 export const PAGE_TITLES = {
   runsList: 'Runs',
-  runsListDescription: `All ${RUN_NOUN.pluralLower} in one place. Filter by workflow or status to change the lens.`,
-  history: 'History',
-  overview: 'Overview',
+  runsListDescription: `Every ${RUN_NOUN.singularLower} on this runner. Filter by workflow or status.`,
   newRun: `New ${RUN_NOUN.singularLower}`,
+  recents: 'Recents',
+  recentsDescription: 'Conversations on this runner.',
   backToRuns: `Back to ${RUN_NOUN.pluralLower}`,
+  newConversation: 'New conversation',
+  generateRun: 'Generate run',
+  runGenerated: 'Run generated',
+  viewRun: 'View run',
+  startRun: 'Start run',
 } as const
 
-export const RUN_LIST_LABELS = {
-  activeRuns: `Active ${RUN_NOUN.pluralLower}`,
-  activeWithSubRuns: `${RUN_NOUN.pluralLower.charAt(0).toUpperCase() + RUN_NOUN.pluralLower.slice(1)} hosting ${SUB_RUN_NOUN.pluralLower}`,
-  awaitingInput: 'Awaiting your input',
-  recentlyFinished: 'Recently finished',
-  emptyActive: `No active ${RUN_NOUN.pluralLower}. Dispatch one from the New ${RUN_NOUN.singularLower} button.`,
-  emptyWithSubRuns: `No ${RUN_NOUN.pluralLower} are coordinating ${SUB_RUN_NOUN.pluralLower} right now.`,
-  emptyAwaiting: 'Nothing parked for approval or a response.',
-  emptyHistory: `Completed and failed ${RUN_NOUN.pluralLower} will appear here.`,
+export const CONVERSATION_COPY = {
+  switchBusy: 'Coro is still working. Switch conversations? The current one stays in Recents.',
+  newBusy: 'Coro is still working. Start a new conversation? This one stays in Recents.',
+  newConfirm: 'Start a new conversation? This one stays in Recents.',
 } as const
+
+/** Composer home — New run. */
+export const HOME_PATH = '/'
+/** Canonical job inventory. */
+export const RUNS_LIST_PATH = '/jobs'
 
 /**
  * Workflow display labels. The dashboard renders these from the workflow
@@ -124,6 +129,3 @@ export function getRunWorkflowTag(job: Pick<Job, 'workflowPath'>): string {
 export function getParentRunBreadcrumbLabel(): string {
   return `Parent ${RUN_NOUN.singularLower}`
 }
-
-/** Detail-page back link target. The unified Runs list is canonical. */
-export const RUNS_LIST_PATH = '/jobs'

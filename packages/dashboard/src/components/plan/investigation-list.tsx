@@ -2,33 +2,18 @@ import { useState } from 'react'
 import { X } from 'lucide-react'
 import { formatRelativeTime } from '../../lib/format'
 import type { InvestigationSummary } from '../../lib/intake-investigation'
-import { Badge } from '../ui/badge'
+import { getConversationDisplayStatus } from '../../lib/status'
+import { PAGE_TITLES } from '../../lib/run-labels'
+import type { Job } from '../../types'
+import StatusBadge from '../StatusBadge'
 import { Button } from '../ui/button'
 import { ScrollArea } from '../ui/scroll-area'
 import { Skeleton } from '../ui/skeleton'
 import { cn } from '../../lib/utils'
 
-function statusBadge(row: InvestigationSummary) {
-  if (row.status === 'dispatched') {
-    return <Badge variant="success">Dispatched</Badge>
-  }
-  if (row.status === 'closed') {
-    return <Badge variant="neutral">Closed</Badge>
-  }
-  if (row.readiness?.state === 'ready') {
-    return <Badge variant="accent">Ready</Badge>
-  }
-  if (row.readiness?.state === 'no-run-needed') {
-    return <Badge variant="neutral">No run</Badge>
-  }
-  if (row.readiness?.state === 'investigating') {
-    return <Badge variant="warning">Open</Badge>
-  }
-  return <Badge variant="neutral">Active</Badge>
-}
-
 export function InvestigationList({
   rows,
+  jobs = [],
   currentId,
   loading,
   loadingMore,
@@ -41,6 +26,7 @@ export function InvestigationList({
   revealRemoveOnHover = true,
 }: {
   rows: InvestigationSummary[]
+  jobs?: Job[]
   currentId: string
   loading: boolean
   loadingMore: boolean
@@ -55,6 +41,7 @@ export function InvestigationList({
 }) {
   const hasMore = rows.length < total
   const [pendingId, setPendingId] = useState<string | null>(null)
+  const jobsById = new Map(jobs.map(job => [job.id, job]))
 
   if (loading) {
     return (
@@ -69,7 +56,7 @@ export function InvestigationList({
   if (rows.length === 0) {
     return (
       <p className="px-1 py-6 text-[13px] leading-5 text-fg-muted">
-        Conversations you start will show up here. New conversation keeps this one in the list.
+        Conversations you start will show up here. {PAGE_TITLES.newConversation} keeps this one in the list.
       </p>
     )
   }
@@ -78,8 +65,8 @@ export function InvestigationList({
     const label = row.title.trim() || 'this conversation'
     const ok = window.confirm(
       busy && row.id === currentId
-        ? `Coro is still working. Remove “${label}” from history?`
-        : `Remove “${label}” from history?`,
+        ? `Coro is still working. Remove “${label}” from Recents?`
+        : `Remove “${label}” from Recents?`,
     )
     if (!ok) return
     setPendingId(row.id)
@@ -97,6 +84,8 @@ export function InvestigationList({
           {rows.map(row => {
             const active = row.id === currentId
             const removing = pendingId === row.id
+            const linkedJob = row.dispatchedJobId ? jobsById.get(row.dispatchedJobId) : undefined
+            const meta = getConversationDisplayStatus(row, linkedJob ?? null)
             return (
               <li key={row.id}>
                 <div
@@ -125,7 +114,7 @@ export function InvestigationList({
                     </span>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] text-fg-subtle">{formatRelativeTime(row.updatedAt)}</span>
-                      {statusBadge(row)}
+                      <StatusBadge meta={meta} />
                     </div>
                   </button>
                   <button

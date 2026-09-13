@@ -1,18 +1,32 @@
 import { Badge } from './ui/badge'
-import { getStatusMeta, toneClasses, toneDotClasses } from '../lib/status'
+import {
+  getJobDisplayStatus,
+  toneClasses,
+  toneDotClasses,
+  type StatusMeta,
+  type StatusSource,
+} from '../lib/status'
+import { cn } from '../lib/utils'
 
-interface StatusBadgeProps {
-  status: string
+interface StatusBadgeProps extends Partial<StatusSource> {
+  meta?: StatusMeta
   className?: string
 }
 
-export default function StatusBadge({ status, className = '' }: StatusBadgeProps) {
-  const meta = getStatusMeta(status)
+export default function StatusBadge({ status, awaitingEvent, meta, className = '' }: StatusBadgeProps) {
+  const resolved = meta ?? (status ? getJobDisplayStatus({ status, awaitingEvent }) : null)
+  if (!resolved) return null
 
   return (
-    <Badge variant="neutral" className={`${toneClasses(meta.tone)} ${className}`}>
-      <span className={`size-1.5 rounded-full ${toneDotClasses(meta.tone)} ${meta.pulse ? 'animate-pulse-dot' : ''}`} />
-      {meta.label}
+    <Badge variant="neutral" className={cn(toneClasses(resolved.tone), className)}>
+      <span
+        className={cn(
+          'size-1.5 rounded-full',
+          toneDotClasses(resolved.tone),
+          resolved.pulse && 'animate-pulse-dot',
+        )}
+      />
+      {resolved.label}
     </Badge>
   )
 }

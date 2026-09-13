@@ -1,5 +1,6 @@
 import { InvestigationList } from './investigation-list'
 import { usePlanSession } from '../../providers/plan-session'
+import { CONVERSATION_COPY, PAGE_TITLES } from '../../lib/run-labels'
 import { cn } from '../../lib/utils'
 
 export default function InvestigationRail({
@@ -17,9 +18,7 @@ export default function InvestigationRail({
       return
     }
     if (session.busy) {
-      const ok = window.confirm(
-        'Coro is still working. Switch conversations? The current one stays in history.',
-      )
+      const ok = window.confirm(CONVERSATION_COPY.switchBusy)
       if (!ok) return
     }
     await session.openInvestigation(id)
@@ -35,14 +34,15 @@ export default function InvestigationRail({
     >
       <div className="mb-3 px-1">
         <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-fg-subtle">
-          Investigations
+          {PAGE_TITLES.recents}
         </div>
         <p className="mt-1 text-[12px] leading-4 text-fg-muted">
-          Last conversations on this runner.
+          {PAGE_TITLES.recentsDescription}
         </p>
       </div>
       <InvestigationList
         rows={session.investigations}
+        jobs={session.jobs}
         currentId={session.sessionId}
         loading={session.investigationsLoading && !session.hydrated}
         loadingMore={session.investigationsLoadingMore}

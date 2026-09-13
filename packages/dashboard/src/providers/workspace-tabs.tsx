@@ -1,13 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useLocalStorage } from '../hooks/use-local-storage'
+import { migrateWorkspaceTabs } from '../lib/workspace-tabs'
 
 export interface WorkspaceTab {
   id: string
   /**
-   * Workspace tabs are now uniformly tagged 'run' to match the unified Runs
-   * surface. The legacy 'job' and 'campaign' values are accepted on read so
-   * persisted localStorage entries from older sessions don't break.
+   * Workspace tabs are uniformly tagged 'run'. Legacy 'job' and 'campaign'
+   * values are accepted on read so older localStorage entries still parse.
    */
   kind: 'run' | 'job' | 'campaign'
   path: string
@@ -30,40 +30,36 @@ const WorkspaceTabsContext = createContext<WorkspaceTabsContextValue | null>(nul
 
 export function WorkspaceTabsProvider({ children }: { children: React.ReactNode }) {
   const location = useLocation()
-  const [tabs, setTabs] = useLocalStorage<WorkspaceTab[]>(STORAGE_KEY, [])
-
-  const upsertTab = useCallback((tab: Omit<WorkspaceTab, 'updatedAt'>) => {
-    setTabs(previous => {
-      const nextTab: WorkspaceTab = { ...tab, updatedAt: new Date().toISOString() }
-      const existingIndex = previous.findIndex(entry => entry.path === tab.path)
-      if (existingIndex >= 0) {
-        // Preserve position so activating a tab doesn't visually shuffle the
-        // bar. We only refresh metadata (title, subtitle, updatedAt) in place.
-        const next = previous.slice()
-        next[existingIndex] = { ...previous[existingIndex], ...nextTab }
-        return next
-      }
-      // New tab → append to the end (most recent on the right), capped at 10.
-      const appended = [...previous, nextTab]
-      return appended.length > 10 ? appended.slice(appended.length - 10) : appended
-    })
-  }, [setTabs])
-
-  const closeTab = useCallback((path: string) => {
-    setTabs(previous => previous.filter(tab => tab.path !== path))
-  }, [setTabs])
-
-  const clearTabs = useCallback(() => {
-    setTabs([])
-  }, [setTabs])
+  const [stored, setStored] = useLocalStorage<WorkspaceTab[]>(STORAGE_KEY, [])
+  const tabs = useMemo(() => migrateWorkspaceTabs(stored), [stored])
 
   useEffect(() => {
-    setTabs(previous => previous.map(tab => (
-      tab.path === location.pathname
-        ? { ...tab, updatedAt: new Date().toISOString() }
-        : tab
-    )))
-  }, [location.pathname, setTabs])
+    if (tabs.length !== stored.length) setStored(tabs)
+  }, [stored, tabs, setStored])
+
+  const upsertTab = useCallback((tab: Omit<WorkspaceTab, 'updatedAt'>) => {
+    if (!tab.path || !migrateWorkspaceTabs([{ path: tab.path }]).length) return
+    setStored(previous => {
+      const nextTab: WorkspaceTab = { ...tab, updatedAt: new Date().toISOString() }
+      const current = migrateWorkspaceTabs(previous)
+      const existingIndex = current.findIndex(entry => entry.path === tab.path)
+      if (existingIndex >= 0) {
+        const next = current.slice()
+        next[existingIndex] = { ...current[existingIndex], ...nextTab }
+        return next
+      }
+      const appended = [...current, nextTab]
+      return appended.length > 10 ? appended.slice(appended.length - 10) : appended
+    })
+  }, [setStored])
+
+  const closeTab = useCallback((path: string) => {
+    setStored(previous => migrateWorkspaceTabs(previous).filter(tab => tab.path !== path))
+  }, [setStored])
+
+  const clearTabs = useCallback(() => {
+    setStored([])
+  }, [setStored])
 
   const value = useMemo<WorkspaceTabsContextValue>(() => ({
     tabs,

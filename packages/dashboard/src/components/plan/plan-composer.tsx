@@ -14,9 +14,10 @@ import type { ProviderOption } from '../llm/ModelPicker'
 import { useExecutorPlugins } from '../llm/useExecutorPlugins'
 import { useProviderModels, type ProviderModelDescriptor } from '../llm/useProviderModels'
 import { cn } from '../../lib/utils'
+import { getReadinessMeta, toneDotClasses } from '../../lib/status'
 import type { Readiness } from '../../lib/intake-readiness'
 import { usePlanSession } from '../../providers/plan-session'
-import GenerateRunButton from './generate-run-button'
+import GenerateRunButton, { conversationHasRun } from './generate-run-button'
 
 function PlanModeModelSelect({
   value,
@@ -118,26 +119,14 @@ function ContextMeter({ used, window }: { used: number; window?: number }) {
   )
 }
 
-const READINESS_LABEL: Record<Readiness['state'], string> = {
-  investigating: 'Investigating',
-  ready: 'Ready to run',
-  'no-run-needed': 'No run needed',
-}
-
-const READINESS_DOT: Record<Readiness['state'], string> = {
-  investigating: 'bg-fg-subtle',
-  ready: 'bg-success-400',
-  'no-run-needed': 'bg-warning-400',
-}
-
-/** Makes the agent's own judgement visible, so "is this clear yet?" is not a guess. */
 function ReadinessStrip({ readiness }: { readiness: Readiness }) {
+  const meta = getReadinessMeta(readiness.state)
   const open = readiness.openQuestions.slice(0, 2)
   return (
     <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] leading-[1.5]">
       <span className="flex items-center gap-1.5 font-medium text-fg-muted">
-        <span className={cn('size-1.5 rounded-full', READINESS_DOT[readiness.state])} />
-        {READINESS_LABEL[readiness.state]}
+        <span className={cn('size-1.5 rounded-full', toneDotClasses(meta.tone))} />
+        {meta.label}
       </span>
       {open.length > 0 ? (
         <span className="text-fg-subtle">
@@ -233,6 +222,7 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
           <GenerateRunButton
             readiness={session.readiness}
             disabled={disabled}
+            generated={conversationHasRun(session.items)}
             onClick={generateRun}
           />
         </div>

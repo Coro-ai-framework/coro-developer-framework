@@ -168,7 +168,7 @@ function HeaderSummary({ job }: { job: Job }) {
           <h1 className="text-[1.75rem] font-semibold tracking-tight text-fg sm:text-[2rem]">
             {deriveJobTitle(job)}
           </h1>
-          <StatusBadge status={job.status} />
+          <StatusBadge status={job.status} awaitingEvent={job.awaitingEvent} />
         </div>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-fg-subtle">
@@ -727,7 +727,6 @@ export default function JobDetail() {
         kind: 'run',
         path: location.pathname,
         title: job ? deriveJobTitle(job) : jobId,
-        subtitle: job?.phase,
       }
     : null)
 
