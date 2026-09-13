@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import pino from 'pino'
 import { tool, createSdkMcpServer } from '@coro-ai/plugin-sdk'
 import { z } from 'zod'
@@ -58,6 +60,13 @@ describe('OpenAiExecutor — models', () => {
     expect(ids).not.toContain('gpt-5.4-mini')
     expect(ids).not.toContain('gpt-5.5-pro')
     expect(ids).not.toContain('gpt-5.4-nano')
+  })
+
+  it('exposes models.json as listModels()', () => {
+    const catalogue = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'models.json'), 'utf8'),
+    ) as { models: unknown }
+    expect(makeExecutor().listModels()).toEqual(catalogue.models)
   })
 
   it('seeds planning to Sol, coding to Terra, mini to Luna', () => {

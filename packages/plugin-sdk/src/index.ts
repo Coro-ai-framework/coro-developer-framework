@@ -6,6 +6,7 @@
 
 export * from './types'
 export * from './helpers'
+export * from './model-catalogue'
 export * from './base'
 export * from './executor-helpers'
 export * from './mcp'

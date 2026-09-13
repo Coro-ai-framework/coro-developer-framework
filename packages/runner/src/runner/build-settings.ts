@@ -8,7 +8,8 @@
 // the bootstrap module into a circular import (server.ts → reload →
 // index.ts → server.ts).
 
-import type { PluginRegistry } from '../plugins/registry'
+import { isExecutorPlugin, type PluginRegistry } from '../plugins/registry'
+import type { PhaseExecutorRuntime } from '../plugins/types'
 import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
 import {
   resolveIntelligenceDir,
@@ -19,50 +20,150 @@ import {
 } from '../config/local-config'
 import { Settings } from '../config/settings'
 
+function isTierAliasKey(key: string): boolean {
+  return key.startsWith('tier:')
+}
+
+/** Capability slots every workflow resolves — owned by the preferred executor. */
+function isCapabilityAliasKey(key: string): boolean {
+  return isTierAliasKey(key) || key === 'planning' || key === 'coding' || key === 'mini'
+}
+
+async function readyExecutors(plugins: PluginRegistry): Promise<PhaseExecutorRuntime[]> {
+  const out: PhaseExecutorRuntime[] = []
+  for (const runtime of plugins.byKind('executor')) {
+    if (!isExecutorPlugin(runtime)) continue
+    try {
+      const health = await runtime.healthcheck()
+      if (health.ok) out.push(runtime)
+    } catch {
+      // Treat a throwing healthcheck as not-ready — same as ok:false.
+    }
+  }
+  return out
+}
+
+/**
+ * Pick the executor whose `tier:*` defaults should fill empty alias
+ * slots. Operator `defaultProvider` wins; otherwise the sole healthy
+ * executor. Two healthy executors with no default stay ambiguous and
+ * we fall back to first-write-wins among the ready set.
+ */
+async function preferredExecutor(
+  plugins: PluginRegistry,
+  defaultProvider: string | undefined,
+): Promise<PhaseExecutorRuntime | undefined> {
+  if (defaultProvider) {
+    const pinned = plugins.byId(defaultProvider)
+    if (pinned && isExecutorPlugin(pinned)) return pinned
+  }
+  const ready = await readyExecutors(plugins)
+  if (ready.length === 1) return ready[0]
+  return undefined
+}
+
+function applyEnvModelOverride(args: {
+  plugins: PluginRegistry
+  aliases: Record<string, { provider: string; model: string; reasoningEffort?: 'low' | 'medium' | 'high' }>
+  model: string
+  tier: 'planning' | 'coding'
+  defaultProvider: string | undefined
+}): void {
+  let provider = process.env['CORO_DEFAULT_PROVIDER'] || args.defaultProvider
+  if (!provider) {
+    try {
+      provider = args.plugins.resolveExecutor({ model: args.model }).manifest.id
+    } catch {
+      provider = undefined
+    }
+  }
+  if (!provider) return
+  const entry = { provider, model: args.model }
+  args.aliases[`tier:${args.tier}`] = entry
+  args.aliases[args.tier] = entry
+}
+
 /**
  * Seed `settings.llm.aliases` from each executor plugin's
  * `defaultAliases()`. Operator-supplied aliases (loaded from
- * `LocalConfig`) win over plugin defaults. Env var overrides
- * (`CLAUDE_PLANNING_MODEL` / `CLAUDE_CODING_MODEL`) trump everything
- * for back-compat with the pre-Phase-C bootstrap behaviour.
+ * `LocalConfig`) win over plugin defaults.
+ *
+ * Provider-specific keys (e.g. `openaiPlanning`) are first-write-wins
+ * across every registered executor. Capability slots (`tier:*` and the
+ * legacy `planning` / `coding` / `mini` shorthands) come from the
+ * preferred executor (configured `defaultProvider`, else the sole
+ * healthy executor) so an OpenAI-only install is not shadowed by the
+ * auto-loaded Anthropic plugin.
+ *
+ * Env var overrides (`CORO_PLANNING_MODEL` / `CORO_CODING_MODEL`,
+ * plus the deprecated `CLAUDE_*` names) trump everything. Provider is
+ * resolved from `CORO_DEFAULT_PROVIDER` or `supports(model)`, never
+ * hardcoded.
  *
  * Called from runner bootstrap and also from `reloadRunnerState`
  * after a config write so newly-installed executor plugins seed
  * their aliases into the live `Settings`.
  */
-export function seedExecutorDefaultAliases(args: {
+export async function seedExecutorDefaultAliases(args: {
   plugins: PluginRegistry
   settings: Settings
-}): void {
+}): Promise<void> {
   const llm = args.settings.llm ?? (args.settings.llm = {})
   const aliases = llm.aliases ?? (llm.aliases = {})
-  for (const runtime of args.plugins.all()) {
-    if (runtime.manifest.kind !== 'executor') continue
-    const exec = runtime as unknown as {
-      defaultAliases?: () => Record<string, { provider: string; model: string }>
-    }
-    if (typeof exec.defaultAliases !== 'function') continue
-    for (const [k, v] of Object.entries(exec.defaultAliases())) {
+  const preferred = await preferredExecutor(args.plugins, llm.defaultProvider)
+  const readyIds = new Set((await readyExecutors(args.plugins)).map(r => r.manifest.id))
+
+  if (!llm.defaultProvider && preferred) {
+    llm.defaultProvider = preferred.manifest.id
+  }
+  if (preferred) {
+    args.plugins.setDefaults({
+      ...args.plugins.getDefaults(),
+      executor: preferred.manifest.id,
+    })
+  }
+
+  if (preferred && typeof preferred.defaultAliases === 'function') {
+    for (const [k, v] of Object.entries(preferred.defaultAliases())) {
       if (!aliases[k]) aliases[k] = v
     }
   }
-  // Env overrides trump everything (back-compat escape hatch for CI /
-  // `docker run`). Model resolution consults `tier:<tier>` *before* the
-  // legacy bare `planning`/`coding` keys, so we must overwrite the
-  // `tier:*` alias — writing only the legacy key would be silently
-  // shadowed by the plugin-seeded `tier:planning` default. We set both
-  // so callers that reference either key resolve consistently.
-  const planEnv = process.env['CLAUDE_PLANNING_MODEL']
-  if (planEnv) {
-    const entry = { provider: 'anthropic', model: planEnv }
-    aliases['tier:planning'] = entry
-    aliases['planning'] = entry
+
+  for (const runtime of args.plugins.all()) {
+    if (!isExecutorPlugin(runtime)) continue
+    if (typeof runtime.defaultAliases !== 'function') continue
+    if (preferred && runtime.manifest.id === preferred.manifest.id) continue
+    for (const [k, v] of Object.entries(runtime.defaultAliases())) {
+      if (isCapabilityAliasKey(k)) {
+        if (preferred) continue
+        if (!readyIds.has(runtime.manifest.id)) continue
+      }
+      if (!aliases[k]) aliases[k] = v
+    }
   }
-  const codeEnv = process.env['CLAUDE_CODING_MODEL']
+
+  // Env overrides trump everything (escape hatch for CI / `docker run`).
+  // Model resolution consults `tier:<tier>` *before* the legacy bare
+  // `planning`/`coding` keys, so we overwrite both.
+  const planEnv = process.env['CORO_PLANNING_MODEL'] || process.env['CLAUDE_PLANNING_MODEL']
+  if (planEnv) {
+    applyEnvModelOverride({
+      plugins: args.plugins,
+      aliases,
+      model: planEnv,
+      tier: 'planning',
+      defaultProvider: llm.defaultProvider,
+    })
+  }
+  const codeEnv = process.env['CORO_CODING_MODEL'] || process.env['CLAUDE_CODING_MODEL']
   if (codeEnv) {
-    const entry = { provider: 'anthropic', model: codeEnv }
-    aliases['tier:coding'] = entry
-    aliases['coding'] = entry
+    applyEnvModelOverride({
+      plugins: args.plugins,
+      aliases,
+      model: codeEnv,
+      tier: 'coding',
+      defaultProvider: llm.defaultProvider,
+    })
   }
 }
 
@@ -154,7 +255,7 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
     proposals: resolveProposalsConfig(config),
     upstream: resolveUpstreamConfig(config),
     llm: {
-      defaultProvider: config.llm?.defaultProvider ?? 'anthropic',
+      defaultProvider: config.llm?.defaultProvider,
       providers: {},
       aliases: { ...(config.llm?.aliases ?? {}) },
     },

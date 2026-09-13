@@ -714,6 +714,30 @@ export interface ExecutorModelDescriptor {
 }
 
 /**
+ * Versioned model catalogue shipped as `models.json` next to an executor
+ * package. The runner never reads this file — executors load it via
+ * {@link loadExecutorModelCatalogue} and expose it through
+ * {@link PhaseExecutorRuntime.listModels} / {@link PhaseExecutorRuntime.supports}.
+ *
+ * `idPrefixes` / `idPatterns` keep `supports()` accepting dated snapshots
+ * (e.g. `claude-sonnet-5-20251022`) without listing every revision.
+ * `extraAliases` maps additional alias keys onto a catalogue model id or
+ * onto a `tier:*` key already derived from `tier` / `isDefault` tags.
+ */
+export interface ExecutorModelCatalogue {
+  models: ExecutorModelDescriptor[]
+  idPrefixes?: string[]
+  idPatterns?: string[]
+  extraAliases?: Record<string, string>
+}
+
+/**
+ * How {@link PhaseExecutorRuntime.classifyPhaseError} labels a thrown
+ * error so the runner can recover without importing a specific LLM package.
+ */
+export type PhaseErrorClass = 'recoverable-abort' | 'stale-session'
+
+/**
  * Capability flags an executor MUST publish at registration time. The
  * runner uses these to decide whether to:
  *   - inject `.claude/CLAUDE.md` into the system prompt manually
@@ -1055,6 +1079,15 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
   supports(model: string): boolean
 
   /**
+   * Optional classification of a thrown phase error so the runner can
+   * recover (retry a stale session, treat a steering interrupt as
+   * non-fatal) without importing a specific LLM package.
+   *
+   * Return `null` / omit the method when the error is not recognised.
+   */
+  classifyPhaseError?(err: unknown): PhaseErrorClass | null
+
+  /**
    * Report a host-enforced sandbox the executor knows about but cannot
    * switch off. Optional — executors that never run shell commands in a
    * confined environment, or that have no way to inspect one, return
@@ -1084,12 +1117,10 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    * reference `model: 'planning'` / `model: 'coding'` without
    * tenant-side config.
    *
-   * The recommended implementation derives these from `listModels()`
-   * via {@link tierDefaultAliases} so the model catalogue stays the
-   * single source of truth — the tier defaults fall out of each
-   * descriptor's `tier` + `isDefault` tags. Anthropic returns
-   * `{ 'tier:planning': { provider: 'anthropic', model: 'claude-opus-5' },
-   *    'tier:coding':   { provider: 'anthropic', model: 'claude-sonnet-5' }, … }`.
+   * The recommended implementation derives these from the package's
+   * `models.json` via {@link defaultAliasesFromCatalogue} so the
+   * catalogue stays the single source of truth — the tier defaults
+   * fall out of each descriptor's `tier` + `isDefault` tags.
    *
    * The runner never writes these defaults back to disk — they only
    * influence in-memory `Settings.llm.aliases` resolution.

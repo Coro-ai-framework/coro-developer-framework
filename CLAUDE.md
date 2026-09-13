@@ -118,7 +118,7 @@ Agents in this repository do not run directly inside Claude Code sessions. They 
 1. Receives job requests from the `coro` CLI or external event sources (BitBucket webhooks, Jira webhooks)
 2. Creates a typed `Job` object with a `workflowPath` pointing to the correct workflow MD file
 3. Assembles a system prompt from the workflow file, agent instructions, and memory — static content (behavior rules, tenant context, git conventions) is loaded natively by the SDK from `.claude/CLAUDE.md`
-4. Resolves a `PhaseExecutor` plugin (default: `@coro-ai/llm-anthropic`) and calls `executor.executePhase()` for each workflow phase. The executor encapsulates the LLM SDK call, manages the tool-use loop, subagent spawning, and conversation history. Per-phase provider/model is resolved by the runner via `settings.llm.aliases` and optional `provider:` overrides in the workflow YAML. The runner core has zero direct Anthropic-SDK imports.
+4. Resolves a `PhaseExecutor` plugin (the configured default, else the sole installed executor) and calls `executor.executePhase()` for each workflow phase. The executor encapsulates the LLM SDK call, manages the tool-use loop, subagent spawning, and conversation history. Per-phase provider/model is resolved by the runner via `settings.llm.aliases` and optional `provider:` overrides in the workflow YAML. Model catalogues live in each executor's `models.json`; the runner core has zero direct Anthropic-SDK imports.
 5. Parks the job in Redis when waiting for an external event (PR merge, review comment, human approval)
 6. Resumes the job when the expected event webhook arrives
 
@@ -554,7 +554,7 @@ coro/                                    ← workspace root
     │   ├── vite.config.ts
     │   └── src/                         ← React UI (jobs, intelligence, settings)
     ├── plugin-sdk/                      ← @coro-ai/plugin-sdk — public SDK for plugin authors
-    │   └── src/                         ← types.ts, base.ts, helpers.ts (ScmPluginBase, TrackerPluginBase, ExecutorPluginBase, PhaseExecutor)
+    │   └── src/                         ← types.ts, base.ts, helpers.ts (ScmPluginBase, TrackerPluginBase, PhaseExecutorBase, model-catalogue)
     ├── llm-anthropic/                   ← @coro-ai/llm-anthropic — built-in Anthropic phase executor plugin
     │   └── src/                         ← executor.ts (wraps @anthropic-ai/claude-agent-sdk), auth.ts, index.ts
     ├── plugin-gitlab/                   ← @coro-ai/plugin-gitlab — example external SCM plugin

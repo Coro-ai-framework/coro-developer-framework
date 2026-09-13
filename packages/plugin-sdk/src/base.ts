@@ -12,8 +12,14 @@
 // correct for stateless plugins.
 
 import type { ExternalRef, NormalizedEvent } from '@coro-ai/cloud-protocol'
+import {
+  calculateCostFromCatalogue,
+  defaultAliasesFromCatalogue,
+  supportsFromCatalogue,
+} from './model-catalogue'
 import type {
   ExecutorCapabilities,
+  ExecutorModelCatalogue,
   ExecutorModelDescriptor,
   NormalizedTokenUsage,
   PhaseExecutionRequest,
@@ -101,9 +107,11 @@ export abstract class TrackerPluginBase<Config = unknown>
 
 /**
  * Phase executor authoring base. Subclasses MUST set `manifest` and
- * `capabilities`, implement `init`, `listModels`, `supports`, and
- * `executePhase`. Optional methods (`calculateCost`, `mcpServer`) can
- * be provided as needed.
+ * `capabilities`, implement `init` and `executePhase`. Pass a
+ * {@link ExecutorModelCatalogue} (typically loaded from `models.json`)
+ * to the constructor to get `listModels` / `supports` / `defaultAliases`
+ * / `calculateCost` for free; override any of those when the catalogue
+ * is not enough.
  *
  * The default `healthcheck` returns `{ ok: true }`; providers that
  * round-trip an upstream API should override to surface auth/rate
@@ -121,13 +129,43 @@ export abstract class PhaseExecutorBase<Config = unknown>
   abstract readonly manifest: PluginManifest
   abstract readonly capabilities: ExecutorCapabilities
 
+  protected readonly modelCatalogue: ExecutorModelCatalogue | undefined
+
+  constructor(catalogue?: ExecutorModelCatalogue) {
+    super()
+    this.modelCatalogue = catalogue
+  }
+
   abstract init(config: Config, deps: PluginDeps): Promise<void>
-  abstract listModels(): ReadonlyArray<ExecutorModelDescriptor>
-  abstract supports(model: string): boolean
   abstract executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent>
 
-  /** Optional — providers that own pricing tables override. */
-  calculateCost?(model: string, usage: NormalizedTokenUsage): number
+  listModels(): ReadonlyArray<ExecutorModelDescriptor> {
+    if (!this.modelCatalogue) {
+      throw new Error(
+        `${this.constructor.name}.listModels: pass a catalogue to PhaseExecutorBase or override listModels()`,
+      )
+    }
+    return this.modelCatalogue.models
+  }
+
+  supports(model: string): boolean {
+    if (!this.modelCatalogue) {
+      throw new Error(
+        `${this.constructor.name}.supports: pass a catalogue to PhaseExecutorBase or override supports()`,
+      )
+    }
+    return supportsFromCatalogue(this.modelCatalogue, model)
+  }
+
+  defaultAliases(): Record<string, { provider: string; model: string }> {
+    if (!this.modelCatalogue) return {}
+    return defaultAliasesFromCatalogue(this.modelCatalogue, this.manifest.id)
+  }
+
+  calculateCost(model: string, usage: NormalizedTokenUsage): number {
+    if (!this.modelCatalogue) return 0
+    return calculateCostFromCatalogue(this.modelCatalogue, model, usage)
+  }
 
   mcpServer(): PluginMcpServerConfig | undefined {
     return undefined

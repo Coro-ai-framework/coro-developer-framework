@@ -155,7 +155,7 @@ export async function startLocalRunner(
   // `plugins.installed.<id>.config`.
   const pluginsConfig = resolvePluginsConfig(effectiveConfig)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
-  seedExecutorDefaultAliases({ plugins, settings })
+  await seedExecutorDefaultAliases({ plugins, settings })
 
   // Create polling transport for PR event detection. Plugin-aware
   // polling lives in the SCM plugins themselves (`pollPr`); the
@@ -259,7 +259,7 @@ export async function startHybridRunner(
   // transport with a closure that normalises plugin webhooks.
   const pluginsConfig = resolvePluginsConfig(effectiveConfig)
   const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
-  seedExecutorDefaultAliases({ plugins, settings })
+  await seedExecutorDefaultAliases({ plugins, settings })
 
   // Create WebSocket transport to cloud
   const transport = new WebSocketTransport({

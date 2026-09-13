@@ -4,6 +4,8 @@
 // throws by design in Phase 2; Phase 2c will wire it).
 
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import pino from 'pino'
 import {
   AnthropicExecutor,
@@ -107,6 +109,17 @@ describe('AnthropicExecutor — listModels', () => {
     })
   })
 
+  it('exposes models.json as listModels()', () => {
+    const ex = createAnthropicExecutor({
+      settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
+      logger: silentLogger,
+    })
+    const catalogue = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'models.json'), 'utf8'),
+    ) as { models: unknown }
+    expect(ex.listModels()).toEqual(catalogue.models)
+  })
+
   it('seeds planning to Opus 5, coding and mini to Sonnet 5', () => {
     const ex = createAnthropicExecutor({
       settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
@@ -161,6 +174,14 @@ describe('AnthropicExecutor — supports()', () => {
     expect(ex.supports('')).toBe(false)
     expect(ex.supports(null as unknown as string)).toBe(false)
     expect(ex.supports(undefined as unknown as string)).toBe(false)
+  })
+
+  it('classifies stale-session and recoverable-abort errors for the runner', () => {
+    expect(ex.classifyPhaseError(new Error('unrelated'))).toBeNull()
+    expect(ex.classifyPhaseError(
+      new Error('Claude Code returned an error result: previous_message_id does not match'),
+    )).toBe('stale-session')
+    expect(ex.classifyPhaseError(new Error('Request was aborted.'))).toBe('recoverable-abort')
   })
 })
 

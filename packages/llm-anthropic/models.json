@@ -1,0 +1,91 @@
+{
+  "idPrefixes": ["claude-"],
+  "extraAliases": {
+    "planning": "tier:planning",
+    "coding": "tier:coding",
+    "mini": "tier:coding",
+    "tier:mini": "tier:coding"
+  },
+  "models": [
+    {
+      "id": "claude-fable-5-1",
+      "displayName": "Claude Fable 5.1",
+      "contextTokens": 1000000,
+      "tier": "planning",
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 10,
+        "outputPerMTokens": 50,
+        "cacheReadPerMTokens": 0.25,
+        "cacheCreationPerMTokens": 12.5
+      }
+    },
+    {
+      "id": "claude-opus-5",
+      "displayName": "Claude Opus 5",
+      "contextTokens": 1000000,
+      "tier": "planning",
+      "isDefault": true,
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 5,
+        "outputPerMTokens": 25,
+        "cacheReadPerMTokens": 0.5,
+        "cacheCreationPerMTokens": 6.25
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "displayName": "Claude Sonnet 5",
+      "contextTokens": 1000000,
+      "tier": "coding",
+      "isDefault": true,
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 2,
+        "outputPerMTokens": 10,
+        "cacheReadPerMTokens": 0.2,
+        "cacheCreationPerMTokens": 2.5
+      }
+    },
+    {
+      "id": "claude-fable-5",
+      "displayName": "Claude Fable 5",
+      "contextTokens": 1000000,
+      "tier": "planning",
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 10,
+        "outputPerMTokens": 50,
+        "cacheReadPerMTokens": 1,
+        "cacheCreationPerMTokens": 12.5
+      }
+    },
+    {
+      "id": "claude-opus-4-8",
+      "displayName": "Claude Opus 4.8",
+      "contextTokens": 1000000,
+      "tier": "planning",
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 5,
+        "outputPerMTokens": 25,
+        "cacheReadPerMTokens": 0.5,
+        "cacheCreationPerMTokens": 6.25
+      }
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "displayName": "Claude Sonnet 4.6",
+      "contextTokens": 1000000,
+      "tier": "coding",
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 3,
+        "outputPerMTokens": 15,
+        "cacheReadPerMTokens": 0.3,
+        "cacheCreationPerMTokens": 3.75
+      }
+    }
+  ]
+}

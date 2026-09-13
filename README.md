@@ -140,9 +140,9 @@ Workflow YAML can pin a provider per phase (`provider:` / model aliases). Jobs c
 **Contributing a new integration** — Implement a separate package that depends on [`@coro-ai/plugin-sdk`](packages/plugin-sdk/):
 
 - **SCM / tracker** — extend `ScmPluginBase` or `TrackerPluginBase`; ship `coro-plugin.json`, optional MCP server wiring, and optional `intelligence/` snippets for the overlay.
-- **LLM** — extend `ExecutorPluginBase` and return a `PhaseExecutor` (see the Anthropic/OpenAI packages for the pattern).
+- **LLM** — extend `PhaseExecutorBase`, ship `models.json`, and implement `executePhase` (see the Anthropic/OpenAI packages for the pattern).
 
-Scaffold locally with `coro plugin init <id>`, or study [`packages/plugin-gitlab`](packages/plugin-gitlab/) as a full SCM example. SDK reference: [`packages/plugin-sdk/README.md`](packages/plugin-sdk/README.md). Extension contract notes: [`docs/workflow-extension-contract.md`](docs/workflow-extension-contract.md).
+Scaffold locally with `coro plugin init <id> --kind scm|tracker|executor`, or study [`packages/plugin-gitlab`](packages/plugin-gitlab/) as a full SCM example. SDK reference: [`packages/plugin-sdk/README.md`](packages/plugin-sdk/README.md). Extension contract notes: [`docs/workflow-extension-contract.md`](docs/workflow-extension-contract.md).
 
 ---
 

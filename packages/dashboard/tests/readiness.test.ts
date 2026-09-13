@@ -167,6 +167,20 @@ describe('evaluateReadiness', () => {
     expect(summary.missingRequired).not.toContain('issue-tracker')
   })
 
+  it('treats a configured OpenAI executor as ready before the catalogue loads', () => {
+    const summary = evaluateReadiness({
+      draft: makeDraft({
+        llmDefaultProvider: 'openai',
+        pluginInstalled: {
+          openai: { enabled: true, config: { apiKey: 'sk-test' } },
+          local: { enabled: true, config: { repoPath: '/tmp/x' } },
+        },
+      }),
+      pluginsCatalogue: null,
+    })
+    expect(summary.byId['llm-provider'].status).toBe('ok')
+  })
+
   it('recognises local as an SCM id before the catalogue has loaded', () => {
     const summary = evaluateReadiness({
       draft: makeDraft({

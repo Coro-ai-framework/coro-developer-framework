@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 import { loadLocalConfig, detectMode, defaultConfigPath } from '../../src/config/local-config'
+import { BUILTIN_PLUGIN_IDS_BY_KIND } from '../../src/plugins/builtin'
 import { assertValidDesktopPort } from '../../src/desktop/contract'
 import { die } from '../http'
 import { maybeOpenBrowser } from '../browser-open'
@@ -92,18 +93,21 @@ runnerCommand
       console.log(`  Cloud URL: ${config.cloud.url}`)
     }
 
-    // Read the LLM provider key from the modern plugin slot. The
-    // legacy top-level `anthropic` block was removed in Phase F of the
-    // Anthropic-as-plugin migration.
-    const installedAnthropic = config?.plugins?.installed?.['anthropic']?.config as
-      | { method?: string; apiKey?: string }
-      | undefined
-    const apiKey =
-      installedAnthropic?.method === 'apiKey' && typeof installedAnthropic.apiKey === 'string'
-        ? installedAnthropic.apiKey
-        : undefined
-    if (apiKey) {
-      console.log(`  API Key:   ${apiKey.slice(0, 10)}...${apiKey.slice(-4)}`)
+    const defaultProvider = config?.llm?.defaultProvider
+    if (defaultProvider) {
+      console.log(`  LLM:       ${defaultProvider} (default)`)
+    }
+    const builtinExecutors = new Set(BUILTIN_PLUGIN_IDS_BY_KIND.executor)
+    for (const [id, entry] of Object.entries(config?.plugins?.installed ?? {})) {
+      if (entry.enabled === false) continue
+      if (!builtinExecutors.has(id) && id !== defaultProvider) continue
+      const cfg = (entry.config ?? {}) as { apiKey?: string; method?: string }
+      if (typeof cfg.apiKey === 'string' && cfg.apiKey.length > 0) {
+        const key = cfg.apiKey
+        console.log(`  ${id} key: ${key.slice(0, 10)}...${key.slice(-4)}`)
+      } else if (typeof cfg.method === 'string' && cfg.method.length > 0) {
+        console.log(`  ${id}:     ${cfg.method}`)
+      }
     }
 
     if (config?.intelligence) {

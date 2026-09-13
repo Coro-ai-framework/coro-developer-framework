@@ -1,7 +1,7 @@
 {
   "name": "@coro-ai/plugin-sdk",
   "version": "0.1.0",
-  "description": "Public SDK for authoring Coro plugins (SCM, tracker, …). Re-exports the runner's plugin contracts plus a small set of authoring helpers (HMAC verification, base classes, MCP-server descriptors).",
+  "description": "Public SDK for authoring Coro plugins (SCM, tracker, executor). Contracts, base classes, HMAC/MCP helpers, and executor models.json catalogue loaders.",
   "license": "BUSL-1.1",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -41,7 +41,8 @@
     "zod": "^3.0.0 || ^4.0.0"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.92"
+    "@anthropic-ai/claude-agent-sdk": "^0.2.92",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@coro-ai/cloud-protocol": "workspace:*",

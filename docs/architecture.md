@@ -40,9 +40,11 @@ Workflow logic, agent procedures, language conventions, and accumulated
 memory all live in markdown. The runner does not hardcode product features
 or workflow-specific logic. A job carries a `workflowPath`; the runner
 materialises the right intelligence overlay, resolves a `PhaseExecutor`
-plugin (default: `@coro-ai/llm-anthropic`) for each phase, and exposes a
-domain-specific MCP toolset. The executor owns the LLM SDK call; the
-runner core has no direct LLM-SDK imports.
+plugin for each phase (the sole configured executor, or an explicit
+`provider:` / alias), and exposes a domain-specific MCP toolset. Each
+executor owns its model catalogue (`models.json`) and the LLM SDK call;
+the runner core has no direct LLM-SDK imports and does not hardcode
+model ids.
 
 ---
 
@@ -55,8 +57,9 @@ Coro ships as a pnpm workspace. The core packages are:
 | `@coro-ai/runner`                | The runtime: `coro` CLI, REST + dashboard server, job runner, MCP server, intelligence resolver, plugin registry, state backends, cloud control plane. |
 | `@coro-ai/dashboard`             | React + Vite + Tailwind UI. Built statically and served by the runner at `/dashboard/`. |
 | `@coro-ai/intelligence-base`     | The base intelligence layer: generic agents, workflows, skills, and empty memory templates. The runner imports `getBaseLayerRoot()` from this package. |
-| `@coro-ai/plugin-sdk`            | Public SDK for authoring Coro plugins. Defines the three plugin kinds — `ScmPluginBase`, `TrackerPluginBase`, `ExecutorPluginBase` — plus the `PhaseExecutor` runtime contract. |
-| `@coro-ai/llm-anthropic`         | Built-in Anthropic phase executor plugin. Wraps `@anthropic-ai/claude-agent-sdk`; registered automatically via `buildBuiltinPluginRegistry`. |
+| `@coro-ai/plugin-sdk`            | Public SDK for authoring Coro plugins. Defines the three plugin kinds — `ScmPluginBase`, `TrackerPluginBase`, `PhaseExecutorBase` — plus the `PhaseExecutorRuntime` contract and executor `models.json` helpers. |
+| `@coro-ai/llm-anthropic`         | Built-in Anthropic phase executor plugin. Wraps `@anthropic-ai/claude-agent-sdk`; registered via `buildBuiltinPluginRegistry`. Model catalogue: `packages/llm-anthropic/models.json`. |
+| `@coro-ai/llm-openai`            | Built-in OpenAI phase executor plugin. Model catalogue: `packages/llm-openai/models.json`. |
 
 Additional shipped packages: `@coro-ai/desktop-electron` (Electron shell
 that bundles runner + dashboard), `@coro-ai/plugin-gitlab` (example external SCM plugin).

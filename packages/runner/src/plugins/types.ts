@@ -103,6 +103,8 @@ export type {
   NormalizedTokenUsage,
   ExecutorSessionState,
   ExecutorModelDescriptor,
+  ExecutorModelCatalogue,
+  PhaseErrorClass,
   ExecutorSubagentSpec,
   McpServerDescriptor,
   ConversationMessage,

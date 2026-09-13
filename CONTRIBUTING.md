@@ -43,7 +43,7 @@ and hybrid/cloud configuration.
 | `packages/intelligence-base` | Base agents, workflows, skills |
 | `packages/plugin-sdk` | SDK for **SCM**, **tracker**, and **executor (LLM)** plugins |
 | `packages/plugin-gitlab` | Reference SCM plugin — start here when adding a Git host |
-| `packages/llm-anthropic`, `packages/llm-openai` | Reference executor plugins |
+| `packages/llm-anthropic`, `packages/llm-openai` | Reference executor plugins. Each owns a versioned `models.json` catalogue (picker rows, `supports()`, default aliases). Do not hardcode model ids in the runner or dashboard. |
 | `packages/runner/src/plugins/builtin/` | Built-in GitHub (SCM) and Jira (tracker) |
 | `packages/runner/src/cloud` | **Commercial** — not accepting drive-by refactors without discussion |
 

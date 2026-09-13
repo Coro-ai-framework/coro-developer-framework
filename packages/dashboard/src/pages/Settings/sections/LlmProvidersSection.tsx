@@ -169,8 +169,8 @@ export default function LlmProvidersSection() {
   )
 
   // Default provider must be one of the enabled executors. If the user
-  // hasn't picked one yet, show a placeholder; the runner falls back to
-  // 'anthropic' on save when this is empty.
+  // hasn't picked one yet, show a placeholder; the runner uses the
+  // sole configured executor when this is empty.
   const defaultProviderValue = draft.llmDefaultProvider
 
   const setDefaultProvider = (next: string) => {
@@ -357,7 +357,7 @@ export default function LlmProvidersSection() {
             onChange={e => setDefaultProvider(e.target.value)}
             className="w-full rounded-xl border border-line bg-overlay px-3 py-2 text-sm text-fg"
           >
-            <option value="">(let the runner choose — defaults to anthropic)</option>
+            <option value="">(let the runner choose — sole configured executor)</option>
             {enabledIds.map(id => (
               <option key={id} value={id}>
                 {executorPlugins.find(p => p.manifest.id === id)?.manifest.displayName ?? id}

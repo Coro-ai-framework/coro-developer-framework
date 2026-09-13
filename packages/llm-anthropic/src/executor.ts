@@ -50,7 +50,7 @@ import type {
   PluginMcpServerConfig,
   PluginTestResult,
 } from '@coro-ai/plugin-sdk'
-import { RateLimitExceededError, classifyProviderError, tierDefaultAliases } from '@coro-ai/plugin-sdk'
+import { RateLimitExceededError, classifyProviderError } from '@coro-ai/plugin-sdk'
 import type { ClassifyOptions } from '@coro-ai/plugin-sdk'
 import { buildAnthropicAuthEnv } from './auth'
 import { registerAnthropicHttpRoutes } from './http-routes'
@@ -75,6 +75,14 @@ import { chatViaAgentSdk, shouldChatViaAgentSdk, shouldRouteChatViaAgentSdk } fr
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
 import type { ExecutorSandboxReport, SteeringInterruptMode } from '@coro-ai/plugin-sdk'
 import { probeHostSandbox } from './sandbox-probe'
+import {
+  ANTHROPIC_MODELS,
+  ANTHROPIC_PLUGIN_ID,
+  anthropicDefaultAliases,
+  supportsAnthropicModel,
+} from './models'
+import type { PhaseErrorClass } from '@coro-ai/plugin-sdk'
+import { isStaleSessionResumeError } from './session-errors'
 
 /** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
 interface NormalizedTokensMutable {
@@ -98,8 +106,6 @@ function toSdkUserMessage(msg: ConversationMessage): SDKUserMessage {
 }
 
 // ── Static manifest data ─────────────────────────────────────────────────────
-
-const ANTHROPIC_PLUGIN_ID = 'anthropic' as const
 
 /**
  * Fallback wait when we recognise a Claude Code subprocess rate-limit
@@ -175,110 +181,9 @@ const ANTHROPIC_CLASSIFY_OPTIONS: ClassifyOptions = {
   ],
 }
 
-/**
- * Static catalogue of Anthropic models the executor recommends. Used by:
- *   - The dashboard's model picker (per-provider dropdown).
- *   - `resolveExecutor({ model })` model-→-provider inference.
- *   - The conformance harness to validate `supports()` consistency.
- *
- * Pricing is published purely as a **pre-run preview hint** for the
- * dashboard cost preview. Runtime accounting still trusts the
- * `total_cost_usd` field the Anthropic Agent SDK reports on every
- * result event — we do not derive cost from these tables. Numbers are
- * USD per million tokens, indexed to Anthropic's published price list
- * for the closest current-generation tier; out-of-date by a few
- * percent is fine for preview, never for invoicing.
- */
-const ANTHROPIC_MODELS: ReadonlyArray<ExecutorModelDescriptor> = [
-  // Current generation — dateless IDs are pinned snapshots, not evergreen
-  // pointers. Source: platform.claude.com/docs models overview + pricing.
-  // There is no current-gen Haiku; `tier:mini` aliases remap to Sonnet 5
-  // in {@link AnthropicExecutor.defaultAliases} until a successor ships.
-  {
-    id: 'claude-fable-5-1',
-    displayName: 'Claude Fable 5.1',
-    contextTokens: 1_000_000,
-    tier: 'planning',
-    supportsThinking: true,
-    pricing: {
-      inputPerMTokens: 10,
-      outputPerMTokens: 50,
-      cacheReadPerMTokens: 0.25,
-      cacheCreationPerMTokens: 12.5,
-    },
-  },
-  {
-    id: 'claude-opus-5',
-    displayName: 'Claude Opus 5',
-    contextTokens: 1_000_000,
-    tier: 'planning',
-    isDefault: true,
-    supportsThinking: true,
-    pricing: {
-      inputPerMTokens: 5,
-      outputPerMTokens: 25,
-      cacheReadPerMTokens: 0.5,
-      cacheCreationPerMTokens: 6.25,
-    },
-  },
-  {
-    id: 'claude-sonnet-5',
-    displayName: 'Claude Sonnet 5',
-    contextTokens: 1_000_000,
-    tier: 'coding',
-    isDefault: true,
-    supportsThinking: true,
-    pricing: {
-      inputPerMTokens: 2,
-      outputPerMTokens: 10,
-      cacheReadPerMTokens: 0.2,
-      cacheCreationPerMTokens: 2.5,
-    },
-  },
-  // Previous generation — kept for cost/latency tuning and for tenants
-  // that have pinned older IDs. Models whose first-party retirement
-  // window is already open (Sonnet 4.5, Haiku 4.5) are omitted from
-  // the picker; `supports()` still accepts any `claude-*` id.
-  {
-    id: 'claude-fable-5',
-    displayName: 'Claude Fable 5',
-    contextTokens: 1_000_000,
-    tier: 'planning',
-    supportsThinking: true,
-    pricing: {
-      inputPerMTokens: 10,
-      outputPerMTokens: 50,
-      cacheReadPerMTokens: 1,
-      cacheCreationPerMTokens: 12.5,
-    },
-  },
-  {
-    id: 'claude-opus-4-8',
-    displayName: 'Claude Opus 4.8',
-    contextTokens: 1_000_000,
-    tier: 'planning',
-    supportsThinking: true,
-    pricing: {
-      inputPerMTokens: 5,
-      outputPerMTokens: 25,
-      cacheReadPerMTokens: 0.5,
-      cacheCreationPerMTokens: 6.25,
-    },
-  },
-  {
-    id: 'claude-sonnet-4-6',
-    displayName: 'Claude Sonnet 4.6',
-    contextTokens: 1_000_000,
-    tier: 'coding',
-    supportsThinking: true,
-    pricing: {
-      inputPerMTokens: 3,
-      outputPerMTokens: 15,
-      cacheReadPerMTokens: 0.3,
-      cacheCreationPerMTokens: 3.75,
-    },
-  },
-]
+// Model catalogue lives in packages/llm-anthropic/models.json and is
+// loaded by ./models.ts. Pricing there is a dashboard preview hint;
+// runtime accounting still trusts the SDK's total_cost_usd.
 
 const ANTHROPIC_CAPABILITIES: ExecutorCapabilities = {
   supportsNativeSubagents: true,
@@ -791,49 +696,26 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
   }
 
   /**
-   * Default alias seed published to the runner. Workflows that
-   * reference `model: 'planning'` / `model: 'coding'` resolve through
-   * here when the tenant has not customised `settings.llm.aliases`.
-   * The model ids match the values the runner historically synthesised
-   * in `buildSettingsFromLocal`, so removing the runner-side defaults
-   * is a no-op for tenants on the built-in Anthropic plugin.
+   * Default alias seed published to the runner. Derived from
+   * `models.json` via {@link anthropicDefaultAliases}.
    */
   defaultAliases(): Record<string, { provider: string; model: string }> {
-    // Derived straight from {@link ANTHROPIC_MODELS} — the catalogue is
-    // the single source of truth. Each tier default is the model tagged
-    // `isDefault` for that tier (falling back to the first model of the
-    // tier), so adding or retiring a catalogue entry updates these
-    // aliases automatically. Workflow phases declare which tier they
-    // want via `tier: planning|coding|mini`; tenants can rebind any tier
-    // (`tier:planning`, etc.) from the dashboard without touching
-    // workflow files.
-    const tiers = tierDefaultAliases(ANTHROPIC_MODELS, ANTHROPIC_PLUGIN_ID)
-    // Legacy two-tier shorthands (back-compat) so existing tenant
-    // configs and custom workflows using `model: planning` keep working.
-    const planning = tiers['tier:planning']
-    const coding = tiers['tier:coding']
-    // No current-gen Haiku: Haiku 4.5's first-party retirement window
-    // opens 15 Oct 2026 and there is no successor yet. Mini phases
-    // (review, code-reviewer, fast-lane) bind to Sonnet 5 — the
-    // cheapest remaining current Claude — until a real mini ships.
-    const mini = coding
-    return {
-      ...tiers,
-      ...(planning ? { planning } : {}),
-      ...(coding ? { coding } : {}),
-      ...(mini ? { 'tier:mini': mini, mini } : {}),
-    }
+    return anthropicDefaultAliases()
   }
 
   /**
-   * True for any model id that starts with `claude-`. We deliberately
-   * accept models not listed in {@link listModels} (e.g. dated snapshots
-   * like `claude-opus-4-6`) so workflow YAML can pin to a
-   * specific revision without us having to ship a release of the
-   * runner every time Anthropic publishes a new snapshot.
+   * True for catalogued ids plus any `claude-*` snapshot. Prefix
+   * matching lives in models.json `idPrefixes` so dated workflow pins
+   * keep working without a package release.
    */
   supports(model: string): boolean {
-    return typeof model === 'string' && model.startsWith('claude-')
+    return supportsAnthropicModel(model)
+  }
+
+  classifyPhaseError(err: unknown): PhaseErrorClass | null {
+    if (isStaleSessionResumeError(err)) return 'stale-session'
+    if (isRecoverableSteeringAbort(err)) return 'recoverable-abort'
+    return null
   }
 
   /**

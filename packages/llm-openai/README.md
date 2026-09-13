@@ -10,7 +10,7 @@ This package implements the `PhaseExecutorRuntime` contract from `@coro-ai/plugi
 - Replays stateless session state through `Job.conversationHistory`.
 - Maps the runner's in-process Coro MCP server into OpenAI function tools named `mcp__<server>__<tool>`.
 - Enforces per-phase allowed-tools and write-root hook policy before every tool call.
-- Reports normalized token usage and derives cost from the package model catalogue.
+- Reports normalized token usage and derives cost from [`models.json`](./models.json). Updating shipped models is a JSON change in this package, not a runner or dashboard change.
 
 ## Configuration
 

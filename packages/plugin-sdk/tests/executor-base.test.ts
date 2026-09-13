@@ -120,3 +120,49 @@ describe('PhaseExecutorBase', () => {
     expect(last.type).toBe('done')
   })
 })
+
+class CatalogueBackedExecutor extends PhaseExecutorBase {
+  readonly manifest = FIXTURE_MANIFEST
+  readonly capabilities = FIXTURE_CAPS
+
+  constructor() {
+    super({
+      idPrefixes: ['mock-'],
+      extraAliases: { planning: 'tier:planning' },
+      models: [
+        {
+          id: 'mock-1',
+          displayName: 'Mock 1',
+          contextTokens: 100_000,
+          tier: 'planning',
+          isDefault: true,
+          pricing: { inputPerMTokens: 1, outputPerMTokens: 2 },
+        },
+      ],
+    })
+  }
+
+  async init(): Promise<void> { /* no-op */ }
+
+  async *executePhase(_req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent> {
+    yield { type: 'done', stopReason: 'end_turn', sessionState: {} }
+  }
+}
+
+describe('PhaseExecutorBase with a catalogue', () => {
+  it('implements listModels / supports / defaultAliases / calculateCost from JSON', () => {
+    const e = new CatalogueBackedExecutor()
+    expect(e.listModels()[0]?.id).toBe('mock-1')
+    expect(e.supports('mock-1')).toBe(true)
+    expect(e.supports('mock-dated-snapshot')).toBe(true)
+    expect(e.supports('other')).toBe(false)
+    expect(e.defaultAliases()['tier:planning']).toEqual({ provider: 'test-executor', model: 'mock-1' })
+    expect(e.defaultAliases().planning).toEqual({ provider: 'test-executor', model: 'mock-1' })
+    expect(e.calculateCost('mock-1', {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    })).toBe(3)
+  })
+})

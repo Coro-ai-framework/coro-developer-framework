@@ -408,6 +408,8 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   // fail the next `runJob` entry — the agent already has
   // `tracker.available` / `scm.available` in the prompt.
 
+  let lastExecutor: PhaseExecutorRuntime | undefined
+
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
 
@@ -616,6 +618,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           model,
           ...(resolvedProvider ? { provider: resolvedProvider } : {}),
         })
+      lastExecutor = executor
 
       // Surface the resolved provider/model in the activity log so
       // developers can see, per phase, which executor + model is
@@ -1121,7 +1124,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           if (
             !staleSessionRetried
             && resumeSessionId
-            && await isStaleSessionResumeErrorDynamic(phaseErr)
+            && executor.classifyPhaseError?.(phaseErr) === 'stale-session'
           ) {
             staleSessionRetried = true
             resumeSessionId = undefined
@@ -1638,7 +1641,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         liveJob.id,
         `[control] Agent stream stopped after pause/park — current turn ended at the safe boundary.`,
       )
-    } else if (await isRecoverableSteeringAbortDynamic(err)) {
+    } else if (lastExecutor?.classifyPhaseError?.(err) === 'recoverable-abort') {
       logger.info(
         { jobId: liveJob.id, err: String(err) },
         'Agent stream ended after recoverable steering interrupt — not marking job failed',
@@ -1766,52 +1769,6 @@ async function stampJob(
   const next = { ...job, ...patch }
   await stateBackend.updateJob(job.id, patch)
   return next
-}
-
-// ── Provider-neutral runner ↔ plugin bridge ─────────────────────────────────
-//
-// The runner core must not statically depend on any LLM plugin (locked
-// down by `tests/unit/runner-no-claude-imports.test.ts`). The only
-// caller for the Anthropic plugin's steering-abort predicate lives in
-// the catch block at the end of `runJob`, on a cold path. We resolve
-// it lazily here so the lockdown stays satisfied without losing the
-// recoverable-interrupt classification.
-//
-// Failure-mode safety: if the plugin can't be loaded for any reason
-// (missing optional dep, runtime resolution error), we conservatively
-// return `false` so the caller falls through to the regular crash
-// handler — better to mark a job failed than to silently swallow a
-// real error as a "steering interrupt".
-async function isRecoverableSteeringAbortDynamic(err: unknown): Promise<boolean> {
-  try {
-    const mod = (await import('@coro-ai/llm-anthropic')) as {
-      isRecoverableSteeringAbort?: (e: unknown) => boolean
-    }
-    return mod.isRecoverableSteeringAbort?.(err) ?? false
-  } catch {
-    return false
-  }
-}
-
-/** Inline fallback — mirrors `@coro-ai/llm-anthropic` `isStaleSessionResumeError`. */
-function isStaleSessionResumeErrorFallback(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  if (!/claude code returned an error result/i.test(msg) && !/API Error:\s*400/i.test(msg)) {
-    return false
-  }
-  return /previous_message_id|prior \/v1\/messages response|starts with [`']?msg_/i.test(msg)
-}
-
-async function isStaleSessionResumeErrorDynamic(err: unknown): Promise<boolean> {
-  if (isStaleSessionResumeErrorFallback(err)) return true
-  try {
-    const mod = (await import('@coro-ai/llm-anthropic')) as {
-      isStaleSessionResumeError?: (e: unknown) => boolean
-    }
-    return mod.isStaleSessionResumeError?.(err) ?? false
-  } catch {
-    return false
-  }
 }
 
 async function refreshJobForBoundary(

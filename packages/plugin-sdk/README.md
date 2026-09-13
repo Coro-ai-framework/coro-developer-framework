@@ -3,17 +3,17 @@
 Public SDK for authoring [Coro](https://github.com/coro-ai) plugins.
 
 A Coro plugin teaches the runner how to talk to a specific source-control
-provider (GitHub, BitBucket, GitLab, …) or issue tracker (Jira, Linear,
-GitHub Issues, …). The runner is provider-agnostic — every per-provider
-detail lives in a plugin.
+provider (GitHub, BitBucket, GitLab, …), issue tracker (Jira, Linear,
+GitHub Issues, …), or LLM executor. The runner is provider-agnostic —
+every per-provider detail lives in a plugin.
 
 ## Quick start
 
 ```bash
-coro plugin init my-provider
+coro plugin init my-provider --kind scm          # or tracker | executor
 cd ~/.coro/plugins/my-provider
 npm install
-$EDITOR index.ts        # implement cloneInfo / matchesRemote / pollPr / normalizeInbound
+$EDITOR src/index.ts
 coro start              # restart the runner; the plugin is detected via coro-plugin.json
 ```
 
@@ -21,8 +21,9 @@ The CLI scaffolds a directory with:
 
 - `coro-plugin.json` — manifest read by the runner's drop-in loader.
 - `package.json` — pre-wired with `@coro-ai/plugin-sdk` as a dependency.
-- `index.ts` — a stub implementing the four required hooks.
-- `intelligence/` — markdown the runner copies into the per-job intelligence overlay.
+- `src/index.ts` — a stub implementing the required hooks.
+- For executors: `models.json` — the model catalogue (picker rows, `supports()`, default aliases).
+- For SCM/tracker: `intelligence/` — markdown the runner copies into the per-job overlay.
 
 ## What you implement
 
@@ -32,19 +33,44 @@ Plugins ship under one of three contracts:
 |---|---|---|
 | `ScmPluginBase` | Source-control providers (PRs, branches, repo creation) | `init`, `cloneInfo`, `matchesRemote`, `pollPr` |
 | `TrackerPluginBase` | Issue trackers (tickets, transitions, links) | `init` (+ either `mcpServer` OR all of `getIssue`/`commentIssue`/`transitionIssue`) |
-| `ExecutorPluginBase` | LLM phase execution engines (e.g. Anthropic, OpenAI) | `init`, `createRuntime` returning a `PhaseExecutor` (`executePhase`, `capabilities`, optional `normalizeInbound`) |
+| `PhaseExecutorBase` | LLM phase execution engines | `init`, `executePhase`. Pass a catalogue loaded from `models.json` to get `listModels` / `supports` / `defaultAliases` / `calculateCost`. Optional `classifyPhaseError` for recoverable interrupts. |
 
 All three bases inherit:
 
 - `manifest: PluginManifest` — id, version, configSchema, webhook descriptor, intelligence contributions.
-- Optional `mcpServer()` — when present, the runner attaches the upstream MCP server to every job session, exposing `mcp__<pluginId>__*` tools to the agent. This is the MCP-first pivot's primary outbound channel; most modern providers ship an MCP server you can point at.
+- Optional `mcpServer()` — when present, the runner attaches the upstream MCP server to every job session, exposing `mcp__<pluginId>__*` tools to the agent.
 - Optional `normalizeInbound(req)` — collapse provider webhook payloads into a `NormalizedEvent` so the runner can resume parked jobs.
-- Optional `intelligenceRoot()` — points at a folder of markdown the resolver copies into the per-job intelligence overlay (clone-URL recipes, transition-name cheatsheets, …).
+- Optional `intelligenceRoot()` — points at a folder of markdown the resolver copies into the per-job intelligence overlay.
+
+## Executor model catalogues
+
+Each LLM package owns its models as versioned JSON next to the package
+(`packages/llm-anthropic/models.json`, `packages/llm-openai/models.json`,
+or `~/.coro/plugins/<id>/models.json` for a drop-in). The runner never
+hardcodes model ids; it only calls `listModels()` / `supports()`.
+
+```ts
+import { loadExecutorModelCatalogue, PhaseExecutorBase } from '@coro-ai/plugin-sdk'
+
+const catalogue = loadExecutorModelCatalogue(path.join(__dirname, '..', 'models.json'))
+
+class MyExecutor extends PhaseExecutorBase {
+  constructor() { super(catalogue) }
+  // listModels / supports / defaultAliases / calculateCost come for free
+}
+```
+
+`idPrefixes` and `idPatterns` keep `supports()` accepting dated snapshots
+without listing every revision. `extraAliases` maps extra keys (legacy
+`planning` / `openaiPlanning`, or remapping `tier:mini` onto coding)
+onto catalogue models.
 
 ## Helpers
 
 The SDK ships small utilities so plugin code stays focused on the integration:
 
+- `loadExecutorModelCatalogue(path)` / `parseExecutorModelCatalogue(json)` — validate `models.json`.
+- `supportsFromCatalogue` / `defaultAliasesFromCatalogue` / `calculateCostFromCatalogue`.
 - `verifyHmacSignature({ algorithm, secret, rawBody, signatureHeader })` — HMAC-verify a webhook body against the provider's signature header (handles `sha256=<hex>` / `sha1=<hex>` / raw-hex shapes).
 - `mcpStdioDescriptor({ command, args, env })` — build a stdio MCP server descriptor with sensible defaults.
 - `buildExternalRef({ kind, pluginId, externalId, repoKey, url })` — construct a provider-neutral pointer for PRs / tickets / repos / issues. Validates that `kind: 'pull_request'` carries a `repoKey`.

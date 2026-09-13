@@ -75,7 +75,6 @@ function pluginIsConfigured(
 
 const KNOWN_SCM_FALLBACK = ['github', 'bitbucket', 'gitlab', 'local']
 const KNOWN_TRACKER_FALLBACK = ['jira', 'linear', 'github-issues']
-const KNOWN_EXECUTOR_FALLBACK = ['anthropic']
 
 export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): ReadinessSummary {
   // LLM provider ──
@@ -86,7 +85,7 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
   // plugin's own concern via its config schema or custom panel.
   const executorPlugins = pluginsCatalogue?.plugins.filter(p => p.manifest.kind === 'executor') ?? []
   const isExecutorId = (id: string): boolean => {
-    if (!pluginsCatalogue) return KNOWN_EXECUTOR_FALLBACK.includes(id)
+    if (!pluginsCatalogue) return id.length > 0
     return executorPlugins.some(p => p.manifest.id === id)
   }
   // When the user hasn't explicitly picked a default provider, mirror

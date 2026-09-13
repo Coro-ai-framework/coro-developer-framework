@@ -1,18 +1,13 @@
 /**
  * Lint test — keeps the runner core provider-neutral.
  *
- * After Phase E of the "Anthropic-as-plugin" work, no source under
- * `packages/runner/src/**` may carry a top-level `import` from
- * `@anthropic-ai/claude-agent-sdk` or `@coro-ai/llm-anthropic`. The
- * Anthropic plugin ships in-box but is loaded through the built-in
- * plugin registry via `await import('@coro-ai/llm-anthropic')`, which
- * deliberately evades this regex — the runner core stays a pure
- * shell that talks to executors only through `@coro-ai/plugin-sdk`.
+ * No source under `packages/runner/src/**` may statically import
+ * `@anthropic-ai/claude-agent-sdk`, `@coro-ai/llm-anthropic`, or
+ * `@coro-ai/llm-openai`. Built-in executors are loaded only from
+ * `plugins/builtin/index.ts` via `await import(...)`.
  *
- * This guards against future regressions where someone reaches for
- * `Query` / `SDKUserMessage` / `PushableInput` instead of the neutral
- * `ExecutorSessionController` / `DeveloperInputChannel` /
- * `ConversationMessage` types from `@coro-ai/plugin-sdk`.
+ * `jobs/runner.ts` must not dynamically import an LLM package either —
+ * error classification goes through {@link PhaseExecutorRuntime.classifyPhaseError}.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -22,10 +17,13 @@ import path from 'node:path'
 const FORBIDDEN_IMPORTS = [
   '@anthropic-ai/claude-agent-sdk',
   '@coro-ai/llm-anthropic',
+  '@coro-ai/llm-openai',
 ] as const
 
 const RUNNER_ROOT = path.resolve(__dirname, '../../src')
-const TARGETS = [RUNNER_ROOT]
+const DYNAMIC_IMPORT_ALLOWLIST = new Set([
+  path.normalize('plugins/builtin/index.ts'),
+])
 
 function collectFiles(target: string): string[] {
   const stat = statSync(target)
@@ -41,24 +39,29 @@ describe('runner core provider neutrality', () => {
   for (const forbidden of FORBIDDEN_IMPORTS) {
     it(`packages/runner/src/** must not statically import from "${forbidden}"`, () => {
       const offenders: string[] = []
-      for (const target of TARGETS) {
-        for (const file of collectFiles(target)) {
-          const src = readFileSync(file, 'utf-8')
-          // Match `from '<forbidden>'` or `from "<forbidden>"` in either
-          // an `import` or a `require()` statement. Dynamic imports
-          // (`await import('<forbidden>')`) are intentionally allowed
-          // — they're how the built-in plugin registry loads the
-          // shipped Anthropic plugin without coupling the core to it.
-          const re = new RegExp(
-            `(?:from\\s+|require\\(\\s*)['"]${forbidden.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}['"]`,
-          )
-          if (re.test(src)) offenders.push(path.relative(RUNNER_ROOT, file))
-        }
+      const escaped = forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const staticRe = new RegExp(`(?:from\\s+|require\\(\\s*)['"]${escaped}['"]`)
+      for (const file of collectFiles(RUNNER_ROOT)) {
+        const src = readFileSync(file, 'utf-8')
+        if (staticRe.test(src)) offenders.push(path.relative(RUNNER_ROOT, file))
       }
       expect(
         offenders,
-        `These files still import "${forbidden}". Route through @coro-ai/plugin-sdk instead, or use a dynamic \`await import(...)\` if you genuinely need the plugin module.`,
+        `These files still import "${forbidden}". Route through @coro-ai/plugin-sdk instead.`,
       ).toEqual([])
+    })
+
+    it(`dynamic import("${forbidden}") is only allowed from plugins/builtin/index.ts`, () => {
+      const offenders: string[] = []
+      const escaped = forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const dynamicRe = new RegExp(`import\\(\\s*['"]${escaped}['"]\\s*\\)`)
+      for (const file of collectFiles(RUNNER_ROOT)) {
+        const rel = path.relative(RUNNER_ROOT, file)
+        if (DYNAMIC_IMPORT_ALLOWLIST.has(path.normalize(rel))) continue
+        const src = readFileSync(file, 'utf-8')
+        if (dynamicRe.test(src)) offenders.push(rel)
+      }
+      expect(offenders).toEqual([])
     })
   }
 })

@@ -18,13 +18,18 @@ function builtinScmIds(): readonly string[] {
   return BUILTIN_PLUGIN_IDS_BY_KIND.scm
 }
 
+function builtinExecutorIds(): readonly string[] {
+  return BUILTIN_PLUGIN_IDS_BY_KIND.executor
+}
+
 export const initCommand = new Command('init')
   .description(
     'Initialize the Coro runner configuration (advanced — most users should ' +
     'instead run `coro start` and complete setup in the dashboard).',
   )
   .option('--local', 'Configure for local-only mode (no cloud)')
-  .option('--api-key <key>', 'Anthropic API key')
+  .option('--api-key <key>', 'LLM API key for the chosen --llm plugin')
+  .option('--llm <pluginId>', `LLM plugin id (one of: ${BUILTIN_PLUGIN_IDS_BY_KIND.executor.join(', ')})`)
   .option('--intelligence-dir <dir>', 'Intelligence directory', defaultIntelligenceDir())
   .option('--working-dir <dir>', 'Working directory', defaultWorkingDir())
   // P6: --scm replaces the old --git-provider. The legacy `git.*`
@@ -38,6 +43,7 @@ export const initCommand = new Command('init')
   .action(async (opts: {
     local?: boolean
     apiKey?: string
+    llm?: string
     intelligenceDir: string
     workingDir: string
     scm?: string
@@ -55,20 +61,24 @@ export const initCommand = new Command('init')
 
     const existing = loadLocalConfig() ?? {}
 
-    // Anthropic API key — `coro init` only supports the API-key method today;
-    // users can switch to OAuth from the dashboard Settings page after init.
-    // Anthropic credentials live under `plugins.installed.anthropic.config`
-    // (the legacy top-level `anthropic` block was removed earlier).
-    const installedAnthropic = existing.plugins?.installed?.['anthropic']?.config as
+    const executorIds = builtinExecutorIds()
+    const existingInstalledExecutor = executorIds.find(id => existing.plugins?.installed?.[id])
+    let llmId = opts.llm ?? existingInstalledExecutor
+    if (!llmId) {
+      llmId = await ask(`LLM plugin (${executorIds.join('/')})`, executorIds[0] ?? '')
+    }
+    if (llmId && !executorIds.includes(llmId)) {
+      die(`Unknown LLM plugin "${llmId}". Available: ${executorIds.join(', ')}.`)
+    }
+
+    const installedLlm = existing.plugins?.installed?.[llmId]?.config as
       | { method?: string; apiKey?: string }
       | undefined
     const existingApiKey =
-      installedAnthropic?.method === 'apiKey' && typeof installedAnthropic.apiKey === 'string'
-        ? installedAnthropic.apiKey
-        : ''
+      typeof installedLlm?.apiKey === 'string' ? installedLlm.apiKey : ''
     const apiKey = opts.apiKey
-      ?? await ask('Anthropic API key', existingApiKey || process.env.ANTHROPIC_API_KEY || '')
-    if (!apiKey) die('Anthropic API key is required')
+      ?? await ask(`${llmId} API key`, existingApiKey || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || '')
+    if (!apiKey) die(`An API key is required for ${llmId}`)
 
     // SCM plugin selection. Falls back to whichever SCM plugin is
     // already installed; otherwise prompts.
@@ -138,11 +148,15 @@ export const initCommand = new Command('init')
 
     const config: LocalConfig = {
       ...existing,
+      llm: {
+        ...(existing.llm ?? {}),
+        defaultProvider: llmId,
+      },
       plugins: {
         ...(existing.plugins ?? {}),
         installed: {
           ...(existing.plugins?.installed ?? {}),
-          anthropic: {
+          [llmId]: {
             enabled: true,
             config: { method: 'apiKey', apiKey },
           },
@@ -176,6 +190,7 @@ export const initCommand = new Command('init')
     console.log()
     console.log(`  Intelligence: ${intelligenceDir}`)
     console.log(`  Working dir:  ${config.paths?.workingDir}`)
+    console.log(`  LLM plugin:   ${llmId}`)
     console.log(`  SCM plugin:   ${scmId}`)
     console.log(`  Mode:         ${config.cloud ? 'hybrid' : 'local'}`)
     console.log()

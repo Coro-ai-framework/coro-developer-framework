@@ -33,13 +33,13 @@ function dropinRoot(): string {
 const initCmd = new Command('init')
   .description('Scaffold a new Coro plugin under ~/.coro/plugins/<id>/')
   .argument('<id>', 'Plugin id (e.g. "gitlab"). Lowercase, kebab-case recommended.')
-  .option('--kind <kind>', 'Plugin kind: scm or tracker', 'scm')
+  .option('--kind <kind>', 'Plugin kind: scm, tracker, or executor', 'scm')
   .action(async (id: string, opts: { kind: string }) => {
     if (!/^[a-z0-9][a-z0-9-]*$/i.test(id)) {
       die(`Plugin id "${id}" should be lowercase, kebab-case, and start with [a-z0-9].`)
     }
-    if (opts.kind !== 'scm' && opts.kind !== 'tracker') {
-      die(`--kind must be "scm" or "tracker" (got "${opts.kind}").`)
+    if (opts.kind !== 'scm' && opts.kind !== 'tracker' && opts.kind !== 'executor') {
+      die(`--kind must be "scm", "tracker", or "executor" (got "${opts.kind}").`)
     }
 
     const root = dropinRoot()
@@ -107,16 +107,23 @@ const initCmd = new Command('init')
     fs.mkdirSync(path.join(pluginDir, 'src'), { recursive: true })
     fs.writeFileSync(
       path.join(pluginDir, 'src', 'index.ts'),
-      buildSkeleton(id, opts.kind as 'scm' | 'tracker'),
+      buildSkeleton(id, opts.kind as 'scm' | 'tracker' | 'executor'),
     )
 
-    fs.writeFileSync(
-      path.join(pluginDir, 'intelligence', 'snippets', `${id}-clone.md`),
-      `# ${id} clone recipe\n\n` +
-      `Document how the agent should clone repos served by ${id}. ` +
-      `This file is layered into every job's intelligence overlay so ` +
-      `the agent reads it when constructing clone commands.\n`,
-    )
+    if (opts.kind === 'executor') {
+      fs.writeFileSync(
+        path.join(pluginDir, 'models.json'),
+        buildExecutorModelsJson(id) + '\n',
+      )
+    } else {
+      fs.writeFileSync(
+        path.join(pluginDir, 'intelligence', 'snippets', `${id}-clone.md`),
+        `# ${id} clone recipe\n\n` +
+        `Document how the agent should clone repos served by ${id}. ` +
+        `This file is layered into every job's intelligence overlay so ` +
+        `the agent reads it when constructing clone commands.\n`,
+      )
+    }
 
     console.log(`✓ Scaffolded ${pluginDir}`)
     console.log()
@@ -251,7 +258,7 @@ export const pluginCommand = new Command('plugin')
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function buildSkeleton(id: string, kind: 'scm' | 'tracker'): string {
+export function buildSkeleton(id: string, kind: 'scm' | 'tracker' | 'executor'): string {
   if (kind === 'scm') {
     return `import { z } from 'zod'
 import {
@@ -342,6 +349,87 @@ export function createPlugin(): ${capitalize(id)}Plugin {
 }
 `
   }
+
+  if (kind === 'executor') {
+    const className = `${capitalize(id)}Executor`
+    return `import * as path from 'node:path'
+import { z } from 'zod'
+import {
+  PhaseExecutorBase,
+  loadExecutorModelCatalogue,
+  type PhaseExecutionRequest,
+  type PhaseExecutorEvent,
+  type PluginDeps,
+  type PluginManifest,
+} from '@coro-ai/plugin-sdk'
+
+const configSchema = z.object({
+  apiKey: z.string().min(1),
+})
+type Config = z.infer<typeof configSchema>
+
+const MANIFEST: PluginManifest = {
+  id: '${id}',
+  kind: 'executor',
+  version: '0.1.0',
+  displayName: '${capitalize(id)}',
+  hostCompatibility: '${HOST_VERSION_RANGE}',
+  configSchema,
+  ui: { subtitle: 'Drop-in executor. See extend/executor-plugin.md.' },
+  auth: {
+    methods: [{
+      kind: 'form',
+      id: 'manual',
+      label: 'API key',
+      recommended: true,
+      fields: [{ key: 'apiKey', label: 'API key', kind: 'secret', required: true }],
+    }],
+  },
+}
+
+const CATALOGUE = loadExecutorModelCatalogue(path.join(__dirname, 'models.json'))
+
+class ${className} extends PhaseExecutorBase<Config> {
+  readonly manifest = MANIFEST
+  readonly capabilities = {
+    supportsNativeSubagents: false,
+    supportsClaudeMdNativeWalkUp: false,
+    supportsNativeFileTools: false,
+    supportsSessionResume: false,
+    supportsConversationReplay: true,
+    supportsThinking: false,
+    supportsImageInput: false,
+    maxContextTokens: 128_000,
+  }
+
+  constructor() {
+    super(CATALOGUE)
+  }
+
+  async init(_config: Config, _deps: PluginDeps): Promise<void> {
+    // Validate credentials here. listModels / supports / defaultAliases
+    // come from models.json via PhaseExecutorBase.
+  }
+
+  async *executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent> {
+    // TODO: call your provider, map the stream to PhaseExecutorEvent.
+    // Docs: https://coro.build — extend/executor-plugin.md
+    yield { type: 'log', level: 'info', message: 'Stub executor received model ' + req.model }
+    yield { type: 'done', stopReason: 'end_turn', sessionState: { conversationHistory: [] } }
+  }
+}
+
+export function createPlugin(): ${className} {
+  return new ${className}()
+}
+
+export default function createRuntime(args: { config?: unknown; logger?: unknown }) {
+  void args
+  return createPlugin()
+}
+`
+  }
+
   // tracker
   return `import { z } from 'zod'
 import {
@@ -388,6 +476,45 @@ export function createPlugin(): ${capitalize(id)}Plugin {
   return new ${capitalize(id)}Plugin()
 }
 `
+}
+
+/** Stub `models.json` for `coro plugin init --kind executor`. */
+export function buildExecutorModelsJson(id: string): string {
+  return JSON.stringify(
+    {
+      idPrefixes: [`${id}-`],
+      extraAliases: {
+        planning: 'tier:planning',
+        coding: 'tier:coding',
+        mini: 'tier:mini',
+      },
+      models: [
+        {
+          id: `${id}-planner`,
+          displayName: `${capitalize(id)} Planner`,
+          contextTokens: 128000,
+          tier: 'planning',
+          isDefault: true,
+        },
+        {
+          id: `${id}-coder`,
+          displayName: `${capitalize(id)} Coder`,
+          contextTokens: 128000,
+          tier: 'coding',
+          isDefault: true,
+        },
+        {
+          id: `${id}-mini`,
+          displayName: `${capitalize(id)} Mini`,
+          contextTokens: 128000,
+          tier: 'mini',
+          isDefault: true,
+        },
+      ],
+    },
+    null,
+    2,
+  )
 }
 
 function capitalize(s: string): string {

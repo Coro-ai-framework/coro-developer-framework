@@ -243,7 +243,7 @@ export async function reloadRunnerState(args: {
       ? { executor: config.llm.defaultProvider }
       : {}),
   })
-  seedExecutorDefaultAliases({ plugins: ctx.plugins, settings: newSettings })
+  await seedExecutorDefaultAliases({ plugins: ctx.plugins, settings: newSettings })
 
   logger.info(
     {
