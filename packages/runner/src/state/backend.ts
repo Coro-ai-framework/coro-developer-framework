@@ -108,7 +108,7 @@ export interface StateBackend {
   //
   // Durable record of a dashboard plan-mode conversation. The in-memory
   // intake session is the hot LLM cache; this is what survives restart
-  // and powers the New Run history rail. Implementations merge patches
+  // and powers the New run Recents rail. Implementations merge patches
   // so a stream turn cannot wipe `items` and a UI PUT cannot wipe `turns`.
 
   upsertInvestigation(record: InvestigationPatch): Promise<Investigation>

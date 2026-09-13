@@ -11,7 +11,7 @@ Open-source workflow runner for the full **spec-to-merge** path on your codebase
 
 > **Pre-1.0.** APIs, workflows, and team/cloud features are still evolving. See [ROADMAP.md](ROADMAP.md).
 
-![Coro Runs dashboard — campaigns with sub-runs, workflow filters, live status, and per-run cost](docs/assets/readme-runs-dashboard.png)
+![Coro dashboard home — New run with Recents, a planning conversation, and a generated Run card](docs/assets/readme-new-run.png)
 
 ---
 
@@ -42,7 +42,7 @@ Settings are saved to `~/.coro/config.json`.
 
 ### 3. Run a job
 
-Open **New Job**, choose a repository, and describe the change. Watch phases progress in the UI. When the workflow finishes, Coro opens a pull request on your target repo.
+Open **New run** (home), describe the change in conversation, then **Start run** on the generated card. Watch phases progress on the run detail page. When the workflow finishes, Coro opens a pull request on your target repo. Use **Runs** in the sidebar to see every job on this runner.
 
 ---
 
