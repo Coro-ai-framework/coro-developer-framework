@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { X } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ArrowUpRight, X } from 'lucide-react'
 import { formatRelativeTime } from '../../lib/format'
 import type { InvestigationSummary } from '../../lib/intake-investigation'
+import { getRunDetailPath } from '../../lib/jobs'
 import { getConversationDisplayStatus } from '../../lib/status'
 import { PAGE_TITLES } from '../../lib/run-labels'
 import type { Job } from '../../types'
@@ -84,13 +86,14 @@ export function InvestigationList({
           {rows.map(row => {
             const active = row.id === currentId
             const removing = pendingId === row.id
-            const linkedJob = row.dispatchedJobId ? jobsById.get(row.dispatchedJobId) : undefined
+            const runId = row.dispatchedJobId
+            const linkedJob = runId ? jobsById.get(runId) : undefined
             const meta = getConversationDisplayStatus(row, linkedJob ?? null)
             return (
               <li key={row.id}>
                 <div
                   className={cn(
-                    'group relative flex rounded-xl border transition-colors',
+                    'group relative flex items-start rounded-xl border transition-colors',
                     active
                       ? 'border-accent-500/30 bg-accent-500/10'
                       : 'border-transparent bg-transparent hover:border-line hover:bg-overlay/60',
@@ -107,7 +110,7 @@ export function InvestigationList({
                     type="button"
                     disabled={disabled || removing}
                     onClick={() => onSelect(row.id)}
-                    className="flex min-w-0 flex-1 flex-col gap-1.5 py-2.5 pl-3 pr-8 text-left"
+                    className="flex min-w-0 flex-1 flex-col gap-1.5 py-2.5 pl-3 pr-2 text-left"
                   >
                     <span className={cn('line-clamp-2 text-[13px] font-medium leading-5', active ? 'text-fg' : 'text-fg-muted')}>
                       {row.title || 'Draft'}
@@ -117,20 +120,33 @@ export function InvestigationList({
                       <StatusBadge meta={meta} />
                     </div>
                   </button>
-                  <button
-                    type="button"
-                    disabled={disabled || removing}
-                    onClick={() => void handleRemove(row)}
-                    className={cn(
-                      'absolute right-1.5 top-1.5 rounded-full p-0.5 text-fg-subtle transition-colors hover:bg-overlay hover:text-fg',
-                      revealRemoveOnHover
-                        ? 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100'
-                        : 'opacity-70 hover:opacity-100',
-                    )}
-                    aria-label={`Remove ${row.title || 'conversation'}`}
-                  >
-                    <X className="size-3" />
-                  </button>
+                  <div className="flex shrink-0 items-center gap-0.5 py-2 pr-1.5">
+                    {runId ? (
+                      <Link
+                        to={getRunDetailPath({ id: runId })}
+                        aria-label={PAGE_TITLES.viewRun}
+                        title={PAGE_TITLES.viewRun}
+                        className="rounded-full p-1 text-fg-subtle transition-colors hover:bg-overlay hover:text-accent-300"
+                        onClick={event => event.stopPropagation()}
+                      >
+                        <ArrowUpRight className="size-3.5" />
+                      </Link>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={disabled || removing}
+                      onClick={() => void handleRemove(row)}
+                      className={cn(
+                        'rounded-full p-1 text-fg-subtle transition-colors hover:bg-overlay hover:text-fg',
+                        revealRemoveOnHover
+                          ? 'opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100'
+                          : 'opacity-70 hover:opacity-100',
+                      )}
+                      aria-label={`Remove ${row.title || 'conversation'}`}
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
                 </div>
               </li>
             )
