@@ -165,6 +165,39 @@ Run schema (emit EXACTLY this shape inside the <run> tags):
 </run>`
 }
 
+/**
+ * Framed into the pending user turn when this investigation has dispatched
+ * a run.
+ *
+ * The user turn is the only `ChatRequest` field every executor is forced to
+ * read: `systemPrompt` need not be re-applied to a resumed session, and
+ * replayed `messages` are skipped entirely while `sessionState` is live —
+ * but the developer's current question exists nowhere else, so a resume
+ * executor reads the last user message and a replay executor sends the lot.
+ *
+ * Carries the job id and nothing volatile, which makes the block identical
+ * on every turn. That matters because a replay executor persists what it
+ * was sent: live status here would pile up as contradictory snapshots with
+ * no way for the model to tell which one is current. `get_past_job` is the
+ * live source.
+ */
+export function renderDispatchedRunBlock(jobId: string): string {
+  return `<dispatched-run>
+This conversation already dispatched run \`${jobId}\` — the run you scoped, and the
+one the developer is most likely asking about.
+- You already have its id. Call get_past_job on it directly; do not list first.
+- Then read_past_job_artifact / list_past_job_files / read_past_job_file, so you
+  answer from what its agents produced rather than what you expected them to.
+- It may still be running. Status, phase, and artefacts move between turns — read
+  them again instead of reusing an earlier turn's answer.
+- Relate what you find back to the investigation you wrote. You are the only
+  surface that can say whether the run did what it was scoped to do.
+- Do not emit a <run> block unless the developer asks for a follow-up run.
+- Still end every turn with <readiness>; use "ready" with no open questions while
+  you are only answering questions about this run.
+</dispatched-run>`
+}
+
 export function formatIntakeUserPrompt(messages: IntakeMessage[]): string {
   if (messages.length === 0) return 'Hello — I want to start a new run.'
   return messages

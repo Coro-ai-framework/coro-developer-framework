@@ -250,6 +250,27 @@ export async function readPastJobFile(
   return readPathSlice(base, deps.workingDir, job.id, rel, offset, limit)
 }
 
+/**
+ * The run this investigation dispatched, if any. The plan-mode session id
+ * *is* the investigation id, so no dashboard-supplied job id is involved —
+ * `dispatchedJobId` on the durable record is the authority.
+ *
+ * Only the id is returned on purpose. Status and phase belong to
+ * `get_past_job`: this value is framed into the prompt every turn, and a
+ * replay executor persists what it was sent, so volatile state here would
+ * accumulate as contradictory snapshots across a conversation.
+ */
+export async function resolveDispatchedRunId(
+  investigationId: string,
+  deps: { stateBackend: Pick<StateBackend, 'getInvestigation'> },
+): Promise<string | null> {
+  const id = investigationId.trim()
+  if (!id) return null
+  const investigation = await deps.stateBackend.getInvestigation(id)
+  const jobId = investigation?.dispatchedJobId?.trim()
+  return jobId ? jobId : null
+}
+
 async function loadJob(
   jobId: string | undefined,
   stateBackend: Pick<StateBackend, 'getJob'>,

@@ -4,6 +4,7 @@ import {
   type Investigation,
   type InvestigationListQuery,
   type InvestigationPatch,
+  type InvestigationStatus,
   type InvestigationSummary,
   type InvestigationTurn,
 } from '@coro-ai/cloud-protocol'
@@ -71,6 +72,22 @@ function hasOwn<K extends string>(obj: object, key: K): boolean {
 }
 
 /**
+ * Dispatch is not undone by carrying on the conversation. Asking a follow-up
+ * question about a shipped run persists the snapshot with the dashboard's
+ * default `active`, which would take the run badge off the Recents row and
+ * lose the record's own memory of having dispatched. Only an explicit
+ * `closed` moves a dispatched investigation on.
+ */
+function resolveStatus(
+  existing: InvestigationStatus | undefined,
+  patch: InvestigationStatus | undefined,
+): InvestigationStatus {
+  const next = patch ?? existing ?? 'active'
+  if (existing === 'dispatched' && next === 'active') return 'dispatched'
+  return next
+}
+
+/**
  * Merge a patch onto an existing row. Stream turns must not wipe the UI
  * transcript, and a dashboard PUT must not wipe runner turns / resume state.
  * `null` on `executorSession` / `executorId` / `dispatchedJobId` clears.
@@ -111,7 +128,7 @@ export function mergeInvestigation(
   const merged: Investigation = {
     id: patch.id,
     title: title.trim() ? title : 'Draft',
-    status: patch.status ?? existing?.status ?? 'active',
+    status: resolveStatus(existing?.status, patch.status),
     items: patch.items ?? existing?.items ?? [],
     turns,
     ...(executorSession ? { executorSession } : {}),

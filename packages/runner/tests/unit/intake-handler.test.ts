@@ -573,3 +573,110 @@ describe('runIntakeStream', () => {
     expect(seen[2]).toEqual({ sessionId: 'claude-plan-1' })
   })
 })
+
+// The run a conversation dispatched is named in the pending user turn: it is
+// the only ChatRequest field every executor must read, since a resumed
+// session need not re-apply `systemPrompt` and replayed `messages` are
+// skipped while `sessionState` is live.
+describe('runIntakeStream — dispatched run awareness', () => {
+  function backendWith(dispatchedJobId?: string) {
+    const upserts: InvestigationPatch[] = []
+    return {
+      upserts,
+      backend: {
+        getInvestigation: async () =>
+          ({ id: 'inv-1', ...(dispatchedJobId ? { dispatchedJobId } : {}) }) as Investigation,
+        upsertInvestigation: async (patch: InvestigationPatch) => {
+          upserts.push(patch)
+          return { id: patch.id } as Investigation
+        },
+      } as unknown as StateBackend,
+    }
+  }
+
+  function capturingRegistry(seen: Array<ReadonlyArray<{ role: string; content: string }>>) {
+    return {
+      all: () => [],
+      resolveExecutor: () => ({
+        chat: async (req: { messages: ReadonlyArray<{ role: string; content: string }> }) => {
+          seen.push(req.messages)
+          return {
+            output: 'Looking at the run now.',
+            usage: { inputTokens: 5, outputTokens: 3, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [],
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+  }
+
+  async function drain(
+    sessionId: string,
+    message: string,
+    registry: PluginRegistry,
+    stateBackend: StateBackend,
+  ) {
+    for await (const _event of runIntakeStream({
+      sessionId,
+      message,
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+      stateBackend,
+    })) {
+      // drain
+    }
+  }
+
+  it('names the dispatched run in the last user message', async () => {
+    const seen: Array<ReadonlyArray<{ role: string; content: string }>> = []
+    const { backend } = backendWith('job-dispatched-1')
+    await drain('session-linked', 'How is it going?', capturingRegistry(seen), backend)
+
+    const last = seen[0]?.at(-1)
+    expect(last?.role).toBe('user')
+    expect(last?.content).toContain('job-dispatched-1')
+    expect(last?.content).toContain('get_past_job')
+    // The developer's own question still has to survive the framing.
+    expect(last?.content).toContain('How is it going?')
+  })
+
+  it('says nothing when the investigation never dispatched a run', async () => {
+    const seen: Array<ReadonlyArray<{ role: string; content: string }>> = []
+    const { backend } = backendWith()
+    await drain('session-unlinked', 'How is it going?', capturingRegistry(seen), backend)
+
+    expect(seen[0]?.at(-1)?.content).toBe('How is it going?')
+  })
+
+  it('records the raw developer turn, so the block cannot accumulate across turns', async () => {
+    const seen: Array<ReadonlyArray<{ role: string; content: string }>> = []
+    const { backend, upserts } = backendWith('job-dispatched-1')
+    const registry = capturingRegistry(seen)
+
+    await drain('session-repeat', 'first question', registry, backend)
+    await drain('session-repeat', 'second question', registry, backend)
+
+    // What is persisted (and replayed) is what the developer typed.
+    expect(upserts.at(-1)?.turns?.[0]?.user).toBe('first question')
+
+    const secondTurn = seen[1] ?? []
+    const framed = secondTurn.filter(m => m.content.includes('<dispatched-run>'))
+    expect(framed).toHaveLength(1)
+    expect(framed[0]).toBe(secondTurn.at(-1))
+  })
+
+  it('still answers when the investigation lookup fails', async () => {
+    const seen: Array<ReadonlyArray<{ role: string; content: string }>> = []
+    const backend = {
+      getInvestigation: async () => {
+        throw new Error('backend down')
+      },
+      upsertInvestigation: async (patch: InvestigationPatch) => ({ id: patch.id }) as Investigation,
+    } as unknown as StateBackend
+
+    await drain('session-backend-down', 'How is it going?', capturingRegistry(seen), backend)
+    expect(seen[0]?.at(-1)?.content).toBe('How is it going?')
+  })
+})

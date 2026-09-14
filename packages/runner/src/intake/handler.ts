@@ -17,9 +17,11 @@ import {
 import {
   buildIntakeSystemPrompt,
   formatIntakeUserPrompt,
+  renderDispatchedRunBlock,
   type IntakeContext,
   type IntakeMessage,
 } from './system-prompt'
+import { resolveDispatchedRunId } from './past-jobs'
 import {
   buildIntakeMessages,
   getIntakeSession,
@@ -258,7 +260,6 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     'intake: stream invoked',
   )
 
-  const conversation = buildIntakeMessages(session, userMessage)
   const assignment = resolveIntakeAssignment(options)
 
   let executor
@@ -305,6 +306,32 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     pastJobsEnabled,
     planModeMcpServerIds,
   })
+
+  // A dispatched run is only worth naming when the agent also has the tools
+  // to open it, so this rides on `pastJobsEnabled` rather than a second
+  // condition that could drift from it. Like plan-mode findings on the job
+  // side, it is an enhancement: a missing row or a backend hiccup must not
+  // cost the developer their turn.
+  let dispatchedRunId: string | null = null
+  if (pastJobsEnabled && options.stateBackend) {
+    try {
+      dispatchedRunId = await resolveDispatchedRunId(options.sessionId, {
+        stateBackend: options.stateBackend,
+      })
+    } catch (err) {
+      log?.warn({ err }, 'intake: could not resolve this investigation’s dispatched run')
+    }
+  }
+
+  // Recorded turns keep the developer's raw text (see `recordIntakeTurn`
+  // below), so the block is re-derived per turn and never replayed stale
+  // out of the transcript.
+  const conversation = buildIntakeMessages(
+    session,
+    dispatchedRunId
+      ? `${renderDispatchedRunBlock(dispatchedRunId)}\n\n${userMessage}`
+      : userMessage,
+  )
   const emptyMcp = createSdkMcpServer({ name: 'coro', tools: [] })
   const model = assignment.model
   const hookPolicy = { allowedTools: [] as string[], writeRoots: [] as string[] }
