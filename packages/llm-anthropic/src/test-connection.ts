@@ -10,21 +10,28 @@
 // means `server.ts` carries zero Anthropic-specific code — adding a new
 // LLM plugin requires zero edits to the runner.
 //
-// The `claudeLogin` branch is the interesting one. It does NOT trust the
-// Claude CLI's own `auth status` (which reports `loggedIn: true` even
-// when the API rejects the token — observed bug). Instead it pulls the
-// OAuth access token straight out of the platform's local credential
-// store and round-trips it against `/v1/messages` with `max_tokens: 1`
-// so a stale-but-cached token surfaces as a clear failure here rather
-// than as a 401 on the user's first real job.
+// Token validity is model-agnostic. We round-trip against `GET /v1/models`
+// (list, no inference, no model id) rather than `POST /v1/messages`. A
+// Messages ping has to name a live model, and Anthropic's OAuth
+// entitlement gate then further requires Claude Code identity scaffolding
+// that has nothing to do with whether the token is good. When the catalogue
+// model used for that ping retires, Connect Claude starts failing for
+// every valid login — which is what happened when the probe moved off
+// Haiku onto Sonnet 5. Listing models does not have that coupling.
+//
+// The `claudeLogin` branch still does NOT trust the Claude CLI's own
+// `auth status` (which reports `loggedIn: true` even when the API
+// rejects the token — observed bug). It pulls the OAuth access token
+// out of the platform credential store and asks Anthropic whether that
+// token is accepted.
 //
 // Because that probe gates job execution (via
 // `AnthropicExecutor.assertAuthReadyForSdk`), it must renew an expired
 // session rather than fail on it. Anthropic's claude.ai access tokens last
 // 8 hours, so a runner that idles overnight will always find an expired
 // token — treating that as fatal is what used to demand a manual
-// "Reconnect" every morning. Both the expiry check and a 401 now trigger a
-// refresh and one retry; only a session that cannot be renewed is a failure.
+// "Reconnect" every morning. Expiry and a 401 now trigger a refresh and
+// one retry; only a session that cannot be renewed is a failure.
 
 import type { PluginTestCheck, PluginTestResult } from '@coro-ai/plugin-sdk'
 import {
@@ -42,15 +49,12 @@ const OAUTH_BETA_HEADER = 'oauth-2025-04-20'
 /** Anthropic API base. */
 const ANTHROPIC_API = 'https://api.anthropic.com'
 
-/** Cheapest remaining current-gen model — pings cost ~1 token. */
-const PROBE_MODEL = 'claude-sonnet-5'
-
 /**
  * Run a live credential probe against Anthropic and return a structured
  * result the dashboard can render directly. Branches on `auth.method`:
  *
- *   - `apiKey`     → POST /v1/messages with `x-api-key`.
- *   - `oauth`      → POST /v1/messages with `Authorization: Bearer …`
+ *   - `apiKey`     → GET /v1/models with `x-api-key`.
+ *   - `oauth`      → GET /v1/models with `Authorization: Bearer …`
  *                    (the user-pasted long-lived OAuth token).
  *   - `claudeLogin`→ Read the persisted Claude CLI session from the
  *                    platform credential store, then probe with the
@@ -77,7 +81,7 @@ export async function testAnthropicCredentials(
     if (!apiKey) {
       return { ok: false, message: 'An Anthropic API key is required.' }
     }
-    return probeMessagesEndpoint({ headers: { 'x-api-key': apiKey } })
+    return probeCredential({ headers: { 'x-api-key': apiKey } })
   }
 
   if (method === 'oauth') {
@@ -85,7 +89,7 @@ export async function testAnthropicCredentials(
     if (!token) {
       return { ok: false, message: 'An OAuth token is required.' }
     }
-    return probeMessagesEndpoint({ headers: { Authorization: `Bearer ${token}` } })
+    return probeCredential({ headers: oauthHeaders(token) })
   }
 
   // claudeLogin — read the persisted session, renewing it if it has aged
@@ -121,30 +125,22 @@ export async function testAnthropicCredentials(
     }
   }
 
-  let apiResult = await probeMessagesEndpoint({
-    headers: {
-      Authorization: `Bearer ${session.accessToken}`,
-      'anthropic-beta': OAUTH_BETA_HEADER,
-    },
-  })
+  let apiResult = await probeCredential({ headers: oauthHeaders(session.accessToken) })
 
-  // A rejected but unexpired token means the stored copy went stale — most
+  // A 401 on an unexpired token means the stored copy went stale — most
   // often because a concurrent Claude Code process refreshed the session and
   // rotated this access token out from under us. Renew once and retry before
-  // calling it a failure.
-  if (!apiResult.ok && (await refreshClaudeLocalSession())) {
+  // calling it a failure. Other statuses (403/429/5xx) are not "bad token".
+  let renewed = false
+  if (!apiResult.ok && apiResult.status === 401 && (await refreshClaudeLocalSession())) {
+    renewed = true
     try {
       session = readClaudeLocalSession()
     } catch {
       // Keep the session we already have and report the original failure.
     }
     if (session.accessToken) {
-      apiResult = await probeMessagesEndpoint({
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`,
-          'anthropic-beta': OAUTH_BETA_HEADER,
-        },
-      })
+      apiResult = await probeCredential({ headers: oauthHeaders(session.accessToken) })
     }
   }
 
@@ -167,17 +163,26 @@ export async function testAnthropicCredentials(
     {
       name: 'Anthropic API accepts the token',
       ok: false,
-      message: apiResult.message ?? 'Rejected by /v1/messages.',
+      message: apiResult.message ?? 'Rejected by Anthropic.',
       ...(apiResult.hint ? { hint: apiResult.hint } : {}),
     },
   ]
 
+  if (apiResult.status === 401) {
+    return {
+      ok: false,
+      message: renewed
+        ? 'Your Claude login looks active locally but Anthropic rejected the token, and renewing it did not help.'
+        : 'Your Claude login looks active locally but Anthropic rejected the token.',
+      hint: 'This usually means the session was revoked — for example by signing in elsewhere. Click Reconnect to sign in again.',
+      checks,
+    }
+  }
+
   return {
     ok: false,
-    message:
-      'Your Claude login looks active locally but Anthropic rejected the token, and renewing it did not help.',
-    hint:
-      'This usually means the session was revoked — for example by signing in elsewhere. Click Reconnect to sign in again.',
+    message: apiResult.message ?? 'Anthropic did not accept the credential.',
+    ...(apiResult.hint ? { hint: apiResult.hint } : {}),
     checks,
   }
 }
@@ -188,22 +193,33 @@ interface ProbeOptions {
   headers: Record<string, string>
 }
 
-async function probeMessagesEndpoint(opts: ProbeOptions): Promise<PluginTestResult> {
+interface ProbeResult extends PluginTestResult {
+  /** HTTP status from Anthropic, when a response arrived. */
+  status?: number
+}
+
+function oauthHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    'anthropic-beta': OAUTH_BETA_HEADER,
+  }
+}
+
+/**
+ * Ask Anthropic whether this credential is accepted, without naming a
+ * model or spending inference tokens. `GET /v1/models` is the auth
+ * round-trip; it stays valid as the catalogue turns over.
+ */
+async function probeCredential(opts: ProbeOptions): Promise<ProbeResult> {
   const headers: Record<string, string> = {
-    'content-type': 'application/json',
     'anthropic-version': '2023-06-01',
     ...opts.headers,
   }
   let response: Response
   try {
-    response = await fetch(`${ANTHROPIC_API}/v1/messages`, {
-      method: 'POST',
+    response = await fetch(`${ANTHROPIC_API}/v1/models`, {
+      method: 'GET',
       headers,
-      body: JSON.stringify({
-        model: PROBE_MODEL,
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'ping' }],
-      }),
     })
   } catch (err) {
     return {
@@ -213,20 +229,22 @@ async function probeMessagesEndpoint(opts: ProbeOptions): Promise<PluginTestResu
   }
 
   if (response.ok) {
-    return { ok: true, message: 'Anthropic API accepted the credential.' }
+    return { ok: true, status: response.status, message: 'Anthropic API accepted the credential.' }
   }
 
+  const status = response.status
   const detail = await describeFailure(response)
   const hint =
-    response.status === 401
+    status === 401
       ? 'The credential was rejected. Double-check the value — for API keys, that means starts with sk-ant- and was copied in full.'
-      : response.status === 403
-        ? 'The credential authenticated but does not have access to the Messages API.'
-        : response.status === 429
+      : status === 403
+        ? 'The credential authenticated but does not have access to list models.'
+        : status === 429
           ? 'Rate limited. The credential is valid; finish setup and try again.'
           : undefined
   return {
     ok: false,
+    status,
     message: `Anthropic ${detail}`,
     ...(hint ? { hint } : {}),
   }
