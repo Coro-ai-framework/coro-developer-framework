@@ -39,6 +39,21 @@ describe('investigationTitleFromItems', () => {
     expect(investigationHasProgress([
       { kind: 'message', id: '1', role: 'user', text: 'hello' },
     ])).toBe(true)
+    expect(investigationHasProgress([
+      {
+        kind: 'activity',
+        id: 'a1',
+        group: 'working',
+        entries: [{
+          id: 'e1',
+          group: 'working',
+          sourceName: 'list_past_jobs',
+          status: 'done',
+          runningLabel: 'Listed 0 past jobs',
+          settledLabel: 'Listed 0 past jobs',
+        }],
+      },
+    ])).toBe(false)
   })
 
   it('promotes a summary only when its updatedAt is newer', () => {

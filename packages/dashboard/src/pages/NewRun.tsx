@@ -162,10 +162,10 @@ export default function NewRun() {
             </div>
           ) : (
             <ActivityFeed
-              items={session.items}
-              partialText={session.partialText}
-              partialThinking={session.partialThinking}
-              busy={session.busy}
+              items={session.hasProgress ? session.items : []}
+              partialText={session.hasProgress ? session.partialText : ''}
+              partialThinking={session.hasProgress ? session.partialThinking : ''}
+              busy={session.hasProgress && session.busy}
               cardRenderers={PLAN_CARD_RENDERERS}
               emptyState={<p className="text-[13.5px] leading-[1.7] text-fg">{GREETING}</p>}
             />

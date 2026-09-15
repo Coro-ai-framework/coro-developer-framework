@@ -141,6 +141,10 @@ export async function runIntakeStream(options: {
         } catch {
           continue
         }
+        // Aborting fetch does not rewind bytes already in this chunk.
+        // The session provider also ignores events after a conversation
+        // switch; this keeps the parser from delivering them at all.
+        if (signal.aborted) return {}
         onEvent(payload)
       }
     }

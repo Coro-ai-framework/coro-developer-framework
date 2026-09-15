@@ -149,6 +149,13 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const persistChainRef = useRef(Promise.resolve())
   const skipNextPersistRef = useRef(false)
   const deletedIdsRef = useRef(new Set<string>())
+  /**
+   * Bumped when the visible conversation changes (new / open / reset).
+   * In-flight `send()` callbacks must not write into the next chat —
+   * aborting the fetch does not stop SSE events already queued, or
+   * `finally` after `mintEmpty()`.
+   */
+  const turnGenerationRef = useRef(0)
   workflowsRef.current = workflows
   jobsRef.current = jobs
   modelChoiceRef.current = modelChoice
@@ -176,32 +183,37 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     if (!existed) setInvestigationsTotal(total => total + 1)
   }, [])
 
-  const persistNow = useCallback(async (opts?: {
+  const persistNow = useCallback(async (opts: {
+    id: string
+    items: ActivityItem[]
+    readiness: Readiness | null
+    modelChoice: { provider: string; model: string }
+    turnCount: number
+    tokens: number
+    contextUsed: number
     status?: InvestigationStatus
     dispatchedJobId?: string
   }) => {
-    const id = sessionIdRef.current
-    if (deletedIdsRef.current.has(id)) return
-    const currentItems = itemsRef.current
-    if (!investigationHasProgress(currentItems) && opts?.status !== 'dispatched') return
+    if (deletedIdsRef.current.has(opts.id)) return
+    if (!investigationHasProgress(opts.items) && opts.status !== 'dispatched') return
     try {
-      const result = await putInvestigation(id, {
-        items: currentItems,
-        readiness: readinessRef.current,
-        findings: currentFindingsMarkdown(currentItems),
-        modelChoice: modelChoiceRef.current,
-        turnCount: turnCountRef.current,
-        tokens: tokensRef.current,
-        contextUsed: contextUsedRef.current,
-        title: investigationTitleFromItems(currentItems),
+      const result = await putInvestigation(opts.id, {
+        items: opts.items,
+        readiness: opts.readiness,
+        findings: currentFindingsMarkdown(opts.items),
+        modelChoice: opts.modelChoice,
+        turnCount: opts.turnCount,
+        tokens: opts.tokens,
+        contextUsed: opts.contextUsed,
+        title: investigationTitleFromItems(opts.items),
         // Autosave omits status so a follow-up question cannot downgrade a
         // dispatched investigation back to active. First insert still
         // becomes active via mergeInvestigation's default.
-        ...(opts?.status ? { status: opts.status } : {}),
-        ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
+        ...(opts.status ? { status: opts.status } : {}),
+        ...(opts.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
       })
-      if (deletedIdsRef.current.has(id)) {
-        await deleteInvestigation(id).catch(() => undefined)
+      if (deletedIdsRef.current.has(opts.id)) {
+        await deleteInvestigation(opts.id).catch(() => undefined)
         return
       }
       if (result.session) rememberSummary(toInvestigationSummary(result.session))
@@ -214,7 +226,20 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     status?: InvestigationStatus
     dispatchedJobId?: string
   }) => {
-    persistChainRef.current = persistChainRef.current.then(() => persistNow(opts)).catch(() => undefined)
+    // Snapshot at enqueue time. mintEmpty() can clear the refs before the
+    // PUT runs; the parked conversation must still be the one we persist.
+    const snapshot = {
+      id: sessionIdRef.current,
+      items: itemsRef.current,
+      readiness: readinessRef.current,
+      modelChoice: modelChoiceRef.current,
+      turnCount: turnCountRef.current,
+      tokens: tokensRef.current,
+      contextUsed: contextUsedRef.current,
+      ...(opts?.status ? { status: opts.status } : {}),
+      ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
+    }
+    persistChainRef.current = persistChainRef.current.then(() => persistNow(snapshot)).catch(() => undefined)
     return persistChainRef.current
   }, [persistNow])
 
@@ -233,6 +258,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     modelChoice?: { provider: string; model: string }
   }) => {
     skipNextPersistRef.current = true
+    turnGenerationRef.current += 1
     const nextItems = asActivityItems(record.items)
     sessionIdRef.current = record.id
     itemsRef.current = nextItems
@@ -252,6 +278,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const mintEmpty = useCallback(() => {
+    turnGenerationRef.current += 1
+    abortRef.current?.abort()
+    abortRef.current = null
     const next = mintSessionId()
     sessionIdRef.current = next
     itemsRef.current = []
@@ -287,6 +316,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
+    const generationAtStart = turnGenerationRef.current
     async function hydrateFromServer() {
       setInvestigationsLoading(true)
       try {
@@ -316,6 +346,12 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         if (resume) {
           const full = await getInvestigation(resume.id)
           if (cancelled) return
+          // New conversation / an in-flight first turn already owns the pane.
+          // Applying the last Recents row here is what made "New conversation"
+          // open on leftover tool chips.
+          if (turnGenerationRef.current !== generationAtStart) return
+          if (busyRef.current) return
+          if (investigationHasProgress(itemsRef.current)) return
           applyRecord(full)
         }
       } catch {
@@ -359,14 +395,19 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   }) => {
     abortRef.current?.abort()
     abortRef.current = null
-    await enqueuePersist(opts)
+    // Drop in-flight turn writes before we snapshot, so a late tool_end
+    // cannot land on the blank session mintEmpty creates next.
+    turnGenerationRef.current += 1
+    const pending = enqueuePersist(opts)
     mintEmpty()
+    await pending
   }, [enqueuePersist, mintEmpty])
 
   const openInvestigation = useCallback(async (id: string) => {
     if (id === sessionIdRef.current) return
     abortRef.current?.abort()
     abortRef.current = null
+    turnGenerationRef.current += 1
     if (investigationHasProgress(itemsRef.current)) await enqueuePersist()
     const full = await getInvestigation(id)
     applyRecord(full)
@@ -445,6 +486,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     const trimmed = text.trim()
     if (!trimmed && !opts?.generateRun) return
 
+    const generation = turnGenerationRef.current
+    const sessionAtStart = sessionIdRef.current
+    const stillThisTurn = () =>
+      turnGenerationRef.current === generation && sessionIdRef.current === sessionAtStart
+
     busyRef.current = true
     setBusy(true)
     setPartialText('')
@@ -459,6 +505,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       : trimmed
 
     const transcript = toIntakeMessages(itemsRef.current)
+    if (!stillThisTurn()) {
+      busyRef.current = false
+      setBusy(false)
+      return
+    }
     commitItems(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'user', text: outgoing }])
 
     abortRef.current?.abort()
@@ -471,6 +522,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     let thinkingBuffer = ''
 
     const flushThinking = () => {
+      if (!stillThisTurn()) return
       const thought = thinkingBuffer.trim()
       thinkingBuffer = ''
       setPartialThinking('')
@@ -479,6 +531,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     }
 
     const flushAssistantBubble = () => {
+      if (!stillThisTurn()) return
       const pending = assistantText.slice(committedAssistantLength).trim()
       committedAssistantLength = assistantText.length
       setPartialText('')
@@ -488,8 +541,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     }
 
     try {
+      if (!stillThisTurn()) return
       const result = await runIntakeStream({
-        sessionId: sessionIdRef.current,
+        sessionId: sessionAtStart,
         message: outgoing,
         transcript,
         context: {
@@ -501,6 +555,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         modelChoice: modelChoiceRef.current.model ? modelChoiceRef.current : undefined,
         signal: controller.signal,
         onEvent: event => {
+          if (!stillThisTurn()) return
           if (event.type === 'thinking' && event.text) {
             flushAssistantBubble()
             thinkingBuffer += event.text
@@ -533,11 +588,14 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         },
       })
 
+      if (!stillThisTurn()) return
+
       if (result.noLlm) {
         setNoLlm(true)
         setError(result.error ?? 'No LLM provider configured')
       }
     } catch (err) {
+      if (!stillThisTurn()) return
       if ((err as Error).name === 'AbortError') {
         // Keep whatever text arrived; not an error.
       } else {
@@ -546,6 +604,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         commitItems(prev => [...prev, { kind: 'notice', id: nextId('notice'), tone: 'error', text: message }])
       }
     } finally {
+      if (!stillThisTurn()) {
+        busyRef.current = false
+        setBusy(false)
+        return
+      }
       flushThinking()
       const committed = assistantText.trim()
       const turnReadiness = committed ? parseReadiness(committed) : null
