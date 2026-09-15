@@ -6,6 +6,7 @@ import {
   mergeInvestigationSummaries,
   dropInvestigationSummary,
   truncateInvestigationTitle,
+  investigationToResume,
 } from '../src/lib/intake-investigation'
 
 describe('investigationTitleFromItems', () => {
@@ -71,5 +72,31 @@ describe('investigationTitleFromItems', () => {
     ]
     expect(dropInvestigationSummary(list, 'a').map(row => row.id)).toEqual(['b'])
     expect(dropInvestigationSummary(list, 'missing')).toEqual(list)
+  })
+
+  it('resumes the newest conversation even when it already dispatched a run', () => {
+    const dispatched = {
+      id: 'disp',
+      title: 'kyc',
+      status: 'dispatched' as const,
+      readiness: null,
+      turnCount: 4,
+      dispatchedJobId: 'job-1',
+      updatedAt: '2026-01-03T00:00:00.000Z',
+    }
+    const active = {
+      id: 'act',
+      title: 'older',
+      status: 'active' as const,
+      readiness: null,
+      turnCount: 1,
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    }
+    expect(investigationToResume([dispatched, active])?.id).toBe('disp')
+    expect(investigationToResume([
+      { ...dispatched, status: 'closed', updatedAt: '2026-01-04T00:00:00.000Z' },
+      active,
+    ])?.id).toBe('act')
+    expect(investigationToResume([])).toBeUndefined()
   })
 })

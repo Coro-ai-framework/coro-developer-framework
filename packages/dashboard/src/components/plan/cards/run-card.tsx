@@ -57,7 +57,11 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
       }
       const result = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
       session.markCardDispatched(itemId, result.jobId)
-      await session.startNewConversation({ status: 'dispatched', dispatchedJobId: result.jobId })
+      // Stay on this investigation. Minting a blank chat here was dropping
+      // the run card (the only copy lived in React) when the dispatched PUT
+      // lost the race, and New Run then rehydrated the same conversation as
+      // if no run existed.
+      await session.persistSnapshot({ status: 'dispatched', dispatchedJobId: result.jobId })
       navigate(`/jobs/${result.jobId}`)
     } catch (err) {
       if (

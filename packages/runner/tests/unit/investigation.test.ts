@@ -107,6 +107,16 @@ describe('mergeInvestigation', () => {
     expect(merged.status).toBe('closed')
   })
 
+  it('keeps dispatched when a follow-up snapshot omits status', () => {
+    const existing = base({ status: 'dispatched', dispatchedJobId: 'job-1' })
+    const merged = mergeInvestigation(existing, {
+      id: 'inv-1',
+      items: [{ kind: 'message', role: 'user', text: 'how is it going?' }],
+    } as InvestigationPatch, '2026-01-01T01:00:00.000Z')
+    expect(merged.status).toBe('dispatched')
+    expect(merged.dispatchedJobId).toBe('job-1')
+  })
+
   it('does not bump updatedAt when the dashboard PUT is a no-op', () => {
     const existing = base()
     const merged = mergeInvestigation(existing, {

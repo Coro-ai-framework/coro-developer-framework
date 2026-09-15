@@ -20,6 +20,7 @@ import {
   getInvestigation,
   investigationHasProgress,
   investigationTitleFromItems,
+  investigationToResume,
   INVESTIGATION_LIST_PAGE_SIZE,
   listInvestigations,
   mergeInvestigationSummaries,
@@ -90,7 +91,10 @@ export interface PlanSessionApi extends PlanSessionState {
   setModelChoice: (next: { provider: string; model: string }) => void
   updateCard: (itemId: string, data: unknown) => void
   markCardDispatched: (itemId: string, jobId: string) => void
-  persistSnapshot: () => Promise<void>
+  persistSnapshot: (opts?: {
+    status?: InvestigationStatus
+    dispatchedJobId?: string
+  }) => Promise<void>
   appendNotice: (notice: { tone: 'info' | 'warning' | 'error'; text: string; action?: { label: string; to: string } }) => void
   setKnownWorkflows: (workflows: WorkflowOption[]) => void
   setJobs: (jobs: Job[]) => void
@@ -190,7 +194,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         tokens: tokensRef.current,
         contextUsed: contextUsedRef.current,
         title: investigationTitleFromItems(currentItems),
-        status: opts?.status ?? 'active',
+        // Autosave omits status so a follow-up question cannot downgrade a
+        // dispatched investigation back to active. First insert still
+        // becomes active via mergeInvestigation's default.
+        ...(opts?.status ? { status: opts.status } : {}),
         ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
       })
       if (deletedIdsRef.current.has(id)) {
@@ -211,7 +218,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     return persistChainRef.current
   }, [persistNow])
 
-  const persistSnapshot = useCallback(() => enqueuePersist(), [enqueuePersist])
+  const persistSnapshot = useCallback((opts?: {
+    status?: InvestigationStatus
+    dispatchedJobId?: string
+  }) => enqueuePersist(opts), [enqueuePersist])
 
   const applyRecord = useCallback((record: {
     id: string
@@ -302,9 +312,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         setInvestigations(list.sessions)
         investigationsRef.current = list.sessions
         setInvestigationsTotal(list.total)
-        const recentActive = list.sessions.find(row => row.status === 'active')
-        if (recentActive) {
-          const full = await getInvestigation(recentActive.id)
+        const resume = investigationToResume(list.sessions)
+        if (resume) {
+          const full = await getInvestigation(resume.id)
           if (cancelled) return
           applyRecord(full)
         }

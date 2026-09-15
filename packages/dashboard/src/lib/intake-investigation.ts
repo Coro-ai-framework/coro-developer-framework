@@ -115,6 +115,18 @@ export function dropInvestigationSummary(
   return list.filter(item => item.id !== id)
 }
 
+/**
+ * Recents is newest-first. Resume that conversation — including one that
+ * already dispatched a run — rather than skipping to the latest `active`
+ * row and leaving the developer in a blank chat. Closed rows stay in the
+ * rail but are not auto-opened.
+ */
+export function investigationToResume(
+  sessions: InvestigationSummary[],
+): InvestigationSummary | undefined {
+  return sessions.find(row => row.status !== 'closed')
+}
+
 export async function listInvestigations(options?: {
   limit?: number
   offset?: number
