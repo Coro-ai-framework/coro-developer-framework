@@ -38,11 +38,11 @@ export const PAGE_TITLES = {
   startRun: 'Start run',
 } as const
 
+// Switching away from a working conversation used to warn, because the turn
+// was discarded. It is not: the turn runs on, the Recents row reads "Working",
+// and returning re-attaches to the live transcript. Only starting fresh still
+// asks, and only when there is something to leave behind.
 export const CONVERSATION_COPY = {
-  switchBusy:
-    'Coro is still working. Switch conversations? This turn keeps running and its reply is saved to the conversation you are leaving.',
-  newBusy:
-    'Coro is still working. Start a new conversation? This turn keeps running and its reply is saved to the one you are leaving.',
   newConfirm: 'Start a new conversation? This one stays in Recents.',
   /** The Stop control disconnects; it cannot recall a turn already sent. */
   stopHint: 'Stop watching this turn. Coro may still finish it in the background.',

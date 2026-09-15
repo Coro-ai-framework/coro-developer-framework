@@ -1,6 +1,6 @@
 import { InvestigationList } from './investigation-list'
 import { usePlanSession } from '../../providers/plan-session'
-import { CONVERSATION_COPY, PAGE_TITLES } from '../../lib/run-labels'
+import { PAGE_TITLES } from '../../lib/run-labels'
 import { cn } from '../../lib/utils'
 
 export default function InvestigationRail({
@@ -12,14 +12,12 @@ export default function InvestigationRail({
 }) {
   const session = usePlanSession()
 
+  // Switching is lossless in both directions — the turn keeps running and the
+  // conversation shows it live on return — so there is nothing to confirm.
   async function handleSelect(id: string) {
     if (id === session.sessionId) {
       onSelect?.()
       return
-    }
-    if (session.busy) {
-      const ok = window.confirm(CONVERSATION_COPY.switchBusy)
-      if (!ok) return
     }
     await session.openInvestigation(id)
     onSelect?.()

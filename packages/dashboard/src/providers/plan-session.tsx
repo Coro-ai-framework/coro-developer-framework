@@ -118,6 +118,25 @@ export interface PlanSessionApi extends PlanSessionState {
   investigationsLoadingMore: boolean
 }
 
+/**
+ * A turn that is still streaming, held per conversation.
+ *
+ * A turn outlives the conversation being on screen — switching away does not
+ * stop it — so returning to one mid-turn has to re-attach to this rather than
+ * re-read the row it was parked with. Without it the developer comes back to a
+ * frozen transcript while the agent is demonstrably still working.
+ */
+interface LiveTurn {
+  items: ActivityItem[]
+  partialText: string
+  partialThinking: string
+  /** Billed tokens this turn has reported so far. */
+  tokens: number
+  contextUsed: number
+  /** Kept so Stop still reaches the turn after a switch away and back. */
+  controller: AbortController
+}
+
 const PlanSessionContext = createContext<PlanSessionApi | null>(null)
 
 export function PlanSessionProvider({ children }: { children: ReactNode }) {
@@ -160,6 +179,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const skipNextPersistRef = useRef(false)
   const deletedIdsRef = useRef(new Set<string>())
   const runningIdsRef = useRef<Set<string>>(new Set())
+  const liveTurnsRef = useRef(new Map<string, LiveTurn>())
   /**
    * Bumped when the visible conversation changes (new / open / reset).
    * An in-flight `send()` compares against it to know whether its
@@ -285,21 +305,26 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     skipNextPersistRef.current = true
     turnGenerationRef.current += 1
     setSwitching(false)
-    const nextItems = asActivityItems(record.items)
+    // Mid-turn, the live transcript is ahead of the stored one — the row was
+    // written when the conversation was parked and the turn has been running
+    // since. Re-attach to it so the feed picks up where the agent actually is.
+    const live = liveTurnsRef.current.get(record.id)
+    const nextItems = live ? live.items : asActivityItems(record.items)
     sessionIdRef.current = record.id
     itemsRef.current = nextItems
     bootSessionId = record.id
     setSessionId(record.id)
     setItems(nextItems)
     setTurnCount(record.turnCount)
-    setTotalTokens(record.tokens)
-    setContextUsed(record.contextUsed)
+    setTotalTokens(record.tokens + (live?.tokens ?? 0))
+    setContextUsed(live ? live.contextUsed : record.contextUsed)
     setReadiness(record.readiness)
     if (record.modelChoice?.model) setModelChoice(record.modelChoice)
-    busyRef.current = false
-    setBusy(false)
-    setPartialText('')
-    setPartialThinking('')
+    abortRef.current = live?.controller ?? null
+    busyRef.current = Boolean(live)
+    setBusy(Boolean(live))
+    setPartialText(live?.partialText ?? '')
+    setPartialThinking(live?.partialThinking ?? '')
     setError(null)
   }, [])
 
@@ -422,8 +447,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     status?: InvestigationStatus
     dispatchedJobId?: string
   }) => {
-    // Stop in-flight turn writes before we snapshot, so a late tool_end
-    // cannot land on the blank session mintEmpty creates next.
+    // mintEmpty swaps the session id, which is what stops the in-flight turn
+    // writing here; the bump additionally invalidates any switch or hydrate
+    // still resolving, so neither can drop a conversation onto the blank one.
     turnGenerationRef.current += 1
     const pending = enqueuePersist(opts)
     mintEmpty()
@@ -436,7 +462,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     abortRef.current = null
     const generation = turnGenerationRef.current
     setSwitching(true)
-    if (investigationHasProgress(itemsRef.current)) await enqueuePersist()
+    if (investigationHasProgress(itemsRef.current)) enqueuePersist()
+    // Drain queued writes first — one of them may be a turn that just
+    // finished in another conversation, and this GET could otherwise read the
+    // row it is about to replace.
+    await persistChainRef.current
     try {
       const full = await getInvestigation(id)
       // A later switch — another row, or New conversation — won while this
@@ -466,9 +496,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const removeInvestigation = useCallback(async (id: string) => {
     deletedIdsRef.current.add(id)
     const isCurrent = id === sessionIdRef.current
+    // Discarding the conversation is the one case where its turn should not
+    // survive: there is nothing left to adopt it, on screen or not.
+    liveTurnsRef.current.get(id)?.controller.abort()
     if (isCurrent) {
-      // Discarding the conversation is the one case where the turn should
-      // not survive: there is nothing left to adopt it.
       abortRef.current?.abort()
       abortRef.current = null
     }
@@ -539,19 +570,17 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     const trimmed = text.trim()
     if (!trimmed && !opts?.generateRun) return false
 
-    const generation = turnGenerationRef.current
     const sessionAtStart = sessionIdRef.current
     const modelAtStart = modelChoiceRef.current
     const turnCountAtStart = turnCountRef.current
     const tokensAtStart = tokensRef.current
     /**
-     * Whether this turn's conversation is still the one on screen. When it
-     * is not, the turn keeps running and keeps building its own transcript —
-     * it just stops writing to React state, and persists itself on the way
-     * out (see the `finally` below).
+     * Whether this turn's conversation is the one on screen. Session ids are
+     * minted UUIDs and never reused, so this goes false on a switch away and
+     * true again on the way back — which is the point: the turn resumes
+     * writing to the feed instead of finishing invisibly.
      */
-    const stillThisTurn = () =>
-      turnGenerationRef.current === generation && sessionIdRef.current === sessionAtStart
+    const onScreen = () => sessionIdRef.current === sessionAtStart
 
     busyRef.current = true
     setBusy(true)
@@ -569,38 +598,45 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
     const transcript = toIntakeMessages(itemsRef.current)
 
-    // While this conversation is on screen the turn writes through to the
-    // provider, so edits that land mid-turn from elsewhere — a run-card field,
-    // a notice — are not clobbered. Once the developer switches away the turn
-    // keeps building its own copy instead, because `items` now belongs to a
-    // different conversation.
-    let turnItems = itemsRef.current
-    const commitTurn = (updater: (prev: ActivityItem[]) => ActivityItem[]) => {
-      if (!stillThisTurn()) {
-        turnItems = updater(turnItems)
-        return
-      }
-      turnItems = updater(itemsRef.current)
-      itemsRef.current = turnItems
-      setItems(turnItems)
-    }
-    commitTurn(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'user', text: outgoing }])
-
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+
+    // The turn's own copy of the transcript, readable by whoever comes back
+    // to this conversation while it is still streaming.
+    const live: LiveTurn = {
+      items: itemsRef.current,
+      partialText: '',
+      partialThinking: '',
+      tokens: 0,
+      contextUsed: contextUsedRef.current,
+      controller,
+    }
+    liveTurnsRef.current.set(sessionAtStart, live)
+
+    // On screen, the turn writes through to the provider so edits that land
+    // mid-turn from elsewhere — a run-card field, a notice — are not
+    // clobbered. Off screen it extends its own copy, because `items` then
+    // belongs to a different conversation.
+    const commitTurn = (updater: (prev: ActivityItem[]) => ActivityItem[]) => {
+      const visible = onScreen()
+      live.items = updater(visible ? itemsRef.current : live.items)
+      if (!visible) return
+      itemsRef.current = live.items
+      setItems(live.items)
+    }
+    commitTurn(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'user', text: outgoing }])
 
     const history = deriveRunHistoryHints(jobsRef.current)
     let assistantText = ''
     let committedAssistantLength = 0
     let thinkingBuffer = ''
-    let turnTokens = 0
-    let turnContext = contextUsedRef.current
 
     const flushThinking = () => {
       const thought = thinkingBuffer.trim()
       thinkingBuffer = ''
-      if (stillThisTurn()) setPartialThinking('')
+      live.partialThinking = ''
+      if (onScreen()) setPartialThinking('')
       if (!thought) return
       commitTurn(prev => [...prev, { kind: 'thought', id: nextId('thought'), text: thought }])
     }
@@ -608,7 +644,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     const flushAssistantBubble = () => {
       const pending = assistantText.slice(committedAssistantLength).trim()
       committedAssistantLength = assistantText.length
-      if (stillThisTurn()) setPartialText('')
+      live.partialText = ''
+      if (onScreen()) setPartialText('')
       if (!pending) return
       if (!displayContent('assistant', pending)) return
       commitTurn(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }])
@@ -631,11 +668,13 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           if (event.type === 'thinking' && event.text) {
             flushAssistantBubble()
             thinkingBuffer += event.text
-            if (stillThisTurn()) setPartialThinking(thinkingBuffer)
+            live.partialThinking = thinkingBuffer
+            if (onScreen()) setPartialThinking(thinkingBuffer)
           } else if (event.type === 'token' && event.text) {
             flushThinking()
             assistantText += event.text
-            if (stillThisTurn()) setPartialText(assistantText.slice(committedAssistantLength))
+            live.partialText = assistantText.slice(committedAssistantLength)
+            if (onScreen()) setPartialText(live.partialText)
           } else if (event.type === 'tool_start' || event.type === 'tool_end') {
             if (event.type === 'tool_start') {
               flushThinking()
@@ -645,17 +684,17 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           } else if (event.type === 'done') {
             commitTurn(prev => applyIntakeEvent(prev, event))
             if (event.usage?.totalTokens) {
-              turnTokens += event.usage.totalTokens
-              if (stillThisTurn()) setTotalTokens(prev => prev + event.usage!.totalTokens)
+              live.tokens += event.usage.totalTokens
+              if (onScreen()) setTotalTokens(prev => prev + event.usage!.totalTokens)
             }
             if (event.contextTokens != null) {
-              turnContext = event.contextTokens
-              if (stillThisTurn()) setContextUsed(event.contextTokens)
+              live.contextUsed = event.contextTokens
+              if (onScreen()) setContextUsed(event.contextTokens)
             }
           } else if (event.type === 'error') {
             commitTurn(prev => applyIntakeEvent(prev, event))
             if (event.message) {
-              if (stillThisTurn()) {
+              if (onScreen()) {
                 if (event.reason === 'no-llm') setNoLlm(true)
                 setError(event.message)
               }
@@ -668,7 +707,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         },
       })
 
-      if (result.noLlm && stillThisTurn()) {
+      if (result.noLlm && onScreen()) {
         setNoLlm(true)
         setError(result.error ?? 'No LLM provider configured')
       }
@@ -677,7 +716,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         // Keep whatever text arrived; not an error.
       } else {
         const message = err instanceof Error ? err.message : String(err)
-        if (stillThisTurn()) setError(message)
+        if (onScreen()) setError(message)
         commitTurn(prev => [...prev, { kind: 'notice', id: nextId('notice'), tone: 'error', text: message }])
       }
     } finally {
@@ -757,11 +796,12 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         ]
       }
 
-      const stillVisible = stillThisTurn()
-      const finalItems = finalize(stillVisible ? itemsRef.current : turnItems)
+      const stillVisible = onScreen()
+      const finalItems = finalize(stillVisible ? itemsRef.current : live.items)
+      live.items = finalItems
+      liveTurnsRef.current.delete(sessionAtStart)
 
       if (stillVisible) {
-        turnItems = finalItems
         itemsRef.current = finalItems
         setItems(finalItems)
         setReadiness(turnReadiness)
@@ -783,8 +823,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           readiness: turnReadiness,
           modelChoice: modelAtStart,
           turnCount: turnCountAtStart + 1,
-          tokens: tokensAtStart + turnTokens,
-          contextUsed: turnContext,
+          tokens: tokensAtStart + live.tokens,
+          contextUsed: live.contextUsed,
         })
       }
       markRunning(sessionAtStart, false)

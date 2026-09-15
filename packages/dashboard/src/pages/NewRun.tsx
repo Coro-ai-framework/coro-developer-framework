@@ -89,14 +89,9 @@ export default function NewRun() {
   }, [session.setScmConnected])
 
   async function handleNewConversation() {
-    if (session.busy || session.hasProgress) {
-      const ok = window.confirm(
-        session.busy
-          ? CONVERSATION_COPY.newBusy
-          : CONVERSATION_COPY.newConfirm,
-      )
-      if (!ok) return
-    }
+    // A turn in flight is no longer a reason to ask: it keeps running and
+    // stays attached to the conversation it belongs to.
+    if (session.hasProgress && !window.confirm(CONVERSATION_COPY.newConfirm)) return
     await session.startNewConversation()
   }
 
@@ -104,12 +99,6 @@ export default function NewRun() {
     if (id === session.sessionId) {
       setRecentsOpen(false)
       return
-    }
-    if (session.busy) {
-      const ok = window.confirm(
-        CONVERSATION_COPY.switchBusy,
-      )
-      if (!ok) return
     }
     await session.openInvestigation(id)
     setRecentsOpen(false)
