@@ -44,6 +44,7 @@ export default function InvestigationRail({
         rows={session.investigations}
         jobs={session.jobs}
         currentId={session.sessionId}
+        runningIds={session.runningIds}
         loading={session.investigationsLoading && !session.hydrated}
         loadingMore={session.investigationsLoadingMore}
         total={session.investigationsTotal}

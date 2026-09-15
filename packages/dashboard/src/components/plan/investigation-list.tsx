@@ -17,6 +17,7 @@ export function InvestigationList({
   rows,
   jobs = [],
   currentId,
+  runningIds = [],
   loading,
   loadingMore,
   total,
@@ -30,6 +31,8 @@ export function InvestigationList({
   rows: InvestigationSummary[]
   jobs?: Job[]
   currentId: string
+  /** Conversations with a turn in flight, on screen or not. */
+  runningIds?: string[]
   loading: boolean
   loadingMore: boolean
   total: number
@@ -44,6 +47,7 @@ export function InvestigationList({
   const hasMore = rows.length < total
   const [pendingId, setPendingId] = useState<string | null>(null)
   const jobsById = new Map(jobs.map(job => [job.id, job]))
+  const running = new Set(runningIds)
 
   if (loading) {
     return (
@@ -88,7 +92,9 @@ export function InvestigationList({
             const removing = pendingId === row.id
             const runId = row.dispatchedJobId
             const linkedJob = runId ? jobsById.get(runId) : undefined
-            const meta = getConversationDisplayStatus(row, linkedJob ?? null)
+            const meta = getConversationDisplayStatus(row, linkedJob ?? null, {
+              running: running.has(row.id),
+            })
             return (
               <li key={row.id}>
                 <div

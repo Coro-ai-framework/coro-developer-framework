@@ -79,7 +79,8 @@ interface PlanSessionState {
 }
 
 export interface PlanSessionApi extends PlanSessionState {
-  send: (text: string, opts?: { generateRun?: boolean }) => Promise<void>
+  /** False when the turn was refused (already busy, nothing to send). */
+  send: (text: string, opts?: { generateRun?: boolean }) => Promise<boolean>
   cancel: () => void
   startNewConversation: (opts?: {
     status?: InvestigationStatus
@@ -104,6 +105,13 @@ export interface PlanSessionApi extends PlanSessionState {
   scmConnected: boolean
   hasProgress: boolean
   hydrated: boolean
+  /** True while a conversation switch is fetching. */
+  switching: boolean
+  /**
+   * Conversations with a turn in flight — including ones the developer has
+   * switched away from, since those turns keep running.
+   */
+  runningIds: string[]
   investigations: InvestigationSummary[]
   investigationsTotal: number
   investigationsLoading: boolean
@@ -129,6 +137,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [scmConnected, setScmConnected] = useState(true)
   const [hydrated, setHydrated] = useState(false)
+  const [switching, setSwitching] = useState(false)
+  const [runningIds, setRunningIds] = useState<string[]>([])
   const [investigations, setInvestigations] = useState<InvestigationSummary[]>([])
   const [investigationsTotal, setInvestigationsTotal] = useState(0)
   const [investigationsLoading, setInvestigationsLoading] = useState(true)
@@ -149,11 +159,13 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const persistChainRef = useRef(Promise.resolve())
   const skipNextPersistRef = useRef(false)
   const deletedIdsRef = useRef(new Set<string>())
+  const runningIdsRef = useRef<Set<string>>(new Set())
   /**
    * Bumped when the visible conversation changes (new / open / reset).
-   * In-flight `send()` callbacks must not write into the next chat —
-   * aborting the fetch does not stop SSE events already queued, or
-   * `finally` after `mintEmpty()`.
+   * An in-flight `send()` compares against it to know whether its
+   * conversation is still the one on screen: writes to React state stop,
+   * but the turn itself keeps going and is persisted to the conversation
+   * that started it. See `send`.
    */
   const turnGenerationRef = useRef(0)
   workflowsRef.current = workflows
@@ -172,6 +184,14 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     itemsRef.current = next
     setItems(next)
     return next
+  }, [])
+
+  const markRunning = useCallback((id: string, running: boolean) => {
+    const next = new Set(runningIdsRef.current)
+    if (running) next.add(id)
+    else next.delete(id)
+    runningIdsRef.current = next
+    setRunningIds([...next])
   }, [])
 
   const rememberSummary = useCallback((summary: InvestigationSummary) => {
@@ -222,26 +242,31 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     }
   }, [rememberSummary])
 
-  const enqueuePersist = useCallback((opts?: {
-    status?: InvestigationStatus
-    dispatchedJobId?: string
-  }) => {
-    // Snapshot at enqueue time. mintEmpty() can clear the refs before the
-    // PUT runs; the parked conversation must still be the one we persist.
-    const snapshot = {
-      id: sessionIdRef.current,
-      items: itemsRef.current,
-      readiness: readinessRef.current,
-      modelChoice: modelChoiceRef.current,
-      turnCount: turnCountRef.current,
-      tokens: tokensRef.current,
-      contextUsed: contextUsedRef.current,
-      ...(opts?.status ? { status: opts.status } : {}),
-      ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
-    }
+  const enqueueSnapshot = useCallback((snapshot: Parameters<typeof persistNow>[0]) => {
     persistChainRef.current = persistChainRef.current.then(() => persistNow(snapshot)).catch(() => undefined)
     return persistChainRef.current
   }, [persistNow])
+
+  const enqueuePersist = useCallback((opts?: {
+    status?: InvestigationStatus
+    dispatchedJobId?: string
+  }) => enqueueSnapshot({
+    // Snapshot at enqueue time. mintEmpty() can clear the refs before the
+    // PUT runs; the parked conversation must still be the one we persist.
+    id: sessionIdRef.current,
+    // A turn still streaming has entries marked `running`. Storing them
+    // that way leaves a conversation that reopens with a spinner it will
+    // never resolve, so the stored copy is always settled — the live turn
+    // re-persists the real outcome when it finishes.
+    items: settleRunningEntries(itemsRef.current),
+    readiness: readinessRef.current,
+    modelChoice: modelChoiceRef.current,
+    turnCount: turnCountRef.current,
+    tokens: tokensRef.current,
+    contextUsed: contextUsedRef.current,
+    ...(opts?.status ? { status: opts.status } : {}),
+    ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
+  }), [enqueueSnapshot])
 
   const persistSnapshot = useCallback((opts?: {
     status?: InvestigationStatus
@@ -259,6 +284,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   }) => {
     skipNextPersistRef.current = true
     turnGenerationRef.current += 1
+    setSwitching(false)
     const nextItems = asActivityItems(record.items)
     sessionIdRef.current = record.id
     itemsRef.current = nextItems
@@ -279,7 +305,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
   const mintEmpty = useCallback(() => {
     turnGenerationRef.current += 1
-    abortRef.current?.abort()
+    setSwitching(false)
+    // Forget the in-flight controller without aborting it. The turn belongs
+    // to the conversation being parked and finishes into it; killing the
+    // fetch here is what used to throw away a reply already paid for.
     abortRef.current = null
     const next = mintSessionId()
     sessionIdRef.current = next
@@ -393,9 +422,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     status?: InvestigationStatus
     dispatchedJobId?: string
   }) => {
-    abortRef.current?.abort()
-    abortRef.current = null
-    // Drop in-flight turn writes before we snapshot, so a late tool_end
+    // Stop in-flight turn writes before we snapshot, so a late tool_end
     // cannot land on the blank session mintEmpty creates next.
     turnGenerationRef.current += 1
     const pending = enqueuePersist(opts)
@@ -405,21 +432,47 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
   const openInvestigation = useCallback(async (id: string) => {
     if (id === sessionIdRef.current) return
-    abortRef.current?.abort()
-    abortRef.current = null
     turnGenerationRef.current += 1
+    abortRef.current = null
+    const generation = turnGenerationRef.current
+    setSwitching(true)
     if (investigationHasProgress(itemsRef.current)) await enqueuePersist()
-    const full = await getInvestigation(id)
-    applyRecord(full)
-  }, [applyRecord, enqueuePersist])
+    try {
+      const full = await getInvestigation(id)
+      // A later switch — another row, or New conversation — won while this
+      // GET was in flight. Applying now would drag the developer back into
+      // a conversation they already left.
+      if (turnGenerationRef.current !== generation) return
+      applyRecord(full)
+    } catch (err) {
+      if (turnGenerationRef.current !== generation) return
+      // The switch did not happen. Say so in the conversation still on
+      // screen rather than leaving the click looking like a no-op.
+      const message = err instanceof Error ? err.message : String(err)
+      commitItems(prev => [
+        ...prev,
+        {
+          kind: 'notice',
+          id: nextId('notice'),
+          tone: 'error',
+          text: `Could not open that conversation — ${message}`,
+        },
+      ])
+    } finally {
+      if (turnGenerationRef.current === generation) setSwitching(false)
+    }
+  }, [applyRecord, commitItems, enqueuePersist])
 
   const removeInvestigation = useCallback(async (id: string) => {
     deletedIdsRef.current.add(id)
     const isCurrent = id === sessionIdRef.current
     if (isCurrent) {
+      // Discarding the conversation is the one case where the turn should
+      // not survive: there is nothing left to adopt it.
       abortRef.current?.abort()
       abortRef.current = null
     }
+    markRunning(id, false)
     try {
       await deleteInvestigation(id)
     } catch (err) {
@@ -445,7 +498,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     } catch {
       // The row is already gone from the rail.
     }
-  }, [mintEmpty])
+  }, [markRunning, mintEmpty])
 
   const loadMoreInvestigations = useCallback(async () => {
     if (investigationsRef.current.length >= investigationsTotal) return
@@ -481,18 +534,28 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     [commitItems],
   )
 
-  const send = useCallback(async (text: string, opts?: { generateRun?: boolean }) => {
-    if (busyRef.current) return
+  const send = useCallback(async (text: string, opts?: { generateRun?: boolean }): Promise<boolean> => {
+    if (busyRef.current) return false
     const trimmed = text.trim()
-    if (!trimmed && !opts?.generateRun) return
+    if (!trimmed && !opts?.generateRun) return false
 
     const generation = turnGenerationRef.current
     const sessionAtStart = sessionIdRef.current
+    const modelAtStart = modelChoiceRef.current
+    const turnCountAtStart = turnCountRef.current
+    const tokensAtStart = tokensRef.current
+    /**
+     * Whether this turn's conversation is still the one on screen. When it
+     * is not, the turn keeps running and keeps building its own transcript —
+     * it just stops writing to React state, and persists itself on the way
+     * out (see the `finally` below).
+     */
     const stillThisTurn = () =>
       turnGenerationRef.current === generation && sessionIdRef.current === sessionAtStart
 
     busyRef.current = true
     setBusy(true)
+    markRunning(sessionAtStart, true)
     setPartialText('')
     setPartialThinking('')
     setError(null)
@@ -505,12 +568,23 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       : trimmed
 
     const transcript = toIntakeMessages(itemsRef.current)
-    if (!stillThisTurn()) {
-      busyRef.current = false
-      setBusy(false)
-      return
+
+    // While this conversation is on screen the turn writes through to the
+    // provider, so edits that land mid-turn from elsewhere — a run-card field,
+    // a notice — are not clobbered. Once the developer switches away the turn
+    // keeps building its own copy instead, because `items` now belongs to a
+    // different conversation.
+    let turnItems = itemsRef.current
+    const commitTurn = (updater: (prev: ActivityItem[]) => ActivityItem[]) => {
+      if (!stillThisTurn()) {
+        turnItems = updater(turnItems)
+        return
+      }
+      turnItems = updater(itemsRef.current)
+      itemsRef.current = turnItems
+      setItems(turnItems)
     }
-    commitItems(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'user', text: outgoing }])
+    commitTurn(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'user', text: outgoing }])
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -520,28 +594,27 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     let assistantText = ''
     let committedAssistantLength = 0
     let thinkingBuffer = ''
+    let turnTokens = 0
+    let turnContext = contextUsedRef.current
 
     const flushThinking = () => {
-      if (!stillThisTurn()) return
       const thought = thinkingBuffer.trim()
       thinkingBuffer = ''
-      setPartialThinking('')
+      if (stillThisTurn()) setPartialThinking('')
       if (!thought) return
-      commitItems(prev => [...prev, { kind: 'thought', id: nextId('thought'), text: thought }])
+      commitTurn(prev => [...prev, { kind: 'thought', id: nextId('thought'), text: thought }])
     }
 
     const flushAssistantBubble = () => {
-      if (!stillThisTurn()) return
       const pending = assistantText.slice(committedAssistantLength).trim()
       committedAssistantLength = assistantText.length
-      setPartialText('')
+      if (stillThisTurn()) setPartialText('')
       if (!pending) return
       if (!displayContent('assistant', pending)) return
-      commitItems(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }])
+      commitTurn(prev => [...prev, { kind: 'message', id: nextId('msg'), role: 'assistant', text: pending }])
     }
 
     try {
-      if (!stillThisTurn()) return
       const result = await runIntakeStream({
         sessionId: sessionAtStart,
         message: outgoing,
@@ -552,34 +625,41 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           availableWorkflows: workflowsRef.current,
           userLocale: navigator.language,
         },
-        modelChoice: modelChoiceRef.current.model ? modelChoiceRef.current : undefined,
+        modelChoice: modelAtStart.model ? modelAtStart : undefined,
         signal: controller.signal,
         onEvent: event => {
-          if (!stillThisTurn()) return
           if (event.type === 'thinking' && event.text) {
             flushAssistantBubble()
             thinkingBuffer += event.text
-            setPartialThinking(thinkingBuffer)
+            if (stillThisTurn()) setPartialThinking(thinkingBuffer)
           } else if (event.type === 'token' && event.text) {
             flushThinking()
             assistantText += event.text
-            setPartialText(assistantText.slice(committedAssistantLength))
+            if (stillThisTurn()) setPartialText(assistantText.slice(committedAssistantLength))
           } else if (event.type === 'tool_start' || event.type === 'tool_end') {
             if (event.type === 'tool_start') {
               flushThinking()
               flushAssistantBubble()
             }
-            commitItems(prev => applyIntakeEvent(prev, event))
+            commitTurn(prev => applyIntakeEvent(prev, event))
           } else if (event.type === 'done') {
-            commitItems(prev => applyIntakeEvent(prev, event))
-            if (event.usage?.totalTokens) setTotalTokens(prev => prev + event.usage!.totalTokens)
-            if (event.contextTokens != null) setContextUsed(event.contextTokens)
+            commitTurn(prev => applyIntakeEvent(prev, event))
+            if (event.usage?.totalTokens) {
+              turnTokens += event.usage.totalTokens
+              if (stillThisTurn()) setTotalTokens(prev => prev + event.usage!.totalTokens)
+            }
+            if (event.contextTokens != null) {
+              turnContext = event.contextTokens
+              if (stillThisTurn()) setContextUsed(event.contextTokens)
+            }
           } else if (event.type === 'error') {
-            commitItems(prev => applyIntakeEvent(prev, event))
+            commitTurn(prev => applyIntakeEvent(prev, event))
             if (event.message) {
-              if (event.reason === 'no-llm') setNoLlm(true)
-              setError(event.message)
-              commitItems(prev => [
+              if (stillThisTurn()) {
+                if (event.reason === 'no-llm') setNoLlm(true)
+                setError(event.message)
+              }
+              commitTurn(prev => [
                 ...prev,
                 { kind: 'notice', id: nextId('notice'), tone: 'error', text: event.message ?? 'Plan mode failed' },
               ])
@@ -588,32 +668,24 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         },
       })
 
-      if (!stillThisTurn()) return
-
-      if (result.noLlm) {
+      if (result.noLlm && stillThisTurn()) {
         setNoLlm(true)
         setError(result.error ?? 'No LLM provider configured')
       }
     } catch (err) {
-      if (!stillThisTurn()) return
       if ((err as Error).name === 'AbortError') {
         // Keep whatever text arrived; not an error.
       } else {
         const message = err instanceof Error ? err.message : String(err)
-        setError(message)
-        commitItems(prev => [...prev, { kind: 'notice', id: nextId('notice'), tone: 'error', text: message }])
+        if (stillThisTurn()) setError(message)
+        commitTurn(prev => [...prev, { kind: 'notice', id: nextId('notice'), tone: 'error', text: message }])
       }
     } finally {
-      if (!stillThisTurn()) {
-        busyRef.current = false
-        setBusy(false)
-        return
-      }
       flushThinking()
       const committed = assistantText.trim()
       const turnReadiness = committed ? parseReadiness(committed) : null
-      setReadiness(turnReadiness)
-      commitItems(prev => {
+
+      const finalize = (prev: ActivityItem[]): ActivityItem[] => {
         const settled = settleRunningEntries(prev)
         const pending = assistantText.slice(committedAssistantLength).trim()
         const visible = pending ? displayContent('assistant', pending) : ''
@@ -683,15 +755,42 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
             card: { type: 'run', data: { run: parsed, state: 'draft' } },
           },
         ]
-      })
-      setPartialText('')
-      setPartialThinking('')
-      setTurnCount(c => c + 1)
-      busyRef.current = false
-      setBusy(false)
-      abortRef.current = null
+      }
+
+      const stillVisible = stillThisTurn()
+      const finalItems = finalize(stillVisible ? itemsRef.current : turnItems)
+
+      if (stillVisible) {
+        turnItems = finalItems
+        itemsRef.current = finalItems
+        setItems(finalItems)
+        setReadiness(turnReadiness)
+        setPartialText('')
+        setPartialThinking('')
+        setTurnCount(c => c + 1)
+        busyRef.current = false
+        setBusy(false)
+        abortRef.current = null
+      } else {
+        // The developer moved on. Write the finished exchange into the
+        // conversation that ran it, so reopening it shows the reply instead
+        // of a turn that appears to have vanished. Counters come from the
+        // values this turn started with; the runner's own session is
+        // authoritative and overrides them server-side when it is still warm.
+        void enqueueSnapshot({
+          id: sessionAtStart,
+          items: finalItems,
+          readiness: turnReadiness,
+          modelChoice: modelAtStart,
+          turnCount: turnCountAtStart + 1,
+          tokens: tokensAtStart + turnTokens,
+          contextUsed: turnContext,
+        })
+      }
+      markRunning(sessionAtStart, false)
     }
-  }, [commitItems])
+    return true
+  }, [enqueueSnapshot, markRunning])
 
   const updateCard = useCallback((itemId: string, data: unknown) => {
     commitItems(prev =>
@@ -746,6 +845,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       scmConnected,
       hasProgress,
       hydrated,
+      switching,
+      runningIds,
       investigations,
       investigationsTotal,
       investigationsLoading,
@@ -779,6 +880,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       scmConnected,
       hasProgress,
       hydrated,
+      switching,
+      runningIds,
       investigations,
       investigationsTotal,
       investigationsLoading,

@@ -77,6 +77,23 @@ export interface IntakeSession {
 
 const sessions = new Map<string, IntakeSession>()
 
+/**
+ * Ids the developer explicitly discarded, with the time of the DELETE.
+ *
+ * A turn already in flight finishes after the row is gone, and
+ * `recordIntakeTurn` recreates the cache entry it writes into — so without a
+ * tombstone the discarded conversation reappears in Recents carrying that one
+ * turn. Session ids are minted UUIDs and never reused, so remembering them is
+ * safe; the entries are swept on the same TTL as the sessions themselves.
+ */
+const discarded = new Map<string, number>()
+
+/** True once this conversation has been deleted. Nothing may persist it again. */
+export function isIntakeSessionDiscarded(sessionId: string): boolean {
+  sweep(Date.now())
+  return discarded.has(sessionId)
+}
+
 function removeWorkRoot(session: IntakeSession): void {
   if (!session.workRoot) return
   try {
@@ -92,6 +109,9 @@ function sweep(now: number): void {
     if (now - session.updatedAt <= INTAKE_SESSION_TTL_MS) continue
     removeWorkRoot(session)
     sessions.delete(id)
+  }
+  for (const [id, deletedAt] of discarded) {
+    if (now - deletedAt > INTAKE_SESSION_TTL_MS) discarded.delete(id)
   }
 }
 
@@ -117,6 +137,7 @@ export function getIntakeSession(sessionId: string): IntakeSession {
 export function deleteIntakeSession(sessionId: string): boolean {
   const existing = sessions.get(sessionId)
   if (existing) removeWorkRoot(existing)
+  discarded.set(sessionId, Date.now())
   return sessions.delete(sessionId)
 }
 
@@ -352,4 +373,5 @@ export function buildIntakeMessages(
 export function resetIntakeSessionsForTests(): void {
   for (const session of sessions.values()) removeWorkRoot(session)
   sessions.clear()
+  discarded.clear()
 }

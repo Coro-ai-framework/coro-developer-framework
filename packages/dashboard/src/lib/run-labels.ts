@@ -39,9 +39,13 @@ export const PAGE_TITLES = {
 } as const
 
 export const CONVERSATION_COPY = {
-  switchBusy: 'Coro is still working. Switch conversations? The current one stays in Recents.',
-  newBusy: 'Coro is still working. Start a new conversation? This one stays in Recents.',
+  switchBusy:
+    'Coro is still working. Switch conversations? This turn keeps running and its reply is saved to the conversation you are leaving.',
+  newBusy:
+    'Coro is still working. Start a new conversation? This turn keeps running and its reply is saved to the one you are leaving.',
   newConfirm: 'Start a new conversation? This one stays in Recents.',
+  /** The Stop control disconnects; it cannot recall a turn already sent. */
+  stopHint: 'Stop watching this turn. Coro may still finish it in the background.',
 } as const
 
 /** Composer home — New run. */

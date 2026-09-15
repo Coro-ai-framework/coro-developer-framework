@@ -47,6 +47,22 @@ describe('display status', () => {
     }).label).toBe('Needs you')
   })
 
+  it('shows a streaming conversation as working, over the job and readiness badges', () => {
+    const row = { status: 'dispatched', readiness: { state: 'ready' }, dispatchedJobId: 'job-1' }
+    expect(getConversationDisplayStatus(row, { status: 'coding' }, { running: true }).label)
+      .toBe('Working')
+    expect(getConversationDisplayStatus(
+      { status: 'active', readiness: { state: 'investigating' } },
+      null,
+      { running: true },
+    ).label).toBe('Working')
+    expect(getConversationDisplayStatus(
+      { status: 'active', readiness: { state: 'investigating' } },
+      null,
+      { running: false },
+    ).label).toBe('Investigating')
+  })
+
   it('keeps tab labels identical to the job badge', () => {
     expect(getTabStatus({ status: 'coding' }).label).toBe(getJobDisplayStatus({ status: 'coding' }).label)
     expect(getTabStatus({

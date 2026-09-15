@@ -71,6 +71,13 @@ export const READINESS_META = {
 
 export const PAUSED_META: StatusMeta = { label: 'Paused', category: 'waiting', tone: 'warning' }
 export const CLOSED_META: StatusMeta = { label: 'Closed', category: 'idle', tone: 'neutral' }
+/** A conversation with a turn in flight, including one not on screen. */
+export const CONVERSATION_WORKING_META: StatusMeta = {
+  label: 'Working',
+  category: 'running',
+  tone: 'accent',
+  pulse: true,
+}
 
 const CONNECTION_MAP: Record<ConnectionStatus, StatusMeta> = {
   connecting: { label: 'Connecting', category: 'waiting', tone: 'warning', pulse: true },
@@ -154,8 +161,10 @@ export function getReadinessMeta(state?: string | null): StatusMeta {
 }
 
 /**
- * Recents-rail status. A linked live job wins; otherwise this is still a
- * conversation (investigating / ready to start / closed).
+ * Recents-rail status. A turn in flight wins — it is the only transient state
+ * here, and a conversation the developer switched away from has no other way
+ * to say it is still working. Then a linked live job; otherwise this is still
+ * a conversation (investigating / ready to start / closed).
  */
 export function getConversationDisplayStatus(
   row: {
@@ -164,7 +173,9 @@ export function getConversationDisplayStatus(
     dispatchedJobId?: string | null
   },
   job?: StatusSource | null,
+  opts?: { running?: boolean },
 ): StatusMeta {
+  if (opts?.running) return CONVERSATION_WORKING_META
   if (job) return getJobDisplayStatus(job)
   if (row.status === 'dispatched') return getStatusMeta('dispatched')
   if (row.status === 'closed') return CLOSED_META

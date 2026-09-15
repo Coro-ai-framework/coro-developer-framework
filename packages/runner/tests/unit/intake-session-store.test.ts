@@ -6,6 +6,7 @@ import {
   deleteIntakeSession,
   getIntakeSession,
   hydrateIntakeSession,
+  isIntakeSessionDiscarded,
   peekIntakeSession,
   persistIntakeExecutorSession,
   recordIntakeTurn,
@@ -139,6 +140,23 @@ describe('deleteIntakeSession', () => {
     recordIntakeTurn('s', { user: 'hello', assistant: 'hi', evidence: [], usage })
     expect(deleteIntakeSession('s')).toBe(true)
     expect(getIntakeSession('s').turns).toEqual([])
+  })
+
+  it('tombstones the id so an in-flight turn cannot resurrect the row', () => {
+    recordIntakeTurn('s', { user: 'hello', assistant: 'hi', evidence: [], usage })
+    expect(isIntakeSessionDiscarded('s')).toBe(false)
+    deleteIntakeSession('s')
+    expect(isIntakeSessionDiscarded('s')).toBe(true)
+    // The abandoned turn lands after the delete and recreates the cache entry.
+    recordIntakeTurn('s', { user: 'hello', assistant: 'late reply', evidence: [], usage })
+    expect(peekIntakeSession('s')?.turns).toHaveLength(1)
+    expect(isIntakeSessionDiscarded('s')).toBe(true)
+  })
+
+  it('does not tombstone conversations that were never deleted', () => {
+    recordIntakeTurn('other', { user: 'hello', assistant: 'hi', evidence: [], usage })
+    deleteIntakeSession('s')
+    expect(isIntakeSessionDiscarded('other')).toBe(false)
   })
 })
 

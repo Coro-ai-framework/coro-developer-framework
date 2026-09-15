@@ -141,9 +141,10 @@ export async function runIntakeStream(options: {
         } catch {
           continue
         }
-        // Aborting fetch does not rewind bytes already in this chunk.
-        // The session provider also ignores events after a conversation
-        // switch; this keeps the parser from delivering them at all.
+        // Aborting fetch does not rewind bytes already in this chunk. An
+        // abort here means the turn was cancelled or its conversation was
+        // discarded — the two cases where nothing should adopt what arrives
+        // next — so stop delivering rather than leaving it to the caller.
         if (signal.aborted) return {}
         onEvent(payload)
       }

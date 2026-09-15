@@ -116,7 +116,9 @@ export default function NewRun() {
   }
 
   const composerBlocked = session.noLlm
-  const showFeedSkeleton = !session.hydrated
+  // A switch fetches the conversation before it can render it. Without this
+  // the old transcript stays on screen and the click reads as a no-op.
+  const showFeedSkeleton = !session.hydrated || session.switching
 
   return (
     <div
@@ -210,6 +212,7 @@ export default function NewRun() {
               rows={session.investigations}
               jobs={session.jobs}
               currentId={session.sessionId}
+              runningIds={session.runningIds}
               loading={session.investigationsLoading && !session.hydrated}
               loadingMore={session.investigationsLoadingMore}
               total={session.investigationsTotal}

@@ -14,6 +14,7 @@ import type { ProviderOption } from '../llm/ModelPicker'
 import { useExecutorPlugins } from '../llm/useExecutorPlugins'
 import { useProviderModels, type ProviderModelDescriptor } from '../llm/useProviderModels'
 import { cn } from '../../lib/utils'
+import { CONVERSATION_COPY } from '../../lib/run-labels'
 import { getReadinessMeta, toneDotClasses } from '../../lib/status'
 import type { Readiness } from '../../lib/intake-readiness'
 import { usePlanSession } from '../../providers/plan-session'
@@ -154,17 +155,21 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
     [modelsByProvider, session.modelChoice],
   )
 
-  const submit = useCallback(() => {
+  // The textarea clears optimistically so the next question can be typed
+  // straight away, but `send` refuses a turn while one is in flight — and the
+  // disabled state trails the ref by a render, so a fast second Enter can get
+  // that far. Put the text back rather than swallowing it.
+  const dispatchTurn = useCallback((opts?: { generateRun?: boolean }) => {
     const text = input
     setInput('')
-    void session.send(text)
+    void session.send(text, opts).then(accepted => {
+      if (!accepted) setInput(prev => (prev ? prev : text))
+    })
   }, [input, session])
 
-  const generateRun = useCallback(() => {
-    const text = input
-    setInput('')
-    void session.send(text, { generateRun: true })
-  }, [input, session])
+  const submit = useCallback(() => dispatchTurn(), [dispatchTurn])
+
+  const generateRun = useCallback(() => dispatchTurn({ generateRun: true }), [dispatchTurn])
 
   return (
     <div className="shrink-0 pb-1 pt-3">
@@ -214,6 +219,7 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
             <button
               type="button"
               onClick={session.cancel}
+              title={CONVERSATION_COPY.stopHint}
               className="text-[11px] text-fg-subtle transition-colors hover:text-fg-muted"
             >
               Stop

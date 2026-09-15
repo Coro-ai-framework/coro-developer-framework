@@ -10,13 +10,14 @@ import {
   mergeInvestigation,
   titleFromTurns,
 } from '../state/investigation'
-import { peekIntakeSession } from './session-store'
+import { isIntakeSessionDiscarded, peekIntakeSession } from './session-store'
 
 export async function persistLiveIntakeSession(
   backend: StateBackend,
   sessionId: string,
   extras?: Pick<InvestigationPatch, 'modelChoice' | 'title'>,
 ): Promise<Investigation | null> {
+  if (isIntakeSessionDiscarded(sessionId)) return null
   const live = peekIntakeSession(sessionId)
   if (!live || live.turns.length === 0) return null
   return backend.upsertInvestigation({
@@ -46,13 +47,15 @@ export interface IntakeSnapshotBody {
 }
 
 /**
- * Dashboard snapshot plus any live runner turns. Skips inserting an empty chat.
+ * Dashboard snapshot plus any live runner turns. Skips inserting an empty chat,
+ * and refuses to re-create one the developer discarded.
  */
 export async function persistIntakeSnapshot(
   backend: StateBackend,
   sessionId: string,
   body: IntakeSnapshotBody,
 ): Promise<{ persisted: boolean; session: Investigation | null }> {
+  if (isIntakeSessionDiscarded(sessionId)) return { persisted: false, session: null }
   const existing = await backend.getInvestigation(sessionId)
   const live = peekIntakeSession(sessionId)
   const patch: InvestigationPatch = {
