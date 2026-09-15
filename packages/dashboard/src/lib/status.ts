@@ -154,6 +154,22 @@ export function getJobDisplayStatus(job: StatusSource): StatusMeta {
   return getStatusMeta(job.status)
 }
 
+export type RunIndicator = 'running' | 'waiting' | 'paused' | 'done' | 'failed'
+
+/**
+ * Which live-state glyph a run surface should show. Derived from the same
+ * status vocabulary as the badge, so a card and the Recents rail can never
+ * disagree: a running phase spins, anything parked (including a developer
+ * pause) is static, and terminal states resolve to done / failed.
+ */
+export function getRunIndicator(job: StatusSource): RunIndicator {
+  if (isPausedStatus(job.status, job.awaitingEvent)) return 'paused'
+  const meta = getStatusMeta(job.status)
+  if (meta.category === 'terminal') return meta.tone === 'danger' ? 'failed' : 'done'
+  if (meta.category === 'waiting' || meta.category === 'idle') return 'waiting'
+  return 'running'
+}
+
 export function getReadinessMeta(state?: string | null): StatusMeta {
   if (state === 'ready') return READINESS_META.ready
   if (state === 'no-run-needed') return READINESS_META['no-run-needed']

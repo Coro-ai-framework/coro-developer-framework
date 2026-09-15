@@ -17,6 +17,7 @@ import {
 import type { Artifact } from '../types'
 import { formatDateTime } from '../lib/format'
 import {
+  artifactHasFileBody,
   artifactIsEditable,
   artifactIsMarkdown,
   fetchArtifactContent,
@@ -491,3 +492,44 @@ function JsonArtefactView({ artifact, compact = false }: { artifact: Artifact; c
     </div>
   )
 }
+
+/**
+ * The artefact viewer without its trigger row. Compact surfaces (the
+ * active-run card's chip row) draw their own chip but must open the same
+ * modal the job page does: file-backed artefacts get the rendered/source
+ * viewer with copy, download, and edit; anything else gets its JSON.
+ */
+export function ArtifactPreviewModal({
+  jobId,
+  artifact,
+  onClose,
+}: {
+  jobId: string
+  artifact: Artifact
+  onClose: () => void
+}) {
+  if (artifactHasFileBody(artifact)) {
+    return <ArtefactModal jobId={jobId} artifact={artifact} onClose={onClose} />
+  }
+
+  return (
+    <Dialog open onOpenChange={open => { if (!open) onClose() }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{artifact.title}</DialogTitle>
+          <div className="text-sm text-fg-muted">
+            {artifact.kind} · posted {formatDateTime(artifact.createdAt)}
+          </div>
+        </DialogHeader>
+        <DialogBody>
+          <ScrollArea className="max-h-[60vh] rounded-2xl border border-line bg-canvas/60">
+            <pre className="whitespace-pre-wrap break-words p-5 font-mono text-xs leading-6 text-fg">
+              {JSON.stringify(artifact.data, null, 2)}
+            </pre>
+          </ScrollArea>
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
+  )
+}
+

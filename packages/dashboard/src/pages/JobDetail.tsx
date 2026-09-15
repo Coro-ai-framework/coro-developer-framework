@@ -58,6 +58,7 @@ import { useJob } from '../hooks/useJob'
 import { useFindingsBallot } from '../hooks/useRetrospectives'
 import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
+import { deriveWorkflowPhases } from '../lib/workflow-phases'
 import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
 import type { Tone } from '../lib/status'
 import {
@@ -101,24 +102,6 @@ interface PendingOutgoingMessage {
   id: string
   text: string
   queuedAt: number
-}
-
-function deriveWorkflowPhases(job: Job | null): WorkflowPhase[] {
-  if (!job) return []
-  if (job.workflowPhases && job.workflowPhases.length > 0) return job.workflowPhases
-
-  const seen = new Set<string>()
-  const phases: WorkflowPhase[] = []
-  for (const phase of job.phaseUsage ?? []) {
-    if (!seen.has(phase.phase)) {
-      seen.add(phase.phase)
-      phases.push({ name: phase.phase, status: phase.phase })
-    }
-  }
-  if (!seen.has(job.phase)) {
-    phases.push({ name: job.phase, status: job.phase })
-  }
-  return phases
 }
 
 /* ─── Header ─────────────────────────────────────────────────────────────── */

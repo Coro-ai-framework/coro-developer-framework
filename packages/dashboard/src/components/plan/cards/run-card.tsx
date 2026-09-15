@@ -16,6 +16,7 @@ import { findSimilarRuns } from '../../../lib/run-history'
 import { usePlanSession } from '../../../providers/plan-session'
 import { PAGE_TITLES } from '../../../lib/run-labels'
 import { durationBandFor } from '../../../workflows'
+import ActiveRunCard from './active-run-card'
 
 export interface RunCardData {
   run: RunDraft
@@ -25,6 +26,19 @@ export interface RunCardData {
 
 export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) {
   const { run, state, jobId } = data
+
+  // Once dispatched, this card is a window onto a running job, not a form.
+  // The card type stays `run` so persisted investigation items need no
+  // migration; only the body changes.
+  if (state === 'dispatched' && jobId) {
+    return <ActiveRunCard run={run} jobId={jobId} />
+  }
+
+  return <DraftRunCard data={data} itemId={itemId} />
+}
+
+function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
+  const { run, state } = data
   const session = usePlanSession()
   const navigate = useNavigate()
   const [submitting, setSubmitting] = useState(false)
@@ -115,24 +129,19 @@ export default function RunCard({ data, itemId }: CardRenderProps<RunCardData>) 
       ? 'A newer run replaced this one.'
       : undefined
 
-  const action =
-    state === 'dispatched' && jobId ? (
-      <Button asChild size="lg" className="w-full">
-        <Link to={`/jobs/${jobId}`}>{PAGE_TITLES.viewRun}</Link>
-      </Button>
-    ) : (
-      <Button
-        type="button"
-        size="lg"
-        className="w-full"
-        disabled={startBlocked}
-        title={startTitle}
-        onClick={() => void dispatch()}
-      >
-        {submitting ? <Loader2 className="animate-spin" /> : null}
-        {submitting ? 'Starting run…' : PAGE_TITLES.startRun}
-      </Button>
-    )
+  const action = (
+    <Button
+      type="button"
+      size="lg"
+      className="w-full"
+      disabled={startBlocked}
+      title={startTitle}
+      onClick={() => void dispatch()}
+    >
+      {submitting ? <Loader2 className="animate-spin" /> : null}
+      {submitting ? 'Starting run…' : PAGE_TITLES.startRun}
+    </Button>
+  )
 
   return (
     <CardShell

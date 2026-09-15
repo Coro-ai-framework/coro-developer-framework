@@ -72,7 +72,12 @@ function parseTimestamp(raw: string): string {
   return match ? match[1] : ''
 }
 
-export function useJobStream(jobId: string | undefined, shouldStream = true) {
+export function useJobStream(
+  jobId: string | undefined,
+  shouldStream = true,
+  opts: { tail?: number } = {},
+) {
+  const { tail } = opts
   const [lines, setLines] = useState<LogLine[]>([])
   const [status, setStatus] = useState<ConnectionStatus>('connecting')
   const [lastHeartbeat, setLastHeartbeat] = useState<number>(Date.now())
@@ -113,7 +118,10 @@ export function useJobStream(jobId: string | undefined, shouldStream = true) {
     setStatus('connecting')
     streamEndedRef.current = false
 
-    const source = new EventSource(`/jobs/${jobId}/stream`)
+    // `?tail=N` keeps a long run's backlog off the wire for consumers that
+    // only render the newest line.
+    const url = tail && tail > 0 ? `/jobs/${jobId}/stream?tail=${tail}` : `/jobs/${jobId}/stream`
+    const source = new EventSource(url)
     eventSourceRef.current = source
 
     source.onopen = () => {
@@ -130,7 +138,12 @@ export function useJobStream(jobId: string | undefined, shouldStream = true) {
       const timestamp = parseTimestamp(raw)
       const { content, lineType } = classifyLine(raw)
 
-      setLines(prev => [...prev, { timestamp, content, lineType }])
+      setLines(prev => {
+        const next = [...prev, { timestamp, content, lineType }]
+        // A tailing consumer never renders history; retaining it would grow
+        // unbounded across a long run for no benefit.
+        return tail && next.length > tail ? next.slice(next.length - tail) : next
+      })
     }
 
     source.onerror = () => {
@@ -148,7 +161,7 @@ export function useJobStream(jobId: string | undefined, shouldStream = true) {
       source.close()
       eventSourceRef.current = null
     }
-  }, [disconnect, jobId, shouldStream])
+  }, [disconnect, jobId, shouldStream, tail])
 
   return { lines, status, lastHeartbeat, disconnect }
 }

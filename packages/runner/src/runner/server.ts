@@ -52,6 +52,7 @@ import {
 } from '../jobs/retrospective'
 import { resolveDashboardDist } from '../dashboard-dist'
 import { formatSseFrame } from './sse'
+import { resolveLogReplayStart } from './log-tail'
 import { listBuiltinPluginMetadata, BUILTIN_PLUGIN_IDS_BY_KIND } from '../plugins/builtin'
 import {
   isRedacted,
@@ -1896,14 +1897,20 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
 
-    // Send existing logs first
-    const existingLogs = await stateBackend.getLog(jobId)
+    // Send existing logs first. `?tail=N` replays only the last N lines —
+    // the intake chat's active-run card needs the newest line, not the
+    // whole console.
+    const totalLines = await stateBackend.logLength(jobId)
+    const replayStart = resolveLogReplayStart(totalLines, req.query['tail'])
+    const existingLogs = await stateBackend.getLog(jobId, replayStart)
     for (const line of existingLogs) {
       res.write(formatSseFrame(line))
     }
 
-    // Poll for new logs (simple polling — could be improved with pub/sub)
-    let lastLen = existingLogs.length
+    // Absolute index into the log, not the length of the replayed slice:
+    // with `?tail=N` the slice starts mid-log, and a relative count would
+    // make the poll below re-send lines the client already has.
+    let lastLen = replayStart + existingLogs.length
     const interval = setInterval(async () => {
       try {
         const currentLen = await stateBackend.logLength(jobId)

@@ -4,6 +4,7 @@ import {
   getConversationDisplayStatus,
   getJobDisplayStatus,
   getReadinessMeta,
+  getRunIndicator,
   getStatusMeta,
   getTabStatus,
   PAUSED_AWAITING_EVENT,
@@ -70,6 +71,29 @@ describe('display status', () => {
       awaitingEvent: PAUSED_AWAITING_EVENT,
     }).pulse).toBe(false)
     expect(getTabStatus({ status: 'awaiting-developer-input' }).attention).toBe(true)
+  })
+})
+
+describe('run indicator', () => {
+  it('spins for a running phase, including unknown custom ones', () => {
+    expect(getRunIndicator({ status: 'coding' })).toBe('running')
+    expect(getRunIndicator({ status: 'some-custom-phase' })).toBe('running')
+  })
+
+  it('separates a developer pause from an agent park', () => {
+    expect(getRunIndicator({
+      status: 'awaiting-developer-input',
+      awaitingEvent: PAUSED_AWAITING_EVENT,
+    })).toBe('paused')
+    expect(getRunIndicator({ status: 'awaiting-developer-input' })).toBe('waiting')
+    expect(getRunIndicator({ status: 'awaiting-pr-merge' })).toBe('waiting')
+  })
+
+  it('resolves terminal states by tone', () => {
+    expect(getRunIndicator({ status: 'complete' })).toBe('done')
+    expect(getRunIndicator({ status: 'cancelled' })).toBe('done')
+    expect(getRunIndicator({ status: 'failed' })).toBe('failed')
+    expect(getRunIndicator({ status: 'escalated' })).toBe('failed')
   })
 })
 
