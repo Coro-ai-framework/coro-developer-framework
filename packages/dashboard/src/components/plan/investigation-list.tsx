@@ -5,6 +5,7 @@ import { formatRelativeTime } from '../../lib/format'
 import type { InvestigationSummary } from '../../lib/intake-investigation'
 import { getRunDetailPath } from '../../lib/jobs'
 import { getConversationDisplayStatus } from '../../lib/status'
+import { jobForInvestigation } from '../../lib/linked-run'
 import { PAGE_TITLES } from '../../lib/run-labels'
 import type { Job } from '../../types'
 import StatusBadge from '../StatusBadge'
@@ -46,7 +47,6 @@ export function InvestigationList({
 }) {
   const hasMore = rows.length < total
   const [pendingId, setPendingId] = useState<string | null>(null)
-  const jobsById = new Map(jobs.map(job => [job.id, job]))
   const running = new Set(runningIds)
 
   if (loading) {
@@ -90,8 +90,8 @@ export function InvestigationList({
           {rows.map(row => {
             const active = row.id === currentId
             const removing = pendingId === row.id
-            const runId = row.dispatchedJobId
-            const linkedJob = runId ? jobsById.get(runId) : undefined
+            const linkedJob = jobForInvestigation(jobs, row.id, row.dispatchedJobId)
+            const runId = linkedJob?.id ?? row.dispatchedJobId
             const meta = getConversationDisplayStatus(row, linkedJob ?? null, {
               running: running.has(row.id),
             })

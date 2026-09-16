@@ -125,9 +125,34 @@ export class Dispatcher {
   async dispatch(input: JobInput) {
     const job = await this.ctx.stateBackend.createJob(input)
     const attached = await this.attachPlanContext(job)
+    await this.markInvestigationDispatched(attached)
     this.ctx.logger.info({ jobId: attached.id, type: attached.type }, 'Job dispatched')
     this.fireAndForget(attached.id)
     return attached
+  }
+
+  /**
+   * The dashboard PUT that used to stamp `dispatchedJobId` is best-effort and
+   * used to vanish on a 413. The runner owns the link: once the job exists,
+   * the investigation row points at it even if the chat snapshot never lands.
+   */
+  private async markInvestigationDispatched(job: Job): Promise<void> {
+    const investigationId = typeof job.params['investigationId'] === 'string'
+      ? job.params['investigationId'].trim()
+      : ''
+    if (!investigationId) return
+    try {
+      await this.ctx.stateBackend.upsertInvestigation({
+        id: investigationId,
+        status: 'dispatched',
+        dispatchedJobId: job.id,
+      })
+    } catch (err) {
+      this.ctx.logger.warn(
+        { err, jobId: job.id, investigationId },
+        'Failed to mark investigation dispatched — Recents will not link this run',
+      )
+    }
   }
 
   /**

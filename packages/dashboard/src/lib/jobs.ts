@@ -67,6 +67,18 @@ export function getServiceName(job: Pick<Job, 'params'>): string | null {
   return typeof serviceName === 'string' && serviceName.length > 0 ? serviceName : null
 }
 
+export function getInvestigationId(job: Pick<Job, 'params'>): string | null {
+  const id = job.params['investigationId']
+  return typeof id === 'string' && id.trim().length > 0 ? id.trim() : null
+}
+
+/** Repo slug or the raw `repo` field the intake card stores. */
+export function getJobRepo(job: Pick<Job, 'params'>): string | null {
+  const repo = job.params['repo']
+  if (typeof repo === 'string' && repo.trim().length > 0) return repo.trim()
+  return getRepoSlug(job)
+}
+
 export function getCurrentWorkItem(job: Pick<Job, 'currentWorkItem'>): string {
   return job.currentWorkItem ?? 'Waiting for the next action'
 }

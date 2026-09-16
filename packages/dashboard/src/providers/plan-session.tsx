@@ -40,6 +40,7 @@ import {
 } from '../lib/new-run-draft'
 import { deriveRunHistoryHints } from '../lib/run-history'
 import { requestJson } from '../lib/http'
+import { ensureDispatchedRunCard, jobForInvestigation } from '../lib/linked-run'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import type { Job } from '../types'
 import type { WorkflowOption } from '../workflows'
@@ -257,8 +258,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         return
       }
       if (result.session) rememberSummary(toInvestigationSummary(result.session))
-    } catch {
-      // Persistence must not block chatting; the next turn retries.
+    } catch (err) {
+      // Autosave must not block chatting; the next turn retries. Dispatch
+      // used to treat a swallowed 413 as success and then navigate away,
+      // which is how a started run vanished from the conversation.
+      console.warn('Failed to persist investigation snapshot', err)
     }
   }, [rememberSummary])
 
@@ -270,23 +274,32 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const enqueuePersist = useCallback((opts?: {
     status?: InvestigationStatus
     dispatchedJobId?: string
-  }) => enqueueSnapshot({
-    // Snapshot at enqueue time. mintEmpty() can clear the refs before the
-    // PUT runs; the parked conversation must still be the one we persist.
-    id: sessionIdRef.current,
-    // A turn still streaming has entries marked `running`. Storing them
-    // that way leaves a conversation that reopens with a spinner it will
-    // never resolve, so the stored copy is always settled — the live turn
-    // re-persists the real outcome when it finishes.
-    items: settleRunningEntries(itemsRef.current),
-    readiness: readinessRef.current,
-    modelChoice: modelChoiceRef.current,
-    turnCount: turnCountRef.current,
-    tokens: tokensRef.current,
-    contextUsed: contextUsedRef.current,
-    ...(opts?.status ? { status: opts.status } : {}),
-    ...(opts?.dispatchedJobId ? { dispatchedJobId: opts.dispatchedJobId } : {}),
-  }), [enqueueSnapshot])
+  }) => {
+    const sessionId = sessionIdRef.current
+    const linked = jobForInvestigation(
+      jobsRef.current,
+      sessionId,
+      opts?.dispatchedJobId ?? investigationsRef.current.find(row => row.id === sessionId)?.dispatchedJobId,
+    )
+    const dispatchedJobId = opts?.dispatchedJobId ?? linked?.id
+    return enqueueSnapshot({
+      // Snapshot at enqueue time. mintEmpty() can clear the refs before the
+      // PUT runs; the parked conversation must still be the one we persist.
+      id: sessionId,
+      // A turn still streaming has entries marked `running`. Storing them
+      // that way leaves a conversation that reopens with a spinner it will
+      // never resolve, so the stored copy is always settled — the live turn
+      // re-persists the real outcome when it finishes.
+      items: settleRunningEntries(itemsRef.current),
+      readiness: readinessRef.current,
+      modelChoice: modelChoiceRef.current,
+      turnCount: turnCountRef.current,
+      tokens: tokensRef.current,
+      contextUsed: contextUsedRef.current,
+      ...(opts?.status ? { status: opts.status } : dispatchedJobId ? { status: 'dispatched' } : {}),
+      ...(dispatchedJobId ? { dispatchedJobId } : {}),
+    })
+  }, [enqueueSnapshot])
 
   const persistSnapshot = useCallback((opts?: {
     status?: InvestigationStatus
@@ -435,6 +448,23 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     }, busy ? 250 : 0)
     return () => window.clearTimeout(timer)
   }, [hydrated, sessionId, items, modelChoice, turnCount, totalTokens, contextUsed, readiness, busy, enqueuePersist])
+
+  // The job exists even when the snapshot PUT never stored a run card
+  // (payload-too-large). Rebuild the card from the live job so Recents and
+  // the chat agree after a refresh.
+  useEffect(() => {
+    if (!hydrated || switching) return
+    const linked = jobForInvestigation(
+      jobs,
+      sessionId,
+      investigations.find(row => row.id === sessionId)?.dispatchedJobId,
+    )
+    if (!linked) return
+    const current = itemsRef.current
+    const next = ensureDispatchedRunCard(current, linked)
+    if (next === current) return
+    commitItems(() => next)
+  }, [commitItems, hydrated, investigations, jobs, sessionId, switching])
 
   const cancel = useCallback(() => {
     abortRef.current?.abort()

@@ -161,4 +161,24 @@ describe('intake session HTTP', () => {
     expect(await fetch(`${base}/intake/sessions/${id}`).then(r => r.status)).toBe(404)
     expect(peekIntakeSession(id)).toBeUndefined()
   })
+
+  it('accepts a snapshot larger than Express\'s 100kb default', async () => {
+    const base = await start()
+    const id = 'inv-large-1'
+    const items = [{
+      kind: 'message',
+      id: '1',
+      role: 'user',
+      text: 'x'.repeat(120_000),
+    }]
+    const put = await fetch(`${base}/intake/sessions/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, title: 'large' }),
+    })
+    expect(put.status).toBe(200)
+    const body = await put.json() as { persisted: boolean; session: { items: Array<{ text: string }> } }
+    expect(body.persisted).toBe(true)
+    expect(body.session.items[0]?.text).toHaveLength(120_000)
+  })
 })

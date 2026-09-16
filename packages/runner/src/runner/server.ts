@@ -367,7 +367,11 @@ const MAX_ARTIFACT_EDIT_BYTES = 2 * 1024 * 1024
 export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   const { port, dispatcher, stateBackend, logger, mode = 'hybrid', tenantId, plugins, runnerCtx } = opts
   const app = express()
-  app.use(express.json())
+  // Plan-mode snapshots include the full activity transcript. A long
+  // investigation plus a generated run card is routinely >100kb — the
+  // Express default — and a 413 used to be swallowed by the dashboard
+  // autosave, leaving the conversation unlinked from the job it started.
+  app.use(express.json({ limit: '5mb' }))
 
   // ── Plugin HTTP-route helpers (boot + late-mount) ───────────────────────
   //

@@ -87,6 +87,17 @@ function makeBackend(opts: {
       if (opts.investigationThrows) throw new Error('investigation store down')
       return investigations.get(id) ?? null
     }),
+    upsertInvestigation: vi.fn(async (patch: { id: string; status?: string; dispatchedJobId?: string }) => {
+      const existing = investigations.get(patch.id)
+      const next = {
+        ...(existing ?? makeInvestigation()),
+        id: patch.id,
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.dispatchedJobId ? { dispatchedJobId: patch.dispatchedJobId } : {}),
+      } as Investigation
+      investigations.set(patch.id, next)
+      return next
+    }),
   }
 }
 
@@ -152,6 +163,7 @@ describe('Dispatcher.dispatch — plan context', () => {
     expect(job.params['planContextDir']).toBeUndefined()
     expect(job.artifacts).toEqual([])
     expect(backend.getInvestigation).not.toHaveBeenCalled()
+    expect(backend.upsertInvestigation).not.toHaveBeenCalled()
     await expect(fs.access(path.join(workingDir, job.id, PLAN_CONTEXT_DIR))).rejects.toThrow()
   })
 
@@ -166,5 +178,38 @@ describe('Dispatcher.dispatch — plan context', () => {
     expect(job.id).toBe('job-1')
     expect(job.params['planContextDir']).toBeUndefined()
     expect(job.artifacts).toEqual([])
+  })
+
+  it('stamps the investigation as dispatched with the job id', async () => {
+    const investigation = makeInvestigation()
+    const backend = makeBackend({ investigation })
+    const job = await dispatcher(backend).dispatch({
+      type: 'job',
+      workflowPath: 'workflows/job/workflow.md',
+      triggerSource: 'cli',
+      params: { investigationId: investigation.id, repo: 'org/svc' },
+    })
+
+    expect(backend.upsertInvestigation).toHaveBeenCalledWith({
+      id: investigation.id,
+      status: 'dispatched',
+      dispatchedJobId: job.id,
+    })
+    const stored = await backend.getInvestigation(investigation.id)
+    expect(stored?.status).toBe('dispatched')
+    expect(stored?.dispatchedJobId).toBe(job.id)
+  })
+
+  it('still dispatches when marking the investigation fails', async () => {
+    const investigation = makeInvestigation()
+    const backend = makeBackend({ investigation })
+    backend.upsertInvestigation.mockRejectedValueOnce(new Error('disk full'))
+    const job = await dispatcher(backend).dispatch({
+      type: 'job',
+      workflowPath: 'workflows/job/workflow.md',
+      triggerSource: 'cli',
+      params: { investigationId: investigation.id, repo: 'org/svc' },
+    })
+    expect(job.id).toBe('job-1')
   })
 })
