@@ -3,6 +3,7 @@
 | Document | Audience | Description |
 |----------|----------|-------------|
 | [architecture-overview.md](architecture-overview.md) | Anyone | Plain-English tour of how Coro works: triggers, intelligence layers, workflows, deployment shapes |
+| [overseer.md](overseer.md) | Anyone, runner engineers | Optional Jev faithfulness check: on-track rating, Observe vs Manage, when a job pauses |
 | [architecture.md](architecture.md) | Engineers, stakeholders, managers | Full system architecture: packages, components, layered intelligence, tenancy, job lifecycle, security |
 | [retrospective-self-learning.md](retrospective-self-learning.md) | Engineers mapping Coro onto the self-evolving-agent literature | Full retrospective loop: inner-loop insights, cross-job analysis, human ballot, upstream contribution, and how ACE / AHE / related papers map onto those features |
 | [agent-host-spec.md](agent-host-spec.md) | Engineers working on `@coro-ai/runner` | Technical specification: deployment modes, HTTP API, job runner internals, MCP tools, state backends |

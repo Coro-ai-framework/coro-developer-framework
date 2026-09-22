@@ -31,6 +31,8 @@ For end-to-end job runs you also need (configured in the dashboard or
 
 Optional: tune runner **guardrails** (PR description, diff size) in **Settings → Guardrails** or see [guardrails.md](./guardrails.md).
 
+Optional: turn on **Overseer** (a Jev faithfulness check) in **Settings → Extensions → Overseer**. See [overseer.md](./overseer.md).
+
 ---
 
 ## Workspace bootstrap

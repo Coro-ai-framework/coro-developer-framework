@@ -470,6 +470,17 @@ then frees the slot.
 In both modes, the runner reloads the job and resumes execution from
 the saved phase. No polling on the agent side, no busy-wait.
 
+### 9.4 Overseer
+
+An optional decision layer can review each phase after it finishes.
+**Jev** answers a fixed questionnaire (goal probability, unmet
+obligations, seriousness, whether the agent looks stuck). **Coro**
+shows that goal probability as an on-track rating and, in Manage mode
+(`decision.mode: live`), can park an interactive job when a stricter
+flag trips. Observe mode (`shadow`) records only. With the layer off,
+or when Jev is unreachable, the phase continues. See
+[overseer.md](overseer.md).
+
 ---
 
 ## 10. State and persistence
@@ -651,3 +662,5 @@ Key rules:
 | Resolver          | The component that materialises the per-job intelligence overlay.                        |
 | Park              | Stop active execution while waiting for an external event.                               |
 | Resume            | Continue a parked Run after the awaited event arrives.                                   |
+| Overseer          | Optional end-of-phase faithfulness check. Jev scores the phase; Coro shows an on-track rating and can pause interactive jobs in Manage mode. |
+| Jev               | Structured decision model behind Overseer. Answers fixed questions. Does not generate the phase. |

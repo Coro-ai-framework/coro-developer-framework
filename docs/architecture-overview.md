@@ -190,6 +190,21 @@ The same workflow and agent markdown work in both modes.
 
 ---
 
+## Overseer
+
+Overseer is optional. When a Jev API key is configured, Coro asks Jev,
+after each phase, whether the work still serves what you asked. The
+run header shows that as **On track**, **Needs a look**, or **Off
+track**, with a percentage.
+
+**Observe** records the rating and leaves the job running. **Manage**
+can pause an interactive job when the check says the run has drifted
+badly or missed a serious requirement. Jobs run normally with Overseer
+off, and they keep running if Jev cannot be reached. Details:
+[overseer.md](overseer.md).
+
+---
+
 ## In one sentence
 
 Coro is a multi-tenant AI agent platform — defined entirely in

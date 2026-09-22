@@ -529,6 +529,28 @@ MCP transport blips (`Stream closed`, etc.) trigger inline
 `healMcpTransport()` and an optional retry nudge so the agent retries
 the same tool call instead of replanning.
 
+### 7.6 Overseer
+
+After `executePhase()` returns, and before the interactive checkpoint,
+the runner may consult the optional decision layer
+(`packages/runner/src/decision/layer.ts`). With no resolved
+`decision` config the layer is a no-op.
+
+When it is on, the overseer site sends the phase obligations and a
+trajectory digest to the configured provider (Jev, loaded from
+`packages/runner/src/plugins/builtin/jev/` only when selected). The
+provider returns structured answers. The runner records them on
+`job.decisionRecords` and evaluates a flag. Manage mode
+(`decision.mode: live`) parks an interactive job — status
+`awaiting-developer-input` — only when that flag trips, `onFlag` is
+`park`, and this phase was not already approved to advance. Observe
+mode records and continues. Provider failures continue the phase.
+
+The next phase's kickoff may include a `[process note]` from the
+**previous** phase's flag. The session that was just judged does not
+see its own result. Full behaviour, thresholds, and config:
+[overseer.md](overseer.md).
+
 ---
 
 ## 8. Intelligence resolution

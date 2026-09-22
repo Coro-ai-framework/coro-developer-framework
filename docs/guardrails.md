@@ -98,3 +98,5 @@ When a rule blocks an action, the runner also appends a line to the job **activi
 ```
 
 The dashboard classifies these as **Guardrail** (amber, shield icon). Logging happens inside the guardrail engine once per denial — not on every passing check.
+
+Guardrails block a specific tool call. [Overseer](overseer.md) is separate: it scores whether a finished phase still serves the job, and it does not deny tools.
