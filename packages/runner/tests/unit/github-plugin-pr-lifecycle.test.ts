@@ -81,6 +81,8 @@ describe('GitHub plugin PR lifecycle', () => {
     'replyToComment',
     'approvePr',
     'mergePr',
+    'addReviewers',
+    'resolveUser',
   ])('implements %s so scm_* does not redirect', method => {
     expect(typeof (plugin as unknown as Record<string, unknown>)[method]).toBe('function')
   })

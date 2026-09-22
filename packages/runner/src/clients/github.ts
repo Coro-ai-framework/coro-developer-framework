@@ -68,6 +68,17 @@ export interface PrComment {
   inline?: { path: string; from?: number; to?: number }
 }
 
+/**
+ * Identity returned by {@link GitHubClient.resolveUser}. `nickname` is
+ * the login `requested_reviewers` accepts; `uuid` is the GraphQL node id.
+ */
+export interface GitHubUserRef {
+  uuid: string
+  account_id?: string
+  nickname?: string
+  display_name?: string
+}
+
 export interface PullRequest {
   id: number
   title: string
@@ -364,20 +375,99 @@ export class GitHubClient {
       body,
     )
 
-    // Request reviewers if provided
+    // Request reviewers if provided. Failure stays non-fatal at creation
+    // time: a reviewer the token cannot see, or who is not a collaborator,
+    // must not fail the PR itself. Adding reviewers to an already-open PR
+    // goes through requestReviewers directly, where the same failure is
+    // reported.
     if (opts.reviewerUsernames && opts.reviewerUsernames.length > 0) {
       try {
-        await this.request(
-          'POST',
-          `/repos/${repo}/pulls/${ghPr.number}/requested_reviewers`,
-          { reviewers: opts.reviewerUsernames },
-        )
+        await this.requestReviewers(opts.repoSlug, ghPr.number, opts.reviewerUsernames)
       } catch {
         // Non-fatal: reviewer might not have access
       }
     }
 
     return normalizeGhPr(ghPr)
+  }
+
+  /**
+   * Ask GitHub to request reviews on an open pull request.
+   *
+   * `POST /pulls/{n}/requested_reviewers` adds to the current list; it
+   * does not replace it. Each entry may be a login, a numeric account
+   * id, a GraphQL node id, or a display name. Display names are matched
+   * against the configured owner's organisation members first, then
+   * against an exact public-profile name. Logins are what the API
+   * accepts, so everything else is resolved before the request.
+   */
+  async requestReviewers(
+    repoSlug: string,
+    prId: number,
+    reviewers: ReadonlyArray<string>,
+  ): Promise<void> {
+    const logins: string[] = []
+    const seen = new Set<string>()
+    const unresolved: string[] = []
+    for (const raw of reviewers) {
+      const user = await this.resolveUser(raw)
+      const login = user?.nickname
+      if (!login) {
+        unresolved.push(raw)
+        continue
+      }
+      const key = login.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      logins.push(login)
+    }
+    if (unresolved.length > 0) {
+      throw new Error(
+        `addReviewers: could not resolve ${unresolved.length} of ${reviewers.length} reviewer(s) to GitHub logins: ` +
+        `${unresolved.map(u => `"${u}"`).join(', ')}. ` +
+        'Pass a GitHub login (for example octocat). Display names are matched against organisation members and, failing that, an exact public profile name.',
+      )
+    }
+    if (logins.length === 0) return
+    try {
+      await this.request(
+        'POST',
+        `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/requested_reviewers`,
+        { reviewers: logins },
+      )
+    } catch (err) {
+      if (err instanceof GitHubError) {
+        throw new Error(
+          `addReviewers: GitHub refused the reviewer request for ${logins.join(', ')} on PR #${prId}: ${err.message}. ` +
+          'Reviewers must be collaborators on the repository and cannot be the pull request author.',
+        )
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Resolve a login, numeric account id, GraphQL node id, or display
+   * name to the identity `requestReviewers` can attach. Returns null
+   * when nothing matches. Email is not searchable.
+   *
+   * A login-shaped query is a single `GET /users/{login}`. Display
+   * names go to the owner's organisation membership first
+   * (`membersWithRole`), because a public search for a common name
+   * would attach the wrong person.
+   */
+  async resolveUser(input: string): Promise<GitHubUserRef | null> {
+    const q = input.trim().replace(/^@/, '')
+    if (!q) return null
+
+    if (isGitHubNodeId(q)) return this.lookupNode(q)
+    if (/^\d+$/.test(q)) return this.lookupByAccountId(q)
+
+    if (isGitHubLogin(q)) {
+      const direct = await this.lookupByLogin(q)
+      if (direct) return direct
+    }
+    return this.searchByName(q)
   }
 
   async getPr(repoSlug: string, prId: number): Promise<PullRequest> {
@@ -585,6 +675,141 @@ export class GitHubClient {
     return parseGitHubRepo(repoSlug, this.owner)
   }
 
+  private async lookupByLogin(login: string): Promise<GitHubUserRef | null> {
+    try {
+      const user = await this.request<GhUser>('GET', `/users/${encodeURIComponent(login)}`)
+      if (user.type === 'Organization') return null
+      return toUserRef(user)
+    } catch (err) {
+      if (err instanceof GitHubError && err.statusCode === 404) return null
+      throw err
+    }
+  }
+
+  private async lookupByAccountId(id: string): Promise<GitHubUserRef | null> {
+    try {
+      const user = await this.request<GhUser>('GET', `/user/${encodeURIComponent(id)}`)
+      if (user.type === 'Organization') return null
+      return toUserRef(user)
+    } catch (err) {
+      if (err instanceof GitHubError && err.statusCode === 404) return null
+      throw err
+    }
+  }
+
+  private async lookupNode(id: string): Promise<GitHubUserRef | null> {
+    try {
+      const data = await this.graphql<{
+        node?: { login?: string; name?: string | null; id?: string; databaseId?: number } | null
+      }>(
+        'query($id:ID!){ node(id:$id){ ... on User { login name id databaseId } } }',
+        { id },
+      )
+      const node = data.node
+      if (!node?.login || !node.id) return null
+      return {
+        uuid: node.id,
+        nickname: node.login,
+        ...(node.databaseId != null ? { account_id: String(node.databaseId) } : {}),
+        ...(node.name ? { display_name: node.name } : {}),
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Organisation-scoped name search. An empty list means "no member
+   * matched" or "this token cannot list members" — callers may widen
+   * the search. A thrown error is swallowed by the caller only when
+   * the GraphQL endpoint itself is unreachable.
+   */
+  private async searchOrgMembers(query: string): Promise<GitHubUserRef[]> {
+    try {
+      const data = await this.graphql<{
+        organization: {
+          membersWithRole: {
+            nodes: Array<{ login: string; name: string | null; id: string; databaseId: number } | null>
+          }
+        } | null
+      }>(
+        'query($org:String!,$q:String!){ organization(login:$org){ membersWithRole(query:$q, first:10){ nodes { login name id databaseId } } } }',
+        { org: this.owner, q: query },
+      )
+      const nodes = data.organization?.membersWithRole?.nodes ?? []
+      return nodes
+        .filter((n): n is NonNullable<typeof n> => Boolean(n?.login))
+        .map(n => ({
+          uuid: n.id,
+          nickname: n.login,
+          account_id: String(n.databaseId),
+          ...(n.name ? { display_name: n.name } : {}),
+        }))
+    } catch {
+      return []
+    }
+  }
+
+  private async searchByName(query: string): Promise<GitHubUserRef | null> {
+    const orgMembers = await this.searchOrgMembers(query)
+    const fromOrg = pickUserMatch(query, orgMembers, true)
+    if (fromOrg) return fromOrg
+    // Several org members and none is an exact name/login: guessing
+    // would request the wrong person. A public search is wider, not safer.
+    if (orgMembers.length > 1) return null
+
+    const listed = await this.searchUsers(`${query} org:${this.owner} in:login,name,fullname`)
+    const fromList = pickUserMatch(query, listed, true)
+    if (fromList) return fromList
+    if (listed.length > 1) return null
+
+    const pub = await this.searchUsers(`${query} in:login,name,fullname`)
+    return pickUserMatch(query, pub, false)
+  }
+
+  private async searchUsers(q: string): Promise<GitHubUserRef[]> {
+    try {
+      const data = await this.request<{ items?: Array<{ login: string }> }>(
+        'GET',
+        `/search/users?q=${encodeURIComponent(q)}&per_page=5`,
+      )
+      const logins = (data.items ?? []).map(item => item.login).filter(Boolean)
+      const profiles = await Promise.all(logins.map(login => this.lookupByLogin(login)))
+      return profiles.filter((p): p is GitHubUserRef => p !== null)
+    } catch (err) {
+      if (err instanceof GitHubError && (err.statusCode === 403 || err.statusCode === 422)) return []
+      throw err
+    }
+  }
+
+  private graphqlUrl(): string {
+    const base = this.baseUrl.replace(/\/$/, '')
+    if (/^https:\/\/api\.github\.com$/i.test(base)) return `${base}/graphql`
+    // GitHub Enterprise serves REST at {host}/api/v3 and GraphQL at {host}/api/graphql.
+    return `${base.replace(/\/api\/v3$/i, '')}/api/graphql`
+  }
+
+  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const res = await fetch(this.graphqlUrl(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ query, variables }),
+    })
+    if (!res.ok) {
+      throw new GitHubError(res.status, await res.text())
+    }
+    const payload = await res.json() as { data?: T; errors?: Array<{ message: string }> }
+    if (payload.errors?.length && payload.data == null) {
+      throw new GitHubError(422, payload.errors.map(e => e.message).join('; '))
+    }
+    return (payload.data ?? {}) as T
+  }
+
   // ── Internal helpers ────────────────────────────────────────────────────────
 
   private async request<T = void>(
@@ -695,6 +920,14 @@ interface GhPullRequest {
   updated_at: string
 }
 
+interface GhUser {
+  login: string
+  id: number
+  node_id: string
+  name?: string | null
+  type?: string
+}
+
 interface GhReview {
   state: string
 }
@@ -782,6 +1015,45 @@ function assertForkOf(repo: RepoInfo, upstreamSlug: string): void {
     'contribution) to an account that does not hold one — an organisation you can create ' +
     'repositories in works.',
   )
+}
+
+function toUserRef(user: GhUser): GitHubUserRef {
+  return {
+    uuid: user.node_id,
+    account_id: String(user.id),
+    nickname: user.login,
+    ...(user.name ? { display_name: user.name } : {}),
+  }
+}
+
+/** GitHub logins are alphanumeric plus single interior hyphens, max 39. */
+function isGitHubLogin(value: string): boolean {
+  return /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)
+}
+
+/** Node ids are base64 (`=` / `+` / `/`) or the newer `U_` global ids. Logins cannot contain those characters. */
+function isGitHubNodeId(value: string): boolean {
+  return /[=+/_]/.test(value) || value.startsWith('MDQ6')
+}
+
+/**
+ * Pick the reviewer a query names. `allowSoleResult` is for an
+ * org-scoped search, where the query already filtered the directory.
+ * A public search only matches an exact login or exact display name,
+ * so a common name cannot attach a stranger.
+ */
+function pickUserMatch(
+  query: string,
+  users: ReadonlyArray<GitHubUserRef>,
+  allowSoleResult: boolean,
+): GitHubUserRef | null {
+  const lower = query.toLowerCase()
+  const byLogin = users.filter(u => u.nickname?.toLowerCase() === lower)
+  if (byLogin.length === 1) return byLogin[0]!
+  const byName = users.filter(u => (u.display_name ?? '').toLowerCase() === lower)
+  if (byName.length === 1) return byName[0]!
+  if (allowSoleResult && users.length === 1) return users[0]!
+  return null
 }
 
 function normalizeGhPr(ghPr: GhPullRequest): PullRequest {

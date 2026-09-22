@@ -404,6 +404,24 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     return this.createPr(args)
   }
 
+  /**
+   * Request reviews on an open PR. GitHub's requested-reviewers
+   * endpoint adds to the current list, so there is nothing to merge
+   * first. Logins, account ids, node ids, and display names are all
+   * accepted; the client resolves them to logins before the call.
+   */
+  async addReviewers(args: { repoSlug: string; prId: number | string; reviewers: ReadonlyArray<string> }): Promise<void> {
+    const prId = Number(args.prId)
+    if (!Number.isFinite(prId)) {
+      throw new Error(`addReviewers: prId must be numeric, got "${args.prId}"`)
+    }
+    await this.clientFor(args.repoSlug).requestReviewers(args.repoSlug, prId, args.reviewers)
+  }
+
+  async resolveUser(query: string): Promise<{ uuid: string; account_id?: string; nickname?: string; display_name?: string } | null> {
+    return this.client.resolveUser(query)
+  }
+
   // ── PR lifecycle ───────────────────────────────────────────────────────────
   //
   // Served by the inline `GitHubClient` rather than redirected to the

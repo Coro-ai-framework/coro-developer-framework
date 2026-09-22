@@ -494,9 +494,10 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       return error('reviewers must be a non-empty array of usernames or uuids')
     }
     if (!r.scm.addReviewers) {
-      // MCP-mode plugin (e.g. github). Redirect to the upstream tool
-      // when the plugin manifest exposes a mapping; otherwise surface
-      // a clear "not supported" error so the agent stops looking.
+      // Plugin with no native implementation. Redirect when the manifest
+      // maps this op onto an upstream MCP tool; otherwise surface a clear
+      // "not supported" error so the agent stops looking. GitHub implements
+      // addReviewers itself — this branch is for plugins that do not.
       const mapped = r.scm.manifest.mcpToolMap?.scm_add_pr_reviewers
       if (mapped) {
         return mcpRedirect(r.scm.manifest.id, 'scm_add_pr_reviewers', mapped, {
