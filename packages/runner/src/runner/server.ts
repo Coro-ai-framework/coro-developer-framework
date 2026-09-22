@@ -27,6 +27,7 @@ import {
   defaultConfigPath,
   detectMode,
   resolveIntelligenceDir,
+  resolveDecisionConfig,
   resolveUpstreamConfig,
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
@@ -178,6 +179,16 @@ function pruneEmptyConfigSections(config: Record<string, unknown>): Record<strin
   if (upstream) {
     const hasRepoUrl = typeof upstream.repoUrl === 'string' && upstream.repoUrl.length > 0
     if (!hasRepoUrl) delete out.upstream
+  }
+
+  // Decision layer: `mode` is the switch. A block that is off (or has no
+  // mode) and no API key is dead weight — drop it so a blank form does
+  // not persist `{ decision: { mode: 'off' } }`.
+  const decision = out.decision as { mode?: unknown; apiKey?: unknown } | undefined
+  if (decision) {
+    const mode = typeof decision.mode === 'string' ? decision.mode : ''
+    const hasKey = typeof decision.apiKey === 'string' && decision.apiKey.length > 0
+    if ((!mode || mode === 'off') && !hasKey) delete out.decision
   }
 
   // Tracker block: keep only the section relevant to the chosen provider
@@ -2462,6 +2473,12 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
               ...(config.upstream.token ? { token: redactSecret(config.upstream.token) } : {}),
             }
           : undefined,
+        decision: config.decision
+          ? {
+              ...config.decision,
+              ...(config.decision.apiKey ? { apiKey: redactSecret(config.decision.apiKey) } : {}),
+            }
+          : undefined,
       } : null
 
       const guardrailsResolved = resolveGuardrails(config?.guardrails ?? null).resolved
@@ -2485,6 +2502,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           // validly and the launch form must not offer a destination the
           // dispatcher will then refuse.
           upstreamConfigured: Boolean(resolveUpstreamConfig(config)),
+          decisionConfigured: Boolean(resolveDecisionConfig(config)),
         },
       })
     } catch (err) {
@@ -2846,6 +2864,94 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           count('maxCodeJobsPerRun')
 
           ;(merged as Record<string, unknown>).upstream = next
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(updates, 'decision')) {
+        const incoming = (updates as Record<string, unknown>)['decision'] as
+          | {
+              mode?: unknown
+              provider?: unknown
+              apiKey?: unknown
+              baseUrl?: unknown
+              model?: unknown
+              timeoutMs?: unknown
+              sites?: unknown
+              overseer?: unknown
+            }
+          | null
+          | undefined
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).decision
+        } else if (incoming && typeof incoming === 'object') {
+          const previous = (existing.decision ?? {}) as NonNullable<LocalConfig['decision']>
+          const next: NonNullable<LocalConfig['decision']> = { ...previous }
+
+          if (incoming.mode === 'off' || incoming.mode === 'shadow' || incoming.mode === 'live') {
+            next.mode = incoming.mode
+          }
+
+          const text = (key: 'provider' | 'baseUrl' | 'model'): void => {
+            const value = incoming[key]
+            if (typeof value !== 'string') return
+            const trimmed = value.trim()
+            if (trimmed) next[key] = trimmed
+            else delete next[key]
+          }
+          text('provider')
+          text('baseUrl')
+          text('model')
+
+          if (typeof incoming.apiKey === 'string' && !isRedacted(incoming.apiKey)) {
+            const trimmed = incoming.apiKey.trim()
+            if (trimmed) next.apiKey = trimmed
+            else delete next.apiKey
+          }
+
+          if (typeof incoming.timeoutMs === 'number' && Number.isInteger(incoming.timeoutMs) && incoming.timeoutMs >= 1) {
+            next.timeoutMs = incoming.timeoutMs
+          } else if (incoming.timeoutMs === null) {
+            delete next.timeoutMs
+          }
+
+          if (incoming.sites && typeof incoming.sites === 'object' && !Array.isArray(incoming.sites)) {
+            const sites: Record<string, 'off' | 'shadow' | 'live'> = {}
+            for (const [site, mode] of Object.entries(incoming.sites as Record<string, unknown>)) {
+              if (mode === 'off' || mode === 'shadow' || mode === 'live') sites[site] = mode
+            }
+            next.sites = sites
+          }
+
+          if (incoming.overseer && typeof incoming.overseer === 'object') {
+            const overseerIn = incoming.overseer as {
+              scope?: unknown
+              onFlag?: unknown
+              thresholds?: { offTrackNoul?: unknown; severityScore?: unknown; minChoiceConfidence?: unknown }
+            }
+            const prevOverseer = next.overseer ?? {}
+            const overseer: NonNullable<NonNullable<LocalConfig['decision']>['overseer']> = { ...prevOverseer }
+            if (overseerIn.scope === 'all' || overseerIn.scope === 'campaigns' || overseerIn.scope === 'off') {
+              overseer.scope = overseerIn.scope
+            }
+            if (overseerIn.onFlag === 'park' || overseerIn.onFlag === 'flag-only') {
+              overseer.onFlag = overseerIn.onFlag
+            }
+            if (overseerIn.thresholds && typeof overseerIn.thresholds === 'object') {
+              const prevT = overseer.thresholds ?? {}
+              const t = { ...prevT }
+              const num = (key: 'offTrackNoul' | 'severityScore' | 'minChoiceConfidence'): void => {
+                const value = overseerIn.thresholds?.[key]
+                if (typeof value === 'number' && Number.isFinite(value)) t[key] = value
+              }
+              num('offTrackNoul')
+              num('severityScore')
+              num('minChoiceConfidence')
+              overseer.thresholds = t
+            }
+            next.overseer = overseer
+          }
+
+          ;(merged as Record<string, unknown>).decision = next
         }
       }
 

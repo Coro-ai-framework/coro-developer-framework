@@ -120,6 +120,7 @@ function makeCtx(opts: MakeCtxOpts = {}): ToolContext {
     ghClient: {} as unknown as ToolContext['ghClient'],
     lokiClient: {} as ToolContext['lokiClient'],
     tempoClient: {} as ToolContext['tempoClient'],
+    decisionClient: { providerId: 'none', ask: async () => ({ available: false, reason: 'off' }) },
     plugins: new PluginRegistry(),
   }
 }

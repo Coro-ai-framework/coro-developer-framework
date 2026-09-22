@@ -19,6 +19,8 @@ import {
   formatGuardrailAgentReason,
   formatGuardrailDenialLine,
 } from './denial-log'
+import type { DecisionProvider } from '../clients/decision/types'
+import { createDecisionCheck } from './checks/decision'
 
 function matchesGlob(pattern: string, value: string): boolean {
   if (!pattern.includes('*')) return pattern === value
@@ -48,6 +50,11 @@ function ruleMatchesScope(rule: EffectiveGuardrailRule, ctx: GuardrailContext): 
 export interface GuardrailEngineOptions {
   scm?: GuardrailScmDeps
   /**
+   * Optional structured-decision client. When omitted the `decision`
+   * check is a no-op that always allows.
+   */
+  decision?: DecisionProvider
+  /**
    * When set, each denial is written to the job activity log via
    * {@link formatGuardrailDenialLine} (`[guardrail]` prefix).
    */
@@ -69,6 +76,7 @@ export class GuardrailEngine {
       ['merge-requires-approval', createMergeRequiresApprovalCheck(options.scm)],
       ['proposal-markdown-only', checkProposalMarkdownOnly],
       ['script', createScriptCheck(resolved.scriptsDir)],
+      ['decision', createDecisionCheck(options.decision)],
     ])
   }
 

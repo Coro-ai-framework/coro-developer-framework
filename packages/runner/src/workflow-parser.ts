@@ -71,6 +71,12 @@ export interface PhaseConfig {
    * (all built-ins + all `mcp__coro__*`).
    */
   tools?: string[]
+  /**
+   * Optional policy-as-state obligations the overseer judges at the
+   * end of this phase. When omitted the runner uses a generic default
+   * list — shipped workflows do not have to declare any.
+   */
+  obligations?: string[]
 }
 
 export interface WorkflowConfig {
@@ -114,6 +120,7 @@ interface RawPhase {
   subagents?: RawSubagent[]
   interactive_checkpoint?: boolean
   tools?: string[]
+  obligations?: string[]
 }
 
 interface RawConfig {
@@ -169,6 +176,11 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
 
       if (Array.isArray(p.tools) && p.tools.length > 0) {
         phase.tools = p.tools.filter((t): t is string => typeof t === 'string')
+      }
+
+      if (Array.isArray(p.obligations) && p.obligations.length > 0) {
+        const obligations = p.obligations.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+        if (obligations.length > 0) phase.obligations = obligations
       }
 
       if (Array.isArray(p.subagents) && p.subagents.length > 0) {

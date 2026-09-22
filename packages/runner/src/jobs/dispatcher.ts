@@ -48,6 +48,7 @@ import {
   syncCampaignContextToParent,
 } from './campaign-context'
 import { materializePlanContext, PLAN_CONTEXT_DIR } from './plan-context'
+import { createDecisionLayer } from '../decision/layer'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
 const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
@@ -835,7 +836,17 @@ export class Dispatcher {
       return
     }
 
-    const pendingPrompt = buildBatchedWebhookMessage(events)
+    const screened = await createDecisionLayer(this.ctx.settings, this.ctx.decisionClient).screenInbound({
+      job,
+      events,
+      stateBackend: this.ctx.stateBackend,
+      logger: this.ctx.logger,
+    })
+    if (!screened.resume) return
+
+    const pendingPrompt = [screened.warnings.join('\n\n'), buildBatchedWebhookMessage(events)]
+      .filter(Boolean)
+      .join('\n\n')
 
     await this.ctx.stateBackend.updateJob(jobId, {
       status: STATUS_CODING,
@@ -1609,6 +1620,7 @@ export class Dispatcher {
       ghClient: this.ctx.ghClient,
       lokiClient: this.ctx.lokiClient,
       tempoClient: this.ctx.tempoClient,
+      decisionClient: this.ctx.decisionClient,
       plugins: this.ctx.plugins,
       logger: this.ctx.logger,
     }

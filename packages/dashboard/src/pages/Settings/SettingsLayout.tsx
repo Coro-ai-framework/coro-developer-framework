@@ -34,6 +34,7 @@ import PathsSection from './sections/PathsSection'
 import GuardrailsSection from './sections/GuardrailsSection'
 import GeneralSection from './sections/GeneralSection'
 import ContributionSection from './sections/ContributionSection'
+import DecisionLayerSection from './sections/DecisionLayerSection'
 
 const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   general: GeneralSection,
@@ -45,6 +46,7 @@ const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   paths: PathsSection,
   guardrails: GuardrailsSection,
   contribution: ContributionSection,
+  'decision-layer': DecisionLayerSection,
 }
 
 interface SettingsLayoutProps {

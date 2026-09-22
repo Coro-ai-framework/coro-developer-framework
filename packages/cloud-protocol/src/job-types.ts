@@ -579,6 +579,12 @@ export interface Job {
   workflowPathHistory?: WorkflowSwitchEntry[]
 
   /**
+   * Append-only log of external decision-layer calls made during this job.
+   * Absent on every job when the layer is off, which is the default.
+   */
+  decisionRecords?: DecisionRecord[]
+
+  /**
    * Per-phase model overrides applied at runtime by a developer from the
    * dashboard. Keyed by phase name. When set, the runner consults this map
    * before falling through to workflow `model`/`tier` defaults — the
@@ -618,6 +624,65 @@ export interface WorkflowSwitchEntry {
   toPhase: string
   reason: string
   by: 'switch_workflow' | 'convert_to_campaign'
+}
+
+// ── External decision layer ──────────────────────────────────────────────────
+//
+// An optional structured-decision model (see `clients/decision/`) answers
+// typed questions about a job and never generates text. Each call is recorded
+// so the dashboard can show what was judged and the retrospective can ask,
+// later, which judgements turned out to be right.
+
+export type DecisionMode = 'off' | 'shadow' | 'live'
+
+export interface DecisionAnswerNoul {
+  type: 'noul'
+  /** Probability the answer is yes, 0..1. There is no separate confidence. */
+  noul: number
+}
+
+export interface DecisionAnswerChoice {
+  type: 'choice'
+  choice: string
+  confidence: number
+  probabilities: Record<string, number>
+}
+
+export interface DecisionAnswerScore {
+  type: 'score'
+  /** Position along the level array; may be fractional. */
+  score: number
+  confidence: number
+  probabilities: Record<string, number>
+}
+
+export type DecisionAnswer = DecisionAnswerNoul | DecisionAnswerChoice | DecisionAnswerScore
+
+/**
+ * One call to the decision layer, kept on the job for audit.
+ *
+ * The model returns probabilities and no rationale, so `stateDigest` carries
+ * the computed summary that was judged — that is what a human reads when a
+ * job parks, and what makes a recorded judgement reproducible.
+ */
+export interface DecisionRecord {
+  id: string
+  /** Call site: `overseer`, `guardrail:<ruleId>`, `wake-gate`, `lane`, … */
+  site: string
+  at: string
+  phase: string
+  mode: DecisionMode
+  /** Exact model version the provider reported, never the alias we sent. */
+  model: string
+  latencyMs: number
+  inputTokens: number
+  answers: Record<string, DecisionAnswer>
+  /** Human-readable rendering of the state that was judged. */
+  stateDigest?: string
+  /** True only when mode was `live` and the answer changed behaviour. */
+  actedOn?: boolean
+  /** Set when the call raised a concern, whether or not it was acted on. */
+  flagReason?: string
 }
 
 // ── Job input ─────────────────────────────────────────────────────────────────

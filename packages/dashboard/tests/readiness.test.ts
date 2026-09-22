@@ -34,6 +34,14 @@ function makeDraft(overrides: Partial<SettingsDraft> = {}): SettingsDraft {
     upstreamToken: '',
     upstreamMaxIssuesPerRun: '',
     upstreamMaxCodeJobsPerRun: '',
+    decisionMode: 'off',
+    decisionApiKey: '',
+    decisionBaseUrl: '',
+    decisionModel: '',
+    decisionTimeoutMs: '',
+    decisionOverseerScope: 'all',
+    decisionOverseerOnFlag: 'park',
+    decisionSites: {},
     ...overrides,
   }
 }

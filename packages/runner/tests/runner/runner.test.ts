@@ -180,6 +180,7 @@ function makeRunnerContext(stateBackend: MockStateBackend): RunnerContext {
     ghClient: null,
     lokiClient: {} as RunnerContext['lokiClient'],
     tempoClient: {} as RunnerContext['tempoClient'],
+    decisionClient: { providerId: 'none', ask: async () => ({ available: false, reason: 'off' }) },
     plugins,
     logger: {
       debug: vi.fn(),
@@ -291,6 +292,11 @@ function makeStubExecutor(generate: StubGenerator): StubExecutorBundle {
     executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent> {
       capturedRequests.push(req)
       return generate(req, helpers as { signals: PhaseSignals; toolCtx: ToolContext })
+    },
+    classifyPhaseError(err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (message.includes('previous_message_id')) return 'stale-session' as const
+      return undefined
     },
   } as unknown as PhaseExecutorRuntime
   return {

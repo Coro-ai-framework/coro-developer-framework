@@ -209,6 +209,46 @@ export interface Job {
   campaignChildren?: CampaignChild[]
   /** Present only on child jobs spawned by a campaign. */
   campaignParentId?: string
+  /** Append-only log of optional decision-layer calls. */
+  decisionRecords?: DecisionRecord[]
+}
+
+export type DecisionMode = 'off' | 'shadow' | 'live'
+
+export interface DecisionAnswerNoul {
+  type: 'noul'
+  noul: number
+}
+
+export interface DecisionAnswerChoice {
+  type: 'choice'
+  choice: string
+  confidence: number
+  probabilities: Record<string, number>
+}
+
+export interface DecisionAnswerScore {
+  type: 'score'
+  score: number
+  confidence: number
+  probabilities: Record<string, number>
+}
+
+export type DecisionAnswer = DecisionAnswerNoul | DecisionAnswerChoice | DecisionAnswerScore
+
+export interface DecisionRecord {
+  id: string
+  site: string
+  at: string
+  phase: string
+  mode: DecisionMode
+  model: string
+  latencyMs: number
+  inputTokens: number
+  answers: Record<string, DecisionAnswer>
+  stateDigest?: string
+  actedOn?: boolean
+  flagReason?: string
 }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'

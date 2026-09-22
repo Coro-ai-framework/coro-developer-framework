@@ -267,6 +267,7 @@ export function makeMockToolContext(overrides: Partial<ToolContext> = {}): ToolC
     ghClient: null,
     lokiClient,
     tempoClient,
+    decisionClient: { providerId: 'none', ask: async () => ({ available: false, reason: 'off' }) },
     plugins: new PluginRegistry(),
     logger: {
       debug: vi.fn(),

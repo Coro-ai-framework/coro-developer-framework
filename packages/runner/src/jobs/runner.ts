@@ -7,6 +7,7 @@ import { GitClient } from '../clients/git'
 import { prepareJobGitAuth } from '../clients/git-auth'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
+import type { DecisionProvider } from '../clients/decision'
 import { Settings } from '../config/settings'
 import {
   defaultLoaderCacheRoot,
@@ -84,6 +85,7 @@ import {
   uncoveredIssueNumbers,
 } from './contribution-coverage'
 import { buildPhaseKickoffMessage } from './phase-kickoff'
+import { createDecisionLayer } from '../decision/layer'
 import {
   createPhaseIdleWatchdog,
   resolveIdleWatchdogConfig,
@@ -123,6 +125,11 @@ export interface RunnerContext {
   ghClient: GitHubClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
+  /**
+   * Optional structured-decision client. Always present: a permanently
+   * unavailable stub when the install has not opted in.
+   */
+  decisionClient: DecisionProvider
   /**
    * Resolved plugin registry — single source of truth for SCM and
    * tracker providers. Owns the `scm_*` / `tracker_*` MCP surface,
@@ -365,6 +372,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     ghClient: ctx.ghClient,
     lokiClient: ctx.lokiClient,
     tempoClient: ctx.tempoClient,
+    decisionClient: ctx.decisionClient,
     plugins: ctx.plugins,
     logger,
     declaredPhases: workflowConfig?.phases.map(p => p.name),
@@ -553,12 +561,18 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // needs to react to.
       const jobWorkingDir = path.join(settings.paths.workingDir, liveJob.id)
       const hadPendingPrompt = Boolean(liveJob.pendingPrompt)
-      const promptText = liveJob.pendingPrompt ?? buildPhaseKickoffMessage(
+      const decisionLayer = createDecisionLayer(settings, ctx.decisionClient)
+      const kickoffExtras = await decisionLayer.kickoffExtras({
+        job: liveJob,
+        stateBackend,
+        logger,
+      })
+      const promptText = `${kickoffExtras}${liveJob.pendingPrompt ?? buildPhaseKickoffMessage(
         liveJob,
         jobWorkingDir,
         Date.now(),
         workflowConfig?.phases.map(p => p.name),
-      )
+      )}`
 
       // Clear pendingPrompt immediately so it isn't replayed on the next turn.
       if (liveJob.pendingPrompt) {
@@ -799,6 +813,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       const guardrailEngine = createGuardrailEngine(localConfig, {
         scm: createGuardrailScmDeps(toolCtx),
+        decision: ctx.decisionClient,
         activityLog: line => stateBackend.appendLog(toolCtx.job.id, line),
       })
       const guardrailPreToolUse = (toolName: string, input: unknown) => {
@@ -1495,6 +1510,57 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
 
       const checkpointApproved = liveJob.approvedAdvanceFromPhase === liveJob.phase
+
+      const boundary = await decisionLayer.afterPhase({
+        job: liveJob,
+        phaseConf,
+        checkpointPhases: checkpointPhaseSet(workflowConfig?.phases ?? liveJob.workflowPhases),
+        stateBackend,
+        logger,
+      })
+      if (boundary.consulted) {
+        try {
+          const refreshed = await stateBackend.getJob(liveJob.id)
+          if (refreshed) {
+            liveJob = refreshed
+            toolCtx.job = liveJob
+          }
+        } catch (refreshErr) {
+          logger.warn({ err: refreshErr, jobId: liveJob.id }, 'Failed to refresh job after overseer')
+        }
+        if (boundary.flagReason) {
+          await stateBackend.appendLog(liveJob.id, `[overseer] ${boundary.flagReason}`)
+        }
+      }
+      if (boundary.park) {
+        ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
+          stateBackend,
+          liveJob,
+          logger,
+          'before-overseer-park',
+        ))
+        toolCtx.job = liveJob
+        if (shouldStopLoop) break
+
+        const waitingFor = `developer-input: overseer flag after ${liveJob.phase}`
+        liveJob = await syncJob(stateBackend, liveJob, {
+          status: STATUS_AWAITING_DEVELOPER_INPUT,
+          awaitingEvent: waitingFor,
+          awaitingNextPhase: nextPhase,
+          approvedAdvanceFromPhase: undefined,
+        })
+        toolCtx.job = liveJob
+        logger.info(
+          { jobId: liveJob.id, phase: liveJob.phase, nextPhase },
+          'Overseer flagged the run — awaiting developer approval',
+        )
+        await stateBackend.appendLog(
+          liveJob.id,
+          `Overseer parked this run — waiting for developer approval before ${nextPhase}`,
+        )
+        break
+      }
+
       if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved) {
         ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
           stateBackend,

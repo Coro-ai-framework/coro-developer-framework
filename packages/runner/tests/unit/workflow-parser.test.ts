@@ -299,6 +299,25 @@ phases:
       expect(config.phases[0].tools).toBeUndefined()
     })
 
+    it('parses phase obligations when present and omits them otherwise', () => {
+      const yaml = `
+phases:
+  - name: planning
+    model: planning
+    obligations:
+      - The plan names every work item.
+      - The plan stays inside the stated objective.
+  - name: coding
+    model: coding
+`
+      const config = parseWorkflowConfig(md(yaml))!
+      expect(config.phases[0].obligations).toEqual([
+        'The plan names every work item.',
+        'The plan stays inside the stated objective.',
+      ])
+      expect(config.phases[1].obligations).toBeUndefined()
+    })
+
     it('parses interactive_checkpoint: true', () => {
       const yaml = `
 phases:

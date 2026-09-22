@@ -5,6 +5,7 @@ import { GitHubClient } from '../clients/github'
 import { GitClient } from '../clients/git'
 import { LokiClient } from '../clients/loki'
 import { TempoClient } from '../clients/tempo'
+import type { DecisionProvider } from '../clients/decision'
 import { Settings } from '../config/settings'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
@@ -45,6 +46,8 @@ export interface ToolContext {
   ghClient: GitHubClient | null
   lokiClient: LokiClient
   tempoClient: TempoClient
+  /** Always present; a stub when the decision layer is off. */
+  decisionClient: DecisionProvider
   /**
    * Plugin registry shared with the runner. MCP tools dispatch
    * `scm_*` / `tracker_*` calls through this — the registry is the

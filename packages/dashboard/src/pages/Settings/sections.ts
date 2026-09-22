@@ -5,6 +5,7 @@ import {
   GitBranch,
   GitPullRequestArrow,
   Plug,
+  ScanSearch,
   Server,
   ShieldCheck,
   SlidersHorizontal,
@@ -88,6 +89,14 @@ export const SETTINGS_SECTIONS: SettingsSectionDescriptor[] = [
     label: 'Coro contribution',
     description: 'Optional. Lets a retrospective report defects it finds in Coro itself back to the Coro repository.',
     icon: GitPullRequestArrow,
+    required: false,
+  },
+  {
+    id: 'decision-layer',
+    group: 'extensions',
+    label: 'Decision layer',
+    description: 'Optional. An out-of-band structured-decision model for overseeing runs and a few narrow classifications.',
+    icon: ScanSearch,
     required: false,
   },
   {

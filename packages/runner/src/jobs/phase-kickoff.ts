@@ -156,5 +156,29 @@ export function buildPhaseKickoffMessage(
     )
 
   const openPrs = buildOpenPrsKickoffBlock(job, nowMs)
-  return [approval, preflight, workspace, base, openPrs].filter(Boolean).join('\n')
+  const overseer = buildOverseerKickoffBlock(job)
+  return [approval, overseer, preflight, workspace, base, openPrs].filter(Boolean).join('\n')
+}
+
+/**
+ * Process note from the previous phase's overseer. Only the previous
+ * phase's flag is shown, and only as context — never as an instruction
+ * to the session being judged.
+ */
+export function buildOverseerKickoffBlock(job: Job): string {
+  const records = job.decisionRecords ?? []
+  const last = [...records].reverse().find(record => record.site === 'overseer' && record.phase !== job.phase)
+  if (!last) return ''
+  const blocked = last.answers['blocked']
+  const blockedLine = blocked && blocked.type === 'noul' && blocked.noul >= 0.75
+    ? `The previous phase may have been waiting on something it could not resolve itself (blocked probability ${blocked.noul.toFixed(2)}).`
+    : ''
+  if (!last.flagReason && !blockedLine) return ''
+  const lines = [
+    '[process note] An out-of-band overseer reviewed the previous phase. This is a process-confidence signal, not a code-quality score.',
+  ]
+  if (last.flagReason) lines.push(last.flagReason)
+  if (blockedLine) lines.push(blockedLine)
+  lines.push('')
+  return lines.join('\n')
 }

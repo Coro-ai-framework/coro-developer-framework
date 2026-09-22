@@ -122,6 +122,27 @@ export interface UpstreamConfigShape {
   maxCodeJobsPerRun?: number
 }
 
+export type DecisionModeDraft = 'off' | 'shadow' | 'live'
+
+export interface DecisionConfigShape {
+  mode?: DecisionModeDraft
+  provider?: string
+  apiKey?: string
+  baseUrl?: string
+  model?: string
+  timeoutMs?: number
+  sites?: Record<string, DecisionModeDraft>
+  overseer?: {
+    scope?: 'all' | 'campaigns' | 'off'
+    onFlag?: 'park' | 'flag-only'
+    thresholds?: {
+      offTrackNoul?: number
+      severityScore?: number
+      minChoiceConfidence?: number
+    }
+  }
+}
+
 export interface ConfigResponse {
   config: {
     /**
@@ -157,6 +178,8 @@ export interface ConfigResponse {
     }
     /** Where retrospective findings about Coro itself get published. */
     upstream?: UpstreamConfigShape
+    /** Optional structured-decision layer. `apiKey` arrives redacted. */
+    decision?: DecisionConfigShape
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
@@ -174,6 +197,8 @@ export interface ConfigResponse {
      * only `repoUrl` is load-bearing.
      */
     upstreamConfigured?: boolean
+    /** True when a non-off mode and an API key are both resolved. */
+    decisionConfigured?: boolean
   }
   configError?: string
   rawConfig?: unknown
@@ -227,6 +252,14 @@ export interface SettingsDraft {
   upstreamToken: string
   upstreamMaxIssuesPerRun: string
   upstreamMaxCodeJobsPerRun: string
+  decisionMode: DecisionModeDraft
+  decisionApiKey: string
+  decisionBaseUrl: string
+  decisionModel: string
+  decisionTimeoutMs: string
+  decisionOverseerScope: 'all' | 'campaigns' | 'off'
+  decisionOverseerOnFlag: 'park' | 'flag-only'
+  decisionSites: Record<string, DecisionModeDraft>
 }
 
 const EMPTY_DRAFT: SettingsDraft = {
@@ -248,6 +281,14 @@ const EMPTY_DRAFT: SettingsDraft = {
   upstreamToken: '',
   upstreamMaxIssuesPerRun: '',
   upstreamMaxCodeJobsPerRun: '',
+  decisionMode: 'off',
+  decisionApiKey: '',
+  decisionBaseUrl: '',
+  decisionModel: '',
+  decisionTimeoutMs: '',
+  decisionOverseerScope: 'all',
+  decisionOverseerOnFlag: 'park',
+  decisionSites: {},
 }
 
 // ── Section identity ────────────────────────────────────────────────────────
@@ -262,6 +303,7 @@ export type SettingsSectionId =
   | 'paths'
   | 'guardrails'
   | 'contribution'
+  | 'decision-layer'
 
 /** Static (non-plugin) field → section. Plugin entries are mapped
  * dynamically via the plugin manifest kind. */
@@ -283,6 +325,14 @@ const STATIC_FIELD_TO_SECTION: Partial<Record<keyof SettingsDraft, SettingsSecti
   upstreamToken: 'contribution',
   upstreamMaxIssuesPerRun: 'contribution',
   upstreamMaxCodeJobsPerRun: 'contribution',
+  decisionMode: 'decision-layer',
+  decisionApiKey: 'decision-layer',
+  decisionBaseUrl: 'decision-layer',
+  decisionModel: 'decision-layer',
+  decisionTimeoutMs: 'decision-layer',
+  decisionOverseerScope: 'decision-layer',
+  decisionOverseerOnFlag: 'decision-layer',
+  decisionSites: 'decision-layer',
 }
 
 // ── Context shape ───────────────────────────────────────────────────────────
@@ -407,6 +457,14 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     upstreamToken: cfg.upstream?.token ?? '',
     upstreamMaxIssuesPerRun: numberToText(cfg.upstream?.maxIssuesPerRun),
     upstreamMaxCodeJobsPerRun: numberToText(cfg.upstream?.maxCodeJobsPerRun),
+    decisionMode: cfg.decision?.mode === 'shadow' || cfg.decision?.mode === 'live' ? cfg.decision.mode : 'off',
+    decisionApiKey: cfg.decision?.apiKey ?? '',
+    decisionBaseUrl: cfg.decision?.baseUrl ?? '',
+    decisionModel: cfg.decision?.model ?? '',
+    decisionTimeoutMs: numberToText(cfg.decision?.timeoutMs),
+    decisionOverseerScope: cfg.decision?.overseer?.scope ?? 'all',
+    decisionOverseerOnFlag: cfg.decision?.overseer?.onFlag ?? 'park',
+    decisionSites: { ...(cfg.decision?.sites ?? {}) },
   }
 }
 
@@ -433,6 +491,17 @@ export const UPSTREAM_DRAFT_FIELDS: Array<keyof SettingsDraft> = [
   'upstreamToken',
   'upstreamMaxIssuesPerRun',
   'upstreamMaxCodeJobsPerRun',
+]
+
+export const DECISION_DRAFT_FIELDS: Array<keyof SettingsDraft> = [
+  'decisionMode',
+  'decisionApiKey',
+  'decisionBaseUrl',
+  'decisionModel',
+  'decisionTimeoutMs',
+  'decisionOverseerScope',
+  'decisionOverseerOnFlag',
+  'decisionSites',
 ]
 
 function draftEqualField<K extends keyof SettingsDraft>(a: SettingsDraft[K], b: SettingsDraft[K]): boolean {
@@ -816,6 +885,21 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
         token: draft.upstreamToken,
         maxIssuesPerRun: textToCount(draft.upstreamMaxIssuesPerRun),
         maxCodeJobsPerRun: textToCount(draft.upstreamMaxCodeJobsPerRun),
+      }
+    }
+
+    if (DECISION_DRAFT_FIELDS.some(field => dirtyFields.has(field))) {
+      body['decision'] = {
+        mode: draft.decisionMode,
+        apiKey: draft.decisionApiKey,
+        baseUrl: draft.decisionBaseUrl.trim(),
+        model: draft.decisionModel.trim(),
+        timeoutMs: textToCount(draft.decisionTimeoutMs),
+        sites: draft.decisionSites,
+        overseer: {
+          scope: draft.decisionOverseerScope,
+          onFlag: draft.decisionOverseerOnFlag,
+        },
       }
     }
 

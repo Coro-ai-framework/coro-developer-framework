@@ -174,3 +174,49 @@ describe('buildCheckpointApprovalBlock', () => {
     expect(block).toContain('"Approved findings: finding-1"')
   })
 })
+
+describe('buildOverseerKickoffBlock', () => {
+  it('surfaces the previous phase flag as a process note, not as an instruction', () => {
+    const msg = buildPhaseKickoffMessage(makeJob({
+      phase: 'coding',
+      decisionRecords: [{
+        id: 'dec-1',
+        site: 'overseer',
+        at: '2026-05-21T11:00:00Z',
+        phase: 'planning',
+        mode: 'live',
+        model: 'jev-1.13.0',
+        latencyMs: 80,
+        inputTokens: 12,
+        answers: { blocked: { type: 'noul', noul: 0.1 } },
+        flagReason: 'Overseer flagged: obligation unmet.',
+      }],
+    }), '/tmp/work/kickoff-job', NOW)
+
+    expect(msg).toContain('[process note]')
+    expect(msg).toContain('process-confidence signal')
+    expect(msg).toContain('Overseer flagged: obligation unmet.')
+    expect(msg).not.toContain('Treat this as your instruction set')
+  })
+
+  it('omits a note when the only overseer record is for the current phase', () => {
+    const msg = buildPhaseKickoffMessage(makeJob({
+      phase: 'coding',
+      decisionRecords: [{
+        id: 'dec-1',
+        site: 'overseer',
+        at: '2026-05-21T11:00:00Z',
+        phase: 'coding',
+        mode: 'shadow',
+        model: 'jev-1.13.0',
+        latencyMs: 80,
+        inputTokens: 12,
+        answers: {},
+        flagReason: 'should not appear',
+      }],
+    }), '/tmp/work/kickoff-job', NOW)
+
+    expect(msg).not.toContain('should not appear')
+    expect(msg).not.toContain('[process note]')
+  })
+})

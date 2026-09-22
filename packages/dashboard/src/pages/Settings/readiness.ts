@@ -249,6 +249,15 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
         ? 'Findings about Coro itself can be contributed upstream'
         : 'Findings about Coro itself stay on this machine',
     },
+    'decision-layer': {
+      status: draft.decisionMode === 'off' ? 'optional' : 'ok',
+      ...(draft.decisionMode !== 'off' ? { label: draft.decisionMode === 'live' ? 'Live' : 'Shadow' } : {}),
+      detail: draft.decisionMode === 'off'
+        ? 'Jobs run without an external decision layer'
+        : draft.decisionMode === 'live'
+          ? 'Sites inherit live unless overridden'
+          : 'Judgements are recorded without changing behaviour',
+    },
   }
 
   const missingRequired: SettingsSectionId[] = []

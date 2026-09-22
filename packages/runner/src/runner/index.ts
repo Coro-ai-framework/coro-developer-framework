@@ -86,6 +86,7 @@ import { createGitClient } from '../clients/git'
 import { createGitHubClient } from '../clients/github'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
+import { createDecisionClient } from '../clients/decision'
 import { wireCloudJobDispatch } from './hybrid-dispatcher'
 import { createRunnerServer } from './server'
 
@@ -148,6 +149,7 @@ export async function startLocalRunner(
   const ghClient = createGitHubClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
+  const decisionClient = await createDecisionClient(settings)
 
   // Build the plugin registry from the resolved PluginsConfig. The
   // registry is the single source of truth for every provider (LLM,
@@ -198,6 +200,7 @@ export async function startLocalRunner(
     ghClient,
     lokiClient,
     tempoClient,
+    decisionClient,
     plugins,
     logger,
   }
@@ -308,6 +311,7 @@ export async function startHybridRunner(
   const ghClient = createGitHubClient(settings)
   const lokiClient = createLokiClient(settings)
   const tempoClient = createTempoClient(settings)
+  const decisionClient = await createDecisionClient(settings)
 
   // Build runner context — `plugins` was created above so the WS
   // transport could capture the webhook normaliser closure before
@@ -322,6 +326,7 @@ export async function startHybridRunner(
     ghClient,
     lokiClient,
     tempoClient,
+    decisionClient,
     plugins,
     logger,
   }

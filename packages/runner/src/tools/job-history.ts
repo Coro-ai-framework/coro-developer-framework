@@ -165,8 +165,22 @@ export interface JobReport {
   phaseRuns: PhaseRunDetail[]
   insights: Array<{ category: string; summary: string; suggestion?: string; status: string }>
   prs: Array<{ workItem: string; openedAt: string; mergedAt?: string; timeToMergeMs?: number }>
-  artifacts: Array<{ id: string; phase: string; kind: string; title: string }>
+    artifacts: Array<{ id: string; phase: string; kind: string; title: string }>
   workflowSwitches: Array<{ from: string; to: string; reason: string }>
+  /**
+   * External decision-layer calls recorded on this job. Empty when the
+   * layer was off.
+   */
+  decisionRecords: Array<{
+    site: string
+    at: string
+    phase: string
+    mode: string
+    model: string
+    latencyMs: number
+    flagReason?: string
+    actedOn?: boolean
+  }>
   toolHistogram: ToolHistogramEntry[]
   provenance?: IntelligenceProvenance
 }
@@ -327,6 +341,16 @@ export function buildJobReport(job: Job, sanitizer: Sanitizer | null): JobReport
       from: entry.from,
       to: entry.to,
       reason: scrub(entry.reason),
+    })),
+    decisionRecords: (job.decisionRecords ?? []).map(record => ({
+      site: record.site,
+      at: record.at,
+      phase: record.phase,
+      mode: record.mode,
+      model: record.model,
+      latencyMs: record.latencyMs,
+      ...(record.flagReason ? { flagReason: scrub(record.flagReason) } : {}),
+      ...(record.actedOn ? { actedOn: true } : {}),
     })),
     toolHistogram: toolHistogram(job.phaseUsage ?? []),
     ...(job.intelligenceProvenance

@@ -409,6 +409,26 @@ describe('buildJobReport', () => {
     expect(report.prs[0].timeToMergeMs).toBe(2 * 60 * 60 * 1000)
   })
 
+  it('surfaces sanitised decision records', () => {
+    const report = buildJobReport(historyJob('job-decision', {
+      decisionRecords: [{
+        id: 'dec-1',
+        site: 'overseer',
+        at: '2026-01-01T00:00:00Z',
+        phase: 'coding',
+        mode: 'shadow',
+        model: 'jev-1.13.0',
+        latencyMs: 40,
+        inputTokens: 8,
+        answers: {},
+        flagReason: 'clone of billing-api drifted',
+      }],
+    }), sanitizer)
+
+    expect(report.decisionRecords).toHaveLength(1)
+    expect(report.decisionRecords[0].flagReason).toBe('clone of repo-A drifted')
+  })
+
   it('passes through token and cache totals that used to be dropped', () => {
     const report = buildJobReport(historyJob('job-tokens', {
       phaseUsage: [

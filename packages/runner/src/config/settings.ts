@@ -46,6 +46,26 @@ export interface UpstreamSettings {
   maxCodeJobsPerRun: number
 }
 
+/** Mirrors `ResolvedDecisionConfig` from `config/local-config.ts`. */
+export interface DecisionSettings {
+  mode: 'shadow' | 'live'
+  provider: string
+  apiKey: string
+  baseUrl: string
+  model: string
+  timeoutMs: number
+  sites: Record<string, 'off' | 'shadow' | 'live'>
+  overseer: {
+    scope: 'all' | 'campaigns' | 'off'
+    onFlag: 'park' | 'flag-only'
+    thresholds: {
+      offTrackNoul: number
+      severityScore: number
+      minChoiceConfidence: number
+    }
+  }
+}
+
 export interface Settings {
   host: {
     port: number
@@ -117,6 +137,12 @@ export interface Settings {
    * `LocalConfig` by `resolveUpstreamConfig()`.
    */
   upstream?: UpstreamSettings
+  /**
+   * Optional structured-decision model. Undefined when the install has not
+   * opted in — the client factory then returns a stub whose every method
+   * reports unavailable, so no call site needs a null check.
+   */
+  decision?: DecisionSettings
   /**
    * Multi-provider LLM configuration. The runtime treats this as the
    * single source of truth for executor selection and alias resolution.

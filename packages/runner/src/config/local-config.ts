@@ -10,6 +10,7 @@ import path from 'path'
 import os from 'os'
 import { z } from 'zod'
 import type { TenantOverlaySource } from '../intelligence/tenant-context'
+import { JEV_DEFAULT_MODEL, JEV_LEGACY_API_KEY_ENV, JEV_PROVIDER_ID } from '../plugins/builtin/jev/defaults'
 import { pluginsConfigSchema, applyFreshInstallScmDefaults, type PluginsConfig } from './plugins-config'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
@@ -117,6 +118,35 @@ const upstreamConfigSchema = z.object({
   token: z.string().min(1).optional(),
   maxIssuesPerRun: z.number().int().min(0).optional(),
   maxCodeJobsPerRun: z.number().int().min(0).optional(),
+}).optional()
+
+// ── External decision layer ──────────────────────────────────────────────────
+//
+// An optional structured-decision model used as an out-of-band overseer and
+// for a handful of narrow classifications. Absent by default, and `mode` is
+// the switch: without it nothing is constructed and no socket is opened.
+//
+// `mode` is three-state rather than a boolean because the honest way to adopt
+// this is to run it alongside the real decisions first and compare. `sites`
+// narrows or widens individual call sites against that global default.
+
+const decisionConfigSchema = z.object({
+  mode: z.enum(['off', 'shadow', 'live']).optional(),
+  provider: z.string().min(1).optional(),
+  apiKey: z.string().min(1).optional(),
+  baseUrl: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  timeoutMs: z.number().int().min(1).optional(),
+  sites: z.record(z.string(), z.enum(['off', 'shadow', 'live'])).optional(),
+  overseer: z.object({
+    scope: z.enum(['all', 'campaigns', 'off']).optional(),
+    onFlag: z.enum(['park', 'flag-only']).optional(),
+    thresholds: z.object({
+      offTrackNoul: z.number().min(0).max(1).optional(),
+      severityScore: z.number().min(0).optional(),
+      minChoiceConfidence: z.number().min(0).max(1).optional(),
+    }).optional(),
+  }).optional(),
 }).optional()
 
 // ── BYO (bring-your-own) MCP servers ─────────────────────────────────────────
@@ -252,6 +282,11 @@ const localConfigSchema = z.object({
    * `runner-code` are reported but never published.
    */
   upstream: upstreamConfigSchema,
+  /**
+   * Optional structured-decision model. Absent means every call site
+   * behaves exactly as it did before this feature existed.
+   */
+  decision: decisionConfigSchema,
   /**
    * Provider-plugin config — the single source of truth for executor
    * (LLM), SCM, and tracker credentials. Each entry under
@@ -629,6 +664,77 @@ export function resolveUpstreamConfig(config: LocalConfig | null): ResolvedUpstr
     ...(token ? { token } : {}),
     maxIssuesPerRun: upstream?.maxIssuesPerRun ?? UPSTREAM_DEFAULT_MAX_ISSUES_PER_RUN,
     maxCodeJobsPerRun: upstream?.maxCodeJobsPerRun ?? UPSTREAM_DEFAULT_MAX_CODE_JOBS_PER_RUN,
+  }
+}
+
+export const DECISION_DEFAULT_MODEL = JEV_DEFAULT_MODEL
+export const DECISION_DEFAULT_TIMEOUT_MS = 1_500
+export const DECISION_DEFAULT_OFF_TRACK_NOUL = 0.75
+export const DECISION_DEFAULT_SEVERITY_SCORE = 1.5
+export const DECISION_DEFAULT_MIN_CHOICE_CONFIDENCE = 0.5
+
+export interface ResolvedDecisionOverseerConfig {
+  scope: 'all' | 'campaigns' | 'off'
+  onFlag: 'park' | 'flag-only'
+  thresholds: {
+    offTrackNoul: number
+    severityScore: number
+    minChoiceConfidence: number
+  }
+}
+
+export interface ResolvedDecisionConfig {
+  mode: 'shadow' | 'live'
+  provider: string
+  apiKey: string
+  baseUrl: string
+  /** Pinned version. `jev-latest` moves and would shift tuned thresholds. */
+  model: string
+  timeoutMs: number
+  sites: Record<string, 'off' | 'shadow' | 'live'>
+  overseer: ResolvedDecisionOverseerConfig
+}
+
+/**
+ * Resolve the decision layer, or `undefined` when this install has not opted
+ * in. Two things are load-bearing: a non-`off` mode and a key. Without both
+ * there is nothing to call, and every call site falls through to the
+ * behaviour it had before this feature existed.
+ */
+export function resolveDecisionConfig(
+  config: LocalConfig | null,
+): ResolvedDecisionConfig | undefined {
+  const decision = config?.decision
+  const rawMode = decision?.mode ?? process.env.CORO_DECISION_MODE
+  const mode = rawMode === 'shadow' || rawMode === 'live' || rawMode === 'off' ? rawMode : undefined
+  if (!mode || mode === 'off') return undefined
+
+  const legacyKey = process.env[JEV_LEGACY_API_KEY_ENV]
+  const apiKey =
+    decision?.apiKey?.trim() ||
+    process.env.CORO_DECISION_API_KEY?.trim() ||
+    (typeof legacyKey === 'string' ? legacyKey.trim() : '') ||
+    ''
+  if (!apiKey) return undefined
+
+  const overseer = decision?.overseer
+  return {
+    mode,
+    provider: decision?.provider?.trim() || JEV_PROVIDER_ID,
+    apiKey,
+    baseUrl: decision?.baseUrl?.trim() || process.env.CORO_DECISION_BASE_URL?.trim() || '',
+    model: decision?.model?.trim() || process.env.CORO_DECISION_MODEL?.trim() || DECISION_DEFAULT_MODEL,
+    timeoutMs: decision?.timeoutMs ?? DECISION_DEFAULT_TIMEOUT_MS,
+    sites: { ...(decision?.sites ?? {}) },
+    overseer: {
+      scope: overseer?.scope ?? 'all',
+      onFlag: overseer?.onFlag ?? 'park',
+      thresholds: {
+        offTrackNoul: overseer?.thresholds?.offTrackNoul ?? DECISION_DEFAULT_OFF_TRACK_NOUL,
+        severityScore: overseer?.thresholds?.severityScore ?? DECISION_DEFAULT_SEVERITY_SCORE,
+        minChoiceConfidence: overseer?.thresholds?.minChoiceConfidence ?? DECISION_DEFAULT_MIN_CHOICE_CONFIDENCE,
+      },
+    },
   }
 }
 

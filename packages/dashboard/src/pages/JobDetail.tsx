@@ -22,6 +22,7 @@ import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
 import WorkflowFlow, { WorkItemsBreakdown } from '../components/WorkflowFlow'
 import PhaseModelPanel from '../components/jobs/PhaseModelPanel'
+import OnTrackIndicator from '../components/jobs/OnTrackIndicator'
 import RetrospectiveFindingsPanel from '../components/retrospective/findings-panel'
 import ErrorState from '../components/common/error-state'
 import { Button } from '../components/ui/button'
@@ -152,6 +153,7 @@ function HeaderSummary({ job }: { job: Job }) {
             {deriveJobTitle(job)}
           </h1>
           <StatusBadge status={job.status} awaitingEvent={job.awaitingEvent} />
+          <OnTrackIndicator records={job.decisionRecords} />
         </div>
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-fg-subtle">

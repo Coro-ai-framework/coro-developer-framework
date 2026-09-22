@@ -57,6 +57,7 @@ import { createGitClient } from '../clients/git'
 import { createGitHubClient } from '../clients/github'
 import { createLokiClient } from '../clients/loki'
 import { createTempoClient } from '../clients/tempo'
+import { createDecisionClient } from '../clients/decision'
 import { buildSettingsFromLocal, seedExecutorDefaultAliases } from './build-settings'
 
 /**
@@ -124,6 +125,7 @@ export async function reloadRunnerState(args: {
     ghClient: createGitHubClient(newSettings),
     lokiClient: createLokiClient(newSettings),
     tempoClient: createTempoClient(newSettings),
+    decisionClient: await createDecisionClient(newSettings),
   }
   Object.assign(ctx, newClients)
 
