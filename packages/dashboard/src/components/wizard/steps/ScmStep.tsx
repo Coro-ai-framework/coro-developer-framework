@@ -23,7 +23,7 @@ export default function ScmStep({ state, dispatch, onOpenDrawer }: ScmStepProps)
 
   return (
     <StepShell
-      eyebrow="Step 2 of 2"
+      eyebrow="Step 2 of 3"
       title="Where does your code live?"
       description="Coro clones your repository, works on a branch, and opens a pull request for review. Connect GitHub or Bitbucket — or try Coro on a local checkout first."
     >

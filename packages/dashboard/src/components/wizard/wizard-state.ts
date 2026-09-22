@@ -42,11 +42,21 @@ export interface StepState {
   lastResult: TestResult | null
 }
 
-export type WizardStepId = 'llm' | 'scm' | 'success'
+export type WizardStepId = 'llm' | 'scm' | 'overseer' | 'success'
+
+/** Optional Jev key + mode. Not a plugin step — Coro runs without it. */
+export interface OverseerWizardState {
+  apiKey: string
+  mode: 'shadow' | 'live'
+  status: 'idle' | 'passed' | 'skipped'
+  /** True when a key was already saved before this wizard visit. Skip does not turn it off. */
+  configured: boolean
+}
 
 export interface WizardState {
   currentStep: WizardStepId
   steps: Record<StepKind, StepState>
+  overseer: OverseerWizardState
   /** Open drawer flag — true when the user is browsing custom plugins. */
   drawerOpen: boolean
   /** Step the drawer is associated with (so closing returns to the right body). */
@@ -60,12 +70,20 @@ const EMPTY_STEP: StepState = {
   lastResult: null,
 }
 
+const EMPTY_OVERSEER: OverseerWizardState = {
+  apiKey: '',
+  mode: 'shadow',
+  status: 'idle',
+  configured: false,
+}
+
 export const INITIAL_WIZARD_STATE: WizardState = {
   currentStep: 'llm',
   steps: {
     llm: { ...EMPTY_STEP, draftConfig: {} },
     scm: { ...EMPTY_STEP, draftConfig: {} },
   },
+  overseer: { ...EMPTY_OVERSEER },
   drawerOpen: false,
   drawerForStep: null,
 }
@@ -77,6 +95,11 @@ export type WizardAction =
   | { type: 'beginTest'; step: StepKind }
   | { type: 'testResult'; step: StepKind; result: TestResult }
   | { type: 'skip'; step: StepKind }
+  | { type: 'setOverseerKey'; apiKey: string }
+  | { type: 'setOverseerMode'; mode: 'shadow' | 'live' }
+  | { type: 'skipOverseer' }
+  | { type: 'passOverseer' }
+  | { type: 'hydrateOverseer'; apiKey: string; mode: 'shadow' | 'live'; configured: boolean }
   | { type: 'openDrawer'; step: StepKind }
   | { type: 'closeDrawer' }
 
@@ -173,6 +196,34 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
         },
       }
     }
+    case 'setOverseerKey': {
+      if (state.overseer.apiKey === action.apiKey) return state
+      return {
+        ...state,
+        overseer: { ...state.overseer, apiKey: action.apiKey, status: 'idle' },
+      }
+    }
+    case 'setOverseerMode': {
+      if (state.overseer.mode === action.mode) return state
+      return {
+        ...state,
+        overseer: { ...state.overseer, mode: action.mode, status: 'idle' },
+      }
+    }
+    case 'skipOverseer':
+      return { ...state, overseer: { ...state.overseer, status: 'skipped' } }
+    case 'passOverseer':
+      return { ...state, overseer: { ...state.overseer, status: 'passed' } }
+    case 'hydrateOverseer':
+      return {
+        ...state,
+        overseer: {
+          apiKey: action.apiKey,
+          mode: action.mode,
+          status: action.configured ? 'passed' : 'idle',
+          configured: action.configured,
+        },
+      }
     case 'openDrawer':
       return { ...state, drawerOpen: true, drawerForStep: action.step }
     case 'closeDrawer':
@@ -184,8 +235,8 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
 
 /**
  * Required steps for the success screen's "you skipped a required
- * step" warning. After the two-step rewrite, only LLM can be skipped
- * from the footer; the Local card *is* the SCM skip.
+ * step" warning. Both can be skipped from the footer. The Local card
+ * is the other way through the code-host step.
  */
 export const REQUIRED_STEPS: ReadonlyArray<StepKind> = ['llm', 'scm']
 

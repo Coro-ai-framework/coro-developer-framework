@@ -21,7 +21,7 @@ export default function LlmStep({ state, dispatch, onOpenDrawer }: LlmStepProps)
 
   return (
     <StepShell
-      eyebrow="Step 1 of 2"
+      eyebrow="Step 1 of 3"
       title="Which model should power Coro?"
       description="Coro uses an LLM to plan, write code, and review changes. Pick one to start — you can switch or add more later in Settings."
     >

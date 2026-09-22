@@ -251,12 +251,12 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
     },
     'decision-layer': {
       status: draft.decisionMode === 'off' ? 'optional' : 'ok',
-      ...(draft.decisionMode !== 'off' ? { label: draft.decisionMode === 'live' ? 'Live' : 'Shadow' } : {}),
+      ...(draft.decisionMode !== 'off' ? { label: draft.decisionMode === 'live' ? 'Manage' : 'Observe' } : {}),
       detail: draft.decisionMode === 'off'
-        ? 'Jobs run without an external decision layer'
+        ? 'Jobs run without an overseer'
         : draft.decisionMode === 'live'
-          ? 'Sites inherit live unless overridden'
-          : 'Judgements are recorded without changing behaviour',
+          ? 'Can pause an interactive job when it looks off track'
+          : 'Records an on-track rating without changing the job',
     },
   }
 

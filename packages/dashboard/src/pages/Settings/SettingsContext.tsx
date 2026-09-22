@@ -397,6 +397,11 @@ interface SettingsContextValue {
     config: Record<string, unknown>
     setAsDefault?: boolean
   }) => Promise<void>
+  /**
+   * Persist the optional Overseer step. An empty key is omitted so a
+   * blank field does not clear a key that is already on disk.
+   */
+  commitDecisionLayer: (input: { mode: 'shadow' | 'live'; apiKey: string }) => Promise<void>
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null)
@@ -1061,6 +1066,17 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     [reload],
   )
 
+  const commitDecisionLayer = useCallback(
+    async ({ mode, apiKey }: { mode: 'shadow' | 'live'; apiKey: string }) => {
+      const decision: Record<string, unknown> = { mode, provider: 'jev' }
+      const key = apiKey.trim()
+      if (key) decision.apiKey = key
+      await requestJson('/config', jsonRequest({ decision }, { method: 'PUT' }))
+      await reload()
+    },
+    [reload],
+  )
+
   const value: SettingsContextValue = {
     loading,
     loadError,
@@ -1092,6 +1108,7 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
     markFirstRunComplete,
     resetFirstRun,
     commitWizardStep,
+    commitDecisionLayer,
   }
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>

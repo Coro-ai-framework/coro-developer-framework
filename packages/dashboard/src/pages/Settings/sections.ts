@@ -94,8 +94,8 @@ export const SETTINGS_SECTIONS: SettingsSectionDescriptor[] = [
   {
     id: 'decision-layer',
     group: 'extensions',
-    label: 'Decision layer',
-    description: 'Optional. An out-of-band structured-decision model for overseeing runs and a few narrow classifications.',
+    label: 'Overseer',
+    description: 'Optional. Watches whether a job stays faithful to what you asked. Needs a Jev key.',
     icon: ScanSearch,
     required: false,
   },

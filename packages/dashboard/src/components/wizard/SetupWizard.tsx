@@ -12,6 +12,7 @@ import { Button } from '../ui/button'
 import { cn } from '../../lib/utils'
 import { useSettings } from '../../pages/Settings/SettingsContext'
 import LlmStep from './steps/LlmStep'
+import OverseerStep from './steps/OverseerStep'
 import ScmStep from './steps/ScmStep'
 import SuccessStep from './steps/SuccessStep'
 import CustomPluginDrawer from './panels/CustomPluginDrawer'
@@ -30,19 +31,21 @@ interface SetupWizardProps {
   onOpenChange: (open: boolean) => void
 }
 
-const STEP_ORDER: WizardStepId[] = ['llm', 'scm', 'success']
+const STEP_ORDER: WizardStepId[] = ['llm', 'scm', 'overseer', 'success']
 
 /**
- * First-time-user setup wizard. Two real steps — a model and a code
- * host — plus a recap. Tracker, MCP, and drop-in plugins live in
- * Settings; the Local card is the SCM skip, not a footer button.
+ * First-time-user setup wizard. A model, a code host, an optional
+ * Overseer key, then a recap. Tracker, MCP, and drop-in plugins live
+ * in Settings; the Local card is the SCM skip, not a footer button.
  */
 export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
   const {
     markFirstRunComplete,
     commitWizardStep,
+    commitDecisionLayer,
     reloadPlugins,
     draft,
+    meta,
     pluginsCatalogue,
     firstRunCompleted,
   } = useSettings()
@@ -91,7 +94,14 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
         dispatch({ type: 'setField', step: 'scm', key: k, value: v })
       }
     }
-  }, [open, draft, pluginsCatalogue, firstRunCompleted])
+    const overseerMode = draft.decisionMode === 'live' ? 'live' : 'shadow'
+    dispatch({
+      type: 'hydrateOverseer',
+      apiKey: draft.decisionApiKey,
+      mode: overseerMode,
+      configured: draft.decisionMode !== 'off' && Boolean(draft.decisionApiKey || meta?.resolved.decisionConfigured),
+    })
+  }, [open, draft, pluginsCatalogue, firstRunCompleted, meta])
 
   const currentIndex = STEP_ORDER.indexOf(state.currentStep)
   const isFinal = state.currentStep === 'success'
@@ -126,6 +136,28 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
     const stepKind: StepKind | null =
       step === 'llm' ? 'llm' : step === 'scm' ? 'scm' : null
 
+    if (step === 'overseer') {
+      const key = state.overseer.apiKey.trim()
+      const alreadyOn = Boolean(meta?.resolved.decisionConfigured)
+      if (!key && !alreadyOn) {
+        setAdvanceError('Paste a Jev key, or skip this step. Coro runs without Overseer.')
+        return
+      }
+      setAdvancing(true)
+      try {
+        await commitDecisionLayer({ mode: state.overseer.mode, apiKey: state.overseer.apiKey })
+        dispatch({ type: 'passOverseer' })
+      } catch (err) {
+        setAdvanceError(
+          `Could not save Overseer: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        setAdvancing(false)
+        return
+      } finally {
+        setAdvancing(false)
+      }
+    }
+
     if (stepKind && state.steps[stepKind].status === 'passed') {
       const providerId = state.steps[stepKind].selectedProviderId
       if (providerId) {
@@ -151,12 +183,15 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
 
     const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
     advanceTo(next)
-  }, [state, currentIndex, advanceTo, commitWizardStep])
+  }, [state, currentIndex, advanceTo, commitWizardStep, commitDecisionLayer, meta])
 
   const handleSkip = useCallback(() => {
     setAdvanceError(null)
-    if (state.currentStep === 'llm') {
-      dispatch({ type: 'skip', step: 'llm' })
+    if (state.currentStep === 'llm' || state.currentStep === 'scm') {
+      dispatch({ type: 'skip', step: state.currentStep })
+    }
+    if (state.currentStep === 'overseer') {
+      dispatch({ type: 'skipOverseer' })
     }
     const next = STEP_ORDER[Math.min(STEP_ORDER.length - 1, currentIndex + 1)]
     advanceTo(next)
@@ -169,6 +204,7 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
       try {
         const skipped: Array<'llm' | 'scm' | 'tracker'> = []
         if (state.steps.llm.status === 'skipped') skipped.push('llm')
+        if (state.steps.scm.status === 'skipped') skipped.push('scm')
         await markFirstRunComplete({ skipped })
       } catch (err) {
         // The wizard stays open: closing it here would claim setup was
@@ -196,7 +232,14 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
   const currentStepKind: StepKind | null =
     state.currentStep === 'llm' ? 'llm' : state.currentStep === 'scm' ? 'scm' : null
   const currentStepState = currentStepKind ? state.steps[currentStepKind] : null
-  const canAdvance = currentStepState ? currentStepState.status === 'passed' : true
+  const overseerReady =
+    state.overseer.apiKey.trim().length > 0 || Boolean(meta?.resolved.decisionConfigured)
+  const canAdvance =
+    state.currentStep === 'overseer'
+      ? overseerReady
+      : currentStepState
+        ? currentStepState.status === 'passed'
+        : true
 
   // ── Body ───────────────────────────────────────────────────────────────
   let body: ReactNode = null
@@ -230,6 +273,16 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
           />
         )
         break
+      case 'overseer':
+        body = (
+          <OverseerStep
+            state={state.overseer}
+            configured={Boolean(meta?.resolved.decisionConfigured)}
+            onKey={apiKey => dispatch({ type: 'setOverseerKey', apiKey })}
+            onMode={mode => dispatch({ type: 'setOverseerMode', mode })}
+          />
+        )
+        break
       case 'success':
         body = (
           <SuccessStep
@@ -247,14 +300,19 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
       ? {
           title: 'Welcome to Coro',
           description:
-            'Two steps — a model and a code host. About a minute. Anything else lives in Settings.',
+            'A model, a code host, and an optional faithfulness check. About a minute.',
         }
       : state.currentStep === 'scm'
         ? {
             title: 'First-time setup',
             description: 'Connect the code host Coro will clone from and open pull requests on.',
           }
-        : {
+        : state.currentStep === 'overseer'
+          ? {
+              title: 'First-time setup',
+              description: 'Optional. Add a Jev key if you have one. Skip it and Coro runs the same.',
+            }
+          : {
             title: 'You are set!',
             description: 'Recap of what you just configured and what to do next.',
           }
@@ -292,9 +350,9 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
         {!isFinal && !drawerOpen ? (
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-overlay/30 px-6 py-4">
             <div className="flex items-center gap-2">
-              {currentStepKind === 'llm' ? (
+              {currentStepKind === 'llm' || currentStepKind === 'scm' || state.currentStep === 'overseer' ? (
                 <Button type="button" variant="ghost" size="sm" onClick={handleSkip} disabled={advancing}>
-                  Skip for now
+                  {state.currentStep === 'overseer' ? "Skip — I don't have a key" : 'Skip for now'}
                 </Button>
               ) : null}
             </div>
@@ -327,6 +385,10 @@ export default function SetupWizard({ open, onOpenChange }: SetupWizardProps) {
                   <>
                     <Loader2 className="animate-spin" /> Saving…
                   </>
+                ) : state.currentStep === 'overseer' ? (
+                  <>
+                    Turn on Overseer <ArrowRight />
+                  </>
                 ) : (
                   <>
                     Continue <ArrowRight />
@@ -357,6 +419,7 @@ function Stepper({
   const labels: Array<{ id: WizardStepId; label: string; kind?: StepKind }> = [
     { id: 'llm', label: 'Model', kind: 'llm' },
     { id: 'scm', label: 'Code host', kind: 'scm' },
+    { id: 'overseer', label: 'Overseer' },
   ]
   const currentIdx = STEP_ORDER.indexOf(currentStep)
 
@@ -365,9 +428,18 @@ function Stepper({
       {labels.map(({ id, label, kind }) => {
         const idx = STEP_ORDER.indexOf(id)
         const current = idx === currentIdx
-        const passed = kind ? wizardState.steps[kind].status === 'passed' : idx < currentIdx
-        const skipped = kind ? wizardState.steps[kind].status === 'skipped' : false
-        const done = passed || skipped || idx < currentIdx
+        const passed = kind
+          ? wizardState.steps[kind].status === 'passed'
+          : id === 'overseer'
+            ? wizardState.overseer.status === 'passed'
+            : idx < currentIdx
+        const skipped = kind
+          ? wizardState.steps[kind].status === 'skipped'
+          : id === 'overseer'
+            ? wizardState.overseer.status === 'skipped'
+            : false
+        const optionalSkip = id === 'overseer' && skipped
+        const done = passed || (skipped && !optionalSkip) || idx < currentIdx
         return (
           <li
             key={id}
@@ -377,7 +449,7 @@ function Stepper({
                 ? 'border-accent-500/45 bg-accent-500/10 text-fg'
                 : passed
                   ? 'border-success-500/30 bg-success-500/8 text-success-300'
-                  : skipped
+                  : skipped && !optionalSkip
                     ? 'border-warning-500/25 bg-warning-500/8 text-warning-300'
                     : 'border-line bg-overlay/40',
             )}

@@ -1,10 +1,11 @@
-import { AlertTriangle, ArrowRight, Bot, CheckCircle2, FileStack, GitBranch, Layers, PlayCircle, Settings2, Sparkles } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Bot, CheckCircle2, Eye, FileStack, GitBranch, Layers, PlayCircle, Settings2, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '../../ui/button'
 import { cn } from '../../../lib/utils'
 import { HOME_PATH, PAGE_TITLES } from '../../../lib/run-labels'
 import { useSettings } from '../../../pages/Settings/SettingsContext'
 import type { WizardState } from '../wizard-state'
+import { decisionModeLabel } from '../../../lib/decision-mode'
 import { hasSkippedRequiredStep } from '../wizard-state'
 
 interface SuccessStepProps {
@@ -42,6 +43,7 @@ const STATUS_PILL = {
 } as const
 
 const LATER_CHIPS = [
+  { label: 'Overseer', to: '/settings#decision-layer' },
   { label: 'Issue tracker', to: '/settings#issue-tracker' },
   { label: 'MCP servers', to: '/settings#mcp' },
   { label: 'Guardrails', to: '/settings#guardrails' },
@@ -121,6 +123,10 @@ export default function SuccessStep({ wizardState, onFinish, onOpenScmStep }: Su
             </div>
           )
         })}
+        <OverseerRecap
+          on={wizardState.overseer.status === 'passed' || wizardState.overseer.configured}
+          mode={wizardState.overseer.mode}
+        />
       </div>
 
       {localMode ? (
@@ -210,6 +216,41 @@ export default function SuccessStep({ wizardState, onFinish, onOpenScmStep }: Su
           </Button>
         </div>
       )}
+    </div>
+  )
+}
+
+function OverseerRecap({
+  on,
+  mode,
+}: {
+  on: boolean
+  mode: 'shadow' | 'live'
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-overlay/40 px-4 py-3.5">
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="inline-flex size-9 items-center justify-center rounded-xl bg-overlay/60 ring-1 ring-line text-fg-muted">
+          <Eye className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-fg">Overseer</div>
+          <div className="truncate text-[12px] text-fg-muted">
+            {on ? `${decisionModeLabel(mode)} mode` : 'Optional — Coro runs without it'}
+          </div>
+        </div>
+      </div>
+      <span
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]',
+          on
+            ? 'border-success-500/30 bg-success-500/10 text-success-300'
+            : 'border-line bg-overlay/60 text-fg-subtle',
+        )}
+      >
+        {on ? <CheckCircle2 className="size-3.5" /> : <Eye className="size-3.5" />}
+        {on ? 'On' : 'Not added'}
+      </span>
     </div>
   )
 }

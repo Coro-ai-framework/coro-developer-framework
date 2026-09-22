@@ -4,10 +4,11 @@ import Field from '../../../components/forms/field'
 import SecretInput from '../../../components/settings/SecretInput'
 import SettingsNotice from '../../../components/settings/SettingsNotice'
 import SettingsSection from '../../../components/settings/SettingsSection'
+import { decisionModeLabel, MANAGE_SUMMARY, OBSERVE_SUMMARY } from '../../../lib/decision-mode'
 import { useSettings, type DecisionModeDraft } from '../SettingsContext'
 
 const SITES: Array<{ id: string; label: string; hint: string }> = [
-  { id: 'overseer', label: 'Overseer', hint: 'End-of-phase process check. Parks interactive jobs when live.' },
+  { id: 'overseer', label: 'Overseer', hint: 'End-of-phase faithfulness check. In Manage mode, can pause interactive jobs.' },
   { id: 'wake-gate', label: 'Wake gate', hint: 'Whether a webhook should resume a parked job. Plain-code bot filter runs first.' },
   { id: 'lane', label: 'Lane advisory', hint: 'Suggests a workflow-lane mismatch. Never auto-switches.' },
   { id: 'input-screen', label: 'Input screen', hint: 'Flags inbound comments that look like instruction overrides.' },
@@ -28,44 +29,42 @@ export default function DecisionLayerSection() {
 
   return (
     <SettingsSection
-      title="Decision layer"
-      description="Optional. An out-of-band structured-decision model that can oversee runs and classify a few narrow questions. Off by default; every call site fails open if the provider is unreachable."
+      title="Overseer"
+      description="Optional. Jev plus Coro is Overseer: a check that watches whether a job stays faithful to what you asked. Coro runs the same without it. If the provider is unreachable, the job continues."
     >
       {!configured && mode === 'off' ? (
-        <SettingsNotice title="Decision layer is off">
-          Jobs run exactly as they did before this setting existed. Turn on
-          shadow mode first — it records judgements without changing behaviour.
+        <SettingsNotice title="Overseer is off">
+          Jobs run without a faithfulness check. Observe mode records an on-track
+          rating and leaves the job alone. Manage mode can pause an interactive
+          job when that rating says the run has drifted.
         </SettingsNotice>
       ) : null}
 
       {mode === 'shadow' ? (
-        <SettingsNotice tone="accent" title="Shadow mode">
-          The layer is called and every answer is recorded on the job. Nothing
-          parks, skips, or denies because of those answers. Promote a site to
-          live only after you have compared a handful of recordings.
+        <SettingsNotice tone="accent" title="Observe mode">
+          {OBSERVE_SUMMARY} Nothing is paused, skipped, or denied because of the
+          check. Switch to Manage mode after the ratings look right.
         </SettingsNotice>
       ) : null}
 
       {mode === 'live' ? (
-        <SettingsNotice tone="accent" title="Live mode">
-          Sites inherit live unless you override them below. The overseer parks
-          interactive jobs when it flags; non-interactive jobs are flagged
-          only. Guardrail rules that use the decision check still have to be
-          added under Settings → Guardrails — none ship by default.
+        <SettingsNotice tone="accent" title="Manage mode">
+          {MANAGE_SUMMARY} Non-interactive jobs are marked only. Sites below
+          inherit Manage unless you override them.
         </SettingsNotice>
       ) : null}
 
       <Field
         label="Mode"
-        hint="Off is the default. Shadow records without acting. Live lets individual sites change behaviour."
+        hint="Observe records the rating. Manage lets that check pause an interactive job."
       >
         <Select
           value={draft.decisionMode}
           onChange={event => setDraft('decisionMode', event.target.value as DecisionModeDraft)}
         >
           <option value="off">Off</option>
-          <option value="shadow">Shadow (record only)</option>
-          <option value="live">Live</option>
+          <option value="shadow">Observe — record only</option>
+          <option value="live">Manage — can pause a job</option>
         </Select>
       </Field>
 
@@ -139,8 +138,7 @@ export default function DecisionLayerSection() {
         <div>
           <div className="text-sm font-medium text-fg">Per-site overrides</div>
           <p className="mt-0.5 text-xs text-fg-muted">
-            Inherit uses the global mode above. Use this to promote one site to
-            live while the rest stay in shadow.
+            Inherit uses the mode above. A site can stay in Observe while another is in Manage.
           </p>
         </div>
         {SITES.map(site => (
@@ -149,10 +147,10 @@ export default function DecisionLayerSection() {
               value={draft.decisionSites[site.id] ?? ''}
               onChange={event => setSite(site.id, event.target.value as '' | DecisionModeDraft)}
             >
-              <option value="">Inherit ({draft.decisionMode})</option>
+              <option value="">Inherit ({decisionModeLabel(draft.decisionMode)})</option>
               <option value="off">Off</option>
-              <option value="shadow">Shadow</option>
-              <option value="live">Live</option>
+              <option value="shadow">Observe</option>
+              <option value="live">Manage</option>
             </Select>
           </Field>
         ))}
