@@ -12,7 +12,6 @@ import {
 } from 'lucide-react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import ApprovalBox from '../components/ApprovalBox'
-import PhaseArtifactsPanel from '../components/jobs/PhaseArtifactsPanel'
 import CampaignView from '../components/CampaignView'
 import ConnectionIndicator from '../components/ConnectionIndicator'
 import InsightsPanel from '../components/InsightsPanel'
@@ -20,8 +19,9 @@ import JobChangesPanel, { hasActionablePrPreview } from '../components/job-chang
 import JobControlBar from '../components/JobControlBar'
 import LogViewer from '../components/LogViewer'
 import StatusBadge from '../components/StatusBadge'
-import WorkflowFlow, { WorkItemsBreakdown } from '../components/WorkflowFlow'
-import PhaseModelPanel from '../components/jobs/PhaseModelPanel'
+import RunNavigator from '../components/jobs/RunNavigator'
+import WorkItemsPanel from '../components/jobs/WorkItemsPanel'
+import RunContextPanel from '../components/jobs/RunContextPanel'
 import OnTrackIndicator from '../components/jobs/OnTrackIndicator'
 import RetrospectiveFindingsPanel from '../components/retrospective/findings-panel'
 import ErrorState from '../components/common/error-state'
@@ -31,15 +31,12 @@ import { Separator } from '../components/ui/separator'
 import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
-import { Badge } from '../components/ui/badge'
 import { cn } from '../lib/utils'
 import { formatDuration, formatPreciseCurrency, formatRelativeTime, formatTokens } from '../lib/format'
 import {
   deriveJobDescription,
   deriveJobTitle,
-  deriveWorkflowLabel,
   getRepoSlug,
-  getReviewers,
   getRunDetailPath,
   isCampaignJob,
 } from '../lib/jobs'
@@ -48,7 +45,6 @@ import {
   RUN_NOUN,
   RUNS_LIST_PATH,
   SUB_RUN_NOUN,
-  getParentRunBreadcrumbLabel,
   getParentRunId,
   getRunWorkflowTag,
   hostsSubRuns,
@@ -60,7 +56,7 @@ import { useFindingsBallot } from '../hooks/useRetrospectives'
 import { useJobStream } from '../hooks/useJobStream'
 import { useRegisterWorkspaceTab } from '../providers/workspace-tabs'
 import { deriveWorkflowPhases } from '../lib/workflow-phases'
-import type { Job, PhaseUsage, TokenUsage, WorkflowPhase } from '../types'
+import type { Job, PhaseUsage, TokenUsage } from '../types'
 import type { Tone } from '../lib/status'
 import {
   isPausableStatus,
@@ -137,19 +133,19 @@ function HeaderSummary({ job }: { job: Job }) {
   const parentRunId = getParentRunId(job)
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2">
       <Link
         to={RUNS_LIST_PATH}
-        className="inline-flex items-center gap-1.5 text-sm text-fg-muted transition-colors hover:text-fg"
+        className="inline-flex items-center gap-1.5 text-[13px] text-fg-muted transition-colors hover:text-fg"
       >
-        <ArrowLeft className="size-4" />
+        <ArrowLeft className="size-3.5" />
         {PAGE_TITLES.backToRuns}
       </Link>
 
-      <div className="space-y-3">
+      <div className="space-y-1.5">
         {parentRunId ? <SubRunParentIndicator parentRunId={parentRunId} /> : null}
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-[1.75rem] font-semibold tracking-tight text-fg sm:text-[2rem]">
+          <h1 className="min-w-0 text-xl font-semibold tracking-tight text-fg sm:text-2xl">
             {deriveJobTitle(job)}
           </h1>
           <StatusBadge status={job.status} awaitingEvent={job.awaitingEvent} />
@@ -410,88 +406,6 @@ function RateLimitBanner({ info }: { info: NonNullable<Job['rateLimitInfo']> }) 
   )
 }
 
-function WorkflowSnapshotCard({
-  job,
-  selectedPhase,
-  phases,
-  onSelectPhase,
-  onMutated,
-}: {
-  job: Job
-  selectedPhase: string | null
-  phases: WorkflowPhase[]
-  onSelectPhase: (phase: string) => void
-  onMutated: () => void
-}) {
-  const selectedPhaseName = selectedPhase ?? job.phase
-  const selectedPhaseArtifacts = (job.artifacts ?? []).filter(artifact => artifact.phase === selectedPhaseName)
-  const phaseUsage = (job.phaseUsage ?? []).find(phase => phase.phase === selectedPhaseName)
-
-  return (
-    <Card>
-      <CardHeader className="border-b border-line pb-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <CardTitle>{deriveWorkflowLabel(job.workflowPath)}</CardTitle>
-            <CardDescription>{phases.length} phases · click any to inspect</CardDescription>
-          </div>
-          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-            <span>spend</span>
-            <Badge variant="neutral" className="border-line bg-overlay text-fg tabular-nums">
-              {formatPreciseCurrency(job.tokenUsage?.totalCostUsd ?? 0)}
-            </Badge>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-5 pt-5">
-        <WorkflowFlow
-          job={job}
-          phases={phases}
-          selectedPhase={selectedPhase}
-          onSelectPhase={onSelectPhase}
-        />
-
-        <div className="rounded-2xl border border-line bg-overlay/30 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="space-y-0.5">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">
-                Selected phase
-              </div>
-              <div className="text-base font-semibold text-fg">{selectedPhaseName}</div>
-            </div>
-            {phaseUsage ? (
-              <div className="flex flex-wrap gap-4 text-[12px] text-fg-muted">
-                <span><span className="text-fg-subtle">in</span> <span className="tabular-nums text-fg">{formatTokens(phaseUsage.inputTokens)}</span></span>
-                <span><span className="text-fg-subtle">out</span> <span className="tabular-nums text-fg">{formatTokens(phaseUsage.outputTokens)}</span></span>
-                <span><span className="text-fg-subtle">turns</span> <span className="tabular-nums text-fg">{phaseUsage.numTurns}</span></span>
-                <span><span className="text-fg-subtle">duration</span> <span className="tabular-nums text-fg">{formatDuration(phaseUsage.durationMs)}</span></span>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="mt-3">
-            <PhaseArtifactsPanel
-              jobId={job.id}
-              artifacts={selectedPhaseArtifacts}
-              phaseName={selectedPhaseName}
-            />
-          </div>
-
-          <div className="mt-4">
-            <PhaseModelPanel job={job} phase={selectedPhaseName} onMutated={onMutated} />
-          </div>
-        </div>
-
-        <WorkItemsBreakdown
-          job={job}
-          phases={phases}
-          onSelectPhase={onSelectPhase}
-        />
-      </CardContent>
-    </Card>
-  )
-}
-
 function MessageComposer({
   title = 'Send message',
   description = 'Send additional guidance into the live run. Multiple messages are allowed.',
@@ -607,59 +521,6 @@ function JsonPanel({ label, data, defaultOpen = false }: { label: string; data: 
         </pre>
       ) : null}
     </div>
-  )
-}
-
-function ContextPanel({ job }: { job: Job }) {
-  const reviewers = getReviewers(job)
-  const repoSlug = getRepoSlug(job)
-  const parentRunId = getParentRunId(job)
-
-  const rows: Array<{ label: string; value: React.ReactNode }> = []
-  rows.push({ label: 'Workflow', value: getRunWorkflowTag(job) })
-  rows.push({ label: 'Phase', value: job.phase })
-  if (repoSlug) rows.push({ label: 'Repository', value: repoSlug })
-  if (reviewers.length > 0) rows.push({ label: 'Reviewers', value: reviewers.join(', ') })
-  if (parentRunId) {
-    rows.push({
-      label: getParentRunBreadcrumbLabel(),
-      value: (
-        <Link
-          to={getRunDetailPath({ id: parentRunId })}
-          className="font-mono text-accent-300 hover:text-accent-400"
-        >
-          {parentRunId}
-        </Link>
-      ),
-    })
-  }
-  if (job.prMappings && job.prMappings.length > 0) {
-    rows.push({
-      label: 'Pull requests',
-      value: (
-        <div className="flex items-center gap-1.5 text-fg-muted">
-          <GitPullRequest className="size-3.5" />
-          {job.prMappings.length} mapping{job.prMappings.length === 1 ? '' : 's'}
-        </div>
-      ),
-    })
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Context</CardTitle>
-        <CardDescription>{`${RUN_NOUN.singular} metadata and coordination signals.`}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm">
-        {rows.map((row, idx) => (
-          <div key={idx} className="flex items-baseline justify-between gap-3">
-            <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">{row.label}</span>
-            <span className="text-right text-fg">{row.value}</span>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
   )
 }
 
@@ -923,13 +784,14 @@ export default function JobDetail() {
 
   if (loading) {
     return (
-      <div className="space-y-5">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-20 w-full" />
-        <Skeleton className="h-12 w-full" />
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <Skeleton className="h-[520px] w-full" />
-          <Skeleton className="h-[420px] w-full" />
+      <div className="space-y-4">
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-72" />
+        <Skeleton className="h-28 w-full" />
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <Skeleton className="h-28 w-full xl:order-2" />
+          <Skeleton className="h-[480px] w-full xl:order-1" />
         </div>
       </div>
     )
@@ -976,7 +838,7 @@ export default function JobDetail() {
   const canSendFollowUp = job.status === 'complete'
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <HeaderSummary job={job} />
 
       <JobAlerts job={job} />
@@ -1003,19 +865,10 @@ export default function JobDetail() {
         onInteractiveChange={setInteractiveOverride}
       />
 
-      <WorkflowSnapshotCard
-        job={job}
-        selectedPhase={selectedPhase}
-        phases={workflowPhases}
-        onSelectPhase={setSelectedPhase}
-        onMutated={() => void refetch()}
-      />
-
-      {carriesSubRuns ? <CampaignView job={job} onMutated={() => void refetch()} /> : null}
-
-      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)}>
-        <TabsList>
-          <TabsTrigger value="activity">
+      <Tabs value={activeTab} onValueChange={value => setActiveTab(value as DetailTab)} className="gap-3">
+        <div className="overflow-x-auto">
+          <TabsList className="min-w-max">
+          <TabsTrigger value="activity" className="shrink-0">
             <Activity className="size-3.5 shrink-0" aria-hidden="true" />
             Activity
             {isRunningStatus(job.status) ? (
@@ -1025,7 +878,7 @@ export default function JobDetail() {
               />
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="changes">
+          <TabsTrigger value="changes" className="shrink-0">
             <GitPullRequest className="size-3.5 shrink-0" aria-hidden="true" />
             Changes
             {hasActionablePrPreview(job) ? (
@@ -1035,7 +888,7 @@ export default function JobDetail() {
               />
             ) : null}
           </TabsTrigger>
-          <TabsTrigger value="insights">
+          <TabsTrigger value="insights" className="shrink-0">
             <Lightbulb className="size-3.5 shrink-0" aria-hidden="true" />
             Insights
             {(() => {
@@ -1049,7 +902,7 @@ export default function JobDetail() {
               ) : null
             })()}
           </TabsTrigger>
-          <TabsTrigger value="diagnostics">
+          <TabsTrigger value="diagnostics" className="shrink-0">
             <Bug className="size-3.5 shrink-0" aria-hidden="true" />
             Diagnostics
             {(() => {
@@ -1061,50 +914,77 @@ export default function JobDetail() {
               ) : null
             })()}
           </TabsTrigger>
-        </TabsList>
+          </TabsList>
+        </div>
 
-        <TabsContent value="activity" className="space-y-5">
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-            <div className="space-y-5">
-              {isRetrospectiveJob(job) ? (
-                <RetrospectiveFindingsPanel
-                  retrospective={ballot.retrospective}
-                  error={ballot.error}
-                  approved={ballot.selecting ? ballot.approved : undefined}
-                  onToggleApproved={ballot.selecting ? ballot.toggle : undefined}
-                  selectionDisabled={isDevPaused}
-                />
-              ) : null}
+        <TabsContent value="activity" className="space-y-4">
+          <RunNavigator
+            job={job}
+            selectedPhase={selectedPhase}
+            phases={workflowPhases}
+            onSelectPhase={setSelectedPhase}
+            onMutated={() => void refetch()}
+          />
 
-              {job.status === 'awaiting-developer-input' && !isDevPaused ? (
-                <ApprovalBox
-                  job={job}
-                  onSend={postMessage}
-                  onCancel={handleCancel}
-                  onViewChanges={() => setActiveTab('changes')}
-                  approveMessage={ballot.approveMessage}
-                />
-              ) : null}
+          {carriesSubRuns ? <CampaignView job={job} onMutated={() => void refetch()} /> : null}
+          {isRetrospectiveJob(job) ? (
+            <RetrospectiveFindingsPanel
+              retrospective={ballot.retrospective}
+              error={ballot.error}
+              approved={ballot.selecting ? ballot.approved : undefined}
+              onToggleApproved={ballot.selecting ? ballot.toggle : undefined}
+              selectionDisabled={isDevPaused}
+            />
+          ) : null}
 
-              {canReplyToEscalation ? (
-                <MessageComposer
-                  title="Reply to escalation"
-                  description="Send guidance back into the parked run. Your reply will resume the current phase in the existing job."
-                  submitLabel="Send reply"
-                  value={messageText}
-                  onChange={setMessageText}
-                  onSend={handleSendMessage}
-                  error={messageError}
-                />
-              ) : null}
+          {job.status === 'awaiting-developer-input' && !isDevPaused ? (
+            <ApprovalBox
+              job={job}
+              onSend={postMessage}
+              onCancel={handleCancel}
+              onViewChanges={() => setActiveTab('changes')}
+              approveMessage={ballot.approveMessage}
+            />
+          ) : null}
 
+          {canReplyToEscalation ? (
+            <MessageComposer
+              title="Reply to escalation"
+              description="Send guidance back into the parked run. Your reply will resume the current phase in the existing job."
+              submitLabel="Send reply"
+              value={messageText}
+              onChange={setMessageText}
+              onSend={handleSendMessage}
+              error={messageError}
+            />
+          ) : null}
+
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="min-w-0 space-y-4 xl:order-2">
+              <WorkItemsPanel job={job} />
+              <RunContextPanel job={job} />
+            </div>
+
+            <div className="min-w-0 space-y-4 xl:order-1">
               <Card>
-                <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
+                <CardHeader className="gap-3 border-b border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
                     <CardTitle>Live console</CardTitle>
                     <CardDescription>
                       Streaming runner output, tool execution summaries, and developer interventions.
                     </CardDescription>
+                    {job.currentWorkItem ? (
+                      <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[12px] text-fg">
+                        <span
+                          className={cn(
+                            'size-1.5 shrink-0 rounded-full bg-accent-400',
+                            isRunningStatus(job.status) && 'animate-pulse-dot',
+                          )}
+                          aria-hidden
+                        />
+                        <span className="truncate">{job.currentWorkItem}</span>
+                      </div>
+                    ) : null}
                   </div>
                   <ConnectionIndicator status={connectionStatus} lastHeartbeat={lastHeartbeat} />
                 </CardHeader>
@@ -1143,10 +1023,6 @@ export default function JobDetail() {
                   textareaRef={messageRef}
                 />
               ) : null}
-            </div>
-
-            <div className="space-y-4">
-              <ContextPanel job={job} />
             </div>
           </div>
         </TabsContent>

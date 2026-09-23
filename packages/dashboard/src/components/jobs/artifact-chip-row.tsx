@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { ExternalLink, FileJson2, FileText, GitPullRequest, Link2 } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import type { Artifact } from '../../types'
 import { ArtifactPreviewModal } from '../ArtifactLink'
+import { ArtifactKindIcon } from './artifact-presentation'
+import { artifactExternalUrl, artifactFileLabel, isPullRequestArtifact } from '../../lib/job-detail-presentation'
 import { cn } from '../../lib/utils'
 
 interface ArtifactChipRowProps {
@@ -11,23 +13,7 @@ interface ArtifactChipRowProps {
 }
 
 const CHIP =
-  'inline-flex max-w-[190px] shrink-0 items-center gap-1.5 rounded-lg border border-line bg-overlay/40 px-2 py-1 text-[11px] text-fg-muted transition-colors hover:border-accent-500/35 hover:text-fg'
-
-function chipIcon(kind: string) {
-  if (kind === 'pr-link') return <GitPullRequest className="size-3 shrink-0" />
-  if (kind === 'url') return <Link2 className="size-3 shrink-0" />
-  if (kind.endsWith('-md') || kind === 'analysis-contract') {
-    return <FileText className="size-3 shrink-0" />
-  }
-  return <FileJson2 className="size-3 shrink-0" />
-}
-
-/** Filename when the artefact has one on disk, else its title. */
-function chipLabel(artifact: Artifact): string {
-  const path = artifact.data['path']
-  if (typeof path === 'string' && path.trim()) return path.split('/').pop() ?? path
-  return artifact.title
-}
+  'inline-flex max-w-[190px] shrink-0 items-center gap-1.5 rounded-lg border border-line bg-overlay/40 px-2 py-1 text-[11px] text-fg-muted transition-colors hover:border-accent-500/35 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60'
 
 /**
  * Every artefact a run has posted, as one scrollable row of files. Click
@@ -50,10 +36,15 @@ export default function ArtifactChipRow({ jobId, artifacts, className }: Artifac
           {artifacts.length} file{artifacts.length === 1 ? '' : 's'}
         </span>
         {artifacts.map(artifact => {
-          const url = typeof artifact.data['url'] === 'string' ? artifact.data['url'] : null
-          const label = chipLabel(artifact)
+          const url = isPullRequestArtifact(artifact.kind)
+            ? (typeof artifact.data['url'] === 'string' && artifact.data['url'].trim()
+              ? artifact.data['url'].trim()
+              : null)
+            : artifactExternalUrl(artifact)
+          if (isPullRequestArtifact(artifact.kind) && !url) return null
+          const label = artifactFileLabel(artifact)
 
-          if ((artifact.kind === 'pr-link' || artifact.kind === 'url') && url) {
+          if (url) {
             return (
               <a
                 key={artifact.id}
@@ -63,7 +54,7 @@ export default function ArtifactChipRow({ jobId, artifacts, className }: Artifac
                 className={CHIP}
                 title={`${artifact.title} — ${url}`}
               >
-                {chipIcon(artifact.kind)}
+                <ArtifactKindIcon kind={artifact.kind} className="size-3 shrink-0" />
                 <span className="truncate">{label}</span>
                 <ExternalLink className="size-3 shrink-0 opacity-60" />
               </a>
@@ -78,7 +69,7 @@ export default function ArtifactChipRow({ jobId, artifacts, className }: Artifac
               className={CHIP}
               title={`${artifact.title} (${artifact.kind})`}
             >
-              {chipIcon(artifact.kind)}
+              <ArtifactKindIcon kind={artifact.kind} className="size-3 shrink-0" />
               <span className="truncate">{label}</span>
             </button>
           )

@@ -96,7 +96,7 @@ export default function JobControlBar({
     <div className="space-y-3">
       <div
         className={cn(
-          'flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-overlay/40 px-3 py-2',
+          'flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-overlay/40 px-3 py-1.5',
           'sm:gap-3 sm:px-4',
         )}
       >
@@ -154,16 +154,12 @@ export default function JobControlBar({
             disabled={togglePending}
             ariaLabel="Toggle interactive mode"
           />
-          <div className="flex flex-col leading-tight">
-            <span className="text-[12px] font-medium text-fg">
-              {interactiveValue ? 'Interactive' : 'Autonomous'}
-            </span>
-            <span className="text-[11px] text-fg-subtle">
-              {interactiveValue
-                ? 'Will park at checkpoints'
-                : 'Will run end-to-end'}
-            </span>
-          </div>
+          <span
+            className="text-[12px] font-medium text-fg"
+            title={interactiveValue ? 'Will park at checkpoints' : 'Will run end-to-end'}
+          >
+            {interactiveValue ? 'Interactive' : 'Autonomous'}
+          </span>
         </div>
       </div>
 

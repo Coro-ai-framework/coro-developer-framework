@@ -5,10 +5,6 @@ import {
   Download,
   ExternalLink,
   Eye,
-  FileJson2,
-  FileText,
-  GitPullRequest,
-  Link2,
   PencilLine,
   RotateCcw,
   Save,
@@ -24,6 +20,7 @@ import {
   invalidateArtifactContent,
   saveArtifactContent,
 } from '../lib/artifact-content'
+import { artifactSummaryText } from '../lib/job-detail-presentation'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
@@ -33,6 +30,7 @@ import { Textarea } from './ui/textarea'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip'
 import { renderInlineMarkdown } from './intelligence/markdown-mini'
 import ErrorState from './common/error-state'
+import { ArtifactKindIcon } from './jobs/artifact-presentation'
 import { cn } from '../lib/utils'
 
 interface ArtifactLinkProps {
@@ -116,20 +114,12 @@ function ArtifactIcon({ kind, compact = false }: { kind: string; compact?: boole
     <div
       className={cn(
         'shrink-0 rounded-md border border-line bg-overlay text-fg-muted',
-        compact ? 'p-1.5 [&_svg]:size-3.5' : 'rounded-lg p-2',
+        compact ? 'p-1.5' : 'rounded-lg p-2',
       )}
     >
-      {kindIcon(kind)}
+      <ArtifactKindIcon kind={kind} className={compact ? 'size-3.5' : 'size-4'} />
     </div>
   )
-}
-
-function kindIcon(kind: string) {
-  if (kind === 'pr-link') return <GitPullRequest className="size-4" />
-  if (kind === 'url') return <Link2 className="size-4" />
-  if (kind.endsWith('-md')) return <FileText className="size-4" />
-  if (kind === 'analysis-contract') return <FileText className="size-4" />
-  return <FileJson2 className="size-4" />
 }
 
 function FileArtefactButton({
@@ -510,6 +500,31 @@ export function ArtifactPreviewModal({
 }) {
   if (artifactHasFileBody(artifact)) {
     return <ArtefactModal jobId={jobId} artifact={artifact} onClose={onClose} />
+  }
+
+  const summary = artifactSummaryText(artifact)
+  if (summary) {
+    const verdict = artifact.data['verdict']
+    return (
+      <Dialog open onOpenChange={open => { if (!open) onClose() }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{artifact.title}</DialogTitle>
+            <div className="text-sm text-fg-muted">
+              {artifact.kind} · posted {formatDateTime(artifact.createdAt)}
+            </div>
+          </DialogHeader>
+          <DialogBody>
+            <div className="space-y-3">
+              {typeof verdict === 'string' && verdict.trim() ? (
+                <Badge variant="neutral">{verdict.trim()}</Badge>
+              ) : null}
+              <p className="text-sm leading-6 text-fg">{summary}</p>
+            </div>
+          </DialogBody>
+        </DialogContent>
+      </Dialog>
+    )
   }
 
   return (

@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Loader2, Pencil, RotateCw, X } from 'lucide-react'
+import { useEffect, useId, useMemo, useState } from 'react'
+import { Loader2, RotateCw, Settings2, X } from 'lucide-react'
 import { Button } from '../ui/button'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 import ModelPicker from '../llm/ModelPicker'
 import { findModel, formatUsd, projectPhaseCostUsd } from '../llm/pricing'
 import { useExecutorPlugins } from '../llm/useExecutorPlugins'
 import { useProviderModels } from '../llm/useProviderModels'
+import { latestPhaseUsage } from '../../lib/job-detail-presentation'
+import { cn } from '../../lib/utils'
 import type { Job } from '../../types'
 
 /**
@@ -29,9 +31,10 @@ export interface PhaseModelPanelProps {
   phase: string
   /** Called after a successful PATCH/rerun so the parent can refetch. */
   onMutated: () => void
+  className?: string
 }
 
-export default function PhaseModelPanel({ job, phase, onMutated }: PhaseModelPanelProps) {
+export default function PhaseModelPanel({ job, phase, onMutated, className }: PhaseModelPanelProps) {
   const isLivePhase = phase === job.phase
   const isJobRunning = job.status === 'running'
   const override = job.phaseModelOverrides?.[phase]
@@ -54,29 +57,19 @@ export default function PhaseModelPanel({ job, phase, onMutated }: PhaseModelPan
   const [busy, setBusy] = useState<null | 'apply' | 'clear' | 'rerun'>(null)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
+  const editorId = useId()
 
-  // The model that was actually used the last time this phase ran (if
-  // any). Lets us display a concrete value in the collapsed state
-  // instead of vague "workflow default" copy.
-  const lastUsedModel = useMemo(() => {
-    const matches = (job.phaseUsage ?? []).filter(p => p.phase === phase)
-    return matches.length > 0 ? matches[matches.length - 1].model : null
-  }, [job.phaseUsage, phase])
-
-  // Most-recent recorded usage for this phase — feeds the cost-delta
-  // preview that appears under the picker when the developer is
-  // considering a different model for an already-run phase.
-  const lastUsage = useMemo(() => {
-    const matches = (job.phaseUsage ?? []).filter(p => p.phase === phase)
-    return matches.length > 0 ? matches[matches.length - 1] : null
-  }, [job.phaseUsage, phase])
+  // Most recent execution of this phase. Repeated phases append, so the
+  // last match is the model and workload a re-run would be compared with.
+  const lastUsage = latestPhaseUsage(job.phaseUsage, phase)
+  const lastUsedModel = lastUsage?.model ?? null
 
   // Cost delta: project the recorded workload against the candidate
   // pricing and compare to the actually-billed cost. Only meaningful
   // when (a) the phase has run at least once and (b) the candidate
   // model has pricing published.
   const draftDescriptor = findModel(modelsByProvider, draft.provider, draft.model)
-  const projectedCost = projectPhaseCostUsd(draftDescriptor, lastUsage ?? undefined)
+  const projectedCost = projectPhaseCostUsd(draftDescriptor, lastUsage)
   const originalCost = lastUsage?.costUsd ?? null
   const deltaCost
     = projectedCost != null && originalCost != null ? projectedCost - originalCost : null
@@ -132,38 +125,44 @@ export default function PhaseModelPanel({ job, phase, onMutated }: PhaseModelPan
       ? 'last-used'
       : 'default'
 
+  const closeEditor = () => {
+    setEditing(false)
+    setError(null)
+    setDraft({ provider: override?.provider ?? '', model: override?.model ?? '' })
+  }
+
   return (
-    <div className="space-y-2">
-      {/* Collapsed summary row — single line, no extra chrome. */}
-      <div className="flex items-center gap-2 text-[12px]">
-        <span className="text-[11px] uppercase tracking-[0.14em] text-fg-subtle">Model</span>
-        <span className="font-mono text-fg">
-          {displayModel ?? <span className="text-fg-subtle">(workflow default)</span>}
+    <>
+      <button
+        type="button"
+        aria-expanded={editing}
+        aria-controls={editing ? editorId : undefined}
+        onClick={() => {
+          if (editing) closeEditor()
+          else setEditing(true)
+        }}
+        className={cn(
+          'inline-flex h-8 w-full max-w-full items-center gap-2 rounded-xl border border-line bg-canvas/50 px-2.5 text-left transition-colors hover:border-line-strong hover:bg-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 sm:w-auto',
+          className,
+        )}
+      >
+        <Settings2 className="size-3.5 shrink-0 text-fg-muted" aria-hidden />
+        <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-fg-subtle">Model</span>
+        <span className="min-w-0 truncate font-mono text-[12px] text-fg">
+          {displayModel ?? <span className="font-sans text-fg-subtle">(workflow default)</span>}
         </span>
         {displaySource === 'override' ? (
-          <span className="rounded-full border border-info-400/40 bg-info-500/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-info-200">
+          <span className="shrink-0 rounded-full border border-accent-400/40 bg-accent-500/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-accent-300">
             override
           </span>
         ) : displaySource === 'last-used' ? (
-          <span className="text-[10px] uppercase tracking-wide text-fg-subtle">last run</span>
+          <span className="shrink-0 text-[10px] uppercase tracking-wide text-fg-subtle">last run</span>
         ) : null}
-        {!editing ? (
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-fg-muted transition-colors hover:bg-overlay hover:text-fg"
-            aria-label="Change model for this phase"
-            title="Change model for this phase"
-          >
-            <Pencil className="size-3" />
-            Change
-          </button>
-        ) : null}
-      </div>
+        <span className="ml-auto shrink-0 text-[11px] font-medium text-accent-300 sm:ml-1">Change</span>
+      </button>
 
-      {/* Expanded editor — only mounted when the developer wants it. */}
       {editing ? (
-        <div className="space-y-2 rounded-xl border border-line bg-canvas/40 p-3">
+        <div id={editorId} className="w-full basis-full space-y-2 rounded-xl border border-line bg-canvas/40 p-3">
           {providersLoading ? (
             <div className="flex items-center gap-2 text-[12px] text-fg-subtle">
               <Loader2 className="size-3 animate-spin" /> Loading providers…
@@ -223,11 +222,7 @@ export default function PhaseModelPanel({ job, phase, onMutated }: PhaseModelPan
               </Button>
               <button
                 type="button"
-                onClick={() => {
-                  setEditing(false)
-                  setError(null)
-                  setDraft({ provider: override?.provider ?? '', model: override?.model ?? '' })
-                }}
+                onClick={closeEditor}
                 className="text-[11px] text-fg-subtle hover:text-fg"
               >
                 Cancel
@@ -274,6 +269,6 @@ export default function PhaseModelPanel({ job, phase, onMutated }: PhaseModelPan
           ) : null}
         </div>
       ) : null}
-    </div>
+    </>
   )
 }
