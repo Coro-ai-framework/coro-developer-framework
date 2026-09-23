@@ -21,11 +21,24 @@
       }
     },
     {
+      "id": "claude-opus-5-5",
+      "displayName": "Claude Opus 5.5",
+      "contextTokens": 1000000,
+      "tier": "planning",
+      "isDefault": true,
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 4,
+        "outputPerMTokens": 20,
+        "cacheReadPerMTokens": 0.2,
+        "cacheCreationPerMTokens": 5
+      }
+    },
+    {
       "id": "claude-opus-5",
       "displayName": "Claude Opus 5",
       "contextTokens": 1000000,
       "tier": "planning",
-      "isDefault": true,
       "supportsThinking": true,
       "pricing": {
         "inputPerMTokens": 5,
