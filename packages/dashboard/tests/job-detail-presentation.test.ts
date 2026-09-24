@@ -140,6 +140,7 @@ describe('linkPullRequests', () => {
       title: 'Address review of PR 27',
       url: 'https://github.com/acme/repo/pull/28',
       workItem: 'governance-and-helm-docs',
+      merged: false,
     }])
   })
 
@@ -152,6 +153,31 @@ describe('linkPullRequests', () => {
       data: { url: 'https://github.com/acme/repo/pull/9', prId: 9, title: 'Unrelated change' },
     })
     expect(linkPullRequests({ artifacts: [draft, orphan], workItems: names })).toEqual([])
+  })
+
+  it('marks a pull request merged when its mapping has mergedAt', () => {
+    const link = artifact({
+      id: 'link',
+      kind: 'pr-link',
+      title: 'PR #27: governance-and-helm-docs',
+      data: {
+        title: 'Supersede ADR',
+        url: 'https://github.com/acme/repo/pull/27',
+        prId: 27,
+      },
+    })
+    const [row] = linkPullRequests({
+      artifacts: [link],
+      workItems: names,
+      prMappings: [{
+        prId: 27,
+        workItem: 'governance-and-helm-docs',
+        repoSlug: 'acme/repo',
+        openedAt: '2026-01-01T00:00:00.000Z',
+        mergedAt: '2026-01-02T00:00:00.000Z',
+      }],
+    })
+    expect(row?.merged).toBe(true)
   })
 })
 

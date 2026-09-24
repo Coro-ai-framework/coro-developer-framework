@@ -121,6 +121,8 @@ export interface LinkedPullRequest {
   title: string
   url: string
   workItem: string
+  /** True when `prMappings` records a `mergedAt` for this pull request id. */
+  merged: boolean
 }
 
 /**
@@ -147,12 +149,15 @@ export function linkPullRequests(input: {
     if (!url) continue
     const workItem = assignPullRequest(artifact, previews, names, mappings)
     if (!workItem) continue
+    const prId = numericId(artifact.data['prId'])
+    const mapping = prId == null ? undefined : mappings.find(item => item.prId === prId)
     linked.push({
       artifactId: artifact.id,
-      prId: numericId(artifact.data['prId']),
+      prId,
       title: pullRequestTitle(artifact),
       url,
       workItem,
+      merged: Boolean(mapping?.mergedAt),
     })
   }
 

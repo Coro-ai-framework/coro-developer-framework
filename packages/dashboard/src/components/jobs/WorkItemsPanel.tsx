@@ -37,7 +37,23 @@ function StatusMark({ status, label }: { status: WorkItem['status']; label: Work
 
 function prLabel(pullRequest: LinkedPullRequest): string {
   const number = pullRequest.prId != null ? `#${pullRequest.prId}: ` : ''
-  return `Pull request ${number}${pullRequest.title}`
+  const merged = pullRequest.merged ? ', merged' : ''
+  return `Pull request ${number}${pullRequest.title}${merged}`
+}
+
+function PullRequestMark({ merged }: { merged: boolean }) {
+  return (
+    <span className="relative inline-flex">
+      <GitPullRequest className="size-3.5" aria-hidden />
+      {merged ? (
+        <Check
+          className="absolute -bottom-1 -left-1 size-2 rounded-full bg-panel text-success-400"
+          strokeWidth={3.5}
+          aria-hidden
+        />
+      ) : null}
+    </span>
+  )
 }
 
 export default function WorkItemsPanel({ job }: { job: Job }) {
@@ -125,7 +141,7 @@ export default function WorkItemsPanel({ job }: { job: Job }) {
                           aria-label={prLabel(pullRequest)}
                           className="inline-flex size-6 items-center justify-center rounded-md text-fg-muted hover:bg-overlay hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
                         >
-                          <GitPullRequest className="size-3.5" aria-hidden />
+                          <PullRequestMark merged={pullRequest.merged} />
                         </a>
                       ))}
                     </span>
@@ -144,7 +160,9 @@ export default function WorkItemsPanel({ job }: { job: Job }) {
                             rel="noopener noreferrer"
                             className="flex items-start gap-2 rounded-lg px-2 py-1.5 text-[12px] leading-snug text-fg hover:bg-overlay/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
                           >
-                            <GitPullRequest className="mt-0.5 size-3.5 shrink-0 text-fg-muted" aria-hidden />
+                            <span className="mt-0.5 shrink-0 text-fg-muted">
+                              <PullRequestMark merged={pullRequest.merged} />
+                            </span>
                             <span className="min-w-0 flex-1 break-words">
                               {pullRequest.prId != null ? (
                                 <span className="mr-1.5 font-mono text-fg-subtle">#{pullRequest.prId}</span>
