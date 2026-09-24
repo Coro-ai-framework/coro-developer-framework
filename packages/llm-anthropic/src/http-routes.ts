@@ -32,7 +32,7 @@ export function registerAnthropicHttpRoutes(ctx: PluginHttpRoutesContext): void 
     subscriptionType?: string
     tokenSource?: string
     apiKeySource?: string
-    apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'mantle'
+    apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'anthropicGoogleCloud' | 'mantle' | 'gateway'
   }) {
     // A fresh login means any earlier refresh failure is stale — drop the
     // cooldown so the next probe uses the new session immediately.

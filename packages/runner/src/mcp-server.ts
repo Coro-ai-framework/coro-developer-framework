@@ -64,6 +64,9 @@ export function createCoroMcpServer(
 
   return createSdkMcpServer({
     name: 'coro',
+    // Keep mcp__coro__* in the turn-1 prompt. SDK 0.3 defers MCP tools
+    // behind tool search / non-blocking connect unless alwaysLoad is set.
+    alwaysLoad: true,
     tools: [
       ...extensionTools,
 

@@ -269,7 +269,7 @@ Based on the message:
 
 ## Banned tools — do NOT use
 
-- **`TodoWrite` / `TodoRead`** — Do NOT use the built-in todo tool. Use `mcp__coro__log` to report progress instead. The todo tool is a local scratch pad that no one monitors. Developers follow your work via `coro logs`, which reads from `mcp__coro__log`.
+- **`TodoWrite` / `TodoRead` / `TaskCreate` / `TaskUpdate` / `TaskGet` / `TaskList`** — Do NOT use the built-in todo/task-list tools. Use `mcp__coro__log` to report progress instead. Those tools are a local scratch pad that no one monitors. Developers follow your work via `coro logs`, which reads from `mcp__coro__log`. The native `Task` / Agent tool for declared workflow subagents is still allowed.
 
 ## Self-improvement rule
 

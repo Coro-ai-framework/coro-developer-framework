@@ -105,7 +105,7 @@ function buildChatMcpServer(
   const tools = req.tools ?? []
   const runTool = req.runTool
   if (tools.length === 0 || !runTool) {
-    return createSdkMcpServer({ name: 'coro', tools: [] })
+    return createSdkMcpServer({ name: 'coro', tools: [], alwaysLoad: true })
   }
 
   const mcpTools = tools.map(chatTool =>
@@ -144,7 +144,7 @@ function buildChatMcpServer(
     ),
   )
 
-  return createSdkMcpServer({ name: 'coro', tools: mcpTools })
+  return createSdkMcpServer({ name: 'coro', tools: mcpTools, alwaysLoad: true })
 }
 
 function resolveChatWorkRoot(req: ChatRequest): { cwd: string; intelligenceDir: string } {

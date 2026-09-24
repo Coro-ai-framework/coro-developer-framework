@@ -212,7 +212,7 @@ const anthropicConfigSchema = z.object({
     subscriptionType: z.string().optional(),
     tokenSource: z.string().optional(),
     apiKeySource: z.string().optional(),
-    apiProvider: z.enum(['firstParty', 'bedrock', 'vertex', 'foundry', 'anthropicAws', 'mantle']).optional(),
+    apiProvider: z.enum(['firstParty', 'bedrock', 'vertex', 'foundry', 'anthropicAws', 'anthropicGoogleCloud', 'mantle', 'gateway']).optional(),
   }).partial().optional(),
 }).passthrough()
 
@@ -846,6 +846,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       hooks,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      // Native SDK builds default to Bash find/grep and omit dedicated
+      // Grep/Glob tools. Workflows and agent MDs still name Grep/Glob, so
+      // listing them in allowedTools re-registers them without replacing
+      // the rest of the built-in tool set.
+      allowedTools: ['Grep', 'Glob'],
       // Disable the Claude Code OS sandbox. As of claude-agent-sdk >=0.2.x the
       // CLI defaults to OS-level Bash sandboxing on macOS, which routes all
       // outbound traffic through a per-session proxy with a managed domain
@@ -873,6 +878,10 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       env: {
         ...process.env,
         ...buildAnthropicAuthEnv(this.auth),
+        // SDK 0.3 connects MCP servers in the background and can start
+        // turn 1 with status "pending". Coro's mcp__coro__* tools must
+        // be present from the first turn, so restore the 0.2 wait.
+        MCP_CONNECTION_NONBLOCKING: '0',
         BB_WORKSPACE: this.settings.bitbucket.workspace,
         BB_CODER_APP_PASSWORD: this.settings.bitbucket.coderAccount.appPassword,
         BB_BASE_URL: 'https://bitbucket.org',

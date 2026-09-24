@@ -16,7 +16,7 @@ export interface ClaudeAccountInfo {
   subscriptionType?: string
   tokenSource?: string
   apiKeySource?: string
-  apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'mantle'
+  apiProvider?: 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'anthropicAws' | 'anthropicGoogleCloud' | 'mantle' | 'gateway'
 }
 
 export interface ClaudeAuthConfig {
