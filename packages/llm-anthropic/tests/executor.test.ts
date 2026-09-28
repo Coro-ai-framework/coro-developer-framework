@@ -194,6 +194,28 @@ describe('AnthropicExecutor — supports()', () => {
   })
 })
 
+describe('AnthropicExecutor — calculateCost()', () => {
+  const ex = createAnthropicExecutor({
+    settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
+    logger: silentLogger,
+  })
+  const oneMillionEach = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheReadInputTokens: 1_000_000,
+    cacheCreationInputTokens: 1_000_000,
+  }
+
+  it('prices a catalogued model from its models.json pricing row', () => {
+    // claude-opus-5-5: 4 in / 20 out / 0.2 cache read / 5 cache write per MTok.
+    expect(ex.calculateCost('claude-opus-5-5', oneMillionEach)).toBeCloseTo(4 + 20 + 0.2 + 5, 8)
+  })
+
+  it('prices a model it has no pricing row for at 0', () => {
+    expect(ex.calculateCost('gpt-4o-mini', oneMillionEach)).toBe(0)
+  })
+})
+
 describe('AnthropicExecutor — buildSdkAgentsFromRequest', () => {
   // Regression guard: the SDK's `AgentDefinition.mcpServers` is an ARRAY
   // of server names (or inline records), NOT a `Record<name, config>`

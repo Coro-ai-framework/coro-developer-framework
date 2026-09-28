@@ -79,6 +79,7 @@ import {
   ANTHROPIC_MODELS,
   ANTHROPIC_PLUGIN_ID,
   anthropicDefaultAliases,
+  calculateAnthropicCostUsd,
   supportsAnthropicModel,
 } from './models'
 import type { PhaseErrorClass } from '@coro-ai/plugin-sdk'
@@ -710,6 +711,15 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    */
   supports(model: string): boolean {
     return supportsAnthropicModel(model)
+  }
+
+  /**
+   * Catalogue-priced estimate. The runner normally books the SDK's own
+   * `total_cost_usd`; it calls this only when a phase run ends before
+   * that figure arrives (e.g. a signal breaks the stream).
+   */
+  calculateCost(model: string, usage: NormalizedTokenUsage): number {
+    return calculateAnthropicCostUsd(model, usage)
   }
 
   classifyPhaseError(err: unknown): PhaseErrorClass | null {

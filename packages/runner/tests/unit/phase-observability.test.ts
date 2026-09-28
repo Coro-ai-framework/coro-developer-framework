@@ -3,7 +3,6 @@ import {
   attributionForIncoming,
   classifyToolError,
   derivePhaseAttributions,
-  estimatePhaseCostUsd,
   recordToolCall,
   recordToolResult,
   sessionCostBaseline,
@@ -67,6 +66,26 @@ describe('derivePhaseAttributions', () => {
       ],
     )).toEqual(['work-item', 'work-item'])
   })
+
+  it('repairs a post-park run that an older runner recorded as rework', () => {
+    // Snapshots written before this rule carry `attribution: 'rework'`
+    // at append time; re-derivation must still reclassify them.
+    expect(derivePhaseAttributions(
+      [
+        { phase: 'review', workItem: 'w', attribution: 'work-item', parkReason: 'pr:approved' },
+        { phase: 'review', workItem: 'w', attribution: 'rework' },
+      ],
+    )).toEqual(['work-item', 'checkpoint-resume'])
+  })
+
+  it('keeps a recorded rework that does not follow a park', () => {
+    expect(derivePhaseAttributions(
+      [
+        { phase: 'review', workItem: 'w', attribution: 'work-item' },
+        { phase: 'review', workItem: 'w', attribution: 'rework' },
+      ],
+    )).toEqual(['work-item', 'rework'])
+  })
 })
 
 describe('attributionForIncoming', () => {
@@ -108,26 +127,19 @@ describe('sessionCostBaseline', () => {
       4.206,
     )).toBeCloseTo(0.006, 8)
   })
-})
 
-describe('estimatePhaseCostUsd', () => {
-  const tokens = {
-    inputTokens: 1_000_000,
-    outputTokens: 1_000_000,
-    cacheReadInputTokens: 1_000_000,
-    cacheCreationInputTokens: 1_000_000,
-  }
-
-  it('prices a known Claude family from its per-MTok rates', () => {
-    expect(estimatePhaseCostUsd(tokens, 'claude-sonnet-4-5')).toBeCloseTo(3 + 15 + 0.3 + 3.75, 8)
-  })
-
-  it('matches the family by substring, case-insensitively', () => {
-    expect(estimatePhaseCostUsd(tokens, 'Claude-Opus-4-1')).toBeCloseTo(15 + 75 + 1.5 + 18.75, 8)
-  })
-
-  it('prices an unrecognised model family at 0 rather than guessing', () => {
-    expect(estimatePhaseCostUsd(tokens, 'gpt-5-codex')).toBe(0)
+  it('falls back to the job-level total when any prior snapshot lacks a sessionId', () => {
+    // Partially migrated job: the unlabelled run may belong to the
+    // resumed session, so a sum over labelled runs alone would undercount
+    // it and let the next cumulative-cost run absorb it again.
+    expect(sessionCostBaseline(
+      [
+        { costUsd: 1.5 },
+        { costUsd: 0.25, sessionId: 'sess-a' },
+      ],
+      'sess-a',
+      1.75,
+    )).toBe(1.75)
   })
 })
 

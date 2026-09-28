@@ -93,7 +93,6 @@ import {
 import {
   buildPhaseSnapshot,
   checkpointPhaseSet,
-  estimatePhaseCostUsd,
   recordToolCall,
   recordToolResult,
   sessionCostBaseline,
@@ -1214,10 +1213,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // SDK's result event was consumed. Book the cost this run actually
       // incurred rather than $0: prefer the executor's own cumulative
       // report (reconciled against this session's baseline, same as the
-      // normal-ending path), and fall back to a tokens×price estimate
-      // when the executor never reported a cost at all. A $0 booking here
-      // either loses the cost or lets a later run on this session absorb
-      // it under a different phase.
+      // normal-ending path), and fall back to the executor's own pricing
+      // (`calculateCost`) when it never reported a cost at all. A $0
+      // booking here either loses the cost or lets a later run on this
+      // session absorb it under a different phase.
       if (!phaseSnapshotRecorded) {
         const fallbackCostUsd = typeof lastReportedCostUsd === 'number'
           ? derivePhaseCostUsd({
@@ -1226,7 +1225,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               prePhaseCostUsd: prePhaseCostBaseline,
               resumedSessionId: resumeSessionId,
             })
-          : estimatePhaseCostUsd(phaseTokens, model)
+          : (executor.calculateCost?.(model, phaseTokens) ?? 0)
         phaseTokens.totalCostUsd = fallbackCostUsd
 
         const phaseSnapshot = buildPhaseSnapshot({

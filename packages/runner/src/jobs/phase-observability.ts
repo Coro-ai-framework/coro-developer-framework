@@ -90,15 +90,19 @@ export function derivePhaseAttributions(
       && Boolean(previous?.parkReason)
 
     let attribution: PhaseRunAttribution
-    if (isPhaseRunAttribution(usage.attribution)) {
+    if (followsPark && seen.has(key) && (usage.attribution === undefined || usage.attribution === 'rework')) {
+      // Checked before a recorded value on purpose: runners before this
+      // rule stamped the post-park run as `rework` at append time, and
+      // history prefers recorded values, so those snapshots would never
+      // be repaired otherwise. Only `rework` is overridden.
+      attribution = 'checkpoint-resume'
+    } else if (isPhaseRunAttribution(usage.attribution)) {
       attribution = usage.attribution
       seen.add(key)
       if (attribution === 'checkpoint-resume') resumed.add(key)
     } else if (!seen.has(key)) {
       seen.add(key)
       attribution = 'work-item'
-    } else if (followsPark) {
-      attribution = 'checkpoint-resume'
     } else if (checkpointPhases?.has(usage.phase) && !resumed.has(key)) {
       resumed.add(key)
       attribution = 'checkpoint-resume'
@@ -170,66 +174,26 @@ export function buildPhaseSnapshot(args: BuildPhaseSnapshotArgs): PhaseUsage {
 
 /**
  * Baseline cost already booked for the session a resumed run belongs to.
- * Claude Code's reported `total_cost_usd` is cumulative for the whole
- * session, not just this phase, so a resumed run must subtract only what
- * its *own session* already booked — including runs that themselves
- * booked $0 (a signal-terminated run whose cost was recovered by
- * `estimatePhaseCostUsd` or a genuine no-op). Summing by `sessionId`
- * rather than reading the job-level total keeps a $0 run from silently
- * moving its cost onto whichever run happens to end normally next.
+ * The executor's reported cumulative cost covers the whole session, not
+ * just this phase, so a resumed run must subtract only what its *own
+ * session* already booked — including runs that booked $0. Summing by
+ * `sessionId` rather than reading the job-level total keeps a $0 run
+ * from silently moving its cost onto whichever run ends normally next.
  *
- * Falls back to the supplied job-level total when no prior snapshot
- * carries *this* `sessionId` (jobs persisted before this field existed,
- * or a session whose earlier runs predate a runner upgrade that adds
- * it) — the same coarser baseline the runner used previously. Once every
- * run in the session postdates the field, the sum is exact again.
+ * Falls back to the supplied job-level total — the baseline the runner
+ * used previously — whenever any prior snapshot lacks `sessionId`
+ * (persisted before the field existed): such a run may belong to the
+ * resumed session, so a partial session sum could undercount it.
  */
 export function sessionCostBaseline(
   priorUsage: ReadonlyArray<Pick<PhaseUsage, 'costUsd' | 'sessionId'>>,
   sessionId: string | undefined,
   fallbackJobTotalCostUsd: number,
 ): number {
-  if (!sessionId) return fallbackJobTotalCostUsd
-  const sessionEntries = priorUsage.filter(entry => entry.sessionId === sessionId)
-  if (sessionEntries.length === 0) return fallbackJobTotalCostUsd
-  return sessionEntries.reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0)
-}
-
-/**
- * Coarse USD-per-million-token pricing, used only as a last resort when a
- * phase run is cut off by a signal (`await_event` / `goto_phase` /
- * `escalate`) before the executor's authoritative cost frame arrives.
- * A plausible estimated cost beats a false $0 that either gets lost or
- * silently lands on a later run. Unknown model families price at $0
- * rather than guess — this is a fallback, not a billing source of truth.
- */
-const CLAUDE_PRICE_PER_MTOK: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  opus: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
-  sonnet: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  haiku: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
-}
-
-function claudeModelFamily(model: string): keyof typeof CLAUDE_PRICE_PER_MTOK | undefined {
-  const lower = model.toLowerCase()
-  if (lower.includes('opus')) return 'opus'
-  if (lower.includes('sonnet')) return 'sonnet'
-  if (lower.includes('haiku')) return 'haiku'
-  return undefined
-}
-
-export function estimatePhaseCostUsd(
-  tokens: Pick<TokenUsage, 'inputTokens' | 'outputTokens' | 'cacheReadInputTokens' | 'cacheCreationInputTokens'>,
-  model: string,
-): number {
-  const family = claudeModelFamily(model)
-  if (!family) return 0
-  const price = CLAUDE_PRICE_PER_MTOK[family]
-  const usd =
-    (tokens.inputTokens / 1_000_000) * price.input
-    + (tokens.outputTokens / 1_000_000) * price.output
-    + (tokens.cacheReadInputTokens / 1_000_000) * price.cacheRead
-    + (tokens.cacheCreationInputTokens / 1_000_000) * price.cacheWrite
-  return Math.round(usd * 1e6) / 1e6
+  if (!sessionId || priorUsage.some(entry => !entry.sessionId)) return fallbackJobTotalCostUsd
+  return priorUsage
+    .filter(entry => entry.sessionId === sessionId)
+    .reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0)
 }
 
 export function stampParkReason(

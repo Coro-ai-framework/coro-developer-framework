@@ -18,7 +18,6 @@ import {
   STATUS_AWAITING_DEVELOPER_INPUT,
 } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
-import { estimatePhaseCostUsd } from '../../src/jobs/phase-observability'
 import type { Job } from '@coro-ai/cloud-protocol'
 import type { WorkflowConfig } from '../../src/workflow-parser'
 import type { Settings } from '../../src/config/settings'
@@ -1359,10 +1358,9 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(alphaUsage!.cacheReadInputTokens).toBe(500)
     expect(alphaUsage!.numTurns).toBe(1)
     // No SDK result event ever arrived, so there is no reported cost to
-    // reconcile — the fallback booking then estimates from tokens × model
-    // price. 'plan-model' (this fixture's alias target) isn't a priced
-    // Claude family, so the estimate is conservatively 0 — see the sonnet
-    // fixture below for the non-zero case.
+    // reconcile, and this stub executor does not implement
+    // `calculateCost` — so the fallback books 0. See the next test for an
+    // executor that prices its own tokens.
     expect(alphaUsage!.costUsd).toBe(0)
     expect(alphaUsage!.durationMs).toBeGreaterThanOrEqual(0)
     // The run still gets a sessionId, even though it never reached `done`,
@@ -1371,42 +1369,25 @@ describe('runJob (mocked Agent SDK query)', () => {
   })
 
   it('books an estimated cost for a signal-terminated run, and a later run resuming the same session books only its own delta', async () => {
-    // 'plan-model' has no priced family, so this test overrides the
-    // planning alias with a recognisable Claude family name to exercise
-    // the tokens×price fallback end to end.
-    const sonnetCtx: RunnerContext = {
-      ...ctx,
-      settings: {
-        ...ctx.settings,
-        llm: {
-          ...ctx.settings.llm,
-          aliases: {
-            ...ctx.settings.llm.aliases,
-            planning: { provider: 'anthropic', model: 'claude-sonnet-mock' },
-          },
-        },
-      },
-    }
-
     const alphaTokens = {
       inputTokens: 1000,
       outputTokens: 200,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
     }
-    const expectedAlphaCost = estimatePhaseCostUsd(alphaTokens, 'claude-sonnet-mock')
-    expect(expectedAlphaCost).toBeGreaterThan(0)
+    const expectedAlphaCost = 0.006
     const betaOwnCost = 0.05
+    // Pricing belongs to the executor adapter, not the runner: the
+    // runner asks the executor to price the tokens it never got a cost for.
+    const calculateCost = vi.fn().mockReturnValue(expectedAlphaCost)
 
     let call = 0
-    await runWithStubExecutor(
-      makeJob({ phase: 'alpha' }),
-      sonnetCtx,
+    const bundle = makeStubExecutor(
       async function* (_req, h) {
         call++
         if (call === 1) {
           // goto_phase breaks the stream before any cost frame arrives —
-          // the same shape as the fixture above, but with a priced model.
+          // the same shape as the fixture above.
           yield { type: 'usage', tokens: alphaTokens }
           h.signals.nextPhase = 'beta'
           yield { type: 'session_start', sessionId: 'shared-sess' }
@@ -1432,8 +1413,17 @@ describe('runJob (mocked Agent SDK query)', () => {
           }
         }
       },
-      { workflowConfigOverride: workflowTwoPhase },
     )
+    ;(bundle.executor as unknown as { calculateCost: typeof calculateCost }).calculateCost = calculateCost
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      workflowConfigOverride: workflowTwoPhase,
+      executorImpl: bundle.executor,
+      onPhaseExecutorBoot: bundle.bootHook,
+    })
+
+    // Only the signal-ended run needs a price; the resumed run had one.
+    expect(calculateCost).toHaveBeenCalledTimes(1)
+    expect(calculateCost).toHaveBeenCalledWith('plan-model', expect.objectContaining(alphaTokens))
 
     const alphaUsage = stateBackend.current.phaseUsage.find(
       (p: { phase: string }) => p.phase === 'alpha',
