@@ -214,6 +214,8 @@ describe('aggregatePhaseRuns', () => {
     // resume by the check above. The bug this covers is the NEXT run —
     // the gatekeeper merge after the wake — which carries no parkReason
     // and used to fall straight into rework.
+    // Here the parked run is also the first run of the work item, so it
+    // counts as `workItemsHandled`; only the post-wake run is a resume.
     const aggregated = aggregatePhaseRuns([
       phaseRun('review', { workItem: 'w', parkReason: 'pr:approved' }),
       phaseRun('review', { workItem: 'w' }),
@@ -223,6 +225,26 @@ describe('aggregatePhaseRuns', () => {
       runs: 2,
       workItemsHandled: 1,
       checkpointResumeRuns: 1,
+      reworkRuns: 0,
+      reworkCostUsd: 0,
+    })
+  })
+
+  it('excludes both the parked run and the post-wake run from rework when the park follows a first run', () => {
+    // The common gatekeeper shape: open the PR, park on `pr:approved`,
+    // then merge after the wake. The parked run is bucketed by its own
+    // parkReason and the post-wake run by following the park, so both
+    // are resumes and neither is rework.
+    const aggregated = aggregatePhaseRuns([
+      phaseRun('review', { workItem: 'w' }),
+      phaseRun('review', { workItem: 'w', parkReason: 'pr:approved' }),
+      phaseRun('review', { workItem: 'w' }),
+    ])
+
+    expect(aggregated[0]).toMatchObject({
+      runs: 3,
+      workItemsHandled: 1,
+      checkpointResumeRuns: 2,
       reworkRuns: 0,
       reworkCostUsd: 0,
     })
