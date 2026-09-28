@@ -121,6 +121,59 @@ describe('maybeAskWakeGate', () => {
     })
     expect(result.skip).toBe(true)
   })
+
+  it('sends the comment body from the polling transport payload shape', async () => {
+    const ask = vi.fn(async () => ({
+      available: true as const,
+      model: 'jev-1.13.0',
+      latencyMs: 12,
+      inputTokens: 3,
+      answers: { worth_waking: { type: 'noul' as const, noul: 0.9 } },
+    }))
+    const result = await maybeAskWakeGate({
+      config: liveConfig,
+      job: makeJob(),
+      eventKey: 'pullrequest:comment_created',
+      payload: {
+        comment: {
+          id: '1',
+          content: { raw: 'Please rename this function' },
+          created_on: 't',
+          user: { display_name: 'alice' },
+        },
+        prId: 42,
+        pullrequest: { id: 42, state: undefined },
+      },
+      decision: { providerId: 'jev', ask },
+      stateBackend: backend(makeJob()),
+      logger,
+    })
+    expect(result.skip).toBe(false)
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({
+      state: expect.objectContaining({ text: 'Please rename this function' }),
+    }))
+  })
+
+  it('resumes without asking the provider when the event carries no text', async () => {
+    const ask = vi.fn()
+    const result = await maybeAskWakeGate({
+      config: liveConfig,
+      job: makeJob(),
+      eventKey: 'pullrequest:fulfilled',
+      payload: { state: 'MERGED', prId: 42, pullrequest: { id: 42, state: 'MERGED' } },
+      decision: { providerId: 'jev', ask },
+      stateBackend: backend(makeJob()),
+      logger,
+    })
+    expect(result.skip).toBe(false)
+    expect(ask).not.toHaveBeenCalled()
+  })
+})
+
+describe('isBotWebhookAuthor (polling payload)', () => {
+  it('reads display_name on polled comments', () => {
+    expect(isBotWebhookAuthor({ comment: { user: { display_name: 'renovate[bot]' } } })).toBe(true)
+  })
 })
 
 describe('maybeAskLane', () => {

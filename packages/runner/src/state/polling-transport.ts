@@ -297,6 +297,7 @@ export class PollingTransport implements EventTransport {
             id: comment.id,
             content: { raw: comment.body },
             created_on: comment.createdAt,
+            ...(comment.author ? { user: { display_name: comment.author } } : {}),
           },
         })
       }

@@ -27,6 +27,7 @@ function readLogin(value: unknown): string | undefined {
     if (typeof rec['name'] === 'string') return rec['name']
     if (typeof rec['username'] === 'string') return rec['username']
     if (typeof rec['nickname'] === 'string') return rec['nickname']
+    if (typeof rec['display_name'] === 'string') return rec['display_name']
   }
   return undefined
 }
@@ -67,6 +68,11 @@ function readText(value: unknown): string {
     const rec = value as Record<string, unknown>
     if (typeof rec['body'] === 'string') return rec['body']
     if (typeof rec['content'] === 'string') return rec['content']
+    const content = rec['content']
+    if (content && typeof content === 'object') {
+      const raw = (content as Record<string, unknown>)['raw']
+      if (typeof raw === 'string') return raw
+    }
     if (typeof rec['text'] === 'string') return rec['text']
     if (typeof rec['message'] === 'string') return rec['message']
   }
@@ -149,6 +155,11 @@ export async function maybeAskWakeGate(args: {
     return { skip: false, reason }
   }
 
+  // With no text the classifier judges a bare event name; a low score then
+  // means "no evidence", not "noise", so it must not be allowed to skip.
+  const text = extractInboundText(args.payload)
+  if (!text) return { skip: false }
+
   const asked = await askAndRecord({
     config,
     site: 'wake-gate',
@@ -160,7 +171,7 @@ export async function maybeAskWakeGate(args: {
     ask: {
       state: {
         eventKey: args.eventKey,
-        text: extractInboundText(args.payload),
+        text,
         awaitingEvent: args.job.awaitingEvent ?? '',
         phase: args.job.phase,
       },
