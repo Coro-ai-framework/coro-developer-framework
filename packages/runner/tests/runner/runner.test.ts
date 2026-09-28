@@ -1357,9 +1357,88 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(alphaUsage!.outputTokens).toBe(200)
     expect(alphaUsage!.cacheReadInputTokens).toBe(500)
     expect(alphaUsage!.numTurns).toBe(1)
-    // No SDK result event → cost is 0 (token counts are the authoritative metric)
+    // No SDK result event ever arrived, so there is no reported cost to
+    // reconcile, and this stub executor does not implement
+    // `calculateCost` — so the fallback books 0. See the next test for an
+    // executor that prices its own tokens.
     expect(alphaUsage!.costUsd).toBe(0)
     expect(alphaUsage!.durationMs).toBeGreaterThanOrEqual(0)
+    // The run still gets a sessionId, even though it never reached `done`,
+    // so a later resumed run can compute its own session-scoped baseline.
+    expect(alphaUsage!.sessionId).toBe('sig-break')
+  })
+
+  it('books an estimated cost for a signal-terminated run, and a later run resuming the same session books only its own delta', async () => {
+    const alphaTokens = {
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    }
+    const expectedAlphaCost = 0.006
+    const betaOwnCost = 0.05
+    // Pricing belongs to the executor adapter, not the runner: the
+    // runner asks the executor to price the tokens it never got a cost for.
+    const calculateCost = vi.fn().mockReturnValue(expectedAlphaCost)
+
+    let call = 0
+    const bundle = makeStubExecutor(
+      async function* (_req, h) {
+        call++
+        if (call === 1) {
+          // goto_phase breaks the stream before any cost frame arrives —
+          // the same shape as the fixture above.
+          yield { type: 'usage', tokens: alphaTokens }
+          h.signals.nextPhase = 'beta'
+          yield { type: 'session_start', sessionId: 'shared-sess' }
+        } else {
+          // Same session resumes. The executor's reported cost is
+          // cumulative for the whole session: alpha's real (estimated)
+          // cost plus beta's own.
+          yield {
+            type: 'usage',
+            tokens: {
+              inputTokens: 300,
+              outputTokens: 50,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              totalCostUsd: expectedAlphaCost + betaOwnCost,
+            },
+          }
+          yield {
+            type: 'done',
+            stopReason: 'end_turn',
+            sessionState: { sessionId: 'shared-sess' },
+            metrics: { numTurns: 1 },
+          }
+        }
+      },
+    )
+    ;(bundle.executor as unknown as { calculateCost: typeof calculateCost }).calculateCost = calculateCost
+    await runJob(makeJob({ phase: 'alpha' }), ctx, {
+      workflowConfigOverride: workflowTwoPhase,
+      executorImpl: bundle.executor,
+      onPhaseExecutorBoot: bundle.bootHook,
+    })
+
+    // Only the signal-ended run needs a price; the resumed run had one.
+    expect(calculateCost).toHaveBeenCalledTimes(1)
+    expect(calculateCost).toHaveBeenCalledWith('plan-model', expect.objectContaining(alphaTokens))
+
+    const alphaUsage = stateBackend.current.phaseUsage.find(
+      (p: { phase: string }) => p.phase === 'alpha',
+    )
+    const betaUsage = stateBackend.current.phaseUsage.find(
+      (p: { phase: string }) => p.phase === 'beta',
+    )
+
+    expect(alphaUsage!.costUsd).toBeCloseTo(expectedAlphaCost, 8)
+    expect(alphaUsage!.sessionId).toBe('shared-sess')
+    // Beta must book only its own increment — neither the full cumulative
+    // cost (double-booking alpha's) nor zero (losing alpha's booked cost
+    // was the bug: a job-level baseline that excluded alpha's $0 booking
+    // would have let this run absorb it).
+    expect(betaUsage!.costUsd).toBeCloseTo(betaOwnCost, 8)
   })
 
   it('creates PhaseUsage from result event and uses SDK cost when provided', async () => {

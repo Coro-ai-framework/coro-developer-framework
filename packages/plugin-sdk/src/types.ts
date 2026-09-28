@@ -1104,10 +1104,13 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
   executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent>
 
   /**
-   * Optional per-provider cost calculation. Plugins that trust an
-   * upstream `total_cost_usd` (Anthropic) leave this undefined; the
-   * runner reads `usage.tokens.totalCostUsd` directly. Plugins that
-   * own their pricing tables (OpenAI, Foundry, Ollama=$0) implement it.
+   * Optional per-provider cost calculation. When the executor reports
+   * `usage.tokens.totalCostUsd` (Anthropic), the runner books that
+   * figure; plugins that own their pricing tables (OpenAI, Foundry,
+   * Ollama=$0) implement this for every phase. The runner also calls
+   * it as a fallback when a phase run ends before any cost was
+   * reported (e.g. a signal breaks the stream), so implement it
+   * whenever a pricing table is available. Omitting it books $0.
    */
   calculateCost?(model: string, usage: NormalizedTokenUsage): number
 

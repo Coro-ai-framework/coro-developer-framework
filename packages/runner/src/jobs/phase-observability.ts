@@ -66,23 +66,37 @@ export interface AttributionContext {
  *
  * Derivation undercounts rework rather than inventing it: one resume
  * per (phase, work item) is allowed when the phase is a checkpoint and
- * the job was interactive.
+ * the job was interactive. Independently of that allowance, a run whose
+ * immediately preceding run of the same (phase, work item) carries a
+ * `parkReason` (`pr:approved`, `developer-input: …`) is also a resume —
+ * the gatekeeper merge (or equivalent) that follows a park is not a loop
+ * the agent made on its own, even outside an interactive checkpoint.
  */
 export function derivePhaseAttributions(
-  phaseUsage: ReadonlyArray<Pick<PhaseUsage, 'phase' | 'workItem' | 'attribution'>>,
+  phaseUsage: ReadonlyArray<Pick<PhaseUsage, 'phase' | 'workItem' | 'attribution' | 'parkReason'>>,
   context: AttributionContext = {},
 ): PhaseRunAttribution[] {
   const checkpointPhases = context.interactive ? context.checkpointPhases : undefined
   const seenWorkItems = new Map<string, Set<string>>()
   const resumeAllowanceUsed = new Map<string, Set<string>>()
 
-  return phaseUsage.map(usage => {
+  return phaseUsage.map((usage, index) => {
     const key = usage.workItem ?? ''
     const seen = seenWorkItems.get(usage.phase) ?? new Set<string>()
     const resumed = resumeAllowanceUsed.get(usage.phase) ?? new Set<string>()
+    const previous = index > 0 ? phaseUsage[index - 1] : undefined
+    const followsPark = previous?.phase === usage.phase
+      && (previous?.workItem ?? '') === key
+      && Boolean(previous?.parkReason)
 
     let attribution: PhaseRunAttribution
-    if (isPhaseRunAttribution(usage.attribution)) {
+    if (followsPark && seen.has(key) && (usage.attribution === undefined || usage.attribution === 'rework')) {
+      // Checked before a recorded value on purpose: runners before this
+      // rule stamped the post-park run as `rework` at append time, and
+      // history prefers recorded values, so those snapshots would never
+      // be repaired otherwise. Only `rework` is overridden.
+      attribution = 'checkpoint-resume'
+    } else if (isPhaseRunAttribution(usage.attribution)) {
       attribution = usage.attribution
       seen.add(key)
       if (attribution === 'checkpoint-resume') resumed.add(key)
@@ -103,7 +117,7 @@ export function derivePhaseAttributions(
 }
 
 export function attributionForIncoming(
-  prior: ReadonlyArray<Pick<PhaseUsage, 'phase' | 'workItem' | 'attribution'>>,
+  prior: ReadonlyArray<Pick<PhaseUsage, 'phase' | 'workItem' | 'attribution' | 'parkReason'>>,
   incoming: Pick<PhaseUsage, 'phase' | 'workItem'>,
   context: AttributionContext,
 ): PhaseRunAttribution {
@@ -126,6 +140,7 @@ export interface BuildPhaseSnapshotArgs {
   interactive: boolean
   parkReason?: string
   toolLedger?: ReadonlyArray<ToolLedgerEntry>
+  sessionId?: string
 }
 
 export function buildPhaseSnapshot(args: BuildPhaseSnapshotArgs): PhaseUsage {
@@ -153,7 +168,32 @@ export function buildPhaseSnapshot(args: BuildPhaseSnapshotArgs): PhaseUsage {
     attribution,
     ...(args.parkReason ? { parkReason: args.parkReason } : {}),
     ...(ledger.length > 0 ? { toolLedger: ledger } : {}),
+    ...(args.sessionId ? { sessionId: args.sessionId } : {}),
   }
+}
+
+/**
+ * Baseline cost already booked for the session a resumed run belongs to.
+ * The executor's reported cumulative cost covers the whole session, not
+ * just this phase, so a resumed run must subtract only what its *own
+ * session* already booked — including runs that booked $0. Summing by
+ * `sessionId` rather than reading the job-level total keeps a $0 run
+ * from silently moving its cost onto whichever run ends normally next.
+ *
+ * Falls back to the supplied job-level total — the baseline the runner
+ * used previously — whenever any prior snapshot lacks `sessionId`
+ * (persisted before the field existed): such a run may belong to the
+ * resumed session, so a partial session sum could undercount it.
+ */
+export function sessionCostBaseline(
+  priorUsage: ReadonlyArray<Pick<PhaseUsage, 'costUsd' | 'sessionId'>>,
+  sessionId: string | undefined,
+  fallbackJobTotalCostUsd: number,
+): number {
+  if (!sessionId || priorUsage.some(entry => !entry.sessionId)) return fallbackJobTotalCostUsd
+  return priorUsage
+    .filter(entry => entry.sessionId === sessionId)
+    .reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0)
 }
 
 export function stampParkReason(
