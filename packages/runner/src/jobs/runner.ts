@@ -93,8 +93,10 @@ import {
 import {
   buildPhaseSnapshot,
   checkpointPhaseSet,
+  estimatePhaseCostUsd,
   recordToolCall,
   recordToolResult,
+  sessionCostBaseline,
   stampParkReason,
   type PendingToolCall,
 } from './phase-observability'
@@ -904,6 +906,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       let sessionId: string | undefined = resumeSessionId
       const phaseTokens: TokenUsage = emptyTokenUsage()
       const prePhaseUsage: TokenUsage = { ...(liveJob.tokenUsage ?? emptyTokenUsage()) }
+      // Computed once per attempt: neither input changes while the phase
+      // runs, and both the normal-ending and signal-terminated cost
+      // bookings below must reconcile against the same baseline.
+      const prePhaseCostBaseline = sessionCostBaseline(liveJob.phaseUsage ?? [], resumeSessionId, prePhaseUsage.totalCostUsd)
       let phaseTurns = 0
       let lastUsageSyncTurn = 0
       const phaseStartMs = Date.now()
@@ -1080,7 +1086,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               const phaseCostUsd = derivePhaseCostUsd({
                 reportedTotalCostUsd: lastReportedCostUsd,
                 phaseTokens,
-                prePhaseCostUsd: prePhaseUsage.totalCostUsd,
+                prePhaseCostUsd: prePhaseCostBaseline,
                 resumedSessionId: resumeSessionId,
               })
               phaseTokens.totalCostUsd = phaseCostUsd
@@ -1108,6 +1114,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
                 interactive: liveJob.interactive === true,
                 parkReason: signals.awaitingEvent,
                 toolLedger,
+                sessionId,
               })
 
               const existingPhaseUsage = liveJob.phaseUsage ?? []
@@ -1204,13 +1211,29 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
       // Ensure every phase gets a PhaseUsage snapshot, even when a signal
       // (goto_phase, await_event, escalate) broke the stream before the
-      // SDK's result event was consumed.
+      // SDK's result event was consumed. Book the cost this run actually
+      // incurred rather than $0: prefer the executor's own cumulative
+      // report (reconciled against this session's baseline, same as the
+      // normal-ending path), and fall back to a tokens×price estimate
+      // when the executor never reported a cost at all. A $0 booking here
+      // either loses the cost or lets a later run on this session absorb
+      // it under a different phase.
       if (!phaseSnapshotRecorded) {
+        const fallbackCostUsd = typeof lastReportedCostUsd === 'number'
+          ? derivePhaseCostUsd({
+              reportedTotalCostUsd: lastReportedCostUsd,
+              phaseTokens,
+              prePhaseCostUsd: prePhaseCostBaseline,
+              resumedSessionId: resumeSessionId,
+            })
+          : estimatePhaseCostUsd(phaseTokens, model)
+        phaseTokens.totalCostUsd = fallbackCostUsd
+
         const phaseSnapshot = buildPhaseSnapshot({
           phase: liveJob.phase,
           workItem: liveJob.currentWorkItem,
           tokens: phaseTokens,
-          costUsd: 0,
+          costUsd: fallbackCostUsd,
           durationMs: Date.now() - phaseStartMs,
           durationApiMs: 0,
           numTurns: phaseTurns,
@@ -1220,6 +1243,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           interactive: liveJob.interactive === true,
           parkReason: signals.awaitingEvent,
           toolLedger,
+          sessionId,
         })
 
         const existingPhaseUsage = liveJob.phaseUsage ?? []

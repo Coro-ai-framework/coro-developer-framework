@@ -155,6 +155,14 @@ export interface PhaseUsage {
    * Absent on older snapshots.
    */
   toolLedger?: ToolLedgerEntry[]
+  /**
+   * The Claude Code session this run executed under. A session can span
+   * several phase runs (planning → coding without a fresh session), and the
+   * executor's reported cost is cumulative for the whole session — so this
+   * is what lets a resumed run subtract only what its own session already
+   * booked, instead of the whole job's cost. Absent on older snapshots.
+   */
+  sessionId?: string
 }
 
 /** One intelligence layer that was applied when a job resolved its overlay. */

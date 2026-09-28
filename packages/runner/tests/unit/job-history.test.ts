@@ -208,6 +208,25 @@ describe('aggregatePhaseRuns', () => {
       reworkCostUsd: 0,
     })
   })
+
+  it('does not count the run that resumes after a park as rework, even with no parkReason of its own', () => {
+    // The parked run itself (parkReason set) is already bucketed as a
+    // resume by the check above. The bug this covers is the NEXT run —
+    // the gatekeeper merge after the wake — which carries no parkReason
+    // and used to fall straight into rework.
+    const aggregated = aggregatePhaseRuns([
+      phaseRun('review', { workItem: 'w', parkReason: 'pr:approved' }),
+      phaseRun('review', { workItem: 'w' }),
+    ])
+
+    expect(aggregated[0]).toMatchObject({
+      runs: 2,
+      workItemsHandled: 1,
+      checkpointResumeRuns: 1,
+      reworkRuns: 0,
+      reworkCostUsd: 0,
+    })
+  })
 })
 
 describe('attributePhaseRuns', () => {
