@@ -11,6 +11,32 @@ import { runSubagent } from './tools/run-subagent'
 // `scm_*` / `tracker_*` surface or the upstream MCP server directly
 // (`mcp__github__*`, `mcp__jira__*`, …).
 
+/**
+ * Wrap an array/object/record zod schema so a JSON-encoded string that
+ * parses to the expected shape is accepted transparently.
+ *
+ * When an executor defers this tool's schema, the model sometimes sends
+ * an array/object argument as a JSON string instead of the native shape
+ * (observed with `set_work_items({ workItems: '["a","b"]' })` and other
+ * array/object/record parameters below). Without this, zod rejects it
+ * with "expected array, received string" and the agent's only recovery
+ * is to reload the schema via ToolSearch.
+ *
+ * A string that isn't valid JSON, or that parses to the wrong shape, is
+ * passed through unchanged so the wrapped schema still reports its own
+ * validation error — this only coerces, it never hides a real mismatch.
+ */
+export function jsonArg<T extends z.ZodTypeAny>(schema: T): z.ZodType<z.infer<T>> {
+  return z.preprocess((value) => {
+    if (typeof value !== 'string') return value
+    try {
+      return JSON.parse(value)
+    } catch {
+      return value
+    }
+  }, schema)
+}
+
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 /**
@@ -103,7 +129,7 @@ export function createCoroMcpServer(
             'upstream repository — set `repo` to upstream and this to the fork owner.',
           ),
           targetBranch: z.string().optional(),
-          reviewers: z.array(z.string()).optional(),
+          reviewers: jsonArg(z.array(z.string())).optional(),
         },
         h.scm_create_pr,
       ),
@@ -164,7 +190,7 @@ export function createCoroMcpServer(
           pluginId: z.string().optional(),
           repo: z.string(),
           prId: z.union([z.number(), z.string()]),
-          reviewers: z.array(z.string()).min(1),
+          reviewers: jsonArg(z.array(z.string()).min(1)),
         },
         h.scm_add_pr_reviewers,
       ),
@@ -313,7 +339,7 @@ export function createCoroMcpServer(
       tool(
         'set_work_items',
         'Register the ordered work-item list for this job. Called after producing the implementation plan.',
-        { workItems: z.array(z.string()) },
+        { workItems: jsonArg(z.array(z.string())) },
         h.set_work_items,
       ),
 
@@ -346,7 +372,7 @@ export function createCoroMcpServer(
       tool(
         'set_job_params',
         'Merge key-value pairs into job.params. Use to set language, build commands, or other dynamic context for downstream phases. params.scm / params.tracker (and trackerRef.pluginId) must name an enabled plugin — the call is rejected otherwise, and the rest of the job continues.',
-        { params: z.record(z.string(), z.unknown()) },
+        { params: jsonArg(z.record(z.string(), z.unknown())) },
         h.set_job_params,
       ),
 
@@ -393,7 +419,7 @@ export function createCoroMcpServer(
           phase: z.string().optional().describe('Defaults to the current phase'),
           kind: z.string().describe('Render hint for the dashboard, e.g. plan-md | pr-link | url | report-md | test-results | json'),
           title: z.string().describe('Short human label shown on the phase node'),
-          data: z.record(z.string(), z.unknown()).optional().describe('Arbitrary JSON, typically { path } or { url, ... }'),
+          data: jsonArg(z.record(z.string(), z.unknown())).optional().describe('Arbitrary JSON, typically { path } or { url, ... }'),
         },
         h.post_artifact,
       ),
@@ -489,13 +515,12 @@ export function createCoroMcpServer(
         'upstream_search',
         'Search the upstream Coro repository for an existing report of a finding. ALWAYS call this before upstream_create_issue: several installs analyse the same Coro version, so the problem you found may already be filed. Pass `finding` to search by content fingerprint (exact) — `duplicate: true` means do not file again, add your evidence to the hit with upstream_comment_issue instead. Pass `query` for free-text search. Retrospective jobs only.',
         {
-          finding: z
-            .object({
+          finding: jsonArg(z.object({
               category: z.string().describe('Finding category, e.g. "base-intelligence" or "runner-code".'),
               title: z.string().describe('Finding title, exactly as recorded in the findings artefact.'),
               targetPaths: z.array(z.string()).optional().describe('Repo-relative paths the finding points at. For a rootCause group, the union across its members.'),
               rootCause: z.string().optional().describe('Set when the finding shares a rootCause with others — the group files one issue, so search for the group.'),
-            })
+            }))
             .optional()
             .describe('Fingerprint search — preferred. The tool derives the fingerprint; do not invent one.'),
           query: z.string().optional().describe('Free-text GitHub search, automatically scoped to the upstream repo.'),
@@ -512,12 +537,12 @@ export function createCoroMcpServer(
         {
           title: z.string().describe('One line, problem-first. No identifiers.'),
           body: z.string().describe('Markdown: symptom, evidence (aliased job ids + numbers), affected paths, proposed fix.'),
-          finding: z.object({
+          finding: jsonArg(z.object({
             category: z.string(),
             title: z.string(),
             targetPaths: z.array(z.string()).optional(),
             rootCause: z.string().optional(),
-          }).describe('The finding this issue reports — same values you passed to upstream_search. One issue per rootCause group, not per symptom.'),
+          })).describe('The finding this issue reports — same values you passed to upstream_search. One issue per rootCause group, not per symptom.'),
         },
         h.upstream_create_issue,
       ),
@@ -536,7 +561,7 @@ export function createCoroMcpServer(
         'dispatch_improvement_job',
         'Hand approved upstream findings to one implementation job that writes the fix. Use this for `base-intelligence` and `runner-code` findings after filing their issues — not for tenant findings. Do not write the files yourself. Prefer a structured `briefing` per item (behaviour, files, verification); `description` is the fallback for a child that has never seen this retrospective. One call is one child job. Capped per run. Retrospective jobs only.',
         {
-          items: z
+          items: jsonArg(z
             .array(z.object({
               findingId: z.string().describe('Finding id from the report, e.g. "finding-3".'),
               category: z.enum(['base-intelligence', 'runner-code']).describe('Must match the finding. Gates the destination tier.'),
@@ -574,7 +599,7 @@ export function createCoroMcpServer(
                 grepHits: z.array(z.string()).optional(),
               }).optional(),
             }))
-            .min(1)
+            .min(1))
             .describe('Approved findings that still need a fix. One call is one contribution job.'),
         },
         h.dispatch_improvement_job,
@@ -607,16 +632,16 @@ export function createCoroMcpServer(
           title: z.string().describe('Short, human-readable title; becomes the PR title.'),
           rationale: z.string().describe('Why this change is worth merging — drives the PR description and future list_proposals previews. Two sentences max.'),
           description: z.string().describe('Implementation details / what the diff does. Be terse.'),
-          files: z.array(z.object({ path: z.string(), content: z.string() })).optional()
+          files: jsonArg(z.array(z.object({ path: z.string(), content: z.string() }))).optional()
             .describe('Multi-file payload. Paths are relative to the target layer\'s root. Prefer `deltas` for a section-level edit.'),
-          deltas: z.array(z.object({
+          deltas: jsonArg(z.array(z.object({
             path: z.string(),
             heading: z.string().optional().describe('Markdown heading text without hashes. Required unless mode is append-to-file.'),
             mode: z.enum(['insert-after', 'replace-section', 'append']),
             content: z.string(),
-          })).optional()
+          }))).optional()
             .describe('Section-level patches applied against the writer clone. Prefer this over shipping a rewritten file.'),
-          entries: z.array(z.object({
+          entries: jsonArg(z.array(z.object({
             file: z.string().describe('Memory file the entry lands in (memory/* or .coro/memory/*).'),
             kind: z.enum(['pitfall', 'pattern']),
             title: z.string().describe('One-line ## heading.'),
@@ -625,7 +650,7 @@ export function createCoroMcpServer(
             recipe: z.string().optional().describe('Copy-paste recipe (pitfall) or code skeleton (pattern). Multi-line allowed within the budget.'),
             antiPattern: z.string().optional().describe('Pattern: one-line anti-pattern note.'),
             whenToUse: z.string().optional().describe('Pattern: one-line "when to use" note.'),
-          })).optional()
+          }))).optional()
             .describe('Structured memory entries. Preferred over hand-composed markdown for memory-update proposals — saves prompt tokens and enforces brevity caps.'),
           targetFile: z.string().optional().describe('Single-file shim. Use `files` for multi-file proposals.'),
           proposedContent: z.string().optional(),
@@ -655,11 +680,11 @@ export function createCoroMcpServer(
         {
           title: z.string().describe('Short epic title — surfaces on the tracker epic and PR copy.'),
           description: z.string().describe('Long-form feature description handed to the campaign-planner agent.'),
-          trackerEpicRef: z.object({
+          trackerEpicRef: jsonArg(z.object({
             pluginId: z.string().describe('Active tracker plugin id (e.g. "jira", "linear", "github-issues").'),
             key: z.string(),
             url: z.string(),
-          }).optional().describe('Optional pointer to a pre-existing tracker epic; otherwise the campaign-planner creates one.'),
+          })).optional().describe('Optional pointer to a pre-existing tracker epic; otherwise the campaign-planner creates one.'),
         },
         h.convert_to_campaign,
       ),
@@ -669,7 +694,7 @@ export function createCoroMcpServer(
         'Switch the active job to a different workflow lane in place. Use when the planner / evaluator detects the current lane is mis-sized (e.g. promote a tiny task to job-fast, or escalate to job-deep). Path-based admission: target workflow must exist in any layer (base, tenant, repo). Refused if target equals the campaign workflow and params.epicAllowed=false.',
         {
           workflowPath: z.string().describe('Workflow markdown path relative to the intelligence root (e.g. "workflows/job-fast/workflow.md").'),
-          paramsPatch: z.record(z.string(), z.unknown()).optional().describe('Shallow merge into job.params (e.g. seed lane-specific options). Other fields are preserved.'),
+          paramsPatch: jsonArg(z.record(z.string(), z.unknown())).optional().describe('Shallow merge into job.params (e.g. seed lane-specific options). Other fields are preserved.'),
           reason: z.string().describe('Short audit message — surfaces in the run log and in workflowPathHistory.'),
           toPhase: z.string().optional().describe('Optional explicit start phase on the new workflow. Must be declared by it; otherwise the workflow\'s initial_phase is used.'),
         },
@@ -682,13 +707,13 @@ export function createCoroMcpServer(
         {
           name: z.string().describe('Slug-like unique name within this campaign (used as dependsOn key and branch suffix).'),
           description: z.string().describe('Scoped description for the child job (what the child planner sees).'),
-          params: z.record(z.string(), z.unknown()).optional().describe('Seed params for the child job (e.g. repoSlug). The dispatcher injects epicAllowed=false and campaignParentId automatically.'),
-          dependsOn: z.array(z.string()).optional().describe('Names of other registered children this one is blocked on.'),
-          trackerRef: z.object({
+          params: jsonArg(z.record(z.string(), z.unknown())).optional().describe('Seed params for the child job (e.g. repoSlug). The dispatcher injects epicAllowed=false and campaignParentId automatically.'),
+          dependsOn: jsonArg(z.array(z.string())).optional().describe('Names of other registered children this one is blocked on.'),
+          trackerRef: jsonArg(z.object({
             pluginId: z.string().describe('Active tracker plugin id (e.g. "jira", "linear", "github-issues").'),
             key: z.string(),
             url: z.string(),
-          }).optional().describe('Tracker issue created for this child (typically created via the active tracker plugin first).'),
+          })).optional().describe('Tracker issue created for this child (typically created via the active tracker plugin first).'),
         },
         h.campaign_register_child,
       ),

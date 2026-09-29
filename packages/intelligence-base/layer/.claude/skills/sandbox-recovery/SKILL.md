@@ -56,19 +56,23 @@ allowlist makes a cold cache impossible, and escalate — when the warm cache
 was usable as a read-only source the whole time.
 
 Point the package manager at the existing cache as a local source and let only
-the genuinely missing artefacts hit the network. Go, for example:
+the genuinely missing artefacts hit the network. Go, for example, when no new
+module is needed — read the warm cache without writing to it:
 
 ```bash
-cd "$REL" && GOFLAGS=-mod=mod \
-  GOCACHE="$JOB/.cache/go-build" GOMODCACHE="$JOB/.cache/gomod" \
-  GOPROXY="file://$HOME/go/pkg/mod/cache/download,direct" \
-  go build -buildvcs=false ./...
+cd "$REL" && GOFLAGS=-mod=mod GOPROXY=off \
+  GOCACHE="$JOB/.cache/go-build" go build -buildvcs=false ./...
 ```
 
-Everything already cached resolves locally; only the missing module falls
-through to `direct`. The equivalent for .NET is an extra `<add key>` source in
-a job-local `NuGet.config` pointing at `~/.nuget/packages`; for npm, an
-offline-first `--prefer-offline` install against the existing cache.
+A new module forces extraction, and a job-local `GOMODCACHE` that starts empty
+re-extracts *every* module — failing with `operation not permitted` on any
+already-cached one that ships a `.gitmodules`, `.idea/`, or `.vscode/` file,
+even though it never needed re-extracting. See `golang-conventions` §
+"When the shared module cache is not writable" for the symlink-seeded
+`GOMODCACHE` recipe and the `GOPRIVATE` sentinel gotcha. The equivalent for
+.NET is an extra `<add key>` source in a job-local `NuGet.config` pointing at
+`~/.nuget/packages`; for npm, an offline-first `--prefer-offline` install
+against the existing cache.
 
 For three further Go-specific recipes this warm-cache fallback doesn't cover —
 vendoring a module that ships a `.gitmodules` file, building a tool CLI from
