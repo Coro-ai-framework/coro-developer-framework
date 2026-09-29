@@ -57,15 +57,25 @@ resolve back into the read-only shared cache and fail the same way:
 
 ```bash
 mkdir -p "$JOB/.cache/gomod"
-find "$HOME/go/pkg/mod" -mindepth 2 -name '*@*' -type d 2>/dev/null | while read -r d; do
+find "$HOME/go/pkg/mod" -path "$HOME/go/pkg/mod/cache" -prune -o \
+  -type d -name '*@*' -print -prune 2>/dev/null | while read -r d; do
   rel="${d#"$HOME"/go/pkg/mod/}"
   mkdir -p "$JOB/.cache/gomod/$(dirname "$rel")"
   ln -s "$d" "$JOB/.cache/gomod/$rel"
 done
-cd "$REL" && GOFLAGS=-mod=mod GOMODCACHE="$JOB/.cache/gomod" \
+cd "$REL" && GOFLAGS=-mod=mod GOCACHE="$JOB/.cache/go-build" \
+  GOMODCACHE="$JOB/.cache/gomod" \
   GOPROXY="file://$HOME/go/pkg/mod/cache/download,direct" \
   go build -buildvcs=false ./...
 ```
+
+Pruning `cache/` matters: it holds the download cache's own `@v` metadata
+directories, which would otherwise get symlinked too — adding a previously
+uncached version of an already-cached module then tries to write its
+`.lock`/`.mod`/`.zip` there and hits the same `operation not permitted`. The
+job-local `$JOB/.cache/gomod/cache/` is left to be created fresh and
+writable. `GOCACHE` is set here for the same reason the happy path above
+requires it — a build in this branch still needs a writable build cache.
 
 If the new module is private and hosted on your SCM, add
 `GOPRIVATE='<scm-host>/<org>/*'` so Go fetches it straight from there instead of

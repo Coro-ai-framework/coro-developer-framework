@@ -55,10 +55,18 @@ export function jsonArg<T extends z.ZodTypeAny>(schema: T): z.ZodType<z.infer<T>
  * (`mcp__coro__*`). All agent markdown that references these tools must use
  * the `mcp__coro__` prefix.
  */
-export function createCoroMcpServer(
+export type CoroMcpToolOptions = { registerFileTools?: boolean; registerRunSubagent?: boolean }
+
+/**
+ * Build the actual tool definitions `createCoroMcpServer` registers.
+ * Split out so tests can call a real, registered tool's `inputSchema` /
+ * `handler` directly — asserting against the wiring, not a look-alike
+ * schema built for the test — without spinning up the SDK MCP transport.
+ */
+export function buildCoroMcpTools(
   ctx: ToolContext,
   signals: PhaseSignals,
-  options: { registerFileTools?: boolean; registerRunSubagent?: boolean } = {},
+  options: CoroMcpToolOptions = {},
 ) {
   // Wrap every native handler in a try/catch so an unhandled throw
   // can't tear down the in-process MCP transport (the cause of the
@@ -88,12 +96,7 @@ export function createCoroMcpServer(
     ),
   )
 
-  return createSdkMcpServer({
-    name: 'coro',
-    // Keep mcp__coro__* in the turn-1 prompt. SDK 0.3 defers MCP tools
-    // behind tool search / non-blocking connect unless alwaysLoad is set.
-    alwaysLoad: true,
-    tools: [
+  return [
       ...extensionTools,
 
       // ── Generic SCM (MCP-first proxy) ─────────────────────────────────────
@@ -860,6 +863,19 @@ export function createCoroMcpServer(
         ),
       ] : []),
 
-    ],
+  ]
+}
+
+export function createCoroMcpServer(
+  ctx: ToolContext,
+  signals: PhaseSignals,
+  options: CoroMcpToolOptions = {},
+) {
+  return createSdkMcpServer({
+    name: 'coro',
+    // Keep mcp__coro__* in the turn-1 prompt. SDK 0.3 defers MCP tools
+    // behind tool search / non-blocking connect unless alwaysLoad is set.
+    alwaysLoad: true,
+    tools: buildCoroMcpTools(ctx, signals, options),
   })
 }

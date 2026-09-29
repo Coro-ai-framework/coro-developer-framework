@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { createCoroMcpServer, jsonArg } from '../../src/mcp-server'
+import { buildCoroMcpTools, createCoroMcpServer, jsonArg } from '../../src/mcp-server'
 import { makeMockToolContext } from './fixtures'
 
 describe('createCoroMcpServer', () => {
@@ -11,6 +11,76 @@ describe('createCoroMcpServer', () => {
     expect(config).toBeDefined()
     expect(config).toMatchObject({ name: 'coro' })
     expect('instance' in config && config.instance).toBeDefined()
+  })
+})
+
+// ── Real-wiring coverage ─────────────────────────────────────────────────────
+//
+// The `jsonArg` unit tests above exercise the helper against look-alike
+// schemas built for the test — they'd stay green even if a production
+// tool's wrapper were accidentally removed. These tests instead pull the
+// actual tool definitions `createCoroMcpServer` registers and exercise the
+// registered schema and handler directly, so removing a wrapper (or
+// leaving one off a new array/object/record param) fails here.
+
+/** Zod v4 def-shape helpers — no schema in this file is a class instance
+ * we can `instanceof` cheaply, so we walk `._zod.def` directly. */
+function coreDef(schema: z.ZodTypeAny): { type: string; innerType?: z.ZodTypeAny; in?: { def?: { type?: string } }; out?: { def?: { type?: string } } } {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let def = (schema as any)._zod.def
+  while (def.type === 'optional' || def.type === 'default' || def.type === 'nullable') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    def = (def.innerType as any)._zod.def
+  }
+  return def
+}
+
+function isJsonArgWrapped(schema: z.ZodTypeAny): boolean {
+  const def = coreDef(schema)
+  return def.type === 'pipe'
+    && def.in?.def?.type === 'transform'
+    && ['array', 'object', 'record'].includes(def.out?.def?.type ?? '')
+}
+
+describe('buildCoroMcpTools wiring', () => {
+  const ctx = makeMockToolContext()
+  const tools = buildCoroMcpTools(ctx, {}, { registerFileTools: true, registerRunSubagent: true })
+
+  it('every top-level array/object/record tool parameter is jsonArg-wrapped', () => {
+    const unwrapped: string[] = []
+    for (const t of tools) {
+      for (const [param, schema] of Object.entries(t.inputSchema)) {
+        const def = coreDef(schema as z.ZodTypeAny)
+        if (['array', 'object', 'record'].includes(def.type) || def.type === 'pipe') {
+          if (!isJsonArgWrapped(schema as z.ZodTypeAny)) unwrapped.push(`${t.name}.${param}`)
+        }
+      }
+    }
+    // Removing any production `jsonArg(...)` call turns this list non-empty.
+    expect(unwrapped).toEqual([])
+  })
+
+  it('registers set_work_items and coerces a JSON-encoded array string end to end', async () => {
+    const setWorkItems = tools.find(t => t.name === 'set_work_items')
+    expect(setWorkItems).toBeDefined()
+
+    const schema = z.object(setWorkItems!.inputSchema)
+    const parsed = schema.parse({ workItems: '["a","b"]' })
+    await setWorkItems!.handler(parsed, undefined)
+
+    expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith(
+      ctx.job.id,
+      { workItems: [
+        { name: 'a', status: 'pending', loopCount: 0 },
+        { name: 'b', status: 'pending', loopCount: 0 },
+      ] },
+    )
+  })
+
+  it('set_work_items\' registered schema still rejects invalid JSON', () => {
+    const setWorkItems = tools.find(t => t.name === 'set_work_items')!
+    const schema = z.object(setWorkItems.inputSchema)
+    expect(() => schema.parse({ workItems: 'not json' })).toThrow()
   })
 })
 
