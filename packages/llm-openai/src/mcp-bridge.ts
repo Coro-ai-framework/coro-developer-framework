@@ -205,22 +205,31 @@ export class McpFunctionBridge {
     }
 
     const input = parseArguments(call.argumentsJson)
+    // The value actually sent to policy checks, events, and the handler.
+    // For SDK tools this becomes the *validated* (and zod-coerced) input
+    // below — e.g. a `jsonArg`-wrapped param's JSON-encoded string argument
+    // becomes the parsed array/object. External tools keep the raw input,
+    // since they validate on their own server.
+    let effectiveInput = input
 
     // ── Schema validation (SDK tools only) ────────────────────────────────
     //
     // The MCP SDK's CallTool dispatcher Zod-validates inputs before
-    // calling a tool's handler. Our bridge calls handlers directly
-    // (via `_registeredTools[name].handler`) and therefore bypasses
-    // that validation entirely. Without this guard, the model can
-    // call e.g. `escalate({message: "..."})` instead of
-    // `escalate({reason: "..."})` and the handler runs with
-    // `reason: undefined`, silently writing an empty escalation
-    // message to the job. We mirror the SDK's pre-handler validation
-    // here so wrong shapes turn into informative tool errors the
-    // model can recover from.
+    // calling a tool's handler — and hands the handler the *validated*
+    // value, not the raw one, so a preprocess/coercion on the schema
+    // (e.g. `jsonArg`) takes effect. Our bridge calls handlers directly
+    // (via `_registeredTools[name].handler`) and therefore bypasses that
+    // validation entirely. Without this guard, the model can call e.g.
+    // `escalate({message: "..."})` instead of `escalate({reason: "..."})`
+    // and the handler runs with `reason: undefined`, silently writing an
+    // empty escalation message to the job. We mirror the SDK's
+    // pre-handler validation here — including using its parsed output —
+    // so wrong shapes turn into informative tool errors the model can
+    // recover from, and coercing schemas behave identically to the
+    // Anthropic path.
     //
     // External MCP servers do their own server-side validation, so we
-    // skip them.
+    // skip them and keep sending them the raw input.
     if (binding.kind === 'sdk' && binding.inputSchema) {
       const validation = validateInputAgainstZodShape(binding.inputSchema, input)
       if (!validation.ok) {
@@ -234,9 +243,10 @@ export class McpFunctionBridge {
           ],
         }
       }
+      effectiveInput = validation.data
     }
 
-    const policy = await this.enforcePolicy(binding.openAiName, binding.toolName, input)
+    const policy = await this.enforcePolicy(binding.openAiName, binding.toolName, effectiveInput)
     if (!policy.allow) {
       const output = policy.reason ?? `Tool ${binding.openAiName} was blocked by policy.`
       return {
@@ -251,22 +261,22 @@ export class McpFunctionBridge {
       {
         type: 'tool_call',
         toolName: binding.openAiName,
-        input,
+        input: effectiveInput,
         isMcp: true,
       },
       {
         type: 'log',
         level: 'info',
-        message: formatToolCallLogLine({ toolName: binding.openAiName, input }),
+        message: formatToolCallLogLine({ toolName: binding.openAiName, input: effectiveInput }),
       },
     ]
 
     try {
       const result = binding.kind === 'sdk'
-        ? await binding.handler(input, { signal: this.opts.signal })
+        ? await binding.handler(effectiveInput, { signal: this.opts.signal })
         : await binding.connection.client.callTool({
             name: binding.toolName,
-            arguments: input,
+            arguments: effectiveInput,
           })
       const output = stringifyMcpResult(result)
       events.push({ type: 'tool_result', toolName: binding.openAiName, output })
@@ -372,8 +382,11 @@ function toJsonSchema(rawShape: Record<string, unknown>): Record<string, unknown
  * Validate a tool-call input against the registered Zod shape. Used
  * by {@link McpFunctionBridge.call} to catch wrong argument shapes
  * (`{message:...}` instead of `{reason:...}`, missing required
- * fields, …) before the handler ever runs. Mirrors what the MCP
- * SDK's CallTool dispatcher does on the Anthropic path.
+ * fields, …) before the handler ever runs, and to return the
+ * *validated* value — mirroring what the MCP SDK's CallTool dispatcher
+ * does on the Anthropic path, where the handler receives the parsed
+ * output of the schema (including any `z.preprocess` coercion), not
+ * the raw call arguments.
  *
  * Accepts either a raw Zod shape (`{message: z.string()}`) or an
  * already-built Zod object schema (`z.object({...})`) — both forms
@@ -382,13 +395,13 @@ function toJsonSchema(rawShape: Record<string, unknown>): Record<string, unknown
 function validateInputAgainstZodShape(
   shape: Record<string, unknown>,
   input: Record<string, unknown>,
-): { ok: true } | { ok: false; message: string } {
+): { ok: true; data: Record<string, unknown> } | { ok: false; message: string } {
   try {
     const schema = isZodSchema(shape)
       ? (shape as unknown as z.ZodTypeAny)
       : z.object(shape as z.core.$ZodLooseShape)
     const result = schema.safeParse(input)
-    if (result.success) return { ok: true }
+    if (result.success) return { ok: true, data: result.data as Record<string, unknown> }
     const issues = result.error.issues.slice(0, 4).map(i => {
       const path = i.path.length > 0 ? i.path.join('.') : '(root)'
       return `${path}: ${i.message}`
