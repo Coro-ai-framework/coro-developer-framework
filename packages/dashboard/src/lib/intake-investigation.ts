@@ -35,6 +35,8 @@ export interface InvestigationRecord {
   tokens: number
   contextUsed: number
   dispatchedJobId?: string | null
+  /** True while the runner is still inside this conversation's turn. */
+  streaming?: boolean
   createdAt: string
   updatedAt: string
 }

@@ -46,6 +46,8 @@ export const CONVERSATION_COPY = {
   newConfirm: 'Start a new conversation? This one stays in Recents.',
   /** The Stop control disconnects; it cannot recall a turn already sent. */
   stopHint: 'Stop watching this turn. Coro may still finish it in the background.',
+  /** Shown when a reload finds the runner still working and there is no local stream to detach. */
+  stillInvestigating: 'Still investigating…',
 } as const
 
 /** Composer home — New run. */

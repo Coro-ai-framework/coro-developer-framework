@@ -215,7 +215,7 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
           <span className="text-[11px] text-fg-subtle">
             {session.turnCount} turns · {session.totalTokens.toLocaleString()} tokens
           </span>
-          {session.busy ? (
+          {session.busy && session.canStop ? (
             <button
               type="button"
               onClick={session.cancel}
@@ -224,6 +224,9 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
             >
               Stop
             </button>
+          ) : null}
+          {session.busy && !session.canStop ? (
+            <span className="text-[11px] text-fg-subtle">{CONVERSATION_COPY.stillInvestigating}</span>
           ) : null}
           <GenerateRunButton
             readiness={session.readiness}

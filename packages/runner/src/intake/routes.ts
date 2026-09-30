@@ -11,6 +11,7 @@ import {
   deleteIntakeSession,
   ensureIntakeWorkRoot,
   hydrateIntakeSession,
+  intakeTurnActive,
 } from './session-store'
 import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
 import type { InvestigationStatus } from '@coro-ai/cloud-protocol'
@@ -83,17 +84,23 @@ export function registerIntakeRoutes(
     res.setHeader('Connection', 'keep-alive')
     res.flushHeaders?.()
 
-    // Plan-mode requests are short (a single LLM round-trip, typically
-    // under 10s). We intentionally do NOT tie the LLM's abort signal
-    // to `req.close` / `res.close`: under Express 4 + Node 20 the
-    // request emits 'close' as soon as `express.json()` finishes
-    // draining the POST body, which would cancel every LLM call a few
-    // ms after it starts. If the browser disconnects mid-flight we'll
-    // simply write SSE bytes into a closed socket — harmless. Longer-
-    // running stream surfaces should bring their own cancellation
-    // protocol rather than borrow the HTTP request lifecycle.
+    // We intentionally do NOT tie the LLM's abort signal to `req.close` /
+    // `res.close`: under Express 4 + Node 20 the request emits 'close' as
+    // soon as `express.json()` finishes draining the POST body, which would
+    // cancel every LLM call a few ms after it starts. A refresh therefore
+    // leaves the turn running. Writes into a closed socket are ignored so
+    // that disconnect cannot abandon the generator before the turn is recorded.
     const abortController = new AbortController()
     logger.debug({ url: req.originalUrl }, 'intake stream: request received')
+
+    const writeFrame = (payload: string) => {
+      if (res.writableEnded || res.destroyed) return
+      try {
+        res.write(formatSseFrame(payload, 'message'))
+      } catch {
+        // The browser is gone. Keep consuming so the turn still records.
+      }
+    }
 
     try {
       for await (const event of runIntakeStream({
@@ -116,18 +123,18 @@ export function registerIntakeRoutes(
         stateBackend,
       })) {
         if (event.type === 'token') {
-          res.write(formatSseFrame(JSON.stringify({ type: 'token', text: event.text }), 'message'))
+          writeFrame(JSON.stringify({ type: 'token', text: event.text }))
         } else if (event.type === 'thinking') {
-          res.write(formatSseFrame(JSON.stringify({ type: 'thinking', text: event.text }), 'message'))
+          writeFrame(JSON.stringify({ type: 'thinking', text: event.text }))
         } else if (event.type === 'tool_start') {
-          res.write(formatSseFrame(JSON.stringify({
+          writeFrame(JSON.stringify({
             type: 'tool_start',
             name: event.name,
             input: event.input,
             ...(event.subagent ? { subagent: event.subagent } : {}),
-          }), 'message'))
+          }))
         } else if (event.type === 'tool_end') {
-          res.write(formatSseFrame(JSON.stringify({
+          writeFrame(JSON.stringify({
             type: 'tool_end',
             name: event.name,
             durationMs: event.durationMs,
@@ -135,27 +142,33 @@ export function registerIntakeRoutes(
             summary: event.summary,
             ...(event.error ? { error: event.error } : {}),
             ...(event.subagent ? { subagent: event.subagent } : {}),
-          }), 'message'))
+          }))
         } else if (event.type === 'done') {
-          res.write(formatSseFrame(JSON.stringify({
+          writeFrame(JSON.stringify({
             type: 'done',
             usage: event.usage,
             ...(event.contextTokens != null ? { contextTokens: event.contextTokens } : {}),
             ...(event.sessionTokens != null ? { sessionTokens: event.sessionTokens } : {}),
             ...(event.turns != null ? { turns: event.turns } : {}),
-          }), 'message'))
+          }))
         } else if (event.type === 'error') {
           const payload: Record<string, unknown> = { type: 'error', message: event.message }
-          if ((event as { reason?: string }).reason) payload['reason'] = (event as { reason?: string }).reason
-          res.write(formatSseFrame(JSON.stringify(payload), 'message'))
+          if (event.reason) payload['reason'] = event.reason
+          writeFrame(JSON.stringify(payload))
         }
       }
-      res.write(formatSseFrame(JSON.stringify({ type: 'done' }), 'done'))
+      if (!res.writableEnded && !res.destroyed) {
+        try {
+          res.write(formatSseFrame(JSON.stringify({ type: 'done' }), 'done'))
+        } catch {
+          // Client already left.
+        }
+      }
     } catch (err) {
       logger.error({ err }, 'POST /intake/stream failed')
-      res.write(formatSseFrame(JSON.stringify({ type: 'error', message: (err as Error).message }), 'message'))
+      writeFrame(JSON.stringify({ type: 'error', message: (err as Error).message }))
     } finally {
-      res.end()
+      if (!res.writableEnded) res.end()
     }
   })
 
@@ -196,7 +209,7 @@ export function registerIntakeRoutes(
         ...(record.executorId ? { executorId: record.executorId } : {}),
       })
       ensureIntakeWorkRoot(record.id)
-      res.json(record)
+      res.json({ ...record, streaming: intakeTurnActive(record.id) })
     } catch (err) {
       logger.error({ err, sessionId }, 'GET /intake/sessions/:id failed')
       res.status(500).json({ error: (err as Error).message })

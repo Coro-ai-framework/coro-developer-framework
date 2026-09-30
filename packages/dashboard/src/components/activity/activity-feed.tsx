@@ -60,7 +60,7 @@ export default function ActivityFeed({
   emptyState,
   className,
 }: ActivityFeedProps) {
-  const stick = useStickToBottom<HTMLDivElement>([items.length, partialText, partialThinking, busy])
+  const stick = useStickToBottom<HTMLDivElement>([items, partialText, partialThinking, busy])
   const showThinking = busy && !partialText && !partialThinking && !lastItemIsRunningDeck(items)
   const empty = items.length === 0 && !partialText && !partialThinking && !busy
 

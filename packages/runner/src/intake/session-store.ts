@@ -76,6 +76,13 @@ export interface IntakeSession {
 }
 
 const sessions = new Map<string, IntakeSession>()
+/**
+ * Sessions with a turn inside `runIntakeStream`. A refresh drops the
+ * browser's stream, but the runner keeps working — a second message in
+ * that window used to reconcile an evidence-free transcript and make the
+ * model start the investigation over.
+ */
+const activeTurns = new Set<string>()
 
 /**
  * Ids the developer explicitly discarded, with the time of the DELETE.
@@ -372,8 +379,28 @@ export function buildIntakeMessages(
   return messages
 }
 
+/** True while this session's intake turn is still inside `runIntakeStream`. */
+export function intakeTurnActive(sessionId: string): boolean {
+  return activeTurns.has(sessionId)
+}
+
+/**
+ * Claims the session's single in-flight turn. Returns false when one is
+ * already running so the caller can refuse without touching the transcript.
+ */
+export function tryBeginIntakeTurn(sessionId: string): boolean {
+  if (activeTurns.has(sessionId)) return false
+  activeTurns.add(sessionId)
+  return true
+}
+
+export function endIntakeTurn(sessionId: string): void {
+  activeTurns.delete(sessionId)
+}
+
 export function resetIntakeSessionsForTests(): void {
   for (const session of sessions.values()) removeWorkRoot(session)
   sessions.clear()
   discarded.clear()
+  activeTurns.clear()
 }

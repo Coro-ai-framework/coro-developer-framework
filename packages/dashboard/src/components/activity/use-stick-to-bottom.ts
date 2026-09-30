@@ -10,6 +10,18 @@ function isScrolledToBottom(el: HTMLElement, thresholdPx = 64): boolean {
   return scrollHeight - scrollTop - clientHeight <= thresholdPx
 }
 
+/**
+ * Content growth and our own scroll-to-bottom both emit scroll events.
+ * An upward user scroll unpins. Arriving at the bottom pins again.
+ * `null` leaves the current pin alone — that is what keeps a growing
+ * feed from flashing "Jump to latest" on every new row.
+ */
+export function nextStickState(previousTop: number, nextTop: number, atBottom: boolean): boolean | null {
+  if (nextTop < previousTop - 4) return atBottom
+  if (atBottom) return true
+  return null
+}
+
 export function useStickToBottom<T extends HTMLElement>(deps: readonly unknown[]): {
   ref: RefObject<T | null>
   /** True while pinned to the bottom. */
@@ -22,6 +34,7 @@ export function useStickToBottom<T extends HTMLElement>(deps: readonly unknown[]
   const ref = useRef<T | null>(null)
   const [stuck, setStuck] = useState(true)
   const stuckRef = useRef(true)
+  const lastTopRef = useRef(0)
   /** Skip one scroll-handler sync right after we programmatically scroll (some browsers coalesce events). */
   const programmaticScrollRef = useRef(false)
 
@@ -32,13 +45,17 @@ export function useStickToBottom<T extends HTMLElement>(deps: readonly unknown[]
   const onScroll = useCallback(() => {
     const el = ref.current
     if (!el) return
+    const top = el.scrollTop
     if (programmaticScrollRef.current) {
       programmaticScrollRef.current = false
+      lastTopRef.current = top
       return
     }
-    const atBottom = isScrolledToBottom(el)
-    stuckRef.current = atBottom
-    setStuck(atBottom)
+    const next = nextStickState(lastTopRef.current, top, isScrolledToBottom(el))
+    lastTopRef.current = top
+    if (next === null) return
+    stuckRef.current = next
+    setStuck(next)
   }, [])
 
   const scrollToBottom = useCallback(() => {

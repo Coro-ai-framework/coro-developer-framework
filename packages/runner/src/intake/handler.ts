@@ -32,10 +32,12 @@ import {
 import { resolveDispatchedRunId } from './past-jobs'
 import {
   buildIntakeMessages,
+  endIntakeTurn,
   getIntakeSession,
   recordIntakeTurn,
   renderIntakeEvidence,
   reconcileIntakeSession,
+  tryBeginIntakeTurn,
   bindIntakeExecutor,
   persistIntakeExecutorSession,
   ensureIntakeWorkRoot,
@@ -189,11 +191,10 @@ async function* streamChatTurn(
   return { result: done!, streamedText }
 }
 
-export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerator<IntakeStreamEvent> {
-  const baseLogger = options.logger ?? pino({ level: 'silent' })
-  const log = baseLogger.child({ component: 'intake-handler', sessionId: options.sessionId })
-  const toolsOn = intakeToolsEnabled(options.settings)
+const TURN_IN_PROGRESS_MESSAGE =
+  'This conversation is still investigating your last message. It will show up here when that finishes.'
 
+export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerator<IntakeStreamEvent> {
   const userMessage = typeof options.message === 'string' ? options.message.trim() : ''
   if (!userMessage) {
     yield {
@@ -202,6 +203,29 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     }
     return
   }
+
+  // One turn per session. A second message — the "continue" someone sends
+  // after a refresh, while subagents are still running — must not reconcile
+  // a transcript that has none of their evidence. That is what made the
+  // model start the investigation over.
+  if (!tryBeginIntakeTurn(options.sessionId)) {
+    yield { type: 'error', message: TURN_IN_PROGRESS_MESSAGE, reason: 'turn-in-progress' }
+    return
+  }
+  try {
+    yield* executeIntakeTurn(options, userMessage)
+  } finally {
+    endIntakeTurn(options.sessionId)
+  }
+}
+
+async function* executeIntakeTurn(
+  options: RunIntakeOptions,
+  userMessage: string,
+): AsyncGenerator<IntakeStreamEvent> {
+  const baseLogger = options.logger ?? pino({ level: 'silent' })
+  const log = baseLogger.child({ component: 'intake-handler', sessionId: options.sessionId })
+  const toolsOn = intakeToolsEnabled(options.settings)
 
   const session = options.seedMessages?.length
     ? reconcileIntakeSession(options.sessionId, options.seedMessages)
@@ -238,7 +262,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
     const message = (err as Error).message
     log?.warn({ err, assignment }, 'intake: resolveExecutor failed')
     if (/executor|provider|llm/i.test(message)) {
-      yield { type: 'error', message: 'Coro plan mode needs an LLM provider. Configure one in Settings.', reason: 'no-llm' } as IntakeStreamEvent & { reason?: string }
+      yield { type: 'error', message: 'Coro plan mode needs an LLM provider. Configure one in Settings.', reason: 'no-llm' }
       return
     }
     yield { type: 'error', message }

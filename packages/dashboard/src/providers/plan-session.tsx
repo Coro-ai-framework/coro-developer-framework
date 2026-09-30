@@ -30,6 +30,7 @@ import {
   type InvestigationSummary,
 } from '../lib/intake-investigation'
 import { parseReadiness, type Readiness } from '../lib/intake-readiness'
+import { recoverIntakeReply } from '../lib/recover-intake-reply'
 import { parseRun } from '../lib/intake-run'
 import { runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
 import {
@@ -83,6 +84,8 @@ export interface PlanSessionApi extends PlanSessionState {
   /** False when the turn was refused (already busy, nothing to send). */
   send: (text: string, opts?: { generateRun?: boolean }) => Promise<boolean>
   cancel: () => void
+  /** Stop reaches a stream this page opened. A reloaded in-flight turn has no local fetch to detach. */
+  canStop: boolean
   startNewConversation: (opts?: {
     status?: InvestigationStatus
     dispatchedJobId?: string
@@ -163,6 +166,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const [investigationsTotal, setInvestigationsTotal] = useState(0)
   const [investigationsLoading, setInvestigationsLoading] = useState(true)
   const [investigationsLoadingMore, setInvestigationsLoadingMore] = useState(false)
+  const [canStop, setCanStop] = useState(false)
+  const [awaitingServerTurn, setAwaitingServerTurn] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
   const busyRef = useRef(false)
@@ -309,6 +314,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const applyRecord = useCallback((record: {
     id: string
     items: unknown[]
+    turns?: unknown
+    streaming?: boolean
     turnCount: number
     tokens: number
     contextUsed: number
@@ -321,8 +328,20 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     // Mid-turn, the live transcript is ahead of the stored one — the row was
     // written when the conversation was parked and the turn has been running
     // since. Re-attach to it so the feed picks up where the agent actually is.
+    // A reload has no live turn. `streaming` means the runner is still in it;
+    // otherwise the recorded reply is folded in so the snapshot is not the
+    // last thing the feed shows.
     const live = liveTurnsRef.current.get(record.id)
-    const nextItems = live ? live.items : asActivityItems(record.items)
+    const waiting = Boolean(record.streaming) && !live
+    const stored = asActivityItems(record.items)
+    const recovered = !live && !waiting
+      ? recoverIntakeReply(
+          stored,
+          record.turns,
+          workflowsRef.current.map(workflow => workflow.workflowPath),
+        )
+      : null
+    const nextItems = live ? live.items : (recovered?.items ?? stored)
     sessionIdRef.current = record.id
     itemsRef.current = nextItems
     bootSessionId = record.id
@@ -331,15 +350,18 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setTurnCount(record.turnCount)
     setTotalTokens(record.tokens + (live?.tokens ?? 0))
     setContextUsed(live ? live.contextUsed : record.contextUsed)
-    setReadiness(record.readiness)
+    setReadiness(recovered?.readiness ?? record.readiness)
     if (record.modelChoice?.model) setModelChoice(record.modelChoice)
     abortRef.current = live?.controller ?? null
-    busyRef.current = Boolean(live)
-    setBusy(Boolean(live))
+    busyRef.current = Boolean(live) || waiting
+    setBusy(Boolean(live) || waiting)
+    setCanStop(Boolean(live))
+    setAwaitingServerTurn(waiting)
+    if (!live) markRunning(record.id, waiting)
     setPartialText(live?.partialText ?? '')
     setPartialThinking(live?.partialThinking ?? '')
     setError(null)
-  }, [])
+  }, [markRunning])
 
   const mintEmpty = useCallback(() => {
     turnGenerationRef.current += 1
@@ -356,6 +378,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setItems([])
     busyRef.current = false
     setBusy(false)
+    setCanStop(false)
+    setAwaitingServerTurn(false)
     setPartialText('')
     setPartialThinking('')
     setError(null)
@@ -436,6 +460,35 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     }
   }, [applyRecord])
 
+  // A refresh drops the browser stream. The runner keeps the turn, and GET
+  // reports `streaming` until it records. Poll that, then fold the reply in.
+  useEffect(() => {
+    if (!awaitingServerTurn) return
+    const generation = turnGenerationRef.current
+    const sessionAtStart = sessionIdRef.current
+    let stopped = false
+    const tick = async () => {
+      if (stopped || turnGenerationRef.current !== generation) return
+      try {
+        const full = await getInvestigation(sessionAtStart)
+        if (stopped || turnGenerationRef.current !== generation || sessionIdRef.current !== sessionAtStart) return
+        if (full.streaming) {
+          markRunning(sessionAtStart, true)
+          return
+        }
+        applyRecord(full)
+      } catch {
+        // A blip must not look like the turn ended.
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => { void tick() }, 1500)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [awaitingServerTurn, sessionId, applyRecord, markRunning])
+
   useEffect(() => {
     if (!hydrated) return
     if (skipNextPersistRef.current) {
@@ -467,10 +520,14 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   }, [commitItems, hydrated, investigations, jobs, sessionId, switching])
 
   const cancel = useCallback(() => {
-    abortRef.current?.abort()
+    // A turn rediscovered after refresh has no fetch on this page. Clearing
+    // busy there would let a follow-up message race the one still running.
+    if (!abortRef.current) return
+    abortRef.current.abort()
     abortRef.current = null
     busyRef.current = false
     setBusy(false)
+    setCanStop(false)
   }, [])
 
   const startNewConversation = useCallback(async (opts?: {
@@ -614,6 +671,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
     busyRef.current = true
     setBusy(true)
+    setCanStop(true)
     markRunning(sessionAtStart, true)
     setPartialText('')
     setPartialThinking('')
@@ -659,6 +717,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
 
     const history = deriveRunHistoryHints(jobsRef.current)
     let assistantText = ''
+    let superseded = false
     let committedAssistantLength = 0
     let thinkingBuffer = ''
 
@@ -722,6 +781,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
               if (onScreen()) setContextUsed(event.contextTokens)
             }
           } else if (event.type === 'error') {
+            if (event.reason === 'turn-in-progress') {
+              superseded = true
+              return
+            }
             commitTurn(prev => applyIntakeEvent(prev, event))
             if (event.message) {
               if (onScreen()) {
@@ -750,6 +813,28 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         commitTurn(prev => [...prev, { kind: 'notice', id: nextId('notice'), tone: 'error', text: message }])
       }
     } finally {
+      if (superseded) {
+        const current = onScreen() ? itemsRef.current : live.items
+        const rolled = current.filter((item, index) => {
+          if (index !== current.length - 1) return true
+          return !(item.kind === 'message' && item.role === 'user' && item.text === outgoing)
+        })
+        live.items = rolled
+        liveTurnsRef.current.delete(sessionAtStart)
+        if (onScreen()) {
+          itemsRef.current = rolled
+          setItems(rolled)
+          setPartialText('')
+          setPartialThinking('')
+          busyRef.current = true
+          setBusy(true)
+          setCanStop(false)
+          abortRef.current = null
+          setAwaitingServerTurn(true)
+        }
+        markRunning(sessionAtStart, true)
+        return false
+      }
       flushThinking()
       const committed = assistantText.trim()
       const turnReadiness = committed ? parseReadiness(committed) : null
@@ -840,6 +925,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         setTurnCount(c => c + 1)
         busyRef.current = false
         setBusy(false)
+        setCanStop(false)
         abortRef.current = null
       } else {
         // The developer moved on. Write the finished exchange into the
@@ -898,6 +984,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       modelChoice,
       send,
       cancel,
+      canStop,
       startNewConversation,
       openInvestigation,
       removeInvestigation,
@@ -937,6 +1024,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       modelChoice,
       send,
       cancel,
+      canStop,
       startNewConversation,
       openInvestigation,
       removeInvestigation,

@@ -18,6 +18,8 @@ export interface IntakeStreamEvent {
   ok?: boolean
   summary?: string
   error?: string
+  /** Machine reason on `error` frames, e.g. `no-llm` or `turn-in-progress`. */
+  reason?: string
   /** Set on tool frames produced by a delegated subagent, e.g. "Subagent 2". */
   subagent?: string
 }

@@ -6,7 +6,7 @@ import { RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { Settings } from '../../src/config/settings'
 import { resetIntakeSessionsForTests, runIntakeStream } from '../../src/intake/handler'
-import { getIntakeSession } from '../../src/intake/session-store'
+import { getIntakeSession, intakeTurnActive } from '../../src/intake/session-store'
 import type { StateBackend } from '../../src/state/backend'
 import type { Investigation, InvestigationPatch } from '@coro-ai/cloud-protocol'
 
@@ -780,5 +780,76 @@ describe('plan-mode subagents', () => {
 
     expect(tools?.map(t => t.name)).not.toContain('delegate_investigation')
     expect(systemPrompt).not.toContain('Delegating')
+  })
+
+  it('refuses a second message while a turn is running and keeps the first turn’s evidence', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let entered!: () => void
+    const enteredGate = new Promise<void>(resolve => { entered = resolve })
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        manifest: { id: 'anthropic' },
+        chat: async () => {
+          entered()
+          await gate
+          return {
+            output: 'The auth module uses sessions.',
+            usage: { inputTokens: 3, outputTokens: 4, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [{ name: 'scm_read_file', input: { path: 'auth.ts' }, output: 'export {}' }],
+            sessionState: { sessionId: 'claude-1' },
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    const first = (async () => {
+      const events = []
+      for await (const event of runIntakeStream({
+        sessionId: 'session-live',
+        message: 'How does auth work?',
+        context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+        registry,
+        settings,
+        signal: new AbortController().signal,
+      })) {
+        events.push(event)
+      }
+      return events
+    })()
+
+    await enteredGate
+
+    const second = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-live',
+      message: 'continue',
+      seedMessages: [
+        { role: 'user', content: 'How does auth work?' },
+        { role: 'assistant', content: 'Looking now.' },
+      ],
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+    })) {
+      second.push(event)
+    }
+
+    expect(second).toEqual([
+      expect.objectContaining({ type: 'error', reason: 'turn-in-progress' }),
+    ])
+    expect(getIntakeSession('session-live').turns).toEqual([])
+    expect(intakeTurnActive('session-live')).toBe(true)
+
+    release()
+    const firstEvents = await first
+    expect(firstEvents.at(-1)).toMatchObject({ type: 'done' })
+    const session = getIntakeSession('session-live')
+    expect(session.turns).toHaveLength(1)
+    expect(session.turns[0]?.evidence).toHaveLength(1)
+    expect(session.executorSession).toEqual({ sessionId: 'claude-1' })
+    expect(intakeTurnActive('session-live')).toBe(false)
   })
 })
