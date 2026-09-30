@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   buildIntakeTools,
   createIntakeRunTool,
+  DELEGATE_INVESTIGATION_TOOL,
+  INTAKE_MAX_SUBAGENT_TASKS,
   INTAKE_MAX_TRACKER_DESCRIPTION_CHARS,
+  INTAKE_SUBAGENT_TIMEOUT_MS,
   INTAKE_TOOL_TIMEOUT_MS,
   summarizeToolCall,
 } from '../../src/intake/tools'
@@ -59,6 +62,16 @@ describe('buildIntakeTools', () => {
     expect(names).not.toContain('scm_list_files')
     expect(names).not.toContain('list_past_jobs')
     expect(names).not.toContain('get_past_job')
+    expect(names).not.toContain('delegate_investigation')
+  })
+
+  it('keeps delegate_investigation out of the lookup tool list', () => {
+    const schema = DELEGATE_INVESTIGATION_TOOL.inputSchema as {
+      properties: { tasks: { type: string; maxItems: number } }
+    }
+    expect(schema.properties.tasks.type).toBe('array')
+    expect(schema.properties.tasks.maxItems).toBe(INTAKE_MAX_SUBAGENT_TASKS)
+    expect(buildIntakeTools(mockRegistry({})).map(t => t.name)).not.toContain('delegate_investigation')
   })
 
   it('exposes scm_list_files when a plugin implements listFiles', () => {
@@ -213,6 +226,40 @@ describe('createIntakeRunTool', () => {
     expect(got.artifacts).toEqual([])
     expect(stateBackend.getJob).toHaveBeenCalledWith('job-a')
   })
+
+  it('dispatches delegate_investigation to the subagent capability', async () => {
+    const delegate = vi.fn(async () => [{ task: 'a', ok: true, output: 'found', toolCalls: 1 }])
+    const runTool = createIntakeRunTool(mockRegistry({}), new AbortController().signal, {
+      subagents: { delegate },
+    })
+    const out = await runTool('delegate_investigation', { tasks: ['a', 'b'] })
+    expect(delegate).toHaveBeenCalledWith(['a', 'b'], expect.any(AbortSignal))
+    expect(out).toEqual([{ task: 'a', ok: true, output: 'found', toolCalls: 1 }])
+  })
+
+  it('rejects a delegate call with no tasks, too many tasks, or no dispatcher', async () => {
+    const runTool = createIntakeRunTool(mockRegistry({}), new AbortController().signal, {
+      subagents: { delegate: async () => [] },
+    })
+    await expect(runTool('delegate_investigation', { tasks: [] })).rejects.toThrow(/non-empty array/)
+    await expect(runTool('delegate_investigation', { tasks: ['a', 'b', 'c', 'd', 'e'] })).rejects.toThrow(/at most 4/)
+    const bare = createIntakeRunTool(mockRegistry({}), new AbortController().signal)
+    await expect(bare('delegate_investigation', { tasks: ['a'] })).rejects.toThrow(/not available/)
+  })
+
+  it('gives delegate_investigation a longer timeout than lookups', async () => {
+    vi.useFakeTimers()
+    const runTool = createIntakeRunTool(mockRegistry({}), new AbortController().signal, {
+      subagents: { delegate: () => new Promise(() => {}) },
+    })
+    let settled = false
+    const pending = runTool('delegate_investigation', { tasks: ['look'] }).then(() => { settled = true }, () => { settled = true })
+    await vi.advanceTimersByTimeAsync(INTAKE_TOOL_TIMEOUT_MS + 10)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(INTAKE_SUBAGENT_TIMEOUT_MS + INTAKE_TOOL_TIMEOUT_MS)
+    await pending
+    expect(settled).toBe(true)
+  })
 })
 
 describe('summarizeToolCall', () => {
@@ -255,5 +302,11 @@ describe('summarizeToolCall', () => {
     expect(summarizeToolCall('read_past_job_artifact', { artifactId: 'art-1' }, {})).toBe('Read artefact art-1')
     expect(summarizeToolCall('list_past_job_files', { path: 'src' }, { entries: [{}, {}] })).toBe('Listed 2 job entries in src')
     expect(summarizeToolCall('read_past_job_file', { path: 'plan.md' }, {})).toBe('Read job file plan.md')
+  })
+
+  it('summarises a delegated investigation', () => {
+    expect(summarizeToolCall('delegate_investigation', {}, [{ ok: true }, { ok: false }])).toBe(
+      'Delegated 2 investigations (1 ok)',
+    )
   })
 })

@@ -126,6 +126,34 @@ describe('applyIntakeEvent', () => {
   })
 })
 
+describe('subagent chips', () => {
+  it('settles parallel subagents calling the same tool against their own chips', () => {
+    let items: ActivityItem[] = []
+    items = applyIntakeEvent(items, { type: 'tool_start', name: 'scm_read_file', input: { path: 'a.ts' }, subagent: 'Subagent 1' })
+    items = applyIntakeEvent(items, { type: 'tool_start', name: 'scm_read_file', input: { path: 'a.ts' }, subagent: 'Subagent 2' })
+    items = applyIntakeEvent(items, { type: 'tool_end', name: 'scm_read_file', ok: true, summary: 'Read a.ts', subagent: 'Subagent 2' })
+    items = applyIntakeEvent(items, { type: 'tool_end', name: 'scm_read_file', ok: true, summary: 'Read a.ts', subagent: 'Subagent 1' })
+    const entries = items.flatMap(item => item.kind === 'activity' ? item.entries : [])
+    expect(entries.map(e => e.settledLabel)).toEqual([
+      'Subagent 1 · Read a.ts',
+      'Subagent 2 · Read a.ts',
+    ])
+    expect(entries.every(e => e.status === 'done')).toBe(true)
+    expect(entries[0]?.runningLabel.startsWith('Subagent 1 · ')).toBe(true)
+    expect(entries[1]?.runningLabel.startsWith('Subagent 2 · ')).toBe(true)
+  })
+
+  it('does not treat a subagent call as a duplicate of the parent call', () => {
+    let items: ActivityItem[] = []
+    items = applyIntakeEvent(items, start('scm_read_file', { path: 'a.ts' }))
+    items = applyIntakeEvent(items, { type: 'tool_start', name: 'scm_read_file', input: { path: 'a.ts' }, subagent: 'Subagent 1' })
+    const entries = items.flatMap(item => item.kind === 'activity' ? item.entries : [])
+    expect(entries).toHaveLength(2)
+    expect(entries[0]?.actor).toBeUndefined()
+    expect(entries[1]?.actor).toBe('Subagent 1')
+  })
+})
+
 describe('runningLabelFor', () => {
   it('humanizes MCP Atlassian tools instead of dumping the server id', () => {
     expect(runningLabelFor('mcp__claude_ai_Atlassian__getJiraIssue', { issueId: 'WS-5144' })).toBe('Reading WS-5144')
@@ -134,5 +162,6 @@ describe('runningLabelFor', () => {
       'Browsing internal/platform',
     )
     expect(runningLabelFor('Bash', { command: 'ls' })).toBe('Bash')
+    expect(runningLabelFor('delegate_investigation', { tasks: ['a', 'b'] })).toBe('Delegating 2 investigations')
   })
 })

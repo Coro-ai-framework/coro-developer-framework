@@ -19,7 +19,17 @@ export interface IntakePromptOptions {
   toolsEnabled?: boolean
   pastJobsEnabled?: boolean
   planModeMcpServerIds?: string[]
+  subagentsEnabled?: boolean
 }
+
+const READ_ONLY_TOOL_RULES_HEAD = `- Prefer one scm_list_files call over multiple scm_search_code guesses when you don't know the layout.
+- Never call scm_read_file with a path you haven't verified via scm_list_files (or that the user gave you literally).`
+
+const READ_ONLY_TOOL_RULES_TAIL = `- These tools never write — no comments, transitions, commits, or PRs from plan mode.
+- If a tool errors, summarise the failure to the user and proceed with what you have.`
+
+const READ_ONLY_TOOL_RULES = `${READ_ONLY_TOOL_RULES_HEAD}
+${READ_ONLY_TOOL_RULES_TAIL}`
 
 export function buildIntakeSystemPrompt(context: IntakeContext, options: IntakePromptOptions = {}): string {
   const workflowsJson = JSON.stringify(context.availableWorkflows, null, 2)
@@ -44,6 +54,17 @@ ${planModeMcpIds.map(id => `- ${id}: use when the user asks about service owners
 `
     : ''
 
+  const subagentsSection = options.subagentsEnabled
+    ? `
+Delegating (delegate_investigation):
+- Use it for breadth: 2–4 independent questions that each need several reads — different repos, different directories, a ticket thread and the code it names, a past job's artefacts. Subagents run in parallel with the same read-only tools you have.
+- Do not delegate a single lookup; call the tool yourself. Do not delegate a question whose answer decides what to ask next — run those in sequence.
+- Each task must stand alone: name the repo, the paths or ticket keys, and exactly what to report. A subagent sees nothing of this conversation.
+- Subagent reports are evidence, not ground truth. A claim that is load-bearing for the findings or the run description must cite a file or ticket; re-read it yourself when in doubt.
+- Reports come back in <evidence> on later turns like any tool result — do not delegate the same question twice.
+`
+    : ''
+
   const toolsSection = options.toolsEnabled
     ? `
 Tools (read-only — this is how you investigate):
@@ -53,13 +74,11 @@ Tools (read-only — this is how you investigate):
 - scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directories that look relevant.
 - scm_read_file: when you need a file's contents. Confirm the path with scm_list_files first; do not guess paths.
 - scm_search_code: when the user names a symbol or string and you want to find it. On Bitbucket Cloud this can legitimately return 0 hits even when the symbol exists (workspaces below Standard plan are not in the search index), so do not retry the same search more than once — switch to scm_list_files instead.
-${pastJobsSection}${planModeMcpSection}
+${pastJobsSection}${planModeMcpSection}${subagentsSection}
 Tool rules:
 - Read as much as the investigation genuinely needs. Depth is the point of this conversation — you are not rationing calls. What you must not do is read aimlessly: every call should be answering a question you can name.
-- Prefer one scm_list_files call over multiple scm_search_code guesses when you don't know the layout.
-- Never call scm_read_file with a path you haven't verified via scm_list_files (or that the user gave you literally).
-${options.pastJobsEnabled ? '- Call list_past_jobs before guessing a job id. get_past_job is a catalog — never expect file bodies from it. Read artefacts one at a time with read_past_job_artifact; crawl the workspace with list_past_job_files / read_past_job_file. If a read is truncated, continue from nextOffset. Fold what you learned into the run description — the autonomous agent does not get these tool results. Do not abandon a past job for the live repo until the workspace is missing.\n' : ''}- These tools never write — no comments, transitions, commits, or PRs from plan mode.
-- If a tool errors, summarise the failure to the user and proceed with what you have.
+${READ_ONLY_TOOL_RULES_HEAD}
+${options.pastJobsEnabled ? '- Call list_past_jobs before guessing a job id. get_past_job is a catalog — never expect file bodies from it. Read artefacts one at a time with read_past_job_artifact; crawl the workspace with list_past_job_files / read_past_job_file. If a read is truncated, continue from nextOffset. Fold what you learned into the run description — the autonomous agent does not get these tool results. Do not abandon a past job for the live repo until the workspace is missing.\n' : ''}${READ_ONLY_TOOL_RULES_TAIL}
 - Your own prior tool results are replayed to you inside <evidence> blocks on your earlier turns. Read them before calling anything — re-reading a file that is already in your evidence wastes the developer's money and tells you nothing new.
 - When the developer names a ticket, read it (and its comments when the thread looks load-bearing) and fold the substance into your investigation. The autonomous agent that runs later does NOT get the ticket — only the run description you eventually write. Never write "see PROJ-123" and stop there.
 `
@@ -163,6 +182,21 @@ Run schema (emit EXACTLY this shape inside the <run> tags):
   "interactive": true
 }
 </run>`
+}
+
+export function buildIntakeSubagentSystemPrompt(): string {
+  return `You are a research subagent for Coro plan mode. Another agent is investigating a piece of work with a developer and has handed you one self-contained question. Answer that question and nothing else.
+
+How to work:
+- Use the read-only tools to find the answer. Read before you claim; say "not found" or "could not determine" rather than guessing.
+${READ_ONLY_TOOL_RULES}
+- Nobody will answer questions from you. If the task is ambiguous, state the assumption you made and proceed.
+
+How to report (this is your final message, returned verbatim to the other agent):
+- Concise markdown. Lead with the direct answer, then the supporting evidence.
+- Cite every file path, symbol, ticket key, or job id you relied on.
+- End with what you could not determine, if anything.
+- Never emit <run>, <findings>, or <readiness> blocks — those belong to the other agent.`
 }
 
 /**

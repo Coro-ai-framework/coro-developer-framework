@@ -1,5 +1,5 @@
 import type { ChatRequest, ChatResult } from '@coro-ai/plugin-sdk'
-import { createSdkMcpServer, RateLimitExceededError } from '@coro-ai/plugin-sdk'
+import { createSdkMcpServer, emptyNormalizedUsage, RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import type { PhaseExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { Logger } from 'pino'
 import pino from 'pino'
@@ -11,9 +11,17 @@ import { resolveIntelligenceDir, resolveWorkingDir } from '../config/local-confi
 import {
   buildIntakeTools,
   createIntakeRunTool,
+  DELEGATE_INVESTIGATION_TOOL,
   INTAKE_MAX_TOOL_ROUNDS,
-  summarizeToolCall,
 } from './tools'
+import { createIntakeSubagentDispatcher, intakeSubagentsEnabled } from './subagents'
+import {
+  createIntakeEventQueue,
+  toolEndEvent,
+  toolStartEvent,
+  type IntakeEventQueue,
+  type IntakeStreamEvent,
+} from './stream-events'
 import {
   buildIntakeSystemPrompt,
   formatIntakeUserPrompt,
@@ -37,25 +45,7 @@ import {
 import { persistLiveIntakeSession } from './persist'
 
 export { resetIntakeSessionsForTests }
-
-export interface IntakeStreamEvent {
-  type: 'token' | 'thinking' | 'done' | 'error' | 'tool_start' | 'tool_end'
-  text?: string
-  usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
-  /** Tokens resident in the model's context after this turn. */
-  contextTokens?: number
-  /** Cumulative billed tokens across the whole session. */
-  sessionTokens?: number
-  /** Completed turns in this session, including this one. */
-  turns?: number
-  message?: string
-  name?: string
-  input?: unknown
-  durationMs?: number
-  ok?: boolean
-  summary?: string
-  error?: string
-}
+export type { IntakeStreamEvent } from './stream-events'
 
 export interface RunIntakeOptions {
   sessionId: string
@@ -142,28 +132,22 @@ async function persistTurn(options: RunIntakeOptions): Promise<void> {
  * the model thinks, speaks, and invokes tools. The executor itself
  * only resolves a single final `ChatResult`; we bridge to a stream by
  * attaching `onText` / `onThinking` / `onToolStart` / `onToolEnd`
- * hooks that push events into a queue and wake the generator loop via
- * `notify`.
+ * hooks that push events into a shared queue. Nested subagent hooks
+ * push into the same queue, so their tool frames interleave live.
  *
  * Invariants:
  *   - The hooks fire synchronously inside the executor's tool loop,
- *     so each push happens-before the corresponding `notify?.()`.
- *   - When the chat task resolves/rejects, the awaited `Promise.race`
- *     unblocks and we drain any remaining queued events before
- *     returning the final ChatResult (or throwing).
+ *     so each push happens-before the corresponding wake.
+ *   - When the chat task resolves/rejects, the awaited wait unblocks
+ *     and we drain any remaining queued events before returning the
+ *     final ChatResult (or throwing).
  */
 async function* streamChatTurn(
   executor: { chat: (req: ChatRequest) => Promise<ChatResult> },
   chatReq: ChatRequest,
+  events: IntakeEventQueue,
 ): AsyncGenerator<IntakeStreamEvent, { result: ChatResult; streamedText: boolean }> {
-  let notify: (() => void) | null = null
-  const queue: IntakeStreamEvent[] = []
   let streamedText = false
-
-  const wake = (): void => {
-    notify?.()
-    notify = null
-  }
 
   const reqWithHooks: ChatRequest = {
     ...chatReq,
@@ -171,53 +155,35 @@ async function* streamChatTurn(
       if (!content) return
       streamedText = true
       chatReq.onText?.(content)
-      queue.push({ type: 'token', text: content })
-      wake()
+      events.push({ type: 'token', text: content })
     },
     onThinking: content => {
       if (!content) return
       chatReq.onThinking?.(content)
-      queue.push({ type: 'thinking', text: content })
-      wake()
+      events.push({ type: 'thinking', text: content })
     },
     onToolStart: info => {
       chatReq.onToolStart?.(info)
-      queue.push({ type: 'tool_start', name: info.name, input: info.input })
-      wake()
+      events.push(toolStartEvent(info))
     },
     onToolEnd: record => {
       chatReq.onToolEnd?.(record)
-      queue.push({
-        type: 'tool_end',
-        name: record.name,
-        durationMs: record.durationMs,
-        ok: !record.error,
-        summary: record.error ?? summarizeToolCall(record.name, record.input, record.output),
-        ...(record.error ? { error: record.error } : {}),
-      })
-      wake()
+      events.push(toolEndEvent(record))
     },
   }
 
   let done: ChatResult | null = null
   let chatError: unknown = null
+  let settled = false
   const chatTask = executor.chat(reqWithHooks)
-    .then(result => { done = result })
-    .catch(err => { chatError = err })
+    .then(result => { done = result }, err => { chatError = err })
+    .finally(() => { settled = true })
 
-  while (!done && !chatError) {
-    while (queue.length > 0) {
-      yield queue.shift()!
-    }
-    await Promise.race([
-      chatTask,
-      new Promise<void>(resolve => { notify = resolve }),
-    ])
+  while (!settled) {
+    yield* events.drain()
+    await events.until(chatTask)
   }
-
-  while (queue.length > 0) {
-    yield queue.shift()!
-  }
+  yield* events.drain()
 
   if (chatError) throw chatError
   return { result: done!, streamedText }
@@ -282,6 +248,34 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
   bindIntakeExecutor(options.sessionId, executor.manifest?.id)
   const liveSession = getIntakeSession(options.sessionId)
   const workRoot = ensureIntakeWorkRoot(options.sessionId)
+  const model = assignment.model
+  const cwd = resolveWorkingDir(null)
+  const intelligenceDir = resolveIntelligenceDir(null)
+  const lookupTools = toolsOn ? buildIntakeTools(options.registry, { stateBackend: options.stateBackend }) : []
+  const planModeMcpServers = toolsOn ? collectPlanModeMcpServers({ logger: baseLogger }) : {}
+  const planModeMcpServerIds = Object.keys(planModeMcpServers)
+  const events = createIntakeEventQueue()
+  const subagents =
+    toolsOn &&
+    intakeSubagentsEnabled(options.settings) &&
+    typeof executor.chat === 'function' &&
+    (lookupTools.length > 0 || planModeMcpServerIds.length > 0)
+      ? createIntakeSubagentDispatcher({
+          executor: executor as Parameters<typeof createIntakeSubagentDispatcher>[0]['executor'],
+          parentModel: model,
+          settings: options.settings,
+          registry: options.registry,
+          lookupTools,
+          toolDeps: { stateBackend: options.stateBackend, workingDir: cwd },
+          pluginMcpServers: planModeMcpServers,
+          workRoot,
+          emit: events.push,
+          logger: log,
+        })
+      : undefined
+  const tools = subagents ? [...lookupTools, DELEGATE_INVESTIGATION_TOOL] : lookupTools
+  const hasTools = tools.length > 0 || planModeMcpServerIds.length > 0
+  const pastJobsEnabled = tools.some(t => t.name === 'list_past_jobs')
 
   log?.debug(
     {
@@ -290,21 +284,16 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       hasChat: typeof executor.chat === 'function',
       hasRunSubagent: typeof executor.runSubagent === 'function',
       toolsOn,
+      subagents: Boolean(subagents),
     },
     'intake: executor resolved',
   )
 
-  const cwd = resolveWorkingDir(null)
-  const intelligenceDir = resolveIntelligenceDir(null)
-  const tools = toolsOn ? buildIntakeTools(options.registry, { stateBackend: options.stateBackend }) : []
-  const planModeMcpServers = toolsOn ? collectPlanModeMcpServers({ logger: baseLogger }) : {}
-  const planModeMcpServerIds = Object.keys(planModeMcpServers)
-  const hasTools = tools.length > 0 || planModeMcpServerIds.length > 0
-  const pastJobsEnabled = tools.some(t => t.name === 'list_past_jobs')
   const systemPrompt = buildIntakeSystemPrompt(options.context, {
     toolsEnabled: hasTools,
     pastJobsEnabled,
     planModeMcpServerIds,
+    subagentsEnabled: Boolean(subagents),
   })
 
   // A dispatched run is only worth naming when the agent also has the tools
@@ -333,7 +322,6 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       : userMessage,
   )
   const emptyMcp = createSdkMcpServer({ name: 'coro', tools: [] })
-  const model = assignment.model
   const hookPolicy = { allowedTools: [] as string[], writeRoots: [] as string[] }
 
   try {
@@ -365,6 +353,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
               runTool: createIntakeRunTool(options.registry, options.signal, {
                 stateBackend: options.stateBackend,
                 workingDir: cwd,
+                ...(subagents ? { subagents } : {}),
               }),
             }
           : {}),
@@ -375,6 +364,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       const chatGen = streamChatTurn(
         executor as { chat: (req: ChatRequest) => Promise<ChatResult> },
         chatReq,
+        events,
       )
       let next = await chatGen.next()
       while (!next.done) {
@@ -385,6 +375,10 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       result = next.value.result
       streamedText = streamedText || next.value.streamedText
 
+      const subagentUsage = subagents?.usage() ?? emptyNormalizedUsage()
+      const subagentTokens = subagentUsage.inputTokens + subagentUsage.outputTokens
+      const tokens = result.usage.inputTokens + result.usage.outputTokens
+
       log?.debug(
         {
           pluginId: executor.manifest?.id,
@@ -393,11 +387,10 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           toolCalls: result.toolCalls?.length ?? 0,
+          subagentTokens,
         },
         'intake: chat() resolved',
       )
-
-      const tokens = result.usage.inputTokens + result.usage.outputTokens
 
       const trimmed = result.output.trim()
       if (!trimmed) {
@@ -421,6 +414,7 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
         assistant: trimmed,
         evidence,
         usage: result.usage,
+        extraBilledTokens: subagentTokens,
       })
       persistIntakeExecutorSession(options.sessionId, result.sessionState)
       await persistTurn(options)
@@ -436,9 +430,9 @@ export async function* runIntakeStream(options: RunIntakeOptions): AsyncGenerato
       yield {
         type: 'done',
         usage: {
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          totalTokens: tokens,
+          inputTokens: result.usage.inputTokens + subagentUsage.inputTokens,
+          outputTokens: result.usage.outputTokens + subagentUsage.outputTokens,
+          totalTokens: tokens + subagentTokens,
         },
         contextTokens: updated.contextTokens,
         sessionTokens: updated.tokens,

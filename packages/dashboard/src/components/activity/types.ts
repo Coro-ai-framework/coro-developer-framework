@@ -32,6 +32,8 @@ export interface ActivityEntry {
   /** Server-side plugin/server id when group === 'external'. */
   externalId?: string
   status: 'running' | 'done' | 'failed'
+  /** Who performed this step when it was delegated, e.g. "Subagent 2". Undefined for the main agent. */
+  actor?: string
   /** Label while running, e.g. 'Reading src/api/users.ts'. Adapter supplies it. */
   runningLabel: string
   /** Label once settled, e.g. 'Read src/api/users.ts'. Adapter supplies it. */

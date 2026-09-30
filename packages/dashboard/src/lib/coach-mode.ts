@@ -10,6 +10,8 @@ export interface CoachModeConfig {
 
 export interface IntakeConfig {
   toolsEnabled?: boolean
+  subagentsEnabled?: boolean
+  subagentModel?: string
 }
 
 export const DEFAULT_COACH_MODE: Required<Pick<CoachModeConfig, 'enabled' | 'graduateAfterRuns'>> = {

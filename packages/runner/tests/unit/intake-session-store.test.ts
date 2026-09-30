@@ -160,6 +160,20 @@ describe('deleteIntakeSession', () => {
   })
 })
 
+describe('recordIntakeTurn', () => {
+  it('bills extra tokens without growing the context window', () => {
+    const session = recordIntakeTurn('s', {
+      user: 'q',
+      assistant: 'a',
+      evidence: [],
+      usage,
+      extraBilledTokens: 7,
+    })
+    expect(session.tokens).toBe(21)
+    expect(session.contextTokens).toBe(14)
+  })
+})
+
 describe('hydrateIntakeSession', () => {
   it('restores turns into the hot cache without creating a duplicate empty session first', () => {
     expect(peekIntakeSession('restored')).toBeUndefined()

@@ -86,16 +86,43 @@ function mcpError(msg: string) {
   return { content: [{ type: 'text' as const, text: msg }], isError: true as const }
 }
 
-function chatToolZodShape(inputSchema: object): Record<string, z.ZodTypeAny> {
-  if (inputSchema && typeof inputSchema === 'object' && 'properties' in inputSchema) {
-    const props = (inputSchema as { properties?: Record<string, { type?: string }> }).properties ?? {}
-    const shape: Record<string, z.ZodTypeAny> = {}
-    for (const [key, spec] of Object.entries(props)) {
-      shape[key] = spec?.type === 'number' ? z.number() : z.string()
+interface JsonSchemaProperty {
+  type?: string
+  items?: JsonSchemaProperty
+  description?: string
+  minItems?: number
+  maxItems?: number
+}
+
+function zodForProperty(spec: JsonSchemaProperty | undefined): z.ZodTypeAny {
+  switch (spec?.type) {
+    case 'number':
+    case 'integer':
+      return z.number()
+    case 'boolean':
+      return z.boolean()
+    case 'array': {
+      let array = z.array(zodForProperty(spec.items ?? { type: 'string' }))
+      if (typeof spec.minItems === 'number') array = array.min(spec.minItems)
+      if (typeof spec.maxItems === 'number') array = array.max(spec.maxItems)
+      return array
     }
-    return shape
+    default:
+      return z.string()
   }
-  return {}
+}
+
+export function chatToolZodShape(inputSchema: object): Record<string, z.ZodTypeAny> {
+  if (!inputSchema || typeof inputSchema !== 'object' || !('properties' in inputSchema)) return {}
+  const schema = inputSchema as { properties?: Record<string, JsonSchemaProperty>; required?: string[] }
+  const required = new Set(schema.required ?? [])
+  const shape: Record<string, z.ZodTypeAny> = {}
+  for (const [key, spec] of Object.entries(schema.properties ?? {})) {
+    const base = zodForProperty(spec)
+    const described = spec?.description ? base.describe(spec.description) : base
+    shape[key] = required.has(key) ? described : described.optional()
+  }
+  return shape
 }
 
 function buildChatMcpServer(

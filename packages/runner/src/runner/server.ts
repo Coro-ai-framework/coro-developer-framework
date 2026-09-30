@@ -2762,6 +2762,14 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           if (typeof incoming.toolsEnabled === 'boolean') {
             next.toolsEnabled = incoming.toolsEnabled
           }
+          if (typeof incoming.subagentsEnabled === 'boolean') {
+            next.subagentsEnabled = incoming.subagentsEnabled
+          }
+          if (typeof incoming.subagentModel === 'string') {
+            const trimmed = incoming.subagentModel.trim()
+            if (trimmed) next.subagentModel = trimmed
+            else delete next.subagentModel
+          }
           ;(merged as Record<string, unknown>).intake = next
         }
       }

@@ -263,6 +263,8 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
     },
     intake: {
       toolsEnabled: config.intake?.toolsEnabled !== false,
+      subagentsEnabled: config.intake?.subagentsEnabled !== false,
+      ...(config.intake?.subagentModel?.trim() ? { subagentModel: config.intake.subagentModel.trim() } : {}),
     },
     jobs: config.jobs
       ? {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildIntakeSystemPrompt, renderDispatchedRunBlock } from '../../src/intake/system-prompt'
+import { buildIntakeSubagentSystemPrompt, buildIntakeSystemPrompt, renderDispatchedRunBlock } from '../../src/intake/system-prompt'
 
 const emptyContext = {
   recentRepos: [],
@@ -25,6 +25,23 @@ describe('buildIntakeSystemPrompt', () => {
     expect(prompt).not.toContain('list_past_jobs')
     expect(prompt).not.toContain('get_past_job')
     expect(prompt).not.toContain('read_past_job_artifact')
+  })
+
+  it('documents delegation only when subagents are enabled', () => {
+    const on = buildIntakeSystemPrompt(emptyContext, { toolsEnabled: true, subagentsEnabled: true })
+    const off = buildIntakeSystemPrompt(emptyContext, { toolsEnabled: true })
+    expect(on).toContain('delegate_investigation')
+    expect(on).toContain('stand alone')
+    expect(off).not.toContain('Delegating')
+  })
+})
+
+describe('buildIntakeSubagentSystemPrompt', () => {
+  it('keeps the read-only rules and leaves run blocks to the parent', () => {
+    const prompt = buildIntakeSubagentSystemPrompt()
+    expect(prompt).toContain('scm_list_files')
+    expect(prompt).toContain('never write')
+    expect(prompt).toContain('<run>')
   })
 })
 

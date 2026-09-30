@@ -29,6 +29,11 @@ export const INTAKE_TOOL_TIMEOUT_MS = 15_000
  * repo it has never seen rather than for a three-question intake.
  */
 export const INTAKE_MAX_TOOL_ROUNDS = 25
+export const DELEGATE_INVESTIGATION_TOOL_NAME = 'delegate_investigation'
+/** Tasks one delegate_investigation call may carry, and subagents one turn may run at once. */
+export const INTAKE_MAX_SUBAGENT_TASKS = 4
+/** Per-subagent deadline. The dispatcher enforces it and reports a timeout instead of throwing. */
+export const INTAKE_SUBAGENT_TIMEOUT_MS = 5 * 60_000
 /** Hard cap on a single tracker description we hand back to the LLM. */
 export const INTAKE_MAX_TRACKER_DESCRIPTION_CHARS = 8 * 1024
 /** Hard cap on how many comments a single tracker_get_comments call returns. */
@@ -58,9 +63,46 @@ function hasScmMethod(
 /** Hard cap on entries returned to the LLM in a single list_files call. */
 export const INTAKE_MAX_LIST_FILES = 200
 
+export interface IntakeSubagentReport {
+  task: string
+  ok: boolean
+  output: string
+  error?: string
+  /** Tool calls the subagent made — lets the parent judge how grounded the output is. */
+  toolCalls: number
+}
+
+export interface IntakeSubagentDispatcher {
+  delegate(tasks: ReadonlyArray<string>, signal: AbortSignal): Promise<IntakeSubagentReport[]>
+}
+
+export const DELEGATE_INVESTIGATION_TOOL: ChatTool = {
+  name: DELEGATE_INVESTIGATION_TOOL_NAME,
+  description:
+    `Run up to ${INTAKE_MAX_SUBAGENT_TASKS} independent read-only investigations in parallel. ` +
+    'Each task goes to a fresh subagent with the same lookup tools you have and returns its findings. ' +
+    'Subagents do NOT see this conversation: every task must name the repo, paths or ticket keys, ' +
+    'and exactly what to report. Use for breadth, not for a single lookup. Read-only.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      tasks: {
+        type: 'array',
+        items: { type: 'string' },
+        minItems: 1,
+        maxItems: INTAKE_MAX_SUBAGENT_TASKS,
+        description: 'Self-contained instructions, one per subagent.',
+      },
+    },
+    required: ['tasks'],
+  },
+}
+
 export interface IntakeToolDeps {
   stateBackend?: StateBackend
   workingDir?: string
+  /** Present only when this turn offers delegate_investigation. */
+  subagents?: IntakeSubagentDispatcher
 }
 
 export function buildIntakeTools(
@@ -379,6 +421,11 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
     const filePath = readField(input, 'path')
     return filePath ? `Read job file ${filePath}` : 'Read job file'
   }
+  if (name === DELEGATE_INVESTIGATION_TOOL_NAME) {
+    const reports = Array.isArray(output) ? (output as Array<{ ok?: boolean }>) : []
+    const ok = reports.filter(r => r?.ok).length
+    return `Delegated ${reports.length} investigation${reports.length === 1 ? '' : 's'} (${ok} ok)`
+  }
   const mcp = parseMcpToolName(name)
   if (mcp) {
     return `${mcp.serverId}: ${mcp.toolName}`
@@ -409,6 +456,27 @@ function parseArgs(input: unknown): Record<string, unknown> {
   return {}
 }
 
+function parseSubagentTasks(raw: unknown): string[] {
+  const list = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : []
+  const tasks = list.filter((t): t is string => typeof t === 'string').map(t => t.trim()).filter(Boolean)
+  if (tasks.length === 0) {
+    throw new Error('delegate_investigation requires tasks: a non-empty array of self-contained instructions.')
+  }
+  if (tasks.length > INTAKE_MAX_SUBAGENT_TASKS) {
+    throw new Error(
+      `delegate_investigation accepts at most ${INTAKE_MAX_SUBAGENT_TASKS} tasks; got ${tasks.length}. ` +
+      'Merge related questions or delegate the rest after these return.',
+    )
+  }
+  return tasks
+}
+
+function toolTimeoutMs(name: string): number {
+  return name === DELEGATE_INVESTIGATION_TOOL_NAME
+    ? INTAKE_SUBAGENT_TIMEOUT_MS + INTAKE_TOOL_TIMEOUT_MS
+    : INTAKE_TOOL_TIMEOUT_MS
+}
+
 export function createIntakeRunTool(
   registry: PluginRegistry,
   signal: AbortSignal,
@@ -417,8 +485,8 @@ export function createIntakeRunTool(
   return async (name: string, input: unknown) => {
     const args = parseArgs(input)
     return withTimeout(
-      dispatchIntakeTool(registry, name, args, deps),
-      INTAKE_TOOL_TIMEOUT_MS,
+      dispatchIntakeTool(registry, name, args, deps, signal),
+      toolTimeoutMs(name),
       signal,
     )
   }
@@ -429,6 +497,7 @@ async function dispatchIntakeTool(
   name: string,
   args: Record<string, unknown>,
   deps: IntakeToolDeps,
+  signal: AbortSignal,
 ): Promise<unknown> {
   switch (name) {
     case 'tracker_get_issue': {
@@ -588,6 +657,10 @@ async function dispatchIntakeTool(
           ...(deps.workingDir ? { workingDir: deps.workingDir } : {}),
         },
       )
+    }
+    case DELEGATE_INVESTIGATION_TOOL_NAME: {
+      if (!deps.subagents) throw new Error('delegate_investigation is not available in this plan-mode turn.')
+      return deps.subagents.delegate(parseSubagentTasks(args.tasks), signal)
     }
     default:
       throw new Error(`Unknown plan-mode tool: ${name}`)

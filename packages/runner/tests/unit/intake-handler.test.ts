@@ -194,8 +194,9 @@ describe('runIntakeStream', () => {
     const registry = {
       all: () => [],
       resolveExecutor: () => ({
-        chat: async () => {
+        chat: async (req: { tools?: unknown }) => {
           calls.chat += 1
+          expect(req.tools).toBeUndefined()
           return { output: 'chat path', usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }, toolCalls: [] }
         },
         runSubagent: async () => {
@@ -678,5 +679,106 @@ describe('runIntakeStream — dispatched run awareness', () => {
 
     await drain('session-backend-down', 'How is it going?', capturingRegistry(seen), backend)
     expect(seen[0]?.at(-1)?.content).toBe('How is it going?')
+  })
+})
+
+describe('plan-mode subagents', () => {
+  const usage = { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }
+
+  function trackerRegistry(chat: (req: {
+    systemPrompt?: string
+    tools?: Array<{ name: string }>
+    runTool?: (name: string, input: unknown) => Promise<unknown>
+    onToolStart?: (info: { name: string; input: unknown }) => void
+    onToolEnd?: (record: { name: string; input: unknown; output: unknown; durationMs: number }) => void
+  }) => Promise<unknown>) {
+    const trackerPlugin = {
+      manifest: { id: 'jira', kind: 'tracker' as const },
+      kind: 'tracker' as const,
+      getIssue: async (key: string) => ({ key, url: 'u', summary: 'Hello', status: 'open' }),
+    }
+    return {
+      all: () => [trackerPlugin],
+      resolveTracker: () => trackerPlugin,
+      resolveScm: () => { throw new Error('no scm') },
+      resolveExecutor: () => ({ chat }),
+    } as unknown as PluginRegistry
+  }
+
+  it('streams subagent tool events and bills their tokens outside the context window', async () => {
+    const registry = trackerRegistry(async (req) => {
+      if (req.systemPrompt?.includes('research subagent')) {
+        req.onToolStart?.({ name: 'tracker_get_issue', input: { key: 'PROJ-1' } })
+        const output = { key: 'PROJ-1' }
+        req.onToolEnd?.({ name: 'tracker_get_issue', input: { key: 'PROJ-1' }, output, durationMs: 2 })
+        return {
+          output: 'PROJ-1 is about logging.',
+          usage: { ...usage, inputTokens: 10, outputTokens: 5 },
+          toolCalls: [{ name: 'tracker_get_issue', input: { key: 'PROJ-1' }, output, durationMs: 2 }],
+        }
+      }
+      const output = await req.runTool!('delegate_investigation', { tasks: ['look up PROJ-1'] })
+      return {
+        output: 'Delegated.',
+        usage: { ...usage, inputTokens: 20, outputTokens: 8 },
+        toolCalls: [{ name: 'delegate_investigation', input: { tasks: ['look up PROJ-1'] }, output, durationMs: 4 }],
+      }
+    })
+
+    const events: Array<Record<string, unknown>> = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-subagents',
+      message: 'What is PROJ-1?',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+    })) {
+      events.push(event)
+    }
+
+    const nested = events.find(e => e.type === 'tool_start' && e.subagent)
+    expect(nested).toMatchObject({
+      type: 'tool_start',
+      name: 'tracker_get_issue',
+      subagent: 'Subagent 1',
+    })
+    expect(events.indexOf(nested!)).toBeLessThan(events.findIndex(e => e.type === 'done'))
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      usage: { inputTokens: 30, outputTokens: 13, totalTokens: 43 },
+      contextTokens: 28,
+      sessionTokens: 43,
+    })
+    expect(getIntakeSession('session-subagents').tokens).toBe(43)
+    expect(getIntakeSession('session-subagents').contextTokens).toBe(28)
+  })
+
+  it('omits delegate_investigation when subagents are disabled', async () => {
+    let tools: Array<{ name: string }> | undefined
+    let systemPrompt = ''
+    const registry = trackerRegistry(async (req) => {
+      tools = req.tools
+      systemPrompt = req.systemPrompt ?? ''
+      return {
+        output: 'No delegation.',
+        usage: { ...usage, inputTokens: 1, outputTokens: 1 },
+        toolCalls: [],
+      }
+    })
+
+    for await (const _event of runIntakeStream({
+      sessionId: 'session-subagents-off',
+      message: 'What is PROJ-1?',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings: { intake: { toolsEnabled: true, subagentsEnabled: false } } as Settings,
+      signal: new AbortController().signal,
+    })) {
+      // drain
+    }
+
+    expect(tools?.map(t => t.name)).not.toContain('delegate_investigation')
+    expect(systemPrompt).not.toContain('Delegating')
   })
 })

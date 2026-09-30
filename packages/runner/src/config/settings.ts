@@ -183,6 +183,10 @@ export interface Settings {
   intake?: {
     /** When false, plan mode runs without read-only tracker/SCM tools. Default true. */
     toolsEnabled?: boolean
+    /** When false, plan mode cannot delegate to parallel subagents. Default true; requires toolsEnabled. */
+    subagentsEnabled?: boolean
+    /** Model id for plan-mode subagents. Falls back to the `mini` tier, then the conversation's model. */
+    subagentModel?: string
   }
   /**
    * Job harness tuning — idle watchdog, etc.

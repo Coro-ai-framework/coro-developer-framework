@@ -5,8 +5,8 @@ import type { ActivityEntry, ActivityItem } from '../types'
 export type IntakeEvent =
   | { type: 'token'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'tool_start'; name: string; input?: unknown }
-  | { type: 'tool_end'; name: string; durationMs?: number; ok?: boolean; summary?: string; error?: string }
+  | { type: 'tool_start'; name: string; input?: unknown; subagent?: string }
+  | { type: 'tool_end'; name: string; durationMs?: number; ok?: boolean; summary?: string; error?: string; subagent?: string }
   | {
       type: 'done'
       usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
@@ -66,6 +66,11 @@ export function runningLabelFor(name: string, input: unknown): string {
       const query = readField(input, 'query')
       return query ? `Searching code for "${clip(query)}"` : 'Searching code'
     }
+    case 'delegate_investigation': {
+      const tasks = input && typeof input === 'object' ? (input as { tasks?: unknown }).tasks : undefined
+      const n = Array.isArray(tasks) ? tasks.length : 0
+      return n > 0 ? `Delegating ${n} investigation${n === 1 ? '' : 's'}` : 'Delegating investigations'
+    }
     default: {
       const key = issueKeyFrom(input)
       if (/jira|ticket|issue|atlassian|linear/i.test(name) || /jira|issue|ticket/i.test(leaf)) {
@@ -106,13 +111,19 @@ function humanizeToolName(raw: string): string {
  * executor fires tool_end in the same order it queued tool_start, so the
  * last running one is the one resolving now.
  */
-function findLastRunning(items: ActivityItem[], sourceName: string): ActivityEntry | undefined {
+function withActor(label: string, actor?: string): string {
+  return actor ? `${actor} · ${label}` : label
+}
+
+function findLastRunning(items: ActivityItem[], sourceName: string, actor?: string): ActivityEntry | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
     if (item.kind !== 'activity') continue
     for (let j = item.entries.length - 1; j >= 0; j--) {
       const entry = item.entries[j]
-      if (entry.status === 'running' && namesMatchTool(entry.sourceName, sourceName)) return entry
+      if (entry.status === 'running' && namesMatchTool(entry.sourceName, sourceName) && entry.actor === actor) {
+        return entry
+      }
     }
   }
   return undefined
@@ -130,13 +141,14 @@ function findDuplicateStart(
   items: ActivityItem[],
   sourceName: string,
   input: unknown,
+  actor?: string,
 ): ActivityEntry | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
     if (item.kind !== 'activity') continue
     for (let j = item.entries.length - 1; j >= 0; j--) {
       const entry = item.entries[j]
-      if (entry.status !== 'running' || !namesMatchTool(entry.sourceName, sourceName)) continue
+      if (entry.status !== 'running' || !namesMatchTool(entry.sourceName, sourceName) || entry.actor !== actor) continue
       // mcp__coro__scm_list_files and scm_list_files are the same call observed
       // twice. Parallel calls of the same tool use different inputs.
       if (entry.sourceName !== sourceName || inputsMatch(entry.detail, input)) return entry
@@ -148,9 +160,9 @@ function findDuplicateStart(
 export function applyIntakeEvent(items: ActivityItem[], event: IntakeEvent): ActivityItem[] {
   switch (event.type) {
     case 'tool_start': {
-      const duplicate = findDuplicateStart(items, event.name, event.input)
+      const duplicate = findDuplicateStart(items, event.name, event.input, event.subagent)
       if (duplicate) {
-        const label = runningLabelFor(event.name, event.input)
+        const label = withActor(runningLabelFor(event.name, event.input), event.subagent)
         const richer = label.length > duplicate.runningLabel.length
         if (!richer && duplicate.detail !== undefined) return items
         return settleEntry(items, duplicate.id, {
@@ -164,18 +176,21 @@ export function applyIntakeEvent(items: ActivityItem[], event: IntakeEvent): Act
         group,
         sourceName: toolLeafName(event.name),
         ...(externalId ? { externalId } : {}),
+        ...(event.subagent ? { actor: event.subagent } : {}),
         status: 'running',
-        runningLabel: runningLabelFor(event.name, event.input),
+        runningLabel: withActor(runningLabelFor(event.name, event.input), event.subagent),
         detail: event.input,
       }
       return appendEntry(items, entry)
     }
     case 'tool_end': {
-      const running = findLastRunning(items, event.name)
+      const running = findLastRunning(items, event.name, event.subagent)
       if (!running) return items
       return settleEntry(items, running.id, {
         status: event.ok === false ? 'failed' : 'done',
-        settledLabel: event.summary ?? running.runningLabel,
+        settledLabel: event.summary
+          ? withActor(event.summary, event.subagent)
+          : running.runningLabel,
         durationMs: event.durationMs,
         ...(event.error ? { error: event.error } : {}),
       })

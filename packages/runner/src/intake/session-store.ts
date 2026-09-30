@@ -295,6 +295,8 @@ export function recordIntakeTurn(
     assistant: string
     evidence: IntakeEvidence[]
     usage: { inputTokens: number; outputTokens: number }
+    /** Tokens billed this turn outside the parent's context (plan-mode subagents). */
+    extraBilledTokens?: number
   },
 ): IntakeSession {
   const session = getIntakeSession(sessionId)
@@ -303,7 +305,7 @@ export function recordIntakeTurn(
     assistant: turn.assistant || NO_REPLY,
     evidence: turn.evidence,
   })
-  session.tokens += turn.usage.inputTokens + turn.usage.outputTokens
+  session.tokens += turn.usage.inputTokens + turn.usage.outputTokens + (turn.extraBilledTokens ?? 0)
   session.contextTokens = turn.usage.inputTokens + turn.usage.outputTokens
   session.updatedAt = Date.now()
   return session

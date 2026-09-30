@@ -256,6 +256,10 @@ const coachModeConfigSchema = z.object({
 const intakeConfigSchema = z.object({
   /** When true (default), plan mode may read trackers and repos via read-only tools. */
   toolsEnabled: z.boolean().optional(),
+  /** When true (default), plan mode may delegate parallel read-only investigations to subagents. */
+  subagentsEnabled: z.boolean().optional(),
+  /** Model id plan-mode subagents run on. Ignored when the plan-mode provider cannot serve it. */
+  subagentModel: z.string().optional(),
 }).optional()
 
 const idleWatchdogConfigSchema = z.object({

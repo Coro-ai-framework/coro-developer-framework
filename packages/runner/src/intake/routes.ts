@@ -124,6 +124,7 @@ export function registerIntakeRoutes(
             type: 'tool_start',
             name: event.name,
             input: event.input,
+            ...(event.subagent ? { subagent: event.subagent } : {}),
           }), 'message'))
         } else if (event.type === 'tool_end') {
           res.write(formatSseFrame(JSON.stringify({
@@ -133,6 +134,7 @@ export function registerIntakeRoutes(
             ok: event.ok,
             summary: event.summary,
             ...(event.error ? { error: event.error } : {}),
+            ...(event.subagent ? { subagent: event.subagent } : {}),
           }), 'message'))
         } else if (event.type === 'done') {
           res.write(formatSseFrame(JSON.stringify({

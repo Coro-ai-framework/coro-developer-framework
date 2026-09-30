@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import pino from 'pino'
 import { createAnthropicExecutor } from '../src/executor'
-import { chatViaAgentSdk, formatChatUserPrompt, shouldChatViaAgentSdk, type AnthropicChatHost } from '../src/chat-via-sdk'
+import { chatToolZodShape, chatViaAgentSdk, formatChatUserPrompt, shouldChatViaAgentSdk, type AnthropicChatHost } from '../src/chat-via-sdk'
+import { z } from 'zod'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from '../src/types'
 
 let querySteps: Array<() => IteratorResult<unknown>> = []
@@ -101,6 +102,32 @@ function successQuerySteps(): Array<() => IteratorResult<unknown>> {
     }),
   ]
 }
+
+describe('chatToolZodShape', () => {
+  const shape = chatToolZodShape({
+    type: 'object',
+    properties: {
+      tasks: { type: 'array', items: { type: 'string' }, maxItems: 4, description: 'briefs' },
+      flag: { type: 'boolean' },
+      count: { type: 'integer' },
+      ref: { type: 'string' },
+    },
+    required: ['tasks', 'flag', 'count'],
+  })
+  const schema = z.object(shape)
+
+  it('parses a string array and rejects more than maxItems', () => {
+    expect(schema.safeParse({ tasks: ['a'], flag: true, count: 1 }).success).toBe(true)
+    expect(schema.safeParse({ tasks: ['a', 'b', 'c', 'd', 'e'], flag: true, count: 1 }).success).toBe(false)
+    expect(schema.safeParse({ tasks: 'a', flag: true, count: 1 }).success).toBe(false)
+  })
+
+  it('maps boolean and integer, and leaves non-required fields optional', () => {
+    expect(schema.safeParse({ tasks: ['a'], flag: false, count: 2 }).success).toBe(true)
+    expect(schema.safeParse({ tasks: ['a'], flag: true, count: 1, ref: 'main' }).success).toBe(true)
+    expect(schema.safeParse({ tasks: ['a'], flag: true }).success).toBe(false)
+  })
+})
 
 describe('shouldChatViaAgentSdk', () => {
   it('returns true for claudeLogin and oauth', () => {
