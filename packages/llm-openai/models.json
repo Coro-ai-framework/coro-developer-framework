@@ -35,11 +35,24 @@
       }
     },
     {
+      "id": "gpt-6.1-sol",
+      "displayName": "GPT-6.1 Sol",
+      "contextTokens": 1050000,
+      "tier": "coding",
+      "isDefault": true,
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 2,
+        "cacheReadPerMTokens": 0.1,
+        "cacheCreationPerMTokens": 2.5,
+        "outputPerMTokens": 10
+      }
+    },
+    {
       "id": "gpt-5.6-terra",
       "displayName": "GPT-5.6 Terra",
       "contextTokens": 1050000,
       "tier": "coding",
-      "isDefault": true,
       "supportsThinking": true,
       "pricing": {
         "inputPerMTokens": 2,

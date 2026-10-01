@@ -50,6 +50,7 @@ describe('OpenAiExecutor — capabilities', () => {
 describe('OpenAiExecutor — models', () => {
   it('returns a curated Responses API model catalogue', () => {
     const ids = makeExecutor().listModels().map(m => m.id)
+    expect(ids).toContain('gpt-6.1-sol')
     expect(ids).toContain('gpt-5.6-sol')
     expect(ids).toContain('gpt-5.6-terra')
     expect(ids).toContain('gpt-5.6-luna')
@@ -69,12 +70,22 @@ describe('OpenAiExecutor — models', () => {
     expect(makeExecutor().listModels()).toEqual(catalogue.models)
   })
 
-  it('seeds planning to Sol, coding to Terra, mini to Luna', () => {
+  it('seeds planning to GPT-5.6 Sol, coding to GPT-6.1 Sol, mini to Luna', () => {
     const aliases = makeExecutor().defaultAliases()
     expect(aliases['tier:planning']).toEqual({ provider: 'openai', model: 'gpt-5.6-sol' })
-    expect(aliases['tier:coding']).toEqual({ provider: 'openai', model: 'gpt-5.6-terra' })
+    expect(aliases['tier:coding']).toEqual({ provider: 'openai', model: 'gpt-6.1-sol' })
+    expect(aliases.openaiCoding).toEqual({ provider: 'openai', model: 'gpt-6.1-sol' })
     expect(aliases['tier:mini']).toEqual({ provider: 'openai', model: 'gpt-5.6-luna' })
     expect(aliases.openaiPlanning).toEqual({ provider: 'openai', model: 'gpt-5.6-sol' })
+    const byId = new Map(makeExecutor().listModels().map(m => [m.id, m]))
+    expect(byId.get('gpt-6.1-sol')?.isDefault).toBe(true)
+    expect(byId.get('gpt-5.6-terra')?.isDefault).toBeUndefined()
+    expect(byId.get('gpt-6.1-sol')?.pricing).toEqual({
+      inputPerMTokens: 2,
+      cacheReadPerMTokens: 0.1,
+      cacheCreationPerMTokens: 2.5,
+      outputPerMTokens: 10,
+    })
   })
 
   it('supports OpenAI-family model ids defensively', () => {
@@ -94,6 +105,17 @@ describe('OpenAiExecutor — models', () => {
       cacheCreationInputTokens: 0,
     })
     expect(cost).toBeCloseTo(35.5, 5)
+  })
+
+  it('prices GPT-6.1 Sol at the published $2 / $10 rates', () => {
+    const cost = calculateOpenAiCostUsd('gpt-6.1-sol', {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadInputTokens: 1_000_000,
+      cacheCreationInputTokens: 1_000_000,
+    })
+    // 2 + 10 + 0.10 + 2.50 = 14.60
+    expect(cost).toBeCloseTo(14.6, 5)
   })
 
   it('prices GPT-5.6 Luna at the published $0.20 / $1.20 rates', () => {

@@ -83,7 +83,7 @@ describe('AnthropicExecutor — listModels', () => {
     })
     const models = ex.listModels()
 
-    expect(models).toHaveLength(7)
+    expect(models).toHaveLength(8)
     const ids = models.map(m => m.id).sort()
     expect(ids).toEqual([
       'claude-fable-5',
@@ -93,12 +93,15 @@ describe('AnthropicExecutor — listModels', () => {
       'claude-opus-5-5',
       'claude-sonnet-4-6',
       'claude-sonnet-5',
+      'claude-sonnet-5-5',
     ])
 
     // Tier mapping is part of the public contract — the dashboard's
     // model picker groups by tier.
     const byId = new Map(models.map(m => [m.id, m]))
-    expect(byId.get('claude-sonnet-5')?.tier).toBe('coding')
+    expect(byId.get('claude-sonnet-5-5')?.tier).toBe('coding')
+    expect(byId.get('claude-sonnet-5-5')?.isDefault).toBe(true)
+    expect(byId.get('claude-sonnet-5')?.isDefault).toBeUndefined()
     expect(byId.get('claude-fable-5-1')?.tier).toBe('planning')
     expect(byId.get('claude-opus-5-5')?.tier).toBe('planning')
     expect(byId.get('claude-opus-5-5')?.isDefault).toBe(true)
@@ -108,6 +111,12 @@ describe('AnthropicExecutor — listModels', () => {
       outputPerMTokens: 20,
       cacheReadPerMTokens: 0.2,
       cacheCreationPerMTokens: 5,
+    })
+    expect(byId.get('claude-sonnet-5-5')?.pricing).toEqual({
+      inputPerMTokens: 2,
+      outputPerMTokens: 10,
+      cacheReadPerMTokens: 0.2,
+      cacheCreationPerMTokens: 2.5,
     })
     expect(byId.get('claude-sonnet-5')?.pricing).toEqual({
       inputPerMTokens: 2,
@@ -128,7 +137,7 @@ describe('AnthropicExecutor — listModels', () => {
     expect(ex.listModels()).toEqual(catalogue.models)
   })
 
-  it('seeds planning to Opus 5.5, coding and mini to Sonnet 5', () => {
+  it('seeds planning to Opus 5.5, coding and mini to Sonnet 5.5', () => {
     const ex = createAnthropicExecutor({
       settings: makeSettings(), auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
       logger: silentLogger,
@@ -136,10 +145,10 @@ describe('AnthropicExecutor — listModels', () => {
     const aliases = ex.defaultAliases()
     expect(aliases.planning).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5' })
     expect(aliases['tier:planning']).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5' })
-    expect(aliases.coding).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5' })
-    expect(aliases['tier:coding']).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5' })
-    expect(aliases.mini).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5' })
-    expect(aliases['tier:mini']).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5' })
+    expect(aliases.coding).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5-5' })
+    expect(aliases['tier:coding']).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5-5' })
+    expect(aliases.mini).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5-5' })
+    expect(aliases['tier:mini']).toEqual({ provider: 'anthropic', model: 'claude-sonnet-5-5' })
   })
 
   it('omits pricing fields (Anthropic reports total_cost_usd directly)', () => {
@@ -161,6 +170,7 @@ describe('AnthropicExecutor — supports()', () => {
   })
 
   it('accepts every catalogued model id', () => {
+    expect(ex.supports('claude-sonnet-5-5')).toBe(true)
     expect(ex.supports('claude-sonnet-5')).toBe(true)
     expect(ex.supports('claude-opus-5-5')).toBe(true)
     expect(ex.supports('claude-opus-5')).toBe(true)

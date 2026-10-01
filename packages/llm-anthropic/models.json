@@ -48,11 +48,24 @@
       }
     },
     {
+      "id": "claude-sonnet-5-5",
+      "displayName": "Claude Sonnet 5.5",
+      "contextTokens": 1000000,
+      "tier": "coding",
+      "isDefault": true,
+      "supportsThinking": true,
+      "pricing": {
+        "inputPerMTokens": 2,
+        "outputPerMTokens": 10,
+        "cacheReadPerMTokens": 0.2,
+        "cacheCreationPerMTokens": 2.5
+      }
+    },
+    {
       "id": "claude-sonnet-5",
       "displayName": "Claude Sonnet 5",
       "contextTokens": 1000000,
       "tier": "coding",
-      "isDefault": true,
       "supportsThinking": true,
       "pricing": {
         "inputPerMTokens": 2,

@@ -22,7 +22,7 @@ This package implements the `PhaseExecutorRuntime` contract from `@coro-ai/plugi
         "enabled": true,
         "config": {
           "apiKey": "sk-...",
-          "defaultModel": "gpt-5.6-terra"
+          "defaultModel": "gpt-6.1-sol"
         }
       }
     }
@@ -31,7 +31,7 @@ This package implements the `PhaseExecutorRuntime` contract from `@coro-ai/plugi
     "defaultProvider": "openai",
     "aliases": {
       "planning": { "provider": "openai", "model": "gpt-5.6-sol", "reasoningEffort": "high" },
-      "coding": { "provider": "openai", "model": "gpt-5.6-terra", "reasoningEffort": "medium" }
+      "coding": { "provider": "openai", "model": "gpt-6.1-sol", "reasoningEffort": "medium" }
     }
   }
 }
