@@ -34,22 +34,54 @@ cd "$REL" && mkdir -p "$JOB/.cache/go-build" && \
 
 ### When the shared module cache is not writable
 
-If `go build` / `go mod download` fails with `operation not permitted` writing
-under `$HOME/go/pkg/mod`, the host sandbox is denying the write (see the
-`sandbox-recovery` skill). The shared cache is still **readable**, so use it as
-a local proxy and write into the job root:
+`go build` / `go mod download` failing with `operation not permitted` under
+`$HOME/go/pkg/mod` means the host sandbox is denying the write (see
+`sandbox-recovery`). The same error on a `.gitmodules`, `.idea/`, or
+`.vscode/` file inside an *already-cached* module means a job-local
+`GOMODCACHE` is re-extracting a module needlessly — the shared cache is still
+**readable**.
+
+**No new module needed** — build read-only against the warm cache:
 
 ```bash
-cd "$REL" && GOFLAGS=-mod=mod \
-  GOCACHE="$JOB/.cache/go-build" GOMODCACHE="$JOB/.cache/gomod" \
+cd "$REL" && GOFLAGS=-mod=mod GOPROXY=off \
+  GOCACHE="$JOB/.cache/go-build" go build -buildvcs=false ./...
+```
+
+**A new module is needed** — pre-seed a job-local `GOMODCACHE` by symlinking
+only the shared cache's already-extracted `@version` leaves, not the
+host/owner directories above them: those need to stay real, writable
+directories in `$JOB` so Go can create the new module's entry inside them —
+symlinking a host dir itself (e.g. `github.com`) makes every write beneath it
+resolve back into the read-only shared cache and fail the same way:
+
+```bash
+mkdir -p "$JOB/.cache/gomod"
+find "$HOME/go/pkg/mod" -path "$HOME/go/pkg/mod/cache" -prune -o \
+  -type d -name '*@*' -print -prune 2>/dev/null | while read -r d; do
+  rel="${d#"$HOME"/go/pkg/mod/}"
+  mkdir -p "$JOB/.cache/gomod/$(dirname "$rel")"
+  ln -s "$d" "$JOB/.cache/gomod/$rel"
+done
+cd "$REL" && GOFLAGS=-mod=mod GOCACHE="$JOB/.cache/go-build" \
+  GOMODCACHE="$JOB/.cache/gomod" \
   GOPROXY="file://$HOME/go/pkg/mod/cache/download,direct" \
   go build -buildvcs=false ./...
 ```
 
-Only modules missing from the warm cache fall through to `direct`. If the
-missing module is private and hosted on your SCM, add
+Pruning `cache/` matters: it holds the download cache's own `@v` metadata
+directories, which would otherwise get symlinked too — adding a previously
+uncached version of an already-cached module then tries to write its
+`.lock`/`.mod`/`.zip` there and hits the same `operation not permitted`. The
+job-local `$JOB/.cache/gomod/cache/` is left to be created fresh and
+writable. `GOCACHE` is set here for the same reason the happy path above
+requires it — a build in this branch still needs a writable build cache.
+
+If the new module is private and hosted on your SCM, add
 `GOPRIVATE='<scm-host>/<org>/*'` so Go fetches it straight from there instead of
 `proxy.golang.org` / `sum.golang.org`, which a host allowlist may not permit.
+`GOPRIVATE=''` does not clear an inherited value — pass a sentinel host that
+matches nothing (e.g. `GOPRIVATE='none.invalid/*'`) when you need it empty.
 
 ## Test verification (Coro runner)
 
@@ -64,10 +96,11 @@ For long runs, redirect to a file under the job root: `go test ./... > test-outp
 After two failed build attempts with the same goal: `add_insight` + `escalate`.
 
 The one exception is a **sandbox write denial** (`operation not permitted` under
-`$HOME/go`). That has a known single-shot fix — the `GOPROXY=file://…` recipe
-above — so apply it once before you count attempts. If it also fails, escalate
-with both errors. Never bump or unpin a dependency to get around a cache or
-network restriction.
+`$HOME/go`, or on a `.gitmodules`/`.idea/`/`.vscode/` file during extraction).
+That has a known single-shot fix — the read-only or symlink-seeded recipe
+above, matched to whether a new module is needed — so apply it once before you
+count attempts. If it also fails, escalate with both errors. Never bump or
+unpin a dependency to get around a cache or network restriction.
 
 ### Vendoring a module that ships a `.gitmodules` file
 
