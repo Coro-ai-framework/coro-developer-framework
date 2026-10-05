@@ -16,8 +16,9 @@ describe('renderInlineMarkdown tables', () => {
     expect(html.match(/<th /g)).toHaveLength(4)
     expect(html.match(/<td /g)).toHaveLength(8)
     expect(html).toContain('Reviewer says')
-    expect(html).toContain('MaintenanceWindow is')
-    expect(html).toContain('<code class="rounded bg-overlay px-1 py-0.5 text-[11px]">Id/StartedUtc/ClosedUtc</code>')
+    expect(html).toContain('Maintenance<wbr>Window is')
+    expect(html).toContain('Id/<wbr>Started<wbr>Utc/<wbr>Closed<wbr>Utc')
+    expect(html).not.toContain('&quot;<wbr>')
     expect(html).not.toContain('<p')
   })
 

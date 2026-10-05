@@ -33,10 +33,22 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function renderInline(line: string): string {
+/** Break long identifiers at camelCase humps, leaving tags alone. */
+function softBreakWords(html: string): string {
+  return html.replace(/(^|>)([^<]+)/g, (_, lead, text) =>
+    lead + text.replace(/([a-z0-9])([A-Z])/g, '$1<wbr>$2'),
+  )
+}
+
+function renderInline(line: string, inTable = false): string {
   let out = escapeHtml(line)
-  // `code`
-  out = out.replace(/`([^`]+)`/g, (_, m) => `<code class="rounded bg-overlay px-1 py-0.5 text-[11px]">${m}</code>`)
+  // `code`. Inside a table, offer a wrap after path and punctuation
+  // separators so a long token breaks at `/` or `,` instead of mid-word.
+  // Semicolons are omitted: they appear inside escaped entities (`&quot;`).
+  out = out.replace(/`([^`]+)`/g, (_, m) => {
+    const body = inTable ? m.replace(/([/_.\-,:{}()])/g, '$1<wbr>') : m
+    return `<code class="rounded bg-overlay px-1 py-0.5 text-[11px]">${body}</code>`
+  })
   // **bold**
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold text-fg">$1</strong>')
   // *italic* — only when not already part of **
@@ -119,10 +131,10 @@ function renderTable(headers: string[], aligns: ColumnAlign[], rows: string[][])
     .map((cell, i) => {
       const index = isIndexHeader(cell)
       const cls = [
-        'border border-line-strong bg-overlay/70 py-2 align-top font-medium text-fg',
-        index ? 'w-px whitespace-nowrap px-2.5 text-center' : `px-3 ${ALIGN_CLASS[aligns[i] ?? 'left']}`,
+        'border border-white/15 bg-overlay py-2 align-top font-medium text-fg',
+        index ? 'whitespace-nowrap px-2.5 text-center' : `px-3 ${ALIGN_CLASS[aligns[i] ?? 'left']}`,
       ].join(' ')
-      return `<th scope="col" class="${cls}">${renderInline(cell)}</th>`
+      return `<th scope="col" class="${cls}">${softBreakWords(renderInline(cell, true))}</th>`
     })
     .join('')
 
@@ -132,17 +144,20 @@ function renderTable(headers: string[], aligns: ColumnAlign[], rows: string[][])
         .map((cell, i) => {
           const index = isIndexHeader(headers[i] ?? '')
           const cls = [
-            'border border-line-strong py-2 align-top text-fg-muted [overflow-wrap:anywhere]',
-            index ? 'w-px whitespace-nowrap px-2.5 text-center' : `px-3 ${ALIGN_CLASS[aligns[i] ?? 'left']}`,
+            'border border-white/15 py-2 align-top text-fg-muted break-words',
+            index ? 'whitespace-nowrap px-2.5 text-center' : `px-3 ${ALIGN_CLASS[aligns[i] ?? 'left']}`,
           ].join(' ')
-          return `<td class="${cls}">${renderInline(cell)}</td>`
+          return `<td class="${cls}">${softBreakWords(renderInline(cell, true))}</td>`
         })
         .join('')
       return `<tr class="even:bg-white/[0.03]">${cells}</tr>`
     })
     .join('')
 
-  return `<div class="max-w-full overflow-x-auto"><table class="w-full border-collapse text-left text-sm leading-6"><thead><tr>${head}</tr></thead>${
+  const cols = headers
+    .map(cell => (isIndexHeader(cell) ? '<col class="w-12">' : '<col>'))
+    .join('')
+  return `<div class="max-w-full overflow-x-auto"><table class="w-full table-fixed border-collapse text-left text-sm leading-6"><colgroup>${cols}</colgroup><thead><tr>${head}</tr></thead>${
     body ? `<tbody>${body}</tbody>` : ''
   }</table></div>`
 }
@@ -207,7 +222,7 @@ export function renderInlineMarkdown(input: string): string {
   let para: string[] = []
   function flushPara() {
     if (para.length === 0) return
-    out.push(`<p class="text-fg-muted">${para.map(renderInline).join(' ')}</p>`)
+    out.push(`<p class="text-fg-muted">${para.map(line => renderInline(line)).join(' ')}</p>`)
     para = []
   }
 
