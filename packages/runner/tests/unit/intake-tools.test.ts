@@ -260,6 +260,22 @@ describe('createIntakeRunTool', () => {
     await pending
     expect(settled).toBe(true)
   })
+
+  it('asks the permission gate before running a workspace tool', async () => {
+    const gate = vi.fn(async () => ({ allow: false, reason: 'not this time' }))
+    const runTool = createIntakeRunTool(mockRegistry({}), new AbortController().signal, {
+      workspace: { shell: vi.fn(async () => ({ stdout: 'hi', stderr: '', exitCode: 0 })) },
+      gate,
+    })
+    await expect(runTool('shell', { command: 'echo hi' })).rejects.toThrow('not this time')
+  })
+
+  it('grants a capability through request_tool_access', async () => {
+    const requestCapability = vi.fn(async () => ({ granted: true, mode: 'ask' }))
+    const runTool = createIntakeRunTool(mockRegistry({}), new AbortController().signal, { requestCapability })
+    await expect(runTool('request_tool_access', { capability: 'shell', reason: 'clone the repo' })).resolves.toEqual({ granted: true, mode: 'ask' })
+    expect(requestCapability).toHaveBeenCalledWith('shell', 'clone the repo')
+  })
 })
 
 describe('summarizeToolCall', () => {
@@ -302,6 +318,13 @@ describe('summarizeToolCall', () => {
     expect(summarizeToolCall('read_past_job_artifact', { artifactId: 'art-1' }, {})).toBe('Read artefact art-1')
     expect(summarizeToolCall('list_past_job_files', { path: 'src' }, { entries: [{}, {}] })).toBe('Listed 2 job entries in src')
     expect(summarizeToolCall('read_past_job_file', { path: 'plan.md' }, {})).toBe('Read job file plan.md')
+  })
+
+  it('summarises workspace tools and access requests', () => {
+    expect(summarizeToolCall('shell', { command: 'git status' }, { exitCode: 0 })).toBe('Ran git status (exit 0)')
+    expect(summarizeToolCall('web_fetch', { url: 'https://example.com/a' }, {})).toBe('Fetched example.com')
+    expect(summarizeToolCall('file_read', { path: 'notes.md' }, {})).toBe('Read notes.md')
+    expect(summarizeToolCall('request_tool_access', { capability: 'web' }, { granted: true, mode: 'ask' })).toBe('Enabled: web')
   })
 
   it('summarises a delegated investigation', () => {

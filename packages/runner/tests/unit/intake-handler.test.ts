@@ -196,7 +196,9 @@ describe('runIntakeStream', () => {
       resolveExecutor: () => ({
         chat: async (req: { tools?: unknown }) => {
           calls.chat += 1
-          expect(req.tools).toBeUndefined()
+          expect((req.tools as Array<{ name: string }> | undefined)?.map(t => t.name)).toEqual(
+            expect.arrayContaining(['request_tool_access', 'shell', 'web_fetch']),
+          )
           return { output: 'chat path', usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }, toolCalls: [] }
         },
         runSubagent: async () => {
@@ -224,6 +226,39 @@ describe('runIntakeStream', () => {
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
       contextTokens: 15,
     })
+  })
+
+  it('keeps native file tools off the runner list and can surface a permission prompt', async () => {
+    let toolNames: string[] = []
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        capabilities: { supportsNativeFileTools: true, supportsNativeWebTools: true },
+        chat: async (req: { tools?: Array<{ name: string }>; nativeTools?: boolean; permissionGate?: (name: string, input: Record<string, unknown>) => Promise<{ allow: boolean; reason?: string }> }) => {
+          toolNames = req.tools?.map(t => t.name) ?? []
+          expect(req.nativeTools).toBe(true)
+          const pending = req.permissionGate!('Bash', { command: 'ls' })
+          const { listPendingIntakePermissions, resolveIntakePermission } = await import('../../src/intake/permissions')
+          const [request] = listPendingIntakePermissions('session-native')
+          resolveIntakePermission('session-native', request!.requestId, { decision: 'once' })
+          await pending
+          return { output: 'ok', usage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }, toolCalls: [] }
+        },
+      }),
+    } as unknown as PluginRegistry
+    const events = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-native',
+      message: 'Hello',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+    })) events.push(event)
+    expect(toolNames).toContain('request_tool_access')
+    expect(toolNames).not.toContain('shell')
+    expect(toolNames).not.toContain('file_read')
+    expect(events.some(e => e.type === 'permission_request')).toBe(true)
   })
 
   it('carries prior turns and their tool evidence into the next turn', async () => {

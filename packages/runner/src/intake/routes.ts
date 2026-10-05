@@ -6,13 +6,24 @@ import type { RunnerContext } from '../jobs/runner'
 import { formatSseFrame } from '../runner/sse'
 import { clampInvestigationListQuery } from '../state/investigation'
 import { runIntakeStream } from './handler'
-import { persistIntakeSnapshot } from './persist'
+import { persistIntakeSnapshot, persistLiveIntakeSession } from './persist'
 import {
   deleteIntakeSession,
   ensureIntakeWorkRoot,
   hydrateIntakeSession,
   intakeTurnActive,
+  peekIntakeSession,
+  updateIntakeToolAccess,
 } from './session-store'
+import {
+  listPendingIntakePermissions,
+  parseRule,
+  readIntakePermissionConfig,
+  resolveIntakePermission,
+  resolveToolAccess,
+} from './permissions'
+import { listUserMcpServerCatalog } from '../jobs/runner'
+import type { IntakeBuiltinCapability, IntakePermissionDecision, ToolAccessMode } from '@coro-ai/cloud-protocol'
 import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
 import type { InvestigationStatus } from '@coro-ai/cloud-protocol'
 
@@ -151,6 +162,15 @@ export function registerIntakeRoutes(
             ...(event.sessionTokens != null ? { sessionTokens: event.sessionTokens } : {}),
             ...(event.turns != null ? { turns: event.turns } : {}),
           }))
+        } else if (event.type === 'permission_request') {
+          writeFrame(JSON.stringify({ type: 'permission_request', request: event.request }))
+        } else if (event.type === 'permission_resolved') {
+          writeFrame(JSON.stringify({
+            type: 'permission_resolved',
+            requestId: event.requestId,
+            decision: event.decision,
+            by: event.by,
+          }))
         } else if (event.type === 'error') {
           const payload: Record<string, unknown> = { type: 'error', message: event.message }
           if (event.reason) payload['reason'] = event.reason
@@ -207,13 +227,113 @@ export function registerIntakeRoutes(
           ? { executorSession: record.executorSession as ExecutorSessionState }
           : {}),
         ...(record.executorId ? { executorId: record.executorId } : {}),
+        ...(record.toolAccess ? { toolAccess: record.toolAccess } : {}),
       })
       ensureIntakeWorkRoot(record.id)
-      res.json({ ...record, streaming: intakeTurnActive(record.id) })
+      const live = peekIntakeSession(record.id)
+      res.json({
+        ...record,
+        streaming: intakeTurnActive(record.id),
+        toolAccess: live?.toolAccess ?? record.toolAccess ?? null,
+        pendingPermissions: listPendingIntakePermissions(record.id),
+      })
     } catch (err) {
       logger.error({ err, sessionId }, 'GET /intake/sessions/:id failed')
       res.status(500).json({ error: (err as Error).message })
     }
+  })
+
+  app.post('/intake/sessions/:sessionId/permissions/:requestId', (req: Request, res: Response) => {
+    const sessionId = String(req.params['sessionId'] ?? '').trim()
+    const requestId = String(req.params['requestId'] ?? '').trim()
+    if (!sessionId || !requestId) {
+      res.status(400).json({ error: 'sessionId and requestId are required' })
+      return
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const decision = body['decision']
+    if (!isPermissionDecision(decision)) {
+      res.status(400).json({ error: 'decision must be once, conversation, always, or deny' })
+      return
+    }
+    const mode = body['mode']
+    if (mode !== undefined && mode !== 'ask' && mode !== 'allow') {
+      res.status(400).json({ error: 'mode must be ask or allow' })
+      return
+    }
+    const message = typeof body['message'] === 'string' ? body['message'].slice(0, 1000) : undefined
+    const rule = typeof body['rule'] === 'string' ? body['rule'] : undefined
+    const result = resolveIntakePermission(sessionId, requestId, {
+      decision,
+      ...(rule ? { rule } : {}),
+      ...(mode === 'ask' || mode === 'allow' ? { mode } : {}),
+      ...(message ? { message } : {}),
+    })
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error })
+      return
+    }
+    res.json({ resolved: true })
+  })
+
+  app.get('/intake/sessions/:sessionId/tool-access', (req: Request, res: Response) => {
+    const sessionId = String(req.params['sessionId'] ?? '').trim()
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId is required' })
+      return
+    }
+    res.json(toolAccessPayload(sessionId, logger))
+  })
+
+  app.put('/intake/sessions/:sessionId/tool-access', async (req: Request, res: Response) => {
+    const sessionId = String(req.params['sessionId'] ?? '').trim()
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId is required' })
+      return
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const capabilities = body['capabilities']
+    const mcp = body['mcp']
+    const allow = body['allow']
+    const deny = body['deny']
+    if (allow !== undefined && !isRuleList(allow)) {
+      res.status(400).json({ error: 'allow must be an array of permission rules' })
+      return
+    }
+    if (deny !== undefined && !isRuleList(deny)) {
+      res.status(400).json({ error: 'deny must be an array of permission rules' })
+      return
+    }
+    if (capabilities !== undefined && !isModePatch(capabilities, ['files', 'filesWrite', 'shell', 'web'])) {
+      res.status(400).json({ error: 'capabilities must map files, filesWrite, shell, or web to off, ask, allow, or null' })
+      return
+    }
+    if (mcp !== undefined && !isModeRecord(mcp)) {
+      res.status(400).json({ error: 'mcp must map server ids to off, ask, allow, or null' })
+      return
+    }
+    updateIntakeToolAccess(sessionId, access => {
+      if (capabilities && typeof capabilities === 'object') {
+        for (const [key, value] of Object.entries(capabilities as Record<string, unknown>)) {
+          if (value === null) delete access.capabilities[key as IntakeBuiltinCapability]
+          else access.capabilities[key as IntakeBuiltinCapability] = value as ToolAccessMode
+        }
+      }
+      if (mcp && typeof mcp === 'object') {
+        for (const [key, value] of Object.entries(mcp as Record<string, unknown>)) {
+          if (value === null) delete access.mcp[key]
+          else access.mcp[key] = value as ToolAccessMode
+        }
+      }
+      if (Array.isArray(allow)) access.allow = allow as string[]
+      if (Array.isArray(deny)) access.deny = deny as string[]
+    })
+    try {
+      await persistLiveIntakeSession(stateBackend, sessionId)
+    } catch (err) {
+      logger.warn({ err, sessionId }, 'intake: failed to persist tool access')
+    }
+    res.json(toolAccessPayload(sessionId, logger))
   })
 
   app.put('/intake/sessions/:sessionId', async (req: Request, res: Response) => {
@@ -278,6 +398,43 @@ type IntakeSnapshotReadiness = {
   openQuestions: string[]
   note: string
 } | null
+
+const PERMISSION_DECISIONS = new Set(['once', 'conversation', 'always', 'deny'])
+const TOOL_ACCESS_MODES = new Set(['off', 'ask', 'allow'])
+
+function isPermissionDecision(value: unknown): value is IntakePermissionDecision {
+  return typeof value === 'string' && PERMISSION_DECISIONS.has(value)
+}
+
+function isRuleList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string' && parseRule(item) !== null)
+}
+
+function isModePatch(value: unknown, keys: readonly string[]): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return Object.entries(value as Record<string, unknown>).every(([key, mode]) =>
+    keys.includes(key) && (mode === null || (typeof mode === 'string' && TOOL_ACCESS_MODES.has(mode))),
+  )
+}
+
+function isModeRecord(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return Object.values(value as Record<string, unknown>).every(mode =>
+    mode === null || (typeof mode === 'string' && TOOL_ACCESS_MODES.has(mode)),
+  )
+}
+
+function toolAccessPayload(sessionId: string, log: Logger) {
+  const session = peekIntakeSession(sessionId)
+  const catalog = listUserMcpServerCatalog({ logger: log })
+  const cfg = readIntakePermissionConfig(log)
+  return {
+    toolAccess: session?.toolAccess ?? null,
+    resolved: resolveToolAccess(session?.toolAccess, cfg, catalog),
+    catalog: { mcpServers: catalog },
+    globalAllow: cfg.allow,
+  }
+}
 
 function isModelChoice(value: unknown): value is { provider: string; model: string } {
   if (!value || typeof value !== 'object') return false

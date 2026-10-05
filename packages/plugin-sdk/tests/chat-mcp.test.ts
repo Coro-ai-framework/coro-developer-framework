@@ -26,7 +26,7 @@ describe('chat-mcp helpers', () => {
     })).toBe(true)
   })
 
-  it('buildChatToolAllowPolicy allows coro and plan-mode MCP prefixes', () => {
+  it('buildChatToolAllowPolicy allows coro and plan-mode MCP prefixes', async () => {
     const req: ChatRequest = {
       messages: [],
       model: 'm',
@@ -41,6 +41,30 @@ describe('chat-mcp helpers', () => {
     expect(policy.checkToolAllowed('mcp__slack__post').allow).toBe(false)
     expect(policy.checkToolAllowed('ToolSearch').allow).toBe(true)
     expect(policy.hookAllowedTools).toBe(null)
+    await expect(policy.decideToolCall('Bash', {})).resolves.toEqual({
+      allow: false,
+      reason: 'Blocked Bash: only plan-mode lookup tools are available.',
+    })
+  })
+
+  it('decideToolCall sends non-builtin tools to permissionGate', async () => {
+    const seen: string[] = []
+    const req: ChatRequest = {
+      messages: [],
+      model: 'm',
+      signal: new AbortController().signal,
+      tools: [{ name: 'tracker_get_issue', description: '', inputSchema: {} }],
+      runTool: async () => ({}),
+      permissionGate: async (toolName) => {
+        seen.push(toolName)
+        return { allow: toolName === 'Bash', reason: 'no' }
+      },
+    }
+    const policy = buildChatToolAllowPolicy(req)
+    await expect(policy.decideToolCall('ToolSearch', {})).resolves.toEqual({ allow: true })
+    await expect(policy.decideToolCall('mcp__coro__tracker_get_issue', {})).resolves.toEqual({ allow: true })
+    await expect(policy.decideToolCall('Bash', { command: 'ls' })).resolves.toEqual({ allow: true, reason: 'no' })
+    expect(seen).toEqual(['Bash'])
   })
 
   it('allows BYO MCP when built-in intake tools are also present', () => {

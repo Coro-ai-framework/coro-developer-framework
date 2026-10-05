@@ -140,6 +140,9 @@ export function mergeInvestigation(
     tokens: patch.tokens ?? existing?.tokens ?? 0,
     contextUsed: patch.contextUsed ?? existing?.contextUsed ?? 0,
     ...(dispatchedJobId ? { dispatchedJobId } : {}),
+    ...((patch.toolAccess ?? existing?.toolAccess)
+      ? { toolAccess: patch.toolAccess ?? existing!.toolAccess }
+      : {}),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   }
@@ -163,5 +166,6 @@ function investigationUnchanged(existing: Investigation, next: Investigation): b
     && JSON.stringify(existing.turns) === JSON.stringify(next.turns)
     && JSON.stringify(existing.readiness) === JSON.stringify(next.readiness)
     && JSON.stringify(existing.modelChoice) === JSON.stringify(next.modelChoice)
+    && JSON.stringify(existing.toolAccess ?? null) === JSON.stringify(next.toolAccess ?? null)
   )
 }

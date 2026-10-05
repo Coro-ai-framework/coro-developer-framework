@@ -664,6 +664,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       )
       const mcpServerOpts = {
         registerFileTools: !executor.capabilities.supportsNativeFileTools,
+        registerWebTools: executor.capabilities.supportsNativeWebTools !== true,
         registerRunSubagent:
           !executor.capabilities.supportsNativeSubagents || hasCrossProviderSubagent,
       }
@@ -2117,56 +2118,57 @@ export function collectPluginMcpServers(args: {
  * developer mis-edited the config. The SDK reports unreachable MCP
  * servers in its `init` message anyway.
  */
-export function collectUserMcpServers(args: {
-  logger: Logger
-  /** When true, only entries with `planMode: true` are returned. */
-  planModeOnly?: boolean
-}): Record<string, PluginMcpServerConfig> {
-  const result: Record<string, PluginMcpServerConfig> = {}
+function loadMergedUserMcpServers(logger: Logger): Record<string, UserMcpServerConfig> {
   let config: ReturnType<typeof loadLocalConfig>
   try {
     config = loadLocalConfig()
   } catch (err) {
-    args.logger.warn(
+    logger.warn(
       { err },
       'collectUserMcpServers: failed to load local config — skipping BYO MCP servers',
     )
-    return result
+    return {}
   }
 
-  // Build the merged source map: explicit BYO entries from
-  // ~/.coro/config.json land last so they always win over inherited
-  // Claude Code entries with the same id (operators can mask noisy
-  // inherited servers without editing ~/.claude.json).
+  // Explicit BYO entries from ~/.coro/config.json land last so they win
+  // over inherited Claude Code entries with the same id.
   const merged: Record<string, UserMcpServerConfig> = {}
   if (config?.inheritClaudeCodeMcps === true) {
     try {
       const discovered = discoverClaudeCodeMcpServers()
       Object.assign(merged, discovered.servers)
       if (discovered.sources.length > 0) {
-        args.logger.info(
+        logger.info(
           { sources: discovered.sources, inheritedCount: Object.keys(discovered.servers).length },
           'Inheriting MCP servers from Claude Code user-level config',
         )
       }
     } catch (err) {
-      args.logger.warn(
+      logger.warn(
         { err },
         'collectUserMcpServers: Claude Code MCP discovery failed — skipping',
       )
     }
   }
-  if (config?.mcpServers) {
-    Object.assign(merged, config.mcpServers)
-  }
+  if (config?.mcpServers) Object.assign(merged, config.mcpServers)
+  return merged
+}
 
-  const userServers: Record<string, UserMcpServerConfig> = merged
-  const reservedIds = new Set<string>(['coro', 'a5'])
+const RESERVED_MCP_IDS = new Set<string>(['coro', 'a5'])
 
-  for (const [id, raw] of Object.entries(userServers)) {
+export function collectUserMcpServers(args: {
+  logger: Logger
+  /** When true, only entries with `planMode: true` are returned. */
+  planModeOnly?: boolean
+  /** Extra per-entry gate. Applied after `enabled` / `planModeOnly`. */
+  filter?: (id: string, raw: UserMcpServerConfig) => boolean
+}): Record<string, PluginMcpServerConfig> {
+  const result: Record<string, PluginMcpServerConfig> = {}
+  for (const [id, raw] of Object.entries(loadMergedUserMcpServers(args.logger))) {
     if (raw.enabled === false) continue
     if (args.planModeOnly && raw.planMode !== true) continue
-    if (reservedIds.has(id)) {
+    if (args.filter && !args.filter(id, raw)) continue
+    if (RESERVED_MCP_IDS.has(id)) {
       args.logger.warn(
         { mcpServerId: id },
         'BYO MCP server id collides with a reserved key — skipping; rename the entry',
@@ -2174,29 +2176,39 @@ export function collectUserMcpServers(args: {
       continue
     }
 
-    const allowed = raw.allowedTools ?? null
-    const disallowed = raw.disallowedTools ?? null
-    const toolsPolicy = buildPluginMcpToolPolicy(allowed, disallowed)
+    const toolsPolicy = buildPluginMcpToolPolicy(raw.allowedTools ?? null, raw.disallowedTools ?? null)
 
     if (raw.type === 'http' || raw.type === 'sse') {
       const desc = {
         type: raw.type,
         url: raw.url,
         ...(raw.headers ? { headers: raw.headers } : {}),
+        ...(toolsPolicy ? { tools: toolsPolicy } : {}),
       }
-      result[id] = (toolsPolicy ? { ...desc, tools: toolsPolicy } : desc) as unknown as PluginMcpServerConfig
+      result[id] = desc as unknown as PluginMcpServerConfig
     } else if (raw.type === 'stdio') {
       const desc = {
         type: 'stdio' as const,
         command: raw.command,
         ...(raw.args ? { args: raw.args } : {}),
         ...(raw.env ? { env: raw.env } : {}),
+        ...(toolsPolicy ? { tools: toolsPolicy } : {}),
       }
       result[id] = desc as unknown as PluginMcpServerConfig
     }
   }
 
   return result
+}
+
+/** Enabled BYO MCP servers, for plan-mode capability menus. Reserved ids are omitted. */
+export function listUserMcpServerCatalog(args: { logger: Logger }): Array<{ id: string; planMode: boolean }> {
+  const catalog: Array<{ id: string; planMode: boolean }> = []
+  for (const [id, raw] of Object.entries(loadMergedUserMcpServers(args.logger))) {
+    if (raw.enabled === false || RESERVED_MCP_IDS.has(id)) continue
+    catalog.push({ id, planMode: raw.planMode === true })
+  }
+  return catalog
 }
 
 /** BYO MCP servers opted into Coro plan mode via `planMode: true`. */

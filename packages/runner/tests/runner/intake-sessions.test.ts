@@ -13,6 +13,12 @@ import {
   resetIntakeSessionsForTests,
 } from '../../src/intake/session-store'
 import { resolveIntelligenceRoot } from '../integration/repo-root'
+import {
+  createIntakePermissionBroker,
+  resetIntakePermissionsForTests,
+  resolveIntakePermission,
+  resolveToolAccess,
+} from '../../src/intake/permissions'
 
 const silentLogger = pino({ level: 'silent' })
 const usage = { inputTokens: 10, outputTokens: 4 }
@@ -38,6 +44,7 @@ describe('intake session HTTP', () => {
     backend.close()
     fs.rmSync(tmpDir, { recursive: true, force: true })
     resetIntakeSessionsForTests()
+    resetIntakePermissionsForTests()
   })
 
   async function start() {
@@ -180,5 +187,57 @@ describe('intake session HTTP', () => {
     const body = await put.json() as { persisted: boolean; session: { items: Array<{ text: string }> } }
     expect(body.persisted).toBe(true)
     expect(body.session.items[0]?.text).toHaveLength(120_000)
+  })
+
+  it('rejects a bad allow rule and an unknown permission reply', async () => {
+    const base = await start()
+    const bad = await fetch(`${base}/intake/sessions/s1/tool-access`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allow: ['not a rule'] }),
+    })
+    expect(bad.status).toBe(400)
+
+    const missing = await fetch(`${base}/intake/sessions/s1/permissions/nope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'once' }),
+    })
+    expect(missing.status).toBe(404)
+  })
+
+  it('returns pending permission prompts with the session', async () => {
+    const base = await start()
+    const id = 'inv-perm-1'
+    const put = await fetch(`${base}/intake/sessions/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [{ kind: 'message', id: '1', role: 'user', text: 'hello' }],
+        title: 'hello',
+      }),
+    })
+    expect(put.status).toBe(200)
+
+    const access = resolveToolAccess(undefined, { defaults: {}, allow: [], deny: [] }, [])
+    access.capabilities = { ...access.capabilities, shell: 'ask' }
+    const broker = createIntakePermissionBroker({
+      sessionId: id,
+      workRoot: '/tmp',
+      attachedMcpIds: new Set(),
+      emit: () => {},
+      signal: new AbortController().signal,
+      getAccess: () => access,
+      updateSessionAccess: () => {},
+    })
+    const pending = broker.gate('shell', { command: 'ls' })
+    const loaded = await fetch(`${base}/intake/sessions/${id}`).then(r => r.json()) as {
+      pendingPermissions: Array<{ requestId: string }>
+    }
+    expect(loaded.pendingPermissions).toHaveLength(1)
+    const requestId = loaded.pendingPermissions[0]!.requestId
+    expect(resolveIntakePermission(id, requestId, { decision: 'once' }).ok).toBe(true)
+    await expect(pending).resolves.toEqual({ allow: true })
+    broker.dispose('done')
   })
 })

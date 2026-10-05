@@ -12,6 +12,17 @@ export interface IntakeConfig {
   toolsEnabled?: boolean
   subagentsEnabled?: boolean
   subagentModel?: string
+  permissions?: {
+    defaults?: {
+      files?: 'off' | 'ask' | 'allow'
+      filesWrite?: 'off' | 'ask' | 'allow'
+      shell?: 'off' | 'ask' | 'allow'
+      web?: 'off' | 'ask' | 'allow'
+      mcp?: 'off' | 'ask' | 'allow'
+    }
+    allow?: string[]
+    deny?: string[]
+  }
 }
 
 export const DEFAULT_COACH_MODE: Required<Pick<CoachModeConfig, 'enabled' | 'graduateAfterRuns'>> = {

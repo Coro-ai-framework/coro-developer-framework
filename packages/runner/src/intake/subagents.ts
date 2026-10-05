@@ -15,6 +15,7 @@ import type { PluginRegistry } from '../plugins/registry'
 import type { IntakeStreamEvent } from './stream-events'
 import { toolEndEvent, toolStartEvent } from './stream-events'
 import { buildIntakeSubagentSystemPrompt } from './system-prompt'
+import type { WorkspaceTools } from '../tools/workspace-tools'
 import {
   createIntakeRunTool,
   INTAKE_MAX_SUBAGENT_TASKS,
@@ -91,6 +92,10 @@ export interface IntakeSubagentDispatcherOptions {
   pluginMcpServers: Record<string, PluginMcpServerConfig>
   /** The conversation's stable work root; each subagent gets its own subdirectory. */
   workRoot: string
+  /** Already bound with canAsk: false. Subagents never prompt the developer. */
+  permissionGate?: (name: string, input: unknown) => Promise<{ allow: boolean; reason?: string }>
+  workspace?: WorkspaceTools
+  nativeTools?: boolean
   emit: (event: IntakeStreamEvent) => void
   logger?: Logger
 }
@@ -102,7 +107,7 @@ export interface IntakeSubagentRunner extends IntakeSubagentDispatcher {
 
 export function createIntakeSubagentDispatcher(opts: IntakeSubagentDispatcherOptions): IntakeSubagentRunner {
   const model = resolveIntakeSubagentModel(opts.executor, opts.parentModel, opts.settings)
-  const systemPrompt = buildIntakeSubagentSystemPrompt()
+  const systemPrompt = buildIntakeSubagentSystemPrompt({ scratchDir: opts.workRoot })
   let usage = emptyNormalizedUsage()
   let inFlight = 0
   let seq = 0
@@ -120,12 +125,20 @@ export function createIntakeSubagentDispatcher(opts: IntakeSubagentDispatcherOpt
       cwd,
       maxOutputTokens: INTAKE_SUBAGENT_MAX_OUTPUT_TOKENS,
       signal,
+      ...(opts.permissionGate
+        ? { permissionGate: opts.permissionGate, permissionTimeoutMs: 60_000 }
+        : {}),
+      ...(opts.nativeTools ? { nativeTools: true } : {}),
       ...(hasMcp ? { pluginMcpServers: opts.pluginMcpServers } : {}),
-      ...(hasTools
+      ...(hasTools || opts.workspace
         ? {
             tools: opts.lookupTools,
             maxToolRounds: INTAKE_SUBAGENT_MAX_TOOL_ROUNDS,
-            runTool: createIntakeRunTool(opts.registry, signal, opts.toolDeps),
+            runTool: createIntakeRunTool(opts.registry, signal, {
+              ...opts.toolDeps,
+              ...(opts.workspace ? { workspace: opts.workspace } : {}),
+              ...(opts.permissionGate ? { gate: opts.permissionGate } : {}),
+            }),
           }
         : {}),
       onToolStart: info => opts.emit(toolStartEvent(info, label)),

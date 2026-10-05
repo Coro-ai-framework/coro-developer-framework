@@ -190,6 +190,7 @@ const ANTHROPIC_CAPABILITIES: ExecutorCapabilities = {
   supportsNativeSubagents: true,
   supportsClaudeMdNativeWalkUp: true,
   supportsNativeFileTools: true,
+  supportsNativeWebTools: true,
   supportsSessionResume: true,
   supportsConversationReplay: false,
   supportsThinking: true,

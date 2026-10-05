@@ -564,14 +564,14 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     let bridge: McpFunctionBridge | null = null
     if (Object.keys(pluginServers).length > 0) {
       const emptyCoro = createSdkMcpServer({ name: 'coro', tools: [] })
-      const { checkToolAllowed } = buildChatToolAllowPolicy(req)
+      const { decideToolCall } = buildChatToolAllowPolicy(req)
       bridge = new McpFunctionBridge({
         coroServer: { kind: 'sdk-instance', id: 'coro', instance: emptyCoro },
         pluginServers,
         hookPolicy: {
           allowedTools: null,
           writeRoots: [],
-          onPreToolUse: (toolName) => checkToolAllowed(toolName),
+          onPreToolUse: (toolName, input) => decideToolCall(toolName, input),
         },
         cwd: process.cwd(),
         phase: 'chat',

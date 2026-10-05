@@ -49,7 +49,7 @@ export function shouldChatViaAgentSdk(auth: ClaudeAuthConfig): boolean {
 
 /** Use the SDK subprocess path when subscription auth or BYO MCP requires it. */
 export function shouldRouteChatViaAgentSdk(auth: ClaudeAuthConfig, req: ChatRequest): boolean {
-  return shouldChatViaAgentSdk(auth) || chatPluginMcpServerIds(req).length > 0
+  return shouldChatViaAgentSdk(auth) || chatPluginMcpServerIds(req).length > 0 || req.nativeTools === true
 }
 
 /**
@@ -194,7 +194,7 @@ export async function chatViaAgentSdk(
 
   const toolCalls: ChatToolCallRecord[] = []
   const mcpInstance = buildChatMcpServer(req, toolCalls)
-  const { hookAllowedTools, checkToolAllowed } = buildChatToolAllowPolicy(req)
+  const { hookAllowedTools, decideToolCall } = buildChatToolAllowPolicy(req)
   const pluginMcpServers = req.pluginMcpServers ?? {}
   const resumeSessionId = req.sessionState?.sessionId
 
@@ -209,7 +209,8 @@ export async function chatViaAgentSdk(
     hookPolicy: {
       allowedTools: hookAllowedTools,
       writeRoots: [cwd],
-      onPreToolUse: (toolName) => checkToolAllowed(toolName),
+      onPreToolUse: (toolName, input) => decideToolCall(toolName, input),
+      ...(req.permissionTimeoutMs ? { preToolUseTimeoutMs: req.permissionTimeoutMs + 30_000 } : {}),
     },
     sessionState: { sessionId: resumeSessionId },
     maxTurns: computeChatMaxTurns(req),

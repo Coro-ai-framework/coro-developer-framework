@@ -756,6 +756,12 @@ export interface ExecutorCapabilities {
   supportsClaudeMdNativeWalkUp: boolean
   /** True when the executor brings native Read/Write/Edit/Glob/Grep tools. */
   supportsNativeFileTools: boolean
+  /**
+   * True when the executor brings native web fetch/search tools (Claude Code
+   * WebFetch/WebSearch). Optional; absent means false so existing executors
+   * keep compiling.
+   */
+  supportsNativeWebTools?: boolean
   /** True when resume by sessionId is supported (Claude SDK). */
   supportsSessionResume: boolean
   /** True when resume by conversation replay is supported (most others). */
@@ -787,6 +793,11 @@ export interface HookPolicy {
     toolName: string,
     input: unknown,
   ): { allow: boolean; reason?: string } | Promise<{ allow: boolean; reason?: string }>
+  /**
+   * Upper bound for an async onPreToolUse decision (e.g. waiting for a
+   * developer). Executors with hook timeouts must raise them to at least this.
+   */
+  preToolUseTimeoutMs?: number
 }
 
 /**
@@ -1245,6 +1256,19 @@ export interface ChatRequest {
    * `mcp__<id>__*`.
    */
   pluginMcpServers?: Record<string, PluginMcpServerConfig>
+  /**
+   * Runner decision for any tool call that is not a built-in `tools` entry
+   * (native tools, plugin MCP, claude.ai connectors). When set, executors
+   * MUST await it before running such a call and deny with `reason` on
+   * `{ allow: false }`. May wait for a developer for up to `permissionTimeoutMs`.
+   */
+  permissionGate?: (toolName: string, input: unknown) => Promise<{ allow: boolean; reason?: string }>
+  permissionTimeoutMs?: number
+  /**
+   * Runner wants the executor's native file/shell/web tools this turn.
+   * Executors that do not have them ignore it.
+   */
+  nativeTools?: boolean
 }
 
 /** Terminal result from a single {@link PhaseExecutorRuntime.chat} call. */

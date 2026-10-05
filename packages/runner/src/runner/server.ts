@@ -2770,6 +2770,32 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             if (trimmed) next.subagentModel = trimmed
             else delete next.subagentModel
           }
+          if (Object.prototype.hasOwnProperty.call(incoming, 'permissions')) {
+            const incomingPermissions = incoming.permissions
+            if (incomingPermissions === null) {
+              delete next.permissions
+            } else if (incomingPermissions && typeof incomingPermissions === 'object') {
+              const current = { ...(next.permissions ?? {}) }
+              if (Object.prototype.hasOwnProperty.call(incomingPermissions, 'defaults')) {
+                const incomingDefaults = incomingPermissions.defaults
+                if (incomingDefaults === null) {
+                  delete current.defaults
+                } else if (incomingDefaults && typeof incomingDefaults === 'object') {
+                  const defaults = { ...(current.defaults ?? {}) }
+                  for (const key of ['files', 'filesWrite', 'shell', 'web', 'mcp'] as const) {
+                    if (!Object.prototype.hasOwnProperty.call(incomingDefaults, key)) continue
+                    const value = incomingDefaults[key]
+                    if (value === null || value === undefined) delete defaults[key]
+                    else defaults[key] = value
+                  }
+                  current.defaults = defaults
+                }
+              }
+              if (Array.isArray(incomingPermissions.allow)) current.allow = incomingPermissions.allow
+              if (Array.isArray(incomingPermissions.deny)) current.deny = incomingPermissions.deny
+              next.permissions = current
+            }
+          }
           ;(merged as Record<string, unknown>).intake = next
         }
       }

@@ -252,6 +252,8 @@ const coachModeConfigSchema = z.object({
   graduatedAt: z.string().optional(),
 }).optional()
 
+const toolAccessModeSchema = z.enum(['off', 'ask', 'allow'])
+
 /** Plan-mode intake preferences. */
 const intakeConfigSchema = z.object({
   /** When true (default), plan mode may read trackers and repos via read-only tools. */
@@ -260,6 +262,21 @@ const intakeConfigSchema = z.object({
   subagentsEnabled: z.boolean().optional(),
   /** Model id plan-mode subagents run on. Ignored when the plan-mode provider cannot serve it. */
   subagentModel: z.string().optional(),
+  /**
+   * Defaults and standing allow/deny rules for plan-mode tool permissions.
+   * Per-conversation overrides live on the investigation, not here.
+   */
+  permissions: z.object({
+    defaults: z.object({
+      files: toolAccessModeSchema.optional(),
+      filesWrite: toolAccessModeSchema.optional(),
+      shell: toolAccessModeSchema.optional(),
+      web: toolAccessModeSchema.optional(),
+      mcp: toolAccessModeSchema.optional(),
+    }).optional(),
+    allow: z.array(z.string()).optional(),
+    deny: z.array(z.string()).optional(),
+  }).optional(),
 }).optional()
 
 const idleWatchdogConfigSchema = z.object({

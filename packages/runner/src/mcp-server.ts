@@ -32,7 +32,7 @@ import { runSubagent } from './tools/run-subagent'
 export function createCoroMcpServer(
   ctx: ToolContext,
   signals: PhaseSignals,
-  options: { registerFileTools?: boolean; registerRunSubagent?: boolean } = {},
+  options: { registerFileTools?: boolean; registerRunSubagent?: boolean; registerWebTools?: boolean } = {},
 ) {
   // Wrap every native handler in a try/catch so an unhandled throw
   // can't tear down the in-process MCP transport (the cause of the
@@ -806,6 +806,19 @@ export function createCoroMcpServer(
             timeoutMs: z.number().int().positive().optional().describe('Wall-clock timeout in milliseconds (default 120000, max 600000).'),
           },
           h.shell,
+        ),
+      ] : []),
+
+      ...(options.registerWebTools ? [
+        tool(
+          'web_fetch',
+          'Fetch a public http(s) URL with GET and return its text. HTML is reduced to readable text. The body is capped at 1 MiB and the returned text at 40,000 characters.',
+          {
+            url: z.string().describe('Absolute http or https URL.'),
+            maxChars: z.number().int().positive().optional().describe('Max characters of text to return (default 40000, cap 100000).'),
+          },
+          h.web_fetch,
+          { annotations: { readOnlyHint: true } },
         ),
       ] : []),
 

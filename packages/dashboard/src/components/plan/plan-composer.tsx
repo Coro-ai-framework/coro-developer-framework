@@ -19,6 +19,7 @@ import { getReadinessMeta, toneDotClasses } from '../../lib/status'
 import type { Readiness } from '../../lib/intake-readiness'
 import { usePlanSession } from '../../providers/plan-session'
 import GenerateRunButton, { conversationHasRun } from './generate-run-button'
+import ToolAccessMenu from './tool-access-menu'
 
 function PlanModeModelSelect({
   value,
@@ -202,14 +203,17 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
         </Button>
       </form>
       <div className="mt-2 flex items-center justify-between gap-2">
-        <PlanModeModelSelect
-          value={session.modelChoice}
-          onChange={session.setModelChoice}
-          providers={providers}
-          modelsByProvider={modelsByProvider}
-          loadModels={loadModels}
-          disabled={session.busy}
-        />
+        <div className="flex items-center gap-3">
+          <PlanModeModelSelect
+            value={session.modelChoice}
+            onChange={session.setModelChoice}
+            providers={providers}
+            modelsByProvider={modelsByProvider}
+            loadModels={loadModels}
+            disabled={session.busy}
+          />
+          <ToolAccessMenu />
+        </div>
         <div className="flex items-center gap-2.5">
           <ContextMeter used={session.contextUsed} window={contextWindow} />
           <span className="text-[11px] text-fg-subtle">

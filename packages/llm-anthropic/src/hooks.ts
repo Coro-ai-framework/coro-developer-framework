@@ -1,6 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
-import type { HookCallback, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
+import type { HookCallback, HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
 import type { Logger } from 'pino'
 import type { HookPolicy } from '@coro-ai/plugin-sdk'
 
@@ -33,7 +33,7 @@ export interface BuildHookOpts {
   logger: Logger
 }
 
-export function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hooks: HookCallback[] }>> {
+export function buildPhaseHooks(opts: BuildHookOpts): Record<string, HookCallbackMatcher[]> {
   const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
   const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
     ? new Set(opts.allowedTools)
@@ -113,8 +113,11 @@ export function buildPhaseHooks(opts: BuildHookOpts): Record<string, Array<{ hoo
     return {}
   }
 
+  const timeoutMs = opts.hookPolicy?.preToolUseTimeoutMs
+  const timeout = timeoutMs && timeoutMs > 0 ? Math.ceil(timeoutMs / 1000) : undefined
+
   return {
-    PreToolUse: [{ hooks: [preToolUse] }],
+    PreToolUse: [{ hooks: [preToolUse], ...(timeout ? { timeout } : {}) }],
   }
 }
 

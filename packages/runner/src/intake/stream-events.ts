@@ -1,8 +1,9 @@
 import type { ChatToolCallRecord } from '@coro-ai/plugin-sdk'
+import type { IntakePermissionRequest } from '@coro-ai/cloud-protocol'
 import { summarizeToolCall } from './tools'
 
 export interface IntakeStreamEvent {
-  type: 'token' | 'thinking' | 'done' | 'error' | 'tool_start' | 'tool_end'
+  type: 'token' | 'thinking' | 'done' | 'error' | 'tool_start' | 'tool_end' | 'permission_request' | 'permission_resolved'
   text?: string
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
   /** Tokens resident in the model's context after this turn. */
@@ -22,6 +23,12 @@ export interface IntakeStreamEvent {
   reason?: string
   /** Set on tool frames produced by a delegated subagent, e.g. "Subagent 2". */
   subagent?: string
+  /** Pending developer decision, on `permission_request`. */
+  request?: IntakePermissionRequest
+  /** Id of the request a `permission_resolved` frame closes. */
+  requestId?: string
+  decision?: 'allow' | 'deny'
+  by?: 'developer' | 'timeout' | 'abort'
 }
 
 export function toolStartEvent(info: { name: string; input: unknown }, subagent?: string): IntakeStreamEvent {

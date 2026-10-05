@@ -14,6 +14,47 @@ const WORKING = '/tmp/coro-job-working/job-test'
 const INTEL = '/tmp/coro-job-working/job-test/_intelligence'
 const MEMORY = path.join(INTEL, 'memory')
 
+it('raises the PreToolUse matcher timeout when a decision may wait on a developer', () => {
+  const logger = pino({ level: 'silent' })
+  const withTimeout = buildPhaseHooks({
+    liveJobRef: () => ({ phase: 'chat' }),
+    workingDir: WORKING,
+    coroIntelligenceDir: INTEL,
+    hookPolicy: { allowedTools: null, writeRoots: [], preToolUseTimeoutMs: 90_500 },
+    logger,
+  })
+  expect(withTimeout.PreToolUse[0]?.timeout).toBe(91)
+  const without = buildPhaseHooks({
+    liveJobRef: () => ({ phase: 'chat' }),
+    workingDir: WORKING,
+    coroIntelligenceDir: INTEL,
+    logger,
+  })
+  expect(without.PreToolUse[0]?.timeout).toBeUndefined()
+})
+
+it('denies when an async onPreToolUse resolves to deny', async () => {
+  const logger = pino({ level: 'silent' })
+  const hooks = buildPhaseHooks({
+    liveJobRef: () => ({ phase: 'chat' }),
+    workingDir: WORKING,
+    coroIntelligenceDir: INTEL,
+    hookPolicy: {
+      allowedTools: null,
+      writeRoots: [WORKING],
+      onPreToolUse: async () => ({ allow: false, reason: 'wait' }),
+    },
+    logger,
+  })
+  const hook = hooks.PreToolUse[0]!.hooks[0] as HookCallback
+  const result = await hook(
+    { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } } as unknown as Parameters<HookCallback>[0],
+    'tool-use-id',
+    { signal: new AbortController().signal },
+  ) as HookJSONOutput
+  expect(result.hookSpecificOutput).toMatchObject({ permissionDecision: 'deny', permissionDecisionReason: 'wait' })
+})
+
 function makeHook() {
   const logger = pino({ level: 'silent' })
   const hooks = buildPhaseHooks({

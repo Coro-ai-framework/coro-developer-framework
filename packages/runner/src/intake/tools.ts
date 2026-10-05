@@ -7,6 +7,11 @@ import {
 } from '../plugins/registry'
 import type { ScmPluginRuntime, TrackerComment, TrackerIssue, TrackerPluginRuntime } from '../plugins/types'
 import type { StateBackend } from '../state/backend'
+import { WORKSPACE_TOOL_NAMES, type WorkspaceTools } from '../tools/workspace-tools'
+import {
+  INTAKE_PERMISSION_TIMEOUT_MS,
+  type IntakePermissionBroker,
+} from './permissions'
 import {
   getPastJob,
   listPastJobFiles,
@@ -76,6 +81,24 @@ export interface IntakeSubagentDispatcher {
   delegate(tasks: ReadonlyArray<string>, signal: AbortSignal): Promise<IntakeSubagentReport[]>
 }
 
+export const REQUEST_TOOL_ACCESS_TOOL_NAME = 'request_tool_access'
+
+export const REQUEST_TOOL_ACCESS_TOOL: ChatTool = {
+  name: REQUEST_TOOL_ACCESS_TOOL_NAME,
+  description:
+    'Ask the developer to enable a capability that is currently off for this conversation: ' +
+    '"files", "filesWrite", "shell", "web", or "mcp:<serverId>". Give a one-line reason naming ' +
+    'what you will do with it. Blocks until they answer.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      capability: { type: 'string', description: 'Capability id, e.g. "shell" or "mcp:linear".' },
+      reason: { type: 'string', description: 'One line: what you will do with it.' },
+    },
+    required: ['capability', 'reason'],
+  },
+}
+
 export const DELEGATE_INVESTIGATION_TOOL: ChatTool = {
   name: DELEGATE_INVESTIGATION_TOOL_NAME,
   description:
@@ -103,6 +126,11 @@ export interface IntakeToolDeps {
   workingDir?: string
   /** Present only when this turn offers delegate_investigation. */
   subagents?: IntakeSubagentDispatcher
+  /** Scratch-directory file/shell/web tools. Present when the executor lacks native equivalents. */
+  workspace?: WorkspaceTools
+  /** Approves workspace tools before they run. Native tools are gated inside the executor. */
+  gate?: (name: string, input: unknown) => Promise<{ allow: boolean; reason?: string }>
+  requestCapability?: IntakePermissionBroker['requestCapability']
 }
 
 export function buildIntakeTools(
@@ -421,6 +449,51 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
     const filePath = readField(input, 'path')
     return filePath ? `Read job file ${filePath}` : 'Read job file'
   }
+  if (name === 'shell' || name === 'Bash') {
+    const command = readField(input, 'command')
+    const code = output && typeof output === 'object' && 'exitCode' in output
+      ? (output as { exitCode: unknown }).exitCode
+      : undefined
+    const head = command ? `Ran ${clip(command, 60)}` : 'Ran a command'
+    return typeof code === 'number' ? `${head} (exit ${code})` : head
+  }
+  if (name === 'web_fetch' || name === 'WebFetch') {
+    const url = readField(input, 'url')
+    if (!url) return 'Fetched a page'
+    try { return `Fetched ${new URL(url).hostname}` }
+    catch { return `Fetched ${clip(url, 60)}` }
+  }
+  if (name === 'WebSearch') {
+    const query = readField(input, 'query')
+    return query ? `Searched the web for "${clip(query, 48)}"` : 'Searched the web'
+  }
+  if (name === 'file_read' || name === 'Read') {
+    const filePath = readField(input, 'path') ?? readField(input, 'file_path')
+    return filePath ? `Read ${filePath}` : 'Read a file'
+  }
+  if (name === 'file_write' || name === 'Write' || name === 'file_edit' || name === 'Edit') {
+    const filePath = readField(input, 'path') ?? readField(input, 'file_path')
+    return filePath ? `Wrote ${filePath}` : 'Wrote a file'
+  }
+  if (name === 'file_glob' || name === 'Glob') {
+    const matches = output && typeof output === 'object' && 'matches' in output
+      ? (output as { matches: unknown }).matches
+      : null
+    const count = Array.isArray(matches) ? matches.length : 0
+    return `Found ${count} file${count === 1 ? '' : 's'}`
+  }
+  if (name === 'file_grep' || name === 'Grep') {
+    const hits = output && typeof output === 'object' && 'hits' in output
+      ? (output as { hits: unknown }).hits
+      : null
+    const count = Array.isArray(hits) ? hits.length : 0
+    return `Found ${count} match${count === 1 ? '' : 'es'}`
+  }
+  if (name === REQUEST_TOOL_ACCESS_TOOL_NAME) {
+    const capability = readField(input, 'capability') ?? 'a capability'
+    const granted = output && typeof output === 'object' && (output as { granted?: boolean }).granted === true
+    return `${granted ? 'Enabled' : 'Not enabled'}: ${capability}`
+  }
   if (name === DELEGATE_INVESTIGATION_TOOL_NAME) {
     const reports = Array.isArray(output) ? (output as Array<{ ok?: boolean }>) : []
     const ok = reports.filter(r => r?.ok).length
@@ -431,6 +504,10 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
     return `${mcp.serverId}: ${mcp.toolName}`
   }
   return 'Done'
+}
+
+function clip(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value
 }
 
 function readField(input: unknown, field: string): string | null {
@@ -472,9 +549,11 @@ function parseSubagentTasks(raw: unknown): string[] {
 }
 
 function toolTimeoutMs(name: string): number {
-  return name === DELEGATE_INVESTIGATION_TOOL_NAME
-    ? INTAKE_SUBAGENT_TIMEOUT_MS + INTAKE_TOOL_TIMEOUT_MS
-    : INTAKE_TOOL_TIMEOUT_MS
+  if (name === DELEGATE_INVESTIGATION_TOOL_NAME) return INTAKE_SUBAGENT_TIMEOUT_MS + INTAKE_TOOL_TIMEOUT_MS
+  if (name === 'shell') return 600_000 + INTAKE_TOOL_TIMEOUT_MS
+  if (name === 'web_fetch') return 35_000
+  if (name === REQUEST_TOOL_ACCESS_TOOL_NAME) return INTAKE_PERMISSION_TIMEOUT_MS + INTAKE_TOOL_TIMEOUT_MS
+  return INTAKE_TOOL_TIMEOUT_MS
 }
 
 export function createIntakeRunTool(
@@ -484,6 +563,10 @@ export function createIntakeRunTool(
 ): (name: string, input: unknown) => Promise<unknown> {
   return async (name: string, input: unknown) => {
     const args = parseArgs(input)
+    if (WORKSPACE_TOOL_NAMES.has(name) && deps.gate) {
+      const decision = await deps.gate(name, args)
+      if (!decision.allow) throw new Error(decision.reason ?? `Blocked ${name}.`)
+    }
     return withTimeout(
       dispatchIntakeTool(registry, name, args, deps, signal),
       toolTimeoutMs(name),
@@ -661,6 +744,23 @@ async function dispatchIntakeTool(
     case DELEGATE_INVESTIGATION_TOOL_NAME: {
       if (!deps.subagents) throw new Error('delegate_investigation is not available in this plan-mode turn.')
       return deps.subagents.delegate(parseSubagentTasks(args.tasks), signal)
+    }
+    case 'file_read':
+    case 'file_write':
+    case 'file_edit':
+    case 'file_glob':
+    case 'file_grep':
+    case 'shell':
+    case 'web_fetch': {
+      if (!deps.workspace) throw new Error(`${name} is not available in this plan-mode turn.`)
+      return deps.workspace[name](args as never)
+    }
+    case REQUEST_TOOL_ACCESS_TOOL_NAME: {
+      if (!deps.requestCapability) throw new Error('request_tool_access is not available in this plan-mode turn.')
+      const capability = String(args.capability ?? '').trim()
+      const reason = String(args.reason ?? '').trim()
+      if (!capability || !reason) throw new Error('request_tool_access requires capability and reason')
+      return deps.requestCapability(capability, reason)
     }
     default:
       throw new Error(`Unknown plan-mode tool: ${name}`)

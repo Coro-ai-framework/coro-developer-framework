@@ -28,6 +28,7 @@ export async function persistLiveIntakeSession(
     turnCount: live.turns.length,
     executorSession: (live.executorSession as InvestigationExecutorSession | undefined) ?? null,
     executorId: live.executorId ?? null,
+    ...(live.toolAccess ? { toolAccess: live.toolAccess } : {}),
     title: extras?.title ?? titleFromTurns(live.turns),
     ...(extras?.modelChoice ? { modelChoice: extras.modelChoice } : {}),
   })
@@ -78,6 +79,7 @@ export async function persistIntakeSnapshot(
     patch.turnCount = live.turns.length
     patch.executorSession = (live.executorSession as InvestigationExecutorSession | undefined) ?? null
     patch.executorId = live.executorId ?? null
+    if (live.toolAccess) patch.toolAccess = live.toolAccess
     if (!patch.title) patch.title = titleFromTurns(live.turns)
   }
 

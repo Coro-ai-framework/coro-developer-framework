@@ -7,6 +7,56 @@ export const INVESTIGATION_TITLE_MAX = 40
 
 export type InvestigationStatus = 'active' | 'dispatched' | 'closed'
 
+export type ToolAccessMode = 'off' | 'ask' | 'allow'
+export type IntakeBuiltinCapability = 'files' | 'filesWrite' | 'shell' | 'web'
+export type IntakeCapability = IntakeBuiltinCapability | `mcp:${string}`
+export type IntakePermissionDecision = 'once' | 'conversation' | 'always' | 'deny'
+export type IntakePermissionRisk = 'normal' | 'mutating' | 'outside-scratch'
+
+export interface InvestigationToolAccess {
+  capabilities: Partial<Record<IntakeBuiltinCapability, ToolAccessMode>>
+  mcp: Record<string, ToolAccessMode>
+  allow: string[]
+  deny: string[]
+}
+
+export interface IntakePermissionRequest {
+  requestId: string
+  sessionId: string
+  kind: 'tool' | 'capability'
+  capability: IntakeCapability
+  toolName: string
+  title: string
+  subject: string
+  detail?: unknown
+  risk: IntakePermissionRisk
+  suggestedRule?: string
+  allowedDecisions: IntakePermissionDecision[]
+  createdAt: string
+  expiresAt: string
+}
+
+export interface ResolvedToolAccess {
+  capabilities: Record<IntakeBuiltinCapability, ToolAccessMode>
+  mcp: Record<string, ToolAccessMode>
+  allow: string[]
+  deny: string[]
+}
+
+export interface ToolAccessView {
+  toolAccess: InvestigationToolAccess | null
+  resolved: ResolvedToolAccess
+  catalog: { mcpServers: Array<{ id: string; planMode: boolean }> }
+  globalAllow: string[]
+}
+
+export interface ToolAccessPatch {
+  capabilities?: Partial<Record<IntakeBuiltinCapability, ToolAccessMode | null>>
+  mcp?: Record<string, ToolAccessMode | null>
+  allow?: string[]
+  deny?: string[]
+}
+
 export interface InvestigationModelChoice {
   provider: string
   model: string
@@ -37,6 +87,8 @@ export interface InvestigationRecord {
   dispatchedJobId?: string | null
   /** True while the runner is still inside this conversation's turn. */
   streaming?: boolean
+  toolAccess?: InvestigationToolAccess | null
+  pendingPermissions?: IntakePermissionRequest[]
   createdAt: string
   updatedAt: string
 }
@@ -151,6 +203,28 @@ export async function putInvestigation(
   body: InvestigationPutBody,
 ): Promise<{ persisted: boolean; session: InvestigationRecord | null }> {
   return requestJson(`/intake/sessions/${encodeURIComponent(id)}`, jsonRequest(body, { method: 'PUT' }))
+}
+
+export async function respondToPermission(
+  sessionId: string,
+  requestId: string,
+  body: { decision: IntakePermissionDecision; rule?: string; mode?: ToolAccessMode; message?: string },
+): Promise<{ resolved: boolean }> {
+  return requestJson(
+    `/intake/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}`,
+    jsonRequest(body, { method: 'POST' }),
+  )
+}
+
+export async function getToolAccess(sessionId: string): Promise<ToolAccessView> {
+  return requestJson<ToolAccessView>(`/intake/sessions/${encodeURIComponent(sessionId)}/tool-access`)
+}
+
+export async function putToolAccess(sessionId: string, patch: ToolAccessPatch): Promise<ToolAccessView> {
+  return requestJson<ToolAccessView>(
+    `/intake/sessions/${encodeURIComponent(sessionId)}/tool-access`,
+    jsonRequest(patch, { method: 'PUT' }),
+  )
 }
 
 export async function deleteInvestigation(id: string): Promise<void> {

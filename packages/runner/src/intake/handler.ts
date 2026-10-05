@@ -6,14 +6,22 @@ import pino from 'pino'
 import type { PluginRegistry } from '../plugins/registry'
 import type { Settings } from '../config/settings'
 import type { StateBackend } from '../state/backend'
-import { selectModel, collectPlanModeMcpServers } from '../jobs/runner'
+import { selectModel, collectUserMcpServers, listUserMcpServerCatalog } from '../jobs/runner'
 import { resolveIntelligenceDir, resolveWorkingDir } from '../config/local-config'
 import {
   buildIntakeTools,
   createIntakeRunTool,
   DELEGATE_INVESTIGATION_TOOL,
   INTAKE_MAX_TOOL_ROUNDS,
+  REQUEST_TOOL_ACCESS_TOOL,
 } from './tools'
+import { buildWorkspaceChatTools, createWorkspaceTools } from '../tools/workspace-tools'
+import {
+  createIntakePermissionBroker,
+  INTAKE_PERMISSION_TIMEOUT_MS,
+  readIntakePermissionConfig,
+  resolveToolAccess,
+} from './permissions'
 import { createIntakeSubagentDispatcher, intakeSubagentsEnabled } from './subagents'
 import {
   createIntakeEventQueue,
@@ -42,6 +50,7 @@ import {
   persistIntakeExecutorSession,
   ensureIntakeWorkRoot,
   resetIntakeSessionsForTests,
+  updateIntakeToolAccess,
   type IntakeEvidence,
 } from './session-store'
 import { persistLiveIntakeSession } from './persist'
@@ -275,10 +284,48 @@ async function* executeIntakeTurn(
   const model = assignment.model
   const cwd = resolveWorkingDir(null)
   const intelligenceDir = resolveIntelligenceDir(null)
-  const lookupTools = toolsOn ? buildIntakeTools(options.registry, { stateBackend: options.stateBackend }) : []
-  const planModeMcpServers = toolsOn ? collectPlanModeMcpServers({ logger: baseLogger }) : {}
-  const planModeMcpServerIds = Object.keys(planModeMcpServers)
   const events = createIntakeEventQueue()
+  const mcpCatalog = toolsOn ? listUserMcpServerCatalog({ logger: baseLogger }) : []
+  const permissionConfig = toolsOn ? readIntakePermissionConfig(baseLogger) : null
+  const currentAccess = () => resolveToolAccess(
+    getIntakeSession(options.sessionId).toolAccess,
+    permissionConfig!,
+    mcpCatalog,
+  )
+  const accessAtStart = toolsOn ? currentAccess() : null
+  const nativeFiles = executor.capabilities?.supportsNativeFileTools === true
+  const nativeWeb = executor.capabilities?.supportsNativeWebTools === true
+  const planModeMcpServers = toolsOn
+    ? collectUserMcpServers({
+        logger: baseLogger,
+        filter: id => accessAtStart!.mcp[id] !== 'off',
+      })
+    : {}
+  const planModeMcpServerIds = Object.keys(planModeMcpServers)
+  const broker = toolsOn
+    ? createIntakePermissionBroker({
+        sessionId: options.sessionId,
+        workRoot,
+        attachedMcpIds: new Set(planModeMcpServerIds),
+        emit: events.push,
+        signal: options.signal,
+        getAccess: currentAccess,
+        updateSessionAccess: fn => {
+          updateIntakeToolAccess(options.sessionId, fn)
+          void persistTurn(options)
+        },
+        logger: log,
+      })
+    : undefined
+  const workspace = toolsOn && (!nativeFiles || !nativeWeb)
+    ? createWorkspaceTools({ root: workRoot })
+    : undefined
+  const accessTools = toolsOn
+    ? buildWorkspaceChatTools({ includeFiles: !nativeFiles, includeWeb: !nativeWeb })
+    : []
+  const lookupTools = toolsOn
+    ? [...buildIntakeTools(options.registry, { stateBackend: options.stateBackend }), ...accessTools]
+    : []
   const subagents =
     toolsOn &&
     intakeSubagentsEnabled(options.settings) &&
@@ -295,9 +342,16 @@ async function* executeIntakeTurn(
           workRoot,
           emit: events.push,
           logger: log,
+          ...(broker ? { permissionGate: (name, input) => broker.gate(name, input, { canAsk: false }) } : {}),
+          ...(workspace ? { workspace } : {}),
+          nativeTools: nativeFiles,
         })
       : undefined
-  const tools = subagents ? [...lookupTools, DELEGATE_INVESTIGATION_TOOL] : lookupTools
+  const tools = [
+    ...lookupTools,
+    ...(toolsOn ? [REQUEST_TOOL_ACCESS_TOOL] : []),
+    ...(subagents ? [DELEGATE_INVESTIGATION_TOOL] : []),
+  ]
   const hasTools = tools.length > 0 || planModeMcpServerIds.length > 0
   const pastJobsEnabled = tools.some(t => t.name === 'list_past_jobs')
 
@@ -318,6 +372,18 @@ async function* executeIntakeTurn(
     pastJobsEnabled,
     planModeMcpServerIds,
     subagentsEnabled: Boolean(subagents),
+    ...(accessAtStart
+      ? {
+          access: {
+            modes: accessAtStart.capabilities,
+            nativeFiles,
+            nativeWeb,
+            scratchDir: workRoot,
+            mcpAttached: planModeMcpServerIds,
+            mcpOnRequest: mcpCatalog.filter(entry => accessAtStart.mcp[entry.id] === 'off').map(entry => entry.id),
+          },
+        }
+      : {}),
   })
 
   // A dispatched run is only worth naming when the agent also has the tools
@@ -370,6 +436,13 @@ async function* executeIntakeTurn(
         cwd: workRoot,
         ...(liveSession.executorSession ? { sessionState: liveSession.executorSession } : {}),
         ...(Object.keys(planModeMcpServers).length > 0 ? { pluginMcpServers: planModeMcpServers } : {}),
+        ...(broker
+          ? {
+              permissionGate: (name: string, input: unknown) => broker.gate(name, input),
+              permissionTimeoutMs: INTAKE_PERMISSION_TIMEOUT_MS,
+            }
+          : {}),
+        ...(toolsOn && nativeFiles ? { nativeTools: true } : {}),
         ...(tools.length > 0
           ? {
               tools,
@@ -378,6 +451,13 @@ async function* executeIntakeTurn(
                 stateBackend: options.stateBackend,
                 workingDir: cwd,
                 ...(subagents ? { subagents } : {}),
+                ...(workspace ? { workspace } : {}),
+                ...(broker
+                  ? {
+                      gate: (name, input) => broker.gate(name, input),
+                      requestCapability: (capability, reason) => broker.requestCapability(capability, reason),
+                    }
+                  : {}),
               }),
             }
           : {}),
@@ -566,5 +646,7 @@ async function* executeIntakeTurn(
       'intake: stream threw',
     )
     yield { type: 'error', message: describeIntakeChatError(err) }
+  } finally {
+    broker?.dispose('turn ended')
   }
 }

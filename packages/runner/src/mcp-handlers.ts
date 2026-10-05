@@ -12,6 +12,7 @@ import {
   createGuardrailEngine,
   createGuardrailScmDeps,
 } from './guardrails'
+import { createWorkspaceTools, WorkspacePathError } from './tools/workspace-tools'
 import { loadLocalConfig } from './config/local-config'
 import { RETROSPECTIVE_REPORT_KIND } from './jobs/retrospective'
 import { validateRetrospectiveReport } from './tools/retrospective-report'
@@ -860,85 +861,21 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
 
   const jobWorkingDir = () => path.resolve(ctx.settings.paths.workingDir, ctx.job.id)
 
-  const resolveUnderRoot = (root: string, requested: string): string | null => {
-    const resolved = path.resolve(root, requested)
-    const rel = path.relative(root, resolved)
-    if (rel.startsWith('..') || path.isAbsolute(rel)) return null
-    return resolved
-  }
-
-  const file_read = async ({ path: requested }: { path: string }) => {
-    const root = jobWorkingDir()
-    const abs = resolveUnderRoot(root, requested)
-    if (!abs) return error(`path escapes working dir: ${requested}`)
-    const content = await fs.readFile(abs, 'utf8')
-    return text({ path: requested, content })
-  }
-
-  const file_write = async ({ path: requested, content }: { path: string; content: string }) => {
-    const root = jobWorkingDir()
-    const abs = resolveUnderRoot(root, requested)
-    if (!abs) return error(`path escapes working dir: ${requested}`)
-    await fs.mkdir(path.dirname(abs), { recursive: true })
-    await fs.writeFile(abs, content, 'utf8')
-    return text({ path: requested, bytesWritten: Buffer.byteLength(content, 'utf8') })
-  }
-
-  const file_edit = async ({ path: requested, oldStr, newStr }: {
-    path: string; oldStr: string; newStr: string
-  }) => {
-    const root = jobWorkingDir()
-    const abs = resolveUnderRoot(root, requested)
-    if (!abs) return error(`path escapes working dir: ${requested}`)
-    const existing = await fs.readFile(abs, 'utf8')
-    // Count occurrences (non-overlapping) for safety. If oldStr is empty,
-    // refuse — that would match everywhere.
-    if (oldStr.length === 0) return error('oldStr must be non-empty')
-    let count = 0
-    let idx = 0
-    while ((idx = existing.indexOf(oldStr, idx)) !== -1) { count++; idx += oldStr.length }
-    if (count === 0) return error(`oldStr not found in ${requested}`)
-    if (count > 1) return error(`oldStr matches ${count} times in ${requested}; must be unique`)
-    const updated = existing.replace(oldStr, newStr)
-    await fs.writeFile(abs, updated, 'utf8')
-    return text({ path: requested, replaced: 1 })
-  }
-
-  const file_glob = async ({ pattern }: { pattern: string }) => {
-    const root = jobWorkingDir()
-    const re = globToRegex(pattern)
-    const matches: string[] = []
-    await walkDir(root, root, async (rel, entry) => {
-      if (entry.isFile() && re.test(rel)) matches.push(rel)
-    })
-    matches.sort()
-    return text({ pattern, matches })
-  }
-
-  const file_grep = async (
-    { pattern, path: subPath, isRegex }: { pattern: string; path?: string; isRegex?: boolean },
-  ) => {
-    const root = jobWorkingDir()
-    const searchRoot = subPath
-      ? (resolveUnderRoot(root, subPath) ?? root)
-      : root
-    if (!searchRoot) return error(`path escapes working dir: ${subPath}`)
-    const re = isRegex
-      ? new RegExp(pattern)
-      : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    const hits: { path: string; line: number; text: string }[] = []
-    await walkDir(searchRoot, root, async (rel, entry) => {
-      if (!entry.isFile()) return
-      let buf: string
-      try { buf = await fs.readFile(path.join(root, rel), 'utf8') }
-      catch { return }
-      const lines = buf.split('\n')
-      for (let i = 0; i < lines.length; i++) {
-        if (re.test(lines[i])) hits.push({ path: rel, line: i + 1, text: lines[i] })
+  const wrapWs = <A,>(fn: (tools: ReturnType<typeof createWorkspaceTools>, args: A) => Promise<unknown>) =>
+    async (args: A) => {
+      try {
+        return text(await fn(createWorkspaceTools({ root: jobWorkingDir() }), args))
+      } catch (err) {
+        if (err instanceof WorkspacePathError) return error(err.message)
+        throw err
       }
-    })
-    return text({ pattern, isRegex: !!isRegex, hits })
-  }
+    }
+
+  const file_read = wrapWs((t, a: { path: string }) => t.file_read(a))
+  const file_write = wrapWs((t, a: { path: string; content: string }) => t.file_write(a))
+  const file_edit = wrapWs((t, a: { path: string; oldStr: string; newStr: string }) => t.file_edit(a))
+  const file_glob = wrapWs((t, a: { pattern: string }) => t.file_glob(a))
+  const file_grep = wrapWs((t, a: { pattern: string; path?: string; isRegex?: boolean }) => t.file_grep(a))
 
   const read_skill = async ({ name }: { name: string }) => {
     if (!/^[a-z0-9][a-z0-9-_]*$/i.test(name)) return error(`invalid skill name: ${name}`)
@@ -952,106 +889,11 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   /**
-   * Run a shell command, scoped to the per-job working dir.
-   *
-   * Gating:
-   *   - Only registered when the executor lacks a native shell tool
-   *     (Claude Code SDK ships `Bash`; OpenAI executor does not).
-   *   - `cwd` is resolved relative to the job's working dir and must
-   *     not escape it. We do NOT try to parse the command itself —
-   *     working-dir scoping is the boundary, mirroring how plugin
-   *     MCP servers are trusted within their own sandbox.
-   *   - Wall-clock timeout (default 120s, hard ceiling 600s) enforced
-   *     via `child_process.spawn` + AbortController.
-   *   - Output is capped at 64 KiB per stream; truncation is reported
-   *     in the response so the model can re-run with narrower scope.
+   * Run a shell command, scoped to the per-job working dir. Implementation
+   * lives in workspace-tools so plan mode can reuse it against a scratch root.
    */
-  const shell = async (
-    { command, cwd: requestedCwd, timeoutMs }:
-    { command: string; cwd?: string; timeoutMs?: number },
-  ) => {
-    if (typeof command !== 'string' || command.trim().length === 0) {
-      return error('command must be a non-empty string')
-    }
-    const root = jobWorkingDir()
-    const cwdAbs = requestedCwd ? resolveUnderRoot(root, requestedCwd) : root
-    if (!cwdAbs) return error(`cwd escapes working dir: ${requestedCwd}`)
-    try {
-      const stat = await fs.stat(cwdAbs)
-      if (!stat.isDirectory()) return error(`cwd is not a directory: ${requestedCwd ?? '.'}`)
-    } catch {
-      return error(`cwd does not exist: ${requestedCwd ?? '.'}`)
-    }
-
-    const HARD_TIMEOUT_MS = 600_000
-    const DEFAULT_TIMEOUT_MS = 120_000
-    const MAX_OUTPUT_BYTES = 64 * 1024
-    const effectiveTimeout = Math.min(
-      Math.max(1_000, typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_TIMEOUT_MS),
-      HARD_TIMEOUT_MS,
-    )
-
-    const { spawn } = await import('child_process')
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), effectiveTimeout)
-
-    try {
-      const child = spawn('sh', ['-c', command], {
-        cwd: cwdAbs,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        signal: controller.signal,
-      })
-
-      const collect = (stream: NodeJS.ReadableStream): Promise<{ data: string; truncated: boolean }> => {
-        return new Promise(resolve => {
-          const chunks: Buffer[] = []
-          let total = 0
-          let truncated = false
-          stream.on('data', (chunk: Buffer) => {
-            if (truncated) return
-            const remaining = MAX_OUTPUT_BYTES - total
-            if (chunk.length <= remaining) {
-              chunks.push(chunk)
-              total += chunk.length
-            } else {
-              chunks.push(chunk.subarray(0, remaining))
-              total = MAX_OUTPUT_BYTES
-              truncated = true
-            }
-          })
-          stream.on('end', () => resolve({ data: Buffer.concat(chunks).toString('utf8'), truncated }))
-          stream.on('error', () => resolve({ data: Buffer.concat(chunks).toString('utf8'), truncated }))
-        })
-      }
-
-      const [stdoutResult, stderrResult, exit] = await Promise.all([
-        collect(child.stdout!),
-        collect(child.stderr!),
-        new Promise<{ code: number | null; signal: NodeJS.Signals | null; aborted: boolean }>(resolve => {
-          child.on('close', (code, signal) => resolve({ code, signal, aborted: controller.signal.aborted }))
-          child.on('error', () => resolve({ code: null, signal: null, aborted: controller.signal.aborted }))
-        }),
-      ])
-
-      const result: Record<string, unknown> = {
-        command,
-        cwd: requestedCwd ?? '.',
-        exitCode: exit.code,
-        stdout: stdoutResult.data,
-        stderr: stderrResult.data,
-      }
-      if (stdoutResult.truncated) result.stdoutTruncated = true
-      if (stderrResult.truncated) result.stderrTruncated = true
-      if (exit.signal) result.signal = exit.signal
-      if (exit.aborted) {
-        result.timedOut = true
-        result.timeoutMs = effectiveTimeout
-      }
-      return text(result)
-    } finally {
-      clearTimeout(timer)
-    }
-  }
+  const shell = wrapWs((t, a: { command: string; cwd?: string; timeoutMs?: number }) => t.shell(a))
+  const web_fetch = wrapWs((t, a: { url: string; maxChars?: number }) => t.web_fetch(a))
 
   return {
     // ── Generic surface (preferred, post-pivot) ────────
@@ -1080,6 +922,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     file_grep,
     read_skill,
     shell,
+    web_fetch,
 
     // ── Legacy bb_*/gh_*/jira_* shims removed in S6 ──────────────────────
     //
@@ -1606,44 +1449,3 @@ async function cloneLooksIncomplete(repoDir: string): Promise<boolean> {
 }
 
 export type McpToolHandlers = ReturnType<typeof createMcpToolHandlers>
-
-// ── Glob/walk helpers for file_glob / file_grep ──────────────────────────────
-
-const SKIP_DIRS = new Set(['node_modules', '.git', '.coro', 'dist', 'build', '.next', '.cache'])
-
-async function walkDir(
-  start: string,
-  rootForRel: string,
-  visit: (relFromRoot: string, entry: import('fs').Dirent) => Promise<void>,
-): Promise<void> {
-  let entries: import('fs').Dirent[]
-  try { entries = await fs.readdir(start, { withFileTypes: true }) }
-  catch { return }
-  for (const entry of entries) {
-    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue
-    const abs = path.join(start, entry.name)
-    const rel = path.relative(rootForRel, abs)
-    await visit(rel, entry)
-    if (entry.isDirectory()) await walkDir(abs, rootForRel, visit)
-  }
-}
-
-function globToRegex(pattern: string): RegExp {
-  // Translate a minimal glob (`**`, `*`, `?`) into a regex anchored at both ends.
-  // `**` matches any number of path segments (including none); `*` matches
-  // anything except `/`; `?` matches a single non-`/` char.
-  let re = ''
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]
-    if (c === '*') {
-      if (pattern[i + 1] === '*') {
-        // `**/` → match zero+ segments incl. trailing slash
-        if (pattern[i + 2] === '/') { re += '(?:.*/)?'; i += 2 }
-        else { re += '.*'; i += 1 }
-      } else { re += '[^/]*' }
-    } else if (c === '?') { re += '[^/]' }
-    else if ('.+^$(){}|[]\\'.includes(c)) { re += '\\' + c }
-    else { re += c }
-  }
-  return new RegExp('^' + re + '$')
-}

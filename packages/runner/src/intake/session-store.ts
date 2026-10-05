@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
+import type { InvestigationToolAccess } from '@coro-ai/cloud-protocol'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Server-side plan-mode conversation state.
@@ -72,6 +73,8 @@ export interface IntakeSession {
   executorId?: string
   /** Stable cwd for Claude Code persist/resume. Removed when the session dies. */
   workRoot?: string
+  /** Per-conversation tool permission overrides. */
+  toolAccess?: InvestigationToolAccess
   updatedAt: number
 }
 
@@ -165,6 +168,7 @@ export function hydrateIntakeSession(record: {
   contextTokens: number
   executorSession?: ExecutorSessionState
   executorId?: string
+  toolAccess?: InvestigationToolAccess
 }): IntakeSession {
   const now = Date.now()
   sweep(now)
@@ -185,6 +189,7 @@ export function hydrateIntakeSession(record: {
   session.contextTokens = record.contextTokens
   session.executorSession = record.executorSession
   session.executorId = record.executorId
+  if (record.toolAccess && !existing?.toolAccess) session.toolAccess = record.toolAccess
   session.updatedAt = now
   sessions.set(record.id, session)
   return session
@@ -283,6 +288,17 @@ export function bindIntakeExecutor(sessionId: string, executorId: string | undef
   }
   session.executorId = executorId
   session.updatedAt = Date.now()
+}
+
+export function updateIntakeToolAccess(
+  sessionId: string,
+  fn: (access: InvestigationToolAccess) => void,
+): InvestigationToolAccess {
+  const session = getIntakeSession(sessionId)
+  session.toolAccess ??= { capabilities: {}, mcp: {}, allow: [], deny: [] }
+  fn(session.toolAccess)
+  session.updatedAt = Date.now()
+  return session.toolAccess
 }
 
 export function persistIntakeExecutorSession(

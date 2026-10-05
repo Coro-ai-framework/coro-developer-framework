@@ -1,12 +1,23 @@
 import { appendEntry, groupForTool, namesMatchTool, settleEntry, settleRunningEntries, toolLeafName } from '../group'
 import type { ActivityEntry, ActivityItem } from '../types'
+import type { IntakePermissionRequest } from '../../../lib/intake-investigation'
 
-/** Mirrors the payloads written by POST /intake/stream (server.ts 1392-1415). */
+export type { IntakePermissionRequest }
+
+export interface PermissionCardData {
+  request: IntakePermissionRequest
+  status: 'pending' | 'allowed' | 'denied' | 'expired'
+  by?: string
+}
+
+/** Mirrors the payloads written by POST /intake/stream. */
 export type IntakeEvent =
   | { type: 'token'; text: string }
   | { type: 'thinking'; text: string }
   | { type: 'tool_start'; name: string; input?: unknown; subagent?: string }
   | { type: 'tool_end'; name: string; durationMs?: number; ok?: boolean; summary?: string; error?: string; subagent?: string }
+  | { type: 'permission_request'; request: IntakePermissionRequest }
+  | { type: 'permission_resolved'; requestId: string; decision: 'allow' | 'deny'; by: 'developer' | 'timeout' | 'abort' }
   | {
       type: 'done'
       usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
@@ -65,6 +76,38 @@ export function runningLabelFor(name: string, input: unknown): string {
     case 'scm_search_code': {
       const query = readField(input, 'query')
       return query ? `Searching code for "${clip(query)}"` : 'Searching code'
+    }
+    case 'Bash':
+    case 'shell': {
+      const command = readField(input, 'command')
+      return command ? `Running ${clip(command)}` : 'Running a command'
+    }
+    case 'WebFetch':
+    case 'web_fetch': {
+      const url = readField(input, 'url')
+      if (!url) return 'Fetching a page'
+      try { return `Fetching ${clip(new URL(url).hostname)}` }
+      catch { return `Fetching ${clip(url)}` }
+    }
+    case 'WebSearch': {
+      const query = readField(input, 'query')
+      return query ? `Searching the web for "${clip(query)}"` : 'Searching the web'
+    }
+    case 'Read':
+    case 'file_read': {
+      const path = readField(input, 'path') ?? readField(input, 'file_path')
+      return path ? `Reading ${clip(path)}` : 'Reading a file'
+    }
+    case 'Write':
+    case 'Edit':
+    case 'file_write':
+    case 'file_edit': {
+      const path = readField(input, 'path') ?? readField(input, 'file_path')
+      return path ? `Writing ${clip(path)}` : 'Writing a file'
+    }
+    case 'request_tool_access': {
+      const capability = readField(input, 'capability')
+      return capability ? `Asking to enable ${clip(capability)}` : 'Asking to enable a tool'
     }
     case 'delegate_investigation': {
       const tasks = input && typeof input === 'object' ? (input as { tasks?: unknown }).tasks : undefined
@@ -202,8 +245,57 @@ export function applyIntakeEvent(items: ActivityItem[], event: IntakeEvent): Act
     case 'token':
     case 'thinking':
       return items
+    case 'permission_request': {
+      const id = `perm-${event.request.requestId}`
+      if (items.some(item => item.id === id)) return items
+      return [
+        ...items,
+        {
+          kind: 'card',
+          id,
+          card: { type: 'permission', data: { request: event.request, status: 'pending' } satisfies PermissionCardData },
+        },
+      ]
+    }
+    case 'permission_resolved':
+      return items.map(item => {
+        if (item.kind !== 'card' || item.card.type !== 'permission' || item.id !== `perm-${event.requestId}`) return item
+        const data = item.card.data as PermissionCardData
+        return {
+          ...item,
+          card: {
+            ...item.card,
+            data: {
+              ...data,
+              status: event.decision === 'allow' ? 'allowed' : 'denied',
+              by: event.by,
+            } satisfies PermissionCardData,
+          },
+        }
+      })
     case 'done':
     case 'error':
-      return settleRunningEntries(items)
+      return expirePendingPermissions(settleRunningEntries(items))
   }
+}
+
+function expirePendingPermissions(items: ActivityItem[]): ActivityItem[] {
+  let changed = false
+  const next = items.map(item => {
+    if (item.kind !== 'card' || item.card.type !== 'permission') return item
+    const data = item.card.data as PermissionCardData
+    if (data.status !== 'pending') return item
+    changed = true
+    return { ...item, card: { ...item.card, data: { ...data, status: 'expired' } satisfies PermissionCardData } }
+  })
+  return changed ? next : items
+}
+
+/** Re-attach permission cards after a refresh, without duplicating ones already shown. */
+export function ensurePermissionCards(items: ActivityItem[], pending: IntakePermissionRequest[]): ActivityItem[] {
+  let next = items
+  for (const request of pending) {
+    next = applyIntakeEvent(next, { type: 'permission_request', request })
+  }
+  return next
 }

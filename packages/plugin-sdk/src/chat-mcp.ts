@@ -16,7 +16,7 @@ export function chatPluginMcpServerIds(req: ChatRequest): string[] {
 export function chatHasTools(req: ChatRequest): boolean {
   const hasBuiltin = (req.tools?.length ?? 0) > 0 && typeof req.runTool === 'function'
   const hasMcp = chatPluginMcpServerIds(req).length > 0
-  return hasBuiltin || hasMcp
+  return hasBuiltin || hasMcp || req.nativeTools === true
 }
 
 /** SDK-visible names for runner-dispatched intake tools (`mcp__coro__*`). */
@@ -52,6 +52,13 @@ export interface ChatToolAllowPolicy {
    */
   hookAllowedTools: null
   checkToolAllowed: (toolName: string) => { allow: boolean; reason?: string }
+  /**
+   * Async decision used by chat executors. Built-in intake tools and
+   * ToolSearch are allowed immediately; everything else goes to
+   * {@link ChatRequest.permissionGate} when one is set, otherwise falls
+   * back to {@link checkToolAllowed}.
+   */
+  decideToolCall: (toolName: string, input: unknown) => Promise<{ allow: boolean; reason?: string }>
 }
 
 /** Build hook allowlist + checker for plan-mode chat (built-in + BYO MCP + claude.ai connectors). */
@@ -60,31 +67,40 @@ export function buildChatToolAllowPolicy(req: ChatRequest): ChatToolAllowPolicy 
   const builtinNames = chatBuiltinToolAllowlist(req)
   const hasAny = builtinNames.length > 0 || serverIds.length > 0
 
-  if (!hasAny) {
+  if (!hasAny && !req.permissionGate) {
+    const checkToolAllowed = (): { allow: boolean; reason?: string } => ({
+      allow: false,
+      reason: 'Plan mode chat does not use tools for this turn.',
+    })
     return {
       hookAllowedTools: null,
-      checkToolAllowed: () => ({
-        allow: false,
-        reason: 'Plan mode chat does not use tools for this turn.',
-      }),
+      checkToolAllowed,
+      decideToolCall: async () => checkToolAllowed(),
     }
   }
 
   const allowedSet = new Set(builtinNames)
-  return {
-    hookAllowedTools: null,
-    checkToolAllowed: (toolName: string) => {
-      // Claude Code may invoke ToolSearch when many MCP tools are attached.
-      if (toolName === 'ToolSearch') return { allow: true }
-      if (allowedSet.has(toolName)) return { allow: true }
-      if (isPlanModeMcpToolName(toolName, serverIds)) return { allow: true }
-      if (isClaudeAiConnectorToolName(toolName)) return { allow: true }
-      return {
-        allow: false,
-        reason: `Blocked ${toolName}: only plan-mode lookup tools are available.`,
-      }
-    },
+  const checkToolAllowed = (toolName: string): { allow: boolean; reason?: string } => {
+    // Claude Code may invoke ToolSearch when many MCP tools are attached.
+    if (toolName === 'ToolSearch') return { allow: true }
+    if (allowedSet.has(toolName)) return { allow: true }
+    if (isPlanModeMcpToolName(toolName, serverIds)) return { allow: true }
+    if (isClaudeAiConnectorToolName(toolName)) return { allow: true }
+    return {
+      allow: false,
+      reason: `Blocked ${toolName}: only plan-mode lookup tools are available.`,
+    }
   }
+
+  const gate = req.permissionGate
+  const decideToolCall = async (toolName: string, input: unknown): Promise<{ allow: boolean; reason?: string }> => {
+    if (!gate) return checkToolAllowed(toolName)
+    if (toolName === 'ToolSearch') return { allow: true }
+    if (allowedSet.has(toolName)) return { allow: true }
+    return gate(toolName, input)
+  }
+
+  return { hookAllowedTools: null, checkToolAllowed, decideToolCall }
 }
 
 export function computeChatMaxTurns(req: ChatRequest): number {

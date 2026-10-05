@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { applyIntakeEvent } from '../components/activity/adapters/intake'
+import { applyIntakeEvent, ensurePermissionCards, type PermissionCardData } from '../components/activity/adapters/intake'
 import { settleRunningEntries } from '../components/activity/group'
 import { displayContent } from '../components/activity/message-block'
 import type { ActivityItem } from '../components/activity/types'
@@ -18,6 +18,7 @@ import {
   deleteInvestigation,
   dropInvestigationSummary,
   getInvestigation,
+  getToolAccess,
   investigationHasProgress,
   investigationTitleFromItems,
   investigationToResume,
@@ -25,9 +26,14 @@ import {
   listInvestigations,
   mergeInvestigationSummaries,
   putInvestigation,
+  putToolAccess,
+  respondToPermission,
   toInvestigationSummary,
+  type IntakePermissionRequest,
   type InvestigationStatus,
   type InvestigationSummary,
+  type ToolAccessPatch,
+  type ToolAccessView,
 } from '../lib/intake-investigation'
 import { parseReadiness, type Readiness } from '../lib/intake-readiness'
 import { recoverIntakeReply } from '../lib/recover-intake-reply'
@@ -40,7 +46,7 @@ import {
   mintSessionId,
 } from '../lib/new-run-draft'
 import { deriveRunHistoryHints } from '../lib/run-history'
-import { requestJson } from '../lib/http'
+import { ApiError, requestJson } from '../lib/http'
 import { ensureDispatchedRunCard, jobForInvestigation } from '../lib/linked-run'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import type { Job } from '../types'
@@ -104,6 +110,9 @@ export interface PlanSessionApi extends PlanSessionState {
   setKnownWorkflows: (workflows: WorkflowOption[]) => void
   setJobs: (jobs: Job[]) => void
   setScmConnected: (connected: boolean) => void
+  respondToPermission: (requestId: string, body: { decision: 'once' | 'conversation' | 'always' | 'deny'; rule?: string; mode?: 'ask' | 'allow'; message?: string }) => Promise<void>
+  toolAccess: ToolAccessView | null
+  updateToolAccess: (patch: ToolAccessPatch) => Promise<void>
   workflows: WorkflowOption[]
   jobs: Job[]
   scmConnected: boolean
@@ -168,6 +177,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const [investigationsLoadingMore, setInvestigationsLoadingMore] = useState(false)
   const [canStop, setCanStop] = useState(false)
   const [awaitingServerTurn, setAwaitingServerTurn] = useState(false)
+  const [toolAccess, setToolAccess] = useState<ToolAccessView | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const busyRef = useRef(false)
@@ -321,6 +331,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     contextUsed: number
     readiness: Readiness | null
     modelChoice?: { provider: string; model: string }
+    pendingPermissions?: IntakePermissionRequest[]
   }) => {
     skipNextPersistRef.current = true
     turnGenerationRef.current += 1
@@ -341,7 +352,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
           workflowsRef.current.map(workflow => workflow.workflowPath),
         )
       : null
-    const nextItems = live ? live.items : (recovered?.items ?? stored)
+    const baseItems = live ? live.items : (recovered?.items ?? stored)
+    const nextItems = record.pendingPermissions?.length
+      ? ensurePermissionCards(baseItems, record.pendingPermissions)
+      : baseItems
     sessionIdRef.current = record.id
     itemsRef.current = nextItems
     bootSessionId = record.id
@@ -474,6 +488,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         if (stopped || turnGenerationRef.current !== generation || sessionIdRef.current !== sessionAtStart) return
         if (full.streaming) {
           markRunning(sessionAtStart, true)
+          if (full.pendingPermissions?.length) {
+            commitItems(prev => ensurePermissionCards(prev, full.pendingPermissions!))
+          }
           return
         }
         applyRecord(full)
@@ -487,7 +504,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       stopped = true
       window.clearInterval(timer)
     }
-  }, [awaitingServerTurn, sessionId, applyRecord, markRunning])
+  }, [awaitingServerTurn, sessionId, applyRecord, markRunning, commitItems])
 
   useEffect(() => {
     if (!hydrated) return
@@ -519,16 +536,50 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     commitItems(() => next)
   }, [commitItems, hydrated, investigations, jobs, sessionId, switching])
 
+  const respond = useCallback(async (
+    requestId: string,
+    body: { decision: 'once' | 'conversation' | 'always' | 'deny'; rule?: string; mode?: 'ask' | 'allow'; message?: string },
+  ) => {
+    const optimistic = body.decision === 'deny' ? 'denied' : 'allowed'
+    commitItems(prev => prev.map(item => {
+      if (item.kind !== 'card' || item.id !== `perm-${requestId}`) return item
+      const data = item.card.data as PermissionCardData
+      return { ...item, card: { ...item.card, data: { ...data, status: optimistic, by: 'developer' } } }
+    }))
+    try {
+      await respondToPermission(sessionIdRef.current, requestId, body)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        commitItems(prev => prev.map(item => {
+          if (item.kind !== 'card' || item.id !== `perm-${requestId}`) return item
+          const data = item.card.data as PermissionCardData
+          return { ...item, card: { ...item.card, data: { ...data, status: 'expired' } } }
+        }))
+      }
+    }
+  }, [commitItems])
+
+  const updateToolAccess = useCallback(async (patch: ToolAccessPatch) => {
+    const view = await putToolAccess(sessionIdRef.current, patch)
+    setToolAccess(view)
+  }, [])
+
   const cancel = useCallback(() => {
     // A turn rediscovered after refresh has no fetch on this page. Clearing
     // busy there would let a follow-up message race the one still running.
     if (!abortRef.current) return
+    for (const item of itemsRef.current) {
+      if (item.kind !== 'card' || item.card.type !== 'permission') continue
+      const data = item.card.data as PermissionCardData
+      if (data.status !== 'pending') continue
+      void respond(data.request.requestId, { decision: 'deny', message: 'The developer stopped this turn.' })
+    }
     abortRef.current.abort()
     abortRef.current = null
     busyRef.current = false
     setBusy(false)
     setCanStop(false)
-  }, [])
+  }, [respond])
 
   const startNewConversation = useCallback(async (opts?: {
     status?: InvestigationStatus
@@ -764,6 +815,12 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
             assistantText += event.text
             live.partialText = assistantText.slice(committedAssistantLength)
             if (onScreen()) setPartialText(live.partialText)
+          } else if (event.type === 'permission_request') {
+            flushThinking()
+            flushAssistantBubble()
+            commitTurn(prev => applyIntakeEvent(prev, event))
+          } else if (event.type === 'permission_resolved') {
+            commitTurn(prev => applyIntakeEvent(prev, event))
           } else if (event.type === 'tool_start' || event.type === 'tool_end') {
             if (event.type === 'tool_start') {
               flushThinking()
@@ -966,6 +1023,14 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     )
   }, [commitItems])
 
+  useEffect(() => {
+    let cancelled = false
+    void getToolAccess(sessionId)
+      .then(view => { if (!cancelled) setToolAccess(view) })
+      .catch(() => { if (!cancelled) setToolAccess(null) })
+    return () => { cancelled = true }
+  }, [sessionId, busy])
+
   const hasProgress = investigationHasProgress(items)
 
   const value = useMemo<PlanSessionApi>(
@@ -997,6 +1062,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       setKnownWorkflows: setWorkflows,
       setJobs,
       setScmConnected,
+      respondToPermission: respond,
+      toolAccess,
+      updateToolAccess,
       workflows,
       jobs,
       scmConnected,
@@ -1033,6 +1101,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       markCardDispatched,
       persistSnapshot,
       appendNotice,
+      respond,
+      toolAccess,
+      updateToolAccess,
       workflows,
       jobs,
       scmConnected,

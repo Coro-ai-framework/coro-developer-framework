@@ -136,6 +136,12 @@ Coro Runner technical spec: [docs/agent-host-spec.md](docs/agent-host-spec.md)
 
 ---
 
+## Plan mode tool permissions
+
+Plan mode can use a shell, fetch web pages, and read or write a per-conversation scratch directory. Anthropic uses Claude Code's own tools (`Bash`, `Read`, `WebFetch`, …). Every other provider gets the same capabilities from the runner (`shell`, `file_*`, `web_fetch`), the same split job phases already use via `supportsNativeFileTools`.
+
+Each capability is Off, Ask, or Allow for that conversation. Ask pauses the tool call until the developer answers in the dashboard. Allow-rules (`Shell(git clone:*)`, `Web(domain:github.com)`, `Files(read)`, `mcp__linear__*`) skip the prompt. Commands that can change something outside the scratch directory (`git push`, `gh pr create`, `curl -X POST`, and similar) can only be approved once. The gate lives in `packages/runner/src/intake/permissions.ts` and reaches executors through `ChatRequest.permissionGate`. Subagents inherit grants but never prompt.
+
 ## Job types and workflow routing
 
 Every job carries a `type` and a `workflowPath`. The runner uses these — not hardcoded logic — to decide which workflow and which agents to run. This is how new workflows drop in without changing the infrastructure.

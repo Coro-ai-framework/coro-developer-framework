@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import pino from 'pino'
 import { createAnthropicExecutor } from '../src/executor'
-import { chatToolZodShape, chatViaAgentSdk, formatChatUserPrompt, shouldChatViaAgentSdk, type AnthropicChatHost } from '../src/chat-via-sdk'
+import { chatToolZodShape, chatViaAgentSdk, formatChatUserPrompt, shouldChatViaAgentSdk, shouldRouteChatViaAgentSdk, type AnthropicChatHost } from '../src/chat-via-sdk'
 import { z } from 'zod'
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from '../src/types'
 
@@ -137,6 +137,12 @@ describe('shouldChatViaAgentSdk', () => {
 
   it('returns false for apiKey billing', () => {
     expect(shouldChatViaAgentSdk({ method: 'apiKey', apiKey: 'sk-ant-test' })).toBe(false)
+  })
+
+  it('routes apiKey chats through the SDK when native tools are requested', () => {
+    const req = { messages: [], model: 'm', signal: new AbortController().signal, nativeTools: true }
+    expect(shouldRouteChatViaAgentSdk({ method: 'apiKey', apiKey: 'sk-ant-test' }, req)).toBe(true)
+    expect(shouldRouteChatViaAgentSdk({ method: 'apiKey', apiKey: 'sk-ant-test' }, { ...req, nativeTools: false })).toBe(false)
   })
 })
 
@@ -278,6 +284,25 @@ describe('chatViaAgentSdk session resume', () => {
       cwd: '/tmp/coro-plan-stable',
     }])
     expect(result.sessionState).toEqual({ sessionId: 'sess-1' })
+  })
+
+  it('raises the hook timeout while a permission gate can wait', async () => {
+    let timeout: number | undefined
+    const host: AnthropicChatHost = {
+      async *executePhase(req) {
+        timeout = req.hookPolicy.preToolUseTimeoutMs
+        yield { type: 'text', content: 'ok' }
+        yield { type: 'done', stopReason: 'end_turn', sessionState: {} }
+      },
+    }
+    await chatViaAgentSdk(host, {
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'claude-sonnet-4-6',
+      signal: new AbortController().signal,
+      permissionTimeoutMs: 60_000,
+      permissionGate: async () => ({ allow: true }),
+    })
+    expect(timeout).toBe(90_000)
   })
 
   it('replays the textual transcript when resume is stale', async () => {

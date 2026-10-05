@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   applyIntakeEvent,
+  ensurePermissionCards,
   resetIntakeEntryCounterForTests,
   runningLabelFor,
   type IntakeEvent,
 } from '../src/components/activity/adapters/intake'
+import type { IntakePermissionRequest } from '../src/lib/intake-investigation'
 import type { ActivityItem } from '../src/components/activity/types'
 
 beforeEach(() => {
@@ -154,6 +156,45 @@ describe('subagent chips', () => {
   })
 })
 
+describe('permission cards', () => {
+  function request(requestId: string): IntakePermissionRequest {
+    return {
+      requestId,
+      sessionId: 's',
+      kind: 'tool',
+      capability: 'shell',
+      toolName: 'shell',
+      title: 'Run a shell command',
+      subject: 'ls',
+      risk: 'normal',
+      allowedDecisions: ['once', 'deny'],
+      createdAt: '2026-10-05T00:00:00.000Z',
+      expiresAt: '2026-10-05T00:10:00.000Z',
+    }
+  }
+
+  it('appends, settles, expires, and reattaches without duplicating', () => {
+    let items = applyIntakeEvent([], { type: 'permission_request', request: request('r1') })
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: 'card', id: 'perm-r1' })
+    items = applyIntakeEvent(items, { type: 'permission_resolved', requestId: 'r1', decision: 'allow', by: 'developer' })
+    const settled = items[0]
+    if (settled?.kind !== 'card') throw new Error('expected a permission card')
+    expect(settled.card.data).toMatchObject({ status: 'allowed', by: 'developer' })
+
+    items = applyIntakeEvent(items, { type: 'permission_request', request: request('r2') })
+    items = applyIntakeEvent(items, { type: 'done', usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } })
+    const expired = items[1]
+    if (expired?.kind !== 'card') throw new Error('expected a second permission card')
+    expect(expired.card.data).toMatchObject({ status: 'expired' })
+
+    expect(ensurePermissionCards(items, [request('r2')])).toBe(items)
+    const added = ensurePermissionCards(items, [request('r3')])
+    expect(added).toHaveLength(3)
+    expect(added[2]).toMatchObject({ id: 'perm-r3' })
+  })
+})
+
 describe('runningLabelFor', () => {
   it('humanizes MCP Atlassian tools instead of dumping the server id', () => {
     expect(runningLabelFor('mcp__claude_ai_Atlassian__getJiraIssue', { issueId: 'WS-5144' })).toBe('Reading WS-5144')
@@ -161,7 +202,7 @@ describe('runningLabelFor', () => {
     expect(runningLabelFor('mcp__coro__scm_list_files', { path: 'internal/platform' })).toBe(
       'Browsing internal/platform',
     )
-    expect(runningLabelFor('Bash', { command: 'ls' })).toBe('Bash')
+    expect(runningLabelFor('Bash', { command: 'ls' })).toBe('Running ls')
     expect(runningLabelFor('delegate_investigation', { tasks: ['a', 'b'] })).toBe('Delegating 2 investigations')
   })
 })

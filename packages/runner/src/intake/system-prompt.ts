@@ -20,12 +20,20 @@ export interface IntakePromptOptions {
   pastJobsEnabled?: boolean
   planModeMcpServerIds?: string[]
   subagentsEnabled?: boolean
+  access?: {
+    modes: Record<'files' | 'filesWrite' | 'shell' | 'web', 'off' | 'ask' | 'allow'>
+    nativeFiles: boolean
+    nativeWeb: boolean
+    scratchDir: string
+    mcpAttached: string[]
+    mcpOnRequest: string[]
+  }
 }
 
 const READ_ONLY_TOOL_RULES_HEAD = `- Prefer one scm_list_files call over multiple scm_search_code guesses when you don't know the layout.
 - Never call scm_read_file with a path you haven't verified via scm_list_files (or that the user gave you literally).`
 
-const READ_ONLY_TOOL_RULES_TAIL = `- These tools never write — no comments, transitions, commits, or PRs from plan mode.
+const READ_ONLY_TOOL_RULES_TAIL = `- Lookup tools never write. Shell and file writes stay inside your scratch directory. Never push, comment, transition tickets, publish, deploy, or open PRs from plan mode — even when a command or MCP tool would let you.
 - If a tool errors, summarise the failure to the user and proceed with what you have.`
 
 const READ_ONLY_TOOL_RULES = `${READ_ONLY_TOOL_RULES_HEAD}
@@ -65,6 +73,25 @@ Delegating (delegate_investigation):
 `
     : ''
 
+  const access = options.access
+  const modeLine = (mode: 'off' | 'ask' | 'allow'): string =>
+    mode === 'allow' ? 'on' : mode === 'ask' ? 'on — the developer approves each call' : 'off — call request_tool_access first'
+  const accessSection = access
+    ? `
+Workspace tools (your scratch directory is ${access.scratchDir} — it is empty at the start and deleted when the conversation ends):
+- Read files (${access.nativeFiles ? 'Read / Grep / Glob' : 'file_read / file_grep / file_glob'}): ${modeLine(access.modes.files)}
+- Write scratch files (${access.nativeFiles ? 'Write / Edit' : 'file_write / file_edit'}): ${modeLine(access.modes.filesWrite)}
+- Shell (${access.nativeFiles ? 'Bash' : 'shell'}): ${modeLine(access.modes.shell)}
+- Web (${access.nativeWeb ? 'WebFetch / WebSearch' : 'web_fetch'}): ${modeLine(access.modes.web)}
+${access.mcpOnRequest.length ? `- MCP servers available on request (not attached yet): ${access.mcpOnRequest.join(', ')}\n` : ''}How approvals work:
+- A call that needs approval pauses until the developer answers. Make each call worth a click: one clear command, not a chain of guesses.
+- If a call is declined, read the reason, do not retry the same call, and adapt.
+- If a capability is off and you genuinely need it, call request_tool_access with the capability and a one-line reason. Do not ask in prose.
+- For broad code questions, prefer a shallow clone into the scratch directory (git clone --depth 1 <url> repo) and then search it locally, instead of dozens of scm_read_file calls. Clone only repos the developer is asking about.
+- Never read outside the scratch directory unless the developer asked you to look at a specific local path.
+`
+    : ''
+
   const toolsSection = options.toolsEnabled
     ? `
 Tools (read-only — this is how you investigate):
@@ -74,7 +101,7 @@ Tools (read-only — this is how you investigate):
 - scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directories that look relevant.
 - scm_read_file: when you need a file's contents. Confirm the path with scm_list_files first; do not guess paths.
 - scm_search_code: when the user names a symbol or string and you want to find it. On Bitbucket Cloud this can legitimately return 0 hits even when the symbol exists (workspaces below Standard plan are not in the search index), so do not retry the same search more than once — switch to scm_list_files instead.
-${pastJobsSection}${planModeMcpSection}${subagentsSection}
+${pastJobsSection}${planModeMcpSection}${subagentsSection}${accessSection}
 Tool rules:
 - Read as much as the investigation genuinely needs. Depth is the point of this conversation — you are not rationing calls. What you must not do is read aimlessly: every call should be answering a question you can name.
 ${READ_ONLY_TOOL_RULES_HEAD}
@@ -96,7 +123,7 @@ You CAN:
 - Disagree. If the request rests on a wrong premise, say so and show the evidence.
 - Conclude that no run is needed at all.
 - Suggest a workflow from the provided list, reviewers from the developer's history, and acceptance criteria.
-- Respond in the developer's language. Always mirror the language they used.${options.toolsEnabled ? `\n- Look up tracker tickets${options.pastJobsEnabled ? ', past jobs,' : ''} and read repository files throughout the conversation.` : ''}
+- Respond in the developer's language. Always mirror the language they used.${options.toolsEnabled ? `\n- Look up tracker tickets${options.pastJobsEnabled ? ', past jobs,' : ''} and read repository files throughout the conversation.` : ''}${options.access ? '\n- Run shell commands, fetch web pages, and use scratch files, within the permissions above.' : ''}
 
 You CANNOT:
 - Make claims about repo contents you have not read${options.toolsEnabled ? ' (use scm_list_files / scm_read_file / scm_search_code)' : ''}. Say "I haven't checked yet" instead of guessing.
@@ -184,12 +211,15 @@ Run schema (emit EXACTLY this shape inside the <run> tags):
 </run>`
 }
 
-export function buildIntakeSubagentSystemPrompt(): string {
+export function buildIntakeSubagentSystemPrompt(opts?: { scratchDir?: string }): string {
+  const scratch = opts?.scratchDir
+    ? `\n- The conversation's scratch directory is ${opts.scratchDir}; read anything cloned there with absolute paths. Calls that need developer approval will be refused — report what you needed instead of working around it.`
+    : ''
   return `You are a research subagent for Coro plan mode. Another agent is investigating a piece of work with a developer and has handed you one self-contained question. Answer that question and nothing else.
 
 How to work:
 - Use the read-only tools to find the answer. Read before you claim; say "not found" or "could not determine" rather than guessing.
-${READ_ONLY_TOOL_RULES}
+${READ_ONLY_TOOL_RULES}${scratch}
 - Nobody will answer questions from you. If the task is ambiguous, state the assumption you made and proceed.
 
 How to report (this is your final message, returned verbatim to the other agent):
