@@ -10,6 +10,7 @@
 //   • Inline `code`, **bold**, *em*   → <code>/<strong>/<em>
 //   • - / * unordered lists           → <ul><li>
 //   • Numbered 1. lists               → <ol><li>
+//   • GitHub-style pipe tables        → <table>
 //   • Blank-line-separated paragraphs → <p>
 //
 // Everything else is escaped and rendered as plain text. Callers are free
@@ -41,6 +42,133 @@ function renderInline(line: string): string {
   // *italic* — only when not already part of **
   out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
   return out
+}
+
+type ColumnAlign = 'left' | 'center' | 'right'
+
+const ALIGN_CLASS: Record<ColumnAlign, string> = {
+  left: 'text-left',
+  center: 'text-center',
+  right: 'text-right',
+}
+
+/**
+ * Split a GitHub-flavored table row into cells. Leading and trailing pipes
+ * are the row's borders, not extra cells. Pipes inside inline code or
+ * escaped as `\|` stay in the cell.
+ */
+function splitTableRow(line: string): string[] | null {
+  const trimmed = line.trim()
+  if (!trimmed.includes('|')) return null
+  let body = trimmed
+  if (body.startsWith('|')) body = body.slice(1)
+  if (body.endsWith('|') && !body.endsWith('\\|')) body = body.slice(0, -1)
+
+  const cells: string[] = []
+  let buf = ''
+  let inCode = false
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]
+    if (ch === '\\' && body[i + 1] === '|' && !inCode) {
+      buf += '|'
+      i++
+      continue
+    }
+    if (ch === '`') {
+      inCode = !inCode
+      buf += ch
+      continue
+    }
+    if (ch === '|' && !inCode) {
+      cells.push(buf.trim())
+      buf = ''
+      continue
+    }
+    buf += ch
+  }
+  cells.push(buf.trim())
+  return cells
+}
+
+function parseDelimiter(line: string): ColumnAlign[] | null {
+  const cells = splitTableRow(line)
+  if (!cells || cells.length === 0) return null
+  const aligns: ColumnAlign[] = []
+  for (const cell of cells) {
+    const match = /^(:)?(-+)(:)?$/.exec(cell.replace(/\s+/g, ''))
+    if (!match) return null
+    if (match[1] && match[3]) aligns.push('center')
+    else if (match[3]) aligns.push('right')
+    else aligns.push('left')
+  }
+  return aligns
+}
+
+function isIndexHeader(cell: string): boolean {
+  const plain = cell.replace(/[`*_]/g, '').trim()
+  return plain === '#' || plain === 'No' || plain === 'No.'
+}
+
+function blocksTable(line: string): boolean {
+  const trimmed = line.trim()
+  return /^#{1,6}\s/.test(trimmed) || /^[-*]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed) || trimmed.startsWith('```')
+}
+
+function renderTable(headers: string[], aligns: ColumnAlign[], rows: string[][]): string {
+  const head = headers
+    .map((cell, i) => {
+      const index = isIndexHeader(cell)
+      const cls = [
+        'border border-line-strong bg-overlay/70 py-2 align-top font-medium text-fg',
+        index ? 'w-px whitespace-nowrap px-2.5 text-center' : `px-3 ${ALIGN_CLASS[aligns[i] ?? 'left']}`,
+      ].join(' ')
+      return `<th scope="col" class="${cls}">${renderInline(cell)}</th>`
+    })
+    .join('')
+
+  const body = rows
+    .map(row => {
+      const cells = row
+        .map((cell, i) => {
+          const index = isIndexHeader(headers[i] ?? '')
+          const cls = [
+            'border border-line-strong py-2 align-top text-fg-muted [overflow-wrap:anywhere]',
+            index ? 'w-px whitespace-nowrap px-2.5 text-center' : `px-3 ${ALIGN_CLASS[aligns[i] ?? 'left']}`,
+          ].join(' ')
+          return `<td class="${cls}">${renderInline(cell)}</td>`
+        })
+        .join('')
+      return `<tr class="even:bg-white/[0.03]">${cells}</tr>`
+    })
+    .join('')
+
+  return `<div class="max-w-full overflow-x-auto"><table class="w-full border-collapse text-left text-sm leading-6"><thead><tr>${head}</tr></thead>${
+    body ? `<tbody>${body}</tbody>` : ''
+  }</table></div>`
+}
+
+function tryConsumeTable(lines: string[], start: number): { html: string; next: number } | null {
+  if (start + 1 >= lines.length) return null
+  const headerLine = lines[start]
+  if (!headerLine.includes('|') || blocksTable(headerLine) || parseDelimiter(headerLine)) return null
+  const header = splitTableRow(headerLine)
+  const aligns = parseDelimiter(lines[start + 1])
+  if (!header || !aligns || header.length === 0 || header.length !== aligns.length) return null
+
+  const rows: string[][] = []
+  let i = start + 2
+  while (i < lines.length) {
+    const line = lines[i]
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('```') || !line.includes('|')) break
+    const cells = splitTableRow(line)
+    if (!cells) break
+    const fitted = cells.slice(0, aligns.length)
+    while (fitted.length < aligns.length) fitted.push('')
+    rows.push(fitted)
+    i++
+  }
+  return { html: renderTable(header, aligns, rows), next: i }
 }
 
 export function renderInlineMarkdown(input: string): string {
@@ -100,6 +228,15 @@ export function renderInlineMarkdown(input: string): string {
       )
       const consumedLines = fence[0].split('\n').length
       i += consumedLines
+      continue
+    }
+
+    const table = tryConsumeTable(lines, i)
+    if (table) {
+      flushPara()
+      flushList()
+      out.push(table.html)
+      i = table.next
       continue
     }
 
