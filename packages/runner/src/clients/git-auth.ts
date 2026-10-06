@@ -268,6 +268,8 @@ export interface IsolatedGitSpawnOptions {
   /** Kill the git child if it emits no stdout/stderr for this many ms. */
   timeoutMs?: number
   progress?: SimpleGitOptions['progress']
+  /** Aborts the git child. Plan mode passes the turn signal so a stopped conversation does not leave a clone running. */
+  signal?: AbortSignal
 }
 
 export function createIsolatedGit(
@@ -280,6 +282,7 @@ export function createIsolatedGit(
     unsafe: isolatedGitUnsafeOptions,
     ...(spawn?.timeoutMs ? { timeout: { block: spawn.timeoutMs } } : {}),
     ...(spawn?.progress ? { progress: spawn.progress } : {}),
+    ...(spawn?.signal ? { abort: spawn.signal } : {}),
   }
   return simpleGit(opts).env(isolatedGitEnv(extraEnv))
 }

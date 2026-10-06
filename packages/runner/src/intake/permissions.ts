@@ -124,13 +124,19 @@ export type ToolClass =
 export function classifyIntakeTool(
   toolName: string,
   input: unknown,
-  ctx: { workRoot: string; attachedMcpIds: ReadonlySet<string> },
+  ctx: { workRoot: string; attachedMcpIds: ReadonlySet<string>; checkoutAvailable?: boolean },
 ): ToolClass {
   if (toolName === 'Bash' || toolName === 'shell') {
     if (readBool(input, 'run_in_background')) {
       return { kind: 'deny', reason: 'Background shells are not available in plan mode; run the command in the foreground.' }
     }
     const command = readString(input, 'command')
+    if (ctx.checkoutAvailable && commandClonesRepository(command)) {
+      return {
+        kind: 'deny',
+        reason: 'Use scm_checkout to read a repository; shell clones are not available in plan mode.',
+      }
+    }
     return {
       kind: 'gated',
       capability: 'shell',
@@ -406,6 +412,8 @@ export function createIntakePermissionBroker(opts: {
   sessionId: string
   workRoot: string
   attachedMcpIds: ReadonlySet<string>
+  /** When scm_checkout is offered, a shell clone is refused instead of prompted. */
+  checkoutAvailable?: boolean
   emit: (event: BrokerEmitEvent) => void
   signal: AbortSignal
   getAccess: () => ResolvedToolAccess
@@ -478,7 +486,11 @@ export function createIntakePermissionBroker(opts: {
 
   return {
     async gate(toolName, input, gateOpts) {
-      const cls = classifyIntakeTool(toolName, input, { workRoot: opts.workRoot, attachedMcpIds: opts.attachedMcpIds })
+      const cls = classifyIntakeTool(toolName, input, {
+        workRoot: opts.workRoot,
+        attachedMcpIds: opts.attachedMcpIds,
+        checkoutAvailable: opts.checkoutAvailable,
+      })
       if (cls.kind === 'deny') return { allow: false, reason: cls.reason }
       const access = opts.getAccess()
       for (const raw of access.deny) {
@@ -661,6 +673,13 @@ function clampDetail(input: unknown): unknown {
   catch { text = String(input) }
   if (text.length <= 2000) return input
   return text.slice(0, 2000) + '…'
+}
+
+function commandClonesRepository(command: string): boolean {
+  return splitSegments(command).map(stripAssignments).some(segment => {
+    const normalised = segment.replace(/\s+/g, ' ').trim().replace(/^(?:do|then|else)\s+/, '')
+    return /^git\s+clone\b/.test(normalised) || /^gh\s+repo\s+clone\b/.test(normalised)
+  })
 }
 
 function splitSegments(command: string): string[] {

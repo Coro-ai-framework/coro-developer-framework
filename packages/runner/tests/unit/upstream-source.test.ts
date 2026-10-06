@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   UPSTREAM_SOURCE_STAMP,
   UPSTREAM_SOURCE_SUBDIR,
+  materialiseSourceSnapshot,
   materialiseUpstreamSource,
 } from '../../src/tools/upstream-source'
 
@@ -24,13 +25,16 @@ let absDir: string
  * fresh checkout (a file plus a `.git`), so the assertions about what
  * survives the clone are about real directory contents.
  */
-function makeGit(over: { clone?: (url: string, dir: string, opts?: string[]) => Promise<void> } = {}) {
+function makeGit(over: {
+  clone?: (url: string, dir: string, opts?: string[]) => Promise<void>
+  revparse?: (args: string[]) => Promise<string>
+} = {}) {
   const clone = vi.fn(over.clone ?? (async (_url: string, dir: string) => {
     await fs.mkdir(path.join(dir, '.git'), { recursive: true })
     await fs.mkdir(path.join(dir, 'packages/runner/src'), { recursive: true })
     await fs.writeFile(path.join(dir, 'packages/runner/src/index.ts'), 'export {}\n', 'utf-8')
   }))
-  const revparse = vi.fn(async () => `${COMMIT}\n`)
+  const revparse = vi.fn(over.revparse ?? (async () => `${COMMIT}\n`))
   return {
     clone,
     revparse,
@@ -148,5 +152,83 @@ describe('materialiseUpstreamSource', () => {
 
     await expect(materialiseUpstreamSource(args(git))).rejects.toThrow(/remote repository/)
     await expect(fs.stat(absDir)).rejects.toThrow()
+  })
+})
+
+describe('materialiseSourceSnapshot', () => {
+  function branchRevparse(args: string[]): Promise<string> {
+    return Promise.resolve(args[0] === '--abbrev-ref' ? 'main\n' : `${COMMIT}\n`)
+  }
+
+  it('clones the remote default branch when no ref is given and records the resolved name', async () => {
+    const git = makeGit({ revparse: branchRevparse })
+    const dest = path.join(jobWorkingDir, 'repos', 'acme_api@default')
+    const snapshot = await materialiseSourceSnapshot({
+      cloneUrl: 'https://github.com/acme/api.git',
+      repo: 'acme/api',
+      destDir: dest,
+      logger,
+      gitFactory: git.factory,
+    })
+
+    const opts = (git.clone.mock.calls[0] as [string, string, string[]])[2]
+    expect(opts).toEqual(['--depth', '1', '--single-branch'])
+    expect(git.revparse).toHaveBeenCalledWith(['--abbrev-ref', 'HEAD'])
+    expect(snapshot).toMatchObject({
+      ref: 'main',
+      requestedRef: 'default',
+      absDir: dest,
+      cloned: true,
+      commit: COMMIT,
+    })
+    const stamp = JSON.parse(await fs.readFile(path.join(dest, UPSTREAM_SOURCE_STAMP), 'utf-8'))
+    expect(stamp).toMatchObject({ ref: 'main', requestedRef: 'default', commit: COMMIT })
+    await expect(fs.stat(path.join(dest, '.git'))).rejects.toThrow()
+  })
+
+  it('writes to the requested directory', async () => {
+    const git = makeGit()
+    const dest = path.join(jobWorkingDir, 'custom', 'tree')
+    const snapshot = await materialiseSourceSnapshot({
+      cloneUrl: 'https://github.com/acme/api.git',
+      repo: 'acme/api',
+      ref: 'k8s-staging',
+      destDir: dest,
+      logger,
+      gitFactory: git.factory,
+    })
+    expect(snapshot.absDir).toBe(dest)
+    expect((git.clone.mock.calls[0] as [string, string, string[]])[2]).toEqual([
+      '--depth', '1', '--single-branch', '--branch', 'k8s-staging',
+    ])
+    await expect(fs.stat(path.join(jobWorkingDir, UPSTREAM_SOURCE_SUBDIR))).rejects.toThrow()
+    await expect(fs.stat(path.join(dest, 'packages/runner/src/index.ts'))).resolves.toBeTruthy()
+  })
+
+  it('does not treat a default-branch snapshot and an explicit ref as the same request', async () => {
+    const dest = path.join(jobWorkingDir, 'snap')
+    const base = {
+      cloneUrl: 'https://github.com/acme/api.git',
+      repo: 'acme/api',
+      destDir: dest,
+      logger,
+    }
+    const first = makeGit({ revparse: branchRevparse })
+    await materialiseSourceSnapshot({ ...base, gitFactory: first.factory })
+
+    const again = makeGit({ revparse: branchRevparse })
+    const reused = await materialiseSourceSnapshot({ ...base, gitFactory: again.factory })
+    expect(again.clone).not.toHaveBeenCalled()
+    expect(reused).toMatchObject({ cloned: false, ref: 'main', requestedRef: 'default' })
+
+    const explicit = makeGit()
+    const replaced = await materialiseSourceSnapshot({ ...base, ref: 'main', gitFactory: explicit.factory })
+    expect(explicit.clone).toHaveBeenCalled()
+    expect(replaced).toMatchObject({ ref: 'main', requestedRef: 'main', cloned: true })
+
+    const backToDefault = makeGit({ revparse: branchRevparse })
+    const recloned = await materialiseSourceSnapshot({ ...base, gitFactory: backToDefault.factory })
+    expect(backToDefault.clone).toHaveBeenCalled()
+    expect(recloned).toMatchObject({ requestedRef: 'default', cloned: true })
   })
 })

@@ -18,6 +18,8 @@ export interface IntakeContext {
 export interface IntakePromptOptions {
   toolsEnabled?: boolean
   pastJobsEnabled?: boolean
+  /** scm_checkout is registered. Independent of shell/file access. */
+  checkoutEnabled?: boolean
   planModeMcpServerIds?: string[]
   subagentsEnabled?: boolean
   access?: {
@@ -87,7 +89,9 @@ ${access.mcpOnRequest.length ? `- MCP servers available on request (not attached
 - A call that needs approval pauses until the developer answers. Make each call worth a click: one clear command, not a chain of guesses.
 - If a call is declined, read the reason, do not retry the same call, and adapt.
 - If a capability is off and you genuinely need it, call request_tool_access with the capability and a one-line reason. Do not ask in prose.
-- For broad code questions, prefer a shallow clone into the scratch directory (git clone --depth 1 <url> repo) and then search it locally, instead of dozens of scm_read_file calls. Clone only repos the developer is asking about.
+${options.checkoutEnabled
+    ? '- For broad code questions, call scm_checkout and search the snapshot locally instead of dozens of scm_read_file calls. Never clone with the shell. A checkout is read-only and has no git history; its .coro-source.json names the commit to cite. If a path from an earlier turn is gone, call scm_checkout again — it is idempotent.'
+    : '- Do not clone repositories with the shell. Read them through the scm_* tools.'}
 - Never read outside the scratch directory unless the developer asked you to look at a specific local path.
 `
     : ''
@@ -101,7 +105,7 @@ Tools (read-only — this is how you investigate):
 - scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directories that look relevant.
 - scm_read_file: when you need a file's contents. Confirm the path with scm_list_files first; do not guess paths.
 - scm_search_code: when the user names a symbol or string and you want to find it. On Bitbucket Cloud this can legitimately return 0 hits even when the symbol exists (workspaces below Standard plan are not in the search index), so do not retry the same search more than once — switch to scm_list_files instead.
-${pastJobsSection}${planModeMcpSection}${subagentsSection}${accessSection}
+${options.checkoutEnabled ? `- scm_checkout: read-only snapshot of a repository (shallow, no git history) in the scratch directory. Use it for broad questions or more than a few files, then Read/Grep/Glob the returned path. Use scm_read_file / scm_list_files for one to three known files. Never clone with the shell. .coro-source.json names the commit to cite. If a checkout path from an earlier turn is gone, call scm_checkout again; it is idempotent.\n` : ''}${pastJobsSection}${planModeMcpSection}${subagentsSection}${accessSection}
 Tool rules:
 - Read as much as the investigation genuinely needs. Depth is the point of this conversation — you are not rationing calls. What you must not do is read aimlessly: every call should be answering a question you can name.
 ${READ_ONLY_TOOL_RULES_HEAD}
@@ -211,15 +215,18 @@ Run schema (emit EXACTLY this shape inside the <run> tags):
 </run>`
 }
 
-export function buildIntakeSubagentSystemPrompt(opts?: { scratchDir?: string }): string {
+export function buildIntakeSubagentSystemPrompt(opts?: { scratchDir?: string; checkoutEnabled?: boolean }): string {
   const scratch = opts?.scratchDir
-    ? `\n- The conversation's scratch directory is ${opts.scratchDir}; read anything cloned there with absolute paths. Calls that need developer approval will be refused — report what you needed instead of working around it.`
+    ? `\n- The conversation's scratch directory is ${opts.scratchDir}; read anything checked out there with absolute paths. Calls that need developer approval will be refused — report what you needed instead of working around it.`
+    : ''
+  const checkout = opts?.checkoutEnabled
+    ? `\n- For a whole repository, call scm_checkout and read the snapshot at the absolute path it returns. Never clone with the shell. The snapshot is read-only and has no git history; cite the commit in .coro-source.json.`
     : ''
   return `You are a research subagent for Coro plan mode. Another agent is investigating a piece of work with a developer and has handed you one self-contained question. Answer that question and nothing else.
 
 How to work:
 - Use the read-only tools to find the answer. Read before you claim; say "not found" or "could not determine" rather than guessing.
-${READ_ONLY_TOOL_RULES}${scratch}
+${READ_ONLY_TOOL_RULES}${scratch}${checkout}
 - Nobody will answer questions from you. If the task is ambiguous, state the assumption you made and proceed.
 
 How to report (this is your final message, returned verbatim to the other agent):

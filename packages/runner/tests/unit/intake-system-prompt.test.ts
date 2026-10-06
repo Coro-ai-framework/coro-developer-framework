@@ -27,6 +27,26 @@ describe('buildIntakeSystemPrompt', () => {
     expect(prompt).not.toContain('read_past_job_artifact')
   })
 
+  it('points broad reads at scm_checkout and does not suggest a shell clone', () => {
+    const access = {
+      modes: { files: 'allow' as const, filesWrite: 'ask' as const, shell: 'ask' as const, web: 'ask' as const },
+      nativeFiles: true,
+      nativeWeb: true,
+      scratchDir: '/tmp/scratch',
+      mcpAttached: [],
+      mcpOnRequest: [],
+    }
+    const on = buildIntakeSystemPrompt(emptyContext, { toolsEnabled: true, checkoutEnabled: true, access })
+    expect(on).toContain('scm_checkout')
+    expect(on).toContain('Never clone with the shell')
+    expect(on).toContain('.coro-source.json')
+    expect(on).not.toContain('git clone --depth 1')
+    const off = buildIntakeSystemPrompt(emptyContext, { toolsEnabled: true, access })
+    expect(off).not.toContain('scm_checkout')
+    expect(off).not.toContain('git clone --depth 1')
+    expect(off).toContain('Do not clone repositories with the shell')
+  })
+
   it('documents delegation only when subagents are enabled', () => {
     const on = buildIntakeSystemPrompt(emptyContext, { toolsEnabled: true, subagentsEnabled: true })
     const off = buildIntakeSystemPrompt(emptyContext, { toolsEnabled: true })
@@ -42,6 +62,14 @@ describe('buildIntakeSubagentSystemPrompt', () => {
     expect(prompt).toContain('scm_list_files')
     expect(prompt).toContain('never write')
     expect(prompt).toContain('<run>')
+    expect(prompt).not.toContain('scm_checkout')
+  })
+
+  it('tells a subagent to check out instead of cloning when the tool is offered', () => {
+    const prompt = buildIntakeSubagentSystemPrompt({ checkoutEnabled: true, scratchDir: '/tmp/scratch' })
+    expect(prompt).toContain('scm_checkout')
+    expect(prompt).toContain('Never clone with the shell')
+    expect(prompt).toContain('/tmp/scratch')
   })
 })
 

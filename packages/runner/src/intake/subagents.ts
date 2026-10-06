@@ -88,7 +88,7 @@ export interface IntakeSubagentDispatcherOptions {
   registry: PluginRegistry
   /** Lookup tools only — never includes delegate_investigation, so subagents cannot recurse. */
   lookupTools: ReadonlyArray<ChatTool>
-  toolDeps: Pick<IntakeToolDeps, 'stateBackend' | 'workingDir'>
+  toolDeps: Pick<IntakeToolDeps, 'stateBackend' | 'workingDir' | 'scratchDir'>
   pluginMcpServers: Record<string, PluginMcpServerConfig>
   /** The conversation's stable work root; each subagent gets its own subdirectory. */
   workRoot: string
@@ -107,7 +107,10 @@ export interface IntakeSubagentRunner extends IntakeSubagentDispatcher {
 
 export function createIntakeSubagentDispatcher(opts: IntakeSubagentDispatcherOptions): IntakeSubagentRunner {
   const model = resolveIntakeSubagentModel(opts.executor, opts.parentModel, opts.settings)
-  const systemPrompt = buildIntakeSubagentSystemPrompt({ scratchDir: opts.workRoot })
+  const systemPrompt = buildIntakeSubagentSystemPrompt({
+    scratchDir: opts.workRoot,
+    checkoutEnabled: opts.lookupTools.some(t => t.name === 'scm_checkout'),
+  })
   let usage = emptyNormalizedUsage()
   let inFlight = 0
   let seq = 0

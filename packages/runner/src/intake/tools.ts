@@ -1,11 +1,15 @@
+import * as path from 'path'
 import type { ChatTool } from '@coro-ai/plugin-sdk'
 import { parseMcpToolName } from '@coro-ai/plugin-sdk'
+import type { Logger } from 'pino'
+import { createIsolatedGit, persistableCloneUrl } from '../clients/git-auth'
 import {
   isScmPlugin,
   isTrackerPlugin,
   type PluginRegistry,
 } from '../plugins/registry'
 import type { ScmPluginRuntime, TrackerComment, TrackerIssue, TrackerPluginRuntime } from '../plugins/types'
+import { materialiseSourceSnapshot, SOURCE_SNAPSHOT_DEFAULT_REF } from '../tools/upstream-source'
 import type { StateBackend } from '../state/backend'
 import { WORKSPACE_TOOL_NAMES, type WorkspaceTools } from '../tools/workspace-tools'
 import {
@@ -65,8 +69,19 @@ function hasScmMethod(
   return registry.all().some(p => isScmPlugin(p) && typeof p[method] === 'function')
 }
 
+function hasScmPlugin(registry: PluginRegistry): boolean {
+  return registry.all().some(p => isScmPlugin(p))
+}
+
 /** Hard cap on entries returned to the LLM in a single list_files call. */
 export const INTAKE_MAX_LIST_FILES = 200
+/**
+ * A shallow clone does not fit the lookup timeout. This bounds the whole
+ * checkout; a git child that goes silent is killed sooner, inside the tool.
+ */
+export const INTAKE_CHECKOUT_TIMEOUT_MS = 10 * 60_000
+/** Kill a git child that emits no output for this long. `--progress` keeps a healthy clone under it. */
+const CHECKOUT_GIT_STALL_MS = 120_000
 
 export interface IntakeSubagentReport {
   task: string
@@ -128,6 +143,8 @@ export interface IntakeToolDeps {
   subagents?: IntakeSubagentDispatcher
   /** Scratch-directory file/shell/web tools. Present when the executor lacks native equivalents. */
   workspace?: WorkspaceTools
+  /** Conversation scratch directory. scm_checkout writes its snapshot under here. */
+  scratchDir?: string
   /** Approves workspace tools before they run. Native tools are gated inside the executor. */
   gate?: (name: string, input: unknown) => Promise<{ allow: boolean; reason?: string }>
   requestCapability?: IntakePermissionBroker['requestCapability']
@@ -185,6 +202,26 @@ export function buildIntakeTools(
           pluginId: PLUGIN_ID_SCHEMA,
         },
         required: ['query'],
+      },
+    })
+  }
+
+  if (hasScmPlugin(registry)) {
+    tools.push({
+      name: 'scm_checkout',
+      description:
+        'Read-only snapshot of a repository (shallow, no git history) in the scratch directory. ' +
+        'Use for broad questions, then Read/Grep/Glob the returned path. ' +
+        'ref is a branch or tag name, never a commit SHA; omit it for the remote default branch. ' +
+        'Idempotent: a second call for the same repo and ref reuses the snapshot. Read-only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Repository slug or owner/repo.' },
+          ref: { type: 'string', description: 'Branch or tag. Omit for the remote default branch. Not a commit SHA.' },
+          pluginId: PLUGIN_ID_SCHEMA,
+        },
+        required: ['repo'],
       },
     })
   }
@@ -362,6 +399,114 @@ export function buildIntakeTools(
   return tools
 }
 
+const checkoutLogger = {
+  info() {},
+  warn() {},
+  error() {},
+  debug() {},
+  fatal() {},
+  trace() {},
+  child() { return this },
+} as unknown as Logger
+
+/**
+ * Parallel subagents asking for the same repo share one clone. The map is
+ * published before this function returns, and cleared when the clone
+ * settles so a later retry starts clean.
+ */
+const checkoutInflight = new Map<string, Promise<unknown>>()
+
+function shareCheckout<T>(destDir: string, run: () => Promise<T>): Promise<T> {
+  const existing = checkoutInflight.get(destDir)
+  if (existing) return existing as Promise<T>
+  const pending = run().finally(() => {
+    if (checkoutInflight.get(destDir) === pending) checkoutInflight.delete(destDir)
+  })
+  checkoutInflight.set(destDir, pending)
+  return pending
+}
+
+function looksLikeCommitSha(ref: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(ref) || /^[0-9a-f]{64}$/i.test(ref)
+}
+
+function safeCheckoutSegment(raw: string, label: string): string {
+  if (raw.includes('..')) {
+    throw new Error(`scm_checkout: ${label} "${raw}" is not a safe path`)
+  }
+  const safe = raw.replace(/[^A-Za-z0-9._-]/g, '_')
+  if (!safe || safe === '.' || safe === '..') {
+    throw new Error(`scm_checkout: ${label} "${raw}" is not a safe path`)
+  }
+  return safe
+}
+
+function checkoutDestDir(scratchDir: string, repo: string, ref: string | undefined): string {
+  const repoSeg = safeCheckoutSegment(repo, 'repo')
+  const refSeg = safeCheckoutSegment(ref?.trim() || SOURCE_SNAPSHOT_DEFAULT_REF, 'ref')
+  return path.join(scratchDir, 'repos', `${repoSeg}@${refSeg}`)
+}
+
+async function checkoutRepo(
+  registry: PluginRegistry,
+  args: Record<string, unknown>,
+  deps: IntakeToolDeps,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const repo = String(args.repo ?? '').trim()
+  if (!repo) throw new Error('scm_checkout requires repo')
+  const ref = typeof args.ref === 'string' ? args.ref.trim() : ''
+  if (ref && looksLikeCommitSha(ref)) {
+    throw new Error(
+      `ref "${ref}" looks like a commit SHA. scm_checkout needs a branch or tag name, not a commit.`,
+    )
+  }
+  if (!deps.scratchDir) throw new Error('scm_checkout is not available in this plan-mode turn.')
+  const destDir = checkoutDestDir(deps.scratchDir, repo, ref || undefined)
+
+  return shareCheckout(destDir, async () => {
+    const scm = registry.resolveScm({
+      scm: typeof args.pluginId === 'string' ? args.pluginId : undefined,
+    })
+    const info = scm.cloneInfo({ repo })
+    const cloneUrl = persistableCloneUrl(info)
+    if (!cloneUrl) {
+      throw new Error(`scm plugin "${scm.manifest.id}" returned an empty clone URL for repo "${repo}"`)
+    }
+    const killer = new AbortController()
+    const onAbort = () => killer.abort()
+    if (signal.aborted) killer.abort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => killer.abort(), INTAKE_CHECKOUT_TIMEOUT_MS)
+    try {
+      const snapshot = await materialiseSourceSnapshot({
+        cloneUrl,
+        repo,
+        ...(ref ? { ref } : {}),
+        destDir,
+        logger: checkoutLogger,
+        extraCloneArgs: ['--progress'],
+        gitFactory: cwd => createIsolatedGit(cwd, info.envForGit, {
+          timeoutMs: CHECKOUT_GIT_STALL_MS,
+          signal: killer.signal,
+          progress: () => {},
+        }),
+      })
+      return {
+        pluginId: scm.manifest.id,
+        repo,
+        ref: snapshot.ref,
+        commit: snapshot.commit,
+        dir: snapshot.absDir,
+        reused: !snapshot.cloned,
+      }
+    } finally {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+    }
+  })
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new Error('Aborted'))
   return new Promise<T>((resolve, reject) => {
@@ -418,6 +563,13 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
   if (name === 'scm_search_code') {
     const count = Array.isArray(output) ? output.length : 0
     return `Found ${count} code hit${count === 1 ? '' : 's'}`
+  }
+  if (name === 'scm_checkout') {
+    const repo = readField(input, 'repo') ?? 'repository'
+    const ref = readField(input, 'ref')
+    const reused = output && typeof output === 'object' && (output as { reused?: boolean }).reused === true
+    const where = ref ? `${repo}@${ref}` : repo
+    return `Checked out ${where}${reused ? ' (reused)' : ''}`
   }
   if (name === 'scm_list_files') {
     const count = Array.isArray(output) ? output.length : 0
@@ -550,6 +702,7 @@ function parseSubagentTasks(raw: unknown): string[] {
 
 function toolTimeoutMs(name: string): number {
   if (name === DELEGATE_INVESTIGATION_TOOL_NAME) return INTAKE_SUBAGENT_TIMEOUT_MS + INTAKE_TOOL_TIMEOUT_MS
+  if (name === 'scm_checkout') return INTAKE_CHECKOUT_TIMEOUT_MS
   if (name === 'shell') return 600_000 + INTAKE_TOOL_TIMEOUT_MS
   if (name === 'web_fetch') return 35_000
   if (name === REQUEST_TOOL_ACCESS_TOOL_NAME) return INTAKE_PERMISSION_TIMEOUT_MS + INTAKE_TOOL_TIMEOUT_MS
@@ -617,6 +770,8 @@ async function dispatchIntakeTool(
       const issues = await tracker.searchIssues(query, limit)
       return issues.map(clampTrackerIssue)
     }
+    case 'scm_checkout':
+      return checkoutRepo(registry, args, deps, signal)
     case 'scm_read_file': {
       const repo = String(args.repo ?? '').trim()
       const path = String(args.path ?? '').trim()

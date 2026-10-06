@@ -302,11 +302,22 @@ async function* executeIntakeTurn(
       })
     : {}
   const planModeMcpServerIds = Object.keys(planModeMcpServers)
+  const workspace = toolsOn && (!nativeFiles || !nativeWeb)
+    ? createWorkspaceTools({ root: workRoot })
+    : undefined
+  const accessTools = toolsOn
+    ? buildWorkspaceChatTools({ includeFiles: !nativeFiles, includeWeb: !nativeWeb })
+    : []
+  const lookupTools = toolsOn
+    ? [...buildIntakeTools(options.registry, { stateBackend: options.stateBackend }), ...accessTools]
+    : []
+  const checkoutAvailable = lookupTools.some(t => t.name === 'scm_checkout')
   const broker = toolsOn
     ? createIntakePermissionBroker({
         sessionId: options.sessionId,
         workRoot,
         attachedMcpIds: new Set(planModeMcpServerIds),
+        checkoutAvailable,
         emit: events.push,
         signal: options.signal,
         getAccess: currentAccess,
@@ -317,15 +328,6 @@ async function* executeIntakeTurn(
         logger: log,
       })
     : undefined
-  const workspace = toolsOn && (!nativeFiles || !nativeWeb)
-    ? createWorkspaceTools({ root: workRoot })
-    : undefined
-  const accessTools = toolsOn
-    ? buildWorkspaceChatTools({ includeFiles: !nativeFiles, includeWeb: !nativeWeb })
-    : []
-  const lookupTools = toolsOn
-    ? [...buildIntakeTools(options.registry, { stateBackend: options.stateBackend }), ...accessTools]
-    : []
   const subagents =
     toolsOn &&
     intakeSubagentsEnabled(options.settings) &&
@@ -337,7 +339,7 @@ async function* executeIntakeTurn(
           settings: options.settings,
           registry: options.registry,
           lookupTools,
-          toolDeps: { stateBackend: options.stateBackend, workingDir: cwd },
+          toolDeps: { stateBackend: options.stateBackend, workingDir: cwd, scratchDir: workRoot },
           pluginMcpServers: planModeMcpServers,
           workRoot,
           emit: events.push,
@@ -354,6 +356,7 @@ async function* executeIntakeTurn(
   ]
   const hasTools = tools.length > 0 || planModeMcpServerIds.length > 0
   const pastJobsEnabled = tools.some(t => t.name === 'list_past_jobs')
+  const checkoutEnabled = tools.some(t => t.name === 'scm_checkout')
 
   log?.debug(
     {
@@ -370,6 +373,7 @@ async function* executeIntakeTurn(
   const systemPrompt = buildIntakeSystemPrompt(options.context, {
     toolsEnabled: hasTools,
     pastJobsEnabled,
+    checkoutEnabled,
     planModeMcpServerIds,
     subagentsEnabled: Boolean(subagents),
     ...(accessAtStart
@@ -450,6 +454,7 @@ async function* executeIntakeTurn(
               runTool: createIntakeRunTool(options.registry, options.signal, {
                 stateBackend: options.stateBackend,
                 workingDir: cwd,
+                scratchDir: workRoot,
                 ...(subagents ? { subagents } : {}),
                 ...(workspace ? { workspace } : {}),
                 ...(broker

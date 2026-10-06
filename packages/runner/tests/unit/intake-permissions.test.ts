@@ -66,6 +66,17 @@ describe('permission rules', () => {
     expect(parseRule('not a rule')).toBeNull()
   })
 
+  it('refuses a shell clone when scm_checkout is available and leaves other git commands alone', () => {
+    const on = { workRoot: '/scratch', attachedMcpIds: new Set<string>(), checkoutAvailable: true }
+    const reason = 'Use scm_checkout to read a repository; shell clones are not available in plan mode.'
+    expect(classifyIntakeTool('Bash', { command: 'git clone --depth 1 https://example.com/a.git repo' }, on)).toEqual({ kind: 'deny', reason })
+    expect(classifyIntakeTool('shell', { command: 'echo hi && git clone https://example.com/a.git repo' }, on)).toEqual({ kind: 'deny', reason })
+    expect(classifyIntakeTool('Bash', { command: 'for r in a b; do git clone $r dest; done' }, on)).toEqual({ kind: 'deny', reason })
+    expect(classifyIntakeTool('shell', { command: 'gh repo clone org/repo' }, on)).toEqual({ kind: 'deny', reason })
+    expect(classifyIntakeTool('Bash', { command: 'git log -1' }, on).kind).toBe('gated')
+    expect(classifyIntakeTool('Bash', { command: 'git clone x' }, { workRoot: '/scratch', attachedMcpIds: new Set() }).kind).toBe('gated')
+  })
+
   it('classifies path and tool reach', () => {
     const outside = classifyIntakeTool('Read', { file_path: '/etc/passwd' }, { workRoot: '/scratch', attachedMcpIds: new Set() })
     expect(gated(outside).risk).toBe('outside-scratch')
@@ -174,6 +185,15 @@ describe('permission broker', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('refuses a shell clone without asking when checkout is available', async () => {
+    const { broker: gate, events, current } = broker({ checkoutAvailable: true })
+    current.capabilities = { ...current.capabilities, shell: 'ask' }
+    const decision = await gate.gate('shell', { command: 'git clone https://example.com/a.git repo' })
+    expect(decision.allow).toBe(false)
+    expect(decision.reason).toContain('scm_checkout')
+    expect(events).toHaveLength(0)
   })
 
   it('does not prompt a subagent', async () => {

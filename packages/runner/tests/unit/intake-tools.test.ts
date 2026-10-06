@@ -1,17 +1,31 @@
+import * as path from 'path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createIsolatedGit } from '../../src/clients/git-auth'
 import {
   buildIntakeTools,
   createIntakeRunTool,
   DELEGATE_INVESTIGATION_TOOL,
+  INTAKE_CHECKOUT_TIMEOUT_MS,
   INTAKE_MAX_SUBAGENT_TASKS,
   INTAKE_MAX_TRACKER_DESCRIPTION_CHARS,
   INTAKE_SUBAGENT_TIMEOUT_MS,
   INTAKE_TOOL_TIMEOUT_MS,
   summarizeToolCall,
 } from '../../src/intake/tools'
-import type { PluginRegistry } from '../../src/plugins/registry'
+import { PluginRegistry } from '../../src/plugins/registry'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from '../../src/plugins/types'
+import { materialiseSourceSnapshot } from '../../src/tools/upstream-source'
 import { makeMockJob } from '../mcp/fixtures'
+
+vi.mock('../../src/tools/upstream-source', () => ({
+  SOURCE_SNAPSHOT_DEFAULT_REF: 'default',
+  materialiseSourceSnapshot: vi.fn(),
+}))
+
+vi.mock('../../src/clients/git-auth', async () => {
+  const actual = await vi.importActual<typeof import('../../src/clients/git-auth')>('../../src/clients/git-auth')
+  return { ...actual, createIsolatedGit: vi.fn() }
+})
 
 function mockRegistry(parts: {
   trackers?: Partial<TrackerPluginRuntime>[]
@@ -74,6 +88,15 @@ describe('buildIntakeTools', () => {
     expect(buildIntakeTools(mockRegistry({})).map(t => t.name)).not.toContain('delegate_investigation')
   })
 
+  it('offers scm_checkout for any installed scm plugin, even without file APIs', () => {
+    const tools = buildIntakeTools(mockRegistry({ scms: [{}] }))
+    const checkout = tools.find(t => t.name === 'scm_checkout')
+    expect(checkout).toBeDefined()
+    expect(checkout!.description).toContain('Read-only snapshot')
+    expect(checkout!.inputSchema).toMatchObject({ required: ['repo'] })
+    expect(tools.map(t => t.name)).not.toContain('scm_read_file')
+  })
+
   it('exposes scm_list_files when a plugin implements listFiles', () => {
     const tools = buildIntakeTools(mockRegistry({
       scms: [{
@@ -108,7 +131,22 @@ describe('buildIntakeTools', () => {
 describe('createIntakeRunTool', () => {
   beforeEach(() => {
     vi.useRealTimers()
+    vi.mocked(materialiseSourceSnapshot).mockReset()
+    vi.mocked(createIsolatedGit).mockReset()
   })
+
+  function snapshotOf(over: Record<string, unknown> = {}) {
+    return {
+      repo: 'acme/api',
+      ref: 'k8s-staging',
+      requestedRef: 'k8s-staging',
+      commit: 'abc123',
+      at: '2026-01-01T00:00:00.000Z',
+      absDir: '/scratch/repos/acme_api@k8s-staging',
+      cloned: true,
+      ...over,
+    }
+  }
 
   it('dispatches tracker_get_issue to the plugin', async () => {
     const getIssue = vi.fn(async (key: string) => ({ key, url: 'u', summary: 's', status: 'open' }))
@@ -261,6 +299,128 @@ describe('createIntakeRunTool', () => {
     expect(settled).toBe(true)
   })
 
+  it('checks a repository out through the resolved scm plugin', async () => {
+    vi.mocked(materialiseSourceSnapshot).mockResolvedValue(snapshotOf())
+    const cloneInfo = vi.fn(() => ({
+      url: 'https://user:token@github.com/acme/api.git',
+      envForGit: { GIT_ASKPASS: '' },
+    }))
+    const registry = mockRegistry({
+      scms: [{ manifest: { id: 'github', kind: 'scm' }, cloneInfo }],
+    })
+    const runTool = createIntakeRunTool(registry, new AbortController().signal, { scratchDir: '/scratch' })
+    const out = await runTool('scm_checkout', { repo: 'acme/api', ref: 'k8s-staging' })
+    expect(cloneInfo).toHaveBeenCalledWith({ repo: 'acme/api' })
+    expect(out).toEqual({
+      pluginId: 'github',
+      repo: 'acme/api',
+      ref: 'k8s-staging',
+      commit: 'abc123',
+      dir: '/scratch/repos/acme_api@k8s-staging',
+      reused: false,
+    })
+    expect(materialiseSourceSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      cloneUrl: 'https://github.com/acme/api.git',
+      repo: 'acme/api',
+      ref: 'k8s-staging',
+      destDir: path.join('/scratch', 'repos', 'acme_api@k8s-staging'),
+      extraCloneArgs: ['--progress'],
+    }))
+    const gitFactory = vi.mocked(materialiseSourceSnapshot).mock.calls[0]![0].gitFactory
+    gitFactory!('/tmp/parent')
+    expect(createIsolatedGit).toHaveBeenCalledWith(
+      '/tmp/parent',
+      { GIT_ASKPASS: '' },
+      expect.objectContaining({ timeoutMs: 120_000, signal: expect.any(AbortSignal) }),
+    )
+  })
+
+  it('routes pluginId and reports an ambiguous install instead of guessing', async () => {
+    vi.mocked(materialiseSourceSnapshot).mockImplementation(async (args) => snapshotOf({
+      repo: args.repo,
+      absDir: args.destDir,
+      ref: 'main',
+    }))
+    const registry = new PluginRegistry()
+    const github = vi.fn(() => ({ url: 'https://github.com/acme/api.git', envForGit: {} }))
+    const bitbucket = vi.fn(() => ({ url: 'https://bitbucket.org/acme/api.git', envForGit: {} }))
+    registry.register({ manifest: { id: 'github', kind: 'scm' }, cloneInfo: github } as ScmPluginRuntime)
+    registry.register({ manifest: { id: 'bitbucket', kind: 'scm' }, cloneInfo: bitbucket } as ScmPluginRuntime)
+
+    const runTool = createIntakeRunTool(registry, new AbortController().signal, { scratchDir: '/scratch' })
+    await expect(runTool('scm_checkout', { repo: 'acme/api' })).rejects.toThrow(/installed=\[github, bitbucket\]/)
+    expect(github).not.toHaveBeenCalled()
+    expect(bitbucket).not.toHaveBeenCalled()
+
+    await runTool('scm_checkout', { repo: 'acme/api', pluginId: 'bitbucket' })
+    expect(bitbucket).toHaveBeenCalledWith({ repo: 'acme/api' })
+    expect(github).not.toHaveBeenCalled()
+    expect(materialiseSourceSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      cloneUrl: 'https://bitbucket.org/acme/api.git',
+    }))
+  })
+
+  it('rejects path traversal and a commit sha, and an empty clone url', async () => {
+    const registry = mockRegistry({
+      scms: [{
+        manifest: { id: 'github', kind: 'scm' },
+        cloneInfo: () => ({ url: '', envForGit: {} }),
+      }],
+    })
+    const runTool = createIntakeRunTool(registry, new AbortController().signal, { scratchDir: '/scratch' })
+    await expect(runTool('scm_checkout', { repo: '..' })).rejects.toThrow(/not a safe path/)
+    await expect(runTool('scm_checkout', { repo: 'acme/api', ref: 'a/../../etc' })).rejects.toThrow(/not a safe path/)
+    await expect(runTool('scm_checkout', { repo: 'acme/api', ref: 'a'.repeat(40) })).rejects.toThrow(/branch or tag/)
+    await expect(runTool('scm_checkout', { repo: 'acme/api' })).rejects.toThrow(/empty clone URL/)
+    expect(materialiseSourceSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('clones once when two calls ask for the same repo together', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => { release = resolve })
+    vi.mocked(materialiseSourceSnapshot).mockImplementation(async () => {
+      await gate
+      return snapshotOf()
+    })
+    const registry = mockRegistry({
+      scms: [{
+        manifest: { id: 'github', kind: 'scm' },
+        cloneInfo: () => ({ url: 'https://github.com/acme/api.git', envForGit: {} }),
+      }],
+    })
+    const runTool = createIntakeRunTool(registry, new AbortController().signal, { scratchDir: '/scratch' })
+    const first = runTool('scm_checkout', { repo: 'acme/api', ref: 'k8s-staging' })
+    const second = runTool('scm_checkout', { repo: 'acme/api', ref: 'k8s-staging' })
+    expect(materialiseSourceSnapshot).toHaveBeenCalledTimes(1)
+    release()
+    const [a, b] = await Promise.all([first, second])
+    expect(a).toEqual(b)
+    expect(materialiseSourceSnapshot).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives scm_checkout longer than the lookup timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(materialiseSourceSnapshot).mockReturnValue(new Promise(() => {}))
+      const registry = mockRegistry({
+        scms: [{
+          manifest: { id: 'github', kind: 'scm' },
+          cloneInfo: () => ({ url: 'https://github.com/acme/slow.git', envForGit: {} }),
+        }],
+      })
+      const runTool = createIntakeRunTool(registry, new AbortController().signal, { scratchDir: '/scratch-timeout' })
+      let settled = false
+      const pending = runTool('scm_checkout', { repo: 'acme/slow' }).then(() => { settled = true }, () => { settled = true })
+      await vi.advanceTimersByTimeAsync(INTAKE_TOOL_TIMEOUT_MS + 10)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(INTAKE_CHECKOUT_TIMEOUT_MS)
+      await pending
+      expect(settled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('asks the permission gate before running a workspace tool', async () => {
     const gate = vi.fn(async () => ({ allow: false, reason: 'not this time' }))
     const runTool = createIntakeRunTool(mockRegistry({}), new AbortController().signal, {
@@ -325,6 +485,16 @@ describe('summarizeToolCall', () => {
     expect(summarizeToolCall('web_fetch', { url: 'https://example.com/a' }, {})).toBe('Fetched example.com')
     expect(summarizeToolCall('file_read', { path: 'notes.md' }, {})).toBe('Read notes.md')
     expect(summarizeToolCall('request_tool_access', { capability: 'web' }, { granted: true, mode: 'ask' })).toBe('Enabled: web')
+  })
+
+  it('summarises a checkout, including a reuse', () => {
+    expect(summarizeToolCall('scm_checkout', { repo: 'acme/api', ref: 'k8s-staging' }, { reused: false })).toBe(
+      'Checked out acme/api@k8s-staging',
+    )
+    expect(summarizeToolCall('scm_checkout', { repo: 'acme/api', ref: 'k8s-staging' }, { reused: true })).toBe(
+      'Checked out acme/api@k8s-staging (reused)',
+    )
+    expect(summarizeToolCall('scm_checkout', { repo: 'acme/api' }, {})).toBe('Checked out acme/api')
   })
 
   it('summarises a delegated investigation', () => {
