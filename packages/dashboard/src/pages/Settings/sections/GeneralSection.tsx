@@ -42,7 +42,7 @@ export default function GeneralSection() {
           <div>
             <div className="text-sm font-medium text-fg">Enable coach mode</div>
             <p className="mt-0.5 text-xs text-fg-muted">
-              New runs default to Interactive mode and show extra guidance on the New Run page.
+              New runs default to Interactive mode and show extra guidance on the Plans page.
             </p>
           </div>
           <Switch

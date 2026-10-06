@@ -194,7 +194,7 @@ const userMcpServerSchema = z.discriminatedUnion('type', [
 ]).and(
   z.object({
     enabled: z.boolean().optional(),
-    /** When true, attach this server during Coro plan mode (New Run intake). */
+    /** When true, attach this server during Coro plan mode (Plans intake). */
     planMode: z.boolean().optional(),
     allowedTools: z.array(z.string()).optional(),
     disallowedTools: z.array(z.string()).optional(),

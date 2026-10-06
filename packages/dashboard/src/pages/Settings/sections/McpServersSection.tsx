@@ -79,7 +79,7 @@ export default function McpServersSection() {
         footer={
           <span>
             Reserved id <code>coro</code> is rejected. Use <code>"enabled": false</code> to keep an entry without attaching it.
-            <code> planMode: true</code> also attaches the server during New Run (Coro plan mode) chat.
+            <code> planMode: true</code> also attaches the server during Plans (Coro plan mode) chat.
             <code> allowedTools</code> / <code>disallowedTools</code> become per-server tool policy. Changes save with the rest of the page.
           </span>
         }

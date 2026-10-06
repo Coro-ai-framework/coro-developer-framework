@@ -49,7 +49,7 @@ interface PluginsResponse {
   plugins: PluginEntry[]
 }
 
-export default function NewRun() {
+export default function Plans() {
   const session = usePlanSession()
   const { tabs } = useWorkspaceTabs()
   const { jobs } = useJobs(30_000)
@@ -91,8 +91,14 @@ export default function NewRun() {
   async function handleNewConversation() {
     // A turn in flight is no longer a reason to ask: it keeps running and
     // stays attached to the conversation it belongs to.
-    if (session.hasProgress && !window.confirm(CONVERSATION_COPY.newConfirm)) return
+    if (session.hasProgress && !window.confirm(CONVERSATION_COPY.newConfirm)) return false
     await session.startNewConversation()
+    return true
+  }
+
+  async function handleNewConversationFromDialog() {
+    const started = await handleNewConversation()
+    if (started) setRecentsOpen(false)
   }
 
   async function handleSelectRecent(id: string) {
@@ -121,23 +127,18 @@ export default function NewRun() {
         <RunnerSetupAlerts />
       </div>
       <PageHeader
-        title={PAGE_TITLES.newRun}
+        title={PAGE_TITLES.plans}
         className="shrink-0"
         actions={
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              className="lg:hidden"
-              onClick={() => setRecentsOpen(true)}
-            >
-              <History />
-              {PAGE_TITLES.recents}
-            </Button>
-            <Button type="button" variant="secondary" onClick={() => void handleNewConversation()}>
-              {PAGE_TITLES.newConversation}
-            </Button>
-          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            className="lg:hidden"
+            onClick={() => setRecentsOpen(true)}
+          >
+            <History />
+            {PAGE_TITLES.recents}
+          </Button>
         }
       />
 
@@ -210,6 +211,7 @@ export default function NewRun() {
               onSelect={id => void handleSelectRecent(id)}
               onRemove={id => session.removeInvestigation(id)}
               onLoadMore={() => void session.loadMoreInvestigations()}
+              onNewConversation={() => void handleNewConversationFromDialog()}
             />
           </DialogBody>
         </DialogContent>

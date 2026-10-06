@@ -1,7 +1,7 @@
 import {
+  ClipboardList,
   Layers,
   Microscope,
-  Plus,
   Settings2,
   Workflow,
   type LucideIcon,
@@ -21,7 +21,7 @@ interface NavigationItem {
 }
 
 const NAV: NavigationItem[] = [
-  { label: PAGE_TITLES.newRun, to: HOME_PATH, icon: Plus, group: 'primary', end: true },
+  { label: PAGE_TITLES.plans, to: HOME_PATH, icon: ClipboardList, group: 'primary', end: true },
   { label: PAGE_TITLES.runsList, to: RUNS_LIST_PATH, icon: Workflow, group: 'primary' },
   { label: 'Intelligence', to: '/intelligence', icon: Layers, group: 'secondary' },
   { label: 'Retrospective', to: '/retrospectives', icon: Microscope, group: 'secondary' },

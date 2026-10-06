@@ -8,7 +8,7 @@ interface WorkflowPreviewStripProps {
   className?: string
 }
 
-/** Horizontal phase pictogram for the New Run page — no job state required. */
+/** Horizontal phase pictogram for the Plans page — no job state required. */
 export default function WorkflowPreviewStrip({
   workflow,
   interactive = false,

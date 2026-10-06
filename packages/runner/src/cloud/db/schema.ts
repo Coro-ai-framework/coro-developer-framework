@@ -165,7 +165,7 @@ export const proposals = pgTable('proposals', {
 
 // ── Plan-mode investigations ──────────────────────────────────────────────────
 //
-// Durable New Run conversations. `data` is the full Investigation JSON;
+// Durable Plans conversations. `data` is the full Investigation JSON;
 // `status` / `updated_at` exist so listing does not have to unpack every blob
 // for sort, and `team_id` scopes hybrid installs the same way jobs do.
 

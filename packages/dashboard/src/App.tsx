@@ -2,7 +2,7 @@ import { Navigate, Route, Routes, useParams } from 'react-router-dom'
 import Layout from './components/Layout'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
-import NewRun from './pages/NewRun'
+import Plans from './pages/Plans'
 import Intelligence from './pages/Intelligence'
 import Retrospective from './pages/Retrospective'
 import Settings from './pages/Settings'
@@ -17,7 +17,7 @@ export default function App() {
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route index element={<NewRun />} />
+        <Route index element={<Plans />} />
         <Route path={RUNS_LIST_PATH} element={<JobList />} />
         <Route path="/campaigns" element={<Navigate to={`${RUNS_LIST_PATH}?workflow=campaign`} replace />} />
         <Route path="/history" element={<Navigate to={`${RUNS_LIST_PATH}?status=terminal`} replace />} />

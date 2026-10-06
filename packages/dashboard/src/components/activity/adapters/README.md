@@ -46,4 +46,4 @@ Would consume `LogLine` from `src/hooks/useJobStream.ts` and map
 The gap to close first is that job logs are **strings, not structured events**
 — `tool_use` lines are matched with `/^→ (\S+)(.*)/` — so the adapter will be
 lossier than the intake one until the runner emits structured events on that
-stream. Do not treat that as a blocker for plan-mode-only New Run.
+stream. Do not treat that as a blocker for plan-mode-only Plans.

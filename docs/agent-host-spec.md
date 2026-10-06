@@ -184,7 +184,7 @@ not the runner's process-wide intelligence dir.
 
 ### 5.1 `POST /intake/stream` (Coro plan mode)
 
-Investigative intake path for the dashboard **New Run** chat. Implemented in
+Investigative intake path for the dashboard **Plans** chat. Implemented in
 `packages/runner/src/intake/handler.ts` with system instructions from
 `packages/runner/src/intake/system-prompt.ts` and conversation state in
 `packages/runner/src/intake/session-store.ts`.

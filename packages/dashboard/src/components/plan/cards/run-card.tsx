@@ -73,7 +73,7 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
       session.markCardDispatched(itemId, result.jobId)
       // Stay on this investigation. Minting a blank chat here was dropping
       // the run card (the only copy lived in React) when the dispatched PUT
-      // lost the race, and New Run then rehydrated the same conversation as
+      // lost the race, and Plans then rehydrated the same conversation as
       // if no run existed.
       await session.persistSnapshot({ status: 'dispatched', dispatchedJobId: result.jobId })
       navigate(`/jobs/${result.jobId}`)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, X } from 'lucide-react'
+import { ArrowUpRight, Plus, X } from 'lucide-react'
 import { formatRelativeTime } from '../../lib/format'
 import type { InvestigationSummary } from '../../lib/intake-investigation'
 import { getRunDetailPath } from '../../lib/jobs'
@@ -14,6 +14,30 @@ import { ScrollArea } from '../ui/scroll-area'
 import { Skeleton } from '../ui/skeleton'
 import { cn } from '../../lib/utils'
 
+function NewConversationRow({
+  onClick,
+  disabled,
+}: {
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        className="flex w-full items-center gap-3 rounded-xl border border-transparent px-2 py-2 text-left transition-colors hover:border-line hover:bg-overlay/60 disabled:opacity-60"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-line bg-overlay/40 text-fg">
+          <Plus className="size-5" />
+        </span>
+        <span className="text-[13px] font-medium leading-5 text-fg">{PAGE_TITLES.newConversation}</span>
+      </button>
+    </li>
+  )
+}
+
 export function InvestigationList({
   rows,
   jobs = [],
@@ -25,6 +49,7 @@ export function InvestigationList({
   onSelect,
   onLoadMore,
   onRemove,
+  onNewConversation,
   busy,
   disabled,
   revealRemoveOnHover = true,
@@ -40,6 +65,8 @@ export function InvestigationList({
   onSelect: (id: string) => void
   onLoadMore: () => void
   onRemove: (id: string) => void | Promise<void>
+  /** When set, a "New conversation" row leads the list. */
+  onNewConversation?: () => void
   busy?: boolean
   disabled?: boolean
   /** Desktop rail hides the control until hover; dialogs keep it visible. */
@@ -49,21 +76,33 @@ export function InvestigationList({
   const [pendingId, setPendingId] = useState<string | null>(null)
   const running = new Set(runningIds)
 
+  const newConversationRow = onNewConversation ? (
+    <ul className="mb-1 pr-2">
+      <NewConversationRow disabled={disabled} onClick={onNewConversation} />
+    </ul>
+  ) : null
+
   if (loading) {
     return (
-      <div className="space-y-2 p-1">
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
+      <div className="flex min-h-0 flex-1 flex-col">
+        {newConversationRow}
+        <div className="space-y-2 p-1">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
       </div>
     )
   }
 
   if (rows.length === 0) {
     return (
-      <p className="px-1 py-6 text-[13px] leading-5 text-fg-muted">
-        Conversations you start will show up here. {PAGE_TITLES.newConversation} keeps this one in the list.
-      </p>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {newConversationRow}
+        <p className="px-1 py-6 text-[13px] leading-5 text-fg-muted">
+          Conversations you start will show up here. {PAGE_TITLES.newConversation} keeps this one in the list.
+        </p>
+      </div>
     )
   }
 
@@ -87,6 +126,9 @@ export function InvestigationList({
     <div className="flex min-h-0 flex-1 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <ul className="space-y-1 pr-2">
+          {onNewConversation ? (
+            <NewConversationRow disabled={disabled} onClick={onNewConversation} />
+          ) : null}
           {rows.map(row => {
             const active = row.id === currentId
             const removing = pendingId === row.id

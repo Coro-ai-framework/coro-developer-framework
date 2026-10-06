@@ -104,7 +104,7 @@ Schema: [`packages/runner/src/config/local-config.ts`](../packages/runner/src/co
 
 ### Submit a job
 
-**Dashboard:** **New run** (home) → describe the work in conversation → **Generate run** → **Start run** on the card. **Runs** in the sidebar is the job inventory.
+**Dashboard:** **Plans** (home) → describe the work in conversation → **Generate run** → **Start run** on the card. **Runs** in the sidebar is the job inventory.
 
 **CLI** (runner must already be running):
 
@@ -410,7 +410,7 @@ export CORO_DASHBOARD_DIST=/abs/path/to/packages/dashboard/dist
 pnpm start
 ```
 
-**Coro plan mode** (New run) hits `POST /intake/stream` on the runner.
+**Coro plan mode** (Plans) hits `POST /intake/stream` on the runner.
 It requires a configured LLM executor and uses the executor's `chat()` path
 when available (`@coro-ai/llm-anthropic`, `@coro-ai/llm-openai`). User-facing
 documentation lives in the docs site: [Coro plan mode](https://docs.coro.build/guides/coro-plan-mode/).

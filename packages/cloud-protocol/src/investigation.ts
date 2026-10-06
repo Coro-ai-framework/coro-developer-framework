@@ -1,6 +1,6 @@
-// ── Plan-mode investigation (New Run chat) ───────────────────────────────────
+// ── Plan-mode investigation (Plans chat) ─────────────────────────────────────
 //
-// Durable record of a Coro plan-mode conversation. The dashboard New Run
+// Durable record of a Coro plan-mode conversation. The dashboard Plans
 // UI lists and reloads these; the runner persists them through StateBackend
 // (SQLite locally, Postgres in hybrid). `items` is the opaque UI transcript
 // (ActivityItem[]); `turns` is the runner's LLM history including clamped

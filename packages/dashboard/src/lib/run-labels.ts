@@ -28,6 +28,7 @@ export const PAGE_TITLES = {
   runsList: 'Runs',
   runsListDescription: `Every ${RUN_NOUN.singularLower} on this runner. Filter by workflow or status.`,
   newRun: `New ${RUN_NOUN.singularLower}`,
+  plans: 'Plans',
   recents: 'Recents',
   recentsDescription: 'Conversations on this runner.',
   backToRuns: `Back to ${RUN_NOUN.pluralLower}`,
@@ -50,7 +51,7 @@ export const CONVERSATION_COPY = {
   stillInvestigating: 'Still investigating…',
 } as const
 
-/** Composer home — New run. */
+/** Composer home — Plans. */
 export const HOME_PATH = '/'
 /** Canonical job inventory. */
 export const RUNS_LIST_PATH = '/jobs'

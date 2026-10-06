@@ -1,6 +1,6 @@
 import { InvestigationList } from './investigation-list'
 import { usePlanSession } from '../../providers/plan-session'
-import { PAGE_TITLES } from '../../lib/run-labels'
+import { CONVERSATION_COPY, PAGE_TITLES } from '../../lib/run-labels'
 import { cn } from '../../lib/utils'
 
 export default function InvestigationRail({
@@ -14,6 +14,12 @@ export default function InvestigationRail({
 
   // Switching is lossless in both directions — the turn keeps running and the
   // conversation shows it live on return — so there is nothing to confirm.
+  async function handleNewConversation() {
+    if (session.hasProgress && !window.confirm(CONVERSATION_COPY.newConfirm)) return
+    await session.startNewConversation()
+    onSelect?.()
+  }
+
   async function handleSelect(id: string) {
     if (id === session.sessionId) {
       onSelect?.()
@@ -50,6 +56,7 @@ export default function InvestigationRail({
         onSelect={id => void handleSelect(id)}
         onRemove={id => session.removeInvestigation(id)}
         onLoadMore={() => void session.loadMoreInvestigations()}
+        onNewConversation={() => void handleNewConversation()}
       />
     </aside>
   )

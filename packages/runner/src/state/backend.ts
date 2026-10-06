@@ -104,11 +104,11 @@ export interface StateBackend {
   getProposal(tenantId: string, id: string): Promise<Proposal | null>
   updateProposal(tenantId: string, id: string, updates: Partial<Proposal>): Promise<Proposal>
 
-  // ── Plan-mode investigations (New Run chat) ────────────────────────────────
+  // ── Plan-mode investigations (Plans chat) ──────────────────────────────────
   //
   // Durable record of a dashboard plan-mode conversation. The in-memory
   // intake session is the hot LLM cache; this is what survives restart
-  // and powers the New run Recents rail. Implementations merge patches
+  // and powers the Plans Recents rail. Implementations merge patches
   // so a stream turn cannot wipe `items` and a UI PUT cannot wipe `turns`.
 
   upsertInvestigation(record: InvestigationPatch): Promise<Investigation>
