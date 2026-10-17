@@ -343,7 +343,7 @@ jobs:
 
       - name: Upload macOS release outputs
         if: ${{ matrix.platform == 'macos' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-release-${{ env.RELEASE_PLATFORM }}-${{ env.DESKTOP_VERSION }}
           retention-days: 30
@@ -358,7 +358,7 @@ jobs:
 
       - name: Upload Windows release outputs
         if: ${{ matrix.platform == 'windows' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-release-${{ env.RELEASE_PLATFORM }}-${{ env.DESKTOP_VERSION }}
           retention-days: 30
