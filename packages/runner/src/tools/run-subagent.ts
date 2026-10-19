@@ -20,6 +20,7 @@ import path from 'path'
 import type { HookPolicy, SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { ToolContext } from './types'
 import { resolveModelAlias } from '../jobs/phase-assignment'
+import { withRunnerToolEquivalents } from './native-tool-equivalents'
 
 /**
  * Tool whitelist applied when a workflow YAML omits `subagents[].tools`.
@@ -168,12 +169,14 @@ export async function runSubagent(
 
   // Tool whitelist: workflow declaration > parent phase whitelist >
   // safe defaults.
-  const allowedTools: ReadonlyArray<string> =
+  const allowedTools: ReadonlyArray<string> = withRunnerToolEquivalents(
     decl.tools && decl.tools.length > 0
-      ? [...decl.tools]
+      ? decl.tools
       : phase.hookPolicy.allowedTools && phase.hookPolicy.allowedTools.length > 0
         ? phase.hookPolicy.allowedTools
-        : [...DEFAULT_SUBAGENT_TOOLS]
+        : DEFAULT_SUBAGENT_TOOLS,
+    subagentExecutor.capabilities,
+  )
 
   const concurrencyKey = `${ctx.job.id}:${phase.phaseConf.name}`
   const current = inFlight.get(concurrencyKey) ?? 0

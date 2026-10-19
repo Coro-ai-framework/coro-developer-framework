@@ -41,6 +41,7 @@ import {
 import { createCoroMcpServer } from '../mcp-server'
 import { resolveModelAlias } from './phase-assignment'
 import { ToolContext, PhaseSignals, type DispatchJob } from '../tools/types'
+import { withRunnerToolEquivalents } from '../tools/native-tool-equivalents'
 import {
   loadWorkflowConfigFromRoots,
   getNextPhase as wfGetNextPhase,
@@ -849,7 +850,9 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         pluginMcpServers: mergedPluginMcpServers,
         subagents: subagentSpecs,
         hookPolicy: {
-          allowedTools: phaseConf?.tools ?? null,
+          allowedTools: phaseConf?.tools
+            ? withRunnerToolEquivalents(phaseConf.tools, executor.capabilities)
+            : null,
           writeRoots: [workingDir, jobIntelligenceDir],
           onPreToolUse: (toolName, input) => guardrailPreToolUse(toolName, input),
         },
