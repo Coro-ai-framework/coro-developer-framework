@@ -56,7 +56,7 @@ jobs:
           echo "PUBLISH_VERSION=$version" >> "$GITHUB_ENV"
           echo "publish_version=$version" >> "$GITHUB_OUTPUT"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
@@ -159,7 +159,7 @@ jobs:
       - name: Resolve release version
         run: echo "PUBLISH_VERSION=${{ needs.prepare.outputs.publish_version }}" >> "$GITHUB_ENV"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.0
 
