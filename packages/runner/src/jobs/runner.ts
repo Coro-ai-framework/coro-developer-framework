@@ -15,6 +15,7 @@ import {
   loadLocalConfig,
   type UserMcpServerConfig,
 } from '../config/local-config'
+import { computeTicketingPolicySnapshot, TICKETING_POLICY_PARAM } from './ticketing'
 import {
   resolveJobIntelligence,
   type ResolvedIntelligence,
@@ -359,6 +360,17 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
     liveJob = await stampJob(stateBackend, liveJob, { intelligenceProvenance: provenance })
   } catch (err) {
     logger.warn({ err, jobId: job.id }, 'Could not record intelligence provenance')
+  }
+
+  try {
+    const ticketingPolicy = computeTicketingPolicySnapshot(liveJob, loadLocalConfig()?.ticketing, logger)
+    if (ticketingPolicy) {
+      liveJob = await stampJob(stateBackend, liveJob, {
+        params: { ...liveJob.params, [TICKETING_POLICY_PARAM]: ticketingPolicy },
+      })
+    }
+  } catch (err) {
+    logger.warn({ err, jobId: job.id }, 'Could not resolve the ticketing policy — the job runs without one')
   }
 
   // Shared mutable context — the MCP server's tool handlers close over these

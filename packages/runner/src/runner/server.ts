@@ -32,6 +32,7 @@ import {
   resolveWorkingDir as resolveLocalWorkingDir,
   type LocalConfig,
 } from '../config/local-config'
+import { describeTicketingPresets, resolveTicketingPolicy } from '../config/ticketing'
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
@@ -2503,6 +2504,11 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           // dispatcher will then refuse.
           upstreamConfigured: Boolean(resolveUpstreamConfig(config)),
           decisionConfigured: Boolean(resolveDecisionConfig(config)),
+          // The install-wide policy before any repo/project override or
+          // per-run patch, plus every preset expanded over the defaults so
+          // the settings UI can preview a preset without re-implementing it.
+          ticketing: resolveTicketingPolicy(config?.ticketing),
+          ticketingPresets: describeTicketingPresets(),
         },
       })
     } catch (err) {
@@ -2986,6 +2992,18 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           }
 
           ;(merged as Record<string, unknown>).decision = next
+        }
+      }
+
+      // Ticket management is edited as one document, so it replaces the
+      // block rather than merging — removing an override in the dashboard
+      // must remove it on disk. Validation below rejects a bad shape.
+      if (Object.prototype.hasOwnProperty.call(updates, 'ticketing')) {
+        const incoming = (updates as Record<string, unknown>)['ticketing']
+        if (incoming === null) {
+          delete (merged as Record<string, unknown>).ticketing
+        } else if (incoming && typeof incoming === 'object') {
+          ;(merged as Record<string, unknown>).ticketing = incoming
         }
       }
 

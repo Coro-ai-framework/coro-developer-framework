@@ -1374,7 +1374,7 @@ export class Dispatcher {
     // forward common scoping fields the planner agent expects on every
     // job (repoSlug, reviewers, gitProvider).
     const inherited: Record<string, unknown> = {}
-    for (const key of ['repoSlug', 'repo', 'reviewers', 'gitProvider', 'investigationId']) {
+    for (const key of ['repoSlug', 'repo', 'reviewers', 'gitProvider', 'investigationId', 'ticketing']) {
       if (parent.params[key] !== undefined) inherited[key] = parent.params[key]
     }
 

@@ -12,6 +12,7 @@ import { z } from 'zod'
 import type { TenantOverlaySource } from '../intelligence/tenant-context'
 import { JEV_DEFAULT_MODEL, JEV_LEGACY_API_KEY_ENV, JEV_PROVIDER_ID } from '../plugins/builtin/jev/defaults'
 import { pluginsConfigSchema, applyFreshInstallScmDefaults, type PluginsConfig } from './plugins-config'
+import { ticketingConfigSchema } from './ticketing'
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -361,6 +362,12 @@ const localConfigSchema = z.object({
   coachMode: coachModeConfigSchema,
   intake: intakeConfigSchema,
   jobs: jobsConfigSchema,
+  /**
+   * How Coro manages tracker tickets: which lifecycle events comment on or
+   * transition the run's ticket, and whether work items get their own
+   * tickets. Absent resolves to the `minimal` preset — see `./ticketing.ts`.
+   */
+  ticketing: ticketingConfigSchema.optional(),
   guardrails: z.object({
     enabled: z.boolean().optional(),
     rules: z.array(z.object({
@@ -544,6 +551,7 @@ export function mergeLocalConfig(patch: Partial<LocalConfig>, configPath?: strin
     setup: patch.setup !== undefined ? patch.setup : existing.setup,
     coachMode: patch.coachMode !== undefined ? patch.coachMode : existing.coachMode,
     intake: patch.intake !== undefined ? patch.intake : existing.intake,
+    ticketing: patch.ticketing !== undefined ? patch.ticketing : existing.ticketing,
   }
   saveLocalConfig(merged, configPath)
   return merged
