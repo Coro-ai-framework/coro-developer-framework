@@ -259,7 +259,7 @@ function ensureRuntimeClaudeLoginQuery(queryInstance: Query): ClaudeLoginRuntime
   return runtime as ClaudeLoginRuntimeQuery
 }
 
-function createIdlePromptStream(): { stream: AsyncIterable<SDKUserMessage>; close(): void } {
+export function createIdlePromptStream(): { stream: AsyncIterable<SDKUserMessage>; close(): void } {
   let closed = false
   let resume: (() => void) | null = null
 

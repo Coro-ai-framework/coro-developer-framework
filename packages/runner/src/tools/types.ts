@@ -12,6 +12,7 @@ import type { PluginRegistry } from '../plugins/registry'
 import type { StateBackend } from '../state/backend'
 import { Job, type JobInput } from '@coro-ai/cloud-protocol'
 import type { PhaseConfig } from '../workflow-parser'
+import type { TrackerBinding } from '../trackers/binding'
 
 /**
  * Create and start a job. Supplied by the dispatcher through
@@ -77,6 +78,11 @@ export interface ToolContext {
    * phase invocation (test fixtures, bootstrap).
    */
   currentPhase?: CurrentPhaseContext
+  /**
+   * The job's tracker for this phase, set by the runner at every phase
+   * boundary. When it is an MCP server, `tracker_*` tools redirect to it.
+   */
+  trackerBinding?: TrackerBinding
 }
 
 /**

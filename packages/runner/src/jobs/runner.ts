@@ -39,6 +39,7 @@ import {
   computeScmPromptContext,
   computeTrackerPromptContext,
 } from '../prompt/builder'
+import { describeTrackerResolution, resolveJobTracker } from '../trackers/resolve-job'
 import { createCoroMcpServer } from '../mcp-server'
 import { resolveModelAlias } from './phase-assignment'
 import { ToolContext, PhaseSignals, type DispatchJob } from '../tools/types'
@@ -431,6 +432,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
   // `tracker.available` / `scm.available` in the prompt.
 
   let lastExecutor: PhaseExecutorRuntime | undefined
+  let lastTrackerLine: string | undefined
 
   try {
     await stateBackend.appendLog(liveJob.id, `Runner started — phase: ${liveJob.phase}`)
@@ -488,10 +490,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         )
       }
 
-      // Recompute every phase: the plugin registry is re-resolved each phase
-      // so the prompt reflects any tenant-overlay config refresh that landed
-      // between phases (e.g. a Jira credential rotation via the dashboard).
-      const trackerInfo = computeTrackerPromptContext(ctx.plugins)
       const scmInfo = computeScmPromptContext(liveJob, ctx.plugins)
       // System prompt build is deferred until after the executor is
       // resolved — we need its `capabilities.supportsClaudeMdNativeWalkUp`
@@ -683,6 +681,33 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       }
       let phaseMcpServer = createCoroMcpServer(toolCtx, signals, mcpServerOpts)
 
+      const pluginMcpServers = collectPluginMcpServers({ plugins: ctx.plugins, logger })
+      const userMcpServers = collectUserMcpServers({ logger })
+      const mergedPluginMcpServers = {
+        ...pluginMcpServers,
+        ...userMcpServers,
+      } as unknown as Record<string, PluginMcpServerConfig>
+
+      // Recompute every phase: the plugin registry is re-resolved each phase
+      // so the prompt reflects any tenant-overlay config refresh that landed
+      // between phases (e.g. a Jira credential rotation via the dashboard),
+      // and an MCP connector authorised mid-job becomes the tracker.
+      const trackerResolution = await resolveJobTracker({
+        job: liveJob,
+        registry: ctx.plugins,
+        executor,
+        pluginMcpServers: mergedPluginMcpServers,
+        cwd: workingDir,
+        logger,
+      })
+      toolCtx.trackerBinding = trackerResolution.binding
+      const trackerLine = describeTrackerResolution(trackerResolution)
+      if (trackerLine !== lastTrackerLine) {
+        lastTrackerLine = trackerLine
+        await stateBackend.appendLog(liveJob.id, trackerLine)
+      }
+      const trackerInfo = computeTrackerPromptContext(ctx.plugins, trackerResolution)
+
       const localConfig = loadLocalConfig()
       const guardrailsInfo = computeGuardrailsPromptContext(localConfig)
       const systemPrompt = await buildSystemPrompt(
@@ -798,13 +823,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       //
       // (`executor` is resolved earlier in the loop so its capabilities
       // can drive system-prompt + subagent assembly.)
-
-      const pluginMcpServers = collectPluginMcpServers({ plugins: ctx.plugins, logger })
-      const userMcpServers = collectUserMcpServers({ logger })
-      const mergedPluginMcpServers = {
-        ...pluginMcpServers,
-        ...userMcpServers,
-      } as unknown as Record<string, PluginMcpServerConfig>
 
       if (Object.keys(pluginMcpServers).length > 0) {
         logger.info(

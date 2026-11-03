@@ -7,6 +7,8 @@ import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
 import { getIncomingPluginSelectionIssues } from './jobs/plugin-preflight'
+import { mcpTrackerRedirect, type TrackerBinding } from './trackers/binding'
+import type { RedirectArgs, RedirectOp } from './trackers/profiles'
 import {
   buildGuardrailContext,
   createGuardrailEngine,
@@ -204,6 +206,44 @@ function resolveScm(
       return { ok: false, error: mcpError(`scm plugin resolution failed: ${err.message}`) }
     }
     return { ok: false, error: mcpError(`scm plugin resolution error: ${(err as Error).message}`) }
+  }
+}
+
+/** The job's tracker when it is an MCP server and the call did not name a different one. */
+function boundMcpTracker(ctx: ToolContext, pluginId?: string): TrackerBinding | undefined {
+  const b = ctx.trackerBinding
+  if (!b || b.source !== 'mcp') return undefined
+  if (pluginId && pluginId !== b.selector && pluginId !== b.id) return undefined
+  return b
+}
+
+function mcpTrackerRedirectResult(
+  binding: TrackerBinding,
+  proxyOp: string,
+  op: RedirectOp,
+  args: RedirectArgs,
+) {
+  const target = mcpTrackerRedirect(binding, op, args)
+  if (!target) {
+    return mcpError(
+      `"${proxyOp}" has no counterpart on the job's tracker (${binding.displayName}). ` +
+      `Its tools: ${[...binding.readTools, ...binding.writeTools].join(', ') || 'none listed'}.`,
+    )
+  }
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        redirect: true,
+        message:
+          `This job's tracker is the ${binding.displayName} MCP server. ` +
+          `Call \`${target.tool}\` with the args below, filling in any <placeholder>.`,
+        upstreamTool: target.tool,
+        upstreamArgs: target.args,
+        ...(binding.notes.length > 0 ? { notes: binding.notes } : {}),
+      }, null, 2),
+    }],
+    isError: true as const,
   }
 }
 
@@ -774,6 +814,8 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   // (which went through `ctx.trackerClient`) are replaced by these.
 
   const tracker_get_issue = async (args: { pluginId?: string; key: string }) => {
+    const bound = boundMcpTracker(ctx, args.pluginId)
+    if (bound) return mcpTrackerRedirectResult(bound, 'tracker_get_issue', 'getIssue', { key: args.key })
     const r = resolveTracker(ctx, args.pluginId)
     if (!r.ok) return r.error
     if (!r.tracker.getIssue) {
@@ -791,6 +833,8 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   const tracker_get_comments = async (args: { pluginId?: string; key: string }) => {
+    const bound = boundMcpTracker(ctx, args.pluginId)
+    if (bound) return mcpTrackerRedirectResult(bound, 'tracker_get_comments', 'getComments', { key: args.key })
     const r = resolveTracker(ctx, args.pluginId)
     if (!r.ok) return r.error
     if (!r.tracker.getComments) {
@@ -808,6 +852,8 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   const tracker_comment_issue = async (args: { pluginId?: string; key: string; body: string; parentId?: string }) => {
+    const bound = boundMcpTracker(ctx, args.pluginId)
+    if (bound) return mcpTrackerRedirectResult(bound, 'tracker_comment_issue', 'comment', { key: args.key, body: args.body })
     const r = resolveTracker(ctx, args.pluginId)
     if (!r.ok) return r.error
     if (!r.tracker.commentIssue) {
@@ -829,6 +875,10 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   }
 
   const tracker_transition_issue = async (args: { pluginId?: string; key: string; status: string }) => {
+    const bound = boundMcpTracker(ctx, args.pluginId)
+    if (bound) {
+      return mcpTrackerRedirectResult(bound, 'tracker_transition_issue', 'transition', { key: args.key, status: args.status })
+    }
     const r = resolveTracker(ctx, args.pluginId)
     if (!r.ok) return r.error
     if (!r.tracker.transitionIssue) {

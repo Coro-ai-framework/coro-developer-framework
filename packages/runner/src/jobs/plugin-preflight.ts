@@ -1,5 +1,6 @@
 import type { JobInput, Job } from '@coro-ai/cloud-protocol'
 import { PluginResolutionError, type PluginRegistry } from '../plugins/registry'
+import { isMcpTrackerSelector } from '../trackers/binding'
 
 type JobPluginParamsSource = Pick<JobInput, 'params'> | Pick<Job, 'params'>
 
@@ -35,6 +36,9 @@ function resolveKind(
   requested: string,
   plugins: PluginRegistry,
 ): PluginResolutionError | undefined {
+  // An MCP-backed tracker is resolved against the session's servers at
+  // each phase boundary; there is no plugin to check it against here.
+  if (kind === 'tracker' && isMcpTrackerSelector(requested)) return undefined
   try {
     if (kind === 'scm') plugins.resolveScm({ scm: requested })
     else plugins.resolveTracker({ tracker: requested })

@@ -33,6 +33,7 @@ import {
   type LocalConfig,
 } from '../config/local-config'
 import { describeTicketingPresets, resolveTicketingPolicy } from '../config/ticketing'
+import type { PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro-ai/plugin-sdk'
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
@@ -2544,6 +2545,62 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       res.json({ servers: safe, sources })
     } catch (err) {
       logger.error({ err }, 'GET /config/claude-code-mcps failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  // GET /trackers/detected — which tracker a job would bind right now, and
+  // every tracker-shaped MCP server seen. `?refresh=1` re-probes the
+  // executor instead of using the cached inventory.
+  app.get('/trackers/detected', async (req: Request, res: Response) => {
+    try {
+      if (!plugins) {
+        res.json({ binding: null, candidates: [], reason: 'plugin registry unavailable', inventory: null })
+        return
+      }
+      const { collectPluginMcpServers, collectUserMcpServers } = await import('../jobs/runner')
+      const { resolveJobTracker } = await import('../trackers/resolve-job')
+      const { peekMcpInventory } = await import('../trackers/inventory')
+      let executor: PhaseExecutorRuntime | undefined
+      try {
+        executor = plugins.resolveExecutor({})
+      } catch {
+        executor = undefined
+      }
+      const policy = resolveTicketingPolicy(loadLocalConfig()?.ticketing)
+      const resolution = await resolveJobTracker({
+        job: { params: { ticketingPolicy: policy } },
+        registry: plugins,
+        ...(executor ? { executor } : {}),
+        pluginMcpServers: {
+          ...collectPluginMcpServers({ plugins, logger }),
+          ...collectUserMcpServers({ logger }),
+        } as unknown as Record<string, PluginMcpServerConfig>,
+        cwd: path.join(os.tmpdir(), 'coro-mcp-inventory'),
+        logger,
+        refresh: req.query['refresh'] === '1',
+        alwaysInventory: true,
+      })
+      const inventory = peekMcpInventory()
+      res.json({
+        binding: resolution.binding ?? null,
+        candidates: resolution.candidates,
+        reason: resolution.reason,
+        inventory: inventory
+          ? {
+              origin: inventory.origin,
+              observedAt: inventory.observedAt,
+              servers: inventory.servers.map(s => ({
+                name: s.name,
+                status: s.status,
+                ...(s.source ? { source: s.source } : {}),
+                toolCount: s.tools.length,
+              })),
+            }
+          : null,
+      })
+    } catch (err) {
+      logger.error({ err }, 'GET /trackers/detected failed')
       res.status(500).json({ error: (err as Error).message })
     }
   })

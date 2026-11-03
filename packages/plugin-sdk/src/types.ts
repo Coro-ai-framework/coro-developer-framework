@@ -1111,6 +1111,16 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    */
   describeSandbox?(): ExecutorSandboxReport | null
 
+  /**
+   * Report every MCP server a session would see, including ones the
+   * executor attaches on its own (Claude Code's claude.ai connectors never
+   * appear in `pluginMcpServers`). The runner uses this to recognise a
+   * tracker MCP and to split its tools into reads and writes. Optional:
+   * without it the runner only knows the servers it configured itself.
+   * Must not spend model tokens; resolve `[]` rather than throw.
+   */
+  inspectMcpServers?(req: ExecutorMcpInspectRequest): Promise<ExecutorMcpServerInfo[]>
+
   /** The single per-phase entry point. */
   executePhase(req: PhaseExecutionRequest): AsyncIterable<PhaseExecutorEvent>
 
@@ -1178,6 +1188,29 @@ export interface PhaseExecutorRuntime<Config = unknown> extends PluginRuntime<Co
    * it is populated; fall back to `messages` when it is not.
    */
   chat?(req: ChatRequest): Promise<ChatResult>
+}
+
+export interface ExecutorMcpInspectRequest {
+  cwd: string
+  /** Servers the runner would attach to a phase, so their status is reported too. */
+  pluginMcpServers?: Record<string, PluginMcpServerConfig>
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
+export type ExecutorMcpServerStatus = 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled' | 'unknown'
+
+export interface ExecutorMcpServerInfo {
+  /** Server name as the executor reports it, e.g. `claude.ai Atlassian`. */
+  name: string
+  /** Prefix of this server's tools as the model sees them, e.g. `mcp__claude_ai_Atlassian__`. */
+  toolPrefix: string
+  status: ExecutorMcpServerStatus
+  /** Where the definition came from: `claudeai`, `plugin`, `user`, `dynamic`, … */
+  source?: string
+  url?: string
+  /** Bare tool names (without {@link toolPrefix}); empty unless connected. */
+  tools: ReadonlyArray<{ name: string; readOnly?: boolean; destructive?: boolean }>
 }
 
 /** Provider-agnostic tool definition for {@link PhaseExecutorRuntime.chat}. */

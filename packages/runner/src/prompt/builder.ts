@@ -13,6 +13,7 @@ import {
 import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workflow-parser'
 import type { LocalConfig } from '../config/local-config'
 import { resolveGuardrails } from '../guardrails/merge'
+import type { TrackerResolution } from '../trackers/binding'
 
 // ── Tracker prompt context ────────────────────────────────────────────────────
 //
@@ -34,14 +35,27 @@ import { resolveGuardrails } from '../guardrails/merge'
 // `campaign-planning/SKILL.md`.
 
 export interface TrackerPromptContext {
-  /** True when a tracker plugin resolves; agents key every tracker step off this. */
+  /** True when a tracker is bound; agents key every tracker step off this. */
   available: boolean
   /**
-   * Plugin manifest id of the active tracker, or `'none'` when no
-   * tracker plugin resolves. Agent docs reference this as
-   * `tracker.pluginId` (`'jira'`, `'linear'`, `'github-issues'`, …).
+   * Plugin manifest id of the active tracker, `mcp:<server>` when the
+   * tracker is an MCP server the session already has, or `'none'`.
+   * Agent docs reference this as `tracker.pluginId`.
    */
   pluginId: string
+  /** `plugin` — reached through `tracker_*`; `mcp` — call `tools.*` directly. */
+  source?: 'plugin' | 'mcp'
+  /** Provider family: `jira`, `linear`, `github-issues`, or the plugin id. */
+  provider?: string
+  displayName?: string
+  /** Fully-qualified tool names by operation (`getIssue`, `comment`, `transition`, …). */
+  tools?: Record<string, string>
+  /** Provider quirks to know before the first call. */
+  notes?: string[]
+  /** When `available` is false: why. */
+  reason?: string
+  /** Tracker-shaped MCP servers that were seen but not bound, with their status. */
+  candidates?: Array<{ selector: string; status: string }>
   /**
    * Provider-specific defaults the agent can plug straight into tool args.
    * Sourced from the active plugin's optional `promptDefaults()` —
@@ -64,7 +78,11 @@ export interface TrackerPromptContext {
  *     instead of crashing the prompt build.
  *   - Zero installed → `available: false`, `pluginId: 'none'`.
  */
-export function computeTrackerPromptContext(plugins: PluginRegistry): TrackerPromptContext {
+export function computeTrackerPromptContext(
+  plugins: PluginRegistry,
+  resolution?: TrackerResolution,
+): TrackerPromptContext {
+  if (resolution) return trackerContextFromResolution(plugins, resolution)
   let runtime: TrackerPluginRuntime | undefined
   try {
     runtime = plugins.resolveTracker({})
@@ -79,6 +97,37 @@ export function computeTrackerPromptContext(plugins: PluginRegistry): TrackerPro
     available: true,
     pluginId: runtime.manifest.id,
     ...(defaults && Object.keys(defaults).length > 0 ? { defaults } : {}),
+  }
+}
+
+function trackerContextFromResolution(plugins: PluginRegistry, resolution: TrackerResolution): TrackerPromptContext {
+  const candidates = resolution.candidates
+    .filter(c => c.selector !== resolution.binding?.selector)
+    .map(c => ({ selector: c.selector, status: c.status }))
+  const withCandidates = candidates.length > 0 ? { candidates } : {}
+  const binding = resolution.binding
+  if (!binding) {
+    return { available: false, pluginId: 'none', reason: resolution.reason, ...withCandidates }
+  }
+
+  let defaults: Record<string, string> | undefined
+  if (binding.source === 'plugin') {
+    try {
+      defaults = plugins.resolveTracker({ tracker: binding.id }).promptDefaults?.()
+    } catch {
+      defaults = undefined
+    }
+  }
+  return {
+    available: true,
+    pluginId: binding.selector,
+    source: binding.source,
+    provider: binding.provider,
+    displayName: binding.displayName,
+    tools: binding.tools as Record<string, string>,
+    ...(binding.notes.length > 0 ? { notes: binding.notes } : {}),
+    ...(defaults && Object.keys(defaults).length > 0 ? { defaults } : {}),
+    ...withCandidates,
   }
 }
 

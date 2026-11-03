@@ -833,14 +833,14 @@ export interface ClaudeCodeDiscovery {
   sources: ReadonlyArray<string>
 }
 
-export function discoverClaudeCodeMcpServers(): ClaudeCodeDiscovery {
-  const home = os.homedir()
+export function discoverClaudeCodeMcpServers(home: string = os.homedir()): ClaudeCodeDiscovery {
   const candidates = [
     path.join(home, '.claude.json'),
     path.join(home, '.claude', 'settings.json'),
   ]
-  const servers: Record<string, UserMcpServerConfig> = {}
-  const sources: string[] = []
+  const fromPlugins = discoverClaudeCodePluginMcpServers(home)
+  const servers: Record<string, UserMcpServerConfig> = { ...fromPlugins.servers }
+  const sources: string[] = [...fromPlugins.sources]
 
   for (const filePath of candidates) {
     if (!fs.existsSync(filePath)) continue
@@ -863,6 +863,95 @@ export function discoverClaudeCodeMcpServers(): ClaudeCodeDiscovery {
     if (imported > 0) sources.push(filePath)
   }
 
+  return { servers, sources }
+}
+
+// Enabled Claude Code plugins can ship MCP servers (the Atlassian plugin is
+// one). Only their MCP servers are taken — hooks, agents and commands stay
+// Claude Code's business. Ids follow Claude Code's own `plugin:<p>:<s>`
+// naming flattened to `plugin_<p>_<s>`, so the agent sees the same
+// `mcp__plugin_<p>_<s>__*` tool names it would in an interactive session.
+
+function readJson(filePath: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+  } catch {
+    return undefined
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+}
+
+function expandPluginRoot<T>(value: T, root: string): T {
+  if (typeof value === 'string') return value.split('${CLAUDE_PLUGIN_ROOT}').join(root) as T
+  if (Array.isArray(value)) return value.map(v => expandPluginRoot(v, root)) as T
+  const obj = asRecord(value)
+  if (obj) return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, expandPluginRoot(v, root)])) as T
+  return value
+}
+
+/** `{ mcpServers: {...} }` or a bare server map, as `.mcp.json` allows both. */
+function serverMapOf(raw: unknown): Record<string, unknown> | undefined {
+  const obj = asRecord(raw)
+  if (!obj) return undefined
+  return asRecord(obj['mcpServers']) ?? obj
+}
+
+function pluginServerMaps(installPath: string): Array<Record<string, unknown>> {
+  const maps: Array<Record<string, unknown>> = []
+  const manifest = asRecord(readJson(path.join(installPath, '.claude-plugin', 'plugin.json')))
+  const declared = manifest?.['mcpServers']
+  if (declared !== undefined) {
+    const refs = Array.isArray(declared) ? declared : [declared]
+    for (const ref of refs) {
+      if (typeof ref === 'string') {
+        const map = serverMapOf(readJson(path.resolve(installPath, ref)))
+        if (map) maps.push(map)
+      } else {
+        const map = asRecord(ref)
+        if (map) maps.push(map)
+      }
+    }
+  }
+  if (maps.length === 0) {
+    const map = serverMapOf(readJson(path.join(installPath, '.mcp.json')))
+    if (map) maps.push(map)
+  }
+  return maps
+}
+
+export function discoverClaudeCodePluginMcpServers(home: string = os.homedir()): ClaudeCodeDiscovery {
+  const servers: Record<string, UserMcpServerConfig> = {}
+  const sources: string[] = []
+  const enabled = asRecord(asRecord(readJson(path.join(home, '.claude', 'settings.json')))?.['enabledPlugins'])
+  if (!enabled) return { servers, sources }
+  const installedFile = path.join(home, '.claude', 'plugins', 'installed_plugins.json')
+  const installed = asRecord(asRecord(readJson(installedFile))?.['plugins'])
+  if (!installed) return { servers, sources }
+
+  for (const [pluginKey, on] of Object.entries(enabled)) {
+    if (on !== true) continue
+    const raw = installed[pluginKey]
+    const entries = (Array.isArray(raw) ? raw : [raw]).map(asRecord)
+    const entry = entries.find(e => e && typeof e['installPath'] === 'string' && (e['scope'] === undefined || e['scope'] === 'user'))
+    const installPath = entry?.['installPath'] as string | undefined
+    if (!installPath || !fs.existsSync(installPath)) continue
+
+    const pluginName = pluginKey.split('@')[0] ?? pluginKey
+    let imported = 0
+    for (const map of pluginServerMaps(installPath)) {
+      for (const [serverName, serverEntry] of Object.entries(map)) {
+        const normalised = normaliseClaudeMcpEntry(expandPluginRoot(serverEntry, installPath))
+        if (!normalised) continue
+        const id = `plugin_${pluginName}_${serverName}`.replace(/[^A-Za-z0-9_-]/g, '_')
+        servers[id] = normalised
+        imported += 1
+      }
+    }
+    if (imported > 0) sources.push(`${installedFile}#${pluginKey}`)
+  }
   return { servers, sources }
 }
 

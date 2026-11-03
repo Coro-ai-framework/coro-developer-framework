@@ -38,6 +38,8 @@ import type {
   ConversationMessage,
   NormalizedTokenUsage,
   ExecutorCapabilities,
+  ExecutorMcpInspectRequest,
+  ExecutorMcpServerInfo,
   ExecutorModelDescriptor,
   ExecutorSessionController,
   PhaseExecutionRequest,
@@ -75,6 +77,7 @@ import { chatViaAgentSdk, shouldChatViaAgentSdk, shouldRouteChatViaAgentSdk } fr
 import type { AnthropicExecutorSettings, ClaudeAuthConfig } from './types'
 import type { ExecutorSandboxReport, SteeringInterruptMode } from '@coro-ai/plugin-sdk'
 import { probeHostSandbox } from './sandbox-probe'
+import { inspectClaudeMcpServers } from './mcp-inventory'
 import {
   ANTHROPIC_MODELS,
   ANTHROPIC_PLUGIN_ID,
@@ -752,6 +755,27 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       }
     }
     return this.sandboxProbe
+  }
+
+  async inspectMcpServers(req: ExecutorMcpInspectRequest): Promise<ExecutorMcpServerInfo[]> {
+    try {
+      await this.assertAuthReadyForSdk()
+      const cliPath = resolveClaudeCodeCliPath()
+      ensureClaudeCodeCliExecutable(cliPath, this.logger)
+      mkdirSync(req.cwd, { recursive: true })
+      return await inspectClaudeMcpServers({
+        cliPath,
+        cwd: req.cwd,
+        env: { ...process.env, ...buildAnthropicAuthEnv(this.auth) },
+        ...(req.pluginMcpServers ? { pluginMcpServers: req.pluginMcpServers } : {}),
+        ...(req.timeoutMs ? { timeoutMs: req.timeoutMs } : {}),
+        ...(req.signal ? { signal: req.signal } : {}),
+        logger: this.logger,
+      })
+    } catch (err) {
+      this.logger.warn({ err }, 'MCP inventory unavailable')
+      return []
+    }
   }
 
   /**

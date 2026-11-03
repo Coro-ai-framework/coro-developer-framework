@@ -110,6 +110,14 @@ export function computeChatMaxTurns(req: ChatRequest): number {
 }
 
 /** Parse `mcp__<serverId>__<toolName>` for intake UI summaries. */
+/**
+ * Prefix Claude Code gives a server's tools: `claude.ai Atlassian` →
+ * `mcp__claude_ai_Atlassian__`. Characters outside `[A-Za-z0-9_-]` become `_`.
+ */
+export function mcpServerToolPrefix(serverName: string): string {
+  return `mcp__${serverName.replace(/[^A-Za-z0-9_-]/g, '_')}__`
+}
+
 export function parseMcpToolName(toolName: string): { serverId: string; toolName: string } | null {
   if (!toolName.startsWith('mcp__')) return null
   const rest = toolName.slice('mcp__'.length)
