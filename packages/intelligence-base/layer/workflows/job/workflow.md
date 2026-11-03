@@ -118,12 +118,12 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 **Agent:** Spec Writer (`agents/spec-writer.md`)
 
-1. Gather scope from every source present: the ticket via `tracker_get_issue({ trackerRef: params.trackerRef })` on tracker-triggered jobs, `params.description`, and `{planContextDir}/findings.md` when `params.planContextDir` is set (the write-up from the plan-mode investigation this run came from).
+1. Gather scope from every source present: the ticket via `tracker_get_issue({ key: params.trackerRef.externalId })` (or the bound MCP tracker's `tracker.tools.getIssue`) on tracker-triggered jobs, `params.description`, and `{planContextDir}/findings.md` when `params.planContextDir` is set (the write-up from the plan-mode investigation this run came from).
 2. Pick a mode. If those sources together settle the repo, a concrete change, criteria-shaped conditions, and the open questions, scope is **established** → `verify` mode: do not re-derive or restate it. If any of that is missing — a one-line description, a thin ticket, an investigation that stalled — → `derive` mode, the full spec-writing pass. The agent file owns the test; judge the material, not whether a findings file happens to exist.
 3. Clone `params.repo` and extract its contract — the linters, pre-commit hooks, required CI checks, naming and placement conventions, and out-of-repo prerequisites that will reject the change. This phase is the first with the repo on disk and a shell, so it is the only place these can be found before the Coder hits them. Both modes.
 4. Infer: affected files/services, reviewers, and the check that proves each acceptance criterion
 5. Output: write `feature-spec.md` in the job working directory and register it via `post_artifact({ kind: "spec-md", … })` so it shows up on the dashboard
-6. Tracker-triggered jobs only: post a comment on the tracker ticket confirming receipt
+6. Make the job-start ticket update, if the **Ticket management** section lists one
 
 ---
 
@@ -137,6 +137,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 3. Call `set_job_params({ language: "<detected-language>" })` to set the language
 4. Produce an implementation plan with work items and acceptance criteria
 5. Call `set_work_items` to register the work-item list
+6. Make the ticket updates its result asks for — the plan-ready update, and work-item tickets when the policy creates them (record each with `update_work_item({ name, ticketKey })`)
 
 ---
 
@@ -197,4 +198,7 @@ Runs **once** after the per-work-item coding → review loop has driven every wo
 
 - If any agent produces an error it cannot self-resolve, it calls `escalate` with a specific description
 - Network failures are retried up to 3 times before escalating
-- On completion, transition the tracker ticket to Done via `tracker_transition_issue` (when the job was tracker-triggered)
+
+## Tickets
+
+Every ticket write — comments, status moves, sub-tickets — follows the **Ticket management** section of the system prompt, which renders the team's `ticketing` policy. There is no default beyond it: a job never moves its ticket to Done unless that section says so. Tools that mark a policy event (`set_work_items`, `update_work_item`, `scm_create_pr`) return the matching `ticketing` lines in their result.

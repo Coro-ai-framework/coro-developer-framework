@@ -91,7 +91,7 @@ All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__cor
 
 ### Work-item tracking
 - `set_work_items` — Register the ordered work-item list (called by planner)
-- `update_work_item` — Update a work item's status or increment its loop count
+- `update_work_item` — Update a work item's status or increment its loop count, or record its ticket (`ticketKey`)
 - `get_work_items` — Read the current work-item list with statuses
 - `request_new_session` — Clear session for fresh context (e.g., new work item)
 - `set_job_params` — Set dynamic job parameters (e.g., language, scm, tracker)
@@ -146,9 +146,17 @@ For native-mode plugins without an upstream MCP (BitBucket today), the
 generic tools above are the entire surface — there is no
 `mcp__bitbucket__*` namespace.
 
-### Issue tracker (provider-neutral; uses `params.tracker` or the tenant default)
+### Issue tracker (provider-neutral)
 
-Generic shim — the same three ops show up in nearly every workflow:
+The job context's `tracker` block says which tracker this job is bound to:
+
+- `source: "plugin"` — a Coro tracker plugin; use the generic tools below.
+- `source: "mcp"` — an MCP server the session already has (a claude.ai connector such as Atlassian, a Claude Code plugin, or a configured server). Call the tools listed in `tracker.tools` directly and read `tracker.notes` first; the generic tools below only point back at them.
+- `available: false` — no tracker; `tracker.reason` says why. Skip every ticket step, and do not go looking for tracker-like MCP tools yourself.
+
+**What you may write is set by the Ticket management section** of your instructions — the team's `ticketing` policy. Reading tickets is always fine; comments, status moves, and new tickets happen only where that section lists them.
+
+Generic shim — the same ops show up in nearly every workflow:
 
 - `tracker_get_issue` — Fetch an issue/ticket by external id (`PROJ-123`, `ENG-7`, `owner/repo#42`, …). Note: this does **not** include the comment thread.
 - `tracker_get_comments` — Read the comments/discussion on an issue (human guidance, clarifications, follow-up requests). Call this explicitly — comments are not part of `tracker_get_issue`.
@@ -338,7 +346,7 @@ the active plugin handles the rest:
   plugin runs for the job. If both are unset and exactly one SCM plugin is
   installed, that one wins; otherwise the runner aborts the job with a clear
   error.
-- `params.tracker` / `defaults.tracker` work the same way for issue trackers.
+- Trackers resolve from `ticketing.tracker` (default `auto`): `params.tracker`, then the tracker plugin, then the one connected tracker MCP server. `params.tracker` may name a plugin id or `mcp:<server>`.
 - The job context's `scm` block tells you which SCM plugin actually resolved for this run. Treat it as authoritative.
 - The plugin's own intelligence snippets (loaded automatically into the
   per-job intelligence overlay) document its tokens, identifier shapes, and

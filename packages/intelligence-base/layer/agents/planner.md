@@ -26,6 +26,7 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | `log` | Report progress to developers (call frequently) |
 | `set_job_params` | Register detected language and other params for downstream agents |
 | `set_work_items` | Register ordered work-item list with job system |
+| `update_work_item` | Record the tracker ticket created for a work item (`ticketKey`, `ticketUrl`) |
 | `post_artifact` | Record the plan file as a job artefact so developers can open it from the dashboard |
 | `add_insight` | Record workarounds, patterns, or unexpected findings |
 | `escalate` | Escalate blockers to human |
@@ -212,6 +213,10 @@ Include for each work item:
 ### 7. Register work items with the job
 
 After writing the plan, call `mcp__coro__set_work_items` with the ordered list of work-item names. This registers the work items with the job system so downstream agents can call `get_work_items` to track progress.
+
+### 7b. Tickets
+
+Ticket updates follow the **Ticket management** section of your instructions and nothing else — it is the team's policy, and it differs between teams. Its result lines (`ticketing` in the `set_work_items` result) tell you what applies right now: the plan-ready update on the source ticket, and whether to create work-item tickets. When it asks for work-item tickets, create them with the tracker tools it names, then record each key with `update_work_item({ name, ticketKey, ticketUrl })` so later phases update the right ticket. When the section says there is no tracker or writes are off, do nothing to tickets — the plan is still complete without them.
 
 ### 8. Post the plan artefact
 

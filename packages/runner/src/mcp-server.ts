@@ -283,7 +283,8 @@ export function createCoroMcpServer(
 
       tool(
         'tracker_transition_issue',
-        'Move a tracker issue to a target status by name (e.g. "In Progress", "Done").',
+        'Move a tracker issue to a target status by name (e.g. "In Progress", "Done"). ' +
+          'Only where the Ticket management section of your instructions asks for it.',
         {
           pluginId: z.string().optional(),
           key: z.string(),
@@ -298,7 +299,7 @@ export function createCoroMcpServer(
           'To reply to an existing comment as a threaded/nested reply, pass parentId with ' +
           'the id of the comment being replied to (from tracker_get_comments). Threading is ' +
           'supported by Jira and Linear; flat providers (GitHub Issues) ignore parentId and ' +
-          'post a top-level comment.',
+          'post a top-level comment. Only where the Ticket management section of your instructions asks for it.',
         {
           pluginId: z.string().optional(),
           key: z.string(),
@@ -312,18 +313,28 @@ export function createCoroMcpServer(
 
       tool(
         'set_work_items',
-        'Register the ordered work-item list for this job. Called after producing the implementation plan.',
-        { workItems: z.array(z.string()) },
+        'Register the ordered work-item list for this job. Called after producing the implementation plan. ' +
+          'Each entry is a name, or `{ name, ticketKey, ticketUrl }` when a tracker ticket already follows the item. ' +
+          'Items whose name is unchanged keep the ticket recorded earlier.',
+        {
+          workItems: z.array(z.union([
+            z.string(),
+            z.object({ name: z.string(), ticketKey: z.string().optional(), ticketUrl: z.string().optional() }),
+          ])),
+        },
         h.set_work_items,
       ),
 
       tool(
         'update_work_item',
-        'Update a work item\'s status or increment its loop count. Called by evaluator/coder.',
+        'Update a work item\'s status or increment its loop count, or record the tracker ticket that follows it ' +
+          '(`ticketKey`, `ticketUrl`). Called by evaluator/coder/planner.',
         {
           name: z.string(),
           status: z.enum(['pending', 'in-progress', 'complete', 'escalated']).optional(),
           incrementLoop: z.boolean().optional(),
+          ticketKey: z.string().optional(),
+          ticketUrl: z.string().optional(),
         },
         h.update_work_item,
       ),

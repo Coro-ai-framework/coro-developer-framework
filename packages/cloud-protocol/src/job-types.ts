@@ -81,6 +81,8 @@ export interface WorkItem {
   name: string
   status: 'pending' | 'in-progress' | 'complete' | 'escalated'
   loopCount: number
+  /** Tracker ticket that follows this work item, when the ticketing policy creates one. */
+  ticket?: { key: string; url?: string }
 }
 
 // ── Token usage tracking ─────────────────────────────────────────────────────

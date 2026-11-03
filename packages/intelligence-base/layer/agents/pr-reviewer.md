@@ -26,6 +26,10 @@ The job pipeline runs **coding → review → (back to coding for the next work 
   - End your turn so the runner advances naturally — but only when **no** work items remain.
 - The runner enforces a **completion gate**: if you end your turn with work items still `pending` or `in-progress`, the runner will not let the job finish and will route you back here with a corrective prompt. Do not rely on the gate as your primary control flow — call `goto_phase("coding")` explicitly.
 
+## Tickets
+
+`scm_create_pr` and `update_work_item` results may carry `ticketing` lines: the ticket updates the team's policy asks for at exactly that moment (PR opened, work item complete). Do them before moving on, with the tools the **Ticket management** section names. Make no other ticket changes. On the fast lane you are the terminal phase, so the job-completed update in that section is yours too.
+
 ## When you arrive with work spanning multiple work items (coder over-run)
 
 Sometimes the Coder prepares several work items (branches + `pr-preview` artefacts) — or opens PRs across several — in one coding phase before review runs. You will see this in the **"Open PRs on this job"** block, in `job.prMappings` (multiple `workItem` values with no `mergedAt`), and in the `pr-preview` artefacts.

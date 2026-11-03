@@ -307,15 +307,15 @@ By the time you run, the per-work-item coding → review loop has driven every w
 
 Possible outcomes:
 
-1. **Verification passes:** end your turn. The runner advances and completes the job. No `update_work_item` call is needed here — the merge gatekeeper already closed every work item before you arrived.
+1. **Verification passes:** make the job-completed ticket update if the **Ticket management** section lists one, then end your turn. The runner advances and completes the job. No `update_work_item` call is needed here — the merge gatekeeper already closed every work item before you arrived. Do not move tickets in any way that section does not ask for.
 
 2. **A regression / acceptance-criterion failure needs a fix:**
    - Decide which work item the failure belongs to (use the plan and the failing test). Pick the work item whose contract is broken.
-   - Call `update_work_item({ name: <work-item>, status: "in-progress", incrementLoop: true })` so the run-time loop counter advances and the dashboard reflects the regression.
+   - Call `update_work_item({ name: <work-item>, status: "in-progress", incrementLoop: true })` so the run-time loop counter advances and the dashboard reflects the regression. Do any `ticketing` lines its result returns (the rework update on that work item's ticket).
    - Call `get_work_items` and check the loop count. If `loopCount >= 5` on any work item, call `escalate` — do not loop indefinitely.
    - Otherwise call `goto_phase("coding")` with a clear fix brief in your reasoning. The Coder will land a fix PR; the gatekeeper will merge it; you will run again on the new merged state.
 
-3. **Hard block you cannot resolve:** call `escalate` with a specific reason. An escalated work item also satisfies the runner's completion gate, so the job can finalise as `escalated` instead of looping.
+3. **Hard block you cannot resolve:** make the escalation ticket update the **Ticket management** section lists, if any, then call `escalate` with a specific reason. An escalated work item also satisfies the runner's completion gate, so the job can finalise as `escalated` instead of looping.
 
 ### 12. Log progress
 

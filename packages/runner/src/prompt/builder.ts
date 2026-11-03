@@ -14,6 +14,14 @@ import { parseWorkflowConfig, stripFrontMatter, getPhaseConfig } from '../workfl
 import type { LocalConfig } from '../config/local-config'
 import { resolveGuardrails } from '../guardrails/merge'
 import type { TrackerResolution } from '../trackers/binding'
+import { TICKETING_POLICY_PARAM } from '../jobs/ticketing'
+import { buildTicketingPromptBlock } from './ticketing-block'
+
+function omitKey(obj: Record<string, unknown>, key: string): Record<string, unknown> {
+  if (!(key in obj)) return obj
+  const { [key]: _omitted, ...rest } = obj
+  return rest
+}
 
 // ── Tracker prompt context ────────────────────────────────────────────────────
 //
@@ -313,6 +321,9 @@ export async function buildSystemPrompt(
     sections.push(buildSandboxPromptBlock(sandbox))
   }
 
+  const ticketing = buildTicketingPromptBlock(job, trackerInfo)
+  if (ticketing) sections.push(ticketing)
+
   sections.push(buildJobContext(job, trackerInfo, scmInfo, guardrailsInfo, jobWorkingDir))
 
   return sections.join('\n\n---\n\n')
@@ -398,7 +409,9 @@ function buildJobContext(
     type: job.type,
     workflowPath: job.workflowPath,
     interactive: job.interactive,
-    params: job.params,
+    // The ticketing snapshot is rendered as its own block; as JSON it is
+    // only noise the agent might act on differently.
+    params: omitKey(job.params, TICKETING_POLICY_PARAM),
     triggerSource: job.triggerSource,
     status: job.status,
     phase: job.phase,

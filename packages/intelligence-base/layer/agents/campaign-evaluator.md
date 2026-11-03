@@ -97,7 +97,7 @@ If you can read each child job's `tokenUsage` and durations from `state`, sum th
 
 ### 5. Update the tracker (when configured)
 
-If the campaign owns a tracker epic (`params.trackerEpicRef`):
+If the campaign owns a tracker epic (`params.trackerEpicRef`) and the **Ticket management** section does not say ticket writes are off (with an MCP-backed tracker, use the matching `tracker.tools` entries instead of the `tracker_*` tools):
 
 ```
 tracker_comment_issue({

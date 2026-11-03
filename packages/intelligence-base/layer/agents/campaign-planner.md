@@ -14,7 +14,7 @@ You may also be re-entered for a **remediation round**: the Campaign Integrator 
 - `working/{job-id}/contracts/_index.json` — the seed cross-child contract index produced by the Architect (see `campaign-contracts` skill).
 - `params.campaignTitle` and `params.campaignDescription` (set by `convert_to_campaign`)
 - `params.trackerEpicRef` if the regular Planner already created an epic
-- `tracker` block on the job context — `{ pluginId, available, defaults? }`. This is the **only** signal you should use to decide whether to call any `tracker_*` tool. When `available` is `false` (or no plugin is resolved), skip every tracker step and proceed without a tracker. Do **not** probe with destructive calls.
+- `tracker` block on the job context — `{ pluginId, available, source?, provider?, tools?, notes?, defaults? }`. This is the **only** signal you should use to decide whether to call any tracker tool. When `available` is `false`, or the **Ticket management** section says ticket writes are off, skip every tracker step and proceed without a tracker. Do **not** probe with destructive calls.
 - The job description, the repository, and any spec the spec-writer produced
 - Memory: `memory/MEMORY.md` and any linked files (call `read_memory`)
 
@@ -52,6 +52,9 @@ exact arguments:
 | `jira` | `mcp__jira__jira_create_issue` (issue type "Epic") | `mcp__jira__jira_create_issue` (issue type "Task" / "Story") | `mcp__jira__jira_create_issue_link` |
 | `linear` | `mcp__linear__create_issue` (use `parentId` for the epic-equivalent) | `mcp__linear__create_issue` (set `parentId` to the epic-issue's id) | `mcp__linear__create_issue` with `parentId` is the dependency edge for Linear |
 | `github-issues` | `mcp__github-issues__create_issue` (label as `epic`) | `mcp__github-issues__create_issue` (link via parent in body or sub-issues API) | `mcp__github-issues__create_sub_issue` or comment links |
+| `mcp:<server>` (`tracker.source === 'mcp'`) | `tracker.tools.createIssue` (epic type per `tracker.provider`) | `tracker.tools.createIssue` with the epic as parent | `tracker.tools.linkIssues` |
+
+With an MCP-backed tracker, `tracker.notes` lists the provider's quirks (for Atlassian: get the `cloudId` first; a Sub-task cannot parent issues) — read them before the first call. Its `trackerRef.pluginId` is `tracker.pluginId` verbatim (`mcp:<server>`).
 
 Read-back during the breakdown stays simple:
 
@@ -113,7 +116,7 @@ Record the lane and the one-line rationale in `campaign-plan.md` (step 6) so the
 
 Read the `tracker` block on the job context first. Decision rule:
 
-- If `tracker.available === false` (no Tracker plugin resolved), **skip steps 3 and 4.1 entirely**. Do not call any tracker tool. Continue with `campaign_register_child` calls that omit `trackerRef`. Note the absence in the campaign plan markdown so the human reader isn't surprised.
+- If `tracker.available === false` (no tracker bound), or the **Ticket management** section says ticket writes are off, **skip steps 3 and 4.1 entirely**. Do not call any tracker tool. Continue with `campaign_register_child` calls that omit `trackerRef`. Note the absence in the campaign plan markdown so the human reader isn't surprised.
 - Otherwise, if `params.trackerEpicRef` is already set, reuse that ref as the epic and skip to step 4.
 
 When `tracker.available === true` and no epic was pre-created, call the

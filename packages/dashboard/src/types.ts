@@ -42,6 +42,7 @@ export interface WorkItem {
   name: string
   status: 'pending' | 'in-progress' | 'complete' | 'escalated'
   loopCount: number
+  ticket?: { key: string; url?: string }
 }
 
 export interface PrMapping {

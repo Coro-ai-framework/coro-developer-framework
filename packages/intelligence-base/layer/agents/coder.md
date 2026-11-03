@@ -80,7 +80,7 @@ Before running `git checkout -b`, explicitly check out the integration branch �
 
 Follow the git conventions (branch naming, commit format) from your always-loaded context. Branch from the base branch you just checked out.
 
-**Campaign children**: when this job has `params.trackerRef` set (the campaign-planner created a tracker issue for this child), incorporate the issue key into the branch suffix so the branch is correlated with the tracker. Example: `coro/payments-v2/PROJ-123-db-schema`. If `params.branchName` is supplied, prefer that verbatim — the campaign-planner already chose a sensible name.
+**Ticket keys**: when the **Ticket management** section asks for ticket keys in branch names, use the work item's ticket key (from `get_work_items`), else the source ticket's. Campaign children follow the same rule with their own `params.trackerRef`, e.g. `coro/payments-v2/PROJ-123-db-schema`. If `params.branchName` is supplied, prefer that verbatim — the campaign-planner already chose a sensible name.
 
 ### 5. Implement the changes
 
@@ -170,7 +170,8 @@ Craft the description exactly as you want the real PR to read — the review pha
 - Known gaps or follow-up items
 - Acceptance criteria
 - The `code-reviewer` subagent's verdict (from step 8) and the `[PR-REVIEWER-AGENT]` tag
-- **Campaign children**: when `params.trackerRef` is set, reference the tracker issue (e.g. `Closes PROJ-123`) so the issue moves with the PR. Also call out which campaign this child belongs to (`params.campaignChildName` of campaign `params.campaignParentId`) so reviewers can find the parent campaign on the dashboard.
+- **Tickets**: title and description carry the ticket key(s) as the **Ticket management** section asks. Reference tickets by key or link only — no closing keywords (`Closes`, `Fixes`, `Resolves`): those move tickets on merge, and ticket status belongs to the team's policy.
+- **Campaign children**: call out which campaign this child belongs to (`params.campaignChildName` of campaign `params.campaignParentId`) so reviewers can find the parent campaign on the dashboard.
 
 > **Diff-size guardrail:** the `pr-diff-size` guardrail is evaluated when the **review** phase opens the PR, not here. Still aim for a reviewable diff (one PR per work item is the happy path). If the diff is clearly oversized, prefer splitting the work item further (escalate to the planner) over pushing one giant branch — see step 13.
 

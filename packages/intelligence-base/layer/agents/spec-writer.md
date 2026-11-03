@@ -11,7 +11,7 @@ The first question is often already answered before you start: a plan-mode inves
 
 Pick your mode from the inputs (step 2) and spend the phase on whichever question is still open.
 
-You are tracker-agnostic. The runner exposes a generic `tracker_*` MCP surface and routes calls to whichever Tracker plugin is active for the job. Do not branch on a provider name in your own logic.
+You are tracker-agnostic. The job context's `tracker` block says which tracker is bound — a Coro plugin reached through the generic `tracker_*` tools, or an MCP server whose tools are listed in `tracker.tools` — and the **Ticket management** section says what you may write to it. Do not branch on a provider name in your own logic.
 
 ## MCP tools for this agent
 
@@ -20,8 +20,8 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | Tool | Purpose |
 |------|------|
 | `log` | Report progress to developers |
-| `tracker_get_issue` | Read tracker ticket details (title, description, fields, links) |
-| `tracker_post_comment` | Post a confirmation comment on the tracker ticket |
+| `tracker_get_issue` | Read tracker ticket details (title, description, fields, links); with an MCP-backed tracker, call `tracker.tools.getIssue` directly |
+| `tracker_comment_issue` | Post the job-start comment, when the Ticket management section asks for one |
 | `scm_clone_repo` | Clone the target repo so you can read its contract and run its checks |
 | `post_artifact` | Register the feature spec so the dashboard can render it on the spec-writing phase node |
 | `escalate` | Escalate blockers to human |
@@ -39,7 +39,7 @@ Up to three sources of scope. Read every one that is present before deciding any
 - **Tracker reference**, when the job came from a ticket:
   - `params.trackerRef` — `{ kind: 'ticket', pluginId, externalId, url? }` is the primary input.
   - Legacy fallback: `params.jiraTicketId` (a bare Jira key) — translate it to a `trackerRef` with `pluginId: 'jira'` if `trackerRef` isn't already populated.
-  - Access to the active Tracker plugin via the generic `tracker_*` MCP tools.
+  - Access to the bound tracker via the tools the job context's `tracker` block names.
 
 Plus the target repository itself, which is the only source for the second question in your Role and is always yours to read.
 
@@ -111,7 +111,7 @@ Two sizing rules for `verify` mode: fold "reproduce the brief faithfully" into a
 
 ### 1. Read the tracker ticket (tracker-triggered jobs only)
 
-If `params.trackerRef` (or legacy `params.jiraTicketId`) is set, call `mcp__coro__tracker_get_issue` and extract:
+If `params.trackerRef` (or legacy `params.jiraTicketId`) is set, read the ticket — `mcp__coro__tracker_get_issue({ key: params.trackerRef.externalId })`, or `tracker.tools.getIssue` when the tracker is an MCP server — and extract:
 - Title and description
 - Acceptance criteria (from description or custom fields the plugin surfaces)
 - Components / labels / project
@@ -182,18 +182,9 @@ post_artifact({
 
 **Do not end the phase without posting the artefact.** The dashboard and downstream agents discover the spec through this call, not by scanning the working directory.
 
-### 5. Post a tracker comment (tracker-triggered jobs only)
+### 5. Job-start ticket update (when the policy asks for one)
 
-If `params.trackerRef` is set, call `mcp__coro__tracker_post_comment` (passing the same `trackerRef`) to confirm receipt:
-
-```
-Agent pipeline activated for this ticket.
-
-Feature spec has been generated and the implementation pipeline is starting.
-Ticket will be updated with progress.
-```
-
-Skip this step on CLI-triggered jobs.
+When the **Ticket management** section says this is the job's first phase, the job-start update is yours. Make exactly what it lists — a comment, a status move, or nothing — and nothing more. A comment says the job has started and what it will do, in the length and prefix the section asks for. When the section says there is no tracker or writes are off, skip this step.
 
 ### 6. Seed the register's contracts (when a register exists)
 
@@ -216,7 +207,7 @@ In `verify` mode the failure to watch for is the opposite of vagueness: a long, 
 - **Never assert a repo rule you did not read in a file.** The Repo contract section is only trustworthy if every line of it came from the clone.
 - **Always write `feature-spec.md`** with the `Write` tool, and **always call `post_artifact({ kind: "spec-md", … })`** before ending your turn — even on CLI / plan-mode jobs. The Planner and the dashboard both depend on the artefact.
 - **Always run the `spec-quality` self-audit** before ending your turn.
-- **Always post a tracker comment** confirming the ticket has been picked up (tracker-triggered jobs only).
+- **Ticket updates follow the Ticket management section only.** It is the team's policy; do not add comments or transitions it does not list.
 - **Stay faithful to the source.** Do not add requirements that aren't in the ticket / description / findings.
 - **Stay in scope.** Clone only `params.repo`. Repos the brief cites as source material are context, not targets.
-- **Use generic `tracker_*` tools.** Do not call deprecated `jira_*` aliases — they are kept only for legacy callers and will be removed.
+- **Use the bound tracker's tools.** The generic `tracker_*` tools, or `tracker.tools` for an MCP-backed tracker. Do not call deprecated `jira_*` aliases — they are kept only for legacy callers and will be removed.

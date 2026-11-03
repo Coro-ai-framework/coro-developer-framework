@@ -8,6 +8,7 @@ import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
 import { getIncomingPluginSelectionIssues } from './jobs/plugin-preflight'
 import { mcpTrackerRedirect, type TrackerBinding } from './trackers/binding'
+import { ticketingReminders } from './jobs/ticketing-reminders'
 import type { RedirectArgs, RedirectOp } from './trackers/profiles'
 import {
   buildGuardrailContext,
@@ -314,25 +315,36 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     activityLog: line => ctx.stateBackend.appendLog(ctx.job.id, line),
   })
 
-  const setWorkItems = async ({ workItems }: { workItems: string[] }) => {
-    const items: WorkItem[] = workItems.map(name => ({
-      name, status: 'pending', loopCount: 0,
-    }))
+  const setWorkItems = async ({ workItems }: {
+    workItems: Array<string | { name: string; ticketKey?: string; ticketUrl?: string }>
+  }) => {
+    // A re-plan keeps the tickets already created for items it keeps.
+    const previous = new Map((ctx.job.workItems ?? []).map(w => [w.name, w.ticket]))
+    const items: WorkItem[] = workItems.map(entry => {
+      const name = typeof entry === 'string' ? entry : entry.name
+      const ticket = typeof entry !== 'string' && entry.ticketKey
+        ? { key: entry.ticketKey, ...(entry.ticketUrl ? { url: entry.ticketUrl } : {}) }
+        : previous.get(name)
+      return { name, status: 'pending', loopCount: 0, ...(ticket ? { ticket } : {}) }
+    })
     await ctx.stateBackend.updateJob(ctx.job.id, { workItems: items })
     ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-    return text({ registered: workItems.length })
+    const ticketing = ticketingReminders(ctx.job, { kind: 'workItemsSet' }, Boolean(ctx.trackerBinding))
+    return text({ registered: workItems.length, ...(ticketing.length > 0 ? { ticketing } : {}) })
   }
 
-  const updateWorkItem = async ({ name, status, incrementLoop }: {
-    name: string; status?: string; incrementLoop?: boolean
+  const updateWorkItem = async ({ name, status, incrementLoop, ticketKey, ticketUrl }: {
+    name: string; status?: string; incrementLoop?: boolean; ticketKey?: string; ticketUrl?: string
   }) => {
     const job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+    const before = job.workItems.find(item => item.name === name)
     const workItems = job.workItems.map(item => {
       if (item.name !== name) return item
       return {
         ...item,
         ...(status ? { status: status as WorkItem['status'] } : {}),
         loopCount: incrementLoop ? item.loopCount + 1 : item.loopCount,
+        ...(ticketKey ? { ticket: { key: ticketKey, ...(ticketUrl ? { url: ticketUrl } : {}) } } : {}),
       }
     })
     const current = workItems.find(item => item.name === name)
@@ -342,7 +354,20 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       workItemLoopCount: current?.loopCount ?? ctx.job.workItemLoopCount,
     })
     ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
-    return text({ updated: name, status: current?.status, loopCount: current?.loopCount })
+    const ticketing = current
+      ? ticketingReminders(
+          ctx.job,
+          { kind: 'workItemStatus', ...(before ? { before } : {}), after: current, ...(incrementLoop ? { incrementLoop } : {}) },
+          Boolean(ctx.trackerBinding),
+        )
+      : []
+    return text({
+      updated: name,
+      status: current?.status,
+      loopCount: current?.loopCount,
+      ...(current?.ticket ? { ticket: current.ticket } : {}),
+      ...(ticketing.length > 0 ? { ticketing } : {}),
+    })
   }
 
   const getWorkItems = async () => {
@@ -448,11 +473,17 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     // repositories or providers.
     await ctx.stateBackend.mapExternalRef(ref, ctx.job.id)
 
+    const ticketing = ticketingReminders(
+      ctx.job,
+      { kind: 'prOpened', ...(ref.url ? { url: ref.url } : {}) },
+      Boolean(ctx.trackerBinding),
+    )
     return text({
       pluginId: ref.pluginId,
       prId: prIdNumber,
       externalId: ref.externalId,
       url: ref.url ?? null,
+      ...(ticketing.length > 0 ? { ticketing } : {}),
     })
   }
 
