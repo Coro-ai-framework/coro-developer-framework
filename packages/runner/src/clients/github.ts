@@ -33,7 +33,6 @@ export interface CreatePrOptions {
    */
   sourceOwner?: string
   targetBranch?: string
-  reviewerUsernames?: string[]
 }
 
 export interface RepoInfo {
@@ -77,6 +76,19 @@ export interface GitHubUserRef {
   account_id?: string
   nickname?: string
   display_name?: string
+}
+
+/**
+ * Result of {@link GitHubClient.requestReviewers}. Names that matched
+ * nobody (or several people) are reported rather than failing the
+ * whole request, so one unknown name cannot drop the reviewers that
+ * did resolve. `candidates` lists the repository's collaborators as
+ * `login (Name)` when something was left unresolved.
+ */
+export interface ReviewerRequestOutcome {
+  requested: string[]
+  unresolved: string[]
+  candidates?: string[]
 }
 
 export interface PullRequest {
@@ -374,20 +386,6 @@ export class GitHubClient {
       `/repos/${repo}/pulls`,
       body,
     )
-
-    // Request reviewers if provided. Failure stays non-fatal at creation
-    // time: a reviewer the token cannot see, or who is not a collaborator,
-    // must not fail the PR itself. Adding reviewers to an already-open PR
-    // goes through requestReviewers directly, where the same failure is
-    // reported.
-    if (opts.reviewerUsernames && opts.reviewerUsernames.length > 0) {
-      try {
-        await this.requestReviewers(opts.repoSlug, ghPr.number, opts.reviewerUsernames)
-      } catch {
-        // Non-fatal: reviewer might not have access
-      }
-    }
-
     return normalizeGhPr(ghPr)
   }
 
@@ -395,22 +393,27 @@ export class GitHubClient {
    * Ask GitHub to request reviews on an open pull request.
    *
    * `POST /pulls/{n}/requested_reviewers` adds to the current list; it
-   * does not replace it. Each entry may be a login, a numeric account
-   * id, a GraphQL node id, or a display name. Display names are matched
-   * against the configured owner's organisation members first, then
-   * against an exact public-profile name. Logins are what the API
-   * accepts, so everything else is resolved before the request.
+   * does not replace it, and it only accepts logins of repository
+   * collaborators. Each entry may be a login, a numeric account id, a
+   * GraphQL node id, or a human name ("Samir Benali", "lee.chun-chen",
+   * "Samir Benali (samir-benali_corp)"); names are matched against the
+   * repository's collaborators before anything wider.
+   *
+   * Entries that match nobody, or several people, are returned in
+   * `unresolved` and the rest are still requested. Throws only when
+   * GitHub refuses the request itself.
    */
   async requestReviewers(
     repoSlug: string,
     prId: number,
     reviewers: ReadonlyArray<string>,
-  ): Promise<void> {
+  ): Promise<ReviewerRequestOutcome> {
+    const collaborators = await this.listCollaborators(repoSlug)
     const logins: string[] = []
     const seen = new Set<string>()
     const unresolved: string[] = []
     for (const raw of reviewers) {
-      const user = await this.resolveUser(raw)
+      const user = await this.resolveUserIn(raw, collaborators, this.parseRepo(repoSlug).owner)
       const login = user?.nickname
       if (!login) {
         unresolved.push(raw)
@@ -421,14 +424,14 @@ export class GitHubClient {
       seen.add(key)
       logins.push(login)
     }
-    if (unresolved.length > 0) {
-      throw new Error(
-        `addReviewers: could not resolve ${unresolved.length} of ${reviewers.length} reviewer(s) to GitHub logins: ` +
-        `${unresolved.map(u => `"${u}"`).join(', ')}. ` +
-        'Pass a GitHub login (for example octocat). Display names are matched against organisation members and, failing that, an exact public profile name.',
-      )
+    const outcome: ReviewerRequestOutcome = {
+      requested: logins,
+      unresolved,
+      ...(unresolved.length > 0 && collaborators.length > 0
+        ? { candidates: collaborators.slice(0, 50).map(describeUser) }
+        : {}),
     }
-    if (logins.length === 0) return
+    if (logins.length === 0) return outcome
     try {
       await this.request(
         'POST',
@@ -444,30 +447,61 @@ export class GitHubClient {
       }
       throw err
     }
+    return outcome
   }
 
   /**
-   * Resolve a login, numeric account id, GraphQL node id, or display
-   * name to the identity `requestReviewers` can attach. Returns null
-   * when nothing matches. Email is not searchable.
+   * Resolve a login, numeric account id, GraphQL node id, or human name
+   * to the identity `requestReviewers` can attach. Returns null when
+   * nothing matches, or when a name matches several people. Email is
+   * not searchable.
    *
-   * A login-shaped query is a single `GET /users/{login}`. Display
-   * names go to the owner's organisation membership first
-   * (`membersWithRole`), because a public search for a common name
-   * would attach the wrong person.
+   * With `repoSlug`, names are matched against that repository's
+   * collaborators first — the only people a review can be requested
+   * from. Then the owner's organisation members, then an exact public
+   * profile. GitHub's user search does not return Enterprise Managed
+   * Users, and its member/collaborator `query` filters are
+   * punctuation-sensitive, so matching is done locally on the listed
+   * people.
    */
-  async resolveUser(input: string): Promise<GitHubUserRef | null> {
+  async resolveUser(input: string, opts: { repoSlug?: string } = {}): Promise<GitHubUserRef | null> {
+    const collaborators = opts.repoSlug ? await this.listCollaborators(opts.repoSlug) : []
+    const org = opts.repoSlug ? this.parseRepo(opts.repoSlug).owner : this.owner
+    return this.resolveUserIn(input, collaborators, org)
+  }
+
+  private async resolveUserIn(
+    input: string,
+    collaborators: ReadonlyArray<GitHubUserRef>,
+    org: string,
+  ): Promise<GitHubUserRef | null> {
     const q = input.trim().replace(/^@/, '')
     if (!q) return null
 
-    if (isGitHubNodeId(q)) return this.lookupNode(q)
+    // "Samir Benali (samir-benali_corp)" — the form GitHub's UI shows.
+    const shown = /\(\s*@?([^()\s]+)\s*\)\s*$/.exec(q)
+    if (shown) {
+      const byLogin = await this.resolveUserIn(shown[1]!, collaborators, org)
+      if (byLogin) return byLogin
+    }
+
+    if (collaborators.length > 0) {
+      const match = matchUser(q, collaborators, true)
+      if (match === 'ambiguous') return null
+      if (match) return match
+    }
+
+    if (isGitHubNodeId(q)) {
+      const node = await this.lookupNode(q)
+      if (node) return node
+    }
     if (/^\d+$/.test(q)) return this.lookupByAccountId(q)
 
     if (isGitHubLogin(q)) {
       const direct = await this.lookupByLogin(q)
       if (direct) return direct
     }
-    return this.searchByName(q)
+    return this.searchByName(q, org)
   }
 
   async getPr(repoSlug: string, prId: number): Promise<PullRequest> {
@@ -719,52 +753,68 @@ export class GitHubClient {
   }
 
   /**
-   * Organisation-scoped name search. An empty list means "no member
-   * matched" or "this token cannot list members" — callers may widen
-   * the search. A thrown error is swallowed by the caller only when
-   * the GraphQL endpoint itself is unreachable.
+   * Everyone who can be requested as a reviewer on `repoSlug`. Empty
+   * when the token cannot list collaborators (it needs push access);
+   * callers then widen to organisation members.
    */
-  private async searchOrgMembers(query: string): Promise<GitHubUserRef[]> {
-    try {
-      const data = await this.graphql<{
-        organization: {
-          membersWithRole: {
-            nodes: Array<{ login: string; name: string | null; id: string; databaseId: number } | null>
-          }
-        } | null
-      }>(
-        'query($org:String!,$q:String!){ organization(login:$org){ membersWithRole(query:$q, first:10){ nodes { login name id databaseId } } } }',
-        { org: this.owner, q: query },
-      )
-      const nodes = data.organization?.membersWithRole?.nodes ?? []
-      return nodes
-        .filter((n): n is NonNullable<typeof n> => Boolean(n?.login))
-        .map(n => ({
-          uuid: n.id,
-          nickname: n.login,
-          account_id: String(n.databaseId),
-          ...(n.name ? { display_name: n.name } : {}),
-        }))
-    } catch {
-      return []
-    }
+  private async listCollaborators(repoSlug: string): Promise<GitHubUserRef[]> {
+    const { owner, repo } = this.parseRepo(repoSlug)
+    return this.listUserConnection(
+      'query($owner:String!,$name:String!,$after:String){ repository(owner:$owner,name:$name){ collaborators(first:100, after:$after){ pageInfo { hasNextPage endCursor } nodes { login name id databaseId } } } }',
+      { owner, name: repo },
+      data => (data as { repository?: { collaborators?: UserConnection } | null }).repository?.collaborators,
+    )
   }
 
-  private async searchByName(query: string): Promise<GitHubUserRef | null> {
-    const orgMembers = await this.searchOrgMembers(query)
-    const fromOrg = pickUserMatch(query, orgMembers, true)
+  /** Organisation members; empty when the token cannot read the membership. */
+  private async listOrgMembers(org: string): Promise<GitHubUserRef[]> {
+    return this.listUserConnection(
+      'query($org:String!,$after:String){ organization(login:$org){ membersWithRole(first:100, after:$after){ pageInfo { hasNextPage endCursor } nodes { login name id databaseId } } } }',
+      { org },
+      data => (data as { organization?: { membersWithRole?: UserConnection } | null }).organization?.membersWithRole,
+    )
+  }
+
+  private async listUserConnection(
+    query: string,
+    variables: Record<string, unknown>,
+    pick: (data: unknown) => UserConnection | undefined,
+  ): Promise<GitHubUserRef[]> {
+    const users: GitHubUserRef[] = []
+    let after: string | null = null
+    try {
+      for (let page = 0; page < MAX_USER_PAGES; page++) {
+        const conn = pick(await this.graphql<unknown>(query, { ...variables, after }))
+        for (const n of conn?.nodes ?? []) {
+          if (!n?.login) continue
+          users.push({
+            uuid: n.id,
+            nickname: n.login,
+            account_id: String(n.databaseId),
+            ...(n.name ? { display_name: n.name } : {}),
+          })
+        }
+        if (!conn?.pageInfo?.hasNextPage || !conn.pageInfo.endCursor) break
+        after = conn.pageInfo.endCursor
+      }
+    } catch {
+      // Permission and transport failures both mean "no list from here".
+    }
+    return users
+  }
+
+  private async searchByName(query: string, org: string): Promise<GitHubUserRef | null> {
+    const fromOrg = matchUser(query, await this.listOrgMembers(org), true)
+    if (fromOrg === 'ambiguous') return null
     if (fromOrg) return fromOrg
-    // Several org members and none is an exact name/login: guessing
-    // would request the wrong person. A public search is wider, not safer.
-    if (orgMembers.length > 1) return null
 
-    const listed = await this.searchUsers(`${query} org:${this.owner} in:login,name,fullname`)
-    const fromList = pickUserMatch(query, listed, true)
-    if (fromList) return fromList
-    if (listed.length > 1) return null
+    const listed = matchUser(query, await this.searchUsers(`${query} org:${org} in:login,name,fullname`), true)
+    if (listed === 'ambiguous') return null
+    if (listed) return listed
 
-    const pub = await this.searchUsers(`${query} in:login,name,fullname`)
-    return pickUserMatch(query, pub, false)
+    // A public search is wider, not safer: only an exact login or name counts.
+    const pub = matchUser(query, await this.searchUsers(`${query} in:login,name,fullname`), false)
+    return pub === 'ambiguous' ? null : pub
   }
 
   private async searchUsers(q: string): Promise<GitHubUserRef[]> {
@@ -928,6 +978,15 @@ interface GhUser {
   type?: string
 }
 
+/** A GraphQL `UserConnection` page as selected by the member/collaborator listings. */
+interface UserConnection {
+  pageInfo?: { hasNextPage: boolean; endCursor: string | null }
+  nodes?: Array<{ login: string; name: string | null; id: string; databaseId: number } | null>
+}
+
+/** Caps member/collaborator listing at 1,000 people (10 GraphQL pages). */
+const MAX_USER_PAGES = 10
+
 interface GhReview {
   state: string
 }
@@ -1026,33 +1085,85 @@ function toUserRef(user: GhUser): GitHubUserRef {
   }
 }
 
-/** GitHub logins are alphanumeric plus single interior hyphens, max 39. */
-function isGitHubLogin(value: string): boolean {
-  return /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/.test(value)
-}
-
-/** Node ids are base64 (`=` / `+` / `/`) or the newer `U_` global ids. Logins cannot contain those characters. */
-function isGitHubNodeId(value: string): boolean {
-  return /[=+/_]/.test(value) || value.startsWith('MDQ6')
+function describeUser(user: GitHubUserRef): string {
+  return user.display_name ? `${user.nickname} (${user.display_name})` : user.nickname ?? user.uuid
 }
 
 /**
- * Pick the reviewer a query names. `allowSoleResult` is for an
- * org-scoped search, where the query already filtered the directory.
- * A public search only matches an exact login or exact display name,
- * so a common name cannot attach a stranger.
+ * GitHub logins are alphanumeric plus single interior hyphens, max 39.
+ * Enterprise Managed Users append `_<shortcode>` (`samir-benali_corp`).
  */
-function pickUserMatch(
+function isGitHubLogin(value: string): boolean {
+  return /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}(?:_[a-zA-Z0-9]+)?$/.test(value)
+}
+
+/**
+ * Legacy node ids are base64 (`=` / `+` / `/`, `MDQ6…` for users); the
+ * newer global ids are an uppercase type prefix and `_` (`U_kgDO…`).
+ * The latter can collide with an EMU login, so a miss falls through
+ * to the login lookup.
+ */
+function isGitHubNodeId(value: string): boolean {
+  return /[=+/]/.test(value) || value.startsWith('MDQ6') || /^[A-Z]{1,4}_[A-Za-z0-9_-]{4,}$/.test(value)
+}
+
+/** `samir-benali_corp` → `samir-benali`: the handle without the EMU shortcode. */
+function loginHandle(login: string): string {
+  return login.replace(/_[a-zA-Z0-9]+$/, '')
+}
+
+/** Case-, punctuation- and parenthetical-insensitive word list: "Lee Chun-Chen (x)" → ["lee", "chun", "chen"]. */
+function nameTokens(value: string): string[] {
+  return value
+    .replace(/\([^)]*\)/g, ' ')
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+}
+
+/**
+ * Pick the person a query names, from strictest to loosest: exact
+ * login, the same words as the name or login handle, the same words in
+ * any order, and — when `allowPartial` — every query word appearing in
+ * one person's name ("samir" → "Samir Benali"). The first rule that
+ * matches anyone decides: one match wins, several are `'ambiguous'`, so
+ * a looser rule never overrides a stricter one.
+ *
+ * `allowPartial` is for lists already scoped to the repository or
+ * organisation. A public search only accepts the exact rules, so a
+ * common name cannot attach a stranger.
+ */
+function matchUser(
   query: string,
   users: ReadonlyArray<GitHubUserRef>,
-  allowSoleResult: boolean,
-): GitHubUserRef | null {
+  allowPartial: boolean,
+): GitHubUserRef | 'ambiguous' | null {
   const lower = query.toLowerCase()
-  const byLogin = users.filter(u => u.nickname?.toLowerCase() === lower)
-  if (byLogin.length === 1) return byLogin[0]!
-  const byName = users.filter(u => (u.display_name ?? '').toLowerCase() === lower)
-  if (byName.length === 1) return byName[0]!
-  if (allowSoleResult && users.length === 1) return users[0]!
+  const q = nameTokens(query)
+  if (q.length === 0) return null
+  const phrase = q.join(' ')
+  const sorted = [...q].sort().join(' ')
+
+  const candidates = users.map(u => {
+    const login = u.nickname ?? ''
+    const forms = [nameTokens(u.display_name ?? ''), nameTokens(loginHandle(login))].filter(t => t.length > 0)
+    return { user: u, login: login.toLowerCase(), handle: loginHandle(login).toLowerCase(), forms }
+  })
+
+  const rules: Array<(c: typeof candidates[number]) => boolean> = [
+    c => c.login === lower || c.handle === lower,
+    c => c.forms.some(t => t.join(' ') === phrase),
+    c => c.forms.some(t => [...t].sort().join(' ') === sorted),
+  ]
+  if (allowPartial) {
+    rules.push(c => c.forms.some(t => q.every(word => t.includes(word))))
+  }
+
+  for (const rule of rules) {
+    const hits = candidates.filter(rule)
+    if (hits.length === 1) return hits[0]!.user
+    if (hits.length > 1) return 'ambiguous'
+  }
   return null
 }
 

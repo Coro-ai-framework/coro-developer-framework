@@ -50,6 +50,8 @@ import type {
   ScmPrComment,
   ScmPrStatus,
   ScmReadFileResult,
+  ScmReviewerOutcome,
+  ScmUserRef,
   CredentialCandidate,
   PluginTestResult,
 } from '../../types'
@@ -375,23 +377,41 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     return this.clientFor(args.repo).listFiles(args.repo, args.path ?? '', args.ref ?? 'HEAD')
   }
 
-  async createPr(args: ScmCreatePrArgs): Promise<ExternalRef> {
-    const reviewers = args.reviewers ? Array.from(args.reviewers) : undefined
-    const pr = await this.clientFor(args.repoSlug).createPr({
+  /**
+   * Reviewers are requested after the PR exists and never fail the
+   * call: a reviewer the token cannot see must not cost the PR. What
+   * happened to them is returned on `reviewers` so the agent can fix
+   * the names instead of assuming they were attached.
+   */
+  async createPr(args: ScmCreatePrArgs): Promise<ExternalRef & { reviewers?: ScmReviewerOutcome }> {
+    const client = this.clientFor(args.repoSlug)
+    const pr = await client.createPr({
       repoSlug: args.repoSlug,
       title: args.title,
       ...(args.description !== undefined ? { description: args.description } : {}),
       sourceBranch: args.sourceBranch,
       ...(args.sourceOwner !== undefined ? { sourceOwner: args.sourceOwner } : {}),
       ...(args.targetBranch !== undefined ? { targetBranch: args.targetBranch } : {}),
-      ...(reviewers && reviewers.length > 0 ? { reviewerUsernames: reviewers } : {}),
     })
-    return {
+    const ref: ExternalRef = {
       kind: 'pull_request',
       pluginId: this.manifest.id,
       repoKey: args.repoSlug,
       externalId: String(pr.id),
       url: pr.links.html.href,
+    }
+    if (!args.reviewers || args.reviewers.length === 0) return ref
+    try {
+      return { ...ref, reviewers: await client.requestReviewers(args.repoSlug, pr.id, args.reviewers) }
+    } catch (err) {
+      return {
+        ...ref,
+        reviewers: {
+          requested: [],
+          unresolved: [],
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }
     }
   }
 
@@ -407,19 +427,21 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
   /**
    * Request reviews on an open PR. GitHub's requested-reviewers
    * endpoint adds to the current list, so there is nothing to merge
-   * first. Logins, account ids, node ids, and display names are all
-   * accepted; the client resolves them to logins before the call.
+   * first. Logins, account ids, node ids, and human names are all
+   * accepted; the client resolves them against the repository's
+   * collaborators and reports the ones it could not place.
    */
-  async addReviewers(args: { repoSlug: string; prId: number | string; reviewers: ReadonlyArray<string> }): Promise<void> {
+  async addReviewers(args: { repoSlug: string; prId: number | string; reviewers: ReadonlyArray<string> }): Promise<ScmReviewerOutcome> {
     const prId = Number(args.prId)
     if (!Number.isFinite(prId)) {
       throw new Error(`addReviewers: prId must be numeric, got "${args.prId}"`)
     }
-    await this.clientFor(args.repoSlug).requestReviewers(args.repoSlug, prId, args.reviewers)
+    return this.clientFor(args.repoSlug).requestReviewers(args.repoSlug, prId, args.reviewers)
   }
 
-  async resolveUser(query: string): Promise<{ uuid: string; account_id?: string; nickname?: string; display_name?: string } | null> {
-    return this.client.resolveUser(query)
+  async resolveUser(query: string, opts: { repoSlug?: string } = {}): Promise<ScmUserRef | null> {
+    const client = opts.repoSlug ? this.clientFor(opts.repoSlug) : this.client
+    return client.resolveUser(query, opts)
   }
 
   // ── PR lifecycle ───────────────────────────────────────────────────────────

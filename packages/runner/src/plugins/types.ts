@@ -529,11 +529,25 @@ export interface ScmAddReviewersArgs {
   repoSlug: string
   prId: number | string
   /**
-   * Provider-specific reviewer identifiers. Bitbucket accepts
-   * `{username}` or `{uuid}`; GitHub accepts login names. Display
-   * names ("Jane Doe") are rejected by every provider.
+   * Reviewer identifiers. Bitbucket accepts `{username}` or `{uuid}`;
+   * GitHub accepts logins and also resolves human names ("Jane Doe")
+   * against the repository's collaborators.
    */
   reviewers: ReadonlyArray<string>
+}
+
+/**
+ * Per-name result of a reviewer request, for providers that resolve
+ * human names themselves. `requested` holds the provider identifiers
+ * that were attached; `unresolved` the inputs that matched nobody or
+ * several people; `candidates` who could have been meant. `error` is
+ * set when the provider refused the request after the names resolved.
+ */
+export interface ScmReviewerOutcome {
+  requested: string[]
+  unresolved: string[]
+  candidates?: string[]
+  error?: string
 }
 
 /**
@@ -663,21 +677,30 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   // operation through their MCP server omit the method; plugins
   // without a usable upstream MCP (currently BitBucket) keep
   // implementing them and the `scm_*` proxy falls back to them.
-  createPr?(args: ScmCreatePrArgs): Promise<ExternalRef>
+  /**
+   * `reviewers` on the result reports what happened to `args.reviewers`
+   * when the plugin requests them after creating the PR; plugins that
+   * fail the whole call on a bad reviewer leave it unset.
+   */
+  createPr?(args: ScmCreatePrArgs): Promise<ExternalRef & { reviewers?: ScmReviewerOutcome }>
   /**
    * Add reviewers to an already-open PR. The plugin merges with any
    * existing reviewers (no replacement). Used by the merge gatekeeper
    * when a developer asks to loop in another reviewer mid-flight.
+   * Plugins that resolve names per entry return the outcome; the rest
+   * throw on the first bad entry and return nothing.
    */
-  addReviewers?(args: ScmAddReviewersArgs): Promise<void>
+  addReviewers?(args: ScmAddReviewersArgs): Promise<ScmReviewerOutcome | void>
   /**
    * Resolve a free-form user query (name, nickname, display name,
    * uuid, account_id) to a rich identity record. Returns `null` when
    * nothing matches. Used by the `scm_resolve_user` MCP tool so the
    * agent can map a human-readable identity to the right provider
-   * identifier before calling `addReviewers`.
+   * identifier before calling `addReviewers`. `repoSlug` scopes name
+   * matching to the people who can review on that repository, where
+   * the provider supports it.
    */
-  resolveUser?(query: string): Promise<ScmUserRef | null>
+  resolveUser?(query: string, opts?: { repoSlug?: string }): Promise<ScmUserRef | null>
   getPrStatus?(ref: ExternalRef): Promise<ScmPrStatus>
   listPrComments?(ref: ExternalRef): Promise<ScmPrComment[]>
   postPrComment?(ref: ExternalRef, body: string): Promise<ScmPrComment>

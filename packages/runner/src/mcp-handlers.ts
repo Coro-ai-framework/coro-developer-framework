@@ -4,7 +4,7 @@ import { createIsolatedGit, installRepoGitAuth, persistableCloneUrl } from './cl
 import { ToolContext, PhaseSignals } from './tools/types'
 import { Artifact, WorkItem, Insight, Job } from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
-import type { ScmPluginRuntime, TrackerPluginRuntime } from './plugins/types'
+import type { ScmPluginRuntime, ScmReviewerOutcome, TrackerPluginRuntime } from './plugins/types'
 import { PluginResolutionError } from './plugins/registry'
 import { getIncomingPluginSelectionIssues } from './jobs/plugin-preflight'
 import { mcpTrackerRedirect, type TrackerBinding } from './trackers/binding'
@@ -34,6 +34,30 @@ export function mcpText(data: unknown) {
 
 export function mcpError(msg: string) {
   return { content: [{ type: 'text' as const, text: msg }], isError: true as const }
+}
+
+/**
+ * A reviewer outcome the agent can act on. The hint matters: without
+ * it an agent read a silent partial failure as success and told the
+ * developer reviewers were on a PR that had none.
+ */
+function reviewerReport(outcome: ScmReviewerOutcome): Record<string, unknown> {
+  const missed = outcome.unresolved.length > 0 || Boolean(outcome.error)
+  return {
+    requested: outcome.requested,
+    ...(outcome.unresolved.length > 0 ? { unresolved: outcome.unresolved } : {}),
+    ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.candidates?.length ? { candidates: outcome.candidates } : {}),
+    ...(missed
+      ? {
+          hint:
+            'Only the `requested` reviewers are on the PR. For each `unresolved` name, pick the matching login ' +
+            'from `candidates` (the people with access to this repository) and call scm_add_pr_reviewers with it. ' +
+            'If nobody in `candidates` is that person, they cannot review this repository; tell the developer ' +
+            'instead of guessing.',
+        }
+      : {}),
+  }
 }
 
 /**
@@ -442,7 +466,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     // Persisted by `scm_clone_repo`. Providers that host the branch remotely
     // ignore it; the local provider pushes from it.
     const sourceCheckoutDir = ctx.job.params['repoCheckoutAbsDir']
-    const ref = await r.scm.createPr({
+    const { reviewers: reviewerOutcome, ...ref } = await r.scm.createPr({
       repoSlug: args.repo,
       title: args.title,
       ...(args.description ? { description: args.description } : {}),
@@ -483,6 +507,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       prId: prIdNumber,
       externalId: ref.externalId,
       url: ref.url ?? null,
+      ...(reviewerOutcome ? { reviewers: reviewerReport(reviewerOutcome) } : {}),
       ...(ticketing.length > 0 ? { ticketing } : {}),
     })
   }
@@ -583,12 +608,14 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
         'Post a PR comment tagging the reviewer instead.',
       )
     }
-    await r.scm.addReviewers({
+    const outcome = await r.scm.addReviewers({
       repoSlug: args.repo,
       prId: args.prId,
       reviewers: args.reviewers,
     })
-    return text({ added: args.reviewers.length })
+    if (!outcome) return text({ added: args.reviewers.length })
+    const report = reviewerReport(outcome)
+    return outcome.requested.length === 0 ? error(JSON.stringify(report, null, 2)) : text(report)
   }
 
   const scm_resolve_user = async (args: { pluginId?: string; repo?: string; query: string }) => {
@@ -602,13 +629,15 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
     const q = (args.query ?? '').trim()
     if (!q) return error('query is required')
-    const match = await r.scm.resolveUser(q)
+    const match = await r.scm.resolveUser(q, args.repo ? { repoSlug: args.repo } : {})
     if (!match) {
       return text({
         matched: false,
         query: q,
         hint:
-          'No workspace member matched. If you have an email address, look up the user in your tracker first ' +
+          'Nobody matched, or the name matched several people. Pass `repo` so the lookup is scoped to the ' +
+          'people who can review there, try another spelling of the name, or ask the developer for the exact ' +
+          'username. For an email on Bitbucket, look the user up in your tracker first ' +
           '(e.g. mcp__jira__jira_get_user_profile) — the Atlassian accountId is identical to the Bitbucket ' +
           'account_id and can be passed directly to scm_add_pr_reviewers.',
       })

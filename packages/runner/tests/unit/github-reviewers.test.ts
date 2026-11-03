@@ -94,7 +94,6 @@ describe('GitHubClient reviewers', () => {
       body: { reviewers: ['octocat'] },
     })
     expect(review?.url).toContain('/repos/acme/widgets/pulls/12/requested_reviewers')
-    expect(calls.some(c => c.url.includes('/graphql'))).toBe(false)
     expect(calls.some(c => c.url.includes('/search/users'))).toBe(false)
   })
 
@@ -133,7 +132,10 @@ describe('GitHubClient reviewers', () => {
       return { status: 404, body: 'not found' }
     })
 
-    await expect(client().requestReviewers(REPO, 12, ['Nobody Known'])).rejects.toThrow(/could not resolve/)
+    await expect(client().requestReviewers(REPO, 12, ['Nobody Known'])).resolves.toEqual({
+      requested: [],
+      unresolved: ['Nobody Known'],
+    })
     expect(calls.some(c => c.url.includes('/requested_reviewers'))).toBe(false)
   })
 
@@ -232,6 +234,104 @@ describe('GitHubClient reviewers', () => {
   })
 })
 
+// Enterprise Managed User installs: logins carry an `_<shortcode>`
+// suffix, user search returns nobody, and `membersWithRole` has no
+// `query` argument. Jobs passed "Samir Benali" / "lee.chun-chen" /
+// "Scott Lee" and every PR opened without reviewers, silently.
+describe('GitHubClient reviewers on an EMU organisation', () => {
+  const COLLABORATORS = [
+    { login: 'samir-benali_acme', name: 'Samir Benali', id: 'U_kgDOSamir', databaseId: 10 },
+    { login: 'lee-chun-chen_acme', name: 'Lee Chun-Chen', id: 'U_kgDOLee', databaseId: 11 },
+    { login: 'damien-lee_acme', name: 'Damien Lee', id: 'U_kgDODamien', databaseId: 12 },
+    { login: 'chen-chun-hao_acme', name: 'Jacky Chen', id: 'U_kgDOJacky', databaseId: 13 },
+  ]
+
+  function emuFetch(): Call[] {
+    return installFetch(call => {
+      if (call.url.endsWith('/graphql')) {
+        const query = (call.body as { query: string }).query
+        if (query.includes('collaborators')) {
+          return { body: { data: { repository: { collaborators: { nodes: COLLABORATORS } } } } }
+        }
+        return { body: { data: { organization: null } } }
+      }
+      if (call.url.includes('/search/users')) return { body: { items: [] } }
+      if (call.url.includes('/requested_reviewers')) return { body: {} }
+      const login = call.url.match(/\/users\/([^/?]+)$/)?.[1]
+      const hit = COLLABORATORS.find(c => c.login === decodeURIComponent(login ?? ''))
+      if (hit) return { body: { login: hit.login, id: hit.databaseId, node_id: hit.id, name: hit.name, type: 'User' } }
+      return { status: 404, body: 'not found' }
+    })
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('requests the names that resolve and reports the rest with candidates', async () => {
+    const calls = emuFetch()
+
+    const outcome = await client().requestReviewers(REPO, 66, ['samir benali', 'lee.chun-chen', 'Scott Lee'])
+
+    expect(calls.find(c => c.url.includes('/requested_reviewers'))?.body).toEqual({
+      reviewers: ['samir-benali_acme', 'lee-chun-chen_acme'],
+    })
+    expect(outcome.requested).toEqual(['samir-benali_acme', 'lee-chun-chen_acme'])
+    expect(outcome.unresolved).toEqual(['Scott Lee'])
+    expect(outcome.candidates).toContain('samir-benali_acme (Samir Benali)')
+  })
+
+  it.each([
+    ['Samir Benali (samir-benali_acme)', 'samir-benali_acme'],
+    ['samir-benali_acme', 'samir-benali_acme'],
+    ['samir-benali', 'samir-benali_acme'],
+    ['Benali Samir', 'samir-benali_acme'],
+    ['samir', 'samir-benali_acme'],
+    ['chen chun hao', 'chen-chun-hao_acme'],
+    ['Jacky Chen', 'chen-chun-hao_acme'],
+  ])('resolves %j to %s', async (input, login) => {
+    emuFetch()
+    await expect(client().resolveUser(input, { repoSlug: REPO })).resolves.toMatchObject({ nickname: login })
+  })
+
+  it('refuses a name that fits two collaborators', async () => {
+    const calls = emuFetch()
+    await expect(client().resolveUser('lee', { repoSlug: REPO })).resolves.toBeNull()
+    // An ambiguous collaborator match must not fall through to a public /users/lee.
+    expect(calls.some(c => c.url.endsWith('/users/lee'))).toBe(false)
+  })
+
+  it('looks an EMU login up as a login, not a node id', async () => {
+    const calls = emuFetch()
+    await expect(client().resolveUser('samir-benali_acme')).resolves.toMatchObject({ nickname: 'samir-benali_acme' })
+    expect(calls.some(c => c.url.endsWith('/users/samir-benali_acme'))).toBe(true)
+  })
+
+  it('lists organisation members without the unsupported query argument', async () => {
+    const calls = installFetch(call => {
+      if (call.url.endsWith('/graphql')) {
+        return {
+          body: {
+            data: {
+              organization: {
+                membersWithRole: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [COLLABORATORS[0]],
+                },
+              },
+            },
+          },
+        }
+      }
+      return { status: 404, body: 'not found' }
+    })
+
+    await expect(client().resolveUser('Samir Benali')).resolves.toMatchObject({ nickname: 'samir-benali_acme' })
+    const orgQuery = calls.find(c => c.url.endsWith('/graphql'))?.body as { query: string }
+    expect(orgQuery.query).not.toMatch(/membersWithRole\(query/)
+  })
+})
+
 describe('GitHub plugin reviewers', () => {
   const logger = pino({ level: 'silent' })
 
@@ -275,6 +375,46 @@ describe('GitHub plugin reviewers', () => {
       nickname: 'octocat',
       uuid: OCTOCAT.node_id,
     })
+  })
+
+  it('createPr reports reviewers it could not request instead of dropping them', async () => {
+    installFetch(call => {
+      if (call.method === 'POST' && call.url.endsWith('/repos/acme/widgets/pulls')) {
+        return {
+          body: {
+            number: 66,
+            title: 't',
+            body: '',
+            state: 'open',
+            merged: false,
+            head: { ref: 'feature' },
+            base: { ref: 'main' },
+            user: { login: 'bot' },
+            created_at: '',
+            updated_at: '',
+            html_url: 'https://github.com/acme/widgets/pull/66',
+          },
+        }
+      }
+      const login = call.url.match(/\/users\/([^/?]+)$/)?.[1]
+      const user = login ? userByLogin(decodeURIComponent(login)) : undefined
+      if (user) return { body: user }
+      if (call.url.includes('/requested_reviewers')) return { body: {} }
+      if (call.url.endsWith('/graphql')) return { body: { data: { organization: null } } }
+      if (call.url.includes('/search/users')) return { body: { items: [] } }
+      return { status: 404, body: 'not found' }
+    })
+
+    const scm = await plugin()
+    const ref = await scm.createPr!({
+      repoSlug: REPO,
+      title: 't',
+      sourceBranch: 'feature',
+      reviewers: ['octocat', 'Nobody Known'],
+    })
+
+    expect(ref.externalId).toBe('66')
+    expect(ref.reviewers).toEqual({ requested: ['octocat'], unresolved: ['Nobody Known'] })
   })
 
   it('rejects a non-numeric pull request id before calling GitHub', async () => {

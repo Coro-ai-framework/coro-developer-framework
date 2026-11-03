@@ -83,8 +83,8 @@ Generic Coro tools (provider-neutral, always available):
 | `scm_list_pr_comments` | Read all comments on the PR |
 | `scm_post_pr_comment` | Post a top-level comment on the PR |
 | `scm_reply_to_comment` | Reply in-thread to a specific comment (pass the `parentCommentId` from `scm_list_pr_comments`) |
-| `scm_add_pr_reviewers` | Add reviewers to the open PR (merges with the existing list; pass usernames or uuids — never display names) |
-| `scm_resolve_user` | Resolve a display name / nickname / uuid / account_id to the SCM-native identifier. Use this when the developer hands you a name and you need a uuid before calling `scm_add_pr_reviewers`. Email is NOT searchable here — for an email, look the user up in the tracker first (see below). |
+| `scm_add_pr_reviewers` | Add reviewers to the open PR (merges with the existing list). GitHub accepts logins or human names and matches them against the repository's collaborators; Bitbucket needs usernames or uuids |
+| `scm_resolve_user` | Resolve a display name / nickname / uuid / account_id to the SCM-native identifier. Pass `repo`. Use this when the developer hands you a name and the provider needs an identifier before `scm_add_pr_reviewers`. Email is NOT searchable here — for an email, look the user up in the tracker first (see below). |
 | `scm_merge_pr` | Merge the PR after approval (runner also stamps `mergedAt` on `job.prMappings` for you) |
 | `get_work_items` | Read the full work-item list and current item |
 | `update_work_item` | Mark the current work item `complete` once all its PRs are merged |
@@ -127,9 +127,10 @@ scm_create_pr({
 })
 ```
 
-3. `scm_create_pr` is **idempotent** — if a PR already exists on the source branch (e.g. you are resuming, or a fix loop updated the branch) it returns the existing `ExternalRef` instead of erroring. Call it unconditionally; do not `curl` the SCM to dedupe first.
-4. **Runner guardrails** block `scm_create_pr` when the description is missing/too short or the diff is oversized. The effective thresholds are in the **Current Job** JSON under `guardrails`. If denied for size, the work item should have been split — route back with `goto_phase("coding")` and a note to split it (do not argue with the tool error).
-5. For each PR opened, post the `pr-link` artefact so it appears on the dashboard:
+3. **Check the reviewers on the result.** When it carries `reviewers`, only `reviewers.requested` were added. For each `unresolved` name, pick the matching login from `candidates` and call `scm_add_pr_reviewers`; if nobody there is that person, say so in your turn summary. Never report reviewers as assigned without seeing them in `requested`.
+4. `scm_create_pr` is **idempotent** — if a PR already exists on the source branch (e.g. you are resuming, or a fix loop updated the branch) it returns the existing `ExternalRef` instead of erroring. Call it unconditionally; do not `curl` the SCM to dedupe first.
+5. **Runner guardrails** block `scm_create_pr` when the description is missing/too short or the diff is oversized. The effective thresholds are in the **Current Job** JSON under `guardrails`. If denied for size, the work item should have been split — route back with `goto_phase("coding")` and a note to split it (do not argue with the tool error).
+6. For each PR opened, post the `pr-link` artefact so it appears on the dashboard:
 
 ```
 post_artifact({

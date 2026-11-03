@@ -90,7 +90,7 @@ export function createCoroMcpServer(
 
       tool(
         'scm_create_pr',
-        'Open a pull request via the configured SCM plugin. Reviewers default to job reviewers when omitted.',
+        'Open a pull request via the configured SCM plugin. Reviewers default to job reviewers when omitted. When the result carries `reviewers`, only its `requested` entries were added — follow its hint for any `unresolved` names.',
         {
           pluginId: z.string().optional(),
           repo: z.string(),
@@ -159,7 +159,7 @@ export function createCoroMcpServer(
 
       tool(
         'scm_add_pr_reviewers',
-        'Add reviewers to an already-open pull request via the configured SCM plugin. Pass usernames or uuids — never display names. Reviewers are merged with the existing list, not replaced. If the active plugin does not support this op, falls back to a clear error so the agent can post a PR comment instead.',
+        'Add reviewers to an already-open pull request via the configured SCM plugin. Reviewers are merged with the existing list, not replaced. GitHub accepts logins or human names ("Samir Benali") and matches names against the repository\'s collaborators; the result lists `requested`, any `unresolved` names, and `candidates` to pick a login from. Bitbucket needs usernames or uuids (resolve names with scm_resolve_user first). If the active plugin does not support this op, falls back to a clear error so the agent can post a PR comment instead.',
         {
           pluginId: z.string().optional(),
           repo: z.string(),
@@ -171,7 +171,7 @@ export function createCoroMcpServer(
 
       tool(
         'scm_resolve_user',
-        'Resolve a free-form user query (display name, nickname, uuid, or account_id) to a provider-canonical identity via the configured SCM plugin. Returns { uuid, account_id?, nickname?, display_name? } when matched, or a no-match hint. Email is NOT searchable: look the user up in your tracker first (e.g. mcp__jira__jira_get_user_profile) and pass the resulting accountId here or directly to scm_add_pr_reviewers — Atlassian accountId === Bitbucket account_id.',
+        'Resolve a free-form user query (display name, nickname, uuid, or account_id) to a provider-canonical identity via the configured SCM plugin. Pass `repo` so names are matched against the people who can review there. Returns { uuid, account_id?, nickname?, display_name? } when matched, or a no-match hint. Email is NOT searchable: look the user up in your tracker first (e.g. mcp__jira__jira_get_user_profile) and pass the resulting accountId here or directly to scm_add_pr_reviewers — Atlassian accountId === Bitbucket account_id.',
         {
           pluginId: z.string().optional(),
           repo: z.string().optional(),
