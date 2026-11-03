@@ -28,6 +28,7 @@ import { evaluateReadiness } from './readiness'
 import LlmProvidersSection from './sections/LlmProvidersSection'
 import SourceControlSection from './sections/SourceControlSection'
 import IssueTrackerSection from './sections/IssueTrackerSection'
+import TicketManagementSection from './sections/TicketManagementSection'
 import PluginsSection from './sections/PluginsSection'
 import McpServersSection from './sections/McpServersSection'
 import PathsSection from './sections/PathsSection'
@@ -41,6 +42,7 @@ const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   'llm-provider': LlmProvidersSection,
   'source-control': SourceControlSection,
   'issue-tracker': IssueTrackerSection,
+  ticketing: TicketManagementSection,
   plugins: PluginsSection,
   mcp: McpServersSection,
   paths: PathsSection,

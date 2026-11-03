@@ -12,6 +12,13 @@ import type { CoachModeConfig, IntakeConfig } from '../../lib/coach-mode'
 import type { PluginAuthMethodDescriptor } from '../../lib/plugin-catalog-types'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 import { invalidateProviderCatalogCache } from '../../hooks/useProviderCatalog'
+import {
+  ticketingDraftOf,
+  ticketingPayload,
+  type ResolvedTicketingPolicy,
+  type TicketingDoc,
+  type TicketingPresets,
+} from '../../lib/ticketing-settings'
 
 // ── Persisted config shapes ─────────────────────────────────────────────────
 //
@@ -180,6 +187,8 @@ export interface ConfigResponse {
     upstream?: UpstreamConfigShape
     /** Optional structured-decision layer. `apiKey` arrives redacted. */
     decision?: DecisionConfigShape
+    /** Ticket management policy. Absent means the `minimal` preset. */
+    ticketing?: Record<string, unknown>
   } | null
   configPath: string
   mode: 'hybrid' | 'local' | 'legacy'
@@ -199,6 +208,10 @@ export interface ConfigResponse {
     upstreamConfigured?: boolean
     /** True when a non-off mode and an API key are both resolved. */
     decisionConfigured?: boolean
+    /** The saved ticketing policy, before repo/project overrides. */
+    ticketing?: ResolvedTicketingPolicy
+    /** Each preset expanded over the built-in defaults. */
+    ticketingPresets?: TicketingPresets
   }
   configError?: string
   rawConfig?: unknown
@@ -260,6 +273,10 @@ export interface SettingsDraft {
   decisionOverseerScope: 'all' | 'campaigns' | 'off'
   decisionOverseerOnFlag: 'park' | 'flag-only'
   decisionSites: Record<string, DecisionModeDraft>
+  // Ticket management: the top-level policy as a document, and the
+  // repo/project overrides as JSON text.
+  ticketing: TicketingDoc
+  ticketingOverridesText: string
 }
 
 const EMPTY_DRAFT: SettingsDraft = {
@@ -289,6 +306,8 @@ const EMPTY_DRAFT: SettingsDraft = {
   decisionOverseerScope: 'all',
   decisionOverseerOnFlag: 'park',
   decisionSites: {},
+  ticketing: {},
+  ticketingOverridesText: '[]',
 }
 
 // ── Section identity ────────────────────────────────────────────────────────
@@ -298,6 +317,7 @@ export type SettingsSectionId =
   | 'llm-provider'
   | 'source-control'
   | 'issue-tracker'
+  | 'ticketing'
   | 'plugins'
   | 'mcp'
   | 'paths'
@@ -333,6 +353,8 @@ const STATIC_FIELD_TO_SECTION: Partial<Record<keyof SettingsDraft, SettingsSecti
   decisionOverseerScope: 'decision-layer',
   decisionOverseerOnFlag: 'decision-layer',
   decisionSites: 'decision-layer',
+  ticketing: 'ticketing',
+  ticketingOverridesText: 'ticketing',
 }
 
 // ── Context shape ───────────────────────────────────────────────────────────
@@ -442,6 +464,7 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     enabled: r.enabled !== false,
   }))
   const guardrailsRulesText = JSON.stringify(cfg?.guardrails?.rules ?? [], null, 2)
+  const ticketing = ticketingDraftOf(cfg.ticketing)
 
   return {
     llmDefaultProvider: cfg.llm?.defaultProvider ?? '',
@@ -470,6 +493,8 @@ function configToDraft(response: ConfigResponse): SettingsDraft {
     decisionOverseerScope: cfg.decision?.overseer?.scope ?? 'all',
     decisionOverseerOnFlag: cfg.decision?.overseer?.onFlag ?? 'park',
     decisionSites: { ...(cfg.decision?.sites ?? {}) },
+    ticketing: ticketing.doc,
+    ticketingOverridesText: ticketing.overridesText,
   }
 }
 
@@ -906,6 +931,12 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
           onFlag: draft.decisionOverseerOnFlag,
         },
       }
+    }
+
+    // Sent whole: the server replaces the block, so a removed override
+    // or a field reset to its preset value is removed on disk too.
+    if (dirtyFields.has('ticketing') || dirtyFields.has('ticketingOverridesText')) {
+      body['ticketing'] = ticketingPayload(draft.ticketing, draft.ticketingOverridesText)
     }
 
     return body

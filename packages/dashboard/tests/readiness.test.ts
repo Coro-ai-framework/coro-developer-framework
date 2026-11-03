@@ -42,6 +42,8 @@ function makeDraft(overrides: Partial<SettingsDraft> = {}): SettingsDraft {
     decisionOverseerScope: 'all',
     decisionOverseerOnFlag: 'park',
     decisionSites: {},
+    ticketing: {},
+    ticketingOverridesText: '[]',
     ...overrides,
   }
 }

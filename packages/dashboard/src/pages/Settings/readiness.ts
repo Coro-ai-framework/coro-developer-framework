@@ -1,4 +1,5 @@
 import type { SettingStatus } from '../../components/settings/StatusBadge'
+import { PRESET_LABELS, presetOf } from '../../lib/ticketing-settings'
 import type {
   SettingsDraft,
   SettingsSectionId,
@@ -238,6 +239,12 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
       detail: draft.guardrailsEnabled
         ? `${draft.guardrailRules.filter(r => r.enabled).length} rule(s) active`
         : 'Disabled',
+    },
+    ticketing: {
+      status: 'optional',
+      detail: draft.ticketing['enabled'] === false
+        ? 'Ticket updates are off'
+        : `${PRESET_LABELS[presetOf(draft.ticketing)].title} preset`,
     },
     contribution: {
       // A repository URL is what switches contribution on; the fork owner
