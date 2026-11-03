@@ -1,3 +1,5 @@
+import type { IntakeTrackerPrompt } from './tracker'
+
 export interface IntakeMessage {
   role: 'user' | 'assistant'
   content: string
@@ -20,6 +22,9 @@ export interface IntakePromptOptions {
   pastJobsEnabled?: boolean
   /** scm_checkout is registered. Independent of shell/file access. */
   checkoutEnabled?: boolean
+  /** The tracker_* lookup tools are registered (a Coro tracker plugin answers). */
+  trackerToolsEnabled?: boolean
+  tracker?: IntakeTrackerPrompt
   planModeMcpServerIds?: string[]
   subagentsEnabled?: boolean
   access?: {
@@ -41,12 +46,70 @@ const READ_ONLY_TOOL_RULES_TAIL = `- Lookup tools never write. Shell and file wr
 const READ_ONLY_TOOL_RULES = `${READ_ONLY_TOOL_RULES_HEAD}
 ${READ_ONLY_TOOL_RULES_TAIL}`
 
+const PLUGIN_TRACKER_TOOL_LINES = `- tracker_get_issue: when the user names a ticket key (e.g. PROJ-123) or pastes a tracker URL. Extract the key from the last path segment of URLs like https://example.atlassian.net/browse/WS-5144 → WS-5144. Do not ask them to retype a key that is already in the URL.
+- tracker_get_comments: after reading a ticket, when the discussion likely carries decisions or clarifications the description omits. Comments are not part of tracker_get_issue.
+- tracker_search_issues: when the user describes work but you suspect a tracker entry already exists, or when you want to know whether this has been attempted before.
+`
+
+function trackerToolLines(options: IntakePromptOptions): string {
+  const tracker = options.tracker
+  if (tracker?.source !== 'mcp') return options.trackerToolsEnabled ? PLUGIN_TRACKER_TOOL_LINES : ''
+  if (tracker.readsOff) {
+    return `- Tickets (${tracker.displayName}): reading tickets is turned off for plan mode. If the developer names a ticket, ask them to paste the parts that matter.\n`
+  }
+  const { getIssue, getComments, searchIssues } = tracker.readTools
+  if (!getIssue && !searchIssues) {
+    return `- Tickets (${tracker.displayName}): its tools are turned off for this conversation. If the developer names a ticket, ask them to paste the parts that matter or to turn ${tracker.displayName} back on.\n`
+  }
+  const lines = [
+    getIssue
+      ? `- ${getIssue} (${tracker.displayName}): when the user names a ticket key (e.g. PROJ-123) or pastes a tracker URL. Extract the key from the last path segment of URLs like https://example.atlassian.net/browse/WS-5144 → WS-5144. Do not ask them to retype a key that is already in the URL.`
+      : null,
+    getComments && getComments !== getIssue
+      ? `- ${getComments}: after reading a ticket, when the discussion likely carries decisions or clarifications the description omits.`
+      : null,
+    searchIssues
+      ? `- ${searchIssues}: when the user describes work but you suspect a tracker entry already exists, or when you want to know whether this has been attempted before.`
+      : null,
+    ...tracker.notes.map(note => `  Note: ${note}`),
+  ]
+  return `${lines.filter(Boolean).join('\n')}\n`
+}
+
+function runTicketFieldsSection(tracker: IntakeTrackerPrompt | undefined): { schema: string; guidance: string } {
+  if (!tracker) return { schema: '', guidance: '' }
+  const schema = `
+  "trackerRef": { "pluginId": "${tracker.refId}", "externalId": "PROJ-123", "url": "https://…" },`
+  const lines = [
+    `- "trackerRef": include it when the work comes from a ticket you read, with "pluginId" exactly "${tracker.refId}". Omit it when there is no ticket. It tells the job which ticket this run belongs to${tracker.writesEnabled ? ' so it can post the updates the team\'s ticketing policy asks for' : ''}.`,
+  ]
+  if (tracker.writesEnabled) {
+    lines.push(
+      '- "ticketing" (optional, not shown above): omit it unless the developer asked for different ticket updates for this run. { "enabled": false } leaves tickets untouched; { "preset": "status-sync" } moves the ticket through its statuses; { "preset": "subtasks" } adds a sub-ticket per work item. Do not invent other keys.',
+    )
+    if (tracker.createSourceTicket === 'ask') {
+      lines.push(
+        '- When there is no ticket for this work, ask the developer once, before emitting the run, whether the job should create one. If yes, set "ticketing": { "createSourceTicket": { "mode": "auto" } }.',
+      )
+    } else if (tracker.createSourceTicket === 'auto') {
+      lines.push('- When there is no trackerRef, the job creates a ticket for this work itself. Do not create one here.')
+    }
+  } else {
+    lines.push('- Ticket updates are turned off for this team, so omit "ticketing". The job only reads the ticket.')
+  }
+  return {
+    schema,
+    guidance: `\nTicket fields on the run (plan mode never changes tickets itself — the job does, after dispatch):\n${lines.join('\n')}\n`,
+  }
+}
+
 export function buildIntakeSystemPrompt(context: IntakeContext, options: IntakePromptOptions = {}): string {
   const workflowsJson = JSON.stringify(context.availableWorkflows, null, 2)
   const recentReposJson = JSON.stringify(context.recentRepos, null, 2)
   const recentReviewersJson = JSON.stringify(context.recentReviewers, null, 2)
   const localeHint = context.userLocale ? `\nUser locale hint: ${context.userLocale}` : ''
   const planModeMcpIds = options.planModeMcpServerIds ?? []
+  const ticketFields = runTicketFieldsSection(options.toolsEnabled ? options.tracker : undefined)
 
   const planModeMcpSection = planModeMcpIds.length > 0
     ? `
@@ -99,10 +162,7 @@ ${options.checkoutEnabled
   const toolsSection = options.toolsEnabled
     ? `
 Tools (read-only — this is how you investigate):
-- tracker_get_issue: when the user names a ticket key (e.g. PROJ-123) or pastes a tracker URL. Extract the key from the last path segment of URLs like https://example.atlassian.net/browse/WS-5144 → WS-5144. Do not ask them to retype a key that is already in the URL.
-- tracker_get_comments: after reading a ticket, when the discussion likely carries decisions or clarifications the description omits. Comments are not part of tracker_get_issue.
-- tracker_search_issues: when the user describes work but you suspect a tracker entry already exists, or when you want to know whether this has been attempted before.
-- scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directories that look relevant.
+${trackerToolLines(options)}- scm_list_files: to discover the repo layout. Start here when you don't already know the structure — call once on the repo root (omit "path" or pass ""), then descend into the directories that look relevant.
 - scm_read_file: when you need a file's contents. Confirm the path with scm_list_files first; do not guess paths.
 - scm_search_code: when the user names a symbol or string and you want to find it. On Bitbucket Cloud this can legitimately return 0 hits even when the symbol exists (workspaces below Standard plan are not in the search index), so do not retry the same search more than once — switch to scm_list_files instead.
 ${options.checkoutEnabled ? `- scm_checkout: read-only snapshot of a repository (shallow, no git history) in the scratch directory. Use it for broad questions or more than a few files, then Read/Grep/Glob the returned path. Use scm_read_file / scm_list_files for one to three known files. Never clone with the shell. .coro-source.json names the commit to cite. If a checkout path from an earlier turn is gone, call scm_checkout again; it is idempotent.\n` : ''}${pastJobsSection}${planModeMcpSection}${subagentsSection}${accessSection}
@@ -111,7 +171,7 @@ Tool rules:
 ${READ_ONLY_TOOL_RULES_HEAD}
 ${options.pastJobsEnabled ? '- Call list_past_jobs before guessing a job id. get_past_job is a catalog — never expect file bodies from it. Read artefacts one at a time with read_past_job_artifact; crawl the workspace with list_past_job_files / read_past_job_file. If a read is truncated, continue from nextOffset. Fold what you learned into the run description — the autonomous agent does not get these tool results. Do not abandon a past job for the live repo until the workspace is missing.\n' : ''}${READ_ONLY_TOOL_RULES_TAIL}
 - Your own prior tool results are replayed to you inside <evidence> blocks on your earlier turns. Read them before calling anything — re-reading a file that is already in your evidence wastes the developer's money and tells you nothing new.
-- When the developer names a ticket, read it (and its comments when the thread looks load-bearing) and fold the substance into your investigation. The autonomous agent that runs later does NOT get the ticket — only the run description you eventually write. Never write "see PROJ-123" and stop there.
+- When the developer names a ticket, read it (and its comments when the thread looks load-bearing) and fold the substance into your investigation. The autonomous agent that runs later works from the run description you eventually write, not from your ticket reads. Never write "see PROJ-123" and stop there.
 `
     : ''
 
@@ -207,12 +267,12 @@ Run schema (emit EXACTLY this shape inside the <run> tags):
 {
   "repo": "org/repo-name",
   "serviceName": "short human label",
-  "description": "everything the autonomous agent needs: what to change, where, acceptance criteria, constraints, edge cases, and the decisions reached in this conversation. If a tracker ticket was involved, restate its content here — the agent cannot read the ticket.",
+  "description": "everything the autonomous agent needs: what to change, where, acceptance criteria, constraints, edge cases, and the decisions reached in this conversation. If a tracker ticket was involved, restate the parts that matter here — the description is what the agent works from.",
   "reviewers": ["alice", "bob"],
-  "workflowPath": "workflows/job/workflow.md",
+  "workflowPath": "workflows/job/workflow.md",${ticketFields.schema}
   "interactive": true
 }
-</run>`
+</run>${ticketFields.guidance}`
 }
 
 export function buildIntakeSubagentSystemPrompt(opts?: { scratchDir?: string; checkoutEnabled?: boolean }): string {

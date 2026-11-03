@@ -25,6 +25,8 @@ function cardToAssistantContent(card: { type: string; data: unknown }): string |
       reviewers: parseReviewersList(run.reviewers),
       workflowPath: run.workflowPath,
       interactive: run.interactive,
+      ...(run.trackerRef ? { trackerRef: run.trackerRef } : {}),
+      ...(run.ticketing ? { ticketing: run.ticketing } : {}),
     })}\n</run>`
   }
   return null

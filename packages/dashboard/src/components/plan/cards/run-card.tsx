@@ -11,7 +11,16 @@ import { Select } from '../../ui/select'
 import { Textarea } from '../../ui/textarea'
 import PhaseTimeline from '../../workflow/phase-timeline'
 import { ApiError, jsonRequest, requestJson } from '../../../lib/http'
-import { parseReviewersList, type RunDraft } from '../../../lib/intake-run'
+import {
+  createsSourceTicket,
+  parseReviewersList,
+  runTicketParams,
+  ticketUpdatesOf,
+  withCreateSourceTicket,
+  withTicketUpdates,
+  type RunDraft,
+  type RunTicketUpdates,
+} from '../../../lib/intake-run'
 import { findSimilarRuns } from '../../../lib/run-history'
 import { usePlanSession } from '../../../providers/plan-session'
 import { PAGE_TITLES } from '../../../lib/run-labels'
@@ -53,6 +62,26 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
     session.updateCard(itemId, { ...data, run: { ...run, ...patch } })
   }
 
+  const ticketUpdates = ticketUpdatesOf(run.ticketing)
+
+  function patchTicketKey(value: string) {
+    const key = value.trim()
+    if (!key) {
+      patchRun({ trackerRef: undefined })
+      return
+    }
+    // The URL belongs to the ticket plan mode read; a different key needs a different link.
+    const keepUrl = run.trackerRef?.externalId === key && run.trackerRef.url
+    patchRun({
+      trackerRef: {
+        externalId: value,
+        ...(run.trackerRef?.pluginId ? { pluginId: run.trackerRef.pluginId } : {}),
+        ...(keepUrl ? { url: run.trackerRef!.url } : {}),
+      },
+      ticketing: withCreateSourceTicket(run.ticketing, false),
+    })
+  }
+
   async function dispatch() {
     if (startBlocked) return
     setSubmitting(true)
@@ -67,7 +96,7 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
         description: run.description.trim(),
         reviewers: parseReviewersList(run.reviewers),
         interactive: run.interactive,
-        params: { investigationId: session.sessionId },
+        params: { investigationId: session.sessionId, ...runTicketParams(run) },
       }
       const result = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
       session.markCardDispatched(itemId, result.jobId)
@@ -119,6 +148,7 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
       <Badge variant={run.interactive ? 'accent' : 'neutral'}>
         {run.interactive ? 'Interactive' : 'Autonomous'}
       </Badge>
+      {run.trackerRef ? <Badge variant="neutral">{run.trackerRef.externalId}</Badge> : null}
       {state === 'superseded' ? <Badge variant="neutral">Superseded</Badge> : null}
     </>
   )
@@ -183,6 +213,41 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
           disabled={state !== 'draft'}
         />
       </Field>
+      <Field label="Ticket" hint="The job reads this ticket and posts the updates chosen below.">
+        <Input
+          value={run.trackerRef?.externalId ?? ''}
+          onChange={e => patchTicketKey(e.target.value)}
+          placeholder="PROJ-123 (optional)"
+          disabled={state !== 'draft'}
+        />
+      </Field>
+      <Field label="Ticket updates">
+        <Select
+          value={ticketUpdates}
+          onChange={e => {
+            const choice = e.target.value as RunTicketUpdates
+            if (choice !== 'custom') patchRun({ ticketing: withTicketUpdates(run.ticketing, choice) })
+          }}
+          disabled={state !== 'draft'}
+        >
+          <option value="default">Team default (Settings → Ticket management)</option>
+          <option value="off">Leave tickets alone</option>
+          <option value="status-sync">Move the ticket through its statuses</option>
+          <option value="subtasks">Statuses plus a sub-ticket per work item</option>
+          {ticketUpdates === 'custom' ? <option value="custom">Custom (set in plan mode)</option> : null}
+        </Select>
+      </Field>
+      {!run.trackerRef && ticketUpdates !== 'off' ? (
+        <label className="flex items-center gap-2 text-[13px] text-fg">
+          <input
+            type="checkbox"
+            checked={createsSourceTicket(run.ticketing)}
+            onChange={e => patchRun({ ticketing: withCreateSourceTicket(run.ticketing, e.target.checked) })}
+            disabled={state !== 'draft'}
+          />
+          Create a ticket for this work
+        </label>
+      ) : null}
       <Field label="Workflow">
         <Select
           value={run.workflowPath}

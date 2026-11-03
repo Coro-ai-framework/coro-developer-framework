@@ -142,6 +142,8 @@ Plan mode can use a shell, fetch web pages, and read or write a per-conversation
 
 Each capability is Off, Ask, or Allow for that conversation. Ask pauses the tool call until the developer answers in the dashboard. Allow-rules (`Shell(git clone:*)`, `Web(domain:github.com)`, `Files(read)`, `mcp__linear__*`) skip the prompt. Commands that can change something outside the scratch directory (`git push`, `gh pr create`, `curl -X POST`, and similar) can only be approved once. The gate lives in `packages/runner/src/intake/permissions.ts` and reaches executors through `ChatRequest.permissionGate`. Subagents inherit grants but never prompt.
 
+The issue tracker is the one exception to per-capability modes, and it goes both ways (`intake/tracker.ts`). Plan mode resolves the tracker the same way a job does. When `ticketing.read.planMode` is on, the bound MCP tracker's read tools are pre-approved, and its configured server is attached even if that server's access is Off. A developer who turns the server Off in this conversation still wins, and deny rules still apply. Every tracker write tool is refused outright: the bound tracker's, and every other tracker-shaped server's. Ticket updates belong to the dispatched job, which applies the ticketing policy. Plan mode can only shape them through the run's `trackerRef` and `ticketing` fields.
+
 ## Job types and workflow routing
 
 Every job carries a `type` and a `workflowPath`. The runner uses these — not hardcoded logic — to decide which workflow and which agents to run. This is how new workflows drop in without changing the infrastructure.

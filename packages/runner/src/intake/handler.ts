@@ -7,7 +7,9 @@ import type { PluginRegistry } from '../plugins/registry'
 import type { Settings } from '../config/settings'
 import type { StateBackend } from '../state/backend'
 import { selectModel, collectUserMcpServers, listUserMcpServerCatalog } from '../jobs/runner'
-import { resolveIntelligenceDir, resolveWorkingDir } from '../config/local-config'
+import { loadLocalConfig, resolveIntelligenceDir, resolveWorkingDir } from '../config/local-config'
+import { resolveTicketingPolicy } from '../config/ticketing'
+import { resolveIntakeTrackerAccess, type IntakeTrackerAccess } from './tracker'
 import {
   buildIntakeTools,
   createIntakeRunTool,
@@ -295,12 +297,30 @@ async function* executeIntakeTurn(
   const accessAtStart = toolsOn ? currentAccess() : null
   const nativeFiles = executor.capabilities?.supportsNativeFileTools === true
   const nativeWeb = executor.capabilities?.supportsNativeWebTools === true
-  const planModeMcpServers = toolsOn
-    ? collectUserMcpServers({
-        logger: baseLogger,
-        filter: id => accessAtStart!.mcp[id] !== 'off',
+  const userMcpServers = toolsOn ? collectUserMcpServers({ logger: baseLogger }) : {}
+  const sessionTurnedOff = (id: string | undefined): boolean =>
+    id !== undefined && getIntakeSession(options.sessionId).toolAccess?.mcp?.[id] === 'off'
+  let trackerAccess: IntakeTrackerAccess | undefined
+  if (toolsOn) {
+    try {
+      trackerAccess = await resolveIntakeTrackerAccess({
+        policy: resolveTicketingPolicy(loadLocalConfig()?.ticketing),
+        registry: options.registry,
+        executor,
+        userMcpServers,
+        cwd: workRoot,
+        logger: log,
       })
-    : {}
+    } catch (err) {
+      log?.warn({ err }, 'intake: tracker resolution failed; continuing without a tracker')
+    }
+  }
+  const trackerServerId = trackerAccess?.attachServerId && !sessionTurnedOff(trackerAccess.attachServerId)
+    ? trackerAccess.attachServerId
+    : undefined
+  const planModeMcpServers = Object.fromEntries(
+    Object.entries(userMcpServers).filter(([id]) => accessAtStart!.mcp[id] !== 'off' || id === trackerServerId),
+  )
   const planModeMcpServerIds = Object.keys(planModeMcpServers)
   const workspace = toolsOn && (!nativeFiles || !nativeWeb)
     ? createWorkspaceTools({ root: workRoot })
@@ -318,6 +338,13 @@ async function* executeIntakeTurn(
         workRoot,
         attachedMcpIds: new Set(planModeMcpServerIds),
         checkoutAvailable,
+        ...(trackerAccess
+          ? {
+              blockedTools: trackerAccess.blockedTools,
+              isPreApproved: (name: string) =>
+                trackerAccess.preApprovedTools.has(name) && !sessionTurnedOff(trackerAccess.accessId),
+            }
+          : {}),
         emit: events.push,
         signal: options.signal,
         getAccess: currentAccess,
@@ -370,11 +397,20 @@ async function* executeIntakeTurn(
     'intake: executor resolved',
   )
 
+  const trackerPrompt = trackerAccess?.prompt
   const systemPrompt = buildIntakeSystemPrompt(options.context, {
     toolsEnabled: hasTools,
     pastJobsEnabled,
     checkoutEnabled,
-    planModeMcpServerIds,
+    trackerToolsEnabled: tools.some(t => t.name === 'tracker_get_issue'),
+    ...(trackerPrompt
+      ? {
+          tracker: trackerPrompt.source === 'mcp' && sessionTurnedOff(trackerAccess?.accessId)
+            ? { ...trackerPrompt, readTools: {} }
+            : trackerPrompt,
+        }
+      : {}),
+    planModeMcpServerIds: planModeMcpServerIds.filter(id => id !== trackerServerId),
     subagentsEnabled: Boolean(subagents),
     ...(accessAtStart
       ? {
@@ -384,7 +420,9 @@ async function* executeIntakeTurn(
             nativeWeb,
             scratchDir: workRoot,
             mcpAttached: planModeMcpServerIds,
-            mcpOnRequest: mcpCatalog.filter(entry => accessAtStart.mcp[entry.id] === 'off').map(entry => entry.id),
+            mcpOnRequest: mcpCatalog
+              .filter(entry => accessAtStart.mcp[entry.id] === 'off' && entry.id !== trackerServerId)
+              .map(entry => entry.id),
           },
         }
       : {}),

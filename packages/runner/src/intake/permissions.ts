@@ -124,8 +124,16 @@ export type ToolClass =
 export function classifyIntakeTool(
   toolName: string,
   input: unknown,
-  ctx: { workRoot: string; attachedMcpIds: ReadonlySet<string>; checkoutAvailable?: boolean },
+  ctx: {
+    workRoot: string
+    attachedMcpIds: ReadonlySet<string>
+    checkoutAvailable?: boolean
+    /** Tool name → refusal reason. Checked before any capability or rule. */
+    blockedTools?: ReadonlyMap<string, string>
+  },
 ): ToolClass {
+  const blocked = ctx.blockedTools?.get(toolName)
+  if (blocked) return { kind: 'deny', reason: blocked }
   if (toolName === 'Bash' || toolName === 'shell') {
     if (readBool(input, 'run_in_background')) {
       return { kind: 'deny', reason: 'Background shells are not available in plan mode; run the command in the foreground.' }
@@ -414,6 +422,9 @@ export function createIntakePermissionBroker(opts: {
   attachedMcpIds: ReadonlySet<string>
   /** When scm_checkout is offered, a shell clone is refused instead of prompted. */
   checkoutAvailable?: boolean
+  blockedTools?: ReadonlyMap<string, string>
+  /** Allowed without a prompt even when the capability's default is off. Deny rules still apply. */
+  isPreApproved?: (toolName: string) => boolean
   emit: (event: BrokerEmitEvent) => void
   signal: AbortSignal
   getAccess: () => ResolvedToolAccess
@@ -490,6 +501,7 @@ export function createIntakePermissionBroker(opts: {
         workRoot: opts.workRoot,
         attachedMcpIds: opts.attachedMcpIds,
         checkoutAvailable: opts.checkoutAvailable,
+        blockedTools: opts.blockedTools,
       })
       if (cls.kind === 'deny') return { allow: false, reason: cls.reason }
       const access = opts.getAccess()
@@ -499,6 +511,7 @@ export function createIntakePermissionBroker(opts: {
           return { allow: false, reason: `Blocked by rule \`${raw}\`.` }
         }
       }
+      if (opts.isPreApproved?.(toolName)) return { allow: true }
       const mode = modeFor(access, cls.capability)
       if (mode === 'off') {
         return {
