@@ -48,7 +48,7 @@ export default function GeneralSection() {
           <Switch
             checked={coachEnabled}
             onCheckedChange={checked => void patchConfig({ coachMode: { enabled: checked, graduateAfterRuns: graduateAfter } })}
-            aria-label="Coach mode"
+            ariaLabel="Coach mode"
           />
         </label>
       </SettingsSection>
@@ -67,7 +67,7 @@ export default function GeneralSection() {
           <Switch
             checked={toolsOn}
             onCheckedChange={checked => void patchConfig({ intake: { ...intake, toolsEnabled: checked } })}
-            aria-label="Plan mode read-only tools"
+            ariaLabel="Plan mode read-only tools"
           />
         </label>
         <label className="flex items-center justify-between gap-4 rounded-xl border border-line bg-overlay/30 p-4">
@@ -81,7 +81,7 @@ export default function GeneralSection() {
             checked={toolsOn && intake?.subagentsEnabled !== false}
             disabled={!toolsOn}
             onCheckedChange={checked => void patchConfig({ intake: { ...intake, subagentsEnabled: checked } })}
-            aria-label="Plan mode subagents"
+            ariaLabel="Plan mode subagents"
           />
         </label>
         <div className={toolsOn ? 'space-y-3' : 'space-y-3 opacity-50'}>

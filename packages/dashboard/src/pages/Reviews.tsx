@@ -167,7 +167,7 @@ export default function Reviews() {
         <StatCard
           label="In progress"
           value={String(stats.active)}
-          description={`${stats.watching} more watched for new commits`}
+          description={stats.watching ? `${stats.watching} more watched for new commits` : 'Queued or reviewing right now'}
           icon={GitPullRequest}
           tone={stats.active ? 'accent' : 'neutral'}
         />
