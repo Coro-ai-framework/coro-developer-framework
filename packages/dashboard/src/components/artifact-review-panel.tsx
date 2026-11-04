@@ -95,10 +95,14 @@ export default function ArtifactReviewPanel({
       <div className="overflow-hidden rounded-2xl border border-line bg-overlay/30">
         <header className="space-y-1 border-b border-line px-4 py-3">
           <div className="text-sm font-semibold text-fg">
-            Review what Coro produced in the <span className="font-mono">{phaseLabel}</span> phase
+            {hasReviewDraft
+              ? 'Review what Coro will post on the pull request'
+              : <>Review what Coro produced in the <span className="font-mono">{phaseLabel}</span> phase</>}
           </div>
           <p className="text-xs text-fg-muted">
-            Read the output below, edit it if needed, then approve or request changes.
+            {hasReviewDraft
+              ? 'Approve it as it is, or tell Coro what to change.'
+              : 'Read the output below, edit it if needed, then approve or request changes.'}
           </p>
         </header>
 

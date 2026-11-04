@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { JobType, type Job, type PrReview, type ReviewEvent } from '@coro-ai/cloud-protocol'
 import { MemoryReviewStore } from '../../src/reviews/store'
 import { ReviewCoordinator } from '../../src/reviews/coordinator'
-import { REVIEW_POLICY_DEFAULTS } from '../../src/reviews/policy'
+import { REVIEW_POLICY_DEFAULTS, reviewsConfigToPolicy, tightenPolicy } from '../../src/reviews/policy'
+import { parseReviewFrontMatter } from '../../src/reviews/workspace'
 import {
   REVIEW_DRAFT_KIND,
   reviewFinish,
@@ -150,6 +151,16 @@ describe('review draft and publish', () => {
 
     expect(h.scm.submitReview).toHaveBeenCalledTimes(1)
     expect(h.draft()).toBeUndefined()
+  })
+})
+
+describe('approveBeforePosting policy', () => {
+  it('maps from config and a repo can turn it on but never off', () => {
+    expect(reviewsConfigToPolicy({ approveBeforePosting: true }).approveBeforePosting).toBe(true)
+    expect(tightenPolicy(REVIEW_POLICY_DEFAULTS, { approveBeforePosting: true }).approveBeforePosting).toBe(true)
+    const strict = { ...REVIEW_POLICY_DEFAULTS, approveBeforePosting: true }
+    expect(tightenPolicy(strict, { approveBeforePosting: false }).approveBeforePosting).toBe(true)
+    expect(parseReviewFrontMatter('---\napproveBeforePosting: true\n---\n').approveBeforePosting).toBe(true)
   })
 })
 

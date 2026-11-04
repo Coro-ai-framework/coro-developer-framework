@@ -218,7 +218,10 @@ export function roundKindLabel(kind: string | undefined): string | undefined {
   return kind ? ROUND_KIND[kind] ?? kind : undefined
 }
 
-export function roundOutcomeMeta(round: ReviewRound): { label: string; tone: Tone; pulse?: boolean } {
+export function roundOutcomeMeta(round: ReviewRound, review?: PrReview): { label: string; tone: Tone; pulse?: boolean } {
+  if (!round.endedAt && round.jobId && review?.awaitingApproval?.jobId === round.jobId) {
+    return { label: 'Waiting for you', tone: 'warning', pulse: true }
+  }
   if (!round.endedAt) return { label: round.jobId ? 'In progress' : 'Preparing', tone: 'accent', pulse: true }
   return ROUND_OUTCOME[round.outcome]
 }

@@ -513,7 +513,7 @@ function RoundsCard({ review }: { review: PrReview }) {
 }
 
 function RoundItem({ review, round }: { review: PrReview; round: ReviewRound }) {
-  const outcome = roundOutcomeMeta(round)
+  const outcome = roundOutcomeMeta(round, review)
   const short = shortCircuitLabel(round)
   const duration = roundDurationMs(round)
   const lenses = Object.entries(round.lensCosts ?? {})
