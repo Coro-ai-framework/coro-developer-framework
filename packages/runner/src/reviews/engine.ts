@@ -34,6 +34,7 @@ export interface ReviewRuntime {
 }
 
 let active: ReviewRuntime | null = null
+let transition: Promise<unknown> = Promise.resolve()
 
 export function getReviewRuntime(): ReviewRuntime | null {
   return active
@@ -43,16 +44,39 @@ export function getReviewRuntime(): ReviewRuntime | null {
  * Apply the reviews block from disk to the live runner. Enabling starts
  * the inbox; disabling stops it. Saving the setting is not enough on its
  * own — the process that is already up has to be told.
+ *
+ * Starting awaits the SCM, so two overlapping calls would each build an
+ * engine and leak the first one's pollers. Calls run one after another.
  */
-export async function syncReviewEngine(
+export function syncReviewEngine(
   ctx: RunnerContext,
   dispatcher: Dispatcher,
   config: LocalConfig,
 ): Promise<ReviewRuntime | null> {
-  ctx.settings.reviews = reviewsConfigToPolicy(config.reviews)
-  active?.stop()
-  if (!ctx.settings.reviews.enabled) return null
-  return startReviewEngine(ctx, dispatcher, config)
+  const next = transition.catch(() => undefined).then(async () => {
+    ctx.settings.reviews = reviewsConfigToPolicy(config.reviews)
+    active?.stop()
+    if (!ctx.settings.reviews.enabled) return null
+    return startReviewEngine(ctx, dispatcher, config)
+  })
+  transition = next
+  return next
+}
+
+/** Start the engine unless one is already up or another call is starting it. */
+export function ensureReviewEngine(
+  ctx: RunnerContext,
+  dispatcher: Dispatcher,
+  config: LocalConfig,
+): Promise<ReviewRuntime | null> {
+  const next = transition.catch(() => undefined).then(async () => {
+    if (active) return active
+    ctx.settings.reviews = reviewsConfigToPolicy(config.reviews)
+    if (!ctx.settings.reviews.enabled) return null
+    return startReviewEngine(ctx, dispatcher, config)
+  })
+  transition = next
+  return next
 }
 
 /**
@@ -195,6 +219,7 @@ export async function createRoundPipeline(
           reviewId: review.id,
           reviewTrigger: kind === 'closing' ? 'pr-review:closing' : kind === 'conversation' || kind === 'command' ? 'pr-review:conversation' : 'pr-review:review',
           roundKind: kind,
+          roundAttempt: events.some(event => event.data['retry'] === true) ? 2 : 1,
           projectContext: 'skip',
           reviewPolicy: round?.policy ?? policy,
           prRef: review.prRef,

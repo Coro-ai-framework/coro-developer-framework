@@ -77,7 +77,15 @@ export interface PrReview {
   ledger: { lastReviewedSha?: string; findings: ReviewFinding[] }
   rounds: ReviewRound[]
   pendingEvents: ReviewPendingEvent[]
-  pendingVerdict?: { verdict: ReviewVerdict; body: string; heldAt: string }
+  pendingVerdict?: {
+    verdict: ReviewVerdict
+    body: string
+    heldAt: string
+    /** Set when the provider holds Coro's comments in a draft review only you can see. */
+    pendingReviewId?: string
+    /** Set when the provider has no drafts and Coro posted nothing yet. */
+    heldComments?: Array<{ path: string; line: number; body: string }>
+  }
   totals: { rounds: number; costUsd: number; inputTokens: number; outputTokens: number }
   spendDay?: { day: string; usd: number }
   /** Present while a round is scheduled; set by the runner, not stored. */

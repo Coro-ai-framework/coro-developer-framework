@@ -8,7 +8,7 @@ import { readFileSync } from 'fs'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import path from 'path'
 import { z } from 'zod'
-import type { HookPolicy, SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
+import { toolMatchesAllowList, type HookPolicy, type SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
 import {
   reviewMarker,
   type Finding,
@@ -178,20 +178,42 @@ function scmFor(ctx: ToolContext, pluginId: string): ScmPluginRuntime {
 }
 
 /** `@architecture` becomes the server ids configured for that role. */
-export function resolveLensMcp(lens: LensConfig, policy: ReviewPolicy): { serverIds: string[]; allowTools: string[] } {
+export function resolveLensMcp(lens: LensConfig, policy: ReviewPolicy): { serverIds: string[]; allowTools: string[]; denyTools: string[] } {
   const serverIds: string[] = []
   const allowTools: string[] = []
+  const denyTools: string[] = []
   for (const entry of lens.mcpServers ?? []) {
     if (entry.startsWith('@')) {
       const role = policy.mcpRoles[entry.slice(1)]
       if (!role) continue
       serverIds.push(...role.servers)
       allowTools.push(...role.allowTools)
+      denyTools.push(...role.denyTools)
     } else {
       serverIds.push(entry)
     }
   }
-  return { serverIds: [...new Set(serverIds)], allowTools }
+  return { serverIds: [...new Set(serverIds)], allowTools, denyTools }
+}
+
+/**
+ * Lenses read. An allow glob such as `mcp__arch__*` cannot be narrowed
+ * ahead of time, so plugin MCP tools are checked per call: an explicit
+ * deny wins, and a write-shaped name is refused unless it is allowed by
+ * its exact name.
+ */
+export function lensToolDecision(
+  toolName: string,
+  mcp: { allowTools: string[]; denyTools: string[] },
+): { allow: boolean; reason?: string } {
+  if (!toolName.startsWith('mcp__') || toolName.startsWith('mcp__coro__')) return { allow: true }
+  if (toolMatchesAllowList(toolName, mcp.denyTools)) {
+    return { allow: false, reason: `${toolName} is denied for review lenses.` }
+  }
+  if (toolNameLooksWritable(toolName) && !mcp.allowTools.includes(toolName)) {
+    return { allow: false, reason: `${toolName} looks like a write. Review lenses only read; allow it by its exact name to override.` }
+  }
+  return { allow: true }
 }
 
 function extractJson(text: string): unknown {
@@ -238,7 +260,16 @@ async function runOneLens(
   const pluginMcpServers = Object.fromEntries(
     Object.entries(phase.pluginMcpServers).filter(([id]) => mcp.serverIds.includes(id)),
   )
-  const hookPolicy: HookPolicy = { ...phase.hookPolicy, allowedTools: allowed }
+  const inherited = phase.hookPolicy.onPreToolUse?.bind(phase.hookPolicy)
+  const hookPolicy: HookPolicy = {
+    ...phase.hookPolicy,
+    allowedTools: allowed,
+    onPreToolUse: async (toolName, input) => {
+      const decision = lensToolDecision(toolName, mcp)
+      if (!decision.allow) return decision
+      return inherited ? inherited(toolName, input) : { allow: true }
+    },
+  }
   const req: SubagentExecutionRequest = {
     name: lens.name,
     systemPrompt,
@@ -252,11 +283,16 @@ async function runOneLens(
     allowedTools: allowed,
     hookPolicy,
     maxTurns: lens.maxTurns ?? 16,
-    signal: new AbortController().signal,
+    signal: phase.signal ?? new AbortController().signal,
     projectContext: 'skip',
     mcpServerIds: mcp.serverIds,
   }
   const first = await executor.runSubagent(req)
+  const usage = {
+    inputTokens: first.usage.inputTokens,
+    outputTokens: first.usage.outputTokens,
+    costUsd: first.usage.totalCostUsd ?? 0,
+  }
   let parsed: LensResult
   try {
     parsed = lensResultSchema.parse(extractJson(first.output))
@@ -265,6 +301,9 @@ async function runOneLens(
       ...req,
       task: `${task}\n\nYour previous output failed validation: ${err instanceof Error ? err.message : String(err)}. Reply with only a fenced JSON object.`,
     })
+    usage.inputTokens += repair.usage.inputTokens
+    usage.outputTokens += repair.usage.outputTokens
+    usage.costUsd += repair.usage.totalCostUsd ?? 0
     parsed = lensResultSchema.parse(extractJson(repair.output))
   }
   if (lens.name === 'architecture') {
@@ -273,12 +312,7 @@ async function runOneLens(
       findings: parsed.findings.filter(finding => (finding.sources?.length ?? 0) > 0),
     }
   }
-  const cost = first.usage.totalCostUsd ?? 0
-  return {
-    name: lens.name,
-    result: parsed,
-    usage: { inputTokens: first.usage.inputTokens, outputTokens: first.usage.outputTokens, costUsd: cost },
-  }
+  return { name: lens.name, result: parsed, usage }
 }
 
 async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -427,13 +461,18 @@ export async function reviewSubmit(
   if (!scm.submitReview) throw new Error('SCM plugin cannot submit a review')
   const headSha = typeof ctx.job.params['headSha'] === 'string' && ctx.job.params['headSha'] ? ctx.job.params['headSha'] : undefined
 
-  const result = await scm.submitReview(review.prRef, {
-    event: submission.event,
-    body,
-    ...(headSha ? { commitSha: headSha } : {}),
-    comments: comments.map(toScmComment),
-  })
-  const pendingReviewId = submission.event === 'pending' ? result.reviewId : undefined
+  // Only providers with real draft reviews may receive a `pending` review;
+  // the others would post it publicly. Coro holds it instead.
+  const holdLocally = submission.event === 'pending' && typeof scm.submitPendingReview !== 'function'
+  const result = holdLocally
+    ? { reviewId: '', commentIds: {} as Record<string, string> }
+    : await scm.submitReview(review.prRef, {
+        event: submission.event,
+        body,
+        ...(headSha ? { commitSha: headSha } : {}),
+        comments: comments.map(toScmComment),
+      })
+  const pendingReviewId = submission.event === 'pending' && !holdLocally ? result.reviewId : undefined
 
   await mutateReview(ctx, fresh => {
     const round = fresh.totals.rounds
@@ -466,18 +505,23 @@ export async function reviewSubmit(
         fresh.ledger.findings.push(finding)
       }
     }
-    if (submission.holdVerdict) {
+    if (submission.holdVerdict || holdLocally) {
       fresh.pendingVerdict = {
         verdict: args.verdict,
         body: args.body,
         ...(pendingReviewId ? { pendingReviewId } : {}),
+        ...(holdLocally && comments.length ? { heldComments: comments.map(toScmComment) } : {}),
         heldAt: new Date().toISOString(),
       }
     } else {
       fresh.pendingVerdict = undefined
     }
   })
-  return { posted: submission.event, held: submission.holdVerdict, comments: comments.length }
+  return {
+    posted: holdLocally ? 'nothing' : submission.event,
+    held: submission.holdVerdict || holdLocally,
+    comments: comments.length,
+  }
 }
 
 function toScmComment(comment: z.infer<typeof commentSchema>) {
@@ -505,22 +549,33 @@ export async function reviewReply(
     replyToComment?: (ref: PrReview['prRef'], parentId: string, body: string) => Promise<unknown>
   }
   const body = `${args.body}\n\n${reviewMarker(review.id)}`
-  if (args.threadId && scm.replyToComment) {
-    await scm.replyToComment(review.prRef, args.threadId, body)
-  } else if (scm.postPrComment) {
+  const matches = (item: Finding) =>
+    (!!args.threadId && item.threadId === args.threadId) || (!!args.commentId && item.commentId === args.commentId)
+  const finding = review.ledger.findings.find(matches)
+  // Replies attach to a comment. GitHub thread ids are GraphQL node ids, not comment ids.
+  const parent = args.commentId ?? finding?.commentId ?? args.threadId
+  let inThread = false
+  if (parent && scm.replyToComment) {
+    try {
+      await scm.replyToComment(review.prRef, parent, body)
+      inThread = true
+    } catch (err) {
+      if (!scm.postPrComment) throw err
+      ctx.logger.warn({ err, parent }, 'review_reply could not reply in thread; posting a top-level comment')
+    }
+  }
+  if (!inThread) {
+    if (!scm.postPrComment) throw new Error('SCM plugin cannot post comments')
     await scm.postPrComment(review.prRef, body)
-  } else {
-    throw new Error('SCM plugin cannot post comments')
   }
   const status = args.findingStatus
   if (status) {
     await mutateReview(ctx, fresh => {
-      const finding = fresh.ledger.findings.find(item =>
-        (args.threadId && item.threadId === args.threadId) || (args.commentId && item.commentId === args.commentId))
-      if (finding) finding.status = status
+      const target = fresh.ledger.findings.find(matches)
+      if (target) target.status = status
     })
   }
-  return { ok: true }
+  return { ok: true, inThread }
 }
 
 export async function reviewResolveThread(

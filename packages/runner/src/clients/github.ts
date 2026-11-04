@@ -660,6 +660,15 @@ export class GitHubClient {
     return created
   }
 
+  /** The inline comments of one review. Creating a review does not return their ids. */
+  async listReviewComments(repoSlug: string, prId: number, reviewId: number): Promise<Array<{ id: number; path: string; line: number | null }>> {
+    const rows = await this.request<Array<{ id: number; path: string; line?: number | null; original_line?: number | null }>>(
+      'GET',
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/reviews/${reviewId}/comments?per_page=100`,
+    )
+    return rows.map(row => ({ id: row.id, path: row.path, line: row.line ?? row.original_line ?? null }))
+  }
+
   async submitPendingReview(repoSlug: string, prId: number, reviewId: number, event: string, body?: string): Promise<void> {
     await this.request(
       'POST',

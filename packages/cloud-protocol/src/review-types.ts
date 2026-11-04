@@ -126,6 +126,11 @@ export interface PendingVerdict {
   body: string
   /** SCM pending-review id when the provider supports draft reviews. */
   pendingReviewId?: string
+  /**
+   * Inline comments held by Coro because the provider has no draft
+   * reviews. Nothing was posted; submitting the verdict posts these.
+   */
+  heldComments?: Array<{ key: string; path: string; line: number; side: 'LEFT' | 'RIGHT'; body: string }>
   heldAt: string
 }
 

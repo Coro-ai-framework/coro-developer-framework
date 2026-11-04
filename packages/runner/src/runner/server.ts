@@ -36,7 +36,7 @@ import { describeTicketingPresets, resolveTicketingPolicy } from '../config/tick
 import type { PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro-ai/plugin-sdk'
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
-import { getReviewRuntime, syncReviewEngine } from '../reviews/engine'
+import { ensureReviewEngine, getReviewRuntime, syncReviewEngine } from '../reviews/engine'
 import { parsePrUrl } from '../reviews/id'
 import type { ScmPluginRuntime } from '../plugins/types'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
@@ -1487,6 +1487,28 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   const reviewNotRunning = 'The review engine is not running. Turn reviews on under Settings → PR reviews.'
 
+  /** An error a review route turns into a status code instead of a 500. */
+  class ReviewHttpError extends Error {
+    constructor(readonly status: number, message: string) {
+      super(message)
+    }
+  }
+
+  /**
+   * Express 4 does not catch a rejected async handler, and an unhandled
+   * rejection takes the runner down. Every review route goes through this.
+   */
+  function reviewRoute(handler: (req: Request, res: Response) => Promise<void>) {
+    return (req: Request, res: Response) => {
+      handler(req, res).catch(err => {
+        if (res.headersSent) return
+        if (err instanceof ReviewHttpError) { res.status(err.status).json({ error: err.message }); return }
+        logger.error({ err, path: req.path }, 'Review request failed')
+        res.status(500).json({ error: (err as Error).message })
+      })
+    }
+  }
+
   function reviewWithSchedule(review: PrReview) {
     const due = getReviewRuntime()?.coordinator.nextRoundAt(review.id)
     return due ? { ...review, nextRoundAt: new Date(due).toISOString() } : review
@@ -1498,20 +1520,29 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     if (!runnerCtx) return null
     const config = loadLocalConfig()
     if (!config?.reviews?.enabled) return null
-    return syncReviewEngine(runnerCtx, dispatcher, config)
+    return ensureReviewEngine(runnerCtx, dispatcher, config)
   }
 
-  app.get('/reviews', async (req: Request, res: Response) => {
-    try {
-      const status = typeof req.query.status === 'string' ? req.query.status : undefined
-      const rows = await stateBackend.reviews.list(status ? { status: status as never } : undefined)
-      res.json(rows.map(reviewWithSchedule))
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message })
-    }
-  })
+  /** Writes go through the coordinator's lock when it is up; with no engine, nothing else writes. */
+  async function updateReview(id: string, fn: (review: PrReview) => Promise<PrReview | null> | PrReview | null) {
+    const runtime = getReviewRuntime()
+    if (runtime) return runtime.coordinator.update(id, fn)
+    const review = await stateBackend.reviews.get(id)
+    if (!review) return null
+    const next = await fn(review)
+    if (!next) return null
+    next.updatedAt = new Date().toISOString()
+    await stateBackend.reviews.save(next)
+    return next
+  }
 
-  app.get('/reviews/status', (_req: Request, res: Response) => {
+  app.get('/reviews', reviewRoute(async (req, res) => {
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined
+    const rows = await stateBackend.reviews.list(status ? { status: status as never } : undefined)
+    res.json(rows.map(reviewWithSchedule))
+  }))
+
+  app.get('/reviews/status', reviewRoute(async (_req, res) => {
     const runtime = getReviewRuntime()
     if (runtime) { res.json(runtime.status()); return }
     const config = loadLocalConfig()
@@ -1522,36 +1553,33 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       eventSource: config?.reviews?.eventSource,
       identity: config?.reviews?.identity,
     })
-  })
+  }))
 
-  app.post('/reviews/inbox/poll', async (_req: Request, res: Response) => {
+  app.post('/reviews/inbox/poll', reviewRoute(async (_req, res) => {
     const runtime = await ensureReviewRuntime()
-    if (!runtime) { res.status(409).json({ error: reviewNotRunning }); return }
+    if (!runtime) throw new ReviewHttpError(409, reviewNotRunning)
     try {
       await runtime.pollInbox()
-      res.json(runtime.status())
     } catch (err) {
-      res.status(409).json({ error: (err as Error).message })
+      throw new ReviewHttpError(409, (err as Error).message)
     }
-  })
+    res.json(runtime.status())
+  }))
 
-  app.get('/reviews/:id', async (req: Request, res: Response) => {
+  app.get('/reviews/:id', reviewRoute(async (req, res) => {
     const review = await stateBackend.reviews.get(String(req.params.id))
-    if (!review) { res.status(404).json({ error: 'Review not found' }); return }
+    if (!review) throw new ReviewHttpError(404, 'Review not found')
     res.json(reviewWithSchedule(review))
-  })
+  }))
 
-  app.post('/reviews', async (req: Request, res: Response) => {
+  app.post('/reviews', reviewRoute(async (req, res) => {
     const runtime = await ensureReviewRuntime()
-    if (!runtime) {
-      res.status(409).json({ error: 'Reviews are off. Turn them on under Settings → PR reviews and save.' })
-      return
-    }
+    if (!runtime) throw new ReviewHttpError(409, 'Reviews are off. Turn them on under Settings → PR reviews and save.')
     const prUrl = typeof req.body?.prUrl === 'string' ? req.body.prUrl.trim() : ''
     const ref = parsePrUrl(prUrl)
-    if (!ref) { res.status(400).json({ error: 'Paste a pull request URL, such as https://github.com/org/repo/pull/1, or owner/repo#1.' }); return }
+    if (!ref) throw new ReviewHttpError(400, 'Paste a pull request URL, such as https://github.com/org/repo/pull/1, or owner/repo#1.')
     const scm = runnerCtx?.plugins.byId(ref.pluginId) as ScmPluginRuntime | undefined
-    if (!scm) { res.status(409).json({ error: `No ${ref.pluginId} connection is configured. Add one under Settings → Integrations.` }); return }
+    if (!scm) throw new ReviewHttpError(409, `No ${ref.pluginId} connection is configured. Add one under Settings → Integrations.`)
     let data: Record<string, unknown> = { url: ref.url }
     if (scm.getPrDetails) {
       try {
@@ -1565,8 +1593,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           baseSha: details.baseSha,
         }
       } catch (err) {
-        res.status(400).json({ error: `Could not read ${ref.url}: ${(err as Error).message}` })
-        return
+        throw new ReviewHttpError(400, `Could not read ${ref.url}: ${(err as Error).message}`)
       }
     }
     const review = await runtime.coordinator.ingest({
@@ -1576,25 +1603,28 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       data,
       source: 'manual',
     })
-    if (!review) { res.status(400).json({ error: 'Could not start a review for that pull request.' }); return }
+    if (!review) throw new ReviewHttpError(400, 'Could not start a review for that pull request.')
     res.status(201).json(reviewWithSchedule(review))
-  })
+  }))
 
   type ReviewControl = 'pause' | 'resume' | 'stop' | 'skip' | 'rerun'
   for (const action of ['pause', 'resume', 'stop', 'skip', 'rerun'] as ReviewControl[]) {
-    app.post(`/reviews/:id/${action}`, async (req: Request, res: Response) => {
+    app.post(`/reviews/:id/${action}`, reviewRoute(async (req, res) => {
       const id = String(req.params.id)
       const runtime = action === 'rerun' || action === 'resume' ? await ensureReviewRuntime() : getReviewRuntime()
       if (!runtime) {
-        const review = await stateBackend.reviews.get(id)
-        if (!review) { res.status(404).json({ error: 'Review not found' }); return }
-        if (action === 'rerun' || action === 'resume') { res.status(409).json({ error: reviewNotRunning }); return }
+        if (action === 'rerun' || action === 'resume') {
+          if (!await stateBackend.reviews.get(id)) throw new ReviewHttpError(404, 'Review not found')
+          throw new ReviewHttpError(409, reviewNotRunning)
+        }
         // With no engine there is no live round to cancel; record the intent so a later start honours it.
-        review.status = action === 'skip' ? 'skipped' : 'paused'
-        review.pauseReason = action === 'skip' ? undefined : 'user'
-        if (action === 'skip') review.pendingEvents = []
-        review.updatedAt = new Date().toISOString()
-        await stateBackend.reviews.save(review)
+        const review = await updateReview(id, current => {
+          current.status = action === 'skip' ? 'skipped' : 'paused'
+          current.pauseReason = action === 'skip' ? undefined : 'user'
+          if (action === 'skip') current.pendingEvents = []
+          return current
+        })
+        if (!review) throw new ReviewHttpError(404, 'Review not found')
         res.json(review)
         return
       }
@@ -1604,100 +1634,96 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           : action === 'stop' ? await coordinator.stop(id)
             : action === 'skip' ? await coordinator.skip(id)
               : await coordinator.requestRound(id)
-      if (!review) { res.status(404).json({ error: 'Review not found' }); return }
+      if (!review) throw new ReviewHttpError(404, 'Review not found')
       res.json(reviewWithSchedule(review))
-    })
+    }))
   }
 
-  app.patch('/reviews/:id/findings/:findingId', async (req: Request, res: Response) => {
+  app.patch('/reviews/:id/findings/:findingId', reviewRoute(async (req, res) => {
     const status = req.body?.status
     if (!['open', 'addressed', 'declined', 'withdrawn'].includes(status)) {
-      res.status(400).json({ error: 'status must be open, addressed, declined, or withdrawn' })
-      return
+      throw new ReviewHttpError(400, 'status must be open, addressed, declined, or withdrawn')
     }
-    const id = String(req.params.id)
     const findingId = String(req.params.findingId)
-    const runtime = getReviewRuntime()
-    let review: PrReview | null
-    if (runtime) {
-      review = await runtime.coordinator.updateFinding(id, findingId, status)
-    } else {
-      review = await stateBackend.reviews.get(id)
-      const finding = review?.ledger.findings.find(item => item.id === findingId)
-      if (review && finding) {
-        finding.status = status
-        review.updatedAt = new Date().toISOString()
-        await stateBackend.reviews.save(review)
-      }
-    }
-    if (!review) { res.status(404).json({ error: 'Review not found' }); return }
+    const review = await updateReview(String(req.params.id), current => {
+      const finding = current.ledger.findings.find(item => item.id === findingId)
+      if (!finding) return null
+      finding.status = status
+      finding.lastTouchedRound = current.totals.rounds
+      return current
+    })
+    if (!review) throw new ReviewHttpError(404, 'Review or finding not found')
     res.json(reviewWithSchedule(review))
-  })
+  }))
 
-  app.delete('/reviews/:id', async (req: Request, res: Response) => {
+  app.delete('/reviews/:id', reviewRoute(async (req, res) => {
     const id = String(req.params.id)
     const runtime = getReviewRuntime()
     if (runtime) {
-      if (!await runtime.coordinator.remove(id)) { res.status(404).json({ error: 'Review not found' }); return }
+      if (!await runtime.coordinator.remove(id)) throw new ReviewHttpError(404, 'Review not found')
     } else {
-      if (!await stateBackend.reviews.get(id)) { res.status(404).json({ error: 'Review not found' }); return }
+      if (!await stateBackend.reviews.get(id)) throw new ReviewHttpError(404, 'Review not found')
       await stateBackend.reviews.delete(id)
     }
     res.status(204).end()
-  })
+  }))
 
-  app.post('/reviews/:id/verdict', async (req: Request, res: Response) => {
-    const id = String(req.params.id)
-    const review = await stateBackend.reviews.get(id)
-    if (!review?.pendingVerdict) { res.status(404).json({ error: 'No pending verdict' }); return }
+  app.post('/reviews/:id/verdict', reviewRoute(async (req, res) => {
     const action = req.body?.action === 'discard' ? 'discard' : req.body?.action === 'edit' ? 'edit' : 'submit'
-    const body = typeof req.body?.body === 'string' ? req.body.body : review.pendingVerdict.body
-    const event = req.body?.event === 'approve' || req.body?.event === 'request_changes' || req.body?.event === 'comment'
-      ? req.body.event as ReviewVerdict
-      : review.pendingVerdict.verdict
-    if (action === 'edit') {
-      review.pendingVerdict = { ...review.pendingVerdict, body, verdict: event }
-    } else if (action === 'submit') {
-      const scm = runnerCtx?.plugins.byId(review.prRef.pluginId) as ScmPluginRuntime | undefined
-      const marked = body.includes(REVIEW_MARKER_PREFIX) ? body : `${body}\n\n${reviewMarker(review.id)}`
-      try {
-        if (scm?.submitPendingReview && review.pendingVerdict.pendingReviewId) {
-          await scm.submitPendingReview(review.prRef, review.pendingVerdict.pendingReviewId, event, marked)
-        } else if (scm?.submitReview) {
-          await scm.submitReview(review.prRef, { event, body: marked, comments: [], commitSha: review.pr.headSha || undefined })
-        } else {
-          res.status(409).json({ error: 'This SCM connection cannot submit reviews.' })
-          return
-        }
-      } catch (err) {
-        res.status(502).json({ error: `The SCM refused the verdict: ${(err as Error).message}` })
-        return
+    const review = await updateReview(String(req.params.id), async current => {
+      const pending = current.pendingVerdict
+      if (!pending) throw new ReviewHttpError(404, 'No pending verdict')
+      const body = typeof req.body?.body === 'string' ? req.body.body : pending.body
+      const event = req.body?.event === 'approve' || req.body?.event === 'request_changes' || req.body?.event === 'comment'
+        ? req.body.event as ReviewVerdict
+        : pending.verdict
+      if (action === 'edit') {
+        current.pendingVerdict = { ...pending, body, verdict: event }
+        return current
       }
-      const latest = review.rounds[review.rounds.length - 1]
-      if (latest) latest.verdict = event
-    }
-    if (action !== 'edit') {
-      review.pendingVerdict = undefined
-      review.ledger.pendingReviewId = undefined
-      if (review.status === 'awaiting-verdict') review.status = 'idle'
-    }
-    review.updatedAt = new Date().toISOString()
-    await stateBackend.reviews.save(review)
+      if (action === 'submit') {
+        const scm = runnerCtx?.plugins.byId(current.prRef.pluginId) as ScmPluginRuntime | undefined
+        const marked = body.includes(REVIEW_MARKER_PREFIX) ? body : `${body}\n\n${reviewMarker(current.id)}`
+        if (!scm?.submitReview && !(scm?.submitPendingReview && pending.pendingReviewId)) {
+          throw new ReviewHttpError(409, 'This SCM connection cannot submit reviews.')
+        }
+        try {
+          if (scm.submitPendingReview && pending.pendingReviewId) {
+            await scm.submitPendingReview(current.prRef, pending.pendingReviewId, event, marked)
+          } else {
+            await scm.submitReview!(current.prRef, {
+              event,
+              body: marked,
+              comments: pending.heldComments ?? [],
+              commitSha: current.pr.headSha || undefined,
+            })
+          }
+        } catch (err) {
+          throw new ReviewHttpError(502, `The SCM refused the verdict: ${(err as Error).message}`)
+        }
+        const latest = current.rounds[current.rounds.length - 1]
+        if (latest) latest.verdict = event
+      }
+      current.pendingVerdict = undefined
+      current.ledger.pendingReviewId = undefined
+      if (current.status === 'awaiting-verdict') current.status = current.pr.state === 'open' ? 'idle' : 'done'
+      return current
+    })
+    if (!review) throw new ReviewHttpError(404, 'Review not found')
     res.json(reviewWithSchedule(review))
-  })
+  }))
 
-  app.get('/reviews-settings', async (_req: Request, res: Response) => {
+  app.get('/reviews-settings', reviewRoute(async (_req, res) => {
     const config = loadLocalConfig()
     res.json(config?.reviews ?? { enabled: false })
-  })
+  }))
 
-  app.put('/reviews-settings', async (req: Request, res: Response) => {
+  app.put('/reviews-settings', reviewRoute(async (req, res) => {
     const existing = loadLocalConfig() ?? ({} as LocalConfig)
     const next = { ...existing, reviews: req.body } as LocalConfig
     const validated = validateLocalConfig(next)
     if (!validated.success) {
-      res.status(400).json({ error: validated.issues.map(issue => issue.message).join('; ') })
-      return
+      throw new ReviewHttpError(400, validated.issues.map(issue => issue.message).join('; '))
     }
     saveLocalConfig(validated.config)
     try {
@@ -1707,7 +1733,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       logger.error({ err }, 'Review engine failed to start')
       res.json({ ...(validated.config.reviews ?? {}), running: false, error: (err as Error).message })
     }
-  })
+  }))
 
   app.get('/retrospectives', async (_req: Request, res: Response) => {
     try {

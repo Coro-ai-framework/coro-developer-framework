@@ -135,14 +135,25 @@ function waitForSettled(store: PrMarkerReviewStore, id: string, untilRoundEnds: 
   })
 }
 
+/** A CI step needs an end. Past this the round is cancelled and the run reports what it has. */
+const ROUND_TIMEOUT_MS = 45 * 60_000
+
 function waitForJob(core: Awaited<ReturnType<typeof createRunnerCore>>, jobId: string): Promise<void> {
   return new Promise(resolve => {
+    const started = Date.now()
+    let cancelling = false
     const timer = setInterval(async () => {
-      const job = await core.stateBackend.getJob(jobId)
-      if (!job) return
-      if (['complete', 'failed', 'escalated', 'cancelled'].includes(job.status)) {
+      const job = await core.stateBackend.getJob(jobId).catch(() => null)
+      if (job && ['complete', 'failed', 'escalated', 'cancelled'].includes(job.status)) {
         clearInterval(timer)
         resolve()
+        return
+      }
+      if (!cancelling && Date.now() - started > ROUND_TIMEOUT_MS) {
+        cancelling = true
+        await core.dispatcher.cancelJob(jobId, 'The review round timed out').catch(() => undefined)
+        // A job that never reached a worker has no stop hook to report it.
+        setTimeout(() => { clearInterval(timer); resolve() }, 30_000)
       }
     }, 1000)
   })

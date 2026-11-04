@@ -105,6 +105,8 @@ export interface CurrentPhaseContext {
   mcpServer: McpServerDescriptor
   /** Plugin MCP servers attached to this phase. */
   pluginMcpServers: Record<string, PluginMcpServerConfig>
+  /** Aborts when the phase is cancelled, so work a tool starts stops with it. */
+  signal?: AbortSignal
 }
 
 // ── Job-control signal types ──────────────────────────────────────────────────

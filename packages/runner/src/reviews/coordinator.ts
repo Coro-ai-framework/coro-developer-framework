@@ -388,6 +388,22 @@ export class ReviewCoordinator {
     })
   }
 
+  /**
+   * A read-modify-write from outside the coordinator, under its lock.
+   * `fn` returns the review to save, or null to leave it untouched.
+   */
+  update(id: string, fn: (review: PrReview) => Promise<PrReview | null> | PrReview | null): Promise<PrReview | null> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return null
+      const next = await fn(review)
+      if (!next) return null
+      next.updatedAt = this.iso()
+      await this.deps.store.save(next)
+      return next
+    })
+  }
+
   updateFinding(id: string, findingId: string, status: FindingStatus): Promise<PrReview | null> {
     return this.locked(id, async () => {
       const review = await this.deps.store.get(id)
@@ -438,8 +454,15 @@ export class ReviewCoordinator {
     this.dueAt.delete(id)
   }
 
+  /**
+   * A due round is never pushed later. The window opens at the first
+   * event and everything inside it shares the round; resetting it per
+   * event would let a busy pull request postpone its round forever.
+   */
   private schedule(id: string, delayMs = this.deps.policy.debounceSec * 1000): void {
     if (this.running.has(id)) return
+    const due = this.dueAt.get(id)
+    if (due !== undefined && this.timers.has(id) && due <= this.now() + delayMs) return
     this.clearTimer(id)
     const setTimer = this.deps.setTimer ?? ((fn, ms) => {
       const handle = setTimeout(fn, ms)
@@ -670,7 +693,7 @@ export class ReviewCoordinator {
       return false
     }
     if (event.kind === 'review-request-removed') {
-      const openThreads = review.ledger.findings.some(f => f.status === 'open' && f.threadId)
+      const openThreads = review.ledger.findings.some(f => f.status === 'open' && (f.threadId || f.commentId))
       if (!openThreads) {
         review.status = 'paused'
         review.pauseReason = 'review-request-removed'
@@ -810,7 +833,7 @@ function eventToKind(event: ReviewEvent, review: PrReview): RoundKind {
 function applyDeterministicClose(review: PrReview): void {
   for (const finding of review.ledger.findings) {
     if (finding.status !== 'open') continue
-    const status: FindingStatus = finding.threadId ? 'addressed' : 'outdated'
+    const status: FindingStatus = finding.threadId || finding.commentId ? 'addressed' : 'outdated'
     finding.status = status
     finding.lastTouchedRound = review.totals.rounds + 1
   }
@@ -824,7 +847,7 @@ export function isIrrelevantConversation(review: PrReview, events: ReviewEvent[]
     const body = typeof event.data['body'] === 'string' ? event.data['body'] : ''
     if (/@coro\b/i.test(body)) return false
     const threadId = typeof event.data['threadId'] === 'string' ? event.data['threadId'] : undefined
-    if (threadId && review.ledger.findings.some(f => f.threadId === threadId)) return false
+    if (threadId && review.ledger.findings.some(f => f.threadId === threadId || f.commentId === threadId)) return false
     return true
   })
 }

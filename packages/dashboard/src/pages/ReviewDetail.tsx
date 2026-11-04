@@ -235,6 +235,14 @@ function StateBanner({ review, onResume, onRerun, busy }: { review: PrReview; on
   return null
 }
 
+/** What is already on the pull request depends on how the provider holds a draft. */
+function heldVerdictCopy(pending: NonNullable<PrReview['pendingVerdict']>): string {
+  const held = pending.heldComments?.length ?? 0
+  if (held > 0) return `Nothing is posted yet. Submitting posts the summary and ${held} inline comment${held === 1 ? '' : 's'}.`
+  if (pending.pendingReviewId) return "Coro's comments sit in a draft review only you can see. Submitting publishes them with this verdict."
+  return 'Inline comments are already on the pull request. Only the verdict waits for you.'
+}
+
 function VerdictCard({ review, onUpdated, onNotice }: { review: PrReview; onUpdated: (review: PrReview) => void; onNotice: (notice: Notice) => void }) {
   const pending = review.pendingVerdict!
   const [body, setBody] = useState(pending.body)
@@ -275,9 +283,7 @@ function VerdictCard({ review, onUpdated, onNotice }: { review: PrReview; onUpda
           <CardTitle className="text-base">Coro recommends: {VERDICT_LABEL[pending.verdict]}</CardTitle>
           <span className="text-[12px] text-fg-subtle">Held {formatRelativeTime(pending.heldAt)}</span>
         </div>
-        <CardDescription>
-          Nothing is posted until you submit. Edit the summary or change the verdict first if you disagree.
-        </CardDescription>
+        <CardDescription>{heldVerdictCopy(pending)} Edit the summary or change the verdict first if you disagree.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <SegmentedControl<ReviewVerdict>

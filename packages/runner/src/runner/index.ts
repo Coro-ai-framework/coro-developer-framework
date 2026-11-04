@@ -89,7 +89,7 @@ import { createDecisionClient } from '../clients/decision'
 import { wireCloudJobDispatch } from './hybrid-dispatcher'
 import { createRunnerServer } from './server'
 import { createRunnerCore, seedExecutorEnvCredentials } from './core'
-import { startReviewEngine } from '../reviews/engine'
+import { ensureReviewEngine } from '../reviews/engine'
 
 export interface RunnerOptions {
   configPath?: string
@@ -135,7 +135,7 @@ export async function startLocalRunner(
     runnerCtx: core.runnerCtx,
   })
 
-  const reviews = await startReviewEngine(core.runnerCtx, core.dispatcher, core.effectiveConfig)
+  const reviews = await ensureReviewEngine(core.runnerCtx, core.dispatcher, core.effectiveConfig)
 
   const shutdown = async () => {
     logger.info('Shutting down local runner...')
@@ -266,7 +266,7 @@ export async function startHybridRunner(
     runnerCtx,
   })
 
-  const reviews = await startReviewEngine(runnerCtx, dispatcher, effectiveConfig)
+  const reviews = await ensureReviewEngine(runnerCtx, dispatcher, effectiveConfig)
 
   const shutdown = async () => {
     logger.info('Shutting down hybrid runner...')

@@ -429,7 +429,8 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
       : review.event === 'request_changes' ? 'REQUEST_CHANGES'
       : review.event === 'pending' ? 'PENDING'
       : 'COMMENT'
-    const created = await this.clientFor(repoSlug).submitReview(repoSlug, prId, {
+    const client = this.clientFor(repoSlug)
+    const created = await client.submitReview(repoSlug, prId, {
       event,
       body: review.body,
       ...(review.commitSha ? { commitId: review.commitSha } : {}),
@@ -441,7 +442,17 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
         body: comment.body,
       })),
     })
-    return { reviewId: String(created.id), commentIds: {} as Record<string, string> }
+    const commentIds: Record<string, string> = {}
+    if (review.comments.length > 0) {
+      try {
+        for (const posted of await client.listReviewComments(repoSlug, prId, created.id)) {
+          if (posted.line !== null) commentIds[`${posted.path}:${posted.line}`] = String(posted.id)
+        }
+      } catch {
+        // The review is posted; findings just stay unlinked to their comments.
+      }
+    }
+    return { reviewId: String(created.id), commentIds }
   }
 
   async submitPendingReview(ref: ExternalRef, reviewId: string, event: 'approve' | 'request_changes' | 'comment', body?: string) {

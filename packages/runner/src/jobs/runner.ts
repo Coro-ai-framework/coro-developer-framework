@@ -979,6 +979,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             hookPolicy: req.hookPolicy,
             mcpServer: req.mcpServer,
             pluginMcpServers: req.pluginMcpServers,
+            signal: abortController.signal,
           }
         : undefined
 

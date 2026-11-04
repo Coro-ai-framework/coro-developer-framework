@@ -7,7 +7,11 @@ import type { ReviewPolicy } from './policy'
 import type { ReviewStore } from './store'
 import type { ReviewEventSink, ReviewEventSource } from './sources'
 
-const WATCHED = new Set(['idle', 'awaiting-verdict', 'paused', 'failed'])
+/** `running` is left out: the round already reads the PR, and the baseline catches up after it. */
+const WATCHED = new Set(['idle', 'queued', 'awaiting-verdict', 'paused', 'failed'])
+
+/** Pauses that only an SCM event lifts, so the PR still has to be watched. */
+const SCM_LIFTED_PAUSES = new Set(['draft', 'review-request-removed'])
 
 export class ActivityPoller implements ReviewEventSource {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -37,7 +41,7 @@ export class ActivityPoller implements ReviewEventSource {
     const reviews = await this.store.list()
     for (const review of reviews) {
       if (!WATCHED.has(review.status)) continue
-      if (review.pauseReason && review.pauseReason !== 'review-request-removed' && review.status === 'paused') continue
+      if (review.status === 'paused' && !SCM_LIFTED_PAUSES.has(review.pauseReason ?? '')) continue
       const runtime = this.plugins.byId(review.prRef.pluginId) as ScmPluginRuntime | undefined
       if (!runtime?.pollPr) continue
       let snap: ScmPollSnapshot
@@ -62,15 +66,37 @@ export class ActivityPoller implements ReviewEventSource {
         if (!kind) continue
         // The baseline can predate the last round; a head that round already reviewed is not news.
         if (kind === 'commits-pushed' && snap.headSha && snap.headSha === review.ledger.lastReviewedSha) continue
+        const { data, actor } = deltaEventData(delta.payload)
         await this.sink({
           kind: kind as ReviewEventKind,
           prRef: review.prRef,
+          ...(actor ? { actor } : {}),
           at: new Date().toISOString(),
-          data: { ...delta.payload, headSha: snap.headSha },
+          data: { ...data, ...(snap.headSha ? { headSha: snap.headSha } : {}) },
           source: 'activity-poll',
         })
       }
     }
+  }
+}
+
+/**
+ * The detector describes comments in the job transport's shape. Review
+ * events carry `body` and `actor`, which is what self-filtering, commands,
+ * and the irrelevant-conversation check read.
+ */
+export function deltaEventData(payload: Record<string, unknown>): { data: Record<string, unknown>; actor?: string } {
+  const comment = payload['comment'] as
+    | { id?: string; content?: { raw?: string }; user?: { display_name?: string } }
+    | undefined
+  if (!comment) return { data: payload }
+  const actor = comment.user?.display_name
+  return {
+    data: {
+      body: comment.content?.raw ?? '',
+      ...(comment.id ? { commentId: comment.id } : {}),
+    },
+    ...(actor ? { actor } : {}),
   }
 }
 
