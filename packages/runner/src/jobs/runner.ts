@@ -1571,7 +1571,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         )
       }
 
-      const checkpointApproved = liveJob.approvedAdvanceFromPhase === liveJob.phase
+      const checkpointApproved = liveJob.approvedAdvanceFromPhase === liveJob.phase && !signals.checkpointReopened
+      if (liveJob.approvedAdvanceFromPhase === liveJob.phase && signals.checkpointReopened) {
+        await stateBackend.appendLog(liveJob.id, `Approval withdrawn — ${signals.checkpointReopened}`)
+      }
 
       const boundary = await decisionLayer.afterPhase({
         job: liveJob,
@@ -1623,7 +1626,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         break
       }
 
-      if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved) {
+      if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved && signals.checkpointWaived) {
+        await stateBackend.appendLog(
+          liveJob.id,
+          `Interactive checkpoint skipped — ${signals.checkpointWaived}`,
+        )
+      }
+
+      if (liveJob.interactive && phaseConf?.interactiveCheckpoint && !checkpointApproved && !signals.checkpointWaived) {
         ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(
           stateBackend,
           liveJob,
@@ -1980,6 +1990,8 @@ function resetSignals(s: PhaseSignals): void {
   s.awaitingPrId = undefined
   s.escalated = undefined
   s.escalationReason = undefined
+  s.checkpointWaived = undefined
+  s.checkpointReopened = undefined
 }
 
 function isDeveloperApprovalRequest(eventName: string): boolean {

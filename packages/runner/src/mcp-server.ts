@@ -6,6 +6,7 @@ import { runSubagent } from './tools/run-subagent'
 import { isPrReviewJob } from './jobs/helpers'
 import {
   reviewFinish,
+  reviewPublish,
   reviewGetContext,
   reviewReadFile,
   reviewReply,
@@ -910,7 +911,7 @@ export function createCoroMcpServer(
         ),
         tool(
           'review_submit',
-          'Post one batched review. Policy decides whether the verdict is submitted, held, or saved as a pending review.',
+          'Write the one batched review for this round. In the review phase nothing is posted: it becomes the draft the publish phase posts, after the developer approves it when the round is interactive. Calling it again replaces the draft. Policy decides whether the verdict is submitted, held, or saved as a pending review.',
           {
             verdict: z.enum(['comment', 'request_changes', 'approve']),
             body: z.string(),
@@ -926,7 +927,7 @@ export function createCoroMcpServer(
             })),
           },
           async (args) => {
-            try { return mcpText(await reviewSubmit(ctx, args)) }
+            try { return mcpText(await reviewSubmit(ctx, args, signals)) }
             catch (err) { return mcpError((err as Error).message) }
           },
         ),
@@ -946,10 +947,10 @@ export function createCoroMcpServer(
         ),
         tool(
           'review_resolve_thread',
-          'Resolve or unresolve a thread Coro opened. Other threads are refused.',
+          'Resolve or unresolve a thread Coro opened. Other threads are refused. In the review phase this is queued with the draft and happens when it is published.',
           { findingId: z.string(), resolved: z.boolean() },
           async (args) => {
-            try { return mcpText(await reviewResolveThread(ctx, args)) }
+            try { return mcpText(await reviewResolveThread(ctx, args, signals)) }
             catch (err) { return mcpError((err as Error).message) }
           },
         ),
@@ -970,14 +971,23 @@ export function createCoroMcpServer(
         ),
         tool(
           'review_finish',
-          'Required to end the round. Writes the round summary and the last reviewed SHA.',
+          'Required to end the round. Writes the round summary and the last reviewed SHA. In the review phase they are recorded when the draft is published.',
           {
             outcome: z.enum(['submitted', 'replied', 'no-op', 'held-for-verdict', 'failed']),
             summary: z.string(),
             nextHint: z.string().optional(),
           },
           async (args) => {
-            try { return mcpText(await reviewFinish(ctx, args)) }
+            try { return mcpText(await reviewFinish(ctx, args, signals)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_publish',
+          "Publish phase only. Posts this round's approved review draft, resolves the threads it queued, and records the round. Safe to call again; nothing is posted twice.",
+          {},
+          async () => {
+            try { return mcpText(await reviewPublish(ctx)) }
             catch (err) { return mcpError((err as Error).message) }
           },
         ),

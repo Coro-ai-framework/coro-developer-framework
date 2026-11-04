@@ -72,9 +72,10 @@ export async function runReviewOnce(opts: OnceOptions): Promise<number> {
     core.stateBackend.close()
     return 1
   }
-  const roundPolicy = { ...policy, debounceSec: 0, enabled: true }
+  // Nobody is there to approve a draft in CI, including one a repo asked for.
+  const roundPolicy = { ...policy, debounceSec: 0, enabled: true, approveBeforePosting: false }
   const login = scm.whoami ? (await scm.whoami()).login : 'ci'
-  const pipeline = await createRoundPipeline(core.runnerCtx, core.dispatcher, roundPolicy)
+  const pipeline = await createRoundPipeline(core.runnerCtx, core.dispatcher, roundPolicy, { interactive: false })
   let ran = false
   const coordinator = new ReviewCoordinator({
     store,

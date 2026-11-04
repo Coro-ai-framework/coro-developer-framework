@@ -29,8 +29,10 @@ import {
   REVIEWS_PATH,
   countBySeverity,
   formatReviewCost,
+  awaitsDecision,
   isActiveReview,
   needsAttention,
+  runHref,
   openFindings,
   prNumberLabel,
   reviewStatusMeta,
@@ -67,9 +69,17 @@ function matchesView(review: PrReview, view: ViewFilter): boolean {
   }
 }
 
+function decisionSummary(drafts: number, verdicts: number): string | undefined {
+  const parts = [
+    drafts ? `${drafts} draft${drafts === 1 ? '' : 's'} to approve` : '',
+    verdicts ? `${verdicts} verdict${verdicts === 1 ? '' : 's'} to submit` : '',
+  ].filter(Boolean)
+  return parts.length ? `${parts.join(', ')}` : undefined
+}
+
 /** Reviews that need the developer float to the top, then live ones, then newest. */
 function rank(review: PrReview): number {
-  if (review.pendingVerdict) return 0
+  if (awaitsDecision(review)) return 0
   if (needsAttention(review)) return 1
   if (isActiveReview(review)) return 2
   if (review.status === 'idle') return 3
@@ -112,6 +122,7 @@ export default function Reviews() {
   const today = new Date().toISOString().slice(0, 10)
   const stats = useMemo(() => {
     const attention = reviews.filter(needsAttention).length
+    const drafts = reviews.filter(review => review.awaitingApproval).length
     const verdicts = reviews.filter(review => review.pendingVerdict).length
     const active = reviews.filter(isActiveReview).length
     const watching = reviews.filter(review => review.status === 'idle').length
@@ -120,7 +131,7 @@ export default function Reviews() {
       .reduce((sum, review) => sum + openFindings(review).filter(finding => finding.severity === 'blocker').length, 0)
     const spentToday = reviews.reduce((sum, review) => sum + (review.spendDay?.day === today ? review.spendDay.usd : 0), 0)
     const spentTotal = reviews.reduce((sum, review) => sum + review.totals.costUsd, 0)
-    return { attention, verdicts, active, watching, blockers, spentToday, spentTotal }
+    return { attention, drafts, verdicts, active, watching, blockers, spentToday, spentTotal }
   }, [reviews, today])
 
   const counts = useMemo(() => {
@@ -160,7 +171,7 @@ export default function Reviews() {
         <StatCard
           label="Needs you"
           value={String(stats.attention)}
-          description={stats.verdicts ? `${stats.verdicts} verdict${stats.verdicts === 1 ? '' : 's'} waiting for your call` : 'Verdicts, failures, and budget holds'}
+          description={decisionSummary(stats.drafts, stats.verdicts) ?? 'Drafts, verdicts, failures, and budget holds'}
           icon={Hourglass}
           tone={stats.attention ? 'warning' : 'neutral'}
         />
@@ -328,6 +339,11 @@ function ReviewRow({ review, onUpdated, onDeleted, onNotice }: ReviewRowProps) {
       </td>
       <td className="px-2 py-2.5 align-top">
         <div className="flex items-center justify-end gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
+          {review.awaitingApproval ? (
+            <Button variant="secondary" size="sm" className="mr-1 h-8" asChild>
+              <Link to={runHref(review.awaitingApproval.jobId)}>Review draft</Link>
+            </Button>
+          ) : null}
           {review.pr.url ? (
             <Button variant="ghost" size="icon" className="size-8" asChild>
               <a href={review.pr.url} target="_blank" rel="noreferrer" aria-label={`Open ${prNumberLabel(review)} on ${scmLabel(review.prRef.pluginId)}`}>

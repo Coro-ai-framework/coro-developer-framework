@@ -312,6 +312,7 @@ const reviewsConfigSchema = z.object({
   skipAuthors: z.array(z.string()).optional(),
   autonomy: z.enum(['draft', 'comment', 'full']).optional(),
   approval: z.enum(['never', 'recommend', 'auto']).optional(),
+  approveBeforePosting: z.boolean().optional(),
   minSeverity: z.enum(['blocker', 'major', 'minor', 'nit']).optional(),
   maxCommentsPerRound: z.number().int().positive().optional(),
   maxDiffLines: z.number().int().positive().optional(),

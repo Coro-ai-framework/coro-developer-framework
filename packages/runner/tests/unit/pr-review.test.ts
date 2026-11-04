@@ -128,15 +128,21 @@ describe('pr change detector', () => {
 })
 
 describe('pr-review workflow', () => {
-  it('parses terminal phases, lenses, and round-kind overrides', () => {
+  it('parses the approval checkpoint, terminal phases, lenses, and round-kind overrides', () => {
     const markdown = readFileSync(
       path.resolve(__dirname, '../../../intelligence-base/layer/workflows/pr-review/workflow.md'),
       'utf8',
     )
     const config = parseWorkflowConfig(markdown)
     expect(config).not.toBeNull()
+    const names = config!.phases.map(phase => phase.name)
+    expect(names.indexOf('publish')).toBe(names.indexOf('review') + 1)
     const review = config!.phases.find(phase => phase.name === 'review')
-    expect(review?.terminal).toBe(true)
+    expect(review?.terminal).toBeFalsy()
+    expect(review?.interactiveCheckpoint).toBe(true)
+    const publish = config!.phases.find(phase => phase.name === 'publish')
+    expect(publish?.terminal).toBe(true)
+    expect(publish?.tools).toContain('mcp__coro__review_publish')
     expect(review?.lenses?.map(lens => lens.name)).toContain('architecture')
     expect(resolveInitialPhase(config!, 'pr-review:conversation')).toBe('converse')
     expect(resolveInitialPhase(config!, 'pr-review:closing')).toBe('learn')

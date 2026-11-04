@@ -64,9 +64,19 @@ describe('@coro-ai/intelligence-base manifest', () => {
         'oss-planner.md',
         'oss-verifier.md',
         'planner.md',
+        'pr-review-converse.md',
+        'pr-review-lead.md',
+        'pr-review-learn.md',
+        'pr-review-publish.md',
         'pr-reviewer.md',
         'qa.md',
         'retrospective-analyst.md',
+        'review-architecture.md',
+        'review-correctness.md',
+        'review-design.md',
+        'review-security.md',
+        'review-tests.md',
+        'review-verifier.md',
         'spec-writer.md',
       ])
     })
@@ -77,7 +87,7 @@ describe('@coro-ai/intelligence-base manifest', () => {
         .filter((e) => e.isDirectory())
         .map((e) => e.name)
       expect(workflows).toEqual(
-        expect.arrayContaining(['job', 'self-update', 'retrospective', 'oss-contribution']),
+        expect.arrayContaining(['job', 'self-update', 'retrospective', 'oss-contribution', 'pr-review']),
       )
       expect(fs.existsSync(path.join(layerRoot, 'workflows/job/workflow.md'))).toBe(true)
       expect(fs.existsSync(path.join(layerRoot, 'workflows/self-update/workflow.md'))).toBe(true)
@@ -93,6 +103,7 @@ describe('@coro-ai/intelligence-base manifest', () => {
         .sort()
       expect(skills).toEqual([
         'api-design',
+        'architecture-review',
         'campaign-contracts',
         'campaign-planning',
         'ci-cd-authoring',
@@ -110,6 +121,8 @@ describe('@coro-ai/intelligence-base manifest', () => {
         'java-conventions',
         'kotlin-conventions',
         'observability-additions',
+        'pr-review-guidelines',
+        'pr-review-ledger',
         'python-conventions',
         'register-convention',
         'retrospective-analysis',

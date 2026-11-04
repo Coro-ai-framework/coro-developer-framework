@@ -127,4 +127,15 @@ export interface PhaseSignals {
   awaitingPrId?: number
   escalated?: boolean
   escalationReason?: string
+  /**
+   * Set by a tool when this phase's interactive checkpoint has nothing to
+   * approve. The reason is logged; the job advances without parking.
+   */
+  checkpointWaived?: string
+  /**
+   * Set by a tool when this phase changed what the developer already
+   * approved at its checkpoint. The approval no longer covers it, so the
+   * job parks again instead of advancing.
+   */
+  checkpointReopened?: string
 }

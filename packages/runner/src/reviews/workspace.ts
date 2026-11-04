@@ -81,6 +81,7 @@ export function parseReviewFrontMatter(markdown: string): Partial<ReviewPolicy> 
     const value = rest.join(':').trim()
     if (key.trim() === 'minSeverity') out.minSeverity = value as ReviewPolicy['minSeverity']
     if (key.trim() === 'maxCommentsPerRound') out.maxCommentsPerRound = Number(value)
+    if (key.trim() === 'approveBeforePosting' && value === 'true') out.approveBeforePosting = true
     if (key.trim() === 'ignorePaths') out.ignorePaths = value.split(',').map(item => item.trim()).filter(Boolean)
   }
   return out

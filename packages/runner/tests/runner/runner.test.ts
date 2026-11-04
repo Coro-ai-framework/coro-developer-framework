@@ -787,6 +787,64 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.approvedAdvanceFromPhase).toBeUndefined()
   })
 
+  it('skips an interactive checkpoint a tool waived because there is nothing to approve', async () => {
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+    stateBackend = createMockStateBackend(makeJob({ phase: 'alpha', status: 'queued', interactive: true }))
+    ctx = makeRunnerContext(stateBackend)
+
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha', interactive: true }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.checkpointWaived = 'Nothing to post'
+        yield* yieldEmptyPhase('sess-waived')
+      },
+      { workflowConfigOverride: workflowCheckpoint },
+    )
+
+    expect(stateBackend.current.status).toBe(STATUS_COMPLETE)
+    expect(stateBackend.current.phase).toBe('beta')
+  })
+
+  it('parks again when the approved phase changes what was approved', async () => {
+    const workflowCheckpoint: WorkflowConfig = {
+      initialPhase: 'alpha',
+      initialStatus: 'queued',
+      phases: [
+        { name: 'alpha', agent: null, model: 'planning', status: 'running-alpha', interactiveCheckpoint: true },
+        { name: 'beta', agent: null, model: 'planning', status: 'running-beta' },
+      ],
+      overrides: {},
+    }
+    stateBackend = createMockStateBackend(
+      makeJob({ phase: 'alpha', status: 'queued', interactive: true, approvedAdvanceFromPhase: 'alpha' }),
+    )
+    ctx = makeRunnerContext(stateBackend)
+
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha', interactive: true, approvedAdvanceFromPhase: 'alpha' }),
+      ctx,
+      async function* (_req, h) {
+        h.signals.checkpointReopened = 'The draft changed'
+        yield* yieldEmptyPhase('sess-reopened')
+      },
+      { workflowConfigOverride: workflowCheckpoint },
+    )
+
+    expect(stateBackend.current.status).toBe(STATUS_AWAITING_DEVELOPER_INPUT)
+    expect(stateBackend.current.phase).toBe('alpha')
+    expect(stateBackend.current.awaitingNextPhase).toBe('beta')
+    expect(stateBackend.current.approvedAdvanceFromPhase).toBeUndefined()
+  })
+
   it('carries a checkpoint approval into the phase it released, then clears it', async () => {
     const workflowCheckpoint: WorkflowConfig = {
       initialPhase: 'alpha',

@@ -1,6 +1,6 @@
 import os from 'os'
 import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
-import type { Job, PrReview, ReviewEvent, RoundKind } from '@coro-ai/cloud-protocol'
+import { STATUS_AWAITING_DEVELOPER_INPUT, type Job, type PrReview, type ReviewEvent, type RoundKind } from '@coro-ai/cloud-protocol'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
 import type { LocalConfig } from '../config/local-config'
@@ -105,6 +105,7 @@ export async function startReviewEngine(
     log: (msg, extra) => ctx.logger.info(extra ?? {}, msg),
     dispatchRound: pipeline.dispatchRound,
     assess: pipeline.assess,
+    isRoundParked: async jobId => (await ctx.stateBackend.getJob(jobId))?.status === STATUS_AWAITING_DEVELOPER_INPUT,
     cancelRound: async jobId => {
       await dispatcher.cancelJob(jobId, 'Stopped from the review')
       // A job that is not on a worker never reaches the dispatcher's stop hook.
@@ -211,6 +212,7 @@ export async function createRoundPipeline(
     dispatchRound: async (review, kind, events) => {
       const round = prepared.get(review.id)
       prepared.delete(review.id)
+      const roundPolicy = round?.policy ?? policy
       const job = await dispatcher.dispatch({
         type: 'pr-review',
         workflowPath: policy.workflowPath,
@@ -221,7 +223,9 @@ export async function createRoundPipeline(
           roundKind: kind,
           roundAttempt: events.some(event => event.data['retry'] === true) ? 2 : 1,
           projectContext: 'skip',
-          reviewPolicy: round?.policy ?? policy,
+          // A closing round posts nothing, so there is nothing to approve.
+          interactive: roundPolicy.approveBeforePosting && kind !== 'closing',
+          reviewPolicy: roundPolicy,
           prRef: review.prRef,
           prUrl: review.pr.url,
           headSha: review.pr.headSha,

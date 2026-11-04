@@ -47,7 +47,7 @@ import { assertJobPluginRequirements, PluginPreflightError } from '../jobs/plugi
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { registerIntakeRoutes } from '../intake/routes'
 import { JobType, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
-import { REVIEW_MARKER_PREFIX, reviewMarker, type PrReview, type ReviewVerdict } from '@coro-ai/cloud-protocol'
+import { REVIEW_MARKER_PREFIX, STATUS_AWAITING_DEVELOPER_INPUT, reviewMarker, type PrReview, type ReviewVerdict } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
 import {
   assertRetrospectiveTiersAvailable,
@@ -1509,9 +1509,18 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   }
 
-  function reviewWithSchedule(review: PrReview) {
+  /** The review record plus what only the runtime knows: the next timer and a parked draft. */
+  async function reviewWithSchedule(review: PrReview) {
     const due = getReviewRuntime()?.coordinator.nextRoundAt(review.id)
-    return due ? { ...review, nextRoundAt: new Date(due).toISOString() } : review
+    const latest = review.rounds[review.rounds.length - 1]
+    const job = review.status === 'running' && latest?.jobId && !latest.endedAt
+      ? await stateBackend.getJob(latest.jobId)
+      : null
+    return {
+      ...review,
+      ...(due ? { nextRoundAt: new Date(due).toISOString() } : {}),
+      ...(job?.status === STATUS_AWAITING_DEVELOPER_INPUT ? { awaitingApproval: { jobId: job.id, since: job.updatedAt ?? job.createdAt } } : {}),
+    }
   }
 
   async function ensureReviewRuntime() {
@@ -1539,7 +1548,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   app.get('/reviews', reviewRoute(async (req, res) => {
     const status = typeof req.query.status === 'string' ? req.query.status : undefined
     const rows = await stateBackend.reviews.list(status ? { status: status as never } : undefined)
-    res.json(rows.map(reviewWithSchedule))
+    res.json(await Promise.all(rows.map(reviewWithSchedule)))
   }))
 
   app.get('/reviews/status', reviewRoute(async (_req, res) => {
@@ -1569,7 +1578,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   app.get('/reviews/:id', reviewRoute(async (req, res) => {
     const review = await stateBackend.reviews.get(String(req.params.id))
     if (!review) throw new ReviewHttpError(404, 'Review not found')
-    res.json(reviewWithSchedule(review))
+    res.json(await reviewWithSchedule(review))
   }))
 
   app.post('/reviews', reviewRoute(async (req, res) => {
@@ -1604,7 +1613,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       source: 'manual',
     })
     if (!review) throw new ReviewHttpError(400, 'Could not start a review for that pull request.')
-    res.status(201).json(reviewWithSchedule(review))
+    res.status(201).json(await reviewWithSchedule(review))
   }))
 
   type ReviewControl = 'pause' | 'resume' | 'stop' | 'skip' | 'rerun'
@@ -1635,7 +1644,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
             : action === 'skip' ? await coordinator.skip(id)
               : await coordinator.requestRound(id)
       if (!review) throw new ReviewHttpError(404, 'Review not found')
-      res.json(reviewWithSchedule(review))
+      res.json(await reviewWithSchedule(review))
     }))
   }
 
@@ -1653,7 +1662,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       return current
     })
     if (!review) throw new ReviewHttpError(404, 'Review or finding not found')
-    res.json(reviewWithSchedule(review))
+    res.json(await reviewWithSchedule(review))
   }))
 
   app.delete('/reviews/:id', reviewRoute(async (req, res) => {
@@ -1710,7 +1719,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       return current
     })
     if (!review) throw new ReviewHttpError(404, 'Review not found')
-    res.json(reviewWithSchedule(review))
+    res.json(await reviewWithSchedule(review))
   }))
 
   app.get('/reviews-settings', reviewRoute(async (_req, res) => {

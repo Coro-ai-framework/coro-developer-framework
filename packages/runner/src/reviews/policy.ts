@@ -43,6 +43,8 @@ export interface ReviewPolicy {
   skipAuthors: string[]
   autonomy: ReviewAutonomy
   approval: ReviewApproval
+  /** Park each round with its draft until a developer approves what gets posted. */
+  approveBeforePosting: boolean
   minSeverity: ReviewSeverity
   maxCommentsPerRound: number
   maxDiffLines: number
@@ -90,6 +92,7 @@ export const REVIEW_POLICY_DEFAULTS: ReviewPolicy = {
   skipAuthors: ['dependabot[bot]', 'renovate[bot]'],
   autonomy: 'comment',
   approval: 'recommend',
+  approveBeforePosting: false,
   minSeverity: 'minor',
   maxCommentsPerRound: 15,
   maxDiffLines: 4000,
@@ -133,6 +136,7 @@ export function reviewsConfigToPolicy(raw: {
   skipAuthors?: string[]
   autonomy?: ReviewAutonomy
   approval?: ReviewApproval
+  approveBeforePosting?: boolean
   minSeverity?: ReviewSeverity
   maxCommentsPerRound?: number
   maxDiffLines?: number
@@ -166,6 +170,7 @@ export function reviewsConfigToPolicy(raw: {
   if (raw.skipAuthors) user.skipAuthors = raw.skipAuthors
   if (raw.autonomy) user.autonomy = raw.autonomy
   if (raw.approval) user.approval = raw.approval
+  if (raw.approveBeforePosting !== undefined) user.approveBeforePosting = raw.approveBeforePosting
   if (raw.minSeverity) user.minSeverity = raw.minSeverity
   if (raw.maxCommentsPerRound !== undefined) user.maxCommentsPerRound = raw.maxCommentsPerRound
   if (raw.maxDiffLines !== undefined) user.maxDiffLines = raw.maxDiffLines
@@ -249,6 +254,7 @@ function applyTighten(target: ReviewPolicy, repo?: Partial<ReviewPolicy>): void 
     target.approval = repo.approval
   }
   if (repo.skipDrafts === true) target.skipDrafts = true
+  if (repo.approveBeforePosting === true) target.approveBeforePosting = true
   if (repo.ignorePaths?.length) {
     target.ignorePaths = [...new Set([...target.ignorePaths, ...repo.ignorePaths])]
   }

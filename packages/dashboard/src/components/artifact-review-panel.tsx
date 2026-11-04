@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/t
 import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { renderInlineMarkdown } from './intelligence/markdown-mini'
 import ErrorState from './common/error-state'
+import ReviewDraftBody, { REVIEW_DRAFT_KIND } from './reviews/review-draft-body'
 import { formatDateTime } from '../lib/format'
 import {
   artifactHasFileBody,
@@ -70,6 +71,7 @@ export default function ArtifactReviewPanel({
   sending = false,
 }: ArtifactReviewPanelProps) {
   const hasPrPreview = artifacts.some(a => a.kind === 'pr-preview')
+  const hasReviewDraft = artifacts.some(a => a.kind === REVIEW_DRAFT_KIND)
   const [activeId, setActiveId] = useState(artifacts[0]?.id ?? '')
   const [showChanges, setShowChanges] = useState(false)
   const [changeText, setChangeText] = useState('')
@@ -138,7 +140,7 @@ export default function ArtifactReviewPanel({
                     onClick={onApprove}
                   >
                     <CheckCircle2 />
-                    Approve and continue
+                    {hasReviewDraft ? 'Approve and post' : 'Approve and continue'}
                   </Button>
                 </span>
               </TooltipTrigger>
@@ -174,11 +176,11 @@ export default function ArtifactReviewPanel({
               size="sm"
               disabled={sending}
               onClick={() => {
-                if (window.confirm('Cancel this run?')) onCancel()
+                if (window.confirm(hasReviewDraft ? 'Discard this draft? Nothing is posted.' : 'Cancel this run?')) onCancel()
               }}
             >
               <Ban />
-              Cancel run
+              {hasReviewDraft ? 'Discard draft' : 'Cancel run'}
             </Button>
           </div>
 
@@ -340,6 +342,9 @@ function ArtifactMetadataRow({ artifact }: { artifact: Artifact }) {
 function ArtifactNonFileBody({ artifact }: { artifact: Artifact }) {
   if (artifact.kind === 'pr-preview') {
     return <PrPreviewBody data={artifact.data} />
+  }
+  if (artifact.kind === REVIEW_DRAFT_KIND) {
+    return <ReviewDraftBody data={artifact.data} />
   }
 
   const url = typeof artifact.data['url'] === 'string' ? (artifact.data['url'] as string) : null
@@ -758,6 +763,7 @@ function tryFormatJson(text: string): string {
 function ArtifactKindIcon({ kind }: { kind: string }) {
   if (kind === 'pr-preview') return <FileDiff className="size-3.5" />
   if (kind === 'pr-link') return <GitPullRequest className="size-3.5" />
+  if (kind === REVIEW_DRAFT_KIND) return <MessageSquare className="size-3.5" />
   if (kind === 'url') return <Link2 className="size-3.5" />
   if (kind.endsWith('-md') || kind === 'analysis-contract') return <FileText className="size-3.5" />
   return <FileJson2 className="size-3.5" />

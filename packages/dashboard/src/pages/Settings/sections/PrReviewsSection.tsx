@@ -141,6 +141,19 @@ export default function PrReviewsSection() {
           ]}
           onChange={approval => update({ approval })}
         />
+        <label className="flex items-center justify-between gap-4">
+          <span className="space-y-0.5">
+            <span className="block text-sm font-medium text-fg">Approve each review before it is posted</span>
+            <span className="block text-[12px] text-fg-subtle">
+              Each round stops with its draft in the run. You can approve it, ask for changes, or discard it. Replies in a conversation and CI runs post right away.
+            </span>
+          </span>
+          <Switch
+            checked={config.approveBeforePosting === true}
+            onCheckedChange={approveBeforePosting => update({ approveBeforePosting })}
+            ariaLabel="Approve each review before it is posted"
+          />
+        </label>
         <Choice
           label="Identity"
           hint="Me posts with your SCM token. Bot uses a separate app or account if one is configured."

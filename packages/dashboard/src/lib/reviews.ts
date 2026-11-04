@@ -90,6 +90,8 @@ export interface PrReview {
   spendDay?: { day: string; usd: number }
   /** Present while a round is scheduled; set by the runner, not stored. */
   nextRoundAt?: string
+  /** Present while the round's draft waits for you before anything is posted; set by the runner. */
+  awaitingApproval?: { jobId: string; since: string }
   createdAt: string
   updatedAt: string
 }
@@ -112,6 +114,7 @@ export interface ReviewsSettings {
   eventSource?: 'poll' | 'webhook' | 'both'
   autonomy?: 'draft' | 'comment' | 'full'
   approval?: 'never' | 'recommend' | 'auto'
+  approveBeforePosting?: boolean
   minSeverity?: FindingSeverity
   skipDrafts?: boolean
   budgetUsdPerPr?: number
@@ -185,6 +188,7 @@ export function reviewStatusMeta(review: PrReview): ReviewStatusMeta {
     case 'queued':
       return { label: 'Queued', tone: 'accent', detail: review.nextRoundAt ? `Starts ${formatUntil(review.nextRoundAt)}` : 'Starting soon' }
     case 'running':
+      if (review.awaitingApproval) return { label: 'Needs approval', tone: 'warning', pulse: true, detail: 'Draft ready to post' }
       return { label: 'Reviewing', tone: 'accent', pulse: true, detail: roundKindLabel(latestRound(review)?.kind) }
     case 'idle':
       return { label: 'Watching', tone: 'success', detail: review.rounds.length ? 'Up to date' : 'Waiting for a round' }
@@ -249,12 +253,21 @@ export function countBySeverity(findings: ReviewFinding[]): Record<FindingSeveri
 }
 
 export function needsAttention(review: PrReview): boolean {
-  if (review.pendingVerdict || review.status === 'awaiting-verdict' || review.status === 'failed') return true
+  if (review.awaitingApproval || review.pendingVerdict || review.status === 'awaiting-verdict' || review.status === 'failed') return true
   return review.status === 'paused' && review.pauseReason !== undefined && review.pauseReason !== 'user'
 }
 
 export function isActiveReview(review: PrReview): boolean {
-  return review.status === 'queued' || review.status === 'running'
+  return review.status === 'queued' || (review.status === 'running' && !review.awaitingApproval)
+}
+
+/** A decision only the developer can make: a draft to approve or a verdict to submit. */
+export function awaitsDecision(review: PrReview): boolean {
+  return Boolean(review.awaitingApproval || review.pendingVerdict)
+}
+
+export function runHref(jobId: string): string {
+  return `/jobs/${encodeURIComponent(jobId)}`
 }
 
 /** A link to the finding's line. GitHub only; other SCMs open the PR. */

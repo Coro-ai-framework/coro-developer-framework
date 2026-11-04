@@ -47,6 +47,11 @@ export interface ReviewCoordinatorDeps {
    * round instead of dispatching.
    */
   assess?: (review: PrReview, kind: RoundKind, events: ReviewEvent[]) => Promise<ShortCircuitDecision | null>
+  /**
+   * True while a round's job waits for a developer to approve its draft.
+   * Such a round costs nothing, so it does not hold a concurrency slot.
+   */
+  isRoundParked?: (jobId: string) => Promise<boolean>
   /** Cancels a round's job. Without it, stop only pauses future rounds. */
   cancelRound?: (jobId: string) => Promise<void>
   /** UTC-day spend across every review, for the daily budget. */
@@ -181,6 +186,7 @@ export class ReviewCoordinator {
     params?: Record<string, unknown>
     tokenUsage?: { totalCostUsd?: number; inputTokens?: number; outputTokens?: number }
     escalationMessage?: string
+    artifacts?: { kind: string; data: unknown }[]
   }): Promise<void> {
     const reviewId = typeof job.params?.['reviewId'] === 'string' ? job.params['reviewId'] : undefined
     if (!reviewId) return Promise.resolve()
@@ -206,7 +212,10 @@ export class ReviewCoordinator {
       if (failed) round.outcome = 'failed'
       else if (cancelled && !round.summary) {
         round.outcome = 'stopped'
-        round.summary = 'Stopped before it finished.'
+        const draft = job.artifacts?.find(item => item.kind === 'review-draft')?.data as { status?: string } | undefined
+        round.summary = draft?.status === 'draft'
+          ? 'The draft was discarded. Nothing was posted.'
+          : 'Stopped before it finished.'
       }
       round.costUsd = cost
     }
@@ -477,8 +486,19 @@ export class ReviewCoordinator {
     this.timers.set(id, timer)
   }
 
+  private async activeRounds(): Promise<number> {
+    if (!this.deps.isRoundParked || this.running.size < this.deps.policy.maxConcurrentRounds) return this.running.size
+    let active = 0
+    for (const id of this.running) {
+      const review = await this.deps.store.get(id)
+      const jobId = review?.rounds[review.rounds.length - 1]?.jobId
+      if (!jobId || !(await this.deps.isRoundParked(jobId).catch(() => false))) active += 1
+    }
+    return active
+  }
+
   private async fire(id: string): Promise<void> {
-    if (this.running.size >= this.deps.policy.maxConcurrentRounds) {
+    if (await this.activeRounds() >= this.deps.policy.maxConcurrentRounds) {
       this.schedule(id, 5_000)
       return
     }

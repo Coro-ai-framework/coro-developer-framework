@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   ExternalLink,
+  FileCheck2,
   FileCode2,
   GitCommitHorizontal,
   GitPullRequest,
@@ -54,6 +55,7 @@ import {
   roundDurationMs,
   roundKindLabel,
   roundOutcomeMeta,
+  runHref,
   scmLabel,
   sendVerdict,
   shortCircuitLabel,
@@ -197,6 +199,22 @@ function PrStateBadge({ review }: { review: PrReview }) {
 }
 
 function StateBanner({ review, onResume, onRerun, busy }: { review: PrReview; onResume: () => void; onRerun: () => void; busy: boolean }) {
+  if (review.awaitingApproval) {
+    return (
+      <div className="flex items-start gap-3 rounded-2xl border border-warning-500/25 bg-warning-500/8 px-4 py-3 text-sm">
+        <FileCheck2 className="mt-0.5 size-4 shrink-0 text-warning-400" />
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-warning-400">Draft ready for your approval</div>
+          <p className="text-fg-muted">
+            Nothing is on the pull request yet. Open the run to read the summary and inline comments, then approve them, ask for changes, or discard the draft.
+          </p>
+        </div>
+        <Button size="sm" className="shrink-0" asChild>
+          <Link to={runHref(review.awaitingApproval.jobId)}><FileCheck2 /> Review draft</Link>
+        </Button>
+      </div>
+    )
+  }
   if (review.status === 'failed' || review.lastError) {
     return (
       <ErrorState
@@ -644,7 +662,9 @@ function upNext(review: PrReview): string {
     case 'queued':
       return `The next round ${meta.detail?.replace(/^Starts /, 'starts ') ?? 'starts soon'}.`
     case 'running':
-      return 'A round is running. Stop it from More if it is not needed.'
+      return review.awaitingApproval
+        ? 'Waiting for you to approve the draft. New commits queue a round after this one.'
+        : 'A round is running. Stop it from More if it is not needed.'
     case 'idle':
       return 'Watching for new commits, comments, and review requests.'
     case 'awaiting-verdict':

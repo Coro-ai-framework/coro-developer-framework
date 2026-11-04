@@ -25,7 +25,7 @@ import { findingFingerprint, findingId } from '../reviews/id'
 import { classifyPath } from '../reviews/packet'
 import { effectiveSubmission, severityAtLeast, type ReviewPolicy } from '../reviews/policy'
 import { withRunnerToolEquivalents } from './native-tool-equivalents'
-import type { ToolContext } from './types'
+import type { PhaseSignals, ToolContext } from './types'
 
 const WRITE_VERB = /(?:^|_)(create|update|delete|write|post|merge|transition|comment)(?:_|$)/i
 
@@ -437,9 +437,107 @@ const commentSchema = z.object({
   body: z.string(),
 })
 
+export const REVIEW_DRAFT_KIND = 'review-draft'
+
+type DraftComment = z.infer<typeof commentSchema>
+type FinishArgs = { outcome: 'submitted' | 'replied' | 'no-op' | 'held-for-verdict' | 'failed'; summary: string; nextHint?: string }
+
+/**
+ * What a gated review phase intends to do to the pull request. It is a job
+ * artefact so the checkpoint shows it for approval; the publish phase is
+ * the only thing that turns it into SCM writes.
+ */
+export interface ReviewDraft {
+  status: 'draft' | 'published'
+  verdict: ReviewVerdict
+  body: string
+  comments: DraftComment[]
+  headSha?: string
+  resolve: { findingId: string; resolved: boolean }[]
+  finish?: FinishArgs
+  /** Set once the review itself is on the SCM, so a retried publish does not post twice. */
+  postedAt?: string
+  publishedAt?: string
+}
+
+/** A phase with a checkpoint writes nothing to the pull request; it drafts. */
+function defersWrites(ctx: ToolContext): boolean {
+  return ctx.currentPhase?.phaseConf.interactiveCheckpoint === true
+}
+
+function headShaOf(ctx: ToolContext): string | undefined {
+  const head = ctx.job.params['headSha']
+  return typeof head === 'string' && head ? head : undefined
+}
+
+function draftIsEmpty(draft: ReviewDraft): boolean {
+  return !draft.body.trim() && draft.comments.length === 0 && draft.resolve.length === 0
+}
+
+function postable(draft: ReviewDraft): string {
+  return JSON.stringify([draft.verdict, draft.body, draft.comments, draft.resolve])
+}
+
+function draftTitle(draft: ReviewDraft): string {
+  const verdict = { approve: 'Approve', request_changes: 'Request changes', comment: 'Comment' }[draft.verdict]
+  const count = draft.comments.length
+  return `Review to post: ${verdict} · ${count} inline comment${count === 1 ? '' : 's'}`
+}
+
+async function loadDraft(ctx: ToolContext): Promise<ReviewDraft | undefined> {
+  const job = await ctx.stateBackend.getJob(ctx.job.id)
+  const artifact = job?.artifacts?.find(item => item.kind === REVIEW_DRAFT_KIND)
+  return artifact ? artifact.data as unknown as ReviewDraft : undefined
+}
+
+/**
+ * One draft per round: revisions replace it in place, so the checkpoint
+ * never shows two. With `signals`, the write also decides the checkpoint:
+ * an empty finished draft skips it (approving nothing is noise), and a
+ * change to what will be posted withdraws an approval already given.
+ */
+async function saveDraft(
+  ctx: ToolContext,
+  change: (draft: ReviewDraft) => void,
+  signals?: PhaseSignals,
+): Promise<ReviewDraft> {
+  const job = await ctx.stateBackend.getJob(ctx.job.id)
+  if (!job) throw new Error('review job not found')
+  const artifacts = [...(job.artifacts ?? [])]
+  const index = artifacts.findIndex(item => item.kind === REVIEW_DRAFT_KIND)
+  const existing = index >= 0 ? artifacts[index] : undefined
+  const draft: ReviewDraft = existing
+    ? structuredClone(existing.data as unknown as ReviewDraft)
+    : { status: 'draft', verdict: 'comment', body: '', comments: [], resolve: [], ...(headShaOf(ctx) ? { headSha: headShaOf(ctx) } : {}) }
+  const before = postable(draft)
+  change(draft)
+  if (signals) {
+    signals.checkpointWaived = draft.finish && draftIsEmpty(draft) ? 'Nothing to post on the pull request' : undefined
+    if (existing && postable(draft) !== before) signals.checkpointReopened = 'The review draft changed, so it needs approving again'
+  }
+  const now = new Date()
+  const artifact = {
+    id: existing?.id ?? `art-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
+    phase: existing?.phase ?? job.phase,
+    kind: REVIEW_DRAFT_KIND,
+    title: draftTitle(draft),
+    data: draft as unknown as Record<string, unknown>,
+    createdBy: existing?.createdBy ?? job.phase,
+    createdAt: existing?.createdAt ?? now.toISOString(),
+    ...(existing ? { editedAt: now.toISOString(), editedBy: job.phase } : {}),
+  }
+  if (index >= 0) artifacts[index] = artifact
+  else artifacts.push(artifact)
+  await ctx.stateBackend.updateJob(ctx.job.id, { artifacts })
+  const refreshed = await ctx.stateBackend.getJob(ctx.job.id)
+  if (refreshed) ctx.job = refreshed
+  return draft
+}
+
 export async function reviewSubmit(
   ctx: ToolContext,
-  args: { verdict: ReviewVerdict; body: string; comments: z.infer<typeof commentSchema>[] },
+  args: { verdict: ReviewVerdict; body: string; comments: DraftComment[] },
+  signals?: PhaseSignals,
 ): Promise<unknown> {
   assertReviewJob(ctx)
   const policy = policyOf(ctx)
@@ -454,12 +552,44 @@ export async function reviewSubmit(
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity))
     .slice(0, policy.maxCommentsPerRound)
 
-  const submission = effectiveSubmission(policy, args.verdict)
+  const proposed = { verdict: args.verdict, body: args.body, comments, headSha: headShaOf(ctx) }
+  if (!defersWrites(ctx)) return postReview(ctx, review, proposed)
+
+  await saveDraft(ctx, current => {
+    current.verdict = proposed.verdict
+    current.body = proposed.body
+    current.comments = proposed.comments
+    if (proposed.headSha) current.headSha = proposed.headSha
+  }, signals)
+  return {
+    drafted: true,
+    posted: 'nothing',
+    comments: comments.length,
+    dropped: args.comments.length - comments.length,
+    next: ctx.job.interactive
+      ? 'The developer reviews this draft before anything is posted. Calling review_submit again replaces it.'
+      : 'The publish phase posts this draft. Calling review_submit again replaces it.',
+  }
+}
+
+/**
+ * Posts a review and records its findings. The single place Coro's review
+ * reaches the SCM, whether it comes straight from the lead or from the
+ * approved draft in the publish phase.
+ */
+async function postReview(
+  ctx: ToolContext,
+  review: PrReview,
+  draft: Pick<ReviewDraft, 'verdict' | 'body' | 'comments' | 'headSha'>,
+): Promise<{ posted: string; held: boolean; comments: number }> {
+  const policy = policyOf(ctx)
+  const submission = effectiveSubmission(policy, draft.verdict)
   const marker = reviewMarker(review.id)
-  const body = `${args.body}\n\n${marker}`
+  const body = `${draft.body}\n\n${marker}`
   const scm = scmFor(ctx, review.prRef.pluginId)
   if (!scm.submitReview) throw new Error('SCM plugin cannot submit a review')
-  const headSha = typeof ctx.job.params['headSha'] === 'string' && ctx.job.params['headSha'] ? ctx.job.params['headSha'] : undefined
+  const headSha = draft.headSha
+  const comments = draft.comments
 
   // Only providers with real draft reviews may receive a `pending` review;
   // the others would post it publicly. Coro holds it instead.
@@ -507,8 +637,8 @@ export async function reviewSubmit(
     }
     if (submission.holdVerdict || holdLocally) {
       fresh.pendingVerdict = {
-        verdict: args.verdict,
-        body: args.body,
+        verdict: draft.verdict,
+        body: draft.body,
         ...(pendingReviewId ? { pendingReviewId } : {}),
         ...(holdLocally && comments.length ? { heldComments: comments.map(toScmComment) } : {}),
         heldAt: new Date().toISOString(),
@@ -581,8 +711,23 @@ export async function reviewReply(
 export async function reviewResolveThread(
   ctx: ToolContext,
   args: { findingId: string; resolved: boolean },
+  signals?: PhaseSignals,
 ): Promise<unknown> {
   assertReviewJob(ctx)
+  const review = await loadReview(ctx)
+  const finding = review.ledger.findings.find(item => item.id === args.findingId)
+  if (!finding?.threadId) throw new Error('finding has no Coro thread')
+  if (defersWrites(ctx)) {
+    await saveDraft(ctx, current => {
+      current.resolve = [...current.resolve.filter(item => item.findingId !== args.findingId), args]
+    }, signals)
+    return { queued: true, next: 'Resolved when the draft is published.' }
+  }
+  await resolveThreadNow(ctx, args)
+  return { ok: true }
+}
+
+async function resolveThreadNow(ctx: ToolContext, args: { findingId: string; resolved: boolean }): Promise<void> {
   const review = await loadReview(ctx)
   const finding = review.ledger.findings.find(item => item.id === args.findingId)
   if (!finding?.threadId) throw new Error('finding has no Coro thread')
@@ -595,7 +740,6 @@ export async function reviewResolveThread(
     if (args.resolved) current.status = 'addressed'
     current.lastTouchedRound = fresh.totals.rounds
   })
-  return { ok: true }
 }
 
 export async function reviewUpdateFindings(
@@ -619,9 +763,19 @@ export async function reviewUpdateFindings(
 
 export async function reviewFinish(
   ctx: ToolContext,
-  args: { outcome: 'submitted' | 'replied' | 'no-op' | 'held-for-verdict' | 'failed'; summary: string; nextHint?: string },
+  args: FinishArgs,
+  signals?: PhaseSignals,
 ): Promise<unknown> {
   assertReviewJob(ctx)
+  if (defersWrites(ctx)) {
+    await saveDraft(ctx, current => { current.finish = args }, signals)
+    return { ok: true, deferred: true, next: 'The publish phase records this outcome when it posts the draft.' }
+  }
+  await finishRound(ctx, args)
+  return { ok: true, nextHint: args.nextHint ?? null }
+}
+
+async function finishRound(ctx: ToolContext, args: FinishArgs): Promise<void> {
   await mutateReview(ctx, review => {
     // Only this job's own round. Falling back to "the latest" would let a late
     // finish overwrite a newer round's summary.
@@ -636,7 +790,50 @@ export async function reviewFinish(
     const patchIds = ctx.job.params['prPatchIds']
     if (patchIds && typeof patchIds === 'object') review.ledger.patchIds = patchIds as Record<string, string>
   })
-  return { ok: true, nextHint: args.nextHint ?? null }
+}
+
+/**
+ * The publish phase. Posts the approved draft, resolves the threads it
+ * queued, and records the round. Safe to call again after a failure: a
+ * review that already reached the SCM is not posted twice.
+ */
+export async function reviewPublish(ctx: ToolContext): Promise<unknown> {
+  assertReviewJob(ctx)
+  const draft = await loadDraft(ctx)
+  if (!draft) {
+    await finishRound(ctx, { outcome: 'no-op', summary: 'The review phase left nothing to post.' })
+    return { posted: 'nothing' }
+  }
+  if (draft.status === 'published') return { posted: 'already', publishedAt: draft.publishedAt }
+
+  let posted: Awaited<ReturnType<typeof postReview>> | undefined
+  if (!draft.postedAt && (draft.body.trim() || draft.comments.length > 0)) {
+    posted = await postReview(ctx, await loadReview(ctx), draft)
+    await saveDraft(ctx, current => { current.postedAt = new Date().toISOString() })
+  }
+  const failed: { findingId: string; error: string }[] = []
+  for (const item of draft.resolve) {
+    try {
+      await resolveThreadNow(ctx, item)
+    } catch (err) {
+      failed.push({ findingId: item.findingId, error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  const outcome = draft.finish?.outcome
+    ?? (posted?.held ? 'held-for-verdict' : posted ? 'submitted' : 'no-op')
+  await finishRound(ctx, { outcome, summary: draft.finish?.summary ?? '' })
+  await saveDraft(ctx, current => {
+    current.status = 'published'
+    current.publishedAt = new Date().toISOString()
+  })
+  return {
+    posted: posted?.posted ?? 'nothing',
+    held: posted?.held ?? false,
+    comments: posted?.comments ?? 0,
+    resolved: draft.resolve.length - failed.length,
+    ...(failed.length ? { resolveFailures: failed } : {}),
+    outcome,
+  }
 }
 
 export function toolNameLooksWritable(name: string): boolean {
