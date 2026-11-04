@@ -576,6 +576,13 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     return toScmComment(await this.clientFor(repoSlug).postComment(repoSlug, prId, body))
   }
 
+  async updatePrComment(ref: ExternalRef, commentId: string, body: string): Promise<ScmPrComment> {
+    const { repoSlug } = parseRef(ref, this.manifest.id)
+    const id = Number(commentId)
+    if (!Number.isFinite(id)) throw new Error(`github plugin: commentId "${commentId}" is not a number`)
+    return toScmComment(await this.clientFor(repoSlug).updateIssueComment(repoSlug, id, body))
+  }
+
   async replyToComment(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
     const parent = Number(parentId)

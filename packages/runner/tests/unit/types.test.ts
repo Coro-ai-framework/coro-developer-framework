@@ -246,6 +246,7 @@ describe('inputToJobType', () => {
     expect(inputToJobType({ type: 'job', params: {} })).toBe(JobType.Job)
     expect(inputToJobType({ type: 'self-update', params: {} })).toBe(JobType.SelfUpdate)
     expect(inputToJobType({ type: 'retrospective', params: {} })).toBe(JobType.Retrospective)
+    expect(inputToJobType({ type: 'pr-review', params: {} })).toBe(JobType.PrReview)
   })
 
   it('throws on an unrecognised type rather than defaulting silently', () => {
@@ -384,9 +385,10 @@ describe('JobType', () => {
     expect(JobType.Job).toBe('job')
     expect(JobType.SelfUpdate).toBe('self-update')
     expect(JobType.Retrospective).toBe('retrospective')
+    expect(JobType.PrReview).toBe('pr-review')
   })
 
-  it('has exactly 3 members', () => {
-    expect(Object.values(JobType)).toHaveLength(3)
+  it('has exactly 4 members', () => {
+    expect(Object.values(JobType)).toHaveLength(4)
   })
 })

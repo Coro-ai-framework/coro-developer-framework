@@ -27,4 +27,9 @@ export class RedisReviewStore implements ReviewStore {
       .filter(review => reviewMatchesStatus(review, filter))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
+
+  async delete(id: string): Promise<void> {
+    await this.redis.del(`review:${id}`)
+    await this.redis.srem(INDEX, id)
+  }
 }

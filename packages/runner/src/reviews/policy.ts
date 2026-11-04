@@ -201,6 +201,13 @@ export function resolveReviewPolicy(layers: ReviewPolicyLayers = {}): ReviewPoli
   return base
 }
 
+/** Apply a repo's `.coro/review.md` to an already-resolved policy. Tighten-only. */
+export function tightenPolicy(policy: ReviewPolicy, repo: Partial<ReviewPolicy>): ReviewPolicy {
+  const next = structuredClone(policy)
+  applyTighten(next, repo)
+  return next
+}
+
 function applyWidenable(target: ReviewPolicy, patch?: Partial<ReviewPolicy>): void {
   if (!patch) return
   const keys = Object.keys(patch) as (keyof ReviewPolicy)[]

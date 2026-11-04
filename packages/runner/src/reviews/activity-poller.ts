@@ -7,7 +7,7 @@ import type { ReviewPolicy } from './policy'
 import type { ReviewStore } from './store'
 import type { ReviewEventSink, ReviewEventSource } from './sources'
 
-const WATCHED = new Set(['idle', 'awaiting-verdict', 'paused'])
+const WATCHED = new Set(['idle', 'awaiting-verdict', 'paused', 'failed'])
 
 export class ActivityPoller implements ReviewEventSource {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -60,6 +60,8 @@ export class ActivityPoller implements ReviewEventSource {
       for (const delta of deltas) {
         const kind = deltaToReviewKind(delta)
         if (!kind) continue
+        // The baseline can predate the last round; a head that round already reviewed is not news.
+        if (kind === 'commits-pushed' && snap.headSha && snap.headSha === review.ledger.lastReviewedSha) continue
         await this.sink({
           kind: kind as ReviewEventKind,
           prRef: review.prRef,

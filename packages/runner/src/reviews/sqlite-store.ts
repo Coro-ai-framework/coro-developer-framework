@@ -55,4 +55,8 @@ export class SqliteReviewStore implements ReviewStore {
       .map(row => JSON.parse(row.data) as PrReview)
       .filter(review => reviewMatchesStatus(review, filter))
   }
+
+  async delete(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM pr_reviews WHERE id = ?').run(id)
+  }
 }

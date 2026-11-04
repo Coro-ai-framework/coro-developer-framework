@@ -7,6 +7,7 @@ import { isPrReviewJob } from './jobs/helpers'
 import {
   reviewFinish,
   reviewGetContext,
+  reviewReadFile,
   reviewReply,
   reviewResolveThread,
   reviewRunLenses,
@@ -879,6 +880,18 @@ export function createCoroMcpServer(
           },
           async (args) => {
             try { return mcpText(await reviewGetContext(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_read_file',
+          "Read one file of this pull request's repository at the head (default) or base commit. Read-only, through the SCM API.",
+          {
+            path: z.string(),
+            at: z.enum(['head', 'base']).optional(),
+          },
+          async (args) => {
+            try { return mcpText(await reviewReadFile(ctx, args)) }
             catch (err) { return mcpError((err as Error).message) }
           },
         ),

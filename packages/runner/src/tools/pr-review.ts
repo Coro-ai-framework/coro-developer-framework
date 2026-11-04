@@ -5,6 +5,7 @@
 // repair turn. The lead never depends on a provider's native Task tool.
 
 import { readFileSync } from 'fs'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import path from 'path'
 import { z } from 'zod'
 import type { HookPolicy, SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
@@ -21,6 +22,7 @@ import { resolveModelAlias } from '../jobs/phase-assignment'
 import type { LensConfig } from '../workflow-parser'
 import type { ScmPluginRuntime } from '../plugins/types'
 import { findingFingerprint, findingId } from '../reviews/id'
+import { classifyPath } from '../reviews/packet'
 import { effectiveSubmission, severityAtLeast, type ReviewPolicy } from '../reviews/policy'
 import { withRunnerToolEquivalents } from './native-tool-equivalents'
 import type { ToolContext } from './types'
@@ -65,6 +67,106 @@ async function loadReview(ctx: ToolContext): Promise<PrReview> {
   const review = await ctx.stateBackend.reviews.get(id)
   if (!review) throw new Error(`review ${id} not found`)
   return review
+}
+
+/**
+ * Re-read, change, and save with no await in between, so events the
+ * coordinator recorded while this tool was talking to the SCM survive.
+ */
+async function mutateReview(ctx: ToolContext, change: (review: PrReview) => void): Promise<PrReview> {
+  const review = await loadReview(ctx)
+  change(review)
+  review.updatedAt = new Date().toISOString()
+  await ctx.stateBackend.reviews.save(review)
+  return review
+}
+
+const MAX_HEAD_FILES = 80
+const MAX_HEAD_FILE_BYTES = 400_000
+
+interface MaterialisedPr {
+  diff: string
+  headDir: string
+  files: number
+  headFiles: number
+  skipped: string[]
+  guidance?: string
+}
+
+/**
+ * Writes the diff and the changed files at head under `<job cwd>/pr/`,
+ * read through the SCM API. Nothing is cloned and nothing from head is
+ * executed or loaded as instructions. Runs once per round; lenses share it.
+ */
+async function materialisePr(ctx: ToolContext, review: PrReview): Promise<MaterialisedPr> {
+  const phase = ctx.currentPhase
+  if (!phase) throw new Error('review tools need an active phase')
+  const root = path.join(phase.workingDir, 'pr')
+  const marker = path.join(root, '.ready.json')
+  try {
+    return JSON.parse(await readFile(marker, 'utf8')) as MaterialisedPr
+  } catch { /* first call this round */ }
+
+  const scm = scmFor(ctx, review.prRef.pluginId)
+  if (!scm.getPrDiff) throw new Error(`The ${review.prRef.pluginId} plugin cannot read pull request diffs`)
+  const diff = await scm.getPrDiff(review.prRef)
+  const headDir = path.join(root, 'head')
+  await mkdir(headDir, { recursive: true })
+
+  const patch = diff.files.map(file => [
+    `diff --git a/${file.path} b/${file.path}`,
+    `--- ${file.status === 'added' ? '/dev/null' : `a/${file.path}`}`,
+    `+++ ${file.status === 'removed' ? '/dev/null' : `b/${file.path}`}`,
+    file.patch ?? '(binary or too large for the SCM to return a patch)',
+  ].join('\n')).join('\n')
+  await writeFile(path.join(root, 'diff.patch'), `${patch}\n`, 'utf8')
+
+  const headSha = typeof ctx.job.params['headSha'] === 'string' ? ctx.job.params['headSha'] : review.pr.headSha
+  const skipped: string[] = []
+  let headFiles = 0
+  if (scm.readFile && review.prRef.repoKey) {
+    for (const file of diff.files) {
+      if (file.status === 'removed') continue
+      const classes = classifyPath(file.path)
+      if (classes.some(cls => cls === 'lockfile' || cls === 'generated' || cls === 'vendored')) continue
+      const dest = path.resolve(headDir, file.path)
+      if (!dest.startsWith(`${headDir}${path.sep}`)) {
+        skipped.push(file.path)
+        continue
+      }
+      if (headFiles >= MAX_HEAD_FILES) {
+        skipped.push(file.path)
+        continue
+      }
+      try {
+        const content = await scm.readFile({ repo: review.prRef.repoKey, path: file.path, ref: headSha })
+        const bytes = content.encoding === 'base64' ? Buffer.from(content.content, 'base64') : Buffer.from(content.content, 'utf8')
+        if (bytes.length > MAX_HEAD_FILE_BYTES) {
+          skipped.push(file.path)
+          continue
+        }
+        await mkdir(path.dirname(dest), { recursive: true })
+        await writeFile(dest, bytes)
+        headFiles += 1
+      } catch {
+        skipped.push(file.path)
+      }
+    }
+  }
+
+  const guidance = typeof ctx.job.params['repoGuidance'] === 'string' ? ctx.job.params['repoGuidance'] : undefined
+  if (guidance) await writeFile(path.join(root, 'review-guidance.md'), guidance, 'utf8')
+
+  const result: MaterialisedPr = {
+    diff: 'pr/diff.patch',
+    headDir: 'pr/head',
+    files: diff.files.length,
+    headFiles,
+    skipped,
+    ...(guidance ? { guidance: 'pr/review-guidance.md' } : {}),
+  }
+  await writeFile(marker, JSON.stringify(result), 'utf8')
+  return result
 }
 
 function scmFor(ctx: ToolContext, pluginId: string): ScmPluginRuntime {
@@ -211,30 +313,32 @@ export async function reviewRunLenses(
     throw new Error(`review_run_lenses: undeclared lenses: ${unknown.join(', ')}`)
   }
   const selected = declared.filter(lens => wanted.includes(lens.name))
+  const workspace = await materialisePr(ctx, await loadReview(ctx))
   const task = [
-    'Review only the files in your slice. Cite path and line.',
+    `The unified diff is at ${workspace.diff}. Changed files at the pull request head are under ${workspace.headDir}/. Read them; do not run anything from them.`,
+    'Review only the files in your slice. Cite path and line from the head version.',
     `Severity floor: ${policy.minSeverity}. Do not emit findings below it.`,
     args.scope?.paths?.length ? `Paths: ${args.scope.paths.join(', ')}` : '',
     args.candidates ? `Candidates to verify:\n${JSON.stringify(args.candidates)}` : '',
     'Reply with a fenced JSON object: {"findings":[{"severity","category","path","line","title","body","sources":[{"kind","ref"}]}],"notes","sourcesUsed":[]}.',
   ].filter(Boolean).join('\n')
   const lenses = await mapPool(selected, policy.maxParallelLenses, lens => runOneLens(ctx, lens, task, policy))
-  const review = await loadReview(ctx).catch(() => null)
-  if (review) {
+  await mutateReview(ctx, review => {
     const round = [...review.rounds].reverse().find(item => item.jobId === ctx.job.id)
-    if (round) {
-      round.lensCosts = {
-        ...(round.lensCosts ?? {}),
-        ...Object.fromEntries(lenses.map(lens => [lens.name, {
-          costUsd: lens.usage.costUsd,
-          inputTokens: lens.usage.inputTokens,
-          outputTokens: lens.usage.outputTokens,
-          findings: lens.result.findings.length,
-        }])),
+    if (!round) return
+    // A lens can run twice in one round (candidates, then the verifier); costs add up.
+    const costs = { ...(round.lensCosts ?? {}) }
+    for (const lens of lenses) {
+      const prior = costs[lens.name]
+      costs[lens.name] = {
+        costUsd: (prior?.costUsd ?? 0) + lens.usage.costUsd,
+        inputTokens: (prior?.inputTokens ?? 0) + lens.usage.inputTokens,
+        outputTokens: (prior?.outputTokens ?? 0) + lens.usage.outputTokens,
+        findings: (prior?.findings ?? 0) + lens.result.findings.length,
       }
-      await ctx.stateBackend.reviews.save(review)
     }
-  }
+    round.lensCosts = costs
+  }).catch(() => undefined)
   return { lenses }
 }
 
@@ -252,16 +356,40 @@ export async function reviewGetContext(
     if (!scm.listReviewThreads) return []
     return scm.listReviewThreads(review.prRef)
   }
+  const packet = ctx.job.params['reviewPacket'] ?? null
+  if (section === 'packet') return packet
+  const workspace = await materialisePr(ctx, review)
   return {
     reviewId: review.id,
+    roundKind: ctx.job.params['roundKind'] ?? null,
     pr: review.pr,
     status: review.status,
     policy: policyOf(ctx),
+    workspace,
     openFindings: review.ledger.findings.filter(finding => finding.status === 'open'),
     architectureBrief: review.architectureBrief ?? null,
     rounds: review.rounds.slice(-3),
-    packet: ctx.job.params['reviewPacket'] ?? null,
+    packet,
   }
+}
+
+/** Read one file of this pull request's repository at its head or base commit. */
+export async function reviewReadFile(
+  ctx: ToolContext,
+  args: { path: string; at?: 'head' | 'base' },
+): Promise<{ path: string; at: 'head' | 'base'; sha: string; content: string; truncated: boolean }> {
+  assertReviewJob(ctx)
+  const review = await loadReview(ctx)
+  const scm = scmFor(ctx, review.prRef.pluginId)
+  if (!scm.readFile || !review.prRef.repoKey) throw new Error('This SCM plugin cannot read repository files')
+  const at = args.at ?? 'head'
+  const param = ctx.job.params[at === 'head' ? 'headSha' : 'baseSha']
+  const sha = typeof param === 'string' && param ? param : at === 'head' ? review.pr.headSha : review.pr.baseSha
+  if (!sha) throw new Error(`The ${at} commit of this pull request is not known yet`)
+  const file = await scm.readFile({ repo: review.prRef.repoKey, path: args.path.replace(/^\/+/, ''), ref: sha })
+  const text = file.encoding === 'base64' ? Buffer.from(file.content, 'base64').toString('utf8') : file.content
+  const limit = 120_000
+  return { path: args.path, at, sha, content: text.slice(0, limit), truncated: file.truncated === true || text.length > limit }
 }
 
 const commentSchema = z.object({
@@ -297,63 +425,58 @@ export async function reviewSubmit(
   const body = `${args.body}\n\n${marker}`
   const scm = scmFor(ctx, review.prRef.pluginId)
   if (!scm.submitReview) throw new Error('SCM plugin cannot submit a review')
+  const headSha = typeof ctx.job.params['headSha'] === 'string' && ctx.job.params['headSha'] ? ctx.job.params['headSha'] : undefined
 
-  let pendingReviewId: string | undefined
-  if (submission.event === 'pending') {
-    const pending = await scm.submitReview(review.prRef, {
-      event: 'pending',
-      body,
-      comments: comments.map(toScmComment),
-    })
-    pendingReviewId = pending.reviewId
-  } else {
-    await scm.submitReview(review.prRef, {
-      event: submission.event,
-      body,
-      comments: comments.map(toScmComment),
-    })
-  }
+  const result = await scm.submitReview(review.prRef, {
+    event: submission.event,
+    body,
+    ...(headSha ? { commitSha: headSha } : {}),
+    comments: comments.map(toScmComment),
+  })
+  const pendingReviewId = submission.event === 'pending' ? result.reviewId : undefined
 
-  const round = review.totals.rounds
-  for (const comment of comments) {
-    const fingerprint = findingFingerprint(comment.path, comment.title, comment.category)
-    const existing = review.ledger.findings.find(finding => finding.fingerprint === fingerprint)
-    if (existing) {
-      existing.status = 'open'
-      existing.lastTouchedRound = round
-      existing.body = comment.body
-    } else {
-      const finding: Finding = {
-        id: comment.findingId ?? findingId(),
-        fingerprint,
-        severity: comment.severity,
-        category: comment.category as FindingCategory,
-        lens: 'lead',
-        path: comment.path,
-        line: comment.line,
-        side: comment.side,
-        title: comment.title,
-        body: comment.body,
-        status: 'open',
-        raisedInRound: round,
-        lastTouchedRound: round,
+  await mutateReview(ctx, fresh => {
+    const round = fresh.totals.rounds
+    for (const comment of comments) {
+      const fingerprint = findingFingerprint(comment.path, comment.title, comment.category)
+      const commentId = result.commentIds[toScmComment(comment).key]
+      const existing = fresh.ledger.findings.find(finding => finding.fingerprint === fingerprint)
+      if (existing) {
+        existing.status = 'open'
+        existing.lastTouchedRound = round
+        existing.body = comment.body
+        if (commentId) existing.commentId = commentId
+      } else {
+        const finding: Finding = {
+          id: comment.findingId ?? findingId(),
+          fingerprint,
+          severity: comment.severity,
+          category: comment.category as FindingCategory,
+          lens: 'lead',
+          path: comment.path,
+          line: comment.line,
+          side: comment.side,
+          title: comment.title,
+          body: comment.body,
+          status: 'open',
+          raisedInRound: round,
+          lastTouchedRound: round,
+          ...(commentId ? { commentId } : {}),
+        }
+        fresh.ledger.findings.push(finding)
       }
-      review.ledger.findings.push(finding)
     }
-  }
-  if (submission.holdVerdict) {
-    review.pendingVerdict = {
-      verdict: args.verdict,
-      body: args.body,
-      ...(pendingReviewId ? { pendingReviewId } : {}),
-      heldAt: new Date().toISOString(),
+    if (submission.holdVerdict) {
+      fresh.pendingVerdict = {
+        verdict: args.verdict,
+        body: args.body,
+        ...(pendingReviewId ? { pendingReviewId } : {}),
+        heldAt: new Date().toISOString(),
+      }
+    } else {
+      fresh.pendingVerdict = undefined
     }
-    review.status = 'awaiting-verdict'
-  } else {
-    review.pendingVerdict = undefined
-  }
-  review.updatedAt = new Date().toISOString()
-  await ctx.stateBackend.reviews.save(review)
+  })
   return { posted: submission.event, held: submission.holdVerdict, comments: comments.length }
 }
 
@@ -389,10 +512,13 @@ export async function reviewReply(
   } else {
     throw new Error('SCM plugin cannot post comments')
   }
-  if (args.findingStatus) {
-    const finding = review.ledger.findings.find(item => item.threadId === args.threadId || item.commentId === args.commentId)
-    if (finding) finding.status = args.findingStatus
-    await ctx.stateBackend.reviews.save(review)
+  const status = args.findingStatus
+  if (status) {
+    await mutateReview(ctx, fresh => {
+      const finding = fresh.ledger.findings.find(item =>
+        (args.threadId && item.threadId === args.threadId) || (args.commentId && item.commentId === args.commentId))
+      if (finding) finding.status = status
+    })
   }
   return { ok: true }
 }
@@ -408,9 +534,12 @@ export async function reviewResolveThread(
   const scm = scmFor(ctx, review.prRef.pluginId)
   if (!scm.resolveThread) throw new Error('SCM plugin cannot resolve threads')
   await scm.resolveThread(review.prRef, finding.threadId, args.resolved)
-  finding.status = args.resolved ? 'addressed' : finding.status
-  finding.lastTouchedRound = review.totals.rounds
-  await ctx.stateBackend.reviews.save(review)
+  await mutateReview(ctx, fresh => {
+    const current = fresh.ledger.findings.find(item => item.id === args.findingId)
+    if (!current) return
+    if (args.resolved) current.status = 'addressed'
+    current.lastTouchedRound = fresh.totals.rounds
+  })
   return { ok: true }
 }
 
@@ -419,16 +548,18 @@ export async function reviewUpdateFindings(
   args: { updates: { findingId: string; status: Finding['status']; note?: string }[] },
 ): Promise<unknown> {
   assertReviewJob(ctx)
-  const review = await loadReview(ctx)
-  for (const update of args.updates) {
-    const finding = review.ledger.findings.find(item => item.id === update.findingId)
-    if (!finding) continue
-    finding.status = update.status
-    finding.lastTouchedRound = review.totals.rounds
-    if (update.note) finding.body = `${finding.body ?? ''}\n\n${update.note}`.trim()
-  }
-  await ctx.stateBackend.reviews.save(review)
-  return { updated: args.updates.length }
+  let updated = 0
+  await mutateReview(ctx, review => {
+    for (const update of args.updates) {
+      const finding = review.ledger.findings.find(item => item.id === update.findingId)
+      if (!finding) continue
+      finding.status = update.status
+      finding.lastTouchedRound = review.totals.rounds
+      if (update.note) finding.body = `${finding.body ?? ''}\n\n${update.note}`.trim()
+      updated += 1
+    }
+  })
+  return { updated }
 }
 
 export async function reviewFinish(
@@ -436,19 +567,20 @@ export async function reviewFinish(
   args: { outcome: 'submitted' | 'replied' | 'no-op' | 'held-for-verdict' | 'failed'; summary: string; nextHint?: string },
 ): Promise<unknown> {
   assertReviewJob(ctx)
-  const review = await loadReview(ctx)
-  const round = [...review.rounds].reverse().find(item => item.jobId === ctx.job.id)
-    ?? review.rounds[review.rounds.length - 1]
-  if (round) {
-    round.outcome = args.outcome
-    round.summary = args.summary
-    round.jobId = ctx.job.id
-    if (args.outcome === 'held-for-verdict') review.status = 'awaiting-verdict'
-  }
-  const head = ctx.job.params['headSha']
-  if (typeof head === 'string' && head) review.ledger.lastReviewedSha = head
-  review.updatedAt = new Date().toISOString()
-  await ctx.stateBackend.reviews.save(review)
+  await mutateReview(ctx, review => {
+    // Only this job's own round. Falling back to "the latest" would let a late
+    // finish overwrite a newer round's summary.
+    const round = review.rounds.find(item => item.jobId === ctx.job.id)
+    if (round) {
+      round.outcome = args.outcome
+      round.summary = args.summary
+    }
+    if (args.outcome === 'failed') return
+    const head = ctx.job.params['headSha']
+    if (typeof head === 'string' && head) review.ledger.lastReviewedSha = head
+    const patchIds = ctx.job.params['prPatchIds']
+    if (patchIds && typeof patchIds === 'object') review.ledger.patchIds = patchIds as Record<string, string>
+  })
   return { ok: true, nextHint: args.nextHint ?? null }
 }
 

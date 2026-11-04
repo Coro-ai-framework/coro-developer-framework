@@ -3,10 +3,10 @@ import type { LocalConfig } from '../config/local-config'
 import { createRunnerCore, tempReviewDbPath } from '../runner/core'
 import { ReviewCoordinator } from './coordinator'
 import { eventsFromCi } from './ci-source'
+import { createRoundPipeline } from './engine'
 import { PrMarkerReviewStore } from './marker-store'
 import { parsePrUrl } from './id'
 import type { ScmPluginRuntime } from '../plugins/types'
-import { isIrrelevantConversation } from './coordinator'
 
 export interface OnceOptions {
   config: LocalConfig | null
@@ -45,13 +45,25 @@ export async function runReviewOnce(opts: OnceOptions): Promise<number> {
     return 1
   }
   const store = new PrMarkerReviewStore(
+    core.stateBackend.reviews,
     async () => {
-      if (!scm.listReviewThreads && !scm.getPrDetails) return []
-      const comments = scm.pollPr ? (await scm.pollPr(ref)).comments.map(comment => comment.body) : []
-      return comments
+      if (scm.listPrComments) {
+        return (await scm.listPrComments(ref)).map(comment => ({ id: String(comment.id), body: comment.body }))
+      }
+      if (scm.pollPr) return (await scm.pollPr(ref)).comments.map(comment => ({ id: String(comment.id), body: comment.body }))
+      return []
     },
-    async body => {
+    async (body, existingId) => {
+      if (existingId && scm.updatePrComment) {
+        await scm.updatePrComment(ref, existingId, body)
+        return { id: existingId }
+      }
+      if (scm.postPrComment) {
+        const posted = await scm.postPrComment(ref, body)
+        return { id: String(posted.id) }
+      }
       await scm.submitReview!(ref, { event: 'comment', body, comments: [] })
+      return undefined
     },
   )
   await store.hydrate()
@@ -60,56 +72,67 @@ export async function runReviewOnce(opts: OnceOptions): Promise<number> {
     core.stateBackend.close()
     return 1
   }
+  const roundPolicy = { ...policy, debounceSec: 0, enabled: true }
   const login = scm.whoami ? (await scm.whoami()).login : 'ci'
+  const pipeline = await createRoundPipeline(core.runnerCtx, core.dispatcher, roundPolicy)
   let ran = false
   const coordinator = new ReviewCoordinator({
     store,
-    policy: { ...policy, debounceSec: 0, enabled: true },
+    policy: roundPolicy,
     reviewerLogin: login,
     identityMode: 'bot',
     setTimer: (fn) => {
       queueMicrotask(fn)
       return { clear() {} }
     },
-    dispatchRound: async (review, kind) => {
+    dispatchRound: async (review, kind, batch) => {
       ran = true
-      const job = await core.dispatcher.dispatch({
-        type: 'pr-review',
-        workflowPath: policy.workflowPath,
-        triggerSource: 'internal',
-        params: {
-          reviewId: review.id,
-          reviewTrigger: kind === 'closing' ? 'pr-review:closing' : kind === 'conversation' ? 'pr-review:conversation' : 'pr-review:review',
-          projectContext: 'skip',
-          reviewPolicy: policy,
-          prUrl: review.pr.url || opts.prUrl,
-          headSha: review.pr.headSha,
-          description: `CI review ${ref.repoKey}#${ref.externalId}`,
-          serviceName: (ref.repoKey ?? 'pr').replace(/[^\w.-]+/g, '-'),
-        },
-      })
-      return { jobId: job.id }
+      return pipeline.dispatchRound(review, kind, batch)
     },
-    assess: async (review, _kind, batch) => {
-      if (isIrrelevantConversation(review, batch)) {
-        return { kind: 'irrelevant-conversation', summary: 'No review needed.' }
-      }
-      return null
-    },
+    assess: pipeline.assess,
     log: (msg, extra) => opts.logger.info(extra ?? {}, msg),
   })
   core.dispatcher.setRoundStoppedHandler(job => coordinator.onRoundStopped(job))
-  for (const event of events) await coordinator.ingest(event)
-  if (ran) {
-    const review = (await store.list())[0]
-    const jobId = review?.rounds[review.rounds.length - 1]?.jobId
-    if (jobId) await waitForJob(core, jobId)
+  let reviewId: string | undefined
+  for (const event of events) {
+    const review = await coordinator.ingest(event)
+    reviewId = review?.id ?? reviewId
   }
-  const review = (await store.list()).find(item => item.prRef.externalId === ref.externalId)
+  if (reviewId) {
+    await waitForSettled(store, reviewId, false)
+    if (ran) {
+      const review = await store.get(reviewId)
+      const jobId = review?.rounds[review.rounds.length - 1]?.jobId
+      if (jobId) await waitForJob(core, jobId)
+      await waitForSettled(store, reviewId, true)
+    }
+    await store.flush(reviewId)
+  }
+  const review = reviewId ? await store.get(reviewId) : null
   const blockers = review?.ledger.findings.filter(finding => finding.status === 'open' && finding.severity === 'blocker').length ?? 0
   core.stateBackend.close()
   if (opts.failOn === 'blocker' && blockers > 0) return 2
   return 0
+}
+
+/**
+ * Waits until the coordinator has dispatched the round (or decided not to),
+ * or, with `untilRoundEnds`, until the stop handler has settled it.
+ */
+function waitForSettled(store: PrMarkerReviewStore, id: string, untilRoundEnds: boolean): Promise<void> {
+  return new Promise(resolve => {
+    const started = Date.now()
+    const timer = setInterval(async () => {
+      const review = await store.get(id)
+      const latest = review?.rounds[review.rounds.length - 1]
+      const busy = review?.status === 'queued'
+        || (review?.status === 'running' && !!latest && !latest.endedAt && (untilRoundEnds || !latest.jobId))
+      if (!review || !busy || Date.now() - started > 120_000) {
+        clearInterval(timer)
+        resolve()
+      }
+    }, 250)
+  })
 }
 
 function waitForJob(core: Awaited<ReturnType<typeof createRunnerCore>>, jobId: string): Promise<void> {

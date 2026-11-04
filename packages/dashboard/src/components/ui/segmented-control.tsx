@@ -52,7 +52,7 @@ export function SegmentedControl<T extends string>({
               'rounded-full font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
               itemSize,
               active
-                ? 'bg-panel-raised text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]'
+                ? 'bg-fg/12 text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]'
                 : 'text-fg-muted hover:text-fg',
             )}
           >

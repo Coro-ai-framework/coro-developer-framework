@@ -646,7 +646,8 @@ export interface ScmPrDetails {
 }
 
 export interface ScmPrDiff {
-  files: { path: string; patch?: string; additions: number; deletions: number }[]
+  /** `status` uses GitHub's words: added, modified, removed, renamed. */
+  files: { path: string; patch?: string; additions: number; deletions: number; status?: string }[]
 }
 
 export interface ScmReviewCommentInput {
@@ -791,6 +792,8 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   getPrStatus?(ref: ExternalRef): Promise<ScmPrStatus>
   listPrComments?(ref: ExternalRef): Promise<ScmPrComment[]>
   postPrComment?(ref: ExternalRef, body: string): Promise<ScmPrComment>
+  /** Edit a top-level PR comment in place. The headless review keeps its state in one such comment. */
+  updatePrComment?(ref: ExternalRef, commentId: string, body: string): Promise<ScmPrComment>
   replyToComment?(ref: ExternalRef, parentId: string, body: string): Promise<ScmPrComment>
   approvePr?(ref: ExternalRef): Promise<void>
   mergePr?(ref: ExternalRef, opts?: ScmMergeOptions): Promise<void>

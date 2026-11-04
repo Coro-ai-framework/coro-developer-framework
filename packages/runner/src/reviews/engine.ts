@@ -1,20 +1,35 @@
-import path from 'path'
 import os from 'os'
+import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
 import type { Job, PrReview, ReviewEvent, RoundKind } from '@coro-ai/cloud-protocol'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
 import type { LocalConfig } from '../config/local-config'
+import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 import { ActivityPoller } from './activity-poller'
-import { ReviewCoordinator } from './coordinator'
-import { isIrrelevantConversation } from './coordinator'
-import { InboxPoller } from './inbox-poller'
-import { isOutOfScopeDelta, patchUnchanged, type PacketFile } from './packet'
+import { ReviewCoordinator, isIrrelevantConversation, type ShortCircuitDecision } from './coordinator'
+import { InboxPoller, type InboxStatus } from './inbox-poller'
+import { prepareRound, shortCircuitFor, type PreparedRound } from './prepare'
 import { reviewsConfigToPolicy, type ReviewPolicy } from './policy'
 import { createWebhookReviewSink } from './webhook-source'
 import type { ScmPluginRuntime } from '../plugins/types'
 
+export interface ReviewEngineStatus {
+  enabled: boolean
+  running: boolean
+  login?: string
+  identity?: ReviewPolicy['identity']
+  eventSource?: ReviewPolicy['eventSource']
+  scms: string[]
+  inboxIntervalSec?: number
+  inbox?: InboxStatus
+  startedAt?: string
+}
+
 export interface ReviewRuntime {
   coordinator: ReviewCoordinator
+  status(): ReviewEngineStatus
+  /** Poll the inbox now instead of waiting for the next interval. */
+  pollInbox(): Promise<void>
   stop(): void
 }
 
@@ -49,33 +64,31 @@ export async function syncReviewEngine(
 export async function startReviewEngine(
   ctx: RunnerContext,
   dispatcher: Dispatcher,
-  config: LocalConfig,
+  _config: LocalConfig,
 ): Promise<ReviewRuntime | null> {
   const policy = ctx.settings.reviews
   if (!policy?.enabled) return null
+  active?.stop()
   await ctx.stateBackend.reviews.initialize?.()
 
   const login = await reviewerLogin(ctx, policy)
+  const pipeline = await createRoundPipeline(ctx, dispatcher, policy)
   const coordinator = new ReviewCoordinator({
     store: ctx.stateBackend.reviews,
     policy,
     reviewerLogin: login,
     identityMode: policy.identity,
     log: (msg, extra) => ctx.logger.info(extra ?? {}, msg),
-    dispatchRound: (review, kind, events) => dispatchRound(ctx, dispatcher, policy, review, kind, events),
-    assess: async (review, _kind, events) => {
-      if (isIrrelevantConversation(review, events)) {
-        return { kind: 'irrelevant-conversation', summary: 'Conversation did not need a review.' }
+    dispatchRound: pipeline.dispatchRound,
+    assess: pipeline.assess,
+    cancelRound: async jobId => {
+      await dispatcher.cancelJob(jobId, 'Stopped from the review')
+      // A job that is not on a worker never reaches the dispatcher's stop hook.
+      if (dispatcher.isJobActive(jobId)) return
+      const job = await ctx.stateBackend.getJob(jobId)
+      if (job?.status === 'cancelled') {
+        setTimeout(() => void coordinator.onRoundStopped(job).catch(() => undefined), 0)
       }
-      const patchIds = events.map(event => event.data['patchIds']).find(value => value && typeof value === 'object') as Record<string, string> | undefined
-      if (patchIds && patchUnchanged(review.ledger.patchIds, patchIds)) {
-        return { kind: 'patch-unchanged', summary: 'Diff patch ids are unchanged.' }
-      }
-      const files = events.map(event => event.data['files']).find(Array.isArray) as PacketFile[] | undefined
-      if (files && isOutOfScopeDelta(files, policy.ignorePaths)) {
-        return { kind: 'out-of-scope', summary: 'Changed files are generated, vendored, or ignored.' }
-      }
-      return null
     },
     spendTodayUsd: async () => {
       const reviews = await ctx.stateBackend.reviews.list()
@@ -89,10 +102,11 @@ export async function startReviewEngine(
   })
 
   const pollers: { stop(): void }[] = []
+  let inbox: InboxPoller | undefined
+  const sink = (event: ReviewEvent) => coordinator.ingest(event).then(() => undefined)
   if (policy.eventSource === 'poll' || policy.eventSource === 'both') {
-    const inbox = new InboxPoller(ctx.plugins, policy, ctx.logger)
+    inbox = new InboxPoller(ctx.plugins, policy, ctx.logger)
     const activity = new ActivityPoller(ctx.stateBackend.reviews, ctx.plugins, policy, ctx.logger)
-    const sink = (event: ReviewEvent) => coordinator.ingest(event).then(() => undefined)
     inbox.start(sink)
     activity.start(sink)
     pollers.push(inbox, activity)
@@ -105,11 +119,29 @@ export async function startReviewEngine(
     const job = await ctx.stateBackend.getJob(jobId)
     return job?.status ?? null
   })
+  await coordinator.resumeQueued()
 
+  const startedAt = new Date().toISOString()
   const runtime: ReviewRuntime = {
     coordinator,
+    status: () => ({
+      enabled: true,
+      running: true,
+      login,
+      identity: policy.identity,
+      eventSource: policy.eventSource,
+      scms: [...policy.scms],
+      inboxIntervalSec: policy.inboxIntervalSec,
+      ...(inbox ? { inbox: inbox.status() } : {}),
+      startedAt,
+    }),
+    pollInbox: async () => {
+      if (!inbox) throw new Error('The inbox is off because reviews listen for webhooks only.')
+      await inbox.pollNow()
+    },
     stop() {
       for (const poller of pollers) poller.stop()
+      coordinator.dispose()
       dispatcher.setRoundStoppedHandler(undefined)
       dispatcher.setUnmatchedPluginEventSink(undefined)
       if (active === runtime) active = null
@@ -117,8 +149,79 @@ export async function startReviewEngine(
   }
   active = runtime
   ctx.logger.info({ login, eventSource: policy.eventSource }, 'PR review engine started')
-  void config
   return runtime
+}
+
+export interface RoundPipeline {
+  assess: (review: PrReview, kind: RoundKind, events: ReviewEvent[]) => Promise<ShortCircuitDecision | null>
+  dispatchRound: (review: PrReview, kind: RoundKind, events: ReviewEvent[]) => Promise<{ jobId: string }>
+}
+
+/**
+ * What happens between "a round is due" and "a job exists". Shared by the
+ * daemon and `--once` so both review the same packet under the same policy.
+ * `assess` reads the PR through the SCM; `dispatchRound` uses what it read.
+ */
+export async function createRoundPipeline(
+  ctx: RunnerContext,
+  dispatcher: Dispatcher,
+  policy: ReviewPolicy,
+  extraParams: Record<string, unknown> = {},
+): Promise<RoundPipeline> {
+  const lenses = await workflowLenses(ctx, policy)
+  const prepared = new Map<string, PreparedRound>()
+
+  return {
+    assess: async (review, kind, events) => {
+      prepared.delete(review.id)
+      if (isIrrelevantConversation(review, events)) {
+        return { kind: 'irrelevant-conversation', summary: 'Conversation did not need a review.' }
+      }
+      if (kind === 'closing') return null
+      const scm = ctx.plugins.byId(review.prRef.pluginId) as ScmPluginRuntime | undefined
+      if (!scm) throw new Error(`No ${review.prRef.pluginId} plugin is configured.`)
+      const round = await prepareRound({ scm, review, policy, lenses })
+      prepared.set(review.id, round)
+      return shortCircuitFor(review, kind, round)
+    },
+    dispatchRound: async (review, kind, events) => {
+      const round = prepared.get(review.id)
+      prepared.delete(review.id)
+      const job = await dispatcher.dispatch({
+        type: 'pr-review',
+        workflowPath: policy.workflowPath,
+        triggerSource: 'internal',
+        params: {
+          reviewId: review.id,
+          reviewTrigger: kind === 'closing' ? 'pr-review:closing' : kind === 'conversation' || kind === 'command' ? 'pr-review:conversation' : 'pr-review:review',
+          roundKind: kind,
+          projectContext: 'skip',
+          reviewPolicy: round?.policy ?? policy,
+          prRef: review.prRef,
+          prUrl: review.pr.url,
+          headSha: review.pr.headSha,
+          baseSha: review.pr.baseSha,
+          ...(round ? { reviewPacket: round.packet, prPatchIds: round.patchIds } : {}),
+          ...(round?.repoGuidance ? { repoGuidance: round.repoGuidance } : {}),
+          description: `Review ${review.pr.title || review.pr.url || review.prRef.externalId} (${kind})`,
+          serviceName: (review.prRef.repoKey ?? 'pr').replace(/[^\w.-]+/g, '-'),
+          triggeringEvents: events.map(event => ({ kind: event.kind, at: event.at })),
+          ...extraParams,
+        },
+      })
+      return { jobId: job.id }
+    },
+  }
+}
+
+async function workflowLenses(ctx: RunnerContext, policy: ReviewPolicy): Promise<{ name: string; when?: string[] }[]> {
+  const resolved = await loadWorkflowConfigFromRoots(
+    policy.workflowPath,
+    [ctx.settings.paths.coroIntelligenceDir, getBaseLayerRoot()],
+    ctx.logger,
+  )
+  const review = resolved?.config.phases.find(phase => (phase.lenses?.length ?? 0) > 0)
+  return (review?.lenses ?? []).map(lens => ({ name: lens.name, ...(lens.when ? { when: lens.when } : {}) }))
 }
 
 async function reviewerLogin(ctx: RunnerContext, policy: ReviewPolicy): Promise<string> {
@@ -133,37 +236,4 @@ async function reviewerLogin(ctx: RunnerContext, policy: ReviewPolicy): Promise<
     }
   }
   return os.userInfo().username
-}
-
-async function dispatchRound(
-  ctx: RunnerContext,
-  dispatcher: Dispatcher,
-  policy: ReviewPolicy,
-  review: PrReview,
-  kind: RoundKind,
-  events: ReviewEvent[],
-): Promise<{ jobId: string }> {
-  const job = await dispatcher.dispatch({
-    type: 'pr-review',
-    workflowPath: policy.workflowPath,
-    triggerSource: 'internal',
-    params: {
-      reviewId: review.id,
-      reviewTrigger: kind === 'closing' ? 'pr-review:closing' : kind === 'conversation' || kind === 'command' ? 'pr-review:conversation' : 'pr-review:review',
-      projectContext: 'skip',
-      reviewPolicy: policy,
-      prRef: review.prRef,
-      prUrl: review.pr.url,
-      headSha: review.pr.headSha,
-      description: `Review ${review.pr.url || review.prRef.externalId} (${kind})`,
-      serviceName: (review.prRef.repoKey ?? 'pr').replace(/[^\w.-]+/g, '-'),
-      triggeringEvents: events.map(event => ({ kind: event.kind, at: event.at })),
-      repoCheckoutAbsDir: path.join(ctx.settings.paths.workingDir, 'reviews', review.id, 'base'),
-    },
-  })
-  return { jobId: job.id }
-}
-
-export function reviewCacheRoot(workingDir: string): string {
-  return path.join(workingDir, 'review-refs')
 }

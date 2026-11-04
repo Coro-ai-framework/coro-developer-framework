@@ -461,7 +461,8 @@ export interface ScmPrDetails {
 }
 
 export interface ScmPrDiff {
-  files: { path: string; patch?: string; additions: number; deletions: number }[]
+  /** `status` uses GitHub's words: added, modified, removed, renamed. */
+  files: { path: string; patch?: string; additions: number; deletions: number; status?: string }[]
 }
 
 export interface ScmReviewCommentInput {

@@ -620,8 +620,8 @@ export class GitHubClient {
     }
   }
 
-  async getPrFiles(repoSlug: string, prId: number): Promise<Array<{ path: string; patch?: string; additions: number; deletions: number }>> {
-    const files = await this.request<Array<{ filename: string; patch?: string; additions?: number; deletions?: number }>>(
+  async getPrFiles(repoSlug: string, prId: number): Promise<Array<{ path: string; patch?: string; additions: number; deletions: number; status?: string }>> {
+    const files = await this.request<Array<{ filename: string; patch?: string; additions?: number; deletions?: number; status?: string }>>(
       'GET',
       `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/files?per_page=100`,
     )
@@ -630,6 +630,7 @@ export class GitHubClient {
       additions: file.additions ?? 0,
       deletions: file.deletions ?? 0,
       ...(file.patch ? { patch: file.patch } : {}),
+      ...(file.status ? { status: file.status } : {}),
     }))
   }
 
@@ -795,6 +796,20 @@ export class GitHubClient {
     const c = await this.request<GhIssueComment>(
       'POST',
       `/repos/${this.repoPath(repoSlug)}/issues/${prId}/comments`,
+      { body: content },
+    )
+    return {
+      id: c.id,
+      content: { raw: c.body },
+      created_on: c.created_at,
+      updated_on: c.updated_at,
+    }
+  }
+
+  async updateIssueComment(repoSlug: string, commentId: number, content: string): Promise<PrComment> {
+    const c = await this.request<GhIssueComment>(
+      'PATCH',
+      `/repos/${this.repoPath(repoSlug)}/issues/comments/${commentId}`,
       { body: content },
     )
     return {

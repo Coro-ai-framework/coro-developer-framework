@@ -14,6 +14,8 @@ export type ReviewStatus =
   | 'paused'
   | 'done'
   | 'failed'
+  /** The developer chose not to have Coro review this PR. Only a manual start revives it. */
+  | 'skipped'
 
 export type RoundKind =
   | 'initial'
@@ -111,7 +113,7 @@ export interface ReviewRoundSummary {
   headSha: string
   startedAt: string
   endedAt?: string
-  outcome: 'submitted' | 'replied' | 'no-op' | 'held-for-verdict' | 'failed'
+  outcome: 'submitted' | 'replied' | 'no-op' | 'held-for-verdict' | 'failed' | 'stopped'
   verdict?: ReviewVerdict
   summary: string
   costUsd: number
@@ -153,7 +155,14 @@ export interface PrReview {
     state: 'open' | 'merged' | 'declined'
     draft: boolean
     url: string
+    /** Refreshed from the SCM before each round. */
+    changedFiles?: number
+    additions?: number
+    deletions?: number
+    labels?: string[]
   }
+  /** Why the last round could not start or failed, in words a developer can act on. */
+  lastError?: string
   ledger: ReviewLedger
   rounds: ReviewRoundSummary[]
   pendingEvents: ReviewEvent[]

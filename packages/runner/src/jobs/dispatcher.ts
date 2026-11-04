@@ -114,6 +114,10 @@ export class Dispatcher {
     this.roundStopped = handler
   }
 
+  isJobActive(jobId: string): boolean {
+    return this.activeJobs.has(jobId)
+  }
+
   constructor(
     private readonly ctx: RunnerContext,
     transport?: EventTransport,

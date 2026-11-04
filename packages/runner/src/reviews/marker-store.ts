@@ -1,37 +1,59 @@
 import type { PrReview } from '@coro-ai/cloud-protocol'
 import { decodeReviewState, renderSummaryComment } from './marker'
-import { MemoryReviewStore, type ReviewStore } from './store'
+import type { ReviewStore } from './store'
+
+export interface MarkerComment {
+  id: string
+  body: string
+}
 
 /**
- * Headless store. The sticky summary comment on the pull request is the
- * Review. `load` reads that comment; `flush` writes the trimmed marker back.
+ * Headless store. The sticky summary comment on the pull request carries
+ * the Review between CI runs. Within a run, state lives in `inner` — the
+ * same store the round's tools read and write — so the agent and the
+ * coordinator see one record. `flush` writes it back to that one comment,
+ * editing it in place when the SCM allows.
  */
 export class PrMarkerReviewStore implements ReviewStore {
-  private readonly memory = new MemoryReviewStore()
+  private commentId: string | undefined
 
   constructor(
-    private readonly readBodies: () => Promise<string[]>,
-    private readonly writeBody: (body: string) => Promise<void>,
+    private readonly inner: ReviewStore,
+    private readonly readComments: () => Promise<MarkerComment[]>,
+    private readonly writeComment: (body: string, existingId: string | undefined) => Promise<{ id: string } | void>,
   ) {}
 
   async hydrate(): Promise<void> {
-    const bodies = await this.readBodies()
-    for (const body of bodies) {
-      const review = decodeReviewState(body)
-      if (review) await this.memory.save(review)
+    await this.inner.initialize?.()
+    const comments = await this.readComments()
+    for (const comment of comments) {
+      const review = decodeReviewState(comment.body)
+      if (!review) continue
+      this.commentId = comment.id
+      await this.inner.save(review)
     }
   }
 
-  async get(id: string): Promise<PrReview | null> {
-    return this.memory.get(id)
+  async flush(id: string): Promise<void> {
+    const review = await this.inner.get(id)
+    if (!review) return
+    const written = await this.writeComment(renderSummaryComment(review), this.commentId)
+    if (written?.id) this.commentId = written.id
   }
 
-  async save(review: PrReview): Promise<void> {
-    await this.memory.save(review)
-    await this.writeBody(renderSummaryComment(review))
+  get(id: string): Promise<PrReview | null> {
+    return this.inner.get(id)
   }
 
-  async list(filter?: Parameters<ReviewStore['list']>[0]): Promise<PrReview[]> {
-    return this.memory.list(filter)
+  save(review: PrReview): Promise<void> {
+    return this.inner.save(review)
+  }
+
+  list(filter?: Parameters<ReviewStore['list']>[0]): Promise<PrReview[]> {
+    return this.inner.list(filter)
+  }
+
+  delete(id: string): Promise<void> {
+    return this.inner.delete(id)
   }
 }

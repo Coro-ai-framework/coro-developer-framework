@@ -16,6 +16,7 @@ export interface ReviewStore {
   get(id: string): Promise<PrReview | null>
   save(review: PrReview): Promise<void>
   list(filter?: ReviewListFilter): Promise<PrReview[]>
+  delete(id: string): Promise<void>
 }
 
 export class MemoryReviewStore implements ReviewStore {
@@ -38,6 +39,10 @@ export class MemoryReviewStore implements ReviewStore {
       .filter(row => !wanted || wanted.has(row.status))
       .map(row => structuredClone(row))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  async delete(id: string): Promise<void> {
+    this.rows.delete(id)
   }
 }
 

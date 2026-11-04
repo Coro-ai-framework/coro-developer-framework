@@ -3,6 +3,11 @@
 // The only component that decides *when* a round runs. Agents decide what
 // the round does. Rounds are ordinary jobs; this state machine never parks
 // one. It debounces, coalesces, and short-circuits before any model call.
+//
+// Every read-modify-write of a review goes through `locked()`. Preparing a
+// round makes network calls, so `fire` claims the round under the lock,
+// works outside it, then re-reads the review before writing. Without that,
+// an event ingested while the diff was being fetched would be overwritten.
 
 import {
   isCoroReviewBody,
@@ -36,8 +41,14 @@ export interface ReviewCoordinatorDeps {
   now?: () => number
   setTimer?: (fn: () => void, ms: number) => { clear: () => void }
   dispatchRound: (review: PrReview, kind: RoundKind, events: ReviewEvent[]) => Promise<RoundDispatch>
-  /** Optional. Returning a decision records a zero-cost round instead of dispatching. */
+  /**
+   * Optional. Runs before dispatch, outside the lock. May refresh
+   * `review.pr` from the SCM. Returning a decision records a zero-cost
+   * round instead of dispatching.
+   */
   assess?: (review: PrReview, kind: RoundKind, events: ReviewEvent[]) => Promise<ShortCircuitDecision | null>
+  /** Cancels a round's job. Without it, stop only pauses future rounds. */
+  cancelRound?: (jobId: string) => Promise<void>
   /** UTC-day spend across every review, for the daily budget. */
   spendTodayUsd?: () => Promise<number>
   log?: (msg: string, extra?: Record<string, unknown>) => void
@@ -52,49 +63,95 @@ const KIND_RANK: Record<RoundKind, number> = {
   closing: 5,
 }
 
+/** A review in one of these states already has, or is about to have, a round. */
+const BUSY = new Set<PrReview['status']>(['queued', 'running', 'awaiting-verdict'])
+
 export class ReviewCoordinator {
   private readonly timers = new Map<string, { clear: () => void }>()
+  private readonly dueAt = new Map<string, number>()
   private readonly running = new Set<string>()
+  private readonly locks = new Map<string, Promise<unknown>>()
   private readonly deps: ReviewCoordinatorDeps
 
   constructor(deps: ReviewCoordinatorDeps) {
     this.deps = deps
   }
 
+  /** Clears pending timers. Queued reviews stay queued for the next engine's `resumeQueued`. */
+  dispose(): void {
+    for (const timer of this.timers.values()) timer.clear()
+    this.timers.clear()
+    this.dueAt.clear()
+  }
+
   private now(): number {
     return this.deps.now?.() ?? Date.now()
+  }
+
+  private iso(): string {
+    return new Date(this.now()).toISOString()
   }
 
   private log(msg: string, extra?: Record<string, unknown>): void {
     this.deps.log?.(msg, extra)
   }
 
-  async ingest(event: ReviewEvent): Promise<PrReview | null> {
-    if (this.isSelfEvent(event)) return null
+  private locked<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(id) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(fn)
+    this.locks.set(id, next)
+    void next.finally(() => {
+      if (this.locks.get(id) === next) this.locks.delete(id)
+    }).catch(() => undefined)
+    return next
+  }
 
+  ingest(event: ReviewEvent): Promise<PrReview | null> {
+    if (this.isSelfEvent(event)) return Promise.resolve(null)
     const login = this.deps.reviewerLogin || 'unknown'
     const id = reviewIdFor(event.prRef, login)
+    return this.locked(id, () => this.ingestLocked(id, login, event))
+  }
+
+  private async ingestLocked(id: string, login: string, event: ReviewEvent): Promise<PrReview | null> {
+    const manual = event.kind === 'manual'
     let review = await this.deps.store.get(id)
 
     if (!review) {
-      if (event.kind !== 'review-requested' && event.kind !== 'manual') return null
-      if (!this.passesFilters(event)) return null
+      if (event.kind !== 'review-requested' && !manual) return null
+      if (!manual && !this.passesFilters(event)) return null
       review = this.blank(id, event, login)
       await this.deps.store.save(review)
+      this.log('review created', { reviewId: id, source: event.source, url: review.pr.url })
+    } else if (manual) {
+      this.refreshFromEvent(review, event)
     }
 
-    if (review.status === 'done' && event.kind !== 'reopened' && event.kind !== 'review-requested' && event.kind !== 'manual') {
+    if (review.status === 'skipped' && !manual) return review
+    if (review.status === 'done' && event.kind !== 'reopened' && event.kind !== 'review-requested' && !manual) {
+      return review
+    }
+    if (event.kind === 'review-requested' && !manual && this.isDuplicateRequest(review, event)) {
       return review
     }
 
+    if (manual) {
+      review.pauseReason = undefined
+      review.lastError = undefined
+      if (review.status === 'skipped' || review.status === 'paused' || review.status === 'done' || review.status === 'failed') {
+        review.status = 'idle'
+      }
+    }
+
     if (await this.applyLifecycle(review, event)) {
+      review.updatedAt = this.iso()
       await this.deps.store.save(review)
       return review
     }
 
     review.pendingEvents.push(event)
-    review.updatedAt = new Date(this.now()).toISOString()
-    if (review.status === 'paused' && review.pauseReason === 'user') {
+    review.updatedAt = this.iso()
+    if (review.status === 'paused') {
       await this.deps.store.save(review)
       return review
     }
@@ -104,25 +161,53 @@ export class ReviewCoordinator {
     return review
   }
 
-  async onRoundStopped(job: {
+  /**
+   * The inbox reports every open request on every poll. Only a request
+   * that is new to the poller, on a review with nothing in flight, starts
+   * a round. Otherwise each poll would reset the debounce timer and the
+   * round would never fire.
+   */
+  private isDuplicateRequest(review: PrReview, event: ReviewEvent): boolean {
+    if (BUSY.has(review.status)) return true
+    if (review.status === 'paused' && review.pauseReason !== 'review-request-removed') return true
+    if (event.data['firstSight'] === true && review.rounds.length > 0) return true
+    return false
+  }
+
+  onRoundStopped(job: {
     id: string
     status: string
     type?: string
     params?: Record<string, unknown>
     tokenUsage?: { totalCostUsd?: number; inputTokens?: number; outputTokens?: number }
+    escalationMessage?: string
   }): Promise<void> {
     const reviewId = typeof job.params?.['reviewId'] === 'string' ? job.params['reviewId'] : undefined
-    if (!reviewId) return
+    if (!reviewId) return Promise.resolve()
+    return this.locked(reviewId, () => this.roundStoppedLocked(reviewId, job))
+  }
+
+  private async roundStoppedLocked(reviewId: string, job: Parameters<ReviewCoordinator['onRoundStopped']>[0]): Promise<void> {
     const review = await this.deps.store.get(reviewId)
+    this.running.delete(reviewId)
     if (!review) return
-    this.running.delete(review.id)
 
     const failed = job.status === 'failed' || job.status === 'escalated'
+    const cancelled = job.status === 'cancelled'
     const round = review.rounds.find(item => item.jobId === job.id)
-    const cost = job.tokenUsage?.totalCostUsd ?? 0
+    // Already settled: a cancel can be reported by the dispatcher and by the stop fallback.
+    if (round?.endedAt) return
+    const jobCost = job.tokenUsage?.totalCostUsd ?? 0
+    // Lenses run as separate executor calls, so their spend is not in the job's usage.
+    const lensCost = Object.values(round?.lensCosts ?? {}).reduce((sum, lens) => sum + lens.costUsd, 0)
+    const cost = jobCost + lensCost
     if (round && !round.endedAt) {
-      round.endedAt = new Date(this.now()).toISOString()
-      round.outcome = failed ? 'failed' : round.outcome
+      round.endedAt = this.iso()
+      if (failed) round.outcome = 'failed'
+      else if (cancelled && !round.summary) {
+        round.outcome = 'stopped'
+        round.summary = 'Stopped before it finished.'
+      }
       round.costUsd = cost
     }
     review.totals.costUsd += cost
@@ -130,14 +215,18 @@ export class ReviewCoordinator {
     review.totals.outputTokens += job.tokenUsage?.outputTokens ?? 0
     this.addDailySpend(review, cost)
 
-    if (failed) {
+    const heldByUser = review.status === 'paused' || review.status === 'skipped'
+    if (heldByUser) {
+      // A pause or skip that arrived mid-round wins over the round's own result.
+    } else if (failed) {
       const attempts = Number(job.params?.['roundAttempt'] ?? 1)
+      review.lastError = job.escalationMessage || 'The round failed. Open its run log for details.'
       if (attempts < 2 && review.pendingEvents.length === 0) {
         review.status = 'queued'
         review.pendingEvents.push({
           kind: 'command',
           prRef: review.prRef,
-          at: new Date(this.now()).toISOString(),
+          at: this.iso(),
           data: { command: 'review', retry: true },
           source: 'manual',
         })
@@ -146,12 +235,14 @@ export class ReviewCoordinator {
       }
     } else if (review.pendingVerdict) {
       review.status = 'awaiting-verdict'
+      review.lastError = undefined
     } else if (review.pr.state !== 'open') {
       review.status = 'done'
     } else {
       review.status = review.pendingEvents.length > 0 ? 'queued' : 'idle'
+      if (!cancelled) review.lastError = undefined
     }
-    review.updatedAt = new Date(this.now()).toISOString()
+    review.updatedAt = this.iso()
     await this.deps.store.save(review)
     if (review.pendingEvents.length > 0 && review.status === 'queued') {
       this.schedule(review.id, delayFor(review.pendingEvents, this.deps.policy.debounceSec))
@@ -163,9 +254,19 @@ export class ReviewCoordinator {
     const running = await this.deps.store.list({ status: 'running' })
     for (const review of running) {
       const latest = review.rounds[review.rounds.length - 1]
-      if (!latest) {
-        review.status = 'queued'
-        await this.deps.store.save(review)
+      if (!latest?.jobId) {
+        await this.locked(review.id, async () => {
+          const fresh = await this.deps.store.get(review.id)
+          if (!fresh) return
+          if (latest && !latest.endedAt) {
+            latest.endedAt = this.iso()
+            latest.outcome = 'stopped'
+            latest.summary = 'The runner restarted before this round started.'
+            fresh.rounds[fresh.rounds.length - 1] = latest
+          }
+          fresh.status = fresh.pendingEvents.length > 0 ? 'queued' : 'idle'
+          await this.deps.store.save(fresh)
+        })
         continue
       }
       const status = await jobStatus(latest.jobId)
@@ -181,43 +282,175 @@ export class ReviewCoordinator {
     }
   }
 
-  async pause(id: string): Promise<PrReview | null> {
-    const review = await this.deps.store.get(id)
-    if (!review) return null
-    review.status = 'paused'
-    review.pauseReason = 'user'
-    review.updatedAt = new Date(this.now()).toISOString()
-    this.timers.get(id)?.clear()
-    this.timers.delete(id)
-    await this.deps.store.save(review)
-    return review
-  }
-
-  async resume(id: string): Promise<PrReview | null> {
-    const review = await this.deps.store.get(id)
-    if (!review) return null
-    review.pauseReason = undefined
-    review.status = review.pendingEvents.length > 0 ? 'queued' : 'idle'
-    review.updatedAt = new Date(this.now()).toISOString()
-    await this.deps.store.save(review)
-    if (review.pendingEvents.length > 0) {
+  /** Timers live in memory. After a restart, queued reviews need a new one. */
+  async resumeQueued(): Promise<void> {
+    const queued = await this.deps.store.list({ status: 'queued' })
+    for (const review of queued) {
+      if (review.pendingEvents.length === 0) {
+        await this.locked(review.id, async () => {
+          const fresh = await this.deps.store.get(review.id)
+          if (!fresh || fresh.status !== 'queued') return
+          fresh.status = 'idle'
+          await this.deps.store.save(fresh)
+        })
+        continue
+      }
       this.schedule(review.id, delayFor(review.pendingEvents, this.deps.policy.debounceSec))
     }
-    return review
+  }
+
+  /** Earliest time the next round may start, if one is scheduled. */
+  nextRoundAt(id: string): number | undefined {
+    return this.dueAt.get(id)
+  }
+
+  pause(id: string): Promise<PrReview | null> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return null
+      // A round already in flight finishes; `stop` is the one that cancels it.
+      review.status = 'paused'
+      review.pauseReason = 'user'
+      review.updatedAt = this.iso()
+      this.clearTimer(id)
+      await this.deps.store.save(review)
+      return review
+    })
+  }
+
+  resume(id: string): Promise<PrReview | null> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return null
+      if (review.status !== 'paused') return review
+      review.pauseReason = undefined
+      review.lastError = undefined
+      review.status = this.running.has(id) ? 'running' : review.pendingEvents.length > 0 ? 'queued' : 'idle'
+      review.updatedAt = this.iso()
+      await this.deps.store.save(review)
+      if (review.status === 'queued') {
+        this.schedule(review.id, delayFor(review.pendingEvents, this.deps.policy.debounceSec))
+      }
+      return review
+    })
+  }
+
+  /** Stop the round in flight, if any, and hold further rounds. */
+  stop(id: string): Promise<PrReview | null> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return null
+      await this.cancelInFlight(review)
+      review.status = 'paused'
+      review.pauseReason = 'user'
+      review.updatedAt = this.iso()
+      this.clearTimer(id)
+      await this.deps.store.save(review)
+      return review
+    })
+  }
+
+  /** Coro leaves this PR alone. Only a manual start brings it back. */
+  skip(id: string): Promise<PrReview | null> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return null
+      await this.cancelInFlight(review)
+      review.status = 'skipped'
+      review.pauseReason = undefined
+      review.pendingEvents = []
+      review.updatedAt = this.iso()
+      this.clearTimer(id)
+      await this.deps.store.save(review)
+      return review
+    })
+  }
+
+  /** A full pass on the current head, now. Clears a pause or a skip. */
+  requestRound(id: string): Promise<PrReview | null> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return null
+      review.pauseReason = undefined
+      review.lastError = undefined
+      review.pendingEvents.push({
+        kind: 'manual',
+        prRef: review.prRef,
+        at: this.iso(),
+        data: { rerun: true },
+        source: 'manual',
+      })
+      if (review.status !== 'running' && review.status !== 'awaiting-verdict') review.status = 'queued'
+      review.updatedAt = this.iso()
+      await this.deps.store.save(review)
+      this.schedule(review.id, 0)
+      return review
+    })
+  }
+
+  updateFinding(id: string, findingId: string, status: FindingStatus): Promise<PrReview | null> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return null
+      const finding = review.ledger.findings.find(item => item.id === findingId)
+      if (!finding) return null
+      finding.status = status
+      finding.lastTouchedRound = review.totals.rounds
+      review.updatedAt = this.iso()
+      await this.deps.store.save(review)
+      return review
+    })
+  }
+
+  remove(id: string): Promise<boolean> {
+    return this.locked(id, async () => {
+      const review = await this.deps.store.get(id)
+      if (!review) return false
+      await this.cancelInFlight(review)
+      this.clearTimer(id)
+      this.running.delete(id)
+      await this.deps.store.delete(id)
+      return true
+    })
+  }
+
+  private async cancelInFlight(review: PrReview): Promise<void> {
+    if (review.status !== 'running') return
+    const latest = review.rounds[review.rounds.length - 1]
+    if (!latest || latest.endedAt) return
+    if (latest.jobId && this.deps.cancelRound) {
+      try {
+        await this.deps.cancelRound(latest.jobId)
+      } catch (err) {
+        this.log('review round cancel failed', { reviewId: review.id, jobId: latest.jobId, err: String(err) })
+      }
+    }
+    if (!latest.jobId) {
+      latest.endedAt = this.iso()
+      latest.outcome = 'stopped'
+      latest.summary = 'Stopped before it started.'
+    }
+  }
+
+  private clearTimer(id: string): void {
+    this.timers.get(id)?.clear()
+    this.timers.delete(id)
+    this.dueAt.delete(id)
   }
 
   private schedule(id: string, delayMs = this.deps.policy.debounceSec * 1000): void {
     if (this.running.has(id)) return
-    this.timers.get(id)?.clear()
-    const delay = delayMs
+    this.clearTimer(id)
     const setTimer = this.deps.setTimer ?? ((fn, ms) => {
       const handle = setTimeout(fn, ms)
       return { clear: () => clearTimeout(handle) }
     })
+    this.dueAt.set(id, this.now() + delayMs)
     const timer = setTimer(() => {
       this.timers.delete(id)
-      void this.fire(id)
-    }, delay)
+      this.dueAt.delete(id)
+      void this.fire(id).catch(err => this.log('review round failed to start', { reviewId: id, err: String(err) }))
+    }, delayMs)
     this.timers.set(id, timer)
   }
 
@@ -226,69 +459,145 @@ export class ReviewCoordinator {
       this.schedule(id, 5_000)
       return
     }
-    const review = await this.deps.store.get(id)
-    if (!review || review.pendingEvents.length === 0) return
-    if (review.status === 'paused' || review.status === 'running' || review.status === 'done') return
-    if (review.totals.rounds >= this.deps.policy.maxRounds) {
-      review.status = 'paused'
-      review.pauseReason = 'max-rounds'
-      await this.deps.store.save(review)
-      return
-    }
-    if (review.totals.costUsd >= this.deps.policy.budgetUsdPerPr) {
-      review.status = 'paused'
-      review.pauseReason = 'budget'
-      await this.deps.store.save(review)
-      return
-    }
     const today = await this.deps.spendTodayUsd?.() ?? 0
-    if (today >= this.deps.policy.budgetUsdPerDay) {
-      review.status = 'paused'
-      review.pauseReason = 'budget'
-      await this.deps.store.save(review)
+    const claim = await this.locked(id, () => this.claimRound(id, today))
+    if (!claim) return
+    this.running.add(id)
+    const { snapshot, kind, events, roundNo } = claim
+
+    let decision: ShortCircuitDecision | null = null
+    let prepareError: string | undefined
+    try {
+      decision = await this.deps.assess?.(snapshot, kind, events) ?? null
+    } catch (err) {
+      prepareError = err instanceof Error ? err.message : String(err)
+    }
+
+    let dispatched: RoundDispatch | undefined
+    const proceed = await this.locked(id, async () => {
+      const fresh = await this.deps.store.get(id)
+      if (!fresh) return false
+      fresh.pr = snapshot.pr
+      const placeholder = fresh.rounds.find(round => round.round === roundNo && !round.jobId)
+      if (fresh.status !== 'running') {
+        // Stopped, skipped, or removed while the round was being prepared.
+        if (placeholder && !placeholder.endedAt) {
+          placeholder.endedAt = this.iso()
+          placeholder.outcome = 'stopped'
+          placeholder.summary = 'Stopped before it started.'
+        }
+        await this.deps.store.save(fresh)
+        return false
+      }
+      if (prepareError) {
+        this.failPlaceholder(fresh, placeholder, `Could not read the pull request: ${prepareError}`)
+        await this.deps.store.save(fresh)
+        return false
+      }
+      if (decision) {
+        if (placeholder) fresh.rounds.splice(fresh.rounds.indexOf(placeholder), 1)
+        fresh.totals.rounds -= 1
+        this.recordShortCircuit(fresh, kind, decision)
+        if (fresh.pendingEvents.length > 0) fresh.status = 'queued'
+        await this.deps.store.save(fresh)
+        if (fresh.status === 'queued') {
+          this.running.delete(id)
+          this.schedule(id, delayFor(fresh.pendingEvents, this.deps.policy.debounceSec))
+        }
+        return false
+      }
+      return true
+    })
+    if (!proceed) {
+      this.running.delete(id)
       return
+    }
+
+    let dispatchError: string | undefined
+    try {
+      dispatched = await this.deps.dispatchRound(snapshot, kind, events)
+    } catch (err) {
+      dispatchError = err instanceof Error ? err.message : String(err)
+    }
+
+    await this.locked(id, async () => {
+      const fresh = await this.deps.store.get(id)
+      if (!fresh) return
+      const placeholder = fresh.rounds.find(round => round.round === roundNo && !round.jobId)
+      if (dispatched && placeholder) {
+        placeholder.jobId = dispatched.jobId
+        placeholder.headSha = fresh.pr.headSha
+        await this.deps.store.save(fresh)
+        // A stop that raced the dispatch still has to reach the new job.
+        if (fresh.status !== 'running' && this.deps.cancelRound) {
+          await this.deps.cancelRound(dispatched.jobId).catch(() => undefined)
+        }
+        return
+      }
+      this.running.delete(id)
+      this.failPlaceholder(fresh, placeholder, dispatchError ?? 'The round could not be dispatched.')
+      await this.deps.store.save(fresh)
+    })
+  }
+
+  /** Gate checks and placeholder round, under the lock. */
+  private async claimRound(id: string, spendToday: number): Promise<{
+    snapshot: PrReview
+    kind: RoundKind
+    events: ReviewEvent[]
+    roundNo: number
+  } | null> {
+    const review = await this.deps.store.get(id)
+    if (!review || review.pendingEvents.length === 0) return null
+    if (review.status !== 'queued' && review.status !== 'idle' && review.status !== 'failed') return null
+    const policy = this.deps.policy
+    const hold = (reason: 'max-rounds' | 'budget', message: string) => {
+      review.status = 'paused'
+      review.pauseReason = reason
+      review.lastError = message
+      review.updatedAt = this.iso()
+      return this.deps.store.save(review).then(() => null)
+    }
+    if (review.totals.rounds >= policy.maxRounds) {
+      return hold('max-rounds', `Reached the limit of ${policy.maxRounds} rounds for this pull request.`)
+    }
+    if (review.totals.costUsd >= policy.budgetUsdPerPr) {
+      return hold('budget', `Reached the $${policy.budgetUsdPerPr.toFixed(2)} budget for this pull request.`)
+    }
+    if (spendToday >= policy.budgetUsdPerDay) {
+      return hold('budget', `Reached today's $${policy.budgetUsdPerDay.toFixed(2)} review budget.`)
     }
 
     const events = review.pendingEvents.splice(0, review.pendingEvents.length)
     const kind = classifyRoundKind(review, events)
-    const decision = await this.deps.assess?.(review, kind, events) ?? null
-    if (decision) {
-      this.recordShortCircuit(review, kind, decision)
-      await this.deps.store.save(review)
-      if (review.pendingEvents.length > 0) {
-        this.schedule(review.id, delayFor(review.pendingEvents, this.deps.policy.debounceSec))
-      }
-      return
-    }
-
+    const roundNo = review.totals.rounds + 1
     review.status = 'running'
-    review.updatedAt = new Date(this.now()).toISOString()
-    const placeholder: ReviewRoundSummary = {
-      round: review.totals.rounds + 1,
+    review.lastError = undefined
+    review.updatedAt = this.iso()
+    review.rounds.push({
+      round: roundNo,
       jobId: '',
       kind,
       headSha: review.pr.headSha,
-      startedAt: new Date(this.now()).toISOString(),
+      startedAt: this.iso(),
       outcome: 'no-op',
       summary: '',
       costUsd: 0,
-    }
-    review.rounds.push(placeholder)
-    review.totals.rounds += 1
+    })
+    review.totals.rounds = roundNo
     await this.deps.store.save(review)
+    return { snapshot: structuredClone(review), kind, events, roundNo }
+  }
 
-    try {
-      const dispatched = await this.deps.dispatchRound(review, kind, events)
-      placeholder.jobId = dispatched.jobId
-      this.running.add(review.id)
-      await this.deps.store.save(review)
-    } catch (err) {
+  private failPlaceholder(review: PrReview, placeholder: ReviewRoundSummary | undefined, message: string): void {
+    if (placeholder) {
       placeholder.outcome = 'failed'
-      placeholder.endedAt = new Date(this.now()).toISOString()
-      placeholder.summary = err instanceof Error ? err.message : String(err)
-      review.status = 'failed'
-      await this.deps.store.save(review)
+      placeholder.endedAt = this.iso()
+      placeholder.summary = message
     }
+    review.lastError = message
+    review.status = 'failed'
+    review.updatedAt = this.iso()
   }
 
   private recordShortCircuit(review: PrReview, kind: RoundKind, decision: ShortCircuitDecision): void {
@@ -297,8 +606,8 @@ export class ReviewCoordinator {
       jobId: '',
       kind,
       headSha: decision.headSha ?? review.pr.headSha,
-      startedAt: new Date(this.now()).toISOString(),
-      endedAt: new Date(this.now()).toISOString(),
+      startedAt: this.iso(),
+      endedAt: this.iso(),
       outcome: 'no-op',
       summary: decision.summary,
       costUsd: 0,
@@ -310,7 +619,7 @@ export class ReviewCoordinator {
       review.ledger.lastReviewedSha = decision.headSha
     }
     review.status = review.pr.state === 'open' ? 'idle' : 'done'
-    review.updatedAt = new Date(this.now()).toISOString()
+    review.updatedAt = this.iso()
     this.log('review short-circuit', { reviewId: review.id, kind: decision.kind })
   }
 
@@ -329,8 +638,8 @@ export class ReviewCoordinator {
           jobId: '',
           kind: 'closing',
           headSha: review.pr.headSha,
-          startedAt: new Date(this.now()).toISOString(),
-          endedAt: new Date(this.now()).toISOString(),
+          startedAt: this.iso(),
+          endedAt: this.iso(),
           outcome: 'no-op',
           summary: 'Closed from thread state without a model call.',
           costUsd: 0,
@@ -354,7 +663,10 @@ export class ReviewCoordinator {
     }
     if (event.kind === 'ready-for-review') {
       review.pr.draft = false
-      if (review.pauseReason === 'draft') review.pauseReason = undefined
+      if (review.pauseReason === 'draft') {
+        review.pauseReason = undefined
+        review.status = 'idle'
+      }
       return false
     }
     if (event.kind === 'review-request-removed') {
@@ -364,6 +676,11 @@ export class ReviewCoordinator {
         review.pauseReason = 'review-request-removed'
         return true
       }
+    }
+    if (event.kind === 'review-requested' && review.pauseReason === 'review-request-removed') {
+      review.pauseReason = undefined
+      review.status = 'idle'
+      return false
     }
     if (event.kind === 'comment' || event.kind === 'command') {
       const body = typeof event.data['body'] === 'string' ? event.data['body'] : undefined
@@ -377,6 +694,7 @@ export class ReviewCoordinator {
       if (command.name === 'pause') {
         review.status = 'paused'
         review.pauseReason = 'user'
+        this.clearTimer(review.id)
         return true
       }
       if (command.name === 'resume') {
@@ -413,13 +731,22 @@ export class ReviewCoordinator {
     return true
   }
 
+  /** A manual start may carry fresher PR facts than the stored review. */
+  private refreshFromEvent(review: PrReview, event: ReviewEvent): void {
+    const text = (key: string) => (typeof event.data[key] === 'string' && event.data[key] ? String(event.data[key]) : undefined)
+    review.pr.title = text('title') ?? review.pr.title
+    review.pr.author = text('author') ?? review.pr.author
+    review.pr.headSha = text('headSha') ?? review.pr.headSha
+    review.pr.baseSha = text('baseSha') ?? review.pr.baseSha
+  }
+
   private blank(id: string, event: ReviewEvent, login: string): PrReview {
-    const now = new Date(this.now()).toISOString()
+    const now = this.iso()
     return {
       id,
       prRef: event.prRef,
       reviewer: { login, mode: this.deps.identityMode ?? this.deps.policy.identity },
-      status: 'queued',
+      status: 'idle',
       pr: {
         title: String(event.data['title'] ?? ''),
         author: String(event.data['author'] ?? ''),
@@ -427,7 +754,7 @@ export class ReviewCoordinator {
         headSha: String(event.data['headSha'] ?? ''),
         state: 'open',
         draft: event.data['draft'] === true,
-        url: event.prRef.url ?? '',
+        url: event.prRef.url ?? String(event.data['url'] ?? ''),
       },
       ledger: { findings: [] },
       rounds: [],
@@ -463,11 +790,20 @@ function delayFor(events: ReviewEvent[], debounceSec: number): number {
 }
 
 function eventToKind(event: ReviewEvent, review: PrReview): RoundKind {
-  if (event.kind === 'review-requested' && review.totals.rounds > 0) return 'rerequest'
-  if (event.kind === 'review-requested' || event.kind === 'manual') return 'initial'
+  const reviewed = review.totals.rounds > 0
+  if (event.kind === 'review-requested' || event.kind === 'manual') return reviewed ? 'rerequest' : 'initial'
   if (event.kind === 'commits-pushed' || event.kind === 'ready-for-review') return 'incremental'
   if (event.kind === 'merged' || event.kind === 'closed') return 'closing'
-  if (event.kind === 'command') return 'command'
+  if (event.kind === 'command') {
+    return event.data['command'] === 'review' ? (reviewed ? 'rerequest' : 'initial') : 'command'
+  }
+  if (event.kind === 'comment') {
+    const body = typeof event.data['body'] === 'string' ? event.data['body'] : undefined
+    if (parseReviewCommand(body)?.name === 'review'
+      && commandIsAuthorised(event.actor, review.pr.author, review.reviewer.login)) {
+      return reviewed ? 'rerequest' : 'initial'
+    }
+  }
   return 'conversation'
 }
 

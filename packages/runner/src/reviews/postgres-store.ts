@@ -74,6 +74,10 @@ export class PostgresReviewStore implements ReviewStore {
       .map(row => row as PrReview)
       .filter(review => reviewMatchesStatus(review, filter))
   }
+
+  async delete(id: string): Promise<void> {
+    await this.db.execute(sql`DELETE FROM pr_reviews WHERE id = ${id} AND team_id = ${this.teamId}`)
+  }
 }
 
 function rowsOf(result: unknown): unknown[] {
