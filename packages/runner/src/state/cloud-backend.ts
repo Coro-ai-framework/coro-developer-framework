@@ -20,12 +20,33 @@ import type {
 } from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
+import Database from 'better-sqlite3'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { SqliteReviewStore } from '../reviews/sqlite-store'
+import type { ReviewStore } from '../reviews/store'
 
 export class CloudStateBackend implements StateBackend {
+  /**
+   * Reviews execute on this runner, so their durable record lives in a
+   * runner-local SQLite file even when jobs themselves are stored in
+   * the cloud. The cloud process keeps its own copy (see
+   * PostgresReviewStore) for a future control-plane surface.
+   */
+  readonly reviews: ReviewStore
+
   constructor(
     private transport: WebSocketTransport,
     public readonly tenantId: string,
-  ) {}
+    reviewDbPath?: string,
+  ) {
+    const dbPath = reviewDbPath ?? path.join(os.homedir(), '.coro', 'reviews.db')
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+    const db = new Database(dbPath)
+    db.pragma('journal_mode = WAL')
+    this.reviews = new SqliteReviewStore(db)
+  }
 
   // ── Job CRUD ───────────────────────────────────────────────────────────────
 
@@ -178,6 +199,10 @@ export class CloudStateBackend implements StateBackend {
 
   async deleteInvestigation(id: string): Promise<void> {
     await this.call('investigation:delete', { investigationId: id })
+  }
+
+  async initialize(): Promise<void> {
+    await this.reviews.initialize?.()
   }
 
   // ── RPC helper ─────────────────────────────────────────────────────────────

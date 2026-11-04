@@ -3,6 +3,17 @@ import { z } from 'zod'
 import { ToolContext, PhaseSignals } from './tools/types'
 import { createMcpToolHandlers, mcpError, mcpText, wrapHandlersSafely } from './mcp-handlers'
 import { runSubagent } from './tools/run-subagent'
+import { isPrReviewJob } from './jobs/helpers'
+import {
+  reviewFinish,
+  reviewGetContext,
+  reviewReply,
+  reviewResolveThread,
+  reviewRunLenses,
+  reviewSubmit,
+  reviewUpdateFindings,
+} from './tools/pr-review'
+import { ensureReferenceSnapshot, listReferenceDocs, searchReference } from './reviews/references'
 
 // Legacy `bb_*` / `gh_*` / `jira_*` tools were removed entirely in
 // S6 of the MCP-first plugins pivot. Workflow markdown that still
@@ -855,6 +866,136 @@ export function createCoroMcpServer(
             } catch (err) {
               return mcpError((err as Error).message)
             }
+          },
+        ),
+      ] : []),
+
+      ...(isPrReviewJob(ctx.job) ? [
+        tool(
+          'review_get_context',
+          'Load the precomputed review: PR details, open findings, recent rounds, policy, and the packet. Pass section to fetch ledger, threads, or history alone.',
+          {
+            section: z.enum(['overview', 'packet', 'ledger', 'threads', 'history']).optional(),
+          },
+          async (args) => {
+            try { return mcpText(await reviewGetContext(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_run_lenses',
+          'Run declared review lenses in parallel through the phase executor. Returns validated findings. Refuses lens names that are not in the workflow.',
+          {
+            lenses: z.array(z.string()),
+            scope: z.object({ paths: z.array(z.string()).optional(), chunk: z.number().optional() }).optional(),
+            candidates: z.array(z.unknown()).optional(),
+          },
+          async (args) => {
+            try { return mcpText(await reviewRunLenses(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_submit',
+          'Post one batched review. Policy decides whether the verdict is submitted, held, or saved as a pending review.',
+          {
+            verdict: z.enum(['comment', 'request_changes', 'approve']),
+            body: z.string(),
+            comments: z.array(z.object({
+              findingId: z.string().optional(),
+              path: z.string(),
+              line: z.number().int(),
+              side: z.enum(['LEFT', 'RIGHT']).optional(),
+              severity: z.enum(['blocker', 'major', 'minor', 'nit']),
+              category: z.enum(['correctness', 'security', 'tests', 'design', 'architecture', 'contract', 'performance', 'style', 'other']),
+              title: z.string(),
+              body: z.string(),
+            })),
+          },
+          async (args) => {
+            try { return mcpText(await reviewSubmit(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_reply',
+          'Reply on a Coro thread. Optionally update the finding status.',
+          {
+            threadId: z.string().optional(),
+            commentId: z.string().optional(),
+            body: z.string(),
+            findingStatus: z.enum(['open', 'addressed', 'declined', 'outdated', 'withdrawn']).optional(),
+          },
+          async (args) => {
+            try { return mcpText(await reviewReply(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_resolve_thread',
+          'Resolve or unresolve a thread Coro opened. Other threads are refused.',
+          { findingId: z.string(), resolved: z.boolean() },
+          async (args) => {
+            try { return mcpText(await reviewResolveThread(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_update_findings',
+          'Update finding status in the review ledger.',
+          {
+            updates: z.array(z.object({
+              findingId: z.string(),
+              status: z.enum(['open', 'addressed', 'declined', 'outdated', 'withdrawn']),
+              note: z.string().optional(),
+            })),
+          },
+          async (args) => {
+            try { return mcpText(await reviewUpdateFindings(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_finish',
+          'Required to end the round. Writes the round summary and the last reviewed SHA.',
+          {
+            outcome: z.enum(['submitted', 'replied', 'no-op', 'held-for-verdict', 'failed']),
+            summary: z.string(),
+            nextHint: z.string().optional(),
+          },
+          async (args) => {
+            try { return mcpText(await reviewFinish(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_reference_list',
+          'List read-only architecture reference snapshots configured for this install.',
+          {},
+          async () => {
+            try {
+              const refs = ctx.settings.reviews?.references ?? []
+              const root = `${ctx.settings.paths.workingDir}/review-refs`
+              const listed = []
+              for (const ref of refs) {
+                const dir = await ensureReferenceSnapshot(root, ref)
+                listed.push({ name: ref.name, purpose: ref.purpose, docs: await listReferenceDocs(dir) })
+              }
+              return mcpText(listed)
+            } catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+        tool(
+          'review_reference_search',
+          'Search a reference snapshot. Returns short snippets, not whole files.',
+          { name: z.string(), query: z.string() },
+          async (args) => {
+            try {
+              const ref = (ctx.settings.reviews?.references ?? []).find(item => item.name === args.name)
+              if (!ref) return mcpError(`unknown reference ${args.name}`)
+              const dir = await ensureReferenceSnapshot(`${ctx.settings.paths.workingDir}/review-refs`, ref)
+              return mcpText(await searchReference(dir, args.query))
+            } catch (err) { return mcpError((err as Error).message) }
           },
         ),
       ] : []),

@@ -27,6 +27,7 @@ import {
   isCampaignJob,
   isParkingStatus,
   isResumableStatus,
+  isPrReviewJob,
   isStoppedStatus,
   isTerminalChildStatus,
   isTerminalStatus,
@@ -100,6 +101,18 @@ export class Dispatcher {
    * dispatcher's own pause/resume/cancel hooks.
    */
   readonly rateLimitScheduler: RateLimitScheduler
+  /** Review webhooks are unmatched because rounds never park. M4 feeds the coordinator. */
+  private unmatchedPluginEvent?: (event: InboundEvent) => Promise<void>
+  /** Called when a pr-review round job stops, so the coordinator can roll cost. */
+  private roundStopped?: (job: Job) => Promise<void>
+
+  setUnmatchedPluginEventSink(sink: ((event: InboundEvent) => Promise<void>) | undefined): void {
+    this.unmatchedPluginEvent = sink
+  }
+
+  setRoundStoppedHandler(handler: ((job: Job) => Promise<void>) | undefined): void {
+    this.roundStopped = handler
+  }
 
   constructor(
     private readonly ctx: RunnerContext,
@@ -718,6 +731,11 @@ export class Dispatcher {
     const ref: ExternalRef = event.ref
     const job = await resolveJobByExternalRef(this.ctx.stateBackend, ref)
     if (!job) {
+      if (this.unmatchedPluginEvent) {
+        await this.unmatchedPluginEvent(event).catch(err => {
+          this.ctx.logger.warn({ err, eventKey: event.eventKey }, 'Unmatched plugin event sink failed')
+        })
+      }
       this.ctx.logger.debug(
         { eventKey: event.eventKey, ref },
         'No job found for external ref — skipping',
@@ -1684,6 +1702,10 @@ export class Dispatcher {
             if (finishedJob.campaignParentId && isStoppedStatus(finishedJob.status)) {
               await this.onChildJobStopped(finishedJob).catch(err => {
                 this.ctx.logger.error({ err, jobId }, 'Campaign child completion handler failed')
+              })
+            } else if (isPrReviewJob(finishedJob) && isStoppedStatus(finishedJob.status) && this.roundStopped) {
+              await this.roundStopped(finishedJob).catch(err => {
+                this.ctx.logger.error({ err, jobId }, 'Review round completion handler failed')
               })
             } else if (
               isCampaignJob(finishedJob) &&

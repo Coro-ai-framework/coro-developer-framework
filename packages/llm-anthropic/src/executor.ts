@@ -43,6 +43,8 @@ import type {
   ExecutorModelDescriptor,
   ExecutorSessionController,
   PhaseExecutionRequest,
+  SubagentExecutionRequest,
+  SubagentResult,
   PhaseExecutorEvent,
   PhaseExecutorRuntime,
   PluginDeps,
@@ -876,7 +878,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       systemPrompt: req.systemPrompt,
       model: req.model,
       cwd: req.cwd,
-      settingSources: ['project'],
+      settingSources: req.projectContext === 'skip' ? [] : ['project'],
       mcpServers: dynamicMcpServers,
       hooks,
       permissionMode: 'bypassPermissions',
@@ -1620,7 +1622,9 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         prompt: sa.systemPrompt,
         ...(sa.allowedTools ? { tools: [...sa.allowedTools] } : {}),
         ...(sa.model ? { model: sa.model } : {}),
-        mcpServers: mcpServerNames,
+        mcpServers: sa.mcpServerIds
+          ? mcpServerNames.filter(name => sa.mcpServerIds!.includes(name))
+          : mcpServerNames,
       }
     }
     return Object.keys(out).length > 0 ? out : undefined
@@ -1639,6 +1643,43 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
    */
   mcpServer(): PluginMcpServerConfig | undefined {
     return undefined
+  }
+
+  /**
+   * Stateless side-conversation used by `review_run_lenses` and
+   * `run_subagent`. Reuses {@link executePhase} so hooks, MCP, and usage
+   * accounting match a normal phase. Review lenses must not depend on
+   * the SDK's native Task tool — OpenAI has no equivalent.
+   */
+  async runSubagent(req: SubagentExecutionRequest): Promise<SubagentResult> {
+    const pluginMcpServers = req.mcpServerIds
+      ? Object.fromEntries(Object.entries(req.pluginMcpServers).filter(([id]) => req.mcpServerIds!.includes(id)))
+      : req.pluginMcpServers
+    const phaseReq: PhaseExecutionRequest = {
+      systemPrompt: req.systemPrompt,
+      userPrompt: req.task,
+      model: req.model,
+      ...(req.modelHints ? { modelHints: req.modelHints } : {}),
+      cwd: req.cwd,
+      intelligenceDir: req.intelligenceDir,
+      mcpServer: req.mcpServer,
+      pluginMcpServers,
+      hookPolicy: { ...req.hookPolicy, allowedTools: req.allowedTools },
+      sessionState: {},
+      maxTurns: req.maxTurns,
+      phase: `subagent:${req.name}`,
+      signal: req.signal,
+      ...(req.projectContext ? { projectContext: req.projectContext } : {}),
+    }
+    const collected: string[] = []
+    let usage: SubagentResult['usage'] = emptyNormalizedUsage()
+    let stopReason = 'end_turn'
+    for await (const event of this.executePhase(phaseReq)) {
+      if (event.type === 'text' && event.content) collected.push(event.content)
+      else if (event.type === 'usage') usage = event.tokens
+      else if (event.type === 'done') stopReason = event.stopReason
+    }
+    return { output: collected.join('\n').trim(), usage, stopReason }
   }
 }
 

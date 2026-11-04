@@ -115,6 +115,8 @@ export interface PullRequest {
 export class GitHubClient {
   private readonly token: string
   private readonly baseUrl: string
+  /** ETag cache so unchanged polls do not spend the rate limit. */
+  private readonly etags = new Map<string, { etag: string; body: unknown }>()
 
   constructor(
     private readonly owner: string,
@@ -535,6 +537,215 @@ export class GitHubClient {
       `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/reviews`,
       { event: 'APPROVE' },
     )
+  }
+
+  async whoami(): Promise<{ login: string; id?: string; name?: string }> {
+    const user = await this.request<{ login: string; id?: number; name?: string }>('GET', '/user')
+    return { login: user.login, ...(user.id !== undefined ? { id: String(user.id) } : {}), ...(user.name ? { name: user.name } : {}) }
+  }
+
+  async listReviewRequests(includeTeams: boolean): Promise<Array<{
+    repo: string
+    number: number
+    title: string
+    author: string
+    url: string
+    updatedAt: string
+    draft?: boolean
+  }>> {
+    const qualifier = includeTeams ? 'review-requested:@me' : 'user-review-requested:@me'
+    const q = `is:pr is:open archived:false ${qualifier}`
+    const data = await this.requestCached<{ items?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/search/issues?q=${encodeURIComponent(q)}&per_page=50`,
+    )
+    return (data?.items ?? []).map(item => {
+      const repoUrl = String(item['repository_url'] ?? '')
+      const repo = repoUrl.split('/repos/')[1] ?? ''
+      const user = item['user'] as { login?: string } | undefined
+      return {
+        repo,
+        number: Number(item['number']),
+        title: String(item['title'] ?? ''),
+        author: user?.login ?? '',
+        url: String(item['html_url'] ?? ''),
+        updatedAt: String(item['updated_at'] ?? ''),
+        draft: item['draft'] === true,
+      }
+    }).filter(item => item.repo && Number.isFinite(item.number))
+  }
+
+  async getPrDetails(repoSlug: string, prId: number): Promise<{
+    author: string
+    title: string
+    draft: boolean
+    state: string
+    baseSha: string
+    headSha: string
+    requestedReviewers: string[]
+    labels: string[]
+    url?: string
+    files: { path: string; additions: number; deletions: number; status?: string }[]
+  }> {
+    const repo = this.repoPath(repoSlug)
+    const pr = await this.request<GhPullRequest & {
+      draft?: boolean
+      user?: { login?: string }
+      base?: { sha?: string }
+      head?: { sha?: string }
+      requested_reviewers?: Array<{ login?: string }>
+      labels?: Array<{ name?: string }>
+      html_url?: string
+    }>('GET', `/repos/${repo}/pulls/${prId}`)
+    const files = await this.request<Array<{ filename: string; additions?: number; deletions?: number; status?: string }>>(
+      'GET',
+      `/repos/${repo}/pulls/${prId}/files?per_page=100`,
+    )
+    return {
+      author: pr.user?.login ?? '',
+      title: pr.title,
+      draft: pr.draft === true,
+      state: pr.merged ? 'MERGED' : pr.state,
+      baseSha: pr.base?.sha ?? '',
+      headSha: pr.head?.sha ?? '',
+      requestedReviewers: (pr.requested_reviewers ?? []).map(r => r.login ?? '').filter(Boolean),
+      labels: (pr.labels ?? []).map(l => l.name ?? '').filter(Boolean),
+      ...(pr.html_url ? { url: pr.html_url } : {}),
+      files: (files ?? []).map(file => ({
+        path: file.filename,
+        additions: file.additions ?? 0,
+        deletions: file.deletions ?? 0,
+        ...(file.status ? { status: file.status } : {}),
+      })),
+    }
+  }
+
+  async getPrFiles(repoSlug: string, prId: number): Promise<Array<{ path: string; patch?: string; additions: number; deletions: number }>> {
+    const files = await this.request<Array<{ filename: string; patch?: string; additions?: number; deletions?: number }>>(
+      'GET',
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/files?per_page=100`,
+    )
+    return (files ?? []).map(file => ({
+      path: file.filename,
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
+      ...(file.patch ? { patch: file.patch } : {}),
+    }))
+  }
+
+  async submitReview(repoSlug: string, prId: number, review: {
+    event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' | 'PENDING'
+    body: string
+    commitId?: string
+    comments: Array<{ path: string; line: number; side?: string; start_line?: number; body: string }>
+  }): Promise<{ id: number }> {
+    const payload: Record<string, unknown> = {
+      body: review.body,
+      comments: review.comments.map(comment => ({
+        path: comment.path,
+        line: comment.line,
+        side: comment.side ?? 'RIGHT',
+        body: comment.body,
+        ...(comment.start_line ? { start_line: comment.start_line } : {}),
+      })),
+    }
+    if (review.commitId) payload['commit_id'] = review.commitId
+    if (review.event !== 'PENDING') payload['event'] = review.event
+    const created = await this.request<{ id: number }>(
+      'POST',
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/reviews`,
+      payload,
+    )
+    return created
+  }
+
+  async submitPendingReview(repoSlug: string, prId: number, reviewId: number, event: string, body?: string): Promise<void> {
+    await this.request(
+      'POST',
+      `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/reviews/${reviewId}/events`,
+      { event, ...(body ? { body } : {}) },
+    )
+  }
+
+  async listReviewThreads(repoSlug: string, prId: number): Promise<Array<{
+    id: string
+    path?: string
+    line?: number
+    resolved: boolean
+    outdated: boolean
+    comments: { id: string; body: string; author?: string; createdAt: string }[]
+  }>> {
+    const { owner, repo } = parseGitHubRepo(repoSlug, this.owner)
+    const data = await this.graphql<{
+      repository?: {
+        pullRequest?: {
+          reviewThreads?: {
+            nodes?: Array<{
+              id: string
+              isResolved: boolean
+              isOutdated: boolean
+              path?: string
+              line?: number
+              comments?: { nodes?: Array<{ databaseId?: number; body: string; author?: { login?: string }; createdAt: string }> }
+            }>
+          }
+        }
+      }
+    }>(`query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100) {
+            nodes { id isResolved isOutdated path line comments(first: 50) { nodes { databaseId body author { login } createdAt } } }
+          }
+        }
+      }
+    }`, { owner, repo, number: prId })
+    const nodes = data.repository?.pullRequest?.reviewThreads?.nodes ?? []
+    return nodes.map(node => ({
+      id: node.id,
+      ...(node.path ? { path: node.path } : {}),
+      ...(node.line !== undefined ? { line: node.line } : {}),
+      resolved: node.isResolved,
+      outdated: node.isOutdated,
+      comments: (node.comments?.nodes ?? []).map(comment => ({
+        id: String(comment.databaseId ?? ''),
+        body: comment.body,
+        ...(comment.author?.login ? { author: comment.author.login } : {}),
+        createdAt: comment.createdAt,
+      })),
+    }))
+  }
+
+  async resolveThread(threadId: string, resolved: boolean): Promise<void> {
+    const mutation = resolved
+      ? `mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id } } }`
+      : `mutation($id: ID!) { unresolveReviewThread(input: { threadId: $id }) { thread { id } } }`
+    await this.graphql(mutation, { id: threadId })
+  }
+
+  /**
+   * GET that returns the cached body on 304. Callers that need a fresh
+   * miss should treat a returned `undefined` body as "unchanged" only
+   * when they already hold the previous value; the first call always hits.
+   */
+  private async requestCached<T>(method: string, path: string): Promise<T | undefined> {
+    const url = `${this.baseUrl}${path}`
+    const cached = this.etags.get(url)
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    }
+    if (cached?.etag) headers['If-None-Match'] = cached.etag
+    const res = await fetch(url, { method, headers })
+    if (res.status === 304 && cached) return cached.body as T
+    if (!res.ok) {
+      throw new GitHubError(res.status, await res.text())
+    }
+    const body = await res.json() as T
+    const etag = res.headers.get('etag')
+    if (etag) this.etags.set(url, { etag, body })
+    return body
   }
 
   async mergePr(repoSlug: string, prId: number, message?: string): Promise<PullRequest> {

@@ -29,6 +29,20 @@ export interface SubagentConfig {
   tools?: string[]
 }
 
+export interface LensConfig {
+  name: string
+  agent?: string
+  model?: string
+  tier?: string
+  provider?: string
+  tools?: string[]
+  /** MCP server ids, or `@role` references resolved from review settings. */
+  mcpServers?: string[]
+  /** File classes that activate this lens. `always` runs on every round. */
+  when?: string[]
+  maxTurns?: number
+}
+
 export interface PhaseConfig {
   name: string
   agent: string | null
@@ -77,6 +91,10 @@ export interface PhaseConfig {
    * list — shipped workflows do not have to declare any.
    */
   obligations?: string[]
+  /** When true, the job completes after this phase unless the agent calls goto_phase. */
+  terminal?: boolean
+  /** Review lenses fanned out by `review_run_lenses`. Also copied into `subagents`. */
+  lenses?: LensConfig[]
 }
 
 export interface WorkflowConfig {
@@ -121,6 +139,20 @@ interface RawPhase {
   interactive_checkpoint?: boolean
   tools?: string[]
   obligations?: string[]
+  terminal?: boolean
+  lenses?: RawLens[]
+}
+
+interface RawLens {
+  name?: string
+  agent?: string
+  model?: string
+  tier?: string
+  provider?: string
+  tools?: string[]
+  mcp_servers?: string[]
+  when?: string[]
+  max_turns?: number
 }
 
 interface RawConfig {
@@ -174,6 +206,10 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
         phase.interactiveCheckpoint = true
       }
 
+      if (p.terminal === true) {
+        phase.terminal = true
+      }
+
       if (Array.isArray(p.tools) && p.tools.length > 0) {
         phase.tools = p.tools.filter((t): t is string => typeof t === 'string')
       }
@@ -183,8 +219,38 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
         if (obligations.length > 0) phase.obligations = obligations
       }
 
+      if (Array.isArray(p.lenses) && p.lenses.length > 0) {
+        phase.lenses = p.lenses
+          .filter((lens): lens is RawLens & { name: string } => typeof lens.name === 'string')
+          .map(lens => {
+            const out: LensConfig = { name: lens.name }
+            if (lens.agent) out.agent = lens.agent
+            if (lens.model) out.model = lens.model
+            if (lens.tier) out.tier = lens.tier
+            if (lens.provider) out.provider = lens.provider
+            if (lens.tools) out.tools = lens.tools.filter((t): t is string => typeof t === 'string')
+            if (lens.mcp_servers) out.mcpServers = lens.mcp_servers.filter((t): t is string => typeof t === 'string')
+            if (lens.when) out.when = lens.when.filter((t): t is string => typeof t === 'string')
+            if (typeof lens.max_turns === 'number') out.maxTurns = lens.max_turns
+            return out
+          })
+        const declared = new Set((phase.subagents ?? []).map(sa => sa.name))
+        const fromLenses = phase.lenses
+          .filter(lens => !declared.has(lens.name))
+          .map(lens => {
+            const sa: SubagentConfig = { name: lens.name }
+            if (lens.agent) sa.agent = lens.agent
+            if (lens.model) sa.model = lens.model
+            if (lens.tier) sa.tier = lens.tier
+            if (lens.provider) sa.provider = lens.provider
+            if (lens.tools) sa.tools = lens.tools
+            return sa
+          })
+        if (fromLenses.length > 0) phase.subagents = [...(phase.subagents ?? []), ...fromLenses]
+      }
+
       if (Array.isArray(p.subagents) && p.subagents.length > 0) {
-        phase.subagents = p.subagents
+        const parsedSubagents = p.subagents
           .filter((sa): sa is RawSubagent & { name: string } => typeof sa.name === 'string')
           .map(sa => {
             const out: SubagentConfig = { name: sa.name }
@@ -195,6 +261,9 @@ export function parseWorkflowConfig(markdown: string): WorkflowConfig | null {
             if (sa.tools !== undefined) out.tools = sa.tools
             return out
           })
+        const declared = new Set(parsedSubagents.map(sa => sa.name))
+        const fromLenses = (phase.subagents ?? []).filter(sa => !declared.has(sa.name))
+        phase.subagents = [...parsedSubagents, ...fromLenses]
       }
 
       return phase

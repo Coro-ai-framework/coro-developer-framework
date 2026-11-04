@@ -348,9 +348,10 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
   async pollPr(ref: ExternalRefShape): Promise<ScmPollSnapshot> {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
     const client = this.clientFor(repoSlug)
-    const [status, comments] = await Promise.all([
+    const [status, comments, details] = await Promise.all([
       client.getPrStatus(repoSlug, prId),
       client.getComments(repoSlug, prId),
+      client.getPrDetails(repoSlug, prId).catch(() => null),
     ])
     const normalisedComments: ScmPrComment[] = comments.map(toScmComment)
     return {
@@ -358,7 +359,105 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
       approvalCount: status.approvalCount,
       commentCount: normalisedComments.length,
       comments: normalisedComments,
+      ...(details ? {
+        headSha: details.headSha,
+        draft: details.draft,
+        reviewRequestedLogins: details.requestedReviewers,
+      } : {}),
     }
+  }
+
+  reviewCapabilities() {
+    return {
+      whoami: true,
+      listReviewRequests: true,
+      diff: true,
+      submitReview: true,
+      pendingReview: true,
+      threads: true,
+      resolveThread: true,
+    }
+  }
+
+  async whoami() {
+    const user = await this.client.whoami()
+    return { login: user.login, ...(user.id ? { id: user.id } : {}), ...(user.name ? { displayName: user.name } : {}) }
+  }
+
+  async listReviewRequests(args: { includeTeams: boolean; repos?: string[] }) {
+    const hits = await this.client.listReviewRequests(args.includeTeams)
+    return hits
+      .filter(hit => !args.repos?.length || args.repos.includes(hit.repo))
+      .map(hit => ({
+        ref: {
+          kind: 'pull_request' as const,
+          pluginId: this.manifest.id,
+          repoKey: hit.repo,
+          externalId: String(hit.number),
+          url: hit.url,
+        },
+        title: hit.title,
+        author: hit.author,
+        requestedAt: hit.updatedAt,
+        ...(hit.draft !== undefined ? { draft: hit.draft } : {}),
+        url: hit.url,
+      }))
+  }
+
+  async getPrDetails(ref: ExternalRef) {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    const details = await this.clientFor(repoSlug).getPrDetails(repoSlug, prId)
+    return {
+      ...details,
+      state: normalisePrState(details.state),
+    }
+  }
+
+  async getPrDiff(ref: ExternalRef) {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    return { files: await this.clientFor(repoSlug).getPrFiles(repoSlug, prId) }
+  }
+
+  async submitReview(ref: ExternalRef, review: {
+    event: 'approve' | 'request_changes' | 'comment' | 'pending'
+    body: string
+    commitSha?: string
+    comments: Array<{ key: string; path: string; line: number; side?: 'LEFT' | 'RIGHT'; startLine?: number; body: string }>
+  }) {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    const event = review.event === 'approve' ? 'APPROVE'
+      : review.event === 'request_changes' ? 'REQUEST_CHANGES'
+      : review.event === 'pending' ? 'PENDING'
+      : 'COMMENT'
+    const created = await this.clientFor(repoSlug).submitReview(repoSlug, prId, {
+      event,
+      body: review.body,
+      ...(review.commitSha ? { commitId: review.commitSha } : {}),
+      comments: review.comments.map(comment => ({
+        path: comment.path,
+        line: comment.line,
+        ...(comment.side ? { side: comment.side } : {}),
+        ...(comment.startLine ? { start_line: comment.startLine } : {}),
+        body: comment.body,
+      })),
+    })
+    return { reviewId: String(created.id), commentIds: {} as Record<string, string> }
+  }
+
+  async submitPendingReview(ref: ExternalRef, reviewId: string, event: 'approve' | 'request_changes' | 'comment', body?: string) {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    const mapped = event === 'approve' ? 'APPROVE' : event === 'request_changes' ? 'REQUEST_CHANGES' : 'COMMENT'
+    await this.clientFor(repoSlug).submitPendingReview(repoSlug, prId, Number(reviewId), mapped, body)
+  }
+
+  async listReviewThreads(ref: ExternalRef) {
+    const { repoSlug, prId } = parseRef(ref, this.manifest.id)
+    return this.clientFor(repoSlug).listReviewThreads(repoSlug, prId)
+  }
+
+  async resolveThread(ref: ExternalRef, threadId: string, resolved: boolean) {
+    const { repoSlug } = parseRef(ref, this.manifest.id)
+    await this.clientFor(repoSlug).resolveThread(threadId, resolved)
   }
 
   matchesRemote(remoteUrl: string): boolean {
@@ -584,10 +683,13 @@ function toGenericPrEvent(eventName: string, action: string): string {
     if (action === 'opened') return 'pr.opened'
     if (action === 'synchronize') return 'pr.updated'
     if (action === 'review_requested') return 'pr.review_requested'
+    if (action === 'review_request_removed') return 'pr.review_request_removed'
+    if (action === 'ready_for_review') return 'pr.ready_for_review'
+    if (action === 'converted_to_draft') return 'pr.converted_to_draft'
     return `pr.${action || 'updated'}`
   }
   if (eventName === 'pull_request_review') {
-    if (action === 'submitted') return 'pr.approved'
+    if (action === 'submitted') return 'pr.review_submitted'
     return `pr.review_${action || 'changed'}`
   }
   if (eventName === 'pull_request_review_comment' || eventName === 'issue_comment') {

@@ -141,7 +141,10 @@ export async function buildJobRecord(
   }
 
   const config = resolution.config
-  const initialPhase = resolveInitialPhase(config, triggerSource)
+  const reviewTrigger = typeof input.params['reviewTrigger'] === 'string'
+    ? input.params['reviewTrigger']
+    : ''
+  const initialPhase = resolveInitialPhase(config, reviewTrigger || triggerSource)
   const phaseConfig = getPhaseConfig(config, initialPhase)
   if (!phaseConfig) {
     // initial_phase points at a phase that doesn't exist in the

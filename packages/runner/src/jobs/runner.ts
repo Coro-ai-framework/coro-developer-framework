@@ -890,6 +890,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         maxTurns: 200,
         signal: abortController.signal,
         phase: liveJob.phase,
+        projectContext: liveJob.params?.projectContext === 'skip' ? 'skip' : 'load',
         lifecycle: {
           onSessionStart: (controller: ExecutorSessionController) => {
             // Augment the executor's controller with a `stop()` that ends
@@ -1385,8 +1386,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 
       // Default: auto-advance to the next phase. goto_phase overrides the
       // workflow-defined order (e.g. evaluator loops back to coding).
+      const currentPhase = workflowConfig?.phases.find(p => p.name === liveJob.phase)
       const nextPhase = signals.nextPhase
-        ?? (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null)
+        ?? (currentPhase?.terminal
+          ? null
+          : (workflowConfig ? wfGetNextPhase(workflowConfig, liveJob.phase) : null))
 
       if (!nextPhase) {
         ({ job: liveJob, shouldStop: shouldStopLoop } = await refreshJobForBoundary(

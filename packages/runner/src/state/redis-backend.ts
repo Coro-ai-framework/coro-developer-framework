@@ -22,6 +22,8 @@ import {
   mergeInvestigation,
   toInvestigationSummary,
 } from './investigation'
+import { RedisReviewStore } from '../reviews/redis-store'
+import type { ReviewStore } from '../reviews/store'
 
 // ── Redis key schema ──────────────────────────────────────────────────────────
 
@@ -49,6 +51,8 @@ function keyExternalRef(ref: ExternalRef): string {
 // ── Redis state backend ───────────────────────────────────────────────────────
 
 export class RedisStateBackend implements StateBackend {
+  readonly reviews: ReviewStore
+
   constructor(
     private readonly redis: Redis,
     private readonly coroIntelligenceDir: string = '',
@@ -58,7 +62,9 @@ export class RedisStateBackend implements StateBackend {
      * defaults to `getBaseLayerRoot()` from `@coro-ai/intelligence-base`.
      */
     private readonly baseLayerDir?: string,
-  ) {}
+  ) {
+    this.reviews = new RedisReviewStore(redis)
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 

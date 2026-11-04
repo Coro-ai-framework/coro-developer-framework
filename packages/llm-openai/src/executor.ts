@@ -453,6 +453,9 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       allowedTools: req.allowedTools,
     }
 
+    const pluginMcpServers = req.mcpServerIds
+      ? Object.fromEntries(Object.entries(req.pluginMcpServers).filter(([id]) => req.mcpServerIds!.includes(id)))
+      : req.pluginMcpServers
     const phaseReq: PhaseExecutionRequest = {
       systemPrompt: req.systemPrompt,
       userPrompt: req.task,
@@ -461,12 +464,13 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       cwd: req.cwd,
       intelligenceDir: req.intelligenceDir,
       mcpServer: req.mcpServer,
-      pluginMcpServers: req.pluginMcpServers,
+      pluginMcpServers,
       hookPolicy,
       sessionState: { conversationHistory: [] },
       maxTurns: req.maxTurns,
       phase: `subagent:${req.name}`,
       signal: req.signal,
+      ...(req.projectContext ? { projectContext: req.projectContext } : {}),
     }
 
     const collected: string[] = []

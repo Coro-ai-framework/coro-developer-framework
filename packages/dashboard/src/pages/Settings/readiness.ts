@@ -256,6 +256,10 @@ export function evaluateReadiness({ draft, pluginsCatalogue }: ReadinessInput): 
         ? 'Findings about Coro itself can be contributed upstream'
         : 'Findings about Coro itself stay on this machine',
     },
+    'pr-reviews': {
+      status: 'optional',
+      detail: 'Configured on its own save, separate from the rest of Settings',
+    },
     'decision-layer': {
       status: draft.decisionMode === 'off' ? 'optional' : 'ok',
       ...(draft.decisionMode !== 'off' ? { label: draft.decisionMode === 'live' ? 'Manage' : 'Observe' } : {}),

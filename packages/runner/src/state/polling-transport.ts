@@ -34,6 +34,7 @@ import type { ScmPluginRuntime, ScmPollSnapshot } from '../plugins/types'
 import { STATUS_ESCALATED, STATUS_FAILED, type Job, type PrMapping } from '@coro-ai/cloud-protocol'
 import { isParkingStatus } from '../jobs/helpers'
 import { buildPrExternalRef } from '../plugins/refs'
+import { diffPrSnapshot, type DetectorSnapshot } from '../reviews/pr-change-detector'
 
 /**
  * The job already stopped and carries a reason a human needs to read.
@@ -57,10 +58,8 @@ export interface PollingTransportOptions {
 }
 
 /** Snapshot of a PR's last-known state for change detection. */
-interface PrSnapshot {
+interface PrSnapshot extends DetectorSnapshot {
   state: ScmPollSnapshot['state']
-  approvalCount: number
-  commentCount: number
 }
 
 export class PollingTransport implements EventTransport {
@@ -229,6 +228,8 @@ export class PollingTransport implements EventTransport {
       state: snap.state,
       approvalCount: snap.approvalCount,
       commentCount: snap.commentCount,
+      ...(snap.headSha ? { headSha: snap.headSha } : {}),
+      ...(snap.draft !== undefined ? { draft: snap.draft } : {}),
     }
 
     const key = snapshotKey(ref)
@@ -269,38 +270,14 @@ export class PollingTransport implements EventTransport {
       return
     }
 
-    // Detect state changes and deliver synthetic events
-    if (current.state !== previous.state) {
-      if (current.state === 'merged') {
-        await this.deliver(jobId, ref, 'pullrequest:fulfilled', { state: 'MERGED' })
-      } else if (current.state === 'declined') {
-        await this.deliver(jobId, ref, 'pullrequest:rejected', { state: 'DECLINED' })
-      } else {
-        await this.deliver(jobId, ref, 'pullrequest:updated', { state: current.state })
-      }
-    }
-
-    if (current.approvalCount > previous.approvalCount) {
-      await this.deliver(jobId, ref, 'pullrequest:approved', {
-        approvalCount: current.approvalCount,
-      })
-    }
-
-    if (current.commentCount > previous.commentCount) {
-      // Slice the new comments off the snapshot. Plugins return the full
-      // comment list ordered by createdAt ASC so this slice is the
-      // delta between successive polls.
-      const newComments = snap.comments.slice(previous.commentCount)
-      for (const comment of newComments) {
-        await this.deliver(jobId, ref, 'pullrequest:comment_created', {
-          comment: {
-            id: comment.id,
-            content: { raw: comment.body },
-            created_on: comment.createdAt,
-            ...(comment.author ? { user: { display_name: comment.author } } : {}),
-          },
-        })
-      }
+    const deltas = diffPrSnapshot(previous, current, snap.comments.map(comment => ({
+      id: comment.id,
+      body: comment.body,
+      createdAt: comment.createdAt,
+      ...(comment.author ? { author: comment.author } : {}),
+    })))
+    for (const delta of deltas) {
+      await this.deliver(jobId, ref, delta.eventKey, delta.payload)
     }
   }
 

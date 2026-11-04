@@ -33,6 +33,11 @@ describe('enforceAllowedTools', () => {
     expect(enforceAllowedTools('Read', ['Read', 'Glob'])).toEqual({ allow: true })
   })
 
+  it('allows a glob pattern', () => {
+    expect(enforceAllowedTools('mcp__backstage__get_entity', ['mcp__backstage__get_*']).allow).toBe(true)
+    expect(enforceAllowedTools('mcp__backstage__delete_entity', ['mcp__backstage__get_*']).allow).toBe(false)
+  })
+
   it('denies tool absent from whitelist with stable reason phrasing', () => {
     const result = enforceAllowedTools('Bash', ['Read', 'Glob'], { phase: 'planning' })
     expect(result.allow).toBe(false)

@@ -323,6 +323,7 @@ export type SettingsSectionId =
   | 'paths'
   | 'guardrails'
   | 'contribution'
+  | 'pr-reviews'
   | 'decision-layer'
 
 /** Static (non-plugin) field → section. Plugin entries are mapped

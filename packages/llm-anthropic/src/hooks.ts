@@ -2,7 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { HookCallback, HookCallbackMatcher, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
 import type { Logger } from 'pino'
-import type { HookPolicy } from '@coro-ai/plugin-sdk'
+import { toolMatchesAllowList, type HookPolicy } from '@coro-ai/plugin-sdk'
 
 // PreToolUse hooks fire before every tool call the model makes (builtins AND
 // mcp__coro__*). Returning a `permissionDecision: 'deny'` rejects the call and
@@ -36,7 +36,7 @@ export interface BuildHookOpts {
 export function buildPhaseHooks(opts: BuildHookOpts): Record<string, HookCallbackMatcher[]> {
   const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
   const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
-    ? new Set(opts.allowedTools)
+    ? opts.allowedTools
     : null
 
   const deny = (reason: string): HookJSONOutput => ({
@@ -52,10 +52,10 @@ export function buildPhaseHooks(opts: BuildHookOpts): Record<string, HookCallbac
     const toolName = input.tool_name
     const toolInput = (input.tool_input ?? {}) as Record<string, unknown>
 
-    if (allowedTools && !allowedTools.has(toolName)) {
+    if (allowedTools && !toolMatchesAllowList(toolName, allowedTools)) {
       const reason =
         `Blocked ${toolName}: phase ${opts.liveJobRef().phase} only allows ` +
-        `${Array.from(allowedTools).join(', ')}. Update the workflow if this phase ` +
+        `${allowedTools.join(', ')}. Update the workflow if this phase ` +
         `needs broader tool access.`
       opts.logger.warn({ phase: opts.liveJobRef().phase, toolName }, reason)
       return deny(reason)

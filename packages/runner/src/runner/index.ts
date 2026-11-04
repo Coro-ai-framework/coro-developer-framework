@@ -76,9 +76,8 @@ import { makePluginWebhookNormalizer } from '../plugins/webhook-bridge'
 import { buildSettingsFromLocal, seedExecutorDefaultAliases } from './build-settings'
 import { CloudStateBackend } from '../state/cloud-backend'
 import { WebSocketTransport } from '../state/ws-transport'
-import { SqliteStateBackend } from '../state/sqlite-backend'
 import { PollingTransport } from '../state/polling-transport'
-import { synthesizeSoloTenant, tenantFromTeamId } from '../intelligence/tenant-context'
+import { tenantFromTeamId } from '../intelligence/tenant-context'
 import { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
 import { createBitBucketClients } from '../clients/bitbucket'
@@ -89,6 +88,8 @@ import { createTempoClient } from '../clients/tempo'
 import { createDecisionClient } from '../clients/decision'
 import { wireCloudJobDispatch } from './hybrid-dispatcher'
 import { createRunnerServer } from './server'
+import { createRunnerCore, seedExecutorEnvCredentials } from './core'
+import { startReviewEngine } from '../reviews/engine'
 
 export interface RunnerOptions {
   configPath?: string
@@ -102,141 +103,49 @@ export async function startLocalRunner(
   logger: pino.Logger,
   localPort: number,
 ): Promise<{ dispatcher: Dispatcher; shutdown: () => Promise<void> }> {
-  // Fallback when no config.json exists: honour either Anthropic env var so
-  // developers can bootstrap local mode with just `ANTHROPIC_API_KEY=... coro runner start`.
-  // We seed the modern plugin slot directly so the rest of the boot
-  // path is identical regardless of where the credential came from.
-  const envOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN
-  const envApiKey = process.env.ANTHROPIC_API_KEY
-  const baseConfig: LocalConfig = config ?? {
-    plugins: {
-      installed: {
-        anthropic: {
-          enabled: true,
-          config: envOauth
-            ? { method: 'oauth', oauthToken: envOauth }
-            : { method: 'apiKey', apiKey: envApiKey ?? '' },
-        },
-      },
-    },
-  }
-  const effectiveConfig = persistFreshInstallDefaultsIfNeeded(baseConfig)
-  const settings = buildSettingsFromLocal(effectiveConfig)
-
-  // Ensure working + intelligence dirs exist
-  fs.mkdirSync(settings.paths.workingDir, { recursive: true })
-  fs.mkdirSync(settings.paths.coroIntelligenceDir, { recursive: true })
-
-  // Create SQLite state backend — DB lives next to config in ~/.coro/
   const path = await import('path')
   const os = await import('os')
-  const configDir = path.join(os.homedir(), '.coro')
-  const dbPath = path.join(configDir, 'state.db')
-  fs.mkdirSync(configDir, { recursive: true })
-
+  const dbPath = path.join(os.homedir(), '.coro', 'state.db')
   logger.info({ dbPath }, 'Opening SQLite database')
-  const stateBackend = new SqliteStateBackend(
+
+  const core = await createRunnerCore({
+    config,
+    logger,
     dbPath,
-    settings.paths.coroIntelligenceDir,
-    logger,
-    settings.paths.baseLayerDir,
-  )
-  await stateBackend.initialize()
-
-  // Build external API clients (run locally on dev machine)
-  const { coder: bbCoder, reviewer: bbReviewer } = createBitBucketClients(settings)
-  const gitClient = createGitClient()
-  const ghClient = createGitHubClient(settings)
-  const lokiClient = createLokiClient(settings)
-  const tempoClient = createTempoClient(settings)
-  const decisionClient = await createDecisionClient(settings)
-
-  // Build the plugin registry from the resolved PluginsConfig. The
-  // registry is the single source of truth for every provider (LLM,
-  // SCM, tracker) — every credential lives under
-  // `plugins.installed.<id>.config`.
-  const pluginsConfig = resolvePluginsConfig(effectiveConfig)
-  const plugins = await buildBuiltinPluginRegistry({ pluginsConfig, settings, logger })
-  await seedExecutorDefaultAliases({ plugins, settings })
-
-  // Create polling transport for PR event detection. Plugin-aware
-  // polling lives in the SCM plugins themselves (`pollPr`); the
-  // transport delegates to whichever SCM plugin owns each parked
-  // job's external_ref.
-  const transport = new PollingTransport({
-    stateBackend,
-    plugins,
-    intervalMs: 60_000,
-    logger,
-  })
-  await transport.connect()
-
-  // Local mode = solo developer on their own machine. Synthesize a stable
-  // `solo-<host>` tenant so per-job state and overlays are scoped consistently.
-  // Phase 4: forward the optional `tenant.overlay` from local config so a
-  // single-host solo deployment can still pull a tenant-level overlay
-  // (typically `localDir` or `gitRemote`).
-  const tenantContext = synthesizeSoloTenant({
-    displayName: effectiveConfig.tenant?.displayName,
-    overlay: resolveTenantOverlaySource(effectiveConfig),
-  })
-  logger.info(
-    {
-      tenantId: tenantContext.tenantId,
-      mode: tenantContext.mode,
-      overlayKind: tenantContext.overlay.kind,
+    attachTransport: async ({ stateBackend, plugins }) => {
+      const transport = new PollingTransport({
+        stateBackend,
+        plugins,
+        intervalMs: 60_000,
+        logger,
+      })
+      await transport.connect()
+      return transport
     },
-    'Tenant context',
-  )
-
-  // Build runner context
-  const runnerCtx: RunnerContext = {
-    stateBackend,
-    settings,
-    tenantContext,
-    gitClient,
-    bbCoder,
-    bbReviewer,
-    ghClient,
-    lokiClient,
-    tempoClient,
-    decisionClient,
-    plugins,
-    logger,
-  }
-
-  // Create dispatcher with polling transport for event delivery
-  const dispatcher = new Dispatcher(runnerCtx, transport)
-
-  // Re-arm any rate-limit wake-ups that were pending when the runner
-  // last shut down. Best-effort — logged but never fatal.
-  await dispatcher.rateLimitScheduler.bootstrap().catch((err) => {
-    logger.warn({ err }, 'RateLimitScheduler bootstrap failed')
   })
 
-  // Start local HTTP server (same as hybrid but serves dashboard too).
-  // We pass `runnerCtx` so the server can hot-reload its in-memory
-  // copy of settings/clients/plugins after `PUT /config` instead of
-  // forcing the operator to restart the runner.
   const server = createRunnerServer({
     port: localPort,
-    dispatcher,
-    stateBackend,
+    dispatcher: core.dispatcher,
+    stateBackend: core.stateBackend,
     logger,
     mode: 'local',
-    tenantId: tenantContext.tenantId,
-    plugins,
-    runnerCtx,
+    tenantId: core.runnerCtx.tenantContext.tenantId,
+    plugins: core.plugins,
+    runnerCtx: core.runnerCtx,
   })
+
+  const reviews = await startReviewEngine(core.runnerCtx, core.dispatcher, core.effectiveConfig)
 
   const shutdown = async () => {
     logger.info('Shutting down local runner...')
+    reviews?.stop()
     server.close()
-    await transport.disconnect()
-    stateBackend.close()
+    await core.transport?.disconnect()
+    core.stateBackend.close()
   }
 
-  return { dispatcher, shutdown }
+  return { dispatcher: core.dispatcher, shutdown }
 }
 
 // ── Hybrid Mode Bootstrap ────────────────────────────────────────────────────
@@ -250,7 +159,7 @@ export async function startHybridRunner(
     throw new Error('Hybrid mode requires cloud.url and cloud.token in config')
   }
 
-  const effectiveConfig = persistFreshInstallDefaultsIfNeeded(config)
+  const effectiveConfig = persistFreshInstallDefaultsIfNeeded(seedExecutorEnvCredentials(config))
   const settings = buildSettingsFromLocal(effectiveConfig)
   const cloud = config.cloud
 
@@ -357,8 +266,11 @@ export async function startHybridRunner(
     runnerCtx,
   })
 
+  const reviews = await startReviewEngine(runnerCtx, dispatcher, effectiveConfig)
+
   const shutdown = async () => {
     logger.info('Shutting down hybrid runner...')
+    reviews?.stop()
     server.close()
     await transport.disconnect()
   }

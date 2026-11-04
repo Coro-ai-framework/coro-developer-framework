@@ -30,6 +30,8 @@ import {
   mergeInvestigation,
   toInvestigationSummary,
 } from './investigation'
+import { SqliteReviewStore } from '../reviews/sqlite-store'
+import type { ReviewStore } from '../reviews/store'
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -116,6 +118,7 @@ const SCHEMA_SQL = `
 
 export class SqliteStateBackend implements StateBackend {
   private db: Database.Database
+  readonly reviews: ReviewStore
 
   constructor(
     dbPath: string,
@@ -134,12 +137,14 @@ export class SqliteStateBackend implements StateBackend {
     this.db.pragma('journal_mode = WAL')
     // Enable foreign keys
     this.db.pragma('foreign_keys = ON')
+    this.reviews = new SqliteReviewStore(this.db)
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
     this.db.exec(SCHEMA_SQL)
+    await this.reviews.initialize?.()
   }
 
   /** Close the database connection. Call on shutdown. */

@@ -312,6 +312,51 @@ export class BitBucketClient {
     return this.listAll<PullRequest>(`/repositories/${this.workspace}/${repoSlug}/pullrequests?state=${state}`)
   }
 
+  async whoami(): Promise<{ uuid: string; nickname?: string; display_name?: string }> {
+    return this.request('GET', '/user')
+  }
+
+  async listReviewRequests(): Promise<Array<{
+    repo: string
+    id: number
+    title: string
+    author: string
+    url?: string
+    updatedOn?: string
+  }>> {
+    const me = await this.whoami()
+    const selected = encodeURIComponent(me.uuid)
+    const page = await this.request<{ values?: Array<Record<string, unknown>> }>(
+      'GET',
+      `/pullrequests/${selected}?state=OPEN&role=REVIEWER`,
+    )
+    return (page.values ?? []).map(pr => {
+      const dest = pr['destination'] as { repository?: { full_name?: string } } | undefined
+      const author = pr['author'] as { display_name?: string; nickname?: string } | undefined
+      const links = pr['links'] as { html?: { href?: string } } | undefined
+      return {
+        repo: dest?.repository?.full_name ?? '',
+        id: Number(pr['id']),
+        title: String(pr['title'] ?? ''),
+        author: author?.nickname ?? author?.display_name ?? '',
+        ...(links?.html?.href ? { url: links.html.href } : {}),
+        ...(typeof pr['updated_on'] === 'string' ? { updatedOn: pr['updated_on'] } : {}),
+      }
+    }).filter(pr => pr.repo && Number.isFinite(pr.id))
+  }
+
+  async getPrDiffstat(repoSlug: string, prId: number): Promise<Array<{ path: string; additions: number; deletions: number }>> {
+    const page = await this.request<{ values?: Array<{ lines_added?: number; lines_removed?: number; new?: { path?: string }; old?: { path?: string } }> }>(
+      'GET',
+      `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}/diffstat`,
+    )
+    return (page.values ?? []).map(row => ({
+      path: row.new?.path ?? row.old?.path ?? '',
+      additions: row.lines_added ?? 0,
+      deletions: row.lines_removed ?? 0,
+    })).filter(row => row.path)
+  }
+
   async approvePr(repoSlug: string, prId: number): Promise<void> {
     await this.request('POST', `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}/approve`)
   }
@@ -376,6 +421,13 @@ export class BitBucketClient {
   async postComment(repoSlug: string, prId: number, content: string): Promise<PrComment> {
     return this.request('POST', `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}/comments`, {
       content: { raw: content },
+    })
+  }
+
+  async postInlineComment(repoSlug: string, prId: number, filePath: string, line: number, content: string): Promise<PrComment> {
+    return this.request('POST', `/repositories/${this.workspace}/${repoSlug}/pullrequests/${prId}/comments`, {
+      content: { raw: content },
+      inline: { path: filePath, to: line },
     })
   }
 

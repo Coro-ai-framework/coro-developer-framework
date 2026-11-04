@@ -151,6 +151,7 @@ export default function JobList() {
   const matchesFilter = useMemo(() => {
     const search = query.trim().toLowerCase()
     return (job: Job): boolean => {
+      if (job.type === 'pr-review') return false
       if (workflowFilter !== 'all' && getWorkflowSlug(job.workflowPath) !== workflowFilter) return false
       if (statusFilter === 'active' && isTerminalStatus(job.status)) return false
       if (statusFilter === 'waiting' && !isWaitingStatus(job.status)) return false

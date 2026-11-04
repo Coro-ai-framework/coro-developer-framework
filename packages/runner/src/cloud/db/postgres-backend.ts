@@ -31,6 +31,8 @@ import {
   mergeInvestigation,
   toInvestigationSummary,
 } from '../../state/investigation'
+import { ensureReviewStorage, PostgresReviewStore } from '../../reviews/postgres-store'
+import type { ReviewStore } from '../../reviews/store'
 
 // ── Row ↔ Job mapping ─────────────────────────────────────────────────────────
 
@@ -130,6 +132,8 @@ function jobToInsert(job: Job, teamId: string): typeof schema.jobs.$inferInsert 
 // ── PostgresStateBackend ──────────────────────────────────────────────────────
 
 export class PostgresStateBackend implements StateBackend {
+  readonly reviews: ReviewStore
+
   constructor(
     private readonly db: CloudDb,
     private readonly teamId: string,
@@ -145,12 +149,15 @@ export class PostgresStateBackend implements StateBackend {
      * defaults to `getBaseLayerRoot()` from `@coro-ai/intelligence-base`.
      */
     private readonly baseLayerDir?: string,
-  ) {}
+  ) {
+    this.reviews = new PostgresReviewStore(db, teamId)
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
     await ensureInvestigationsTable(this.db)
+    await ensureReviewStorage(this.db)
   }
 
   // ── Job CRUD ──────────────────────────────────────────────────────────────

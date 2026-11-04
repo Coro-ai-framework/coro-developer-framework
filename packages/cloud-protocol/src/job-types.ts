@@ -23,6 +23,12 @@ export enum JobType {
    * the dashboard's retrospective page, never from a webhook.
    */
   Retrospective = 'retrospective',
+  /**
+   * One round of a pull-request review. The durable review lives outside
+   * the job; rounds are short and never park. Dispatched by the review
+   * coordinator (inbox, webhook, CI, or `coro review run`).
+   */
+  PrReview = 'pr-review',
 }
 
 // ── Well-known statuses ──────────────────────────────────────────────────────
@@ -698,7 +704,7 @@ export interface DecisionRecord {
 // ── Job input ─────────────────────────────────────────────────────────────────
 
 export interface JobInput {
-  type?: 'job' | 'self-update' | 'retrospective'
+  type?: 'job' | 'self-update' | 'retrospective' | 'pr-review'
   workflowPath?: string
   triggerSource?: 'cli' | 'jira' | 'internal'
   params: Record<string, unknown>

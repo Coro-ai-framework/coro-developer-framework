@@ -2,6 +2,7 @@ import {
   ClipboardList,
   Layers,
   Microscope,
+  GitPullRequest,
   Settings2,
   Workflow,
   type LucideIcon,
@@ -25,6 +26,7 @@ const NAV: NavigationItem[] = [
   { label: PAGE_TITLES.runsList, to: RUNS_LIST_PATH, icon: Workflow, group: 'primary' },
   { label: 'Intelligence', to: '/intelligence', icon: Layers, group: 'secondary' },
   { label: 'Retrospective', to: '/retrospectives', icon: Microscope, group: 'secondary' },
+  { label: 'Reviews', to: '/reviews', icon: GitPullRequest, group: 'secondary' },
   { label: 'Settings', to: '/settings', icon: Settings2, group: 'secondary' },
 ]
 

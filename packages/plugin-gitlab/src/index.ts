@@ -419,6 +419,163 @@ class GitLabScmPlugin extends ScmPluginBase<GitLabPluginConfig> {
     return null
   }
 
+  reviewCapabilities() {
+    return {
+      whoami: true,
+      listReviewRequests: true,
+      diff: true,
+      submitReview: true,
+      pendingReview: false,
+      threads: true,
+      resolveThread: true,
+    }
+  }
+
+  private apiBase(): string {
+    return this.baseUrl ?? 'https://gitlab.com/api/v4'
+  }
+
+  private async gl<T>(path: string, init?: RequestInit): Promise<T> {
+    const res = await this.fetchImpl(`${this.apiBase()}${path}`, {
+      ...init,
+      headers: {
+        'PRIVATE-TOKEN': this.token,
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    })
+    if (!res.ok) throw new Error(`gitlab ${path}: ${res.status}`)
+    if (res.status === 204) return undefined as T
+    return await res.json() as T
+  }
+
+  async whoami() {
+    const user = await this.gl<{ username: string; id: number; name?: string }>('/user')
+    return { login: user.username, id: String(user.id), ...(user.name ? { displayName: user.name } : {}) }
+  }
+
+  async listReviewRequests(args: { includeTeams: boolean; repos?: string[] }) {
+    const me = await this.whoami()
+    const rows = await this.gl<Array<{
+      iid: number
+      title: string
+      web_url: string
+      updated_at: string
+      draft?: boolean
+      author?: { username?: string }
+      references?: { full?: string }
+    }>>(`/merge_requests?scope=reviews_for_me&state=opened&reviewer_username=${encodeURIComponent(me.login)}`)
+    return rows
+      .map(row => {
+        const full = row.references?.full ?? ''
+        const repoKey = full.includes('!') ? full.split('!')[0]! : this.namespace
+        return {
+          ref: {
+            kind: 'pull_request' as const,
+            pluginId: this.manifest.id,
+            repoKey,
+            externalId: String(row.iid),
+            url: row.web_url,
+          },
+          title: row.title,
+          author: row.author?.username ?? '',
+          requestedAt: row.updated_at,
+          ...(row.draft !== undefined ? { draft: row.draft } : {}),
+          url: row.web_url,
+        }
+      })
+      .filter(row => !args.repos?.length || args.repos.includes(row.ref.repoKey ?? ''))
+  }
+
+  async getPrDetails(ref: ExternalRef) {
+    const { projectPath, mrIid } = parseRef(ref, this.manifest.id, this.namespace)
+    const project = encodeURIComponent(projectPath)
+    const mr = await this.gl<{
+      title: string
+      state: string
+      draft?: boolean
+      web_url?: string
+      sha?: string
+      diff_refs?: { base_sha?: string; head_sha?: string }
+      author?: { username?: string }
+      labels?: string[]
+    }>(`/projects/${project}/merge_requests/${mrIid}`)
+    const changes = await this.gl<{ changes?: Array<{ new_path: string; diff?: string }> }>(
+      `/projects/${project}/merge_requests/${mrIid}/changes`,
+    )
+    return {
+      author: mr.author?.username ?? '',
+      title: mr.title,
+      draft: mr.draft === true,
+      state: normalisePrState(mr.state),
+      baseSha: mr.diff_refs?.base_sha ?? '',
+      headSha: mr.diff_refs?.head_sha ?? mr.sha ?? '',
+      requestedReviewers: [],
+      labels: mr.labels ?? [],
+      files: (changes.changes ?? []).map(change => ({
+        path: change.new_path,
+        additions: 0,
+        deletions: 0,
+      })),
+      ...(mr.web_url ? { url: mr.web_url } : {}),
+    }
+  }
+
+  async getPrDiff(ref: ExternalRef) {
+    const details = await this.getPrDetails(ref)
+    return { files: details.files.map(file => ({ path: file.path, additions: 0, deletions: 0 })) }
+  }
+
+  async submitReview(ref: ExternalRef, review: { event: string; body: string; comments: Array<{ path: string; line: number; body: string }> }) {
+    const { projectPath, mrIid } = parseRef(ref, this.manifest.id, this.namespace)
+    const project = encodeURIComponent(projectPath)
+    const note = await this.gl<{ id: number }>(`/projects/${project}/merge_requests/${mrIid}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ body: review.body }),
+    })
+    for (const comment of review.comments) {
+      await this.gl(`/projects/${project}/merge_requests/${mrIid}/discussions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          body: comment.body,
+          position: { position_type: 'text', new_path: comment.path, new_line: comment.line },
+        }),
+      })
+    }
+    if (review.event === 'approve') {
+      await this.gl(`/projects/${project}/merge_requests/${mrIid}/approve`, { method: 'POST' })
+    }
+    return { reviewId: String(note.id), commentIds: {} as Record<string, string> }
+  }
+
+  async listReviewThreads(ref: ExternalRef) {
+    const { projectPath, mrIid } = parseRef(ref, this.manifest.id, this.namespace)
+    const project = encodeURIComponent(projectPath)
+    const discussions = await this.gl<GitLabDiscussion[]>(`/projects/${project}/merge_requests/${mrIid}/discussions`)
+    return discussions.map(disc => ({
+      id: disc.id,
+      path: disc.notes?.find(note => note.position?.new_path)?.position?.new_path,
+      line: disc.notes?.find(note => note.position?.new_line)?.position?.new_line ?? undefined,
+      resolved: false,
+      outdated: false,
+      comments: (disc.notes ?? []).filter(note => !note.system).map(note => ({
+        id: String(note.id),
+        body: note.body,
+        ...(note.author?.username ? { author: note.author.username } : {}),
+        createdAt: note.created_at,
+      })),
+    }))
+  }
+
+  async resolveThread(ref: ExternalRef, threadId: string, resolved: boolean) {
+    const { projectPath, mrIid } = parseRef(ref, this.manifest.id, this.namespace)
+    const project = encodeURIComponent(projectPath)
+    await this.gl(`/projects/${project}/merge_requests/${mrIid}/discussions/${encodeURIComponent(threadId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ resolved }),
+    })
+  }
+
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   private gitlabHost(): string {

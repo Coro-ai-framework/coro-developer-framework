@@ -191,6 +191,12 @@ export interface Settings {
   /**
    * Job harness tuning — idle watchdog, etc.
    */
+  /**
+   * Resolved pull-request review policy. `enabled: false` until the
+   * developer turns reviews on. Tools and the coordinator read this
+   * rather than the raw config blob.
+   */
+  reviews?: import('../reviews/policy').ReviewPolicy
   jobs?: {
     idleWatchdog?: {
       /** When false, disables per-phase idle nudge/park. Default true. */

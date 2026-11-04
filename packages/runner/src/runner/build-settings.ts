@@ -20,6 +20,7 @@ import {
   type LocalConfig,
 } from '../config/local-config'
 import { Settings } from '../config/settings'
+import { reviewsConfigToPolicy } from '../reviews/policy'
 
 function isTierAliasKey(key: string): boolean {
   return key.startsWith('tier:')
@@ -256,6 +257,7 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
     proposals: resolveProposalsConfig(config),
     upstream: resolveUpstreamConfig(config),
     decision: resolveDecisionConfig(config),
+    reviews: reviewsConfigToPolicy(config.reviews),
     llm: {
       defaultProvider: config.llm?.defaultProvider,
       providers: {},

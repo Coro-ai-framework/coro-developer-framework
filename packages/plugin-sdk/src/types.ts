@@ -421,6 +421,94 @@ export interface ScmPollSnapshot {
   approvalCount: number
   commentCount: number
   comments: ReadonlyArray<ScmPrComment>
+  /** Tip of the PR. Pollers emit a push when this changes without a state change. */
+  headSha?: string
+  draft?: boolean
+  reviewRequestedLogins?: ReadonlyArray<string>
+  threadCount?: number
+  resolvedThreadCount?: number
+}
+
+export interface ScmUserIdentity {
+  login: string
+  id?: string
+  displayName?: string
+}
+
+export interface ScmReviewRequest {
+  ref: ExternalRef
+  title: string
+  author: string
+  requestedAt: string
+  viaTeam?: string
+  draft?: boolean
+  headSha?: string
+  url?: string
+}
+
+export interface ScmPrDetails {
+  author: string
+  title: string
+  draft: boolean
+  state: ScmPrStatus['state']
+  baseSha: string
+  headSha: string
+  mergeBaseSha?: string
+  requestedReviewers: string[]
+  labels: string[]
+  files: { path: string; additions: number; deletions: number; status?: string }[]
+  url?: string
+}
+
+export interface ScmPrDiff {
+  files: { path: string; patch?: string; additions: number; deletions: number }[]
+}
+
+export interface ScmReviewCommentInput {
+  key: string
+  path: string
+  line: number
+  side?: 'LEFT' | 'RIGHT'
+  startLine?: number
+  body: string
+}
+
+export interface ScmReviewSubmission {
+  event: 'approve' | 'request_changes' | 'comment' | 'pending'
+  body: string
+  commitSha?: string
+  comments: ScmReviewCommentInput[]
+}
+
+export interface ScmReviewSubmissionResult {
+  reviewId: string
+  commentIds: Record<string, string>
+}
+
+export interface ScmReviewThread {
+  id: string
+  path?: string
+  line?: number
+  resolved: boolean
+  outdated: boolean
+  comments: { id: string; body: string; author?: string; createdAt: string }[]
+}
+
+export interface ScmPrActivity {
+  kind: string
+  at: string
+  actor?: string
+  data: Record<string, unknown>
+}
+
+export interface ScmReviewCapabilities {
+  whoami: boolean
+  listReviewRequests: boolean
+  diff: boolean
+  submitReview: boolean
+  pendingReview: boolean
+  threads: boolean
+  resolveThread: boolean
 }
 
 export interface ScmReadFileResult {
@@ -471,6 +559,18 @@ export interface ScmPluginRuntime<Config = unknown> extends PluginRuntime<Config
   // Polling runs OUTSIDE an active query() session so it cannot use the
   // upstream MCP server. Plugins keep a tiny native fetch for this.
   pollPr(ref: ExternalRef): Promise<ScmPollSnapshot>
+
+  /** Which review methods this plugin actually implements. */
+  reviewCapabilities?(): ScmReviewCapabilities
+  whoami?(): Promise<ScmUserIdentity>
+  listReviewRequests?(args: { includeTeams: boolean; repos?: string[] }): Promise<ScmReviewRequest[]>
+  getPrDetails?(ref: ExternalRef): Promise<ScmPrDetails>
+  getPrDiff?(ref: ExternalRef, opts?: { sinceSha?: string; paths?: string[] }): Promise<ScmPrDiff>
+  getPrActivity?(ref: ExternalRef, cursor?: string): Promise<{ events: ScmPrActivity[]; cursor: string }>
+  submitReview?(ref: ExternalRef, review: ScmReviewSubmission): Promise<ScmReviewSubmissionResult>
+  submitPendingReview?(ref: ExternalRef, reviewId: string, event: 'approve' | 'request_changes' | 'comment', body?: string): Promise<void>
+  listReviewThreads?(ref: ExternalRef): Promise<ScmReviewThread[]>
+  resolveThread?(ref: ExternalRef, threadId: string, resolved: boolean): Promise<void>
 
   // Optional after the MCP-first pivot: plugins serving the operation
   // through their MCP server omit the method.
@@ -903,6 +1003,12 @@ export interface PhaseExecutionRequest {
    * and replay on the next turn.
    */
   developerInput?: DeveloperInputChannel
+  /**
+   * `load` (default) lets the executor walk up from `cwd` into project
+   * CLAUDE.md / skills. `skip` keeps intelligence to `intelligenceDir`
+   * only — required for PR review, whose checkout is untrusted head code.
+   */
+  projectContext?: 'load' | 'skip'
 }
 
 /**
@@ -1354,6 +1460,10 @@ export interface SubagentExecutionRequest {
   maxTurns: number
   /** Cancellation signal — runner aborts on parent cancel/shutdown. */
   signal: AbortSignal
+  /** See {@link PhaseExecutionRequest.projectContext}. */
+  projectContext?: 'load' | 'skip'
+  /** MCP server ids this subagent may use. Omitted means every attached server. */
+  mcpServerIds?: ReadonlyArray<string>
 }
 
 /**

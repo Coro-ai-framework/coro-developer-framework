@@ -11,6 +11,7 @@ import {
   type InvestigationPatch,
 } from '@coro-ai/cloud-protocol'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
+import type { ReviewStore } from '../reviews/store'
 
 // ── State backend interface ───────────────────────────────────────────────────
 //
@@ -25,6 +26,11 @@ import type { ExternalRef } from '@coro-ai/cloud-protocol'
 //   CloudStateBackend    — WebSocket RPC to cloud (Phase 3)
 
 export interface StateBackend {
+  /**
+   * Durable pull-request reviews. Rounds are ordinary jobs; this store
+   * is what makes a sequence of rounds one review.
+   */
+  readonly reviews: ReviewStore
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 

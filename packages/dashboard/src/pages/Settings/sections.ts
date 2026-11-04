@@ -101,6 +101,14 @@ export const SETTINGS_SECTIONS: SettingsSectionDescriptor[] = [
     required: false,
   },
   {
+    id: 'pr-reviews',
+    group: 'extensions',
+    label: 'PR reviews',
+    description: 'Review pull requests you are asked to review. Comments post on their own. Approve and request-changes wait for you.',
+    icon: GitPullRequestArrow,
+    required: false,
+  },
+  {
     id: 'decision-layer',
     group: 'extensions',
     label: 'Overseer',

@@ -9,6 +9,7 @@ Keep entries under 150 characters. Lines beyond 200 will be truncated.
 - [Successful Patterns](successful-patterns.md) — Validated approaches that worked well in past jobs [general]
 - [PR Feedback Patterns](pr-feedback.md) — Recurring developer feedback from code reviews [general]
 - [Architecture Decisions](architecture-decisions.md) — Cross-job ADRs surfaced by the Evaluator from DEEP-lane design notes [architecture]
+- [Service Contracts](service-contracts.md) — Contracts other services depend on [architecture]
 - [Debugging Recipes](debugging-recipes.md) — Step-by-step playbooks for diagnosing recurring failure modes [debugging]
 - [Library Choices](library-choices.md) — Approved / discouraged third-party dependencies with rationale [dependencies]
 - [Deprecated Paths](deprecated-paths.md) — APIs, modules, configs, and patterns the codebase is migrating away from [migration]

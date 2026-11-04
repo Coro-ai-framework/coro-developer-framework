@@ -292,6 +292,59 @@ const jobsConfigSchema = z.object({
   idleWatchdog: idleWatchdogConfigSchema,
 }).optional()
 
+const reviewsConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  scms: z.array(z.string()).optional(),
+  identity: z.enum(['self', 'bot']).optional(),
+  eventSource: z.enum(['poll', 'webhook', 'both']).optional(),
+  inbox: z.object({
+    intervalSec: z.number().int().positive().optional(),
+    includeTeams: z.boolean().optional(),
+  }).optional(),
+  activity: z.object({
+    intervalSec: z.number().int().positive().optional(),
+  }).optional(),
+  repos: z.object({
+    include: z.array(z.string()).optional(),
+    exclude: z.array(z.string()).optional(),
+  }).optional(),
+  skipDrafts: z.boolean().optional(),
+  skipAuthors: z.array(z.string()).optional(),
+  autonomy: z.enum(['draft', 'comment', 'full']).optional(),
+  approval: z.enum(['never', 'recommend', 'auto']).optional(),
+  minSeverity: z.enum(['blocker', 'major', 'minor', 'nit']).optional(),
+  maxCommentsPerRound: z.number().int().positive().optional(),
+  maxDiffLines: z.number().int().positive().optional(),
+  debounceSec: z.number().int().nonnegative().optional(),
+  maxRounds: z.number().int().positive().optional(),
+  maxConcurrentRounds: z.number().int().positive().optional(),
+  maxParallelLenses: z.number().int().positive().optional(),
+  budgetUsdPerPr: z.number().nonnegative().optional(),
+  budgetUsdPerDay: z.number().nonnegative().optional(),
+  maxLensInputTokens: z.number().int().positive().optional(),
+  learnOnClose: z.enum(['off', 'deterministic', 'llm']).optional(),
+  allowCodeExecution: z.boolean().optional(),
+  workflowPath: z.string().optional(),
+  mcpRoles: z.record(z.string(), z.object({
+    servers: z.array(z.string()),
+    allowTools: z.array(z.string()).optional(),
+    denyTools: z.array(z.string()).optional(),
+  })).optional(),
+  references: z.array(z.object({
+    name: z.string(),
+    url: z.string(),
+    ref: z.string().optional(),
+    paths: z.array(z.string()).optional(),
+    purpose: z.string(),
+    refreshMin: z.number().int().positive().optional(),
+  })).optional(),
+  contractCheckers: z.array(z.object({
+    glob: z.string(),
+    command: z.string(),
+  })).optional(),
+  briefTtlHours: z.number().positive().optional(),
+}).optional()
+
 const localConfigSchema = z.object({
   cloud: cloudConfigSchema,
   intelligence: intelligenceConfigSchema,
@@ -368,6 +421,12 @@ const localConfigSchema = z.object({
    * tickets. Absent resolves to the `minimal` preset — see `./ticketing.ts`.
    */
   ticketing: ticketingConfigSchema.optional(),
+  /**
+   * Pull-request review. Off until a developer turns it on. The repo
+   * overlay cannot add servers, references, or checkers — see
+   * `reviews/policy.ts`.
+   */
+  reviews: reviewsConfigSchema,
   guardrails: z.object({
     enabled: z.boolean().optional(),
     rules: z.array(z.object({

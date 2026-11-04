@@ -4,7 +4,10 @@
   "extraAliases": {
     "openaiPlanning": "tier:planning",
     "openaiCoding": "tier:coding",
-    "openaiMini": "tier:mini"
+    "openaiMini": "tier:mini",
+    "tier:review-deep": "tier:planning",
+    "tier:review-fast": "tier:coding",
+    "tier:review-lead": "tier:planning"
   },
   "models": [
     {

@@ -7,6 +7,7 @@ import pino from 'pino'
 import { loadCloudConfig } from './config'
 import { createDb, closeDb } from './db/connection'
 import { ensureInvestigationsTable } from './db/postgres-backend'
+import { ensureReviewStorage } from '../reviews/postgres-store'
 import { authRoutes } from './auth/routes'
 import { teamRoutes } from './routes/teams'
 import { jobRoutes, proposalRoutes } from './routes/jobs'
@@ -31,6 +32,7 @@ async function main(): Promise<void> {
   // Database
   const db = createDb(config.databaseUrl)
   await ensureInvestigationsTable(db)
+  await ensureReviewStorage(db)
   logger.info('Connected to Postgres')
 
   // Runner registry + WebSocket gateway

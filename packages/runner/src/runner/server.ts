@@ -36,6 +36,9 @@ import { describeTicketingPresets, resolveTicketingPolicy } from '../config/tick
 import type { PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro-ai/plugin-sdk'
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
+import { getReviewRuntime } from '../reviews/engine'
+import { parsePrUrl } from '../reviews/id'
+import type { ScmPluginRuntime } from '../plugins/types'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
 import { computeJobDiff, emptyJobDiff, resolveDiffBase } from '../jobs/job-diff'
 import { ArtifactPathEscapeError, resolveJobArtifactPath } from '../jobs/artifact-content'
@@ -1479,6 +1482,125 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       logger.error({ err }, 'Retrospective dispatch failed')
       res.status(400).json({ error: (err as Error).message })
     }
+  })
+
+  app.get('/reviews', async (req: Request, res: Response) => {
+    try {
+      const status = typeof req.query.status === 'string' ? req.query.status : undefined
+      const rows = await stateBackend.reviews.list(status ? { status: status as never } : undefined)
+      res.json(rows)
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  app.get('/reviews/:id', async (req: Request, res: Response) => {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
+    const review = id ? await stateBackend.reviews.get(id) : null
+    if (!review) { res.status(404).json({ error: 'Review not found' }); return }
+    res.json(review)
+  })
+
+  app.post('/reviews', async (req: Request, res: Response) => {
+    const runtime = getReviewRuntime()
+    if (!runtime) { res.status(409).json({ error: 'Reviews are disabled. Turn them on in Settings.' }); return }
+    const prUrl = typeof req.body?.prUrl === 'string' ? req.body.prUrl : ''
+    const ref = parsePrUrl(prUrl)
+    if (!ref) { res.status(400).json({ error: 'prUrl must be owner/repo#n or a pull request URL' }); return }
+    const review = await runtime.coordinator.ingest({
+      kind: 'manual',
+      prRef: ref,
+      at: new Date().toISOString(),
+      data: { url: ref.url, title: prUrl },
+      source: 'manual',
+    })
+    if (!review) { res.status(400).json({ error: 'Could not start a review' }); return }
+    res.status(201).json(review)
+  })
+
+  app.post('/reviews/:id/pause', async (req: Request, res: Response) => {
+    const runtime = getReviewRuntime()
+    const id = String(req.params.id)
+    const review = runtime ? await runtime.coordinator.pause(id) : await stateBackend.reviews.get(id)
+    if (!review) { res.status(404).json({ error: 'Review not found' }); return }
+    if (!runtime) {
+      review.status = 'paused'
+      review.pauseReason = 'user'
+      await stateBackend.reviews.save(review)
+    }
+    res.json(review)
+  })
+
+  app.post('/reviews/:id/resume', async (req: Request, res: Response) => {
+    const runtime = getReviewRuntime()
+    if (!runtime) { res.status(409).json({ error: 'Reviews are disabled' }); return }
+    const review = await runtime.coordinator.resume(String(req.params.id))
+    if (!review) { res.status(404).json({ error: 'Review not found' }); return }
+    res.json(review)
+  })
+
+  app.post('/reviews/:id/rerun', async (req: Request, res: Response) => {
+    const runtime = getReviewRuntime()
+    if (!runtime) { res.status(409).json({ error: 'Reviews are disabled' }); return }
+    const id = String(req.params.id)
+    const existing = await stateBackend.reviews.get(id)
+    if (!existing) { res.status(404).json({ error: 'Review not found' }); return }
+    const review = await runtime.coordinator.ingest({
+      kind: 'command',
+      prRef: existing.prRef,
+      at: new Date().toISOString(),
+      data: { command: 'review' },
+      source: 'manual',
+    })
+    res.json(review)
+  })
+
+  app.post('/reviews/:id/verdict', async (req: Request, res: Response) => {
+    const id = String(req.params.id)
+    const review = await stateBackend.reviews.get(id)
+    if (!review?.pendingVerdict) { res.status(404).json({ error: 'No pending verdict' }); return }
+    const action = req.body?.action === 'discard' ? 'discard' : req.body?.action === 'edit' ? 'edit' : 'submit'
+    if (action === 'discard') {
+      review.pendingVerdict = undefined
+      review.status = 'idle'
+      await stateBackend.reviews.save(review)
+      res.json(review)
+      return
+    }
+    const body = typeof req.body?.body === 'string' ? req.body.body : review.pendingVerdict.body
+    const event = req.body?.event === 'approve' || req.body?.event === 'request_changes' || req.body?.event === 'comment'
+      ? req.body.event
+      : review.pendingVerdict.verdict
+    const scm = runnerCtx?.plugins.byId(review.prRef.pluginId) as ScmPluginRuntime | undefined
+    if (scm?.submitPendingReview && review.pendingVerdict.pendingReviewId) {
+      await scm.submitPendingReview(review.prRef, review.pendingVerdict.pendingReviewId, event, body)
+    } else if (scm?.submitReview) {
+      await scm.submitReview(review.prRef, { event, body, comments: [] })
+    } else {
+      res.status(409).json({ error: 'SCM plugin cannot submit the verdict' })
+      return
+    }
+    review.pendingVerdict = undefined
+    review.status = 'idle'
+    await stateBackend.reviews.save(review)
+    res.json(review)
+  })
+
+  app.get('/reviews-settings', async (_req: Request, res: Response) => {
+    const config = loadLocalConfig()
+    res.json(config?.reviews ?? { enabled: false })
+  })
+
+  app.put('/reviews-settings', async (req: Request, res: Response) => {
+    const existing = loadLocalConfig() ?? ({} as LocalConfig)
+    const next = { ...existing, reviews: req.body } as LocalConfig
+    const validated = validateLocalConfig(next)
+    if (!validated.success) {
+      res.status(400).json({ error: validated.issues.map(issue => issue.message).join('; ') })
+      return
+    }
+    saveLocalConfig(validated.config)
+    res.json(validated.config.reviews ?? {})
   })
 
   app.get('/retrospectives', async (_req: Request, res: Response) => {

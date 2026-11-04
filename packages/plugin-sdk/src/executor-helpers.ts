@@ -46,13 +46,23 @@ const ALLOW: PermissionDecision = { allow: true }
  * the permitted tools verbatim). Keep it stable: agent prompts and
  * memory entries reference this phrasing.
  */
+export function toolMatchesAllowList(toolName: string, allowed: ReadonlyArray<string>): boolean {
+  for (const pattern of allowed) {
+    if (pattern === toolName) return true
+    if (!pattern.includes('*')) continue
+    const re = new RegExp(`^${pattern.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`)
+    if (re.test(toolName)) return true
+  }
+  return false
+}
+
 export function enforceAllowedTools(
   toolName: string,
   allowed: ReadonlyArray<string> | null,
   ctx?: { phase?: string },
 ): PermissionDecision {
   if (!allowed || allowed.length === 0) return ALLOW
-  if (allowed.includes(toolName)) return ALLOW
+  if (toolMatchesAllowList(toolName, allowed)) return ALLOW
   const phaseLabel = ctx?.phase ? `phase ${ctx.phase}` : 'this phase'
   return {
     allow: false,

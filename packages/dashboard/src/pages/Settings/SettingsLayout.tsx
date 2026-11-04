@@ -35,6 +35,7 @@ import PathsSection from './sections/PathsSection'
 import GuardrailsSection from './sections/GuardrailsSection'
 import GeneralSection from './sections/GeneralSection'
 import ContributionSection from './sections/ContributionSection'
+import PrReviewsSection from './sections/PrReviewsSection'
 import DecisionLayerSection from './sections/DecisionLayerSection'
 
 const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
@@ -48,6 +49,7 @@ const SECTION_COMPONENTS: Record<SettingsSectionId, ComponentType> = {
   paths: PathsSection,
   guardrails: GuardrailsSection,
   contribution: ContributionSection,
+  'pr-reviews': PrReviewsSection,
   'decision-layer': DecisionLayerSection,
 }
 

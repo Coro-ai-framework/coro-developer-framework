@@ -516,6 +516,94 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
 
   // ── Polling ────────────────────────────────────────────────────────────
 
+  reviewCapabilities() {
+    return {
+      whoami: true,
+      listReviewRequests: true,
+      diff: true,
+      submitReview: true,
+      pendingReview: false,
+      threads: true,
+      resolveThread: false,
+    }
+  }
+
+  async whoami() {
+    const user = await this.coder.whoami()
+    return {
+      login: user.nickname ?? user.display_name ?? user.uuid,
+      id: user.uuid,
+      ...(user.display_name ? { displayName: user.display_name } : {}),
+    }
+  }
+
+  async listReviewRequests(args: { includeTeams: boolean; repos?: string[] }) {
+    const hits = await this.coder.listReviewRequests()
+    return hits
+      .filter(hit => !args.repos?.length || args.repos.includes(hit.repo))
+      .map(hit => ({
+        ref: {
+          kind: 'pull_request' as const,
+          pluginId: this.manifest.id,
+          repoKey: hit.repo,
+          externalId: String(hit.id),
+          ...(hit.url ? { url: hit.url } : {}),
+        },
+        title: hit.title,
+        author: hit.author,
+        requestedAt: hit.updatedOn ?? new Date().toISOString(),
+        ...(hit.url ? { url: hit.url } : {}),
+      }))
+  }
+
+  async getPrDetails(ref: ExternalRef) {
+    const { repoSlug, prId } = this.parseRef(ref)
+    const [pr, files] = await Promise.all([
+      this.coder.getPr(repoSlug, prId),
+      this.coder.getPrDiffstat(repoSlug, prId),
+    ])
+    return {
+      author: pr.author?.display_name ?? '',
+      title: pr.title,
+      draft: false,
+      state: pr.state === 'MERGED' ? 'merged' as const : pr.state === 'DECLINED' ? 'declined' as const : 'open' as const,
+      baseSha: '',
+      headSha: pr.source?.branch?.name ?? '',
+      requestedReviewers: [],
+      labels: [],
+      files: files.map(file => ({ path: file.path, additions: file.additions, deletions: file.deletions })),
+      ...(pr.links?.html?.href ? { url: pr.links.html.href } : {}),
+    }
+  }
+
+  async getPrDiff(ref: ExternalRef) {
+    const { repoSlug, prId } = this.parseRef(ref)
+    const files = await this.coder.getPrDiffstat(repoSlug, prId)
+    return { files: files.map(file => ({ path: file.path, additions: file.additions, deletions: file.deletions })) }
+  }
+
+  async submitReview(ref: ExternalRef, review: { event: string; body: string; comments: Array<{ path: string; line: number; body: string }> }) {
+    const { repoSlug, prId } = this.parseRef(ref)
+    const posted = await this.postPrComment(ref, review.body)
+    for (const comment of review.comments) {
+      await this.coder.postInlineComment(repoSlug, prId, comment.path, comment.line, comment.body)
+    }
+    if (review.event === 'approve') await this.coder.approvePr(repoSlug, prId)
+    return { reviewId: posted.id, commentIds: {} as Record<string, string> }
+  }
+
+  async listReviewThreads(ref: ExternalRef) {
+    const comments = await this.listPrComments(ref)
+    return comments.filter(comment => !comment.parentId).map(comment => ({
+      id: comment.id,
+      ...(comment.inline?.path ? { path: comment.inline.path } : {}),
+      ...(comment.inline?.line !== undefined ? { line: comment.inline.line } : {}),
+      resolved: false,
+      outdated: false,
+      comments: [{ id: comment.id, body: comment.body, ...(comment.author ? { author: comment.author } : {}), createdAt: comment.createdAt }],
+    }))
+  }
+
   async pollPr(ref: ExternalRef): Promise<ScmPollSnapshot> {
     const [status, comments] = await Promise.all([
       this.getPrStatus(ref),

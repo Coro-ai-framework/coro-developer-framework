@@ -4,7 +4,10 @@
     "planning": "tier:planning",
     "coding": "tier:coding",
     "mini": "tier:coding",
-    "tier:mini": "tier:coding"
+    "tier:mini": "tier:coding",
+    "tier:review-deep": "tier:planning",
+    "tier:review-fast": "tier:coding",
+    "tier:review-lead": "tier:planning"
   },
   "models": [
     {

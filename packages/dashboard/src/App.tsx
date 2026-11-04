@@ -5,6 +5,8 @@ import JobDetail from './pages/JobDetail'
 import Plans from './pages/Plans'
 import Intelligence from './pages/Intelligence'
 import Retrospective from './pages/Retrospective'
+import Reviews from './pages/Reviews'
+import ReviewDetail from './pages/ReviewDetail'
 import Settings from './pages/Settings'
 import { HOME_PATH, RUNS_LIST_PATH } from './lib/run-labels'
 
@@ -26,6 +28,8 @@ export default function App() {
         <Route path="/campaigns/:jobId" element={<RedirectToJobDetail />} />
         <Route path="/intelligence" element={<Intelligence />} />
         <Route path="/retrospectives" element={<Retrospective />} />
+        <Route path="/reviews" element={<Reviews />} />
+        <Route path="/reviews/:id" element={<ReviewDetail />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

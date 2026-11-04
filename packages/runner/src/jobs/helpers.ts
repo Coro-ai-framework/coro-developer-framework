@@ -13,6 +13,7 @@
 import {
   JobType,
   PAUSED_AWAITING_EVENT,
+  PR_REVIEW_WORKFLOW_PATH,
   RETROSPECTIVE_WORKFLOW_PATH,
   STATUS_AWAITING_CHILDREN,
   STATUS_AWAITING_DEVELOPER_INPUT,
@@ -192,6 +193,7 @@ export function inputToJobType(input: JobInput): JobType {
     case 'job':           return JobType.Job
     case 'self-update':   return JobType.SelfUpdate
     case 'retrospective': return JobType.Retrospective
+    case 'pr-review':     return JobType.PrReview
     default:
       throw new Error(`Unknown job type: ${String((input as unknown as Record<string, unknown>).type)}`)
   }
@@ -202,6 +204,7 @@ export function defaultWorkflowPath(type: JobType): string {
     case JobType.Job:           return 'workflows/job/workflow.md'
     case JobType.SelfUpdate:    return 'workflows/self-update/workflow.md'
     case JobType.Retrospective: return RETROSPECTIVE_WORKFLOW_PATH
+    case JobType.PrReview:      return PR_REVIEW_WORKFLOW_PATH
   }
 }
 
@@ -215,6 +218,11 @@ export function defaultWorkflowPath(type: JobType): string {
  */
 export function isRetrospectiveJob(job: Job): boolean {
   return job.type === JobType.Retrospective
+}
+
+/** A single round of a pull-request review. Gates the `review_*` tools. */
+export function isPrReviewJob(job: Job): boolean {
+  return job.type === JobType.PrReview
 }
 
 // ── Campaign helpers ──────────────────────────────────────────────────────────
