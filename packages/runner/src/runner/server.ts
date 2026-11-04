@@ -36,7 +36,7 @@ import { describeTicketingPresets, resolveTicketingPolicy } from '../config/tick
 import type { PhaseExecutorRuntime, PluginMcpServerConfig } from '@coro-ai/plugin-sdk'
 import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
-import { getReviewRuntime } from '../reviews/engine'
+import { getReviewRuntime, syncReviewEngine } from '../reviews/engine'
 import { parsePrUrl } from '../reviews/id'
 import type { ScmPluginRuntime } from '../plugins/types'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
@@ -1501,12 +1501,24 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     res.json(review)
   })
 
+  async function ensureReviewRuntime() {
+    const current = getReviewRuntime()
+    if (current) return current
+    if (!runnerCtx) return null
+    const config = loadLocalConfig()
+    if (!config?.reviews?.enabled) return null
+    return syncReviewEngine(runnerCtx, dispatcher, config)
+  }
+
   app.post('/reviews', async (req: Request, res: Response) => {
-    const runtime = getReviewRuntime()
-    if (!runtime) { res.status(409).json({ error: 'Reviews are disabled. Turn them on in Settings.' }); return }
-    const prUrl = typeof req.body?.prUrl === 'string' ? req.body.prUrl : ''
+    const runtime = await ensureReviewRuntime()
+    if (!runtime) {
+      res.status(409).json({ error: 'Reviews are off. Turn them on under Settings → PR reviews and save. The runner that is already running has to pick that up; restart it if this message remains.' })
+      return
+    }
+    const prUrl = typeof req.body?.prUrl === 'string' ? req.body.prUrl.trim() : ''
     const ref = parsePrUrl(prUrl)
-    if (!ref) { res.status(400).json({ error: 'prUrl must be owner/repo#n or a pull request URL' }); return }
+    if (!ref) { res.status(400).json({ error: 'Paste a pull request URL, such as https://github.com/org/repo/pull/1, or owner/repo#1.' }); return }
     const review = await runtime.coordinator.ingest({
       kind: 'manual',
       prRef: ref,
@@ -1514,7 +1526,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       data: { url: ref.url, title: prUrl },
       source: 'manual',
     })
-    if (!review) { res.status(400).json({ error: 'Could not start a review' }); return }
+    if (!review) { res.status(400).json({ error: 'Could not start a review for that pull request.' }); return }
     res.status(201).json(review)
   })
 
@@ -1600,7 +1612,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       return
     }
     saveLocalConfig(validated.config)
-    res.json(validated.config.reviews ?? {})
+    const runtime = runnerCtx ? await syncReviewEngine(runnerCtx, dispatcher, validated.config) : null
+    res.json({ ...(validated.config.reviews ?? {}), running: runtime !== null })
   })
 
   app.get('/retrospectives', async (_req: Request, res: Response) => {

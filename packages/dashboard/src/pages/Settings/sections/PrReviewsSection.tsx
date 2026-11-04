@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '../../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { Input } from '../../../components/ui/input'
@@ -14,17 +14,45 @@ interface ReviewsConfig {
   eventSource?: string
 }
 
+function saveMessage(savedConfig: ReviewsConfig & { running?: boolean }): string {
+  if (savedConfig.enabled && savedConfig.running) return 'Saved. The inbox is polling review requests now.'
+  if (savedConfig.enabled && savedConfig.running === false) return 'Saved and on, but this runner did not start the inbox. Restart it.'
+  if (savedConfig.enabled) return 'Saved. Restart the runner so it starts watching review requests.'
+  return 'Saved. Reviews are off, so the inbox is stopped.'
+}
+
 export default function PrReviewsSection() {
   const [config, setConfig] = useState<ReviewsConfig>({ enabled: false, autonomy: 'comment', approval: 'recommend' })
   const [saved, setSaved] = useState<string | null>(null)
+  const edited = useRef(false)
 
   useEffect(() => {
-    void requestJson<ReviewsConfig>('/reviews-settings').then(setConfig).catch(() => undefined)
+    void requestJson<ReviewsConfig>('/reviews-settings').then(loaded => {
+      if (!edited.current) setConfig(loaded)
+    }).catch(() => undefined)
   }, [])
 
+  async function persist(next: ReviewsConfig) {
+    const savedConfig = await requestJson<ReviewsConfig & { running?: boolean }>('/reviews-settings', jsonRequest(next, { method: 'PUT' }))
+    setSaved(saveMessage(savedConfig))
+  }
+
   async function save() {
-    await requestJson('/reviews-settings', jsonRequest(config, { method: 'PUT' }))
-    setSaved('Saved. Restart the runner so the pollers pick this up.')
+    edited.current = true
+    try {
+      await persist(config)
+    } catch (err) {
+      setSaved(err instanceof Error ? err.message : 'Could not save')
+    }
+  }
+
+  function setEnabled(checked: boolean) {
+    edited.current = true
+    const next = { ...config, enabled: checked }
+    setConfig(next)
+    void persist(next).catch(err => {
+      setSaved(err instanceof Error ? err.message : 'Could not save')
+    })
   }
 
   return (
@@ -38,7 +66,7 @@ export default function PrReviewsSection() {
       <CardContent className="space-y-4">
         <label className="flex items-center justify-between text-sm">
           Enabled
-          <Switch checked={config.enabled === true} onCheckedChange={checked => setConfig({ ...config, enabled: checked })} />
+          <Switch checked={config.enabled === true} onCheckedChange={setEnabled} />
         </label>
         <label className="block text-sm">Autonomy
           <Input value={config.autonomy ?? 'comment'} onChange={e => setConfig({ ...config, autonomy: e.target.value })} />

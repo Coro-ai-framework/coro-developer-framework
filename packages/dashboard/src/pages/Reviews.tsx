@@ -24,14 +24,39 @@ const ORDER = ['awaiting-verdict', 'running', 'queued', 'idle', 'paused', 'faile
 export default function Reviews() {
   const [rows, setRows] = useState<ReviewRow[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [errorTitle, setErrorTitle] = useState('Review did not start')
   const [prUrl, setPrUrl] = useState('')
+  const [starting, setStarting] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
 
   async function load() {
     try {
       setRows(await requestJson<ReviewRow[]>('/reviews'))
-      setError(null)
     } catch (err) {
+      setErrorTitle('Could not load reviews')
       setError(err instanceof Error ? err.message : 'Could not load reviews')
+    }
+  }
+
+  async function start() {
+    const url = prUrl.trim()
+    if (!url) {
+      setError('Paste a pull request URL first.')
+      return
+    }
+    setStarting(true)
+    setNotice(null)
+    setError(null)
+    setErrorTitle('Review did not start')
+    try {
+      const created = await requestJson<{ id: string; status: string }>('/reviews', jsonRequest({ prUrl: url }, { method: 'POST' }))
+      setPrUrl('')
+      setNotice(`Review ${created.id} is ${created.status}. A round starts immediately.`)
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start the review')
+    } finally {
+      setStarting(false)
     }
   }
 
@@ -46,12 +71,13 @@ export default function Reviews() {
   return (
     <div className="space-y-6">
       <PageHeader title="Reviews" description="Pull requests you were asked to review. Coro comments and recommends. It does not merge." />
-      {error ? <ErrorState title="Could not load reviews" message={error} /> : null}
+      {error ? <ErrorState title={errorTitle} message={error} /> : null}
+      {notice ? <p className="text-sm text-fg-muted">{notice}</p> : null}
       <Card>
         <CardHeader><CardTitle>Review a pull request</CardTitle></CardHeader>
         <CardContent className="flex gap-2">
-          <Input value={prUrl} onChange={e => setPrUrl(e.target.value)} placeholder="https://github.com/org/repo/pull/1" />
-          <Button onClick={() => void requestJson('/reviews', jsonRequest({ prUrl }, { method: 'POST' })).then(() => load())}>Start</Button>
+          <Input value={prUrl} onChange={e => setPrUrl(e.target.value)} placeholder="https://github.com/org/repo/pull/1" onKeyDown={e => { if (e.key === 'Enter') void start() }} />
+          <Button disabled={starting} onClick={() => void start()}>{starting ? 'Starting' : 'Start'}</Button>
         </CardContent>
       </Card>
       {sorted.length === 0 ? <EmptyState icon={GitPullRequest} title="No reviews yet" description="Turn reviews on in Settings, or paste a pull request URL." /> : null}

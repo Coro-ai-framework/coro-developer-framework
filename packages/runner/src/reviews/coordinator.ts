@@ -455,6 +455,7 @@ export function classifyRoundKind(review: PrReview, events: ReviewEvent[]): Roun
 }
 
 function delayFor(events: ReviewEvent[], debounceSec: number): number {
+  if (events.length > 0 && events.every(event => event.kind === 'manual' || event.kind === 'command')) return 0
   if (events.some(event => event.kind === 'commits-pushed' || event.kind === 'review-requested')) {
     return debounceSec * 1000
   }

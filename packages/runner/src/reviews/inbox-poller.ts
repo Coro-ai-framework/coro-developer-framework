@@ -35,6 +35,7 @@ export class InboxPoller implements ReviewEventSource {
         includeTeams: this.policy.includeTeams,
         repos: this.policy.reposInclude.length ? this.policy.reposInclude : undefined,
       })
+      this.logger.info({ pluginId, count: requests.length }, 'Review inbox poll')
       for (const request of requests) {
         if (this.policy.reposExclude.includes(request.ref.repoKey ?? '')) continue
         if (this.policy.skipDrafts && request.draft) continue

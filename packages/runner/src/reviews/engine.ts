@@ -9,7 +9,7 @@ import { ReviewCoordinator } from './coordinator'
 import { isIrrelevantConversation } from './coordinator'
 import { InboxPoller } from './inbox-poller'
 import { isOutOfScopeDelta, patchUnchanged, type PacketFile } from './packet'
-import type { ReviewPolicy } from './policy'
+import { reviewsConfigToPolicy, type ReviewPolicy } from './policy'
 import { createWebhookReviewSink } from './webhook-source'
 import type { ScmPluginRuntime } from '../plugins/types'
 
@@ -22,6 +22,22 @@ let active: ReviewRuntime | null = null
 
 export function getReviewRuntime(): ReviewRuntime | null {
   return active
+}
+
+/**
+ * Apply the reviews block from disk to the live runner. Enabling starts
+ * the inbox; disabling stops it. Saving the setting is not enough on its
+ * own — the process that is already up has to be told.
+ */
+export async function syncReviewEngine(
+  ctx: RunnerContext,
+  dispatcher: Dispatcher,
+  config: LocalConfig,
+): Promise<ReviewRuntime | null> {
+  ctx.settings.reviews = reviewsConfigToPolicy(config.reviews)
+  active?.stop()
+  if (!ctx.settings.reviews.enabled) return null
+  return startReviewEngine(ctx, dispatcher, config)
 }
 
 /**
