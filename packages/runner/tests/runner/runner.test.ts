@@ -1557,6 +1557,65 @@ describe('runJob (mocked Agent SDK query)', () => {
     expect(stateBackend.current.tokenUsage.totalCostUsd).toBe(1.2345)
   })
 
+  it('adds spend a tool books through recordUsage to the phase and the job', async () => {
+    stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
+    ctx = makeRunnerContext(stateBackend)
+
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* (_req, { toolCtx }) {
+        yield {
+          type: 'usage',
+          tokens: { inputTokens: 2000, outputTokens: 500, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: 1 },
+        }
+        // Two lens passes, the way `code_review_lenses` books them.
+        toolCtx.currentPhase?.recordUsage?.({ inputTokens: 300, outputTokens: 30, costUsd: 0.5 })
+        toolCtx.currentPhase?.recordUsage?.({ inputTokens: 100, outputTokens: 10, costUsd: 0.25 })
+        // A later cumulative report replaces the session's own tokens, not the lens spend.
+        yield {
+          type: 'usage',
+          tokens: { inputTokens: 2500, outputTokens: 600, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: 1.5 },
+        }
+        yield {
+          type: 'done',
+          stopReason: 'end_turn',
+          sessionState: { sessionId: 'lens-ok' },
+          metrics: { durationMs: 1000, durationApiMs: 500, numTurns: 2 },
+        }
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
+
+    const usage = stateBackend.current.phaseUsage.find((p: { phase: string }) => p.phase === 'only')!
+    expect(usage.inputTokens).toBe(2900)
+    expect(usage.outputTokens).toBe(640)
+    expect(usage.costUsd).toBeCloseTo(2.25)
+    expect(usage.subagentCostUsd).toBeCloseTo(0.75)
+    expect(stateBackend.current.tokenUsage.inputTokens).toBe(2900)
+    expect(stateBackend.current.tokenUsage.totalCostUsd).toBeCloseTo(2.25)
+  })
+
+  it('books lens spend even when the session never reported usage', async () => {
+    stateBackend = createMockStateBackend(makeJob({ phase: 'only', status: 'queued' }))
+    ctx = makeRunnerContext(stateBackend)
+
+    await runWithStubExecutor(
+      makeJob({ phase: 'only' }),
+      ctx,
+      async function* (_req, { toolCtx }) {
+        toolCtx.currentPhase?.recordUsage?.({ inputTokens: 300, outputTokens: 30, costUsd: 0.5 })
+        yield* yieldEmptyPhase('lens-only')
+      },
+      { workflowConfigOverride: workflowSingle },
+    )
+
+    const usage = stateBackend.current.phaseUsage.find((p: { phase: string }) => p.phase === 'only')!
+    expect(usage.costUsd).toBeCloseTo(0.5)
+    expect(usage.subagentCostUsd).toBeCloseTo(0.5)
+    expect(stateBackend.current.tokenUsage.totalCostUsd).toBeCloseTo(0.5)
+  })
+
   it('uses a delta from cumulative SDK cost when resuming an existing session', async () => {
     stateBackend = createMockStateBackend(makeJob({
       phase: 'only',

@@ -1,6 +1,6 @@
 # Security lens
 
-Read-only. You do not post to the pull request.
+Read-only. You do not post to the pull request or the change under review.
 
 Look for authz gaps, injection, secret leakage, unsafe deserialization, and dependency changes that pull in a known-bad package. Invoke `dependency-hygiene` when lockfiles or manifests are in your slice.
 

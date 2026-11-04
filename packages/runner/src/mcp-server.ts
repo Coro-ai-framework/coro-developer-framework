@@ -4,6 +4,7 @@ import { ToolContext, PhaseSignals } from './tools/types'
 import { createMcpToolHandlers, mcpError, mcpText, wrapHandlersSafely } from './mcp-handlers'
 import { runSubagent } from './tools/run-subagent'
 import { isPrReviewJob } from './jobs/helpers'
+import { codeReviewLenses } from './tools/code-review'
 import {
   reviewFinish,
   reviewPublish,
@@ -45,7 +46,7 @@ import { ensureReferenceSnapshot, listReferenceDocs, searchReference } from './r
 export function createCoroMcpServer(
   ctx: ToolContext,
   signals: PhaseSignals,
-  options: { registerFileTools?: boolean; registerRunSubagent?: boolean; registerWebTools?: boolean } = {},
+  options: { registerFileTools?: boolean; registerRunSubagent?: boolean; registerWebTools?: boolean; registerCodeReview?: boolean } = {},
 ) {
   // Wrap every native handler in a try/catch so an unhandled throw
   // can't tear down the in-process MCP transport (the cause of the
@@ -872,6 +873,25 @@ export function createCoroMcpServer(
         ),
       ] : []),
 
+      // Review lenses on a coding job's working-tree diff. Registered only
+      // when the phase declares `lenses:` and the job is not a pr-review job
+      // (those use the review_* tools above).
+      ...(options.registerCodeReview && !isPrReviewJob(ctx.job) ? [
+        tool(
+          'code_review_lenses',
+          'Run the review lenses on this job\'s local changes (commits on the branch plus uncommitted edits, against the base branch). Lenses are chosen by the kind of files changed, run in parallel, and reply with validated findings. Nothing is posted to the pull request. A second call for the same work item also returns `previous`, the findings of the earlier pass, and flags repeats as `seenBefore`. To verify, call again with `lenses: ["verifier"]` and the findings as `candidates`. Returns `{status:"unavailable"}` when lenses cannot run; review the diff yourself then.',
+          {
+            base: z.string().describe('Branch the pull request will target, e.g. "main".'),
+            lenses: z.array(z.string()).optional().describe('Lens names to run. Omit to run the lenses routed by the changed files.'),
+            candidates: z.array(z.unknown()).optional().describe('Findings for the verifier lens to keep or drop.'),
+            workItem: z.string().optional().describe('Work item the findings belong to. Defaults to the current one.'),
+          },
+          async (args) => {
+            try { return mcpText(await codeReviewLenses(ctx, args)) }
+            catch (err) { return mcpError((err as Error).message) }
+          },
+        ),
+      ] : []),
       ...(isPrReviewJob(ctx.job) ? [
         tool(
           'review_get_context',

@@ -111,12 +111,19 @@ Hold the push until step 8 confirms the diff is clean.
 
 ### 8. Self-review via the `code-reviewer` subagent
 
-Before pushing, invoke the `code-reviewer` subagent on the staged diff. The subagent is declared on this phase in `workflows/job/workflow.md` and follows `agents/code-reviewer.md`. It checks the diff against:
+Before pushing, invoke the `code-reviewer` subagent on the staged diff. The subagent is declared on this phase in `workflows/job/workflow.md` and follows `agents/code-reviewer.md`. In the task you give it, always name:
+
+- **the base branch** the pull request will target (for example `main`), so it can read your local changes against it,
+- the current work item,
+- on a second or later pass, any finding from the previous report you chose not to fix, with the reason.
+
+It checks the diff against:
 
 - the language conventions skill,
 - the implementation plan and the current work-item entry,
 - `memory/known-pitfalls.md` and `memory/pr-feedback.md`,
-- test coverage for the new behaviour.
+- test coverage for the new behaviour,
+- on standard and deep jobs, the same review lenses a pull-request review uses (correctness, security, tests, design, and architecture on deep), run on your local diff. Their findings come back to you only; nothing is posted to the pull request.
 
 The subagent returns a structured report with `Verdict: blocking | non-blocking | clean`. Behaviour:
 
@@ -242,7 +249,7 @@ Procedure:
    - For evaluator loop-backs: read the latest evaluation report under `working/{job-id}/evaluations/` for the fix brief.
 2. Apply fixes to the same branch.
 3. Re-run the local build/tests.
-4. Re-invoke the `code-reviewer` subagent on the new diff and clear any blocking findings before pushing.
+4. Re-invoke the `code-reviewer` subagent on the new diff (name the base branch again, and list any earlier finding you declined, with the reason) and clear any blocking findings before pushing.
 5. Commit with `fix: address review feedback — <brief description>` (or `fix: address evaluation findings — ...` for evaluator loop-backs).
 6. Push to origin.
    - **Gatekeeper loop-back:** the PR is already open, so the push updates it automatically — no new preview needed.

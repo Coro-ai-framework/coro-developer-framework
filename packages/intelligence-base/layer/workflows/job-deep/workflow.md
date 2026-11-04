@@ -34,7 +34,42 @@ phases:
       - name: code-reviewer
         agent: agents/code-reviewer.md
         tier: mini
-        tools: [Read, Glob, Grep, Bash, mcp__coro__scm_get_pr_comments, mcp__coro__scm_post_pr_comment, mcp__coro__log]
+        tools: [Read, Glob, Grep, Bash, mcp__coro__code_review_lenses, mcp__coro__scm_get_pr_comments, mcp__coro__scm_post_pr_comment, mcp__coro__log]
+    # Review lenses the code-reviewer runs on the local diff through
+    # `code_review_lenses`, before any pull request exists.
+    lenses:
+      - name: correctness
+        agent: agents/review-correctness.md
+        tier: review-deep
+        when: [code]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: security
+        agent: agents/review-security.md
+        tier: review-deep
+        when: [code, deps, infra, auth]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: tests
+        agent: agents/review-tests.md
+        tier: review-fast
+        when: [code, tests]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: design
+        agent: agents/review-design.md
+        tier: review-fast
+        when: [code]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: architecture
+        agent: agents/review-architecture.md
+        tier: review-deep
+        when: [contracts, migrations, infra, deps, config]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+        mcp_servers: ["@architecture"]
+        max_turns: 30
+      - name: verifier
+        agent: agents/review-verifier.md
+        tier: review-deep
+        when: [always]
+        tools: [Read, Grep, Glob]
 
   - name: review
     agent: agents/pr-reviewer.md
@@ -78,7 +113,7 @@ merge. Examples:
 | `spec-writing` | tracker-triggered only | **always** (CLI too — gives the analysis phase something concrete to react to) |
 | `analysis` | _absent_ | **new** — architecture decisions before planning |
 | `planning` | as today | as today, but consumes `design-notes.md` from analysis |
-| `coding` | reviewer L1+L2+L3+L4 | reviewer L1+L2+L3+L4 (same lens set as STANDARD) |
+| `coding` | reviewer L1+L2 + review lenses | reviewer L1+L2 + review lenses (STANDARD set plus architecture) |
 | `review` | drives per-WI loop (merge → next WI → coding) | drives per-WI loop **identically** (merge → next WI → coding) |
 | `qa` | _absent_ | **new** — runs **once** on the fully-merged base, after every work item is `complete` |
 | `evaluation` | combined verify + insights + proposals, runs **once** | insights + proposals only (qa already verified), runs **once** |
@@ -89,7 +124,7 @@ merge. Examples:
 
 The Planner (or an explicit `switch_workflow` call) sets
 `params.lane = "deep"`. Downstream agents use this to:
-- Run the full lens set in the `code-reviewer` subagent (L1-L4).
+- Run the full set in the `code-reviewer` subagent: L1-L2 itself, then the review lenses (including architecture) through `code_review_lenses`.
 - Invoke the `cross-cutting-review` skill in the reviewer.
 - Split verification (qa) from insight curation (evaluation).
 
@@ -153,7 +188,7 @@ of analysis. When `params.planContextDir` is set, also read
 ### Phase 3: Coding
 
 **Agent:** Coder (`agents/coder.md`)
-**Subagent:** `code-reviewer` (full lens set L1-L4)
+**Subagent:** `code-reviewer` (L1-L2 itself, plus the correctness, security, tests, design, and architecture review lenses on the local diff)
 
 Standard coding flow. The reviewer subagent reads `params.lane === "deep"` and
 applies all four lenses, including the `cross-cutting-review` skill. As in the

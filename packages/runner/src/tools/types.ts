@@ -107,6 +107,12 @@ export interface CurrentPhaseContext {
   pluginMcpServers: Record<string, PluginMcpServerConfig>
   /** Aborts when the phase is cancelled, so work a tool starts stops with it. */
   signal?: AbortSignal
+  /**
+   * Books tokens and cost a tool spent on subagents against this phase and
+   * the job, so `tokenUsage` and `phaseUsage` include them. Only for work
+   * the phase's own session did not pay for.
+   */
+  recordUsage?: (usage: { inputTokens: number; outputTokens: number; costUsd: number }) => void
 }
 
 // ── Job-control signal types ──────────────────────────────────────────────────

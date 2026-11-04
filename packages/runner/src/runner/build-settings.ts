@@ -258,6 +258,11 @@ export function buildSettingsFromLocal(config: LocalConfig): Settings {
     upstream: resolveUpstreamConfig(config),
     decision: resolveDecisionConfig(config),
     reviews: reviewsConfigToPolicy(config.reviews),
+    codeReview: {
+      lenses: config.codeReview?.lenses !== false,
+      ...(config.codeReview?.minSeverity ? { minSeverity: config.codeReview.minSeverity } : {}),
+      ...(config.codeReview?.maxParallelLenses ? { maxParallelLenses: config.codeReview.maxParallelLenses } : {}),
+    },
     llm: {
       defaultProvider: config.llm?.defaultProvider,
       providers: {},

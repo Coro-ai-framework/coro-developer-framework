@@ -28,7 +28,35 @@ phases:
       - name: code-reviewer
         agent: agents/code-reviewer.md
         tier: mini
-        tools: [Read, Glob, Grep, Bash, mcp__coro__scm_get_pr_comments, mcp__coro__scm_post_pr_comment, mcp__coro__log]
+        tools: [Read, Glob, Grep, Bash, mcp__coro__code_review_lenses, mcp__coro__scm_get_pr_comments, mcp__coro__scm_post_pr_comment, mcp__coro__log]
+    # Review lenses the code-reviewer runs on the local diff through
+    # `code_review_lenses`, before any pull request exists.
+    lenses:
+      - name: correctness
+        agent: agents/review-correctness.md
+        tier: review-deep
+        when: [code]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: security
+        agent: agents/review-security.md
+        tier: review-deep
+        when: [code, deps, infra, auth]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: tests
+        agent: agents/review-tests.md
+        tier: review-fast
+        when: [code, tests]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: design
+        agent: agents/review-design.md
+        tier: review-fast
+        when: [code]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
+      - name: verifier
+        agent: agents/review-verifier.md
+        tier: review-deep
+        when: [always]
+        tools: [Read, Grep, Glob]
 
   - name: review
     agent: agents/pr-reviewer.md
@@ -104,7 +132,7 @@ The job pipeline is intentionally tight: each phase has a distinct decision to m
 | `review` | pr-reviewer (PR opener + merge gatekeeper) | Open the PR(s) for the work item, coordinate with humans, route fix requests back to coder, merge when approved |
 | `evaluation` | evaluator | Verify the merged result against acceptance criteria, manage the work-item loop, capture memory and self-improvement proposals |
 
-The convention/plan/test-coverage review happens **once**, inside the coding phase, via the `code-reviewer` subagent. The standalone `review` phase does **not** re-review the diff — it **opens** the PR and focuses on the human-coordination and merge actions that the coder must not perform on its own work. Acceptance-criteria verification, build/test re-run on the merged commit, and Loki/Tempo error scans live in `evaluation`.
+The convention/plan/test-coverage review happens **once**, inside the coding phase, via the `code-reviewer` subagent. On this lane the subagent also runs the same review lenses a pull-request review uses (correctness, security, tests, design, then a verifier) on the local diff through `code_review_lenses`; the findings go to the coder only and are kept in a `code-review` artefact. Turn the lenses off with `codeReview.lenses: false` in `~/.coro/config.json` and the subagent falls back to its own checklists. The standalone `review` phase does **not** re-review the diff — it **opens** the PR and focuses on the human-coordination and merge actions that the coder must not perform on its own work. Acceptance-criteria verification, build/test re-run on the merged commit, and Loki/Tempo error scans live in `evaluation`.
 
 **PR preview gate.** The coder does not open the PR — it pushes the branch and posts a `pr-preview` artefact, then hands off to `review`, which opens the PR via `scm_create_pr`. Because PR creation moves to `review`, the interactive checkpoint at the **coding** boundary is a genuine *pre-PR* gate: when the job is interactive the developer previews the diff (dashboard "Changes" tab) and the proposed PR before anything is created on the SCM. Autonomous jobs skip the pause but still surface the same preview + live diff while running.
 
@@ -154,7 +182,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 5. Implement the changes following the injected conventions
 6. Write tests
 7. Build, run the test suite, and fix any failures locally
-8. Invoke the `code-reviewer` subagent on the staged diff. Address any blocking findings before pushing. Carry the subagent's verdict into the PR preview description so human reviewers can see it.
+8. Invoke the `code-reviewer` subagent on the staged diff, naming the base branch in the task. Address any blocking findings before pushing. Carry the subagent's verdict into the PR preview description so human reviewers can see it.
 9. Push the work-item branch and post a `pr-preview` artefact (proposed title + detailed description, including the subagent's review summary). Do **not** open the PR — hand off to `review`, which opens it after the developer's optional pre-PR preview.
 
 ---

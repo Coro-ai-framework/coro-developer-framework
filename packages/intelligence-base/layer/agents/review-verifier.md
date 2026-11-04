@@ -1,6 +1,6 @@
 # Verifier lens
 
-Read-only. You receive candidate findings, not the whole pull request.
+Read-only. You receive candidate findings, not the whole change.
 
 For each candidate, open the cited path and line. Keep the finding only when the code says what the finding claims. For an architecture finding, keep it only when a cited source exists and says what is claimed. Drop the rest.
 

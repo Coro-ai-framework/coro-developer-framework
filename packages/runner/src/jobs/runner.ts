@@ -71,6 +71,7 @@ import {
   isParkingStatus,
   isTerminalStatus,
   emptyTokenUsage,
+  deriveRepoCheckoutDir,
 } from './helpers'
 import {
   buildJobCompletionBlockPrompt,
@@ -678,6 +679,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         registerWebTools: executor.capabilities.supportsNativeWebTools !== true,
         registerRunSubagent:
           !executor.capabilities.supportsNativeSubagents || hasCrossProviderSubagent,
+        registerCodeReview: (phaseConf?.lenses?.length ?? 0) > 0,
       }
       let phaseMcpServer = createCoroMcpServer(toolCtx, signals, mcpServerOpts)
 
@@ -940,6 +942,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       let sessionId: string | undefined = resumeSessionId
       const phaseTokens: TokenUsage = emptyTokenUsage()
       const prePhaseUsage: TokenUsage = { ...(liveJob.tokenUsage ?? emptyTokenUsage()) }
+      // Spend on subagents a tool ran outside this phase's session (the
+      // coding job's review lenses). Added on top of the executor's own
+      // cumulative report, which replaces `phaseTokens` on every event.
+      const lensUsage: TokenUsage = emptyTokenUsage()
+      const withLensUsage = (tokens: TokenUsage): TokenUsage => mergeTokenUsage(tokens, lensUsage)
       // Computed once per attempt: neither input changes while the phase
       // runs, and both the normal-ending and signal-terminated cost
       // bookings below must reconcile against the same baseline.
@@ -980,6 +987,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             mcpServer: req.mcpServer,
             pluginMcpServers: req.pluginMcpServers,
             signal: abortController.signal,
+            recordUsage: (usage) => {
+              lensUsage.inputTokens += usage.inputTokens
+              lensUsage.outputTokens += usage.outputTokens
+              lensUsage.totalCostUsd += usage.costUsd
+            },
           }
         : undefined
 
@@ -1092,7 +1104,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               phaseTurns++
               if (phaseTurns - lastUsageSyncTurn >= 5) {
                 lastUsageSyncTurn = phaseTurns
-                const merged = mergeTokenUsage(prePhaseUsage, phaseTokens)
+                const merged = mergeTokenUsage(prePhaseUsage, withLensUsage(phaseTokens))
                 liveJob = await syncJob(stateBackend, liveJob, { tokenUsage: merged })
                 toolCtx.job = liveJob
               }
@@ -1125,12 +1137,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
                 resumedSessionId: resumeSessionId,
               })
               phaseTokens.totalCostUsd = phaseCostUsd
+              const bookedTokens = withLensUsage(phaseTokens)
 
               const phaseSnapshot = buildPhaseSnapshot({
                 phase: liveJob.phase,
                 workItem: liveJob.currentWorkItem,
-                tokens: phaseTokens,
-                costUsd: phaseCostUsd,
+                tokens: bookedTokens,
+                costUsd: bookedTokens.totalCostUsd,
+                subagentCostUsd: lensUsage.totalCostUsd,
                 durationMs: doneMetrics?.durationMs ?? (Date.now() - phaseStartMs),
                 durationApiMs: doneMetrics?.durationApiMs ?? 0,
                 numTurns: doneMetrics?.numTurns ?? phaseTurns,
@@ -1153,7 +1167,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
               })
 
               const existingPhaseUsage = liveJob.phaseUsage ?? []
-              const jobTotals = mergeTokenUsage(prePhaseUsage, phaseTokens)
+              const jobTotals = mergeTokenUsage(prePhaseUsage, bookedTokens)
               liveJob = await syncJob(stateBackend, liveJob, {
                 tokenUsage: jobTotals,
                 phaseUsage: [...existingPhaseUsage, phaseSnapshot],
@@ -1263,12 +1277,14 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             })
           : (executor.calculateCost?.(model, phaseTokens) ?? 0)
         phaseTokens.totalCostUsd = fallbackCostUsd
+        const bookedTokens = withLensUsage(phaseTokens)
 
         const phaseSnapshot = buildPhaseSnapshot({
           phase: liveJob.phase,
           workItem: liveJob.currentWorkItem,
-          tokens: phaseTokens,
-          costUsd: fallbackCostUsd,
+          tokens: bookedTokens,
+          costUsd: bookedTokens.totalCostUsd,
+          subagentCostUsd: lensUsage.totalCostUsd,
           durationMs: Date.now() - phaseStartMs,
           durationApiMs: 0,
           numTurns: phaseTurns,
@@ -1282,7 +1298,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         })
 
         const existingPhaseUsage = liveJob.phaseUsage ?? []
-        const jobTotals = mergeTokenUsage(prePhaseUsage, phaseTokens)
+        const jobTotals = mergeTokenUsage(prePhaseUsage, bookedTokens)
 
         liveJob = await syncJob(stateBackend, liveJob, {
           tokenUsage: jobTotals,
@@ -1295,7 +1311,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
           `[usage] Phase ${liveJob.phase}: ${phaseTokens.inputTokens.toLocaleString()} in / ${phaseTokens.outputTokens.toLocaleString()} out`,
         )
       } else if (phaseTurns > lastUsageSyncTurn) {
-        const merged = mergeTokenUsage(prePhaseUsage, phaseTokens)
+        const merged = mergeTokenUsage(prePhaseUsage, withLensUsage(phaseTokens))
         liveJob = await syncJob(stateBackend, liveJob, { tokenUsage: merged })
         toolCtx.job = liveJob
       }
@@ -1812,33 +1828,6 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Best-effort guess at where the agent will clone the target repo.
- *
- * Convention: the repo is cloned into `<repoSlug>` inside the SDK's
- * `cwd: workingDir`, typically via `mcp__coro__scm_clone_repo`, which
- * lands the checkout at
- * `<workingDir>/<repoSlug>`. The resolver uses this path to discover a
- * repo `.coro/` overlay; if the path doesn't exist (typical at first
- * resolve), the resolver skips the layer.
- *
- * Returns `undefined` when no `repoSlug` is set on the job (e.g.
- * self-update jobs that don't target a specific repo).
- */
-function deriveRepoCheckoutDir(job: Job, workingRoot: string): string | undefined {
-  const params = job.params as Record<string, unknown> | undefined
-  if (typeof params?.['repoCheckoutAbsDir'] === 'string' && params['repoCheckoutAbsDir'].length > 0) {
-    return params['repoCheckoutAbsDir']
-  }
-  const rel =
-    typeof params?.['repoCheckoutDir'] === 'string' ? params['repoCheckoutDir']
-    : typeof params?.['repoSlug'] === 'string' ? params['repoSlug']
-    : typeof params?.['repo'] === 'string' ? params['repo']
-    : undefined
-  if (typeof rel !== 'string' || rel.length === 0) return undefined
-  return path.join(workingRoot, job.id, rel)
-}
 
 const MAX_ACTIVITY_LOG_ENTRY_CHARS = 1600
 

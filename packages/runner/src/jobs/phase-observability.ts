@@ -130,6 +130,8 @@ export interface BuildPhaseSnapshotArgs {
   workItem?: string | null
   tokens: Pick<TokenUsage, 'inputTokens' | 'outputTokens' | 'cacheReadInputTokens' | 'cacheCreationInputTokens'>
   costUsd: number
+  /** The part of `costUsd` that came from lens subagents, not the phase's session. */
+  subagentCostUsd?: number
   durationMs: number
   durationApiMs: number
   numTurns: number
@@ -160,6 +162,7 @@ export function buildPhaseSnapshot(args: BuildPhaseSnapshotArgs): PhaseUsage {
     cacheReadInputTokens: args.tokens.cacheReadInputTokens,
     cacheCreationInputTokens: args.tokens.cacheCreationInputTokens,
     costUsd: args.costUsd,
+    ...(args.subagentCostUsd ? { subagentCostUsd: args.subagentCostUsd } : {}),
     durationMs: args.durationMs,
     durationApiMs: args.durationApiMs,
     numTurns: args.numTurns,
@@ -186,14 +189,19 @@ export function buildPhaseSnapshot(args: BuildPhaseSnapshotArgs): PhaseUsage {
  * resumed session, so a partial session sum could undercount it.
  */
 export function sessionCostBaseline(
-  priorUsage: ReadonlyArray<Pick<PhaseUsage, 'costUsd' | 'sessionId'>>,
+  priorUsage: ReadonlyArray<Pick<PhaseUsage, 'costUsd' | 'sessionId' | 'subagentCostUsd'>>,
   sessionId: string | undefined,
   fallbackJobTotalCostUsd: number,
 ): number {
-  if (!sessionId || priorUsage.some(entry => !entry.sessionId)) return fallbackJobTotalCostUsd
+  // Lens spend is booked on the snapshot but never ran in the session, so
+  // it is not part of what the session's cumulative cost already covers.
+  const own = (entry: Pick<PhaseUsage, 'costUsd' | 'subagentCostUsd'>) => (entry.costUsd ?? 0) - (entry.subagentCostUsd ?? 0)
+  if (!sessionId || priorUsage.some(entry => !entry.sessionId)) {
+    return fallbackJobTotalCostUsd - priorUsage.reduce((sum, entry) => sum + (entry.subagentCostUsd ?? 0), 0)
+  }
   return priorUsage
     .filter(entry => entry.sessionId === sessionId)
-    .reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0)
+    .reduce((sum, entry) => sum + own(entry), 0)
 }
 
 export function stampParkReason(

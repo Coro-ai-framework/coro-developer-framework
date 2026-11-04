@@ -292,6 +292,17 @@ const jobsConfigSchema = z.object({
   idleWatchdog: idleWatchdogConfigSchema,
 }).optional()
 
+/**
+ * The pre-PR code review inside coding jobs. `lenses: false` falls the
+ * `code-reviewer` back to its own checklists. Config only: there is no
+ * dashboard setting for it.
+ */
+const codeReviewConfigSchema = z.object({
+  lenses: z.boolean().optional(),
+  minSeverity: z.enum(['blocker', 'major', 'minor', 'nit']).optional(),
+  maxParallelLenses: z.number().int().positive().optional(),
+}).optional()
+
 const reviewsConfigSchema = z.object({
   enabled: z.boolean().optional(),
   scms: z.array(z.string()).optional(),
@@ -428,6 +439,11 @@ const localConfigSchema = z.object({
    * `reviews/policy.ts`.
    */
   reviews: reviewsConfigSchema,
+  /**
+   * Review lenses inside a coding job's `code-reviewer` subagent. On by
+   * default; see `tools/code-review.ts`.
+   */
+  codeReview: codeReviewConfigSchema,
   guardrails: z.object({
     enabled: z.boolean().optional(),
     rules: z.array(z.object({

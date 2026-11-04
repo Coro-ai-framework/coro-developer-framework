@@ -28,6 +28,7 @@ import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from './
 import { renderInlineMarkdown } from './intelligence/markdown-mini'
 import ErrorState from './common/error-state'
 import ReviewDraftBody, { REVIEW_DRAFT_KIND } from './reviews/review-draft-body'
+import CodeReviewBody, { CODE_REVIEW_KIND } from './reviews/code-review-body'
 import { formatDateTime } from '../lib/format'
 import {
   artifactHasFileBody,
@@ -349,6 +350,9 @@ function ArtifactNonFileBody({ artifact }: { artifact: Artifact }) {
   }
   if (artifact.kind === REVIEW_DRAFT_KIND) {
     return <ReviewDraftBody data={artifact.data} />
+  }
+  if (artifact.kind === CODE_REVIEW_KIND) {
+    return <CodeReviewBody data={artifact.data} />
   }
 
   const url = typeof artifact.data['url'] === 'string' ? (artifact.data['url'] as string) : null
@@ -767,7 +771,7 @@ function tryFormatJson(text: string): string {
 function ArtifactKindIcon({ kind }: { kind: string }) {
   if (kind === 'pr-preview') return <FileDiff className="size-3.5" />
   if (kind === 'pr-link') return <GitPullRequest className="size-3.5" />
-  if (kind === REVIEW_DRAFT_KIND) return <MessageSquare className="size-3.5" />
+  if (kind === REVIEW_DRAFT_KIND || kind === CODE_REVIEW_KIND) return <MessageSquare className="size-3.5" />
   if (kind === 'url') return <Link2 className="size-3.5" />
   if (kind.endsWith('-md') || kind === 'analysis-contract') return <FileText className="size-3.5" />
   return <FileJson2 className="size-3.5" />

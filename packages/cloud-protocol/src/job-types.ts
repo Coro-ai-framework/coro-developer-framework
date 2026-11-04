@@ -142,6 +142,12 @@ export interface PhaseUsage {
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
   costUsd: number
+  /**
+   * Part of `costUsd` spent outside the phase's own session, on review
+   * lenses the coding job ran as subagents. Kept apart so a resumed
+   * session's cumulative cost is reconciled against the session alone.
+   */
+  subagentCostUsd?: number
   durationMs: number
   durationApiMs: number
   numTurns: number

@@ -10,6 +10,7 @@
 // state backend; this file only constructs `Partial<Job>` patches and
 // returns booleans / accessors.
 
+import path from 'path'
 import {
   JobType,
   PAUSED_AWAITING_EVENT,
@@ -259,4 +260,31 @@ export function isTerminalChildStatus(status: CampaignChildStatus): boolean {
 /** Status of a child considered "satisfied" for dependency resolution. */
 export function isSatisfiedChildStatus(status: CampaignChildStatus): boolean {
   return status === 'complete' || status === 'skipped' || status === 'cancelled'
+}
+
+/**
+ * Best-effort guess at where the agent will clone the target repo.
+ *
+ * Convention: the repo is cloned into `<repoSlug>` inside the SDK's
+ * `cwd: workingDir`, typically via `mcp__coro__scm_clone_repo`, which
+ * lands the checkout at
+ * `<workingDir>/<repoSlug>`. The resolver uses this path to discover a
+ * repo `.coro/` overlay; if the path doesn't exist (typical at first
+ * resolve), the resolver skips the layer.
+ *
+ * Returns `undefined` when no `repoSlug` is set on the job (e.g.
+ * self-update jobs that don't target a specific repo).
+ */
+export function deriveRepoCheckoutDir(job: Job, workingRoot: string): string | undefined {
+  const params = job.params as Record<string, unknown> | undefined
+  if (typeof params?.['repoCheckoutAbsDir'] === 'string' && params['repoCheckoutAbsDir'].length > 0) {
+    return params['repoCheckoutAbsDir']
+  }
+  const rel =
+    typeof params?.['repoCheckoutDir'] === 'string' ? params['repoCheckoutDir']
+    : typeof params?.['repoSlug'] === 'string' ? params['repoSlug']
+    : typeof params?.['repo'] === 'string' ? params['repo']
+    : undefined
+  if (typeof rel !== 'string' || rel.length === 0) return undefined
+  return path.join(workingRoot, job.id, rel)
 }

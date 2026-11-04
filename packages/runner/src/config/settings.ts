@@ -197,6 +197,15 @@ export interface Settings {
    * rather than the raw config blob.
    */
   reviews?: import('../reviews/policy').ReviewPolicy
+  /**
+   * Review lenses inside coding jobs. Absent means the defaults: on, the
+   * pull-request review severity floor and lens parallelism.
+   */
+  codeReview?: {
+    lenses: boolean
+    minSeverity?: import('../reviews/policy').ReviewSeverity
+    maxParallelLenses?: number
+  }
   jobs?: {
     idleWatchdog?: {
       /** When false, disables per-phase idle nudge/park. Default true. */

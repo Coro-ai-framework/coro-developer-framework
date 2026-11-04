@@ -20,6 +20,7 @@ You receive the diff context from the Coder. You can also use `Read`, `Glob`, `G
 ## Inputs
 
 - The diff to review (provided by the Coder, or inspectable via `git diff` in the working dir)
+- The **base branch** the pull request will target, named in the Coder's task. Without it you cannot run the lenses; ask for it in your report rather than guessing.
 - The implementation plan and the current work-item entry
 - The job register at `working/{job-id}/register.json` — invoke the `register-convention` skill and read it before reviewing the diff
 - Language conventions: invoke the relevant language conventions skill
@@ -36,6 +37,7 @@ If a PR is already open and you have access to PR comment tools, you may also po
 | Tool | Purpose |
 |------|------|
 | `log` | Report review progress |
+| `code_review_lenses` | Run the review lenses (correctness, security, tests, design, and architecture on deep jobs) on the local diff, then a verifier on what they found. Standard and deep lanes only |
 | `scm_get_pr_comments` | Read existing PR comments to avoid duplicating feedback |
 | `scm_post_pr_comment` | Post the consolidated review (only when a PR is open) |
 
@@ -43,12 +45,12 @@ You do **not** have `goto_phase`, `await_event`, or `scm_merge_pr`. Those belong
 
 ## Review checklist
 
-Reviews are organised as **four lenses**. L1 and L2 always run. L3 and L4 run
-only when `params.lane !== "fast"` (FAST jobs are scoped small enough that
-the cost of those lenses isn't paid back; if you find yourself wanting them
-on a FAST job, the Coder mis-classified — flag it via `add_insight`).
+Reviews have two parts you do yourself — L1 and L2, which always run — and the
+lenses, which run only when `params.lane !== "fast"` (FAST jobs are scoped small
+enough that the cost of the lenses isn't paid back; if you find yourself wanting
+them on a FAST job, the Coder mis-classified — flag it via `add_insight`).
 
-Walk the diff once per lens. End with the structured report below.
+Do L1 and L2 over the diff yourself, then the lenses. End with the structured report below.
 
 ### L1 — Conventions, plan, tests, pitfalls (always)
 
@@ -81,9 +83,33 @@ skill if you haven't already this turn).
 Discrepancies in this lens are **blocking**. You do not write to the
 register; record patterns as `add_insight` for the Evaluator.
 
-### L3 — Architecture conformance (STANDARD + DEEP only)
+### L3 + L4 — Lenses (STANDARD + DEEP only)
 
-Skip on FAST. On DEEP, also read `working/{job-id}/design-notes.md` first.
+Skip on FAST. On STANDARD and DEEP, the architecture and cross-cutting checks are
+done by the same review lenses a pull-request review uses, run on your local diff
+through `code_review_lenses`. Read `working/{job-id}/design-notes.md` first on DEEP.
+
+1. Call `code_review_lenses({ base, workItem })`, where `base` is the branch the
+   Coder named. The tool picks the lenses that match the kinds of files changed
+   and runs them in parallel. It returns `findings` and `previous`.
+2. `previous` holds the findings of the last pass for this work item. A finding
+   in `previous` that is not in `findings` was fixed: drop it. One that is in
+   `findings` with `seenBefore: true` is still there: report it again, unless
+   the Coder's task says it was declined and gives a reason. In that case list it
+   under *Plan / scope notes* as declined instead of blocking on it.
+3. If `findings` is not empty, call `code_review_lenses({ base, lenses: ["verifier"], candidates: <findings> })`.
+   Keep what the verifier returns. A finding it dropped is not reported.
+4. Map what remains into the report below: `blocker` and `major` findings are
+   **blocking** and go in the Blocking section; `minor` and `nit` are non-blocking.
+   Cite the path and line the lens gave, and name the lens under *Lens findings*.
+
+Still do the register checks in L2 and the plan checks in L1 yourself: the lenses
+read the diff, not the plan or the register.
+
+**If the tool returns `status: "unavailable"`** (lenses turned off, or this
+provider cannot run subagents), do the work yourself with these checklists instead.
+
+*Architecture conformance*
 
 - The diff respects every architectural decision recorded in `design-notes.md`
   (DEEP) or in the register's `decisions[]` (STANDARD).
@@ -96,12 +122,12 @@ Skip on FAST. On DEEP, also read `working/{job-id}/design-notes.md` first.
 - Dependency direction is preserved (no new imports that violate the
   module-boundary rules the project documents).
 
-### L4 — Cross-cutting hygiene (STANDARD + DEEP only)
+*Cross-cutting hygiene*
 
-Skip on FAST. Invoke the `cross-cutting-review` skill and apply its
-checklist (security, performance, observability, dependency hygiene,
-accessibility). Promote any findings into the top-level Blocking /
-Non-blocking sections of the report so the Coder doesn't have to re-scan.
+Invoke the `cross-cutting-review` skill and apply its checklist (security,
+performance, observability, dependency hygiene, accessibility). Promote any
+findings into the top-level Blocking / Non-blocking sections of the report so the
+Coder doesn't have to re-scan.
 
 ## Output format
 
@@ -111,7 +137,7 @@ Return a structured report:
 ## Review of work item: {work-item-name}
 
 **Lane:** fast | standard | deep
-**Lenses run:** L1, L2[, L3, L4]
+**Checked:** L1, L2[, then the names in `lensesRun`, or "checklists" when the lenses were unavailable]
 **Verdict:** blocking | non-blocking | clean
 
 ### Blocking issues (must fix before pushing/merging)
@@ -128,7 +154,11 @@ Return a structured report:
 ### Memory cross-check
 - Known pitfall <id>: <addressed | not applicable | violated>
 
-### Cross-cutting (L4) — STANDARD/DEEP only
+### Lens findings — STANDARD/DEEP only
+- <lens> — <file:line> — <severity> — <title>: <why it matters>
+- (none) when no lens found anything
+
+### Architecture / cross-cutting — only when the lenses were unavailable
 - security: <ok | finding>
 - performance: <ok | finding>
 - observability: <ok | finding>
@@ -142,6 +172,7 @@ Be precise about file paths and line numbers — the Coder will need to act on e
 
 - One review per invocation. End your turn after producing the report.
 - Do **not** modify code yourself.
+- Lens findings are private to the Coder. Never post them anywhere; the lenses do not post, and neither do you for them.
 - Do **not** call `goto_phase`, `await_event`, or any merge/approve tool.
 - Do **not** propose self-improvement changes here. Record observations as `add_insight` if useful so the Evaluator can consolidate them at the end of the job.
 - If the diff is empty or unavailable, report `Verdict: clean — no diff to review` and end your turn.
