@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { JobType, type Job } from '@coro-ai/cloud-protocol'
 import { emptyTokenUsage } from '../../src/jobs/helpers'
 import {
+  buildTrajectoryState,
   evaluateOverseerFlag,
   runOverseer,
   shouldParkForOverseer,
@@ -230,5 +231,33 @@ describe('runOverseer', () => {
     expect(stored().decisionRecords).toHaveLength(1)
     expect(stored().decisionRecords?.[0]?.actedOn).toBeUndefined()
     expect(stored().decisionRecords?.[0]?.flagReason).toMatch(/aligned/)
+  })
+})
+
+describe('buildTrajectoryState', () => {
+  it('reports failed tools from the run being judged only', () => {
+    const snapshot = (failedTool?: string) => ({
+      phase: 'review',
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      toolLedger: [
+        { toolName: 'mcp__coro__log', success: true, durationMs: 0 },
+        ...(failedTool ? [{ toolName: failedTool, success: false, durationMs: 0, errorClass: 'blocked' }] : []),
+      ],
+    })
+    const retried = buildTrajectoryState(
+      makeJob({ phase: 'review', phaseUsage: [snapshot('mcp__coro__review_get_context'), snapshot()] as never }),
+      new Set(['review']),
+    )
+    expect(retried.failedToolClasses).toEqual([])
+    expect(retried.phaseRuns[0]?.runs).toBe(2)
+
+    const failing = buildTrajectoryState(
+      makeJob({ phase: 'review', phaseUsage: [snapshot(), snapshot('mcp__coro__review_finish')] as never }),
+      new Set(['review']),
+    )
+    expect(failing.failedToolClasses).toEqual([{ toolName: 'mcp__coro__review_finish', errorClass: 'blocked', count: 1 }])
   })
 })

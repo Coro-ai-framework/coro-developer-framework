@@ -14,7 +14,7 @@ import { mkdir, stat, writeFile } from 'fs/promises'
 import path from 'path'
 import { isPrReviewJob, deriveRepoCheckoutDir } from '../jobs/helpers'
 import { findingFingerprint } from '../reviews/id'
-import { mapPool, runOneLens, type LensRun } from '../reviews/lens-runner'
+import { runLenses, runOneLens, type LensRun } from '../reviews/lens-runner'
 import { readLocalDiff } from '../reviews/local-diff'
 import { buildPacket, type ReviewPacket } from '../reviews/packet'
 import { REVIEW_POLICY_DEFAULTS, severityAtLeast, type ReviewPolicy, type ReviewSeverity } from '../reviews/policy'
@@ -160,7 +160,7 @@ function taskFor(args: {
     `Severity floor: ${args.minSeverity}. Do not emit findings below it.`,
     args.paths.length ? `Paths: ${args.paths.join(', ')}` : '',
     args.candidates ? `Candidates to verify:\n${JSON.stringify(args.candidates)}` : '',
-    'Reply with a fenced JSON object: {"findings":[{"severity","category","path","line","title","body","sources":[{"kind","ref"}]}],"notes","sourcesUsed":[]}.',
+    'Reply with a fenced JSON object: {"findings":[{"severity","category","path","line","title","body","sources":[{"kind","ref"}]}],"notes","sourcesUsed":["kind:ref"]}.',
   ].filter(Boolean).join('\n')
 }
 
@@ -273,31 +273,33 @@ export async function codeReviewLenses(ctx: ToolContext, args: CodeReviewArgs): 
   const previous = await previousItem(ctx, workItem)
   const notes = note ? [note] : []
 
-  const runs = await mapPool(selected, policy.maxParallelLenses, ({ lens, paths }) => runOneLens(
-    ctx,
-    lens,
-    taskFor({
-      checkout,
-      diffPath,
-      paths,
-      minSeverity: policy.minSeverity,
-      workItem,
-      ...(args.candidates ? { candidates: args.candidates } : {}),
-    }),
-    policy,
-    { cwd: checkout, projectContext: 'load' },
-  ))
-
-  const spend = runs.reduce(
-    (sum, run) => ({
-      inputTokens: sum.inputTokens + run.usage.inputTokens,
-      outputTokens: sum.outputTokens + run.usage.outputTokens,
-      costUsd: sum.costUsd + run.usage.costUsd,
-    }),
-    { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+  const { runs, failed, spend } = await runLenses(
+    selected,
+    policy.maxParallelLenses,
+    ({ lens }) => lens.name,
+    ({ lens, paths }) => runOneLens(
+      ctx,
+      lens,
+      taskFor({
+        checkout,
+        diffPath,
+        paths,
+        minSeverity: policy.minSeverity,
+        workItem,
+        ...(args.candidates ? { candidates: args.candidates } : {}),
+      }),
+      policy,
+      { cwd: checkout, projectContext: 'load' },
+    ),
+    phase.signal,
   )
   phase.recordUsage?.(spend)
+  // A failed verifier has no verdicts; applying none would drop every finding.
+  if (verifyOnly && failed.length > 0) {
+    throw new Error(`code_review_lenses: ${failed.map(lens => lens.error).join('; ')}`)
+  }
   for (const run of runs) if (run.result.notes) notes.push(`${run.name}: ${run.result.notes}`)
+  for (const lens of failed) notes.push(`${lens.name} lens failed: ${lens.error}`)
 
   const found = dedupe(
     runs.flatMap(run => run.result.findings

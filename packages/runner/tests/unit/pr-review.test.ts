@@ -143,6 +143,7 @@ describe('pr-review workflow', () => {
     const publish = config!.phases.find(phase => phase.name === 'publish')
     expect(publish?.terminal).toBe(true)
     expect(publish?.tools).toContain('mcp__coro__review_publish')
+    expect(publish?.tools).toContain('mcp__coro__escalate')
     expect(review?.lenses?.map(lens => lens.name)).toContain('architecture')
     expect(resolveInitialPhase(config!, 'pr-review:conversation')).toBe('converse')
     expect(resolveInitialPhase(config!, 'pr-review:closing')).toBe('learn')

@@ -158,6 +158,54 @@ describe('review coordinator scheduling', () => {
     expect(stored?.lastError).toBe('Could not read the pull request: Not Found')
     expect(stored?.rounds[0]?.outcome).toBe('failed')
   })
+
+  it('keeps the head commit the round was prepared against', async () => {
+    const store = new MemoryReviewStore()
+    const coordinator = new ReviewCoordinator({
+      store,
+      policy: { ...REVIEW_POLICY_DEFAULTS, enabled: true, debounceSec: 0 },
+      reviewerLogin: 'ada',
+      setTimer: fn => { queueMicrotask(fn); return { clear() {} } },
+      assess: async review => {
+        review.pr.headSha = 'head-from-scm'
+        review.pr.baseSha = 'base-from-scm'
+        return null
+      },
+      dispatchRound: async () => ({ jobId: 'job-1' }),
+    })
+    const review = await coordinator.ingest(event('manual', {}, 'manual'))
+    await settle()
+    const stored = await store.get(review!.id)
+    expect(stored?.pr).toMatchObject({ headSha: 'head-from-scm', baseSha: 'base-from-scm' })
+    expect(stored?.rounds[0]).toMatchObject({ jobId: 'job-1', headSha: 'head-from-scm' })
+  })
+
+  it('charges a round its job cost once, with lens spend only as the breakdown', async () => {
+    const h = harness()
+    const review = await h.coordinator.ingest(event('manual', {}, 'manual'))
+    await h.fireDue()
+    const running = (await h.store.get(review!.id))!
+    running.rounds[0]!.lensCosts = { security: { costUsd: 0.3, inputTokens: 10, outputTokens: 1, findings: 0 } }
+    await h.store.save(running)
+    await h.finish('job-1', review!.id)
+    const stored = await h.store.get(review!.id)
+    expect(stored?.rounds[0]?.costUsd).toBeCloseTo(0.5)
+    expect(stored?.totals.costUsd).toBeCloseTo(0.5)
+  })
+
+  it('records why an escalated round failed', async () => {
+    const h = harness()
+    const review = await h.coordinator.ingest(event('manual', {}, 'manual'))
+    await h.fireDue()
+    await h.coordinator.onRoundStopped({
+      id: 'job-1',
+      status: 'escalated',
+      params: { reviewId: review!.id, roundAttempt: 2 },
+      escalationMessage: 'The developer asked for a retry, not publication.',
+    })
+    const stored = await h.store.get(review!.id)
+    expect(stored?.rounds[0]).toMatchObject({ outcome: 'failed', summary: 'The developer asked for a retry, not publication.' })
+  })
 })
 
 describe('review round preparation', () => {

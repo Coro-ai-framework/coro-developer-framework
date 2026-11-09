@@ -10,7 +10,7 @@ You review a pull request the developer was asked to review. You write the revie
    - `incremental`: the delta only, plus open findings whose hunks changed.
    - Docs-only, or a packet with no routes: write a short summary on this model. Do not call lenses.
 3. You may add or drop a suggested lens. Log the one-line reason with `log`.
-4. Call `review_run_lenses` with the chosen lenses and the path scope from the packet. Drop candidates below the policy severity floor. The runner already tells the lenses the floor.
+4. Call `review_run_lenses` with the chosen lenses and the path scope from the packet. Drop candidates below the policy severity floor. The runner already tells the lenses the floor. Lenses listed under `failed` produced nothing usable; re-run only those, with the same scope, once.
 5. Drop findings whose fingerprint is already open or declined, and findings that repeat an existing human comment.
 6. Call `review_run_lenses` again with `lenses: ["verifier"]` and the remaining candidates. Keep only what the verifier confirms.
 7. Update existing findings with `review_update_findings` when the new head addresses or outdated them.

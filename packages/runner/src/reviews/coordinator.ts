@@ -203,14 +203,15 @@ export class ReviewCoordinator {
     const round = review.rounds.find(item => item.jobId === job.id)
     // Already settled: a cancel can be reported by the dispatcher and by the stop fallback.
     if (round?.endedAt) return
-    const jobCost = job.tokenUsage?.totalCostUsd ?? 0
-    // Lenses run as separate executor calls, so their spend is not in the job's usage.
-    const lensCost = Object.values(round?.lensCosts ?? {}).reduce((sum, lens) => sum + lens.costUsd, 0)
-    const cost = jobCost + lensCost
+    // Lens spend is booked on the job's phase, so the job's usage already
+    // includes it; `lensCosts` is only the breakdown.
+    const cost = job.tokenUsage?.totalCostUsd ?? 0
     if (round && !round.endedAt) {
       round.endedAt = this.iso()
-      if (failed) round.outcome = 'failed'
-      else if (cancelled && !round.summary) {
+      if (failed) {
+        round.outcome = 'failed'
+        if (!round.summary && job.escalationMessage) round.summary = job.escalationMessage
+      } else if (cancelled && !round.summary) {
         round.outcome = 'stopped'
         const draft = job.artifacts?.find(item => item.kind === 'review-draft')?.data as { status?: string } | undefined
         round.summary = draft?.status === 'draft'
@@ -549,6 +550,8 @@ export class ReviewCoordinator {
         }
         return false
       }
+      if (placeholder) placeholder.headSha = fresh.pr.headSha
+      await this.deps.store.save(fresh)
       return true
     })
     if (!proceed) {

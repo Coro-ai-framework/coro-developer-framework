@@ -52,9 +52,12 @@ export function buildTrajectoryState(
     byPhase.set(snap.phase, current)
   }
 
+  // Only the run being judged: an earlier run's failures were already
+  // judged, and a retry that fixed them would otherwise be flagged for them.
   const failedCounts = new Map<string, { toolName: string; errorClass: string; count: number }>()
-  for (const snap of usage) {
-    for (const entry of snap.toolLedger ?? []) {
+  const latestRun = usage[usage.length - 1]
+  if (latestRun) {
+    for (const entry of latestRun.toolLedger ?? []) {
       if (entry.success) continue
       const errorClass = entry.errorClass ?? 'error'
       const key = `${entry.toolName}|${errorClass}`

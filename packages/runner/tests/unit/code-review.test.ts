@@ -182,6 +182,20 @@ describe('code_review_lenses', () => {
     expect(recordUsage).toHaveBeenCalledWith({ inputTokens: 300, outputTokens: 30, costUsd: 1.5 })
   })
 
+  it('keeps the other lenses when one returns invalid output twice, and still books its spend', async () => {
+    runSubagent.mockImplementation(async (req: { name: string }) => (req.name === 'tests'
+      ? { output: 'not json', usage: { inputTokens: 50, outputTokens: 5, totalCostUsd: 0.25 } }
+      : reply([bug])))
+    const result = await codeReviewLenses(makeCtx(), { base: 'main' })
+    if (result.status !== 'ok') throw new Error('expected ok')
+
+    expect(result.lensesRun).toEqual(['correctness', 'security'])
+    expect(result.findings).toHaveLength(1)
+    expect(result.notes.some(note => note.startsWith('tests lens failed:'))).toBe(true)
+    // Two lenses at 0.5, plus the failing lens's first try and repair turn.
+    expect(recordUsage).toHaveBeenCalledWith({ inputTokens: 300, outputTokens: 30, costUsd: 1.5 })
+  })
+
   it('applies the severity floor from config', async () => {
     runSubagent.mockImplementation(async () => reply([bug, { ...bug, line: 5, title: 'Naming', severity: 'nit', category: 'style' }]))
     const ctx = makeCtx()

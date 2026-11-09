@@ -20,7 +20,7 @@ import type { ScmPluginRuntime } from '../plugins/types'
 import { findingFingerprint, findingId } from '../reviews/id'
 import { classifyPath } from '../reviews/packet'
 import { effectiveSubmission, severityAtLeast, type ReviewPolicy } from '../reviews/policy'
-import { mapPool, runOneLens, type LensRun } from '../reviews/lens-runner'
+import { runLenses, runOneLens, type LensRun } from '../reviews/lens-runner'
 import type { PhaseSignals, ToolContext } from './types'
 
 export { lensToolDecision, resolveLensMcp, toolNameLooksWritable, type LensResult } from '../reviews/lens-runner'
@@ -158,7 +158,7 @@ function scmFor(ctx: ToolContext, pluginId: string): ScmPluginRuntime {
 export async function reviewRunLenses(
   ctx: ToolContext,
   args: { lenses: string[]; scope?: { paths?: string[]; chunk?: number }; candidates?: unknown[] },
-): Promise<{ lenses: LensRun[] }> {
+): Promise<{ lenses: LensRun[]; failed?: { name: string; error: string }[] }> {
   assertReviewJob(ctx)
   const phase = ctx.currentPhase
   if (!phase) throw new Error('review_run_lenses: no active phase')
@@ -180,26 +180,40 @@ export async function reviewRunLenses(
     `Severity floor: ${policy.minSeverity}. Do not emit findings below it.`,
     args.scope?.paths?.length ? `Paths: ${args.scope.paths.join(', ')}` : '',
     args.candidates ? `Candidates to verify:\n${JSON.stringify(args.candidates)}` : '',
-    'Reply with a fenced JSON object: {"findings":[{"severity","category","path","line","title","body","sources":[{"kind","ref"}]}],"notes","sourcesUsed":[]}.',
+    'Reply with a fenced JSON object: {"findings":[{"severity","category","path","line","title","body","sources":[{"kind","ref"}]}],"notes","sourcesUsed":["kind:ref"]}.',
   ].filter(Boolean).join('\n')
-  const lenses = await mapPool(selected, policy.maxParallelLenses, lens => runOneLens(ctx, lens, task, policy))
+  const { runs: lenses, failed, spend } = await runLenses(
+    selected,
+    policy.maxParallelLenses,
+    lens => lens.name,
+    lens => runOneLens(ctx, lens, task, policy),
+    phase.signal,
+  )
+  phase.recordUsage?.(spend)
+  const spentBy = [
+    ...lenses.map(lens => ({ name: lens.name, usage: lens.usage, findings: lens.result.findings.length })),
+    ...failed.map(lens => ({ name: lens.name, usage: lens.usage, findings: 0 })),
+  ]
   await mutateReview(ctx, review => {
     const round = [...review.rounds].reverse().find(item => item.jobId === ctx.job.id)
     if (!round) return
     // A lens can run twice in one round (candidates, then the verifier); costs add up.
     const costs = { ...(round.lensCosts ?? {}) }
-    for (const lens of lenses) {
+    for (const lens of spentBy) {
       const prior = costs[lens.name]
       costs[lens.name] = {
         costUsd: (prior?.costUsd ?? 0) + lens.usage.costUsd,
         inputTokens: (prior?.inputTokens ?? 0) + lens.usage.inputTokens,
         outputTokens: (prior?.outputTokens ?? 0) + lens.usage.outputTokens,
-        findings: (prior?.findings ?? 0) + lens.result.findings.length,
+        findings: (prior?.findings ?? 0) + lens.findings,
       }
     }
     round.lensCosts = costs
   }).catch(() => undefined)
-  return { lenses }
+  return {
+    lenses,
+    ...(failed.length > 0 ? { failed: failed.map(({ name, error }) => ({ name, error })) } : {}),
+  }
 }
 
 export async function reviewGetContext(
@@ -319,8 +333,9 @@ async function loadDraft(ctx: ToolContext): Promise<ReviewDraft | undefined> {
 /**
  * One draft per round: revisions replace it in place, so the checkpoint
  * never shows two. With `signals`, the write also decides the checkpoint:
- * an empty finished draft skips it (approving nothing is noise), and a
- * change to what will be posted withdraws an approval already given.
+ * an empty finished draft skips it (approving nothing is noise), and any
+ * change to what will be posted, including the first draft, withdraws an
+ * approval already given.
  */
 async function saveDraft(
   ctx: ToolContext,
@@ -339,7 +354,7 @@ async function saveDraft(
   change(draft)
   if (signals) {
     signals.checkpointWaived = draft.finish && draftIsEmpty(draft) ? 'Nothing to post on the pull request' : undefined
-    if (existing && postable(draft) !== before) signals.checkpointReopened = 'The review draft changed, so it needs approving again'
+    if (postable(draft) !== before) signals.checkpointReopened = 'The review draft changed, so it needs approving again'
   }
   const now = new Date()
   const artifact = {

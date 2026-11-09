@@ -67,6 +67,7 @@ phases:
     terminal: true
     tools:
       - mcp__coro__review_publish
+      - mcp__coro__escalate
       - mcp__coro__log
   - name: converse
     agent: agents/pr-review-converse.md

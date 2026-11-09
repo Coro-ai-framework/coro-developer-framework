@@ -131,6 +131,15 @@ describe('review draft and publish', () => {
     expect(h.draft()).toMatchObject({ body: 'Softer wording.', comments: [] })
   })
 
+  it('withdraws an approval given before the first draft existed', async () => {
+    const h = harness()
+    await h.reviews.save(makeReview())
+
+    const first: PhaseSignals = {}
+    await reviewSubmit(h.ctx, { verdict: 'approve', body: 'Looks good.', comments: [] }, first)
+    expect(first.checkpointReopened).toBeDefined()
+  })
+
   it('waives the checkpoint for an empty draft, and a later submit restores it', async () => {
     const h = harness()
     await h.reviews.save(makeReview())

@@ -16,6 +16,14 @@ import type { ToolContext } from '../tools/types'
 
 const WRITE_VERB = /(?:^|_)(create|update|delete|write|post|merge|transition|comment)(?:_|$)/i
 
+// Models cite `sourcesUsed` in the same `{kind, ref}` shape as a finding's
+// `sources`, so both forms are accepted and stored as `kind:ref`.
+const sourceCitation = z.union([
+  z.string(),
+  z.object({ kind: z.string().optional(), ref: z.string() })
+    .transform(source => (source.kind ? `${source.kind}:${source.ref}` : source.ref)),
+])
+
 export const lensResultSchema = z.object({
   findings: z.array(z.object({
     severity: z.enum(['blocker', 'major', 'minor', 'nit']),
@@ -30,7 +38,7 @@ export const lensResultSchema = z.object({
     })).optional(),
   })).default([]),
   notes: z.string().optional(),
-  sourcesUsed: z.array(z.string()).default([]),
+  sourcesUsed: z.array(sourceCitation).default([]),
 })
 
 export type LensResult = z.infer<typeof lensResultSchema>
@@ -93,7 +101,21 @@ export interface LensRunOptions {
   projectContext?: 'skip' | 'load'
 }
 
-export type LensRun = { name: string; result: LensResult; usage: { inputTokens: number; outputTokens: number; costUsd: number } }
+export type LensUsage = { inputTokens: number; outputTokens: number; costUsd: number }
+export type LensRun = { name: string; result: LensResult; usage: LensUsage }
+export type LensFailure = { name: string; error: string; usage: LensUsage }
+
+/** A lens that ran but could not produce valid output; `usage` is what it spent. */
+export class LensRunError extends Error {
+  constructor(message: string, readonly usage: LensUsage) {
+    super(message)
+    this.name = 'LensRunError'
+  }
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
 
 export async function runOneLens(
   ctx: ToolContext,
@@ -170,12 +192,18 @@ export async function runOneLens(
   } catch (err) {
     const repair = await executor.runSubagent({
       ...req,
-      task: `${task}\n\nYour previous output failed validation: ${err instanceof Error ? err.message : String(err)}. Reply with only a fenced JSON object.`,
+      task: `${task}\n\nYour previous output failed validation: ${messageOf(err)}. Reply with only a fenced JSON object.`,
+    }).catch(repairErr => {
+      throw new LensRunError(`${lens.name} lens repair turn failed: ${messageOf(repairErr)}`, usage)
     })
     usage.inputTokens += repair.usage.inputTokens
     usage.outputTokens += repair.usage.outputTokens
     usage.costUsd += repair.usage.totalCostUsd ?? 0
-    parsed = lensResultSchema.parse(extractJson(repair.output))
+    try {
+      parsed = lensResultSchema.parse(extractJson(repair.output))
+    } catch (repairErr) {
+      throw new LensRunError(`${lens.name} lens output failed validation twice: ${messageOf(repairErr)}`, usage)
+    }
   }
   if (lens.name === 'architecture') {
     parsed = {
@@ -198,6 +226,40 @@ export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => 
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
   return out
+}
+
+/**
+ * Runs lenses in parallel. A lens that fails comes back in `failed` with
+ * what it spent, so one bad lens neither discards the others' results nor
+ * hides their cost. An aborted phase still throws.
+ */
+export async function runLenses<T>(
+  items: T[],
+  limit: number,
+  nameOf: (item: T) => string,
+  run: (item: T) => Promise<LensRun>,
+  signal?: AbortSignal,
+): Promise<{ runs: LensRun[]; failed: LensFailure[]; spend: LensUsage }> {
+  const settled = await mapPool(items, limit, async (item): Promise<LensRun | LensFailure> => {
+    try {
+      return await run(item)
+    } catch (err) {
+      if (signal?.aborted) throw err
+      const usage = err instanceof LensRunError ? err.usage : { inputTokens: 0, outputTokens: 0, costUsd: 0 }
+      return { name: nameOf(item), error: messageOf(err), usage }
+    }
+  })
+  const runs = settled.filter((item): item is LensRun => 'result' in item)
+  const failed = settled.filter((item): item is LensFailure => 'error' in item)
+  const spend = settled.reduce(
+    (sum, item) => ({
+      inputTokens: sum.inputTokens + item.usage.inputTokens,
+      outputTokens: sum.outputTokens + item.usage.outputTokens,
+      costUsd: sum.costUsd + item.usage.costUsd,
+    }),
+    { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+  )
+  return { runs, failed, spend }
 }
 
 export function toolNameLooksWritable(name: string): boolean {
