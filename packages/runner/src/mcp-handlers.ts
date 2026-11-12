@@ -18,6 +18,7 @@ import {
 import { createWorkspaceTools, WorkspacePathError } from './tools/workspace-tools'
 import { loadLocalConfig } from './config/local-config'
 import { RETROSPECTIVE_REPORT_KIND } from './jobs/retrospective'
+import { changedPathsForPreview, mergeChangedPaths } from './jobs/changed-paths'
 import { validateRetrospectiveReport } from './tools/retrospective-report'
 import type {
   DispatchImprovementJobArgs,
@@ -1196,6 +1197,19 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       await ctx.stateBackend.updateJob(ctx.job.id, { artifacts })
       ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
       await ctx.stateBackend.appendLog(ctx.job.id, `[artifact] ${artifact.phase}/${kind}: ${title}`)
+      if (kind === 'pr-preview') {
+        // Later pull-request reviews ask which jobs touched the files under review.
+        try {
+          const paths = await changedPathsForPreview(ctx.job, ctx.settings.paths.workingDir, data ?? {})
+          if (paths.length > 0) {
+            const fresh = await ctx.stateBackend.getJob(ctx.job.id) as Job
+            await ctx.stateBackend.updateJob(ctx.job.id, {
+              params: { ...fresh.params, changedPaths: mergeChangedPaths(fresh.params?.['changedPaths'], paths) },
+            })
+            ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+          }
+        } catch { /* recording is best-effort */ }
+      }
       return text({ id: artifact.id, phase: artifact.phase, kind, title })
     },
 

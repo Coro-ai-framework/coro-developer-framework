@@ -499,6 +499,7 @@ class GitLabScmPlugin extends ScmPluginBase<GitLabPluginConfig> {
       diff_refs?: { base_sha?: string; head_sha?: string }
       author?: { username?: string }
       labels?: string[]
+      description?: string | null
     }>(`/projects/${project}/merge_requests/${mrIid}`)
     const changes = await this.gl<{ changes?: Array<{ new_path: string; diff?: string }> }>(
       `/projects/${project}/merge_requests/${mrIid}/changes`,
@@ -518,6 +519,7 @@ class GitLabScmPlugin extends ScmPluginBase<GitLabPluginConfig> {
         deletions: 0,
       })),
       ...(mr.web_url ? { url: mr.web_url } : {}),
+      ...(mr.description?.trim() ? { body: mr.description } : {}),
     }
   }
 

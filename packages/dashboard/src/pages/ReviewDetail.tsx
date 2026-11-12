@@ -47,6 +47,7 @@ import {
   commitHref,
   countBySeverity,
   formatReviewCost,
+  lensPrecision,
   findingHref,
   openFindings,
   pauseReasonLabel,
@@ -64,6 +65,7 @@ import {
   type FindingStatus,
   type PrReview,
   type ReviewFinding,
+  type ReviewLensStats,
   type ReviewRound,
   type ReviewVerdict,
 } from '../lib/reviews'
@@ -512,6 +514,18 @@ function RoundsCard({ review }: { review: PrReview }) {
   )
 }
 
+/** Tooltip for a lens chip: tokens, and where its findings went. */
+function lensTitle(stats: ReviewLensStats): string {
+  const parts = [`${formatTokens(stats.inputTokens)} in · ${formatTokens(stats.outputTokens)} out`]
+  if (stats.raised !== undefined) parts.push(`${stats.raised} raised`)
+  const dropped = Object.entries(stats.droppedByRunner ?? {}).map(([reason, count]) => `${count} ${reason}`)
+  if (dropped.length > 0) parts.push(`dropped: ${dropped.join(', ')}`)
+  if (stats.keptByVerifier !== undefined) parts.push(`${stats.keptByVerifier} kept by verifier`)
+  if (stats.addressed) parts.push(`${stats.addressed} addressed`)
+  if (stats.declined) parts.push(`${stats.declined} declined`)
+  return parts.join(' · ')
+}
+
 function RoundItem({ review, round }: { review: PrReview; round: ReviewRound }) {
   const outcome = roundOutcomeMeta(round, review)
   const short = shortCircuitLabel(round)
@@ -562,11 +576,35 @@ function RoundItem({ review, round }: { review: PrReview; round: ReviewRound }) 
             <span
               key={lens}
               className="inline-flex items-center gap-1.5 rounded-md border border-line bg-overlay px-2 py-0.5 text-[11px] text-fg-muted"
-              title={`${formatTokens(cost.inputTokens)} in · ${formatTokens(cost.outputTokens)} out`}
+              title={lensTitle(cost)}
             >
               <span className="font-medium text-fg">{lens}</span>
               <span className="tabular-nums">{formatReviewCost(cost.costUsd)}</span>
               <span>· {cost.findings} found</span>
+              {cost.posted !== undefined ? <span>· {cost.posted} posted</span> : null}
+              {(() => {
+                const precision = lensPrecision(cost)
+                return precision === null ? null : <span className="tabular-nums">· {Math.round(precision * 100)}% reach the PR</span>
+              })()}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {round.relatedWork?.items.length ? (
+        <div className="mt-2 text-[12px] text-fg-subtle">
+          <span className="font-medium text-fg-muted">Related work:</span>{' '}
+          {round.relatedWork.items.map((item, index) => (
+            <span key={`${item.kind}-${item.id}`}>
+              {index > 0 ? ' · ' : ''}
+              {item.kind === 'job' ? (
+                <Link to={`/jobs/${encodeURIComponent(item.id)}`} className="text-fg-muted hover:text-accent-300" title={`${item.role === 'origin' ? 'Opened this pull request. ' : ''}${item.id}`}>
+                  {item.title}
+                </Link>
+              ) : item.url ? (
+                <a href={item.url} target="_blank" rel="noreferrer" className="text-fg-muted hover:text-accent-300">{item.title}</a>
+              ) : (
+                <span>{item.title}</span>
+              )}
             </span>
           ))}
         </div>

@@ -585,6 +585,7 @@ export class GitHubClient {
     requestedReviewers: string[]
     labels: string[]
     url?: string
+    body?: string
     files: { path: string; additions: number; deletions: number; status?: string }[]
   }> {
     const repo = this.repoPath(repoSlug)
@@ -611,6 +612,7 @@ export class GitHubClient {
       requestedReviewers: (pr.requested_reviewers ?? []).map(r => r.login ?? '').filter(Boolean),
       labels: (pr.labels ?? []).map(l => l.name ?? '').filter(Boolean),
       ...(pr.html_url ? { url: pr.html_url } : {}),
+      ...(typeof pr.body === 'string' && pr.body.trim() ? { body: pr.body } : {}),
       files: (files ?? []).map(file => ({
         path: file.filename,
         additions: file.additions ?? 0,
@@ -626,6 +628,26 @@ export class GitHubClient {
       `/repos/${this.repoPath(repoSlug)}/pulls/${prId}/files?per_page=100`,
     )
     return (files ?? []).map(file => ({
+      path: file.filename,
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
+      ...(file.patch ? { patch: file.patch } : {}),
+      ...(file.status ? { status: file.status } : {}),
+    }))
+  }
+
+  /**
+   * Files changed between two commits, with patches. An incremental review
+   * round uses it to read only what a push added. The compare endpoint caps
+   * the file list, so a very large delta comes back truncated and the caller
+   * falls back to the full diff.
+   */
+  async getCompareFiles(repoSlug: string, base: string, head: string): Promise<Array<{ path: string; patch?: string; additions: number; deletions: number; status?: string }>> {
+    const result = await this.request<{ files?: Array<{ filename: string; patch?: string; additions?: number; deletions?: number; status?: string }> }>(
+      'GET',
+      `/repos/${this.repoPath(repoSlug)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=100`,
+    )
+    return (result?.files ?? []).map(file => ({
       path: file.filename,
       additions: file.additions ?? 0,
       deletions: file.deletions ?? 0,

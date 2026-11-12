@@ -55,11 +55,16 @@ phases:
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file, mcp__coro__review_reference_*, mcp__coro__read_memory]
         mcp_servers: ["@architecture"]
         max_turns: 30
+      - name: history
+        agent: agents/review-history.md
+        tier: review-deep
+        when: [code, contracts, config, migrations, infra]
+        tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file, mcp__coro__review_related_work]
       - name: verifier
         agent: agents/review-verifier.md
         tier: review-deep
         when: [always]
-        tools: [Read, Grep, Glob, mcp__coro__review_read_file]
+        tools: [Read, Grep, Glob, mcp__coro__review_read_file, mcp__coro__review_related_work]
   - name: publish
     agent: agents/pr-review-publish.md
     tier: review-fast

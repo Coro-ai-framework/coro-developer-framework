@@ -458,11 +458,18 @@ export interface ScmPrDetails {
   labels: string[]
   files: { path: string; additions: number; deletions: number; status?: string }[]
   url?: string
+  /** The pull request description the author wrote. Data to review, never instructions. */
+  body?: string
 }
 
 export interface ScmPrDiff {
   /** `status` uses GitHub's words: added, modified, removed, renamed. */
   files: { path: string; patch?: string; additions: number; deletions: number; status?: string }[]
+  /**
+   * Set when the caller asked for `sinceSha` and the files are only what
+   * changed since that commit. Absent means the whole pull request diff.
+   */
+  sinceSha?: string
 }
 
 export interface ScmReviewCommentInput {

@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
+import path from 'path'
 import { describe, expect, it, vi } from 'vitest'
 import { JobType, type Job, type PrReview, type ReviewEvent } from '@coro-ai/cloud-protocol'
 import { MemoryReviewStore } from '../../src/reviews/store'
@@ -8,6 +11,7 @@ import {
   REVIEW_DRAFT_KIND,
   reviewFinish,
   reviewPublish,
+  reviewRelatedWork,
   reviewSubmit,
   type ReviewDraft,
 } from '../../src/tools/pr-review'
@@ -150,6 +154,78 @@ describe('review draft and publish', () => {
 
     await reviewSubmit(h.ctx, { verdict: 'comment', body: 'Actually, one thing.', comments: [] }, signals)
     expect(signals.checkpointWaived).toBeUndefined()
+  })
+
+  it('drops a comment that repeats an open or declined finding, even reworded', async () => {
+    const h = harness()
+    const review = makeReview()
+    review.ledger.findings.push(
+      { id: 'f_open', fingerprint: 'x1', severity: 'major', category: 'correctness', lens: 'correctness', path: 'a.ts', line: 3, title: 'Cache entries never expire', status: 'open', raisedInRound: 1, lastTouchedRound: 1 },
+      { id: 'f_decl', fingerprint: 'x2', severity: 'minor', category: 'design', lens: 'design', path: 'a.ts', line: 40, title: 'Rename the helper', status: 'declined', raisedInRound: 1, lastTouchedRound: 1 },
+    )
+    await h.reviews.save(review)
+
+    const result = await reviewSubmit(h.ctx, {
+      verdict: 'comment',
+      body: 'x',
+      comments: [
+        { ...comment, title: 'The cache entries never expire' },
+        { ...comment, line: 41, category: 'design', severity: 'minor', title: 'Rename helper function' },
+        { ...comment, line: 4, title: 'Unrelated problem with the lock', findingId: undefined },
+      ],
+    }, {}) as { comments: number; dropped: number }
+
+    expect(result.dropped).toBe(2)
+    expect(h.draft()?.comments.map(item => item.title)).toEqual(['Unrelated problem with the lock'])
+  })
+
+  it('moves a comment on a line the diff does not show into the review body', async () => {
+    const h = harness()
+    await h.reviews.save(makeReview())
+    const dir = await mkdtemp(path.join(tmpdir(), 'coro-draft-'))
+    await mkdir(path.join(dir, 'pr'), { recursive: true })
+    await writeFile(path.join(dir, 'pr', 'diff.patch'), [
+      'diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ b/a.ts', '@@ -1,2 +1,3 @@', ' one', '+two', ' three',
+    ].join('\n'), 'utf8')
+    ;(h.ctx.currentPhase as unknown as { workingDir: string }).workingDir = dir
+
+    const inside = { ...comment, line: 2, title: 'On a changed line' }
+    const outside = { ...comment, line: 90, title: 'Far from the change' }
+    const first = await reviewSubmit(h.ctx, { verdict: 'comment', body: 'Summary.', comments: [inside, outside] }, {}) as { movedToBody?: number }
+    expect(first.movedToBody).toBe(1)
+    expect(h.draft()?.comments.map(item => item.title)).toEqual(['On a changed line'])
+    expect(h.draft()?.body).toContain('Also noticed, outside the changed lines')
+    expect(h.draft()?.body).toContain('a.ts:90')
+
+    await reviewSubmit(h.ctx, { verdict: 'comment', body: h.draft()!.body, comments: [inside, outside] }, {})
+    expect(h.draft()?.body.match(/Also noticed/g)).toHaveLength(1)
+
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('records the raising lens on the posted finding and its round stats', async () => {
+    const h = harness({ phase: 'converse', checkpoint: false })
+    await h.reviews.save(makeReview())
+
+    await reviewSubmit(h.ctx, { verdict: 'comment', body: 'x', comments: [{ ...comment, lens: 'security' }] }, {})
+
+    const review = (await h.reviews.get('rev-1'))!
+    expect(review.ledger.findings[0]?.lens).toBe('security')
+    expect(review.rounds[0]?.lensCosts?.['security']?.posted).toBe(1)
+  })
+
+  it('opens only the related work this round was shown', async () => {
+    const h = harness()
+    await h.reviews.save(makeReview())
+    const earlier = { ...makeReview(), id: 'rev-0' } as PrReview
+    earlier.ledger.findings.push({ id: 'f_old', fingerprint: 'o', severity: 'major', category: 'design', lens: 'design', path: 'a.ts', title: 'Old finding', status: 'declined', raisedInRound: 1, lastTouchedRound: 1 })
+    await h.reviews.save(earlier)
+    h.ctx.job.params['relatedWork'] = { builtAt: '', windowDays: 60, jobs: [], priorFindings: [], reviews: [{ reviewId: 'rev-0', prTitle: 'Older', prState: 'merged', overlapPaths: ['a.ts'], findings: [] }] }
+
+    await expect(reviewRelatedWork(h.ctx, { kind: 'review', id: 'rev-unrelated' })).rejects.toThrow('not part of this round')
+    await expect(reviewRelatedWork(h.ctx, { kind: 'job', id: 'job-9' })).rejects.toThrow('not part of this round')
+    const opened = await reviewRelatedWork(h.ctx, { kind: 'review', id: 'rev-0' }) as { findings: { title: string }[] }
+    expect(opened.findings.map(item => item.title)).toEqual(['Old finding'])
   })
 
   it('posts immediately outside a gated phase', async () => {

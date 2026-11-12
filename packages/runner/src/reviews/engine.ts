@@ -1,6 +1,18 @@
 import os from 'os'
 import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
-import { STATUS_AWAITING_DEVELOPER_INPUT, type Job, type PrReview, type ReviewEvent, type RoundKind } from '@coro-ai/cloud-protocol'
+import {
+  STATUS_AWAITING_DEVELOPER_INPUT,
+  STATUS_CANCELLED,
+  STATUS_COMPLETE,
+  STATUS_ESCALATED,
+  STATUS_FAILED,
+  type Job,
+  type PrReview,
+  type ReviewEvent,
+  type RoundKind,
+} from '@coro-ai/cloud-protocol'
+import { MAX_RECORDED_PATHS, mergeChangedPaths } from '../jobs/changed-paths'
+import { buildRelatedWork, HISTORY_LENS, type RelatedWork } from './related-work'
 import type { Dispatcher } from '../jobs/dispatcher'
 import type { RunnerContext } from '../jobs/runner'
 import type { LocalConfig } from '../config/local-config'
@@ -206,8 +218,20 @@ export async function createRoundPipeline(
       const scm = ctx.plugins.byId(review.prRef.pluginId) as ScmPluginRuntime | undefined
       if (!scm) throw new Error(`No ${review.prRef.pluginId} plugin is configured.`)
       const round = await prepareRound({ scm, review, policy, lenses })
+      const shortCircuit = shortCircuitFor(review, kind, round)
+      if (!shortCircuit && RELATED_WORK_ROUNDS.has(kind)) {
+        const related = await relatedWorkFor(ctx, scm, review, round.packet.files.map(file => file.path))
+        if (related) {
+          round.relatedWork = related
+        } else {
+          // Nothing to compare against: the history lens has no input, so it is not routed.
+          round.packet.routes = round.packet.routes.filter(route => route.name !== HISTORY_LENS)
+        }
+      } else if (!shortCircuit) {
+        round.packet.routes = round.packet.routes.filter(route => route.name !== HISTORY_LENS)
+      }
       prepared.set(review.id, round)
-      return shortCircuitFor(review, kind, round)
+      return shortCircuit
     },
     dispatchRound: async (review, kind, events) => {
       const round = prepared.get(review.id)
@@ -232,6 +256,8 @@ export async function createRoundPipeline(
           baseSha: review.pr.baseSha,
           ...(round ? { reviewPacket: round.packet, prPatchIds: round.patchIds } : {}),
           ...(round?.repoGuidance ? { repoGuidance: round.repoGuidance } : {}),
+          ...(round?.description ? { prDescription: round.description } : {}),
+          ...(round?.relatedWork ? { relatedWork: round.relatedWork } : {}),
           description: `Review ${review.pr.title || review.pr.url || review.prRef.externalId} (${kind})`,
           serviceName: (review.prRef.repoKey ?? 'pr').replace(/[^\w.-]+/g, '-'),
           triggeringEvents: events.map(event => ({ kind: event.kind, at: event.at })),
@@ -241,6 +267,78 @@ export async function createRoundPipeline(
       return { jobId: job.id }
     },
   }
+}
+
+/** Rounds that run lenses. A conversation reply or a close does not need the history. */
+const RELATED_WORK_ROUNDS: ReadonlySet<RoundKind> = new Set<RoundKind>(['initial', 'incremental', 'rerequest'])
+
+/**
+ * Same-repository jobs and reviews that bear on this round. Failing to build
+ * it costs the round some context, never the round: any error is logged and
+ * the review proceeds without it.
+ */
+async function relatedWorkFor(
+  ctx: RunnerContext,
+  scm: ScmPluginRuntime,
+  review: PrReview,
+  files: string[],
+): Promise<RelatedWork | null> {
+  try {
+    const [jobs, reviews] = await Promise.all([ctx.stateBackend.listJobs(), ctx.stateBackend.reviews.list()])
+    return await buildRelatedWork({
+      review,
+      files,
+      jobs,
+      reviews,
+      workingRoot: ctx.settings.paths.workingDir,
+      changedPathsFor: job => changedPathsViaScm(ctx, scm, review, job),
+    })
+  } catch (err) {
+    ctx.logger.warn({ err, reviewId: review.id }, 'could not build related work for the review round')
+    return null
+  }
+}
+
+const scmPathMemo = new Map<string, string[]>()
+
+/**
+ * Older jobs recorded no changed paths. The pull request they opened still
+ * knows, so ask the SCM once and keep the answer on the job so no later
+ * round asks again.
+ */
+async function changedPathsViaScm(
+  ctx: RunnerContext,
+  scm: ScmPluginRuntime,
+  review: PrReview,
+  job: Job,
+): Promise<string[] | undefined> {
+  if (!scm.getPrDetails) return undefined
+  const mapping = job.prMappings?.[0]
+  const link = (job.artifacts ?? []).find(item => item.kind === 'pr-link')?.data as Record<string, unknown> | undefined
+  const prId = mapping?.prId ?? (link && Number.isFinite(Number(link['prId'])) ? Number(link['prId']) : undefined)
+  const repoKey = review.prRef.repoKey
+  if (prId === undefined || !repoKey) return undefined
+  const jobScm = job.params?.['scm']
+  if (typeof jobScm === 'string' && jobScm !== review.prRef.pluginId) return undefined
+
+  const key = `${review.prRef.pluginId}:${repoKey}#${prId}`
+  const known = scmPathMemo.get(key)
+  if (known) return known
+  const details = await scm.getPrDetails({
+    kind: 'pull_request',
+    pluginId: review.prRef.pluginId,
+    repoKey,
+    externalId: String(prId),
+  })
+  const paths = details.files.map(file => file.path).slice(0, MAX_RECORDED_PATHS)
+  scmPathMemo.set(key, paths)
+  const settled = new Set<string>([STATUS_COMPLETE, STATUS_FAILED, STATUS_CANCELLED, STATUS_ESCALATED])
+  if (settled.has(job.status)) {
+    await ctx.stateBackend
+      .updateJob(job.id, { params: { ...job.params, changedPaths: mergeChangedPaths(job.params?.['changedPaths'], paths) } })
+      .catch(() => undefined)
+  }
+  return paths
 }
 
 async function workflowLenses(ctx: RunnerContext, policy: ReviewPolicy): Promise<{ name: string; when?: string[] }[]> {

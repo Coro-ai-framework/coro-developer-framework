@@ -573,6 +573,7 @@ class BitBucketScmPlugin implements ScmPluginRuntime<BitBucketPluginConfig> {
       labels: [],
       files: files.map(file => ({ path: file.path, additions: file.additions, deletions: file.deletions })),
       ...(pr.links?.html?.href ? { url: pr.links.html.href } : {}),
+      ...(pr.description?.trim() ? { body: pr.description } : {}),
     }
   }
 

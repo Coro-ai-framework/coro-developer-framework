@@ -493,6 +493,66 @@ of quietly downgrading it.
 
 ---
 
+## PR review: related work and lens inputs
+
+A `pr-review` round does not review the diff in isolation, and the lenses are
+not handed one shared task.
+
+**Related work** (`reviews/related-work.ts`). `ReviewCoordinator.assess`
+(`reviews/engine.ts`) builds, without a model, what Coro already knows about
+the files in the pull request: the job that opened it (`prMappings` or the
+`pr-link` artefact), other recent jobs on the same repository whose changed
+paths overlap (`params.changedPaths`, recorded when a job posts its
+`pr-preview` artefact; `changedFiles`; `register.json` traceability; and a
+capped, memoised SCM lookup for older jobs), and earlier reviews of the
+repository with their declined and addressed findings. The result is stored
+as `params.relatedWork`, written to `pr/related-work.md`, and summarised on
+the round for the dashboard. It is recorded data, never instructions, and a
+failure to build it costs the round context, not the round. The tool shell
+stays dumb: the `history` lens (`agents/review-history.md`) judges whether the
+change contradicts it, and `review_related_work` opens one job or review for
+it, but only an id this round was shown. The job-history tools remain
+retrospective-only; PR review has its own, narrower reader. The history lens
+is declared in `workflows/pr-review/workflow.md` only; coding workflows keep
+their exact lens lists. Its findings must cite a `job` or `review` source or
+the runner drops them.
+
+**Per-lens briefs** (`buildLensBrief` in `reviews/lens-runner.ts`, shared with
+`tools/code-review.ts`). Each lens gets its own file slice, the author's
+description, the open and declined ledger, human threads, the repository's
+review guidance, `memory/pr-feedback.md`, problems declined on other pull
+requests, and, on an incremental round, `pr/delta.patch` (what the last push
+changed, from the SCM's compare API where the plugin implements `sinceSha`;
+otherwise the full diff). Lenses return `evidence`, `scenario`, `confidence`
+and optionally `findingId`.
+
+**Runner filters**, in this order, before the lead sees anything:
+low-confidence findings become notes; unsourced architecture and history
+findings are dropped; findings that match the ledger (by `findingId`,
+fingerprint, or same-place fuzzy title match, `reviews/finding-match.ts`) or a
+problem declined on another pull request are dropped, except a blocker; the
+same problem from two lenses is kept once. `review_submit` repeats the ledger
+check and moves a comment on a line outside the diff
+(`reviews/diff-hunks.ts`; files the SCM returned no patch for are not
+second-guessed) into the review body, because an SCM refuses or detaches it.
+The brief and the filters share one matcher on purpose.
+
+**Architecture inputs** (`reviews/architecture-brief.ts`). The brief the
+architecture lens is told to read is built from the configured
+`architectureSources` at the base commit, and user-configured
+`contractCheckers` compare base and head versions of changed contract files;
+the results reach the lens as `pr/checker-results.json`. A repository cannot
+add a checker.
+
+**Precision telemetry.** Each round's `lensCosts` records, per lens, what it
+raised, what the runner dropped and why, what the verifier kept, what was
+posted, and what was later addressed or declined (`reviews/lens-stats.ts`).
+`Finding.resolution = 'closed-open'` marks a thread settled by closing the
+pull request rather than by a fix, so neither the lens's tally nor the
+related-work builder counts it as evidence the code was corrected.
+
+---
+
 ## Repository structure
 
 ```

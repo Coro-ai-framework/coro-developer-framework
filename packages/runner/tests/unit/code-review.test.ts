@@ -118,7 +118,7 @@ describe('code_review_lenses', () => {
     expect(request.cwd).toBe(path.join(root, 'job-1', 'svc'))
     expect(request.projectContext).toBe('load')
     expect(request.task).toContain('code-review/diff.patch')
-    expect(request.task).toContain('Work item under review: add-cache')
+    expect(request.task).toContain('Work item: add-cache')
     expect(readFileSync(path.join(root, 'job-1', 'code-review', 'diff.patch'), 'utf8')).toContain('=== src/a.ts')
     // The same finding from three lenses is one finding.
     expect(result.findings).toHaveLength(1)

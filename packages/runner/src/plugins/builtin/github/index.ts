@@ -413,9 +413,22 @@ class GitHubScmPlugin implements ScmPluginRuntime<GitHubPluginConfig> {
     }
   }
 
-  async getPrDiff(ref: ExternalRef) {
+  async getPrDiff(ref: ExternalRef, opts?: { sinceSha?: string; paths?: string[] }) {
     const { repoSlug, prId } = parseRef(ref, this.manifest.id)
-    return { files: await this.clientFor(repoSlug).getPrFiles(repoSlug, prId) }
+    const client = this.clientFor(repoSlug)
+    if (opts?.sinceSha) {
+      // Only what changed since a commit. If that commit is gone (a force push) or
+      // the compare is too large, fall through to the whole diff; the caller sees
+      // from the missing `sinceSha` that it did not get a delta.
+      try {
+        const details = await client.getPrDetails(repoSlug, prId)
+        if (details.headSha && details.headSha !== opts.sinceSha) {
+          const files = await client.getCompareFiles(repoSlug, opts.sinceSha, details.headSha)
+          if (files.length > 0 && files.length < 100) return { files, sinceSha: opts.sinceSha }
+        }
+      } catch { /* full diff below */ }
+    }
+    return { files: await client.getPrFiles(repoSlug, prId) }
   }
 
   async submitReview(ref: ExternalRef, review: {

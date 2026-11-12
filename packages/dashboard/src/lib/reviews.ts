@@ -28,8 +28,37 @@ export interface ReviewFinding {
   body?: string
   status: FindingStatus
   commentId?: string
+  /** `closed-open` means the pull request closed with the thread open; the code was not necessarily fixed. */
+  resolution?: 'resolved' | 'closed-open'
   raisedInRound: number
   lastTouchedRound: number
+}
+
+export interface ReviewLensStats {
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  findings: number
+  raised?: number
+  keptByVerifier?: number
+  droppedByRunner?: Record<string, number>
+  posted?: number
+  addressed?: number
+  declined?: number
+}
+
+export interface ReviewRelatedWorkItem {
+  kind: 'job' | 'review'
+  id: string
+  title: string
+  url?: string
+  role: 'origin' | 'overlap'
+}
+
+/** Share of a lens's raised findings that reached the pull request, or null before there is data. */
+export function lensPrecision(stats: ReviewLensStats): number | null {
+  if (!stats.raised || stats.posted === undefined) return null
+  return stats.posted / stats.raised
 }
 
 export interface ReviewRound {
@@ -43,7 +72,9 @@ export interface ReviewRound {
   verdict?: ReviewVerdict
   summary: string
   costUsd: number
-  lensCosts?: Record<string, { costUsd: number; inputTokens: number; outputTokens: number; findings: number }>
+  lensCosts?: Record<string, ReviewLensStats>
+  /** Earlier Coro work the round was shown. */
+  relatedWork?: { items: ReviewRelatedWorkItem[] }
   shortCircuit?: 'patch-unchanged' | 'irrelevant-conversation' | 'out-of-scope' | 'deterministic-close'
 }
 

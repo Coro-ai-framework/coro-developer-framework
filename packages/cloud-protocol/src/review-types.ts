@@ -66,9 +66,17 @@ export type ReviewShortCircuit =
   | 'deterministic-close'
 
 export interface FindingSource {
-  kind: 'code' | 'adr' | 'catalog' | 'doc' | 'checker' | 'memory'
+  /** `job` and `review` cite earlier Coro work on the same repository (history lens). */
+  kind: 'code' | 'adr' | 'catalog' | 'doc' | 'checker' | 'memory' | 'job' | 'review'
   ref: string
 }
+
+/**
+ * How a finding left `open`. `closed-open` means the pull request closed
+ * while it was still open, so it was never shown to be fixed. Later rounds
+ * and the lens telemetry do not count it as addressed.
+ */
+export type FindingResolution = 'resolved' | 'closed-open'
 
 export interface Finding {
   id: string
@@ -85,6 +93,8 @@ export interface Finding {
   threadId?: string
   commentId?: string
   sources?: FindingSource[]
+  /** Set when the finding leaves `open`; absent on findings recorded before it existed. */
+  resolution?: FindingResolution
   raisedInRound: number
   lastTouchedRound: number
 }
@@ -117,8 +127,38 @@ export interface ReviewRoundSummary {
   verdict?: ReviewVerdict
   summary: string
   costUsd: number
-  lensCosts?: Record<string, { costUsd: number; inputTokens: number; outputTokens: number; findings: number }>
+  lensCosts?: Record<string, LensRoundStats>
+  /** Earlier Coro work the round was shown. Lets a reader see what the review knew. */
+  relatedWork?: RoundRelatedWork
   shortCircuit?: ReviewShortCircuit
+}
+
+/**
+ * What one lens spent and how its findings fared in one round. `findings`
+ * is what the lens returned; the rest is the funnel after it, so a lens
+ * that is mostly noise shows up as a low `posted / raised`.
+ */
+export interface LensRoundStats {
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  findings: number
+  /** Findings the lens raised before the runner filtered anything. */
+  raised?: number
+  /** Findings the verifier kept. Counted against the lens that raised them. */
+  keptByVerifier?: number
+  /** Findings the runner dropped, keyed by reason (`duplicate`, `declined`, `prior-declined`, `low-confidence`, `unsourced`). */
+  droppedByRunner?: Record<string, number>
+  /** Findings that reached the pull request as comments. */
+  posted?: number
+  /** Posted findings later marked addressed because the code changed. */
+  addressed?: number
+  /** Posted findings later declined. */
+  declined?: number
+}
+
+export interface RoundRelatedWork {
+  items: { kind: 'job' | 'review'; id: string; title: string; url?: string; role: 'origin' | 'overlap' }[]
 }
 
 export interface PendingVerdict {

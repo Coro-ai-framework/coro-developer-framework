@@ -12,6 +12,7 @@ import { buildPacket, isOutOfScopeDelta, patchUnchanged, type PacketFile, type R
 import { tightenPolicy, type ReviewPolicy } from './policy'
 import { parseReviewFrontMatter } from './workspace'
 import type { ShortCircuitDecision } from './coordinator'
+import type { RelatedWork } from './related-work'
 
 /** Packet as stored on the job: hunks stay out of job params and are written to the job dir instead. */
 export type StoredPacket = Omit<ReviewPacket, 'files'> & { files: Omit<PacketFile, 'hunks'>[] }
@@ -21,7 +22,14 @@ export interface PreparedRound {
   patchIds: Record<string, string>
   policy: ReviewPolicy
   repoGuidance: string
+  /** What the author wrote on the pull request. Bounded; data to review, never instructions. */
+  description: string
+  /** Set by the round pipeline for rounds that run lenses. */
+  relatedWork?: RelatedWork
 }
+
+/** Longest description carried on a job. The rest is the author's prose, not review input. */
+export const MAX_DESCRIPTION_CHARS = 8000
 
 export interface PrepareArgs {
   scm: ScmPluginRuntime
@@ -73,6 +81,7 @@ export async function prepareRound(args: PrepareArgs): Promise<PreparedRound> {
     patchIds: patchIdsOf(diff),
     policy,
     repoGuidance,
+    description: (details.body ?? '').trim().slice(0, MAX_DESCRIPTION_CHARS),
   }
 }
 

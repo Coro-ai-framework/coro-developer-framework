@@ -14,7 +14,8 @@ import { mkdir, stat, writeFile } from 'fs/promises'
 import path from 'path'
 import { isPrReviewJob, deriveRepoCheckoutDir } from '../jobs/helpers'
 import { findingFingerprint } from '../reviews/id'
-import { runLenses, runOneLens, type LensRun } from '../reviews/lens-runner'
+import { dedupeFindings } from '../reviews/finding-match'
+import { buildLensBrief, readFeedbackExcerpt, runLenses, runOneLens, type LensRun } from '../reviews/lens-runner'
 import { readLocalDiff } from '../reviews/local-diff'
 import { buildPacket, type ReviewPacket } from '../reviews/packet'
 import { REVIEW_POLICY_DEFAULTS, severityAtLeast, type ReviewPolicy, type ReviewSeverity } from '../reviews/policy'
@@ -146,22 +147,41 @@ function selectLenses(
 }
 
 function taskFor(args: {
+  lens: string
   checkout: string
   diffPath: string
   paths: string[]
   minSeverity: ReviewSeverity
   workItem: string
+  intent?: string
+  feedback?: string
+  priorFindings: CodeReviewFinding[]
   candidates?: unknown[]
 }): string {
-  return [
-    `You are reviewing a change that is still being written. Its checkout is your working directory: ${args.checkout}. The unified diff against the base branch is at ${args.diffPath}. Read files from the checkout; do not run anything from it.`,
-    args.workItem !== WHOLE_JOB ? `Work item under review: ${args.workItem}.` : '',
-    'Review only the files in your slice. Cite path and line from the working-tree version.',
-    `Severity floor: ${args.minSeverity}. Do not emit findings below it.`,
-    args.paths.length ? `Paths: ${args.paths.join(', ')}` : '',
-    args.candidates ? `Candidates to verify:\n${JSON.stringify(args.candidates)}` : '',
-    'Reply with a fenced JSON object: {"findings":[{"severity","category","path","line","title","body","sources":[{"kind","ref"}]}],"notes","sourcesUsed":["kind:ref"]}.',
-  ].filter(Boolean).join('\n')
+  return buildLensBrief({
+    lens: args.lens,
+    mode: args.lens === 'verifier' ? 'verify' : 'review',
+    diffPath: args.diffPath,
+    checkout: args.checkout,
+    paths: args.paths,
+    minSeverity: args.minSeverity,
+    intent: {
+      ...(args.intent ? { title: args.intent } : {}),
+      ...(args.workItem !== WHOLE_JOB ? { workItem: args.workItem } : {}),
+    },
+    // What an earlier pass of this work item already reported is not news.
+    // The verifier's candidates are those very findings, so it is not told to drop them.
+    ledger: (args.lens === 'verifier' ? [] : args.priorFindings).map(finding => ({
+      id: finding.fingerprint,
+      status: 'open',
+      severity: finding.severity,
+      ...(finding.path ? { path: finding.path } : {}),
+      ...(finding.line !== undefined ? { line: finding.line } : {}),
+      title: finding.title,
+    })),
+    ...(args.feedback ? { feedback: args.feedback } : {}),
+    ...(args.candidates ? { candidates: args.candidates } : {}),
+  })
 }
 
 function toFinding(lens: string, raw: LensRun['result']['findings'][number]): CodeReviewFinding {
@@ -178,16 +198,14 @@ function toFinding(lens: string, raw: LensRun['result']['findings'][number]): Co
   }
 }
 
-/** One finding per fingerprint; the more severe copy wins. */
+/**
+ * One finding per problem; the more severe copy wins. Two lenses word the
+ * same problem differently and file it under different categories, so the
+ * second pass matches on place and words, not on the fingerprint alone.
+ */
 function dedupe(findings: CodeReviewFinding[]): CodeReviewFinding[] {
-  const byFingerprint = new Map<string, CodeReviewFinding>()
-  for (const finding of findings) {
-    const seen = byFingerprint.get(finding.fingerprint)
-    if (!seen || (!severityAtLeast(seen.severity, finding.severity) && severityAtLeast(finding.severity, seen.severity))) {
-      byFingerprint.set(finding.fingerprint, finding)
-    }
-  }
-  return [...byFingerprint.values()]
+  const exact = dedupeFindings(findings).kept
+  return dedupeFindings(exact, { ignoreCategory: true }).kept
 }
 
 async function updateItem(
@@ -272,6 +290,7 @@ export async function codeReviewLenses(ctx: ToolContext, args: CodeReviewArgs): 
   const { lenses: selected, note } = selectLenses(declared, packet, args.lenses)
   const previous = await previousItem(ctx, workItem)
   const notes = note ? [note] : []
+  const feedback = readFeedbackExcerpt(phase.jobIntelligenceDir)
 
   const { runs, failed, spend } = await runLenses(
     selected,
@@ -281,11 +300,15 @@ export async function codeReviewLenses(ctx: ToolContext, args: CodeReviewArgs): 
       ctx,
       lens,
       taskFor({
+        lens: lens.name,
         checkout,
         diffPath,
         paths,
         minSeverity: policy.minSeverity,
         workItem,
+        ...(typeof ctx.job.params['description'] === 'string' ? { intent: ctx.job.params['description'].slice(0, 300) } : {}),
+        ...(feedback ? { feedback } : {}),
+        priorFindings: (previous?.findings ?? []).filter(finding => !finding.dropped),
         ...(args.candidates ? { candidates: args.candidates } : {}),
       }),
       policy,

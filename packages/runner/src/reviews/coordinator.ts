@@ -20,6 +20,7 @@ import {
 } from '@coro-ai/cloud-protocol'
 import { commandIsAuthorised, parseReviewCommand } from './commands'
 import { reviewIdFor } from './id'
+import { settleFinding } from './lens-stats'
 import type { ReviewPolicy } from './policy'
 import type { ReviewStore } from './store'
 
@@ -857,7 +858,8 @@ function applyDeterministicClose(review: PrReview): void {
   for (const finding of review.ledger.findings) {
     if (finding.status !== 'open') continue
     const status: FindingStatus = finding.threadId || finding.commentId ? 'addressed' : 'outdated'
-    finding.status = status
+    // Closing the pull request settles the thread; it does not say the code was fixed.
+    settleFinding(review, finding, status, 'closed-open')
     finding.lastTouchedRound = review.totals.rounds + 1
   }
 }

@@ -34,12 +34,30 @@ export interface LensRoute {
   paths: string[]
 }
 
+/** What one configured contract checker said about the changed contract files. */
+export interface CheckerResult {
+  glob: string
+  command: string
+  files: string[]
+  exitCode: number | null
+  timedOut: boolean
+  /** Combined stdout and stderr, capped. */
+  output: string
+  truncated: boolean
+}
+
 export interface ReviewPacket {
   files: PacketFile[]
   totalLines: number
   summaryOnly: boolean
   routes: LensRoute[]
   chunks: { index: number; paths: string[] }[]
+  /**
+   * Filled in when the round's workspace is materialised, because the
+   * checkers need the base and head files on disk. Absent when none is
+   * configured or none matched.
+   */
+  checkerResults?: CheckerResult[]
 }
 
 const CLASS_RULES: { cls: FileClass; test: (path: string) => boolean }[] = [

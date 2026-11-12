@@ -74,6 +74,7 @@ describe('@coro-ai/intelligence-base manifest', () => {
         'review-architecture.md',
         'review-correctness.md',
         'review-design.md',
+        'review-history.md',
         'review-security.md',
         'review-tests.md',
         'review-verifier.md',
