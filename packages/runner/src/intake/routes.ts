@@ -25,7 +25,7 @@ import {
 import { listUserMcpServerCatalog } from '../jobs/runner'
 import type { IntakeBuiltinCapability, IntakePermissionDecision, ToolAccessMode } from '@coro-ai/cloud-protocol'
 import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
-import type { InvestigationStatus } from '@coro-ai/cloud-protocol'
+import type { InvestigationReadiness, InvestigationStatus } from '@coro-ai/cloud-protocol'
 
 export function registerIntakeRoutes(
   app: Express,
@@ -393,11 +393,7 @@ export function registerIntakeRoutes(
   })
 }
 
-type IntakeSnapshotReadiness = {
-  state: 'investigating' | 'ready' | 'no-run-needed'
-  openQuestions: string[]
-  note: string
-} | null
+type IntakeSnapshotReadiness = InvestigationReadiness | null
 
 const PERMISSION_DECISIONS = new Set(['once', 'conversation', 'always', 'deny'])
 const TOOL_ACCESS_MODES = new Set(['off', 'ask', 'allow'])

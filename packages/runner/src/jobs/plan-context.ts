@@ -44,7 +44,8 @@ export function renderPlanFindingsDocument(investigation: Investigation): string
   if (openQuestions.length > 0) {
     parts.push('', '---', '', '## Still open at dispatch', '')
     for (const question of openQuestions) {
-      parts.push(`- ${question.trim()}`)
+      const context = readiness?.questions?.find(q => q.question.trim() === question.trim())?.context.trim()
+      parts.push(context ? `- ${question.trim()} — ${context}` : `- ${question.trim()}`)
     }
   }
 

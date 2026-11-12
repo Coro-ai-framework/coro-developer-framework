@@ -62,6 +62,25 @@ describe('renderPlanFindingsDocument', () => {
     expect(doc).toContain('*Readiness at dispatch: investigating — two unknowns*')
   })
 
+  it('carries a structured question\'s context alongside it', () => {
+    const doc = renderPlanFindingsDocument(makeInvestigation({
+      readiness: {
+        state: 'investigating',
+        openQuestions: ['Which timeout should apply?'],
+        questions: [{
+          id: 'q0',
+          header: 'Timeout',
+          question: 'Which timeout should apply?',
+          context: 'The client and server disagree.',
+          options: [],
+          multiSelect: false,
+        }],
+        note: '',
+      },
+    }))
+    expect(doc).toContain('- Which timeout should apply? — The client and server disagree.')
+  })
+
   it('omits the readiness line when readiness is null', () => {
     const doc = renderPlanFindingsDocument(makeInvestigation({ readiness: null }))
     expect(doc).not.toContain('Readiness at dispatch')

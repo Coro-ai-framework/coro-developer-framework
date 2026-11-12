@@ -26,9 +26,20 @@ export interface InvestigationModelChoice {
   model: string
 }
 
+export interface InvestigationQuestion {
+  id: string
+  header: string
+  question: string
+  context: string
+  options: Array<{ label: string; description: string; recommended: boolean }>
+  multiSelect: boolean
+}
+
 export interface InvestigationReadiness {
   state: 'investigating' | 'ready' | 'no-run-needed'
+  /** Question text only; `questions` carries the structured form when the dashboard parsed one. */
   openQuestions: string[]
+  questions?: InvestigationQuestion[]
   note: string
 }
 

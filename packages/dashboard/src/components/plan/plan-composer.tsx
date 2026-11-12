@@ -16,9 +16,16 @@ import { useProviderModels, type ProviderModelDescriptor } from '../llm/useProvi
 import { cn } from '../../lib/utils'
 import { CONVERSATION_COPY } from '../../lib/run-labels'
 import { getReadinessMeta, toneDotClasses } from '../../lib/status'
-import type { Readiness } from '../../lib/intake-readiness'
+import {
+  composeAnswerMessage,
+  isAnswered,
+  readinessQuestions,
+  type QuestionAnswer,
+  type Readiness,
+} from '../../lib/intake-readiness'
 import { usePlanSession } from '../../providers/plan-session'
 import GenerateRunButton, { conversationHasRun } from './generate-run-button'
+import OpenQuestionsPanel from './open-questions-panel'
 import ToolAccessMenu from './tool-access-menu'
 
 function PlanModeModelSelect({
@@ -123,23 +130,13 @@ function ContextMeter({ used, window }: { used: number; window?: number }) {
 
 function ReadinessStrip({ readiness }: { readiness: Readiness }) {
   const meta = getReadinessMeta(readiness.state)
-  const open = readiness.openQuestions.slice(0, 2)
   return (
-    <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] leading-[1.5]">
+    <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] leading-[1.5]">
       <span className="flex items-center gap-1.5 font-medium text-fg-muted">
         <span className={cn('size-1.5 rounded-full', toneDotClasses(meta.tone))} />
         {meta.label}
       </span>
-      {open.length > 0 ? (
-        <span className="text-fg-subtle">
-          Still open: {open.join(' · ')}
-          {readiness.openQuestions.length > open.length
-            ? ` (+${readiness.openQuestions.length - open.length} more)`
-            : ''}
-        </span>
-      ) : readiness.note ? (
-        <span className="text-fg-subtle">{readiness.note}</span>
-      ) : null}
+      {readiness.note ? <span className="text-fg-subtle">{readiness.note}</span> : null}
     </div>
   )
 }
@@ -156,49 +153,72 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
     [modelsByProvider, session.modelChoice],
   )
 
+  const questions = useMemo(() => readinessQuestions(session.readiness), [session.readiness])
+  const showQuestions = session.hasProgress && !session.busy && questions.length > 0
+  const [answers, setAnswers] = useState<Record<string, QuestionAnswer>>({})
+  const questionsKey = questions.map(q => q.question).join('\n')
+  useEffect(() => setAnswers({}), [questionsKey])
+
+  const hasAnswers = showQuestions && questions.some(q => isAnswered(answers[q.id]))
+  const canSend = !disabled && (input.trim().length > 0 || hasAnswers)
+
   // The textarea clears optimistically so the next question can be typed
   // straight away, but `send` refuses a turn while one is in flight — and the
   // disabled state trails the ref by a render, so a fast second Enter can get
   // that far. Put the text back rather than swallowing it.
   const dispatchTurn = useCallback((opts?: { generateRun?: boolean }) => {
     const text = input
+    const message = showQuestions ? composeAnswerMessage(questions, answers, text) : text
     setInput('')
-    void session.send(text, opts).then(accepted => {
+    void session.send(message, opts).then(accepted => {
       if (!accepted) setInput(prev => (prev ? prev : text))
+      else setAnswers({})
     })
-  }, [input, session])
+  }, [input, session, showQuestions, questions, answers])
 
-  const submit = useCallback(() => dispatchTurn(), [dispatchTurn])
+  const submit = useCallback(() => {
+    if (canSend) dispatchTurn()
+  }, [canSend, dispatchTurn])
 
   const generateRun = useCallback(() => dispatchTurn({ generateRun: true }), [dispatchTurn])
 
   return (
     <div className="shrink-0 pb-1 pt-3">
-      {session.readiness && session.hasProgress ? (
+      {showQuestions ? (
+        <OpenQuestionsPanel
+          questions={questions}
+          answers={answers}
+          onAnswer={(id, answer) => setAnswers(prev => ({ ...prev, [id]: answer }))}
+          note={session.readiness?.note ?? ''}
+          onSend={submit}
+          disabled={disabled}
+        />
+      ) : session.readiness && session.hasProgress ? (
         <ReadinessStrip readiness={session.readiness} />
       ) : null}
       <form
         onSubmit={e => {
           e.preventDefault()
-          if (!disabled && input.trim()) submit()
+          submit()
         }}
         className="flex items-end gap-2"
       >
         <AutoGrowTextarea
           value={input}
           onChange={setInput}
-          onSubmit={() => {
-            if (!disabled && input.trim()) submit()
-          }}
+          onSubmit={submit}
+          canSubmit={canSend}
           placeholder={
-            session.hasProgress
-              ? 'Answer, or dig further… (Shift+Enter for a new line)'
-              : 'Describe what you want Coro to do… (Shift+Enter for a new line)'
+            showQuestions
+              ? 'Add context, or dig further… (sent with your answers)'
+              : session.hasProgress
+                ? 'Answer, or dig further… (Shift+Enter for a new line)'
+                : 'Describe what you want Coro to do… (Shift+Enter for a new line)'
           }
           disabled={disabled}
           autoFocus={!session.hasProgress}
         />
-        <Button type="submit" size="icon" disabled={disabled || !input.trim()} aria-label="Send">
+        <Button type="submit" size="icon" disabled={!canSend} aria-label="Send">
           <ArrowUp />
         </Button>
       </form>
@@ -248,6 +268,7 @@ interface AutoGrowTextareaProps {
   value: string
   onChange: (next: string) => void
   onSubmit: () => void
+  canSubmit: boolean
   placeholder?: string
   disabled?: boolean
   autoFocus?: boolean
@@ -257,6 +278,7 @@ function AutoGrowTextarea({
   value,
   onChange,
   onSubmit,
+  canSubmit,
   placeholder,
   disabled,
   autoFocus,
@@ -281,7 +303,7 @@ function AutoGrowTextarea({
       onKeyDown={e => {
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault()
-          if (!disabled && value.trim()) onSubmit()
+          if (canSubmit) onSubmit()
         }
       }}
       placeholder={placeholder}
