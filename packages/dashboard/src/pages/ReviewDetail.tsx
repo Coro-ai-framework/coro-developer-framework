@@ -180,7 +180,8 @@ export default function ReviewDetail() {
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="min-w-0 space-y-6">
-          {review.pendingVerdict ? <VerdictCard review={review} onUpdated={setReview} onNotice={setNotice} /> : null}
+          {/* A newer round's draft supersedes an older held verdict; publishing it replaces the hold. */}
+          {review.pendingVerdict && !review.awaitingApproval ? <VerdictCard review={review} onUpdated={setReview} onNotice={setNotice} /> : null}
           <FindingsCard review={review} onUpdated={setReview} onNotice={setNotice} />
           <RoundsCard review={review} />
         </div>
@@ -208,7 +209,7 @@ function StateBanner({ review, onResume, onRerun, busy }: { review: PrReview; on
         <div className="min-w-0 flex-1">
           <div className="font-medium text-warning-400">Draft ready for your approval</div>
           <p className="text-fg-muted">
-            Nothing is on the pull request yet. Open the run to read the summary and inline comments, then approve them, ask for changes, or discard the draft.
+            This round's review is not on the pull request yet. Open the run to read the summary and inline comments, then approve them, ask for changes, or discard the draft.
           </p>
         </div>
         <Button size="sm" className="shrink-0" asChild>

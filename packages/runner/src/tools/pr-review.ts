@@ -33,7 +33,9 @@ import { classifyPath, type CheckerResult, type ReviewPacket } from '../reviews/
 import { effectiveSubmission, severityAtLeast, type ReviewPolicy } from '../reviews/policy'
 import {
   buildLensBrief,
+  lensGuides,
   readFeedbackExcerpt,
+  readSkillGuide,
   runLenses,
   runOneLens,
   type FilteredFinding,
@@ -509,6 +511,7 @@ export async function reviewRunLenses(
         ...(lens.name === 'architecture'
           ? { architecture: { ...(workspace.architectureBrief ? { briefPath: workspace.architectureBrief } : {}), ...(workspace.checkers ? { checkerPath: workspace.checkers } : {}) } }
           : {}),
+        guides: lensGuides(lens.name, paths.length ? paths : (packet?.files ?? []).map(file => file.path), phase.jobIntelligenceDir),
         ...(args.candidates ? { candidates: args.candidates } : {}),
       }),
     })
@@ -612,6 +615,7 @@ export async function reviewGetContext(
   const packet = rawPacket && workspace.checkerResults ? { ...rawPacket, checkerResults: workspace.checkerResults } : rawPacket
   const related = ctx.job.params['relatedWork'] as RelatedWork | undefined
   return {
+    guidelines: readSkillGuide(ctx.currentPhase?.jobIntelligenceDir, 'pr-review-guidelines'),
     relatedWork: related && !isEmptyRelatedWork(related) ? summariseRelatedWork(related) : null,
     reviewId: review.id,
     roundKind: ctx.job.params['roundKind'] ?? null,
@@ -742,6 +746,18 @@ export interface ReviewDraft {
   /** Set once the review itself is on the SCM, so a retried publish does not post twice. */
   postedAt?: string
   publishedAt?: string
+  /** When a developer approved this draft at the checkpoint. Kept so a retried publish still knows. */
+  approvedAt?: string
+  /** What approving it posts: the verdict, a plain comment, or a pending SCM review. The checkpoint shows it. */
+  posts?: 'verdict' | 'comment' | 'pending'
+}
+
+/** What a draft becomes on the SCM once a developer approves it. */
+function postsOnApproval(policy: ReviewPolicy, verdict: ReviewVerdict): NonNullable<ReviewDraft['posts']> {
+  const submission = effectiveSubmission(policy, verdict, { developerApproved: true })
+  if (submission.event === 'pending') return 'pending'
+  if (submission.event === 'comment') return 'comment'
+  return 'verdict'
 }
 
 /** A phase with a checkpoint writes nothing to the pull request; it drafts. */
@@ -828,6 +844,15 @@ export async function reviewSubmit(
   const policy = policyOf(ctx)
   const review = await loadReview(ctx)
   const related = ctx.job.params['relatedWork'] as RelatedWork | undefined
+  const leaked = relatedWorkMentions(related, [args.body, ...args.comments.map(item => `${item.title}\n${item.body}`)], {
+    title: review.pr.title,
+    description: typeof ctx.job.params['prDescription'] === 'string' ? ctx.job.params['prDescription'] : '',
+  })
+  if (leaked.length > 0) {
+    throw new Error(
+      `review_submit: the review mentions Coro's own related work (${leaked.join(', ')}). That context is for your judgment and the review_finish summary; the pull request author never sees it. Remove it and submit again. If earlier work shows a real problem, state the problem in terms of this pull request's code.`,
+    )
+  }
   const declinedElsewhere = (related?.priorFindings ?? []).filter(item => item.status === 'declined')
   const settled = review.ledger.findings.filter(item => item.status === 'open' || item.status === 'declined')
   const asMatchable = (comment: DraftComment): MatchableFinding => ({
@@ -874,6 +899,7 @@ export async function reviewSubmit(
     current.verdict = proposed.verdict
     current.body = proposed.body
     current.comments = proposed.comments
+    current.posts = postsOnApproval(policy, proposed.verdict)
     if (proposed.headSha) current.headSha = proposed.headSha
   }, signals)
   return {
@@ -896,10 +922,10 @@ export async function reviewSubmit(
 async function postReview(
   ctx: ToolContext,
   review: PrReview,
-  draft: Pick<ReviewDraft, 'verdict' | 'body' | 'comments' | 'headSha'>,
+  draft: Pick<ReviewDraft, 'verdict' | 'body' | 'comments' | 'headSha' | 'approvedAt'>,
 ): Promise<{ posted: string; held: boolean; comments: number }> {
   const policy = policyOf(ctx)
-  const submission = effectiveSubmission(policy, draft.verdict)
+  const submission = effectiveSubmission(policy, draft.verdict, { developerApproved: Boolean(draft.approvedAt) })
   const marker = reviewMarker(review.id)
   const body = `${draft.body}\n\n${marker}`
   const scm = scmFor(ctx, review.prRef.pluginId)
@@ -987,6 +1013,39 @@ function toScmComment(comment: z.infer<typeof commentSchema>) {
     side: comment.side ?? 'RIGHT' as const,
     body: `**${comment.severity}** ${comment.title}\n\n${comment.body}`,
   }
+}
+
+/**
+ * Identifiers of this round's related work that appear in text bound for the
+ * pull request: Coro job and review ids, and the tickets and pull requests of
+ * related jobs that the author did not mention themselves.
+ */
+export function relatedWorkMentions(
+  related: RelatedWork | undefined,
+  texts: string[],
+  own: { title: string; description: string },
+): string[] {
+  if (!related) return []
+  const text = texts.join('\n')
+  const authored = `${own.title}\n${own.description}`
+  const found = new Set<string>()
+  const jobs = [related.origin, ...related.jobs].filter((item): item is NonNullable<typeof item> => Boolean(item))
+  for (const job of jobs) {
+    if (text.includes(job.id)) found.add(job.id)
+    // The job that opened this pull request is the author's own context.
+    if (job.role === 'origin') continue
+    const tickets = new Set([...(job.ticket ? [job.ticket] : []), ...(job.description?.match(/\b[A-Z][A-Z0-9]+-\d+\b/g) ?? [])])
+    for (const ticket of tickets) {
+      if (new RegExp(`\\b${ticket}\\b`).test(text) && !authored.includes(ticket)) found.add(ticket)
+    }
+    const prNumber = job.prUrl?.match(/\/(?:pull|pull-requests|merge_requests)\/(\d+)/)?.[1]
+    if (prNumber && new RegExp(`(?:PR|pull request)\\s*#${prNumber}\\b`, 'i').test(text) && !authored.includes(`#${prNumber}`)) {
+      found.add(`PR #${prNumber}`)
+    }
+  }
+  for (const item of related.reviews) if (text.includes(item.reviewId)) found.add(item.reviewId)
+  if (/^\s*(?:\*\*)?related work\b/im.test(text)) found.add('a "Related work" section')
+  return [...found]
 }
 
 const OUTSIDE_DIFF_HEADING = '### Also noticed, outside the changed lines'
@@ -1148,6 +1207,13 @@ export async function reviewPublish(ctx: ToolContext): Promise<unknown> {
     return { posted: 'nothing' }
   }
   if (draft.status === 'published') return { posted: 'already', publishedAt: draft.publishedAt }
+
+  // A developer who approved the draft approved its verdict too.
+  const approval = ctx.currentPhase?.enteredByApproval
+  if (!draft.approvedAt && approval) {
+    draft.approvedAt = approval.at
+    await saveDraft(ctx, current => { current.approvedAt = approval.at })
+  }
 
   let posted: Awaited<ReturnType<typeof postReview>> | undefined
   if (!draft.postedAt && (draft.body.trim() || draft.comments.length > 0)) {

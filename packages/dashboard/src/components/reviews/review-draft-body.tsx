@@ -23,6 +23,24 @@ interface ReviewDraftData {
   comments?: DraftComment[]
   resolve?: { findingId: string; resolved: boolean }[]
   publishedAt?: string
+  posts?: 'verdict' | 'comment' | 'pending'
+}
+
+/** What approving the draft does on the pull request. */
+function approvalCopy(draft: ReviewDraftData, verdict: ReviewVerdict): string {
+  const label = VERDICT_LABEL[verdict].toLowerCase()
+  if (draft.posts === 'pending') {
+    return 'Nothing is on the pull request yet. Approve to save this as a draft review only you can see; you submit it from the pull request.'
+  }
+  if (draft.posts === 'comment' && verdict !== 'comment') {
+    return `Nothing is on the pull request yet. Approve to post the summary and comments as a comment. Your review settings never post a verdict, so it will not ${label}.`
+  }
+  switch (draft.posts) {
+    case 'verdict':
+      return `Nothing is on the pull request yet. Approve to post this review with the ${label} verdict. Request changes to have Coro revise it; you see the new draft before anything is posted.`
+    default:
+      return 'Nothing is on the pull request yet. Approve to post this review. Request changes to have Coro revise it; you see the new draft before anything is posted.'
+  }
 }
 
 const VERDICT_TONE = { approve: 'success', request_changes: 'danger', comment: 'neutral' } as const
@@ -40,7 +58,7 @@ export default function ReviewDraftBody({ data }: { data: Record<string, unknown
       <p className="text-xs text-fg-muted">
         {published
           ? `Posted on the pull request${draft.publishedAt ? ` ${formatDateTime(draft.publishedAt)}` : ''}.`
-          : 'Nothing is on the pull request yet. Approve to post this review. Request changes to have Coro revise it; you see the new draft before anything is posted.'}
+          : approvalCopy(draft, verdict)}
       </p>
 
       <div className="flex flex-wrap items-center gap-2 text-xs">

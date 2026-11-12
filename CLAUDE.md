@@ -526,6 +526,25 @@ changed, from the SCM's compare API where the plugin implements `sinceSha`;
 otherwise the full diff). Lenses return `evidence`, `scenario`, `confidence`
 and optionally `findingId`.
 
+A pull-request review runs without project settings (`projectContext: 'skip'`), so
+the `Skill` tool finds nothing. The brief lists the skills a lens should use as
+files instead (`lensGuides`), and `review_get_context` returns
+`pr-review-guidelines` to the lead. The slice is where a lens starts, not a
+fence: correctness also routes on config, infra, and dependency files, and a
+lens that confirms someone else's open thread says so in `notes` so the lead
+does not approve over it. Related work never reaches the pull request:
+`review_submit` refuses a body or comment that names a related job, review, or
+a ticket or pull request the author did not mention (`relatedWorkMentions`).
+
+**Approving the draft is the verdict decision.** With `approveBeforePosting`,
+the developer approves a draft that shows its verdict. The publish phase sees
+that through `CurrentPhaseContext.enteredByApproval` (derived from
+`checkpointApproval` before it is cleared), stamps `draft.approvedAt`, and
+`effectiveSubmission(..., { developerApproved: true })` posts the verdict
+rather than holding it as `pendingVerdict` for a second approval. Only
+`approval: never` and `autonomy: draft` still hold it; `draft.posts` tells the
+dashboard which of these applies, so the approve button says what it will do.
+
 **Runner filters**, in this order, before the lead sees anything:
 low-confidence findings become notes; unsourced architecture and history
 findings are dropped; findings that match the ledger (by `findingId`,

@@ -46,6 +46,16 @@ describe('review policy', () => {
     expect(effectiveSubmission(policy, 'approve')).toEqual({ event: 'comment', holdVerdict: true })
     expect(effectiveSubmission(policy, 'comment').holdVerdict).toBe(false)
   })
+
+  it('posts the verdict a developer approved with the draft, unless approval is never', () => {
+    const recommend = { ...REVIEW_POLICY_DEFAULTS, autonomy: 'comment' as const, approval: 'recommend' as const }
+    expect(effectiveSubmission(recommend, 'approve', { developerApproved: true })).toEqual({ event: 'approve', holdVerdict: false })
+    expect(effectiveSubmission(recommend, 'request_changes', { developerApproved: true })).toEqual({ event: 'request_changes', holdVerdict: false })
+    const never = { ...recommend, approval: 'never' as const }
+    expect(effectiveSubmission(never, 'approve', { developerApproved: true })).toEqual({ event: 'comment', holdVerdict: false })
+    const draft = { ...recommend, autonomy: 'draft' as const }
+    expect(effectiveSubmission(draft, 'approve', { developerApproved: true }).event).toBe('pending')
+  })
 })
 
 describe('review packet', () => {

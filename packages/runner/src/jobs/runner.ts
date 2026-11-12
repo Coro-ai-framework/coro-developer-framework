@@ -597,6 +597,11 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       // addressed to has read it. Clearing on consumption rather than on
       // phase advance is what lets it survive the departing phase's final
       // turn, which is the whole point of the field.
+      // Tools in this phase need to know a developer released it, after
+      // the record itself is cleared below.
+      const enteredByApproval = liveJob.checkpointApproval?.forPhase === liveJob.phase
+        ? { fromPhase: liveJob.checkpointApproval.fromPhase, at: liveJob.checkpointApproval.at }
+        : undefined
       if (liveJob.checkpointApproval?.forPhase === liveJob.phase && !hadPendingPrompt) {
         liveJob = await syncJob(stateBackend, liveJob, { checkpointApproval: undefined })
         toolCtx.job = liveJob
@@ -987,6 +992,7 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
             mcpServer: req.mcpServer,
             pluginMcpServers: req.pluginMcpServers,
             signal: abortController.signal,
+            ...(enteredByApproval ? { enteredByApproval } : {}),
             recordUsage: (usage) => {
               lensUsage.inputTokens += usage.inputTokens
               lensUsage.outputTokens += usage.outputTokens

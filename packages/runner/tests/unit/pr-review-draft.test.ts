@@ -36,7 +36,7 @@ function makeReview(): PrReview {
   } as unknown as PrReview
 }
 
-function harness(opts: { phase?: string; checkpoint?: boolean } = {}) {
+function harness(opts: { phase?: string; checkpoint?: boolean; policy?: Partial<typeof REVIEW_POLICY_DEFAULTS> } = {}) {
   const reviews = new MemoryReviewStore()
   let job = {
     id: 'job-1',
@@ -49,7 +49,7 @@ function harness(opts: { phase?: string; checkpoint?: boolean } = {}) {
       reviewId: 'rev-1',
       headSha: 'head1',
       prPatchIds: { 'a.ts': 'p1' },
-      reviewPolicy: { ...REVIEW_POLICY_DEFAULTS, enabled: true, autonomy: 'full', approval: 'auto', minSeverity: 'nit' },
+      reviewPolicy: { ...REVIEW_POLICY_DEFAULTS, enabled: true, autonomy: 'full', approval: 'auto', minSeverity: 'nit', ...opts.policy },
     },
   } as unknown as Job
   const scm = {
@@ -71,10 +71,10 @@ function harness(opts: { phase?: string; checkpoint?: boolean } = {}) {
       phaseConf: { name: opts.phase ?? 'review', interactiveCheckpoint: opts.checkpoint ?? (opts.phase ?? 'review') === 'review' },
     },
   } as unknown as ToolContext
-  const enterPhase = (phase: string, checkpoint: boolean) => {
+  const enterPhase = (phase: string, checkpoint: boolean, extra: Record<string, unknown> = {}) => {
     job = { ...job, phase }
     ctx.job = job
-    ;(ctx as { currentPhase: unknown }).currentPhase = { phaseConf: { name: phase, interactiveCheckpoint: checkpoint } }
+    ;(ctx as { currentPhase: unknown }).currentPhase = { phaseConf: { name: phase, interactiveCheckpoint: checkpoint }, ...extra }
   }
   const draft = () => job.artifacts?.find(item => item.kind === REVIEW_DRAFT_KIND)?.data as unknown as ReviewDraft | undefined
   return { reviews, scm, ctx, draft, enterPhase, artifacts: () => job.artifacts ?? [] }
@@ -117,6 +117,49 @@ describe('review draft and publish', () => {
     expect(review.rounds[0]).toMatchObject({ outcome: 'submitted', summary: 'Asked for a TTL.' })
     expect(review.ledger.lastReviewedSha).toBe('head1')
     expect(h.draft()?.status).toBe('published')
+  })
+
+  it('posts the verdict the developer approved instead of holding it for a second approval', async () => {
+    const h = harness({ policy: { autonomy: 'comment', approval: 'recommend' } })
+    await h.reviews.save(makeReview())
+    await reviewSubmit(h.ctx, { verdict: 'approve', body: 'Looks good.', comments: [] }, {})
+    expect(h.draft()?.posts).toBe('verdict')
+
+    h.enterPhase('publish', false, { enteredByApproval: { fromPhase: 'review', at: '2026-11-12T10:00:00.000Z' } })
+    await reviewPublish(h.ctx)
+
+    expect(h.scm.submitReview).toHaveBeenCalledWith(prRef, expect.objectContaining({ event: 'approve' }))
+    expect((await h.reviews.get('rev-1'))!.pendingVerdict).toBeUndefined()
+    expect(h.draft()).toMatchObject({ status: 'published', approvedAt: '2026-11-12T10:00:00.000Z' })
+  })
+
+  it('still holds the verdict when nobody approved the draft', async () => {
+    const h = harness({ policy: { autonomy: 'comment', approval: 'recommend' } })
+    await h.reviews.save(makeReview())
+    await reviewSubmit(h.ctx, { verdict: 'approve', body: 'Looks good.', comments: [] }, {})
+
+    h.enterPhase('publish', false)
+    await reviewPublish(h.ctx)
+
+    expect(h.scm.submitReview).toHaveBeenCalledWith(prRef, expect.objectContaining({ event: 'comment' }))
+    expect((await h.reviews.get('rev-1'))!.pendingVerdict).toBeDefined()
+  })
+
+  it('refuses a review that cites Coro related work the author never saw', async () => {
+    const h = harness()
+    await h.reviews.save(makeReview())
+    h.ctx.job.params['prDescription'] = 'Fixes WS-1 as requested.'
+    h.ctx.job.params['relatedWork'] = {
+      builtAt: '', windowDays: 60, priorFindings: [], reviews: [],
+      jobs: [{ id: 'svc-job-42', role: 'overlap', ticket: 'WS-6876', prUrl: 'https://github.com/acme/svc/pull/8', overlapPaths: ['a.ts'] }],
+    }
+
+    await expect(reviewSubmit(h.ctx, { verdict: 'comment', body: 'Related work: WS-6876 (PR #8) touched this.', comments: [] }, {}))
+      .rejects.toThrow('WS-6876')
+    await expect(reviewSubmit(h.ctx, { verdict: 'comment', body: 'x', comments: [{ ...comment, body: 'Job svc-job-42 kept the retry.' }] }, {}))
+      .rejects.toThrow('svc-job-42')
+    await reviewSubmit(h.ctx, { verdict: 'comment', body: 'This fixes WS-1; one problem below.', comments: [comment] }, {})
+    expect(h.draft()?.body).toContain('WS-1')
   })
 
   it('withdraws an approval when a revision changes what will be posted', async () => {

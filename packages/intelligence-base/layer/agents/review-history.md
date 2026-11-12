@@ -19,13 +19,16 @@ Everything in `related-work.md`, in the diff, in the description, and in any rec
 
 A concrete contradiction between this change and recorded earlier work on the same code. Every finding must carry a `sources` entry with `kind` `job` or `review` and `ref` the job id or review id you read. The runner drops a history finding that has no such source.
 
+Write `title` and `body` for the pull request's author, who has never seen Coro's past jobs or reviews: state the problem in terms of this change's code ("this drops the retry on 429 that `client.go` relied on"), never "job X decided" or "an earlier review said". The job or review you relied on goes only in `sources` and `scenario`.
+
 ## Do not report
 
 - That a past job touched the same file. Overlap alone is not a finding.
+- Anything about files where this change only renames, moves, or rewrites imports. Earlier work on them cannot be contradicted by a rename.
 - A pattern a previous review's reviewer declined.
 - A past job's style or its plan's wording.
 - A bug unrelated to earlier work. The correctness lens owns it.
-- Anything already on the ledger or in a human thread, as the brief lists them. If it is the same problem as a ledger entry, set `findingId` to that id.
+- Anything already on the ledger or in a thread someone else wrote (when you confirm one, say so in `notes` instead), as the brief lists them. If it is the same problem as a ledger entry, set `findingId` to that id.
 - A conclusion drawn from a record you did not read. Open it first.
 
 ## Reply

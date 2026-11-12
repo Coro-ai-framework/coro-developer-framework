@@ -285,13 +285,20 @@ export function severityAtLeast(severity: ReviewSeverity, floor: ReviewSeverity)
  * `event` is what the SCM submission carries. `holdVerdict` means the
  * decision (approve / request changes) is parked for a human even when
  * the comments themselves were posted.
+ *
+ * `developerApproved` is a human who read the draft, verdict included, and
+ * approved it. That is the decision `approval: recommend` waits for, so the
+ * verdict is posted rather than held for a second approval. `approval:
+ * never` still never posts a decision.
  */
 export function effectiveSubmission(
   policy: ReviewPolicy,
   verdict: 'approve' | 'request_changes' | 'comment',
+  opts: { developerApproved?: boolean } = {},
 ): { event: 'approve' | 'request_changes' | 'comment' | 'pending'; holdVerdict: boolean } {
   if (policy.autonomy === 'draft') return { event: 'pending', holdVerdict: true }
   if (verdict === 'comment') return { event: 'comment', holdVerdict: false }
+  if (opts.developerApproved && policy.approval !== 'never') return { event: verdict, holdVerdict: false }
 
   const mayPostDecision = policy.autonomy === 'full'
     && (verdict === 'request_changes' ? policy.approval !== 'never' : policy.approval === 'auto')

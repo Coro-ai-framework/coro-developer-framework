@@ -29,6 +29,11 @@ Do not re-raise a finding the ledger marks `declined`, and do not raise again a 
 ## Verdict
 
 - Request changes only when a blocker is still open.
-- Approve only after a full pass on the current head with no open blocker or major.
+- Approve only after a full pass on the current head with no open blocker or major. That includes a problem someone else (a person or a bot) raised in a thread that is still unresolved and that you confirmed: you do not repeat it, but you do not approve over it either.
 - Otherwise comment.
 - Never merge, and never say the pull request was merged by Coro.
+
+## What never goes in the review
+
+- Coro's own context: earlier jobs, earlier reviews, plans, or tickets the author did not mention. They inform your judgment; the author has never seen them. Describe any problem in terms of this pull request's code.
+- On a later round, the previous round's points. They are already on the pull request.

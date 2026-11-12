@@ -31,7 +31,7 @@ phases:
       - name: correctness
         agent: agents/review-correctness.md
         tier: review-deep
-        when: [code]
+        when: [code, config, infra, deps, migrations]
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file]
       - name: security
         agent: agents/review-security.md

@@ -1,4 +1,5 @@
-import { readFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
 import type { Finding, PrReview } from '@coro-ai/cloud-protocol'
@@ -8,7 +9,9 @@ import { matchesGlob } from '../../src/reviews/glob'
 import {
   applyLensRules,
   buildLensBrief,
+  lensGuides,
   lensResultSchema,
+  readSkillGuide,
   type LensFinding,
   type LensResult,
 } from '../../src/reviews/lens-runner'
@@ -178,6 +181,18 @@ describe('buildLensBrief', () => {
     expect(brief).toContain('src/a.ts')
     expect(brief).toContain('Severity floor: minor')
     expect(brief).toContain('`scenario`')
+    expect(brief).toContain('not a fence')
+  })
+
+  it('lists guides as files and asks for confirmed threads in the notes', () => {
+    const brief = buildLensBrief({
+      ...base,
+      guides: [{ name: 'golang-conventions', path: '/i/.claude/skills/golang-conventions/SKILL.md' }],
+      threads: [{ path: 'src/a.ts', line: 9, author: 'copilot', excerpt: 'nil map write' }],
+    })
+    expect(brief).toContain('The `Skill` tool is not available here')
+    expect(brief).toContain('golang-conventions: /i/.claude/skills/golang-conventions/SKILL.md')
+    expect(brief).toContain('say so in `notes`')
   })
 
   it('tells a coding-job lens to read the checkout, not pr/head', () => {
@@ -212,6 +227,28 @@ describe('buildLensBrief', () => {
     expect(brief).toContain('pr/related-work.md')
     expect(brief).not.toContain('Your slice')
     expect(brief).toContain('"dropped"')
+  })
+})
+
+describe('lens guides', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'coro-guides-'))
+  for (const name of ['golang-conventions', 'feature-testing', 'pr-review-guidelines']) {
+    mkdirSync(path.join(root, '.claude', 'skills', name), { recursive: true })
+    writeFileSync(path.join(root, '.claude', 'skills', name, 'SKILL.md'), `---\nname: ${name}\n---\n\n# ${name}\n`)
+  }
+
+  it('gives a lens its own guide and the language guide, skipping what is not installed', () => {
+    expect(lensGuides('tests', ['svc/a.go', 'svc/a_test.go'], root).map(item => item.name)).toEqual(['feature-testing', 'golang-conventions'])
+    expect(lensGuides('design', ['svc/a.go'], root).map(item => item.name)).toEqual(['golang-conventions'])
+    expect(lensGuides('verifier', ['svc/a.go'], root).map(item => item.name)).toEqual(['pr-review-guidelines'])
+    expect(lensGuides('history', ['svc/a.go'], root)).toEqual([])
+    expect(lensGuides('tests', ['svc/a.go'], undefined)).toEqual([])
+  })
+
+  it('reads a skill without its front matter', () => {
+    expect(readSkillGuide(root, 'pr-review-guidelines')).toBe('# pr-review-guidelines')
+    expect(readSkillGuide(root, 'missing')).toBeNull()
+    rmSync(root, { recursive: true, force: true })
   })
 })
 
@@ -378,6 +415,10 @@ describe('pr-review workflow', () => {
     expect(history?.agent).toBe('agents/review-history.md')
     expect(history?.tools).toContain('mcp__coro__review_related_work')
     expect(review.lenses?.find(lens => lens.name === 'verifier')?.tools).toContain('mcp__coro__review_related_work')
+  })
+
+  it('routes build, deploy, and dependency files to correctness, not only code', () => {
+    expect(review.lenses?.find(lens => lens.name === 'correctness')?.when).toEqual(expect.arrayContaining(['code', 'config', 'infra', 'deps']))
   })
 
   it('keeps the verifier last so it can check what the others raised', () => {
