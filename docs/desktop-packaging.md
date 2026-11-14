@@ -22,6 +22,7 @@ next platform extension work, with emphasis on Windows packaging.
 - Validation workflow: `.github/workflows/desktop-validation.yml`
 - Release workflow: `.github/workflows/desktop-release.yml`
 - Public update repo: `Coro-ai-framework/coro-release`
+- macOS validation and release builds run on GitHub's `macos-15` ARM64 runner.
 - Published artifacts today:
   - `Coro-<version>-arm64.dmg`
   - `Coro-<version>-arm64.zip`

@@ -50,7 +50,7 @@ jobs:
             .filter(Boolean)
 
           const allowed = new Map([
-            ['macos', { platform: 'macos', runner: 'macos-14-xlarge' }],
+            ['macos', { platform: 'macos', runner: 'macos-15' }],
             ['windows', { platform: 'windows', runner: 'windows-2022' }],
           ])
 
