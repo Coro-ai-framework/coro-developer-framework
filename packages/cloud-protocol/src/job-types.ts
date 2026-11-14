@@ -792,18 +792,42 @@ export interface Proposal {
 // ── Well-known workflow paths ────────────────────────────────────────────────
 
 /**
+ * Directory (relative to an intelligence layer root) holding the workflow
+ * files. Workflows are Claude Code slash commands: the file basename is the
+ * workflow id (`job`, `job-fast`, …) and the command is invoked as
+ * `/coro:<id>` in a plain Claude Code session.
+ */
+export const WORKFLOWS_DIR = '.claude/commands/coro'
+
+/** `workflowPathForSlug('job')` → `.claude/commands/coro/job.md`. */
+export function workflowPathForSlug(slug: string): string {
+  return `${WORKFLOWS_DIR}/${slug}.md`
+}
+
+/**
+ * Inverse of {@link workflowPathForSlug}: the workflow id is the file
+ * basename without `.md`. Tolerant of unrecognised shapes — returns the last
+ * path segment (extension stripped) so callers can use it as a display label.
+ */
+export function workflowSlugFromPath(workflowPath: string): string {
+  const segments = workflowPath.split('/').filter(Boolean)
+  const last = segments[segments.length - 1] ?? ''
+  return last.replace(/\.md$/i, '') || 'workflow'
+}
+
+/**
  * Canonical path for the campaign workflow. The planner switches a job's
  * `workflowPath` to this value via `convert_to_campaign`. Tenants override
  * the workflow file itself through the layered intelligence resolver.
  */
-export const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
+export const CAMPAIGN_WORKFLOW_PATH = workflowPathForSlug('campaign')
 
 /**
  * Canonical path for the retrospective workflow. Dispatched by the
  * dashboard's retrospective page; tenants override the workflow file
  * itself through the layered intelligence resolver.
  */
-export const RETROSPECTIVE_WORKFLOW_PATH = 'workflows/retrospective/workflow.md'
+export const RETROSPECTIVE_WORKFLOW_PATH = workflowPathForSlug('retrospective')
 
 /**
  * Canonical path for the open-source contribution workflow — an ordinary
@@ -811,4 +835,4 @@ export const RETROSPECTIVE_WORKFLOW_PATH = 'workflows/retrospective/workflow.md'
  * against the upstream repository. Dispatched by a retrospective for a
  * finding that needs a code change rather than a wording change.
  */
-export const OSS_CONTRIBUTION_WORKFLOW_PATH = 'workflows/oss-contribution/workflow.md'
+export const OSS_CONTRIBUTION_WORKFLOW_PATH = workflowPathForSlug('oss-contribution')

@@ -1,4 +1,13 @@
+---
+name: memory-curator
+description: "Trims, merges and canonicalises accumulated memory entries so the memory bundle stays small, preserving every distinct piece of knowledge. The only agent allowed to overwrite or delete memory. Runner-only workflow."
+---
+
 # Agent: Memory Curator
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 
@@ -55,8 +64,8 @@ developer approves the resulting PR before it merges.
 
 ### 2. Triage entries
 
-For each entry in `memory/known-pitfalls.md` and
-`memory/successful-patterns.md`:
+For each entry in `.claude/memory/known-pitfalls.md` and
+`.claude/memory/successful-patterns.md`:
 
 - **Duplicate?** Two entries with the same symptom or recipe should
   collapse into one. Keep the clearer wording; cite the merged
@@ -81,7 +90,7 @@ anything still over budget. The runner enforces:
 - **Pattern:** `## Title` / When to use (1 line) / Code skeleton (≤
   6 lines) / Anti-pattern (1 line). Total ≤ 10 lines.
 
-### 4. Regenerate `memory/MEMORY.md`
+### 4. Regenerate `.claude/memory/MEMORY.md`
 
 If you merged or removed entries, regenerate the index so titles
 match the surviving sections. The index is a navigation aid; stale

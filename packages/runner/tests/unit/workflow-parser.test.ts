@@ -22,7 +22,7 @@ initial_phase: planning
 initial_status: queued
 phases:
   - name: planning
-    agent: agents/planner.md
+    agent: .claude/agents/planner.md
     model: planning
     status: planning
 `
@@ -32,15 +32,15 @@ initial_phase: planning
 initial_status: queued
 phases:
   - name: planning
-    agent: agents/planner.md
+    agent: .claude/agents/planner.md
     model: planning
     status: planning
   - name: coding
-    agent: agents/coder.md
+    agent: .claude/agents/coder.md
     model: coding
     status: coding
   - name: testing
-    agent: agents/tester.md
+    agent: .claude/agents/tester.md
     model: coding
     status: testing
 `
@@ -49,12 +49,12 @@ const WITH_SUBAGENTS_YAML = `
 initial_phase: coding
 phases:
   - name: coding
-    agent: agents/coder.md
+    agent: .claude/agents/coder.md
     model: coding
     status: coding
     subagents:
       - name: code-reviewer
-        agent: agents/pr-reviewer.md
+        agent: .claude/agents/pr-reviewer.md
         model: coding
         tools: [Read, Glob, Grep]
       - name: linter
@@ -65,11 +65,11 @@ const WITH_OVERRIDES_YAML = `
 initial_phase: planning
 phases:
   - name: spec-writing
-    agent: agents/spec-writer.md
+    agent: .claude/agents/spec-writer.md
     model: planning
     status: spec-writing
   - name: planning
-    agent: agents/planner.md
+    agent: .claude/agents/planner.md
     model: planning
     status: planning
 overrides:
@@ -91,7 +91,7 @@ describe('parseWorkflowConfig', () => {
       expect(config!.phases).toHaveLength(1)
       expect(config!.phases[0]).toEqual({
         name: 'planning',
-        agent: 'agents/planner.md',
+        agent: '.claude/agents/planner.md',
         model: 'planning',
         tier: 'planning',
         status: 'planning',
@@ -119,7 +119,7 @@ describe('parseWorkflowConfig', () => {
       expect(coding.subagents).toHaveLength(2)
       expect(coding.subagents![0]).toEqual({
         name: 'code-reviewer',
-        agent: 'agents/pr-reviewer.md',
+        agent: '.claude/agents/pr-reviewer.md',
         model: 'coding',
         tools: ['Read', 'Glob', 'Grep'],
       })
@@ -275,7 +275,7 @@ phases:
       const yaml = `
 phases:
   - name: planning
-    agent: agents/planner.md
+    agent: .claude/agents/planner.md
     model: planning
     tools: [Read, Grep, Glob, mcp__coro__log]
 `
@@ -477,7 +477,7 @@ describe('getPhaseConfig', () => {
     const phase = getPhaseConfig(config, 'coding')
     expect(phase).toBeDefined()
     expect(phase!.name).toBe('coding')
-    expect(phase!.agent).toBe('agents/coder.md')
+    expect(phase!.agent).toBe('.claude/agents/coder.md')
     expect(phase!.model).toBe('coding')
     expect(phase!.status).toBe('coding')
   })
@@ -526,8 +526,8 @@ describe('loadWorkflowConfigFromRoots', () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-wp-roots-'))
     tenantRoot = path.join(tmp, 'tenant')
     baseRoot = path.join(tmp, 'base')
-    await fs.mkdir(path.join(tenantRoot, 'workflows', 'job'), { recursive: true })
-    await fs.mkdir(path.join(baseRoot, 'workflows', 'job'), { recursive: true })
+    await fs.mkdir(path.join(tenantRoot, '.claude', 'commands', 'coro'), { recursive: true })
+    await fs.mkdir(path.join(baseRoot, '.claude', 'commands', 'coro'), { recursive: true })
   })
 
   afterEach(async () => {
@@ -536,16 +536,16 @@ describe('loadWorkflowConfigFromRoots', () => {
 
   it('returns the first hit and reports which root resolved it', async () => {
     await fs.writeFile(
-      path.join(tenantRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(tenantRoot, '.claude', 'commands', 'coro', 'job.md'),
       md('initial_phase: tenant\nphases:\n  - name: tenant\n    model: planning\n'),
     )
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       md('initial_phase: base\nphases:\n  - name: base\n    model: planning\n'),
     )
 
     const result = await loadWorkflowConfigFromRoots(
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       [tenantRoot, baseRoot],
       noopLogger,
     )
@@ -557,12 +557,12 @@ describe('loadWorkflowConfigFromRoots', () => {
 
   it('falls back to the next root when the first does not have the file', async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       md('initial_phase: base\nphases:\n  - name: base\n    model: planning\n'),
     )
 
     const result = await loadWorkflowConfigFromRoots(
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       [tenantRoot, baseRoot],
       noopLogger,
     )
@@ -574,7 +574,7 @@ describe('loadWorkflowConfigFromRoots', () => {
 
   it('returns null when no root has the workflow', async () => {
     const result = await loadWorkflowConfigFromRoots(
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       [tenantRoot, baseRoot],
       noopLogger,
     )
@@ -582,7 +582,7 @@ describe('loadWorkflowConfigFromRoots', () => {
   })
 
   it('handles absolute paths without consulting the search roots', async () => {
-    const absPath = path.join(baseRoot, 'workflows', 'job', 'workflow.md')
+    const absPath = path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md')
     await fs.writeFile(
       absPath,
       md('initial_phase: abs\nphases:\n  - name: abs\n    model: planning\n'),
@@ -597,12 +597,12 @@ describe('loadWorkflowConfigFromRoots', () => {
 
   it('skips empty / duplicate roots without changing order', async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       md('initial_phase: base\nphases:\n  - name: base\n    model: planning\n'),
     )
 
     const result = await loadWorkflowConfigFromRoots(
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       ['', tenantRoot, '', baseRoot, baseRoot],
       noopLogger,
     )

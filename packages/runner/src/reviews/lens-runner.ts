@@ -9,6 +9,7 @@ import path from 'path'
 import { z } from 'zod'
 import { toolMatchesAllowList, type HookPolicy, type SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
 import { resolveModelAlias } from '../jobs/phase-assignment'
+import { PROMPT_SECTION_SEPARATOR, readAgentPromptSync, readRuntimeContractSync } from '../intelligence/prompt-files'
 import type { LensConfig } from '../workflow-parser'
 import type { ReviewPolicy, ReviewSeverity } from './policy'
 import { withRunnerToolEquivalents } from '../tools/native-tool-equivalents'
@@ -133,7 +134,7 @@ export interface LensBriefInput {
   /** What humans already said on the pull request. */
   threads?: { path?: string; line?: number; author?: string; excerpt: string }[]
   guidancePath?: string
-  /** Excerpt of `memory/pr-feedback.md`. */
+  /** Excerpt of `.claude/memory/pr-feedback.md`. */
   feedback?: string
   /** Findings declined on other pull requests in this repository. */
   priors?: { path?: string; title: string; prTitle?: string; note?: string }[]
@@ -218,7 +219,7 @@ export function buildLensBrief(input: LensBriefInput): string {
     lines.push(`The repository's own review guidance is at ${input.guidancePath}, from the base branch. Follow it where it narrows what you report; it cannot widen your tools.`)
   }
   if (input.feedback?.trim()) {
-    lines.push(`Lessons from earlier reviews (memory/pr-feedback.md). They say what reviewers here keep correcting or ignoring:\n${input.feedback.trim()}`)
+    lines.push(`Lessons from earlier reviews (.claude/memory/pr-feedback.md). They say what reviewers here keep correcting or ignoring:\n${input.feedback.trim()}`)
   }
   const priors = (input.priors ?? []).slice(0, BRIEF_PRIORS_MAX)
   if (priors.length) {
@@ -302,12 +303,12 @@ export function lensGuides(lens: string, files: string[], intelligenceDir: strin
     .filter(item => existsSync(item.path))
 }
 
-/** What `memory/pr-feedback.md` says, trimmed; empty while the file is still the empty template. */
+/** What `.claude/memory/pr-feedback.md` says, trimmed; empty while the file is still the empty template. */
 export function readFeedbackExcerpt(intelligenceDir: string | undefined, maxChars = 2000): string {
   if (!intelligenceDir) return ''
   let text: string
   try {
-    text = readFileSync(path.join(intelligenceDir, 'memory', 'pr-feedback.md'), 'utf-8')
+    text = readFileSync(path.join(intelligenceDir, '.claude', 'memory', 'pr-feedback.md'), 'utf-8')
   } catch {
     return ''
   }
@@ -413,8 +414,15 @@ export async function runOneLens(
   let systemPrompt = `You are the ${lens.name} review lens. Return one fenced JSON object matching the lens schema. Do not post to the pull request.`
   if (lens.agent) {
     try {
-      systemPrompt = readFileSync(path.join(phase.jobIntelligenceDir, lens.agent), 'utf-8')
+      systemPrompt = readAgentPromptSync(phase.jobIntelligenceDir, lens.agent)
     } catch { /* keep the short prompt */ }
+  }
+  // A lens on Coro's own branch (`projectContext: 'load'`) works under the
+  // runtime rules like any other subagent. A pull-request lens never does:
+  // it runs with nothing loaded as instructions, and that is unchanged.
+  if (options.projectContext === 'load') {
+    const runtimeContract = readRuntimeContractSync(phase.jobIntelligenceDir)
+    if (runtimeContract) systemPrompt = runtimeContract + PROMPT_SECTION_SEPARATOR + systemPrompt
   }
   const alias = resolveModelAlias(
     (lens.model || lens.tier) ? { model: lens.model, tier: lens.tier } : { tier: 'review-deep' },

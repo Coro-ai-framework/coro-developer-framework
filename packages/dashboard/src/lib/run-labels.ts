@@ -9,6 +9,7 @@
 
 import type { Job } from '../types'
 import { isCampaignJob } from './jobs'
+import { workflowSlugFromPath } from './workflow-paths'
 
 export const RUN_NOUN = {
   singular: 'Run',
@@ -52,7 +53,7 @@ export const RUNS_LIST_PATH = '/jobs'
 
 /**
  * Workflow display labels. The dashboard renders these from the workflow
- * path (e.g. "workflows/job/workflow.md" -> "job") so new workflows show up
+ * path (e.g. ".claude/commands/coro/job.md" -> "job") so new workflows show up
  * automatically with no code change. WORKFLOW_LABEL_OVERRIDES gives a small
  * surface for prettier copy on workflows we know about today.
  */
@@ -62,11 +63,9 @@ const WORKFLOW_LABEL_OVERRIDES: Record<string, string> = {
   'self-update': 'self-update',
 }
 
-/** Slug parsed out of "workflows/<slug>/workflow.md". */
+/** Slug parsed out of ".claude/commands/coro/<slug>.md". */
 export function getWorkflowSlug(workflowPath: string): string {
-  const segments = workflowPath.split('/').filter(Boolean)
-  if (segments.length >= 2) return segments[segments.length - 2]
-  return segments[segments.length - 1] ?? 'workflow'
+  return workflowSlugFromPath(workflowPath)
 }
 
 /** Human-readable workflow tag used in tables and badges. */

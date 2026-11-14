@@ -12,7 +12,7 @@ import { buildPhaseHooks } from '../src/hooks'
 
 const WORKING = '/tmp/coro-job-working/job-test'
 const INTEL = '/tmp/coro-job-working/job-test/_intelligence'
-const MEMORY = path.join(INTEL, 'memory')
+const MEMORY = path.join(INTEL, '.claude', 'memory')
 
 it('raises the PreToolUse matcher timeout when a decision may wait on a developer', () => {
   const logger = pino({ level: 'silent' })

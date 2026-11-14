@@ -64,7 +64,7 @@ function review(overrides: Partial<PrReview> & { id: string }): PrReview {
 
 function run(overrides: Partial<WorkRun> & { id: string }): WorkRun {
   return {
-    kind: 'run', type: 'job', workflowPath: 'workflows/job/workflow.md', title: overrides.id, repo: null,
+    kind: 'run', type: 'job', workflowPath: '.claude/commands/coro/job.md', title: overrides.id, repo: null,
     status: 'complete', phase: 'evaluation', currentWorkItem: null, interactive: false, costUsd: 0,
     createdAt: '2026-06-01T09:00:00.000Z', updatedAt: '2026-06-01T09:00:00.000Z',
     group: 'recent', attention: null, ...overrides,

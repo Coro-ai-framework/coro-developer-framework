@@ -169,7 +169,7 @@ the `coro` CLI.
 ```json
 {
   "type": "job",
-  "workflowPath": "workflows/job/workflow.md",
+  "workflowPath": ".claude/commands/coro/job.md",
   "params": {
     "repoSlug": "my-service",
     "description": "Add rate limiting to /api/users",
@@ -574,7 +574,7 @@ outputs:
 Layers are merged according to the rules described in
 [architecture.md §4.2](architecture.md#42-merge-rules):
 
-- `.claude/CLAUDE.md` and `memory/**/*.md` are **appended** with
+- `.claude/CLAUDE.md` and `.claude/memory/**/*.md` are **appended** with
   provenance banners.
 - All other paths follow **last-wins replace** semantics.
 

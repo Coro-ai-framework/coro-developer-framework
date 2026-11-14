@@ -1,10 +1,11 @@
 import type { Job } from '../types'
 import { isTerminalStatus } from './status'
+import { workflowPathForSlug } from './workflow-paths'
 
 // Runtime-shape helper kept for internal detection (does this Job currently
 // host sub-runs?). User-facing labels and routing now live in
 // `lib/run-labels.ts`; consumers should prefer those exports.
-export const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
+export const CAMPAIGN_WORKFLOW_PATH = workflowPathForSlug('campaign')
 
 function startCase(value: string): string {
   return value

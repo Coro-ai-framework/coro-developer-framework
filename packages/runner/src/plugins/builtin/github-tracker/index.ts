@@ -85,7 +85,7 @@ const MANIFEST: PluginManifest = {
   },
   intelligence: {
     snippets: [
-      { id: 'github-issues-keys', relativePath: 'snippets/github-issues-keys.md' },
+      { id: 'github-issues-keys', relativePath: '.claude/memory/snippets/github-issues-keys.md' },
     ],
   },
   ui: {

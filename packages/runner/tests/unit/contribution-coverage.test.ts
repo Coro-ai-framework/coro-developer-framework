@@ -69,7 +69,7 @@ const FINDINGS = [
 describe('evaluateContributionCoverage — applicability', () => {
   it('skips any workflow but oss-contribution, so ordinary jobs are untouched', () => {
     const job = makeJob({
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       params: { findings: FINDINGS },
     })
     expect(evaluateContributionCoverage(job)).toBeNull()

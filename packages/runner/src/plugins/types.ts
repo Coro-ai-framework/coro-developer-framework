@@ -233,16 +233,17 @@ export interface PluginWebhookDescriptor {
 
 /**
  * Markdown the plugin contributes to the per-job intelligence overlay.
- * Paths are relative to the plugin's `intelligence/` root.
+ * Paths are relative to the plugin's `intelligence/` root, which mirrors the
+ * intelligence layer layout.
  *
  * The resolver copies these into the materialised intelligence dir at
  * job start so agents see them under their normal paths
- * (`.claude/skills/<id>/SKILL.md`, `snippets/<file>.md`, etc.).
+ * (`.claude/skills/<id>/SKILL.md`, `.claude/memory/snippets/<file>.md`, etc.).
  */
 export interface PluginIntelligenceContribution {
   /** Skills the plugin contributes (rendered under `.claude/skills/`). */
   skills?: ReadonlyArray<{ id: string; relativePath: string }>
-  /** Free-form snippets (e.g. `snippets/scm-conventions.md`). */
+  /** Free-form snippets (e.g. `.claude/memory/snippets/scm-conventions.md`). */
   snippets?: ReadonlyArray<{ id: string; relativePath: string }>
 }
 

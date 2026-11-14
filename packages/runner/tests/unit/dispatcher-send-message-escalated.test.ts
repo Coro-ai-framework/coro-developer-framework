@@ -16,7 +16,7 @@ function makeJob(): Job {
   return {
     id: 'job-escalated-message',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { repoSlug: 'svc', serviceName: 'svc' },
     triggerSource: 'cli',
     status: STATUS_ESCALATED,

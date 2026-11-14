@@ -18,7 +18,7 @@ export function makeMockJob(overrides: Record<string, unknown> = {}) {
   return {
     id: 'job-mcp-test',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { repoSlug: 'svc', reviewers: ['reviewer-1'] },
     triggerSource: 'cli' as const,
     status: STATUS_QUEUED,

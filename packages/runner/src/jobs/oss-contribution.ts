@@ -10,7 +10,7 @@
 // What makes this job different from any other implementation job is only
 // its geography: it clones a **fork**, and it opens its PR against the
 // **upstream** repository it cannot push to. Both facts travel in `params`
-// so `workflows/oss-contribution/workflow.md` can read them, and this
+// so `.claude/commands/coro/oss-contribution.md` can read them, and this
 // module is the one place that shapes them.
 //
 // One job may carry several findings. Intelligence and runner code live

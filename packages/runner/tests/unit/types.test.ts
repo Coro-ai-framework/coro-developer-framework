@@ -37,7 +37,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'test-job-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: {},
     triggerSource: 'cli',
     status: STATUS_QUEUED,
@@ -227,11 +227,11 @@ describe('isCancellableStatus', () => {
 
 describe('defaultWorkflowPath', () => {
   it('returns the generic implementation workflow for Job type', () => {
-    expect(defaultWorkflowPath(JobType.Job)).toBe('workflows/job/workflow.md')
+    expect(defaultWorkflowPath(JobType.Job)).toBe('.claude/commands/coro/job.md')
   })
 
   it('returns self-update workflow for SelfUpdate type', () => {
-    expect(defaultWorkflowPath(JobType.SelfUpdate)).toBe('workflows/self-update/workflow.md')
+    expect(defaultWorkflowPath(JobType.SelfUpdate)).toBe('.claude/commands/coro/self-update.md')
   })
 
   it('returns the retrospective workflow for Retrospective type', () => {

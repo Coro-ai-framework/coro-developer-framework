@@ -12,10 +12,10 @@ import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
  */
 export function resolveIntelligenceRoot(): string {
   const root = getBaseLayerRoot()
-  if (!fs.existsSync(path.join(root, 'workflows', 'job', 'workflow.md'))) {
+  if (!fs.existsSync(path.join(root, '.claude', 'commands', 'coro', 'job.md'))) {
     throw new Error(
       `Coro base intelligence layer is missing the canonical workflow ` +
-        `marker (workflows/job/workflow.md) at ${root}. Did you delete or ` +
+        `marker (.claude/commands/coro/job.md) at ${root}. Did you delete or ` +
         `move @coro-ai/intelligence-base/layer/?`,
     )
   }

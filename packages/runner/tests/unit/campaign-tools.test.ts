@@ -56,7 +56,7 @@ function makeCampaignJob(children: CampaignChild[]): Job {
   return {
     id: 'campaign-1',
     type: JobType.Job,
-    workflowPath: 'workflows/campaign/workflow.md',
+    workflowPath: '.claude/commands/coro/campaign.md',
     params: {},
     triggerSource: 'cli',
     status: STATUS_QUEUED,
@@ -396,7 +396,7 @@ describe('campaignCancelChild', () => {
     const childJob: Job = {
       id: 'child-running-1',
       type: JobType.Job,
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       params: {},
       triggerSource: 'cli',
       status: 'running-coding',
@@ -431,7 +431,7 @@ describe('campaignCancelChild', () => {
     const childJob: Job = {
       id: 'child-failed-1',
       type: JobType.Job,
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       params: {},
       triggerSource: 'cli',
       status: STATUS_FAILED,

@@ -1,4 +1,6 @@
 import yaml from 'js-yaml'
+import { WORKFLOWS_DIR } from '@coro-ai/cloud-protocol'
+import { LAYER_FILES } from '@coro-ai/intelligence-base'
 
 // Per-kind validation for intelligence files written via the dashboard /
 // CLI. The validator is intentionally lenient — it catches obvious
@@ -31,10 +33,10 @@ function parseFrontMatter(markdown: string): { fm: Record<string, unknown> | nul
 }
 
 function inferKindFromPath(p: string): ArtefactKind | null {
-  if (p.startsWith('workflows/')) return 'workflow'
-  if (p.startsWith('agents/')) return 'agent'
-  if (p.startsWith('.claude/skills/')) return 'skill'
-  if (p.startsWith('memory/')) return 'memory'
+  if (p.startsWith(`${WORKFLOWS_DIR}/`)) return 'workflow'
+  if (p.startsWith(`${LAYER_FILES.agentsDir}/`)) return 'agent'
+  if (p.startsWith(`${LAYER_FILES.skillsDir}/`)) return 'skill'
+  if (p.startsWith(`${LAYER_FILES.memoryDir}/`)) return 'memory'
   return null
 }
 
@@ -60,7 +62,7 @@ export function validateArtefact(kind: ArtefactKind, path: string, content: stri
       validateWorkflow(path, content, errors, warnings)
       break
     case 'agent':
-      validateAgent(content, errors, warnings)
+      validateAgent(path, content, errors, warnings)
       break
     case 'skill':
       validateSkill(path, content, errors, warnings)
@@ -79,8 +81,8 @@ function validateWorkflow(
   errors: string[],
   warnings: string[],
 ): void {
-  if (!path.endsWith('/workflow.md') || path.split('/').length !== 3) {
-    errors.push('workflow path must be workflows/<id>/workflow.md')
+  if (!path.startsWith(`${WORKFLOWS_DIR}/`) || !path.endsWith('.md') || path.split('/').length !== WORKFLOWS_DIR.split('/').length + 1) {
+    errors.push(`workflow path must be ${WORKFLOWS_DIR}/<id>.md`)
   }
   const { fm, rawErr } = parseFrontMatter(content)
   if (rawErr) {
@@ -125,8 +127,27 @@ function validateWorkflow(
   }
 }
 
-function validateAgent(content: string, errors: string[], warnings: string[]): void {
-  // Agents don't require front matter, but they should at least have an H1.
+function validateAgent(path: string, content: string, errors: string[], warnings: string[]): void {
+  // An agent is a Claude Code subagent: it needs `name` and `description` in
+  // its front matter to be discovered at all. It should also have an H1.
+  if (!path.startsWith(`${LAYER_FILES.agentsDir}/`) || !path.endsWith('.md') || path.split('/').length !== LAYER_FILES.agentsDir.split('/').length + 1) {
+    errors.push(`agent path must be ${LAYER_FILES.agentsDir}/<name>.md`)
+  }
+  const { fm, rawErr } = parseFrontMatter(content)
+  if (rawErr) {
+    errors.push(rawErr)
+  } else if (!fm) {
+    errors.push('missing YAML front matter (--- ... ---) with name and description at top of file')
+  } else {
+    if (typeof fm.name !== 'string' || !fm.name) errors.push('front matter: name (string) is required')
+    if (typeof fm.description !== 'string' || !fm.description) {
+      errors.push('front matter: description (string) is required')
+    }
+    const base = path.split('/').pop()?.replace(/\.md$/, '')
+    if (typeof fm.name === 'string' && fm.name && base && fm.name !== base) {
+      warnings.push(`front matter: name "${fm.name}" does not match file name "${base}"`)
+    }
+  }
   const stripped = content.replace(FRONT_MATTER_RE, '').trimStart()
   if (!/^#\s+\S/m.test(stripped)) {
     errors.push('agent file must contain an H1 heading (e.g. "# Agent: Coder")')

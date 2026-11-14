@@ -15,12 +15,16 @@
 // (Anthropic SDK), the runner skips registering this tool to avoid
 // two parallel dispatch paths. See `mcp-server.ts`.
 
-import { readFileSync } from 'fs'
-import path from 'path'
 import type { HookPolicy, SubagentExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { ToolContext } from './types'
 import { resolveModelAlias } from '../jobs/phase-assignment'
 import { withRunnerToolEquivalents } from './native-tool-equivalents'
+import {
+  PROMPT_SECTION_SEPARATOR,
+  readAgentPromptSync,
+  readClaudeMdSync,
+  readRuntimeContractSync,
+} from '../intelligence/prompt-files'
 
 /**
  * Tool whitelist applied when a workflow YAML omits `subagents[].tools`.
@@ -129,29 +133,24 @@ export async function runSubagent(
     )
   }
 
-  // Build the system prompt: agent file + .claude/CLAUDE.md prepend
-  // when the executor doesn't walk it natively (matches the parity
-  // logic in {@link buildExecutorSubagentSpecs}).
+  // Build the system prompt: the Coro runtime contract, then
+  // .claude/CLAUDE.md when the executor doesn't walk it natively, then the
+  // agent file without its front matter (matches the parity logic in
+  // {@link buildExecutorSubagentSpecs}).
   let systemPrompt = `You are a helper subagent named ${decl.name}.`
   if (decl.agent) {
     try {
-      systemPrompt = readFileSync(
-        path.join(phase.jobIntelligenceDir, decl.agent),
-        'utf-8',
-      )
+      systemPrompt = readAgentPromptSync(phase.jobIntelligenceDir, decl.agent)
     } catch {
       systemPrompt = `You are the ${decl.name} subagent. Follow your instructions carefully.`
     }
   }
   if (!subagentExecutor.capabilities.supportsClaudeMdNativeWalkUp) {
-    try {
-      const claudeMd = readFileSync(
-        path.join(phase.jobIntelligenceDir, '.claude', 'CLAUDE.md'),
-        'utf-8',
-      )
-      systemPrompt = claudeMd + '\n\n---\n\n' + systemPrompt
-    } catch { /* CLAUDE.md missing — proceed without */ }
+    const claudeMd = readClaudeMdSync(phase.jobIntelligenceDir)
+    if (claudeMd) systemPrompt = claudeMd + PROMPT_SECTION_SEPARATOR + systemPrompt
   }
+  const runtimeContract = readRuntimeContractSync(phase.jobIntelligenceDir)
+  if (runtimeContract) systemPrompt = runtimeContract + PROMPT_SECTION_SEPARATOR + systemPrompt
 
   // Resolve model: subagent's own model/tier wins, falling through to
   // the executor's tier defaults via the same alias machinery as

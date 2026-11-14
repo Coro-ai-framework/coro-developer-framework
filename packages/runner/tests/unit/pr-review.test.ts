@@ -140,7 +140,7 @@ describe('pr change detector', () => {
 describe('pr-review workflow', () => {
   it('parses the approval checkpoint, terminal phases, lenses, and round-kind overrides', () => {
     const markdown = readFileSync(
-      path.resolve(__dirname, '../../../intelligence-base/layer/workflows/pr-review/workflow.md'),
+      path.resolve(__dirname, '../../../intelligence-base/layer/.claude/commands/coro/pr-review.md'),
       'utf8',
     )
     const config = parseWorkflowConfig(markdown)

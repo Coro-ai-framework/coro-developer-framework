@@ -24,7 +24,7 @@ function minimalJob(overrides: Partial<Job> = {}): Job {
     type: 'job',
     status: 'running',
     phase: 'coding',
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { repoSlug: 'my-repo' },
     insights: [],
     workItems: [],

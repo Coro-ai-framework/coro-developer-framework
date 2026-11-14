@@ -12,7 +12,7 @@ function finding(over: Record<string, unknown> = {}): Record<string, unknown> {
       { jobId: 'job-a', detail: 'coding reworked 3 times' },
       { jobId: 'job-b', detail: 'coding reworked 2 times' },
     ],
-    targetPaths: ['packages/intelligence-base/layer/agents/coder.md'],
+    targetPaths: ['packages/intelligence-base/layer/.claude/agents/coder.md'],
     predictedMetric: { name: 'coding.reworkRuns', direction: 'decrease', baseline: 5 },
     ...over,
   }
@@ -112,7 +112,7 @@ const REAL_RUN = [
     id: 'finding-1',
     category: 'base-intelligence',
     evidenceJobIds: ['job-623410295', 'job-621605989', 'job-530278716', 'job-528131961'],
-    targetPaths: ['agents/spec-writer.md', 'agents/campaign-planner.md'],
+    targetPaths: ['.claude/agents/spec-writer.md', '.claude/agents/campaign-planner.md'],
   },
   {
     id: 'finding-2',
@@ -130,7 +130,7 @@ const REAL_RUN = [
     id: 'finding-4',
     category: 'base-intelligence',
     evidenceJobIds: ['job-565183512', 'job-303765035'],
-    targetPaths: ['agents/spec-writer.md', 'skills/feature-planning/SKILL.md'],
+    targetPaths: ['.claude/agents/spec-writer.md', '.claude/skills/feature-planning/SKILL.md'],
   },
   {
     id: 'finding-5',

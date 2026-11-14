@@ -1,8 +1,9 @@
 import { Command } from 'commander'
+import { workflowPathForSlug } from '@coro-ai/cloud-protocol'
 import { apiPost, baseUrl, die } from '../http'
 import { streamJobLogs } from '../job-stream'
 
-const IMPLEMENTATION_WORKFLOW_PATH = 'workflows/job/workflow.md'
+const IMPLEMENTATION_WORKFLOW_PATH = workflowPathForSlug('job')
 
 interface JobResponse {
   jobId: string

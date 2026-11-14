@@ -1,4 +1,14 @@
+---
+name: review-tests
+description: "Read-only tests lens for code review. Checks that the change is covered by meaningful tests and that the tests are sound, without running them. Returns findings as one JSON object."
+tools: Read, Grep, Glob, Bash
+---
+
 # Tests lens
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 Read-only. You do not post anything for the change and you do not run the tests.
 

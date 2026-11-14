@@ -1,10 +1,11 @@
 // Workflow types + remote discovery used by the new-run page and any
 // future workflow pickers. The runner exposes `GET /workflows` which
 // walks the layered intelligence stack — so dropping a new
-// `workflows/<my-flow>/workflow.md` into a tenant overlay surfaces it
+// `.claude/commands/coro/<my-flow>.md` into a tenant overlay surfaces it
 // here without a code change.
 
 import { requestJson } from './lib/http'
+import { workflowPathForSlug, workflowSlugFromPath } from './lib/workflow-paths'
 
 export type WorkflowKind = 'job' | 'campaign' | 'internal'
 
@@ -46,7 +47,7 @@ interface WorkflowsResponse {
 export const FALLBACK_JOB_WORKFLOW: WorkflowOption = {
   id: 'job',
   name: 'Implementation Job',
-  workflowPath: 'workflows/job/workflow.md',
+  workflowPath: workflowPathForSlug('job'),
   description:
     'General-purpose work-item workflow for scoped changes in an existing repository.',
   kind: 'job',
@@ -61,16 +62,18 @@ export async function fetchLaunchableWorkflows(): Promise<WorkflowOption[]> {
   return data.workflows
 }
 
+/** Keyed by workflow id, so a tenant overlay that overrides a workflow keeps its band. */
 const DURATION_BANDS: Record<string, string> = {
-  'workflows/job/workflow.md': '15–35 minutes',
-  'workflows/job-fast/workflow.md': '5–15 minutes',
-  'workflows/job-deep/workflow.md': '45–90 minutes',
-  'workflows/campaign/workflow.md': '1–4 hours, sometimes much longer',
+  job: '15–35 minutes',
+  'job-fast': '5–15 minutes',
+  'job-deep': '45–90 minutes',
+  campaign: '1–4 hours, sometimes much longer',
 }
 
 /** Coarse duration estimate for the pre-submit preview card. */
 export function durationBandFor(workflowPath: string, phaseCount: number): string {
-  if (DURATION_BANDS[workflowPath]) return DURATION_BANDS[workflowPath]
+  const band = DURATION_BANDS[workflowSlugFromPath(workflowPath)]
+  if (band) return band
   if (phaseCount <= 0) return 'Duration varies'
   return `${phaseCount * 8}–${phaseCount * 15} minutes (estimate)`
 }

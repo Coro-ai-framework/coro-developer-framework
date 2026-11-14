@@ -27,9 +27,10 @@ That is the “harness / playbook” cell of the map, not the “fine-tune from 
 ```text
   What evolves in Coro
   ─────────────────────────────────────────────────────────────
-  External files     memory/*.md, .coro/memory/*.md
-  Agent harness      agents/*.md, workflows/*/workflow.md,
-                     .claude/CLAUDE.md, .claude/skills/*/SKILL.md
+  External files     .claude/memory/*.md, .coro/.claude/memory/*.md
+  Agent harness      .claude/agents/*.md, .claude/commands/coro/*.md,
+                     .claude/CLAUDE.md, .claude/coro/RUNTIME.md,
+                     .claude/skills/*/SKILL.md
   Runtime harness    packages/runner TypeScript (tools, state,
                      phase loop, MCP surface)
   Model weights      never
@@ -147,8 +148,9 @@ Per job, the intelligence resolver stacks three layers into `<workingDir>/<jobId
 | Path | Merge | Why |
 |---|---|---|
 | `.claude/CLAUDE.md` | **append** with provenance banners | Tenants extend, never overwrite, base guidance. |
-| `memory/**/*.md` | **append** with banners | Memory is cumulative. |
-| Everything else (`agents/`, `workflows/`, skills, …) | **last-wins** replace | A tenant or repo can fully redefine an agent. |
+| `.claude/memory/**/*.md` | **append** with banners | Memory is cumulative. |
+| `.claude/coro/RUNTIME.md` | **append** with banners | The runtime contract is cumulative. |
+| Everything else (`.claude/agents/`, `.claude/commands/coro/`, skills, …) | **last-wins** replace | A tenant or repo can fully redefine an agent. |
 
 Two write rules keep this from becoming an un-auditable self-modifying blob:
 
@@ -159,7 +161,7 @@ At job start the runner also stamps **intelligence provenance** on the `Job`: ru
 
 ### 3.3 A job as a Generator trajectory
 
-An implementation job (`type: job`, `workflows/job/workflow.md`) is ACE's Generator. It is also AHE's rollout. What it persists is the experience corpus the outer loop later reads:
+An implementation job (`type: job`, `.claude/commands/coro/job.md`) is ACE's Generator. It is also AHE's rollout. What it persists is the experience corpus the outer loop later reads:
 
 | Recorded on the job | Used later as |
 |---|---|
@@ -191,7 +193,7 @@ The tool ledger is capped (64 entries) and stores **error class, not payload** �
 
 The inner loop can only see the job it is in. It is the right place to capture “this build needs `CGO_ENABLED=0`.” It cannot notice “the coding phase loops on every Go job.” That is the retrospective's reason to exist.
 
-A third, subtractive loop exists: the **memory curator** (`workflows/memory-curator/workflow.md`). Every other agent only appends to memory. The curator is the only agent allowed to overwrite or delete entries. It is ACE's grow-and-refine, run as its own workflow with a human checkpoint, so memory does not collapse into a rewrite of `coder.md` and also does not grow without bound.
+A third, subtractive loop exists: the **memory curator** (`.claude/commands/coro/memory-curator.md`). Every other agent only appends to memory. The curator is the only agent allowed to overwrite or delete entries. It is ACE's grow-and-refine, run as its own workflow with a human checkpoint, so memory does not collapse into a rewrite of `coder.md` and also does not grow without bound.
 
 ---
 
@@ -199,9 +201,9 @@ A third, subtractive loop exists: the **memory curator** (`workflows/memory-cura
 
 ### 4.1 Experience is produced (Generator)
 
-Ordinary jobs run. Agents follow procedures in `agents/*.md`, invoke skills on demand, and call `add_insight` when a trigger fires (3+ retries, >5 minutes on one op, a sandbox quirk, a workaround, a guess that lasted >2 turns). Insights start as `pending`. A human can approve, reject, or edit them from the dashboard Insights tab before the evaluator ships.
+Ordinary jobs run. Agents follow procedures in `.claude/agents/*.md`, invoke skills on demand, and call `add_insight` when a trigger fires (3+ retries, >5 minutes on one op, a sandbox quirk, a workaround, a guess that lasted >2 turns). Insights start as `pending`. A human can approve, reject, or edit them from the dashboard Insights tab before the evaluator ships.
 
-The evaluator (`agents/evaluator.md`) is the inner-loop Curator:
+The evaluator (`.claude/agents/evaluator.md`) is the inner-loop Curator:
 
 - It verifies the **merged** base branch (out-of-band: build/tests/acceptance, not a self-grade of the transcript).
 - It grooms approved insights into **one** `propose_change` per writable layer. A second call for the same `(jobId, layer)` is rejected in code.
@@ -219,7 +221,7 @@ Dispatch is centralised in `packages/runner/src/jobs/retrospective.ts` so CLI an
 | Param | Default | Why it is not optional |
 |---|---|---|
 | `type` | `retrospective` | Type-gates every history and upstream tool. An implementation job cannot trawl the install. |
-| `workflowPath` | `workflows/retrospective/workflow.md` | Two phases: `analysis` then `shipping`. |
+| `workflowPath` | `.claude/commands/coro/retrospective.md` | Two phases: `analysis` then `shipping`. |
 | `params.jobWindow` | 25 (clamped 5–100) | How many recent implementation jobs to read. |
 | `params.tiers` | tenant on; upstream off | Where an approved finding may travel. The analyst cannot widen this mid-run. |
 | `params.interactive` | **always `true`** | Without it the analysis→shipping checkpoint silently does not park, and the run ships unreviewed. |
@@ -228,7 +230,7 @@ Two concurrent retrospectives are refused (409): they would analyse the same win
 
 ### 4.3 Analysis (Reflector)
 
-The same agent file (`agents/retrospective-analyst.md`) runs both phases. The runner parks between them. Check `phase` to know which procedure applies. The analysis phase is ACE's Reflector and AHE's Agent Debugger: it produces candidates from distilled evidence. It does **not** call `propose_change`.
+The same agent file (`.claude/agents/retrospective-analyst.md`) runs both phases. The runner parks between them. Check `phase` to know which procedure applies. The analysis phase is ACE's Reflector and AHE's Agent Debugger: it produces candidates from distilled evidence. It does **not** call `propose_change`.
 
 #### 4.3.1 Load prior art
 
@@ -375,7 +377,7 @@ The contribution identity is a property of **repositories**, not of job type (`c
 
 ### 4.6 The OSS contribution job (out-of-band implementer)
 
-`workflows/oss-contribution/workflow.md` is not a generic job with the ending swapped. Dedicated agents (`oss-planner`, `oss-coder`, `oss-verifier`, `oss-contributor`) so a contribution cannot run campaign promotion, lane switching, or a merge-gatekeeper review. `epicAllowed: false`. `params.interactive: true` so the coding checkpoint actually parks — last look before the change becomes public.
+`.claude/commands/coro/oss-contribution.md` is not a generic job with the ending swapped. Dedicated agents (`oss-planner`, `oss-coder`, `oss-verifier`, `oss-contributor`) so a contribution cannot run campaign promotion, lane switching, or a merge-gatekeeper review. `epicAllowed: false`. `params.interactive: true` so the coding checkpoint actually parks — last look before the change becomes public.
 
 ```text
   planning  →  coding (+ code-reviewer subagent)  →  verification  →  contribution
@@ -448,10 +450,10 @@ Each row is a research claim and the Coro mechanism that instantiates it. Featur
 
 | ACE claim | Coro feature | How it matches |
 |---|---|---|
-| Contexts should be evolving playbooks, not terse prompts | Layered markdown: `agents/`, `workflows/`, `.claude/skills/`, `memory/`, `.claude/CLAUDE.md` | The harness the model reads is a file tree of strategies, not a single optimized system prompt. |
+| Contexts should be evolving playbooks, not terse prompts | Layered markdown: `.claude/agents/`, `.claude/commands/coro/`, `.claude/skills/`, `.claude/memory/`, `.claude/CLAUDE.md` | The harness the model reads is a file tree of strategies, not a single optimized system prompt. |
 | Generator / Reflector / Curator split | Jobs generate trajectories; retrospective **analysis** reflects; **shipping** + Evaluator + memory curator curate | Same agent file runs analysis and shipping, but the runner **parks between them** and forbids `propose_change` in analysis. Inner-loop Evaluator is a separate curator for per-job insights. |
 | Incremental delta updates, not monolithic rewrites | `propose_change` `deltas[]` (`insert-after`, `replace-section`, `append`); memory `entries[]` merged into the current source file | The writer clone is the merge target. `_intelligence/` is never the write source. Whole-file dumps from a metrics context were the failure this replaced. |
-| Grow-and-refine; de-duplicate rather than rewrite | Memory curator workflow (subtractive, only agent allowed to overwrite memory); line budgets on pitfalls/patterns; append-only merge for `memory/*.md` | Curator is periodic refine. Evaluator is grow. Caps fight bloat; curator fights collapse. |
+| Grow-and-refine; de-duplicate rather than rewrite | Memory curator workflow (subtractive, only agent allowed to overwrite memory); line budgets on pitfalls/patterns; append-only merge for `.claude/memory/*.md` | Curator is periodic refine. Evaluator is grow. Caps fight bloat; curator fights collapse. |
 | Helpful / harmful counters on bullets | `predictedMetric` + `priorRemedies` scores (`still-firing` / `reduced` / `gone` / `regressed` / `unverifiable`) | Coarser than per-bullet counters: scored per finding/PR on the next window, not per memory line on the next task. Same idea: an edit that did not help is not knowledge. |
 | Execution feedback without labels | Job status, test results, tool-ledger success/fail, escalations, cost | The retrospective never needs a labeled “this job was wrong.” The environment already said so. |
 | Brevity bias as a failure mode | Memory line budgets (pitfall ≤ 8, pattern ≤ 10, skill section ≤ 15) **and** the skill's instruction that intelligence changes are section-level, not rewritten `coder.md` | Budgets are ACE's tension made concrete: they prevent collapse-by-verbosity and can cause collapse-by-brevity. The scorecard is how you notice the second. |
@@ -511,7 +513,7 @@ Each row is a research claim and the Coro mechanism that instantiates it. Featur
 
 | Cell | Coro |
 |---|---|
-| Across sessions × external files | Tenant `memory/*.md`, repo `.coro/memory/`. Inner-loop Evaluator + outer-loop tenant findings. |
+| Across sessions × external files | Tenant `.claude/memory/*.md`, repo `.coro/.claude/memory/`. Inner-loop Evaluator + outer-loop tenant findings. |
 | Across sessions × harness | Tenant/repo overlays of agents, skills, workflows, CLAUDE.md. |
 | Across users × harness (platform flywheel) | `upstream_create_issue` + `dispatch_improvement_job` → fork PR. Fingerprint dedup so independent installs converge. |
 | Across users × files | Base-layer markdown in the same upstream PR as runner code when they are one story. |
@@ -558,13 +560,13 @@ AHE's Evolve Agent edits the harness autonomously and rolls back. Coro's Curator
 
 | Concern | Where |
 |---|---|
-| Workflow (phases, checkpoint, routing table) | `packages/intelligence-base/layer/workflows/retrospective/workflow.md` |
-| Analyst procedures | `packages/intelligence-base/layer/agents/retrospective-analyst.md` |
+| Workflow (phases, checkpoint, routing table) | `packages/intelligence-base/layer/.claude/commands/coro/retrospective.md` |
+| Analyst procedures | `packages/intelligence-base/layer/.claude/agents/retrospective-analyst.md` |
 | Thresholds, categories, metric vocabulary, verify-before-name | `packages/intelligence-base/layer/.claude/skills/retrospective-analysis/SKILL.md` |
 | Proposal types, deltas, memory budgets | `packages/intelligence-base/layer/.claude/skills/self-improvement-guide/SKILL.md` |
-| Inner-loop curator | `packages/intelligence-base/layer/agents/evaluator.md` |
-| Grow-and-refine of memory | `packages/intelligence-base/layer/workflows/memory-curator/workflow.md` |
-| OSS child workflow | `packages/intelligence-base/layer/workflows/oss-contribution/workflow.md` |
+| Inner-loop curator | `packages/intelligence-base/layer/.claude/agents/evaluator.md` |
+| Grow-and-refine of memory | `packages/intelligence-base/layer/.claude/commands/coro/memory-curator.md` |
+| OSS child workflow | `packages/intelligence-base/layer/.claude/commands/coro/oss-contribution.md` |
 | Dispatch shape, finding/outcome types | `packages/runner/src/jobs/retrospective.ts` |
 | Report write-time gate | `packages/runner/src/tools/retrospective-report.ts` |
 | `list_jobs` / `get_job_report` / log excerpts | `packages/runner/src/tools/job-history.ts` |

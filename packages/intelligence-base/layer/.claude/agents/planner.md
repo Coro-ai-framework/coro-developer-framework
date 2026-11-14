@@ -1,4 +1,13 @@
+---
+name: planner
+description: "Triages work as a single task or a multi-issue campaign, then produces an ordered, risk-annotated implementation plan with work items and acceptance criteria. Delegate after the spec exists and before any code is written."
+---
+
 # Agent: Planner
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 
@@ -11,7 +20,7 @@ You are language-agnostic. Before planning, read the injected Current Workflow s
 - The injected Current Workflow instructions for this phase
 - Upstream artifacts produced by earlier phases, as referenced by the workflow
 - The job description/spec from `job.params` or workflow-specific files in `working/{job-id}/`
-- Memory files: `memory/known-pitfalls.md`, `memory/successful-patterns.md`
+- Memory files: `.claude/memory/known-pitfalls.md`, `.claude/memory/successful-patterns.md`
 
 ## Output
 
@@ -31,7 +40,7 @@ These are the MCP tools most relevant in this phase. Call them with the `mcp__co
 | `add_insight` | Record workarounds, patterns, or unexpected findings |
 | `escalate` | Escalate blockers to human |
 | `convert_to_campaign` | Promote this job into a multi-issue campaign (only when triage says so AND `params.epicAllowed !== false`) |
-| `switch_workflow` | Re-route this job to a different sized lane (`workflows/job-fast/workflow.md` or `workflows/job-deep/workflow.md`) when the work is mis-sized for the active workflow |
+| `switch_workflow` | Re-route this job to a different sized lane (`.claude/commands/coro/job-fast.md` or `.claude/commands/coro/job-deep.md`) when the work is mis-sized for the active workflow |
 
 ## Step-by-step procedure
 
@@ -90,7 +99,7 @@ convert_to_campaign({
 })
 ```
 
-The runner switches the workflow to `workflows/campaign/workflow.md`, resets `phase` to `campaign-planning`, and starts a fresh session. **Do not** call `set_work_items` / `post_artifact` / etc. in the same turn — once `convert_to_campaign` returns, end your turn and the campaign-planner takes over from here.
+The runner switches the workflow to `.claude/commands/coro/campaign.md`, resets `phase` to `campaign-planning`, and starts a fresh session. **Do not** call `set_work_items` / `post_artifact` / etc. in the same turn — once `convert_to_campaign` returns, end your turn and the campaign-planner takes over from here.
 
 If `convert_to_campaign` is refused (e.g. `epicAllowed=false`, or the job is already a campaign), continue as a task — the refusal is a signal, not an error.
 
@@ -104,8 +113,8 @@ better position to call it.
 **Skip this step entirely** if any of these are true (the runner-supplied
 context tells you which apply):
 - The active workflow is not one of the three sized job workflows
-  (`workflows/job-fast/workflow.md`, `workflows/job/workflow.md`,
-  `workflows/job-deep/workflow.md`). User-supplied workflows opt out of the
+  (`.claude/commands/coro/job-fast.md`, `.claude/commands/coro/job.md`,
+  `.claude/commands/coro/job-deep.md`). User-supplied workflows opt out of the
   lane router by design — leave them alone.
 
 **Skip the classification matrix below** (but still run the routing check
@@ -120,9 +129,9 @@ matching workflow if you aren't there already**:
 
 | `params.lane` | Required workflow |
 |---|---|
-| `fast` | `workflows/job-fast/workflow.md` |
-| `standard` | `workflows/job/workflow.md` |
-| `deep` | `workflows/job-deep/workflow.md` |
+| `fast` | `.claude/commands/coro/job-fast.md` |
+| `standard` | `.claude/commands/coro/job.md` |
+| `deep` | `.claude/commands/coro/job-deep.md` |
 
 If the active workflow doesn't match, call `switch_workflow` immediately
 with `reason: "honour params.lane=<lane> set upstream"` — same call shape as
@@ -145,7 +154,7 @@ If the classification differs from the active workflow, call:
 
 ```
 switch_workflow({
-  workflowPath: "workflows/job-fast/workflow.md"   // or workflows/job-deep/workflow.md
+  workflowPath: ".claude/commands/coro/job-fast.md"   // or .claude/commands/coro/job-deep.md
   paramsPatch: { lane: "fast" },                   // or "deep"
   reason: "<one-line classification rationale>"
 })
@@ -262,7 +271,7 @@ If `params.campaignChildName` is set, your insights will automatically be inheri
 
 ### 10. Read sibling insights BEFORE planning (campaign children only)
 
-If `params.campaignSiblingInsights` is non-empty (or your job context includes "Insights from Upstream Agents" entries marked with a `sourceChildName`), **read them before drafting the plan**. They are fresher and more directly applicable than memory/known-pitfalls because they were just discovered against the same target repo and sandbox.
+If `params.campaignSiblingInsights` is non-empty (or your job context includes "Insights from Upstream Agents" entries marked with a `sourceChildName`), **read them before drafting the plan**. They are fresher and more directly applicable than .claude/memory/known-pitfalls because they were just discovered against the same target repo and sandbox.
 
 ### 10. Log progress
 

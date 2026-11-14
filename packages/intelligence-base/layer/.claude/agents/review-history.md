@@ -1,4 +1,14 @@
+---
+name: review-history
+description: "Read-only history lens for pull request review. Checks whether the change contradicts, undoes or ignores something Coro already did, decided or reviewed on the same code. Returns findings as one JSON object."
+tools: Read, Grep, Glob, Bash
+---
+
 # History lens
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 Read-only. You do not post anything for the change and you do not call SCM tools.
 

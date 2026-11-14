@@ -1,6 +1,6 @@
 # Coro — AI Agent Workspace
 
-> **Agent runtime instructions** are in `packages/intelligence-base/layer/.claude/CLAUDE.md`. **This** file is for developers working on this repository.
+> **Agent instructions** are in `packages/intelligence-base/layer/.claude/CLAUDE.md` (portable rules, also read by Claude Code) and `packages/intelligence-base/layer/.claude/coro/RUNTIME.md` (the Coro-only runtime contract). **This** file is for developers working on this repository.
 
 This repository contains:
 
@@ -9,15 +9,17 @@ This repository contains:
 - The **Coro dashboard** (`packages/dashboard/`) — React + Vite web UI.
 - The **base intelligence layer** (`packages/intelligence-base/`) — the
   generic, company-agnostic agents, workflows, skills, and memory templates
-  that ship with every Coro install. The runner reads its base intelligence
-  from this package via `getBaseLayerRoot()`; nothing in the repo root
-  shadows it anymore.
+  that ship with every Coro install, laid out as a native Claude Code tree
+  (see [Native Claude Code layout](#native-claude-code-layout)). The runner
+  reads its base intelligence from this package via `getBaseLayerRoot()`;
+  nothing in the repo root shadows it anymore.
 
 ### Layered intelligence
 
 Coro composes intelligence from three layers using a **hybrid model**:
-the resolver owns Coro-specific content (`agents/`, `workflows/`,
-`memory/`, `.claude/skills/`, `.claude/CLAUDE.md`); the target repo's
+the resolver owns the Coro intelligence tree (`.claude/agents/`,
+`.claude/commands/coro/`, `.claude/memory/`, `.claude/skills/`,
+`.claude/CLAUDE.md`, `.claude/coro/RUNTIME.md`); the target repo's
 own `.claude/` is left for Claude Code's native loader to discover at
 the SDK's `cwd`.
 
@@ -50,6 +52,61 @@ the SDK's `cwd`.
   belongs to Claude Code's native walk-up via
   `settingSources: ['project']`.
 
+#### Native Claude Code layout
+
+The intelligence layer is a native Claude Code tree, so copying
+`packages/intelligence-base/layer/.claude/` and `layer/AGENTS.md` into any
+repository gives Claude Code the agents, skills and workflows without Coro.
+Every layer (base, tenant, repo) uses the same layout; the repo overlay
+mirrors it under `.coro/`.
+
+```
+layer/
+├── AGENTS.md                      ← entry point for Copilot and other AGENTS.md readers
+└── .claude/
+    ├── CLAUDE.md                  ← portable rules (+ a fenced "standalone" block)
+    ├── coro/RUNTIME.md            ← Coro-only runtime contract (MCP tools, sandbox, checkpoints)
+    ├── agents/<name>.md           ← subagents; `name` + `description` front matter
+    ├── commands/coro/<id>.md      ← workflows as slash commands; the id is the file name
+    ├── skills/<name>/SKILL.md
+    └── memory/*.md                ← memory (plugin snippets under memory/snippets/)
+```
+
+Three rules keep Coro and Claude Code from disturbing each other:
+
+- **The runtime contract is Coro-only.** Claude Code loads `CLAUDE.md`
+  natively and would otherwise be told to call `mcp__coro__*` tools it does
+  not have, so those rules live in `.claude/coro/RUNTIME.md`. The prompt
+  builder, SDK subagent specs, `run_subagent` and `projectContext: 'load'`
+  review lenses inject it first, for every executor
+  (`intelligence/prompt-files.ts`). Pull-request lenses (`'skip'`) are
+  unchanged.
+- **Standalone blocks are removed.** Text meant only for Claude Code (the
+  tool-substitution table in `CLAUDE.md`, the phase-by-phase orchestration
+  in the portable workflow commands, the one-line pointer in each agent) sits
+  between `<!-- standalone:start -->` and `<!-- standalone:end -->`, each
+  marker alone on its line. The resolver strips those blocks from the whole
+  `_intelligence` tree after every layer is applied
+  (`stripStandaloneBlocks` in `intelligence/merge.ts`), so a Coro prompt
+  never contains them. Prose must not write the full marker; a bare
+  `standalone:start` in backticks is harmless.
+- **The SDK sees a selective `.claude/`.** `<cwd>/.claude` is a real
+  directory holding symlinks for `CLAUDE.md`, `skills` and `settings.json`
+  only (`llm-anthropic/src/intelligence-symlink.ts`). `agents/`,
+  `commands/`, `memory/` and `coro/` stay hidden, so the 29 agents and
+  9 workflow commands do not appear as ambient subagents and slash commands
+  in every phase. The runner hands each phase exactly the subagents its
+  workflow declares.
+
+The workflow id is the file's base name, and `workflowPath` is
+`.claude/commands/coro/<id>.md` (`workflowPathForSlug` and
+`workflowSlugFromPath` in `@coro-ai/cloud-protocol`; the dashboard keeps
+its own copy in `lib/workflow-paths.ts`). Runner-only workflows
+(`campaign`, `memory-curator`, `oss-contribution`, `pr-review`,
+`retrospective`, `self-update`) carry `disable-model-invocation: true`
+and a "Needs the Coro runner" block, so Claude Code does not offer them to
+the model.
+
 #### Merge semantics
 
 Two deterministic rules, applied per-file as the resolver stacks
@@ -58,8 +115,9 @@ layers:
 | Path | Mode | Rationale |
 |---|---|---|
 | `.claude/CLAUDE.md` | **append** with banners | Mirrors Claude Code's native CLAUDE.md walk-up; tenants extend, never overwrite, base guidance. |
-| `memory/**/*.md` | **append** with banners | Memory is cumulative knowledge — additions never erase prior entries. |
-| Everything else (`agents/`, `workflows/`, `.claude/skills/`, `.claude/settings.json`, …) | **last-wins** (file replace) | Predictable per-path override; tenants and repos can fully redefine an agent or workflow. |
+| `.claude/coro/RUNTIME.md` | **append** with banners | The runtime contract is cumulative too: a tenant adds rules, it never replaces the base contract. |
+| `.claude/memory/**/*.md` | **append** with banners | Memory is cumulative knowledge — additions never erase prior entries. |
+| Everything else (`.claude/agents/`, `.claude/commands/coro/`, `.claude/skills/`, `.claude/settings.json`, …) | **last-wins** (file replace) | Predictable per-path override; tenants and repos can fully redefine an agent or workflow. |
 
 Append banners look like `<!-- ─── coro layer: tenant:team-abc ─── -->`
 so the model can see provenance when reading the merged file.
@@ -70,7 +128,7 @@ shipping is a separate write path. `propose_change` must materialise
 diffs against the writable tenant/repo source clone, never against the
 constructed `_intelligence` tree. In particular, memory-update
 proposals append against the current source file in the writer clone;
-`memory/MEMORY.md` remains an authored index update rather than an
+`.claude/memory/MEMORY.md` remains an authored index update rather than an
 append-only stream.
 
 #### Resolver lifecycle
@@ -117,7 +175,7 @@ Agents in this repository do not run directly inside Claude Code sessions. They 
 
 1. Receives job requests from the `coro` CLI or external event sources (BitBucket webhooks, Jira webhooks)
 2. Creates a typed `Job` object with a `workflowPath` pointing to the correct workflow MD file
-3. Assembles a system prompt from the workflow file, agent instructions, and memory — static content (behavior rules, tenant context, git conventions) is loaded natively by the SDK from `.claude/CLAUDE.md`
+3. Assembles a system prompt from the runtime contract (`.claude/coro/RUNTIME.md`), the workflow file and agent instructions (front matter removed) — portable static content (behavior rules, git conventions) is loaded natively by the SDK from `.claude/CLAUDE.md`, and injected by the runner for executors that cannot
 4. Resolves a `PhaseExecutor` plugin (the configured default, else the sole installed executor) and calls `executor.executePhase()` for each workflow phase. The executor encapsulates the LLM SDK call, manages the tool-use loop, subagent spawning, and conversation history. Per-phase provider/model is resolved by the runner via `settings.llm.aliases` and optional `provider:` overrides in the workflow YAML. Model catalogues live in each executor's `models.json`; the runner core has zero direct Anthropic-SDK imports.
 5. Parks the job in Redis when waiting for an external event (PR merge, review comment, human approval)
 6. Resumes the job when the expected event webhook arrives
@@ -166,23 +224,29 @@ Every job carries a `type` and a `workflowPath`. The runner uses these — not h
 
 | Trigger | JobType | workflowPath |
 |---------|---------|-------------|
-| `coro job ...` (CLI) | `job` | `workflows/job/workflow.md` |
-| Jira ticket assigned to agent | `job` | `workflows/job/workflow.md` |
-| Agent writes to `memory/`, `agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
-| **Run Retrospective** (dashboard / `coro retrospective run`) | `retrospective` | `workflows/retrospective/workflow.md` |
-| `dispatch_improvement_job` (from a retrospective) | `job` | `workflows/oss-contribution/workflow.md` |
+| `coro job ...` (CLI) | `job` | `.claude/commands/coro/job.md` |
+| Jira ticket assigned to agent | `job` | `.claude/commands/coro/job.md` |
+| Agent writes to `.claude/memory/`, `.claude/agents/`, or `.claude/` | `self-update` | *(inline, no workflow file)* |
+| **Run Retrospective** (dashboard / `coro retrospective run`) | `retrospective` | `.claude/commands/coro/retrospective.md` |
+| `dispatch_improvement_job` (from a retrospective) | `job` | `.claude/commands/coro/oss-contribution.md` |
 
 ---
 
 ## What lives here
 
-- **agents/** — One MD file per agent. Each defines role, inputs, outputs, and step-by-step procedure. Agents are language-agnostic generic process definitions.
-- **workflows/** — Lifecycle definitions, one subdirectory per workflow type. Each `workflow.md` has YAML front matter defining phases, agent assignments, model selection, and subagent definitions.
-- **.claude/** — Intelligence loaded by the Agent SDK natively:
-  - `.claude/CLAUDE.md` — Always-loaded runtime instructions: behavior rules, tenant context, git conventions, infrastructure context.
-  - `.claude/skills/` — On-demand domain knowledge and language conventions. Agents invoke skills when they need specialized guidance (e.g., `feature-planning`, `golang-conventions`).
+All of this lives under `packages/intelligence-base/layer/` (and the same paths in the tenant and repo layers):
+
+- **.claude/agents/** — One MD file per agent, with `name` and `description` front matter so Claude Code discovers it as a subagent. Each defines role, inputs, outputs, and step-by-step procedure. Agents are language-agnostic generic process definitions.
+- **.claude/commands/coro/** — Lifecycle definitions, one file per workflow, each a Claude Code slash command. The YAML front matter defines phases, agent assignments, model selection, and subagent definitions; the portable ones also carry a standalone block that lets Claude Code run the phases itself.
+- **.claude/CLAUDE.md** — Portable behaviour rules and git conventions, loaded natively by Claude Code and by the Agent SDK.
+- **.claude/coro/RUNTIME.md** — Coro-only runtime contract: MCP tools, sandbox, checkpoints, banned tools. Injected by the runner, never exposed to the SDK.
+- **.claude/skills/** — On-demand domain knowledge and language conventions. Agents invoke skills when they need specialized guidance (e.g., `feature-planning`, `golang-conventions`).
+- **.claude/memory/** — Accumulated knowledge from past jobs. Read on demand through `read_memory`. Never modified directly — updates go through a self-improvement PR.
+- **AGENTS.md** — Points Copilot and other AGENTS.md readers at the files above.
+
+Elsewhere in the repository:
+
 - **config/** — `credentials.md` (gitignored, read by the runner at startup) and `repos.md` (service registry).
-- **memory/** — Accumulated knowledge from past jobs. Read at the start of every phase. Never modified directly — updates go through a self-improvement PR.
 - **docs/** — Architecture documentation for engineers and stakeholders.
 - **packages/runner/** — The Coro Runner (TypeScript/Node.js). Local agent runtime, cloud control plane, and the `coro` CLI.
 - **packages/dashboard/** — The Coro Dashboard (React + Vite). Web UI for jobs, intelligence editing, and tenant administration.
@@ -202,19 +266,19 @@ The system is fully language-agnostic. No language-specific defaults are hardcod
 
 | Agent file | Phase(s) / role | Used by workflows |
 |-----------|----------------|------------------|
-| `agents/planner.md` | planning | job |
-| `agents/coder.md` | coding | job |
-| `agents/code-reviewer.md` | `code-reviewer` subagent invoked by the coder pre-PR-open | job |
-| `agents/pr-reviewer.md` | review (merge gatekeeper) | job |
-| `agents/evaluator.md` | evaluation (verify build/tests/acceptance criteria + loop control) | job |
-| `agents/spec-writer.md` | spec-writing | job (Jira-triggered) |
-| `agents/campaign-planner.md` | campaign-planning | campaign |
-| `agents/campaign-evaluator.md` | aggregation | campaign |
-| `agents/retrospective-analyst.md` | analysis + shipping (cross-job self-analysis) | retrospective |
-| `agents/oss-planner.md` | planning (contribution only — no campaign/lanes) | oss-contribution |
-| `agents/oss-coder.md` | coding on the fork | oss-contribution |
-| `agents/oss-verifier.md` | pre-PR test/wording gate | oss-contribution |
-| `agents/oss-contributor.md` | contribution (opens the fork → upstream PR) | oss-contribution |
+| `.claude/agents/planner.md` | planning | job |
+| `.claude/agents/coder.md` | coding | job |
+| `.claude/agents/code-reviewer.md` | `code-reviewer` subagent invoked by the coder pre-PR-open | job |
+| `.claude/agents/pr-reviewer.md` | review (merge gatekeeper) | job |
+| `.claude/agents/evaluator.md` | evaluation (verify build/tests/acceptance criteria + loop control) | job |
+| `.claude/agents/spec-writer.md` | spec-writing | job (Jira-triggered) |
+| `.claude/agents/campaign-planner.md` | campaign-planning | campaign |
+| `.claude/agents/campaign-evaluator.md` | aggregation | campaign |
+| `.claude/agents/retrospective-analyst.md` | analysis + shipping (cross-job self-analysis) | retrospective |
+| `.claude/agents/oss-planner.md` | planning (contribution only — no campaign/lanes) | oss-contribution |
+| `.claude/agents/oss-coder.md` | coding on the fork | oss-contribution |
+| `.claude/agents/oss-verifier.md` | pre-PR test/wording gate | oss-contribution |
+| `.claude/agents/oss-contributor.md` | contribution (opens the fork → upstream PR) | oss-contribution |
 
 Generic job agents are workflow-agnostic and language-agnostic. They receive
 domain-specific expertise by invoking skills on-demand. The same coder agent
@@ -286,9 +350,9 @@ When any agent calls `propose_change`, the runner synchronously:
 Each call produces exactly one PR. Bundle every file change for a layer into one `propose_change` call — splitting creates duplicate PRs. The Evaluator (and PR Reviewer for cross-PR systemic patterns) is responsible for grooming insights into a single multi-file proposal per layer per job.
 
 The self-improvement pipeline covers three writable surfaces (across the tenant and repo layers):
-- **Memory** (`memory/*.md` tenant, `.coro/memory/*.md` repo) — high volatility, grows with every job
+- **Memory** (`.claude/memory/*.md` tenant, `.coro/.claude/memory/*.md` repo) — high volatility, grows with every job
 - **Skills** (`.claude/skills/*/SKILL.md`) — medium volatility, updated when agents discover systemic gaps
-- **Agent instructions** (`agents/*.md`) — lower volatility, updated when procedures need fixing
+- **Agent instructions** (`.claude/agents/*.md`, `name` and `description` front matter required) — lower volatility, updated when procedures need fixing
 
 ### Cross-job self-improvement: the retrospective
 
@@ -297,7 +361,7 @@ ran in. That is enough to capture "this build needs CGO_ENABLED=0"; it can
 never notice "the coding phase loops on every Go job", because no agent
 has ever seen two jobs at once.
 
-The **retrospective** (`workflows/retrospective/workflow.md`, job type
+The **retrospective** (`.claude/commands/coro/retrospective.md`, job type
 `retrospective`) is that missing view. It is dispatched on demand, reads
 the install's own job records through three read-only MCP tools —
 `list_jobs`, `get_job_report`, `get_job_log_excerpts`, implemented in
@@ -371,7 +435,7 @@ a per-finding ballot (`components/retrospective/findings-list.tsx`) and
 `Skipped findings:` lines the analyst parses. The ballot feeds the existing
 approve button rather than adding a second one, so there is one approval
 action on the page. A reply that names no ids still means "all of it" —
-`agents/retrospective-analyst.md` reads it that way so a CLI `coro message`
+`.claude/agents/retrospective-analyst.md` reads it that way so a CLI `coro message`
 approval works too.
 
 Findings are categorised by which layer owns the fix:
@@ -409,8 +473,8 @@ bodies. It is off unless the install sets `upstream.repoUrl` — via
 PRs go out from a fork: `ensureFork` creates it if needed, `syncFork`
 fast-forwards it to the upstream default branch, and
 `dispatch_improvement_job` starts an implementation job on
-`workflows/oss-contribution/workflow.md` (oss-planner → oss-coder →
-verification → `agents/oss-contributor.md`). That job clones the **fork**
+`.claude/commands/coro/oss-contribution.md` (oss-planner → oss-coder →
+verification → `.claude/agents/oss-contributor.md`). That job clones the **fork**
 (`params.repo`), opens its PR against **upstream** (`params.upstreamRepo`
 + `params.prSourceOwner`), and ends there — nobody here can merge it.
 Intelligence markdown and runner code live in the same repository, so
@@ -481,7 +545,7 @@ then pushed to it with the plugin's — the same 403, reachable through a
 config shape the first fix did not cover. `mcpServer()` is the one surface
 that cannot honour any of this: it is a single process holding a single
 token chosen before any repository is named, so contribution jobs are told
-(in the GitHub clone snippet and `agents/oss-contributor.md`) to use the
+(in the GitHub clone snippet and `.claude/agents/oss-contributor.md`) to use the
 in-process `scm_*` tools rather than `mcp__github__*`.
 
 **Surfaces.** Three runner endpoints back both triggers —
@@ -525,18 +589,18 @@ repository with their declined and addressed findings. The result is stored
 as `params.relatedWork`, written to `pr/related-work.md`, and summarised on
 the round for the dashboard. It is recorded data, never instructions, and a
 failure to build it costs the round context, not the round. The tool shell
-stays dumb: the `history` lens (`agents/review-history.md`) judges whether the
+stays dumb: the `history` lens (`.claude/agents/review-history.md`) judges whether the
 change contradicts it, and `review_related_work` opens one job or review for
 it, but only an id this round was shown. The job-history tools remain
 retrospective-only; PR review has its own, narrower reader. The history lens
-is declared in `workflows/pr-review/workflow.md` only; coding workflows keep
+is declared in `.claude/commands/coro/pr-review.md` only; coding workflows keep
 their exact lens lists. Its findings must cite a `job` or `review` source or
 the runner drops them.
 
 **Per-lens briefs** (`buildLensBrief` in `reviews/lens-runner.ts`, shared with
 `tools/code-review.ts`). Each lens gets its own file slice, the author's
 description, the open and declined ledger, human threads, the repository's
-review guidance, `memory/pr-feedback.md`, problems declined on other pull
+review guidance, `.claude/memory/pr-feedback.md`, problems declined on other pull
 requests, and, on an incremental round, `pr/delta.patch` (what the last push
 changed, from the SCM's compare API where the plugin implements `sinceSha`;
 otherwise the full diff). Lenses return `evidence`, `scenario`, `confidence`
@@ -607,16 +671,18 @@ coro/                                    ← workspace root
     │   ├── tests/manifest.test.ts
     │   └── layer/                       ← THE canonical generic intelligence
     │       ├── .claude/
-    │       │   ├── CLAUDE.md            ← Generic Coro runtime instructions
+    │       │   ├── CLAUDE.md            ← Portable rules (+ standalone block)
+    │       │   ├── coro/RUNTIME.md      ← Coro-only runtime contract
+    │       │   ├── agents/              ← Generic agent role definitions (subagents)
+    │       │   ├── commands/coro/       ← Generic workflows, one slash command each
+    │       │   ├── memory/              ← Empty memory templates (tenants populate)
     │       │   └── skills/
     │       │       ├── feature-planning/SKILL.md
     │       │       ├── feature-testing/SKILL.md
     │       │       ├── golang-conventions/SKILL.md
     │       │       ├── dotnet-conventions/SKILL.md
     │       │       └── self-improvement-guide/SKILL.md
-    │       ├── agents/                  ← Generic agent role definitions
-    │       ├── workflows/               ← Generic workflow phase definitions
-    │       └── memory/                  ← Empty memory templates (tenants populate)
+    │       └── AGENTS.md                ← Entry point for Copilot / AGENTS.md readers
     ├── runner/                          ← Coro Runner (TypeScript/Node.js)
     │   ├── docker-compose.cloud.yml     ← Cloud control plane stack: postgres + redis
     │   ├── package.json                 ← @coro-ai/runner

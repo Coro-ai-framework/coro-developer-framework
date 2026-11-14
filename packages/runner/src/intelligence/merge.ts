@@ -4,13 +4,20 @@
 // single materialised directory. Two merge modes are supported:
 //
 //   1. last-wins (default): higher layers replace lower-layer files at
-//      the same relative path. Used for `agents/`, `workflows/`,
-//      `.claude/skills/`, and everything else.
+//      the same relative path. Used for `.claude/agents/`,
+//      `.claude/commands/coro/` (workflows), `.claude/skills/`, and
+//      everything else.
 //
 //   2. append (with banners): higher layers append their content under a
 //      banner so the model can see provenance. Used for
-//      `.claude/CLAUDE.md` and `memory/**/*.md`. Mirrors Claude Code's
-//      native CLAUDE.md walk-up semantics.
+//      `.claude/CLAUDE.md`, `.claude/coro/RUNTIME.md` and
+//      `.claude/memory/**`. Mirrors Claude Code's native CLAUDE.md
+//      walk-up semantics.
+//
+// Once every layer is applied, `stripStandaloneBlocksInTree` removes the
+// blocks that only make sense outside the runner (see below), so the
+// prompts Coro assembles stay exactly what they were before the layer
+// became directly usable from Claude Code.
 //
 // Why split into helpers: keeps `resolver.ts` focused on orchestration,
 // makes merge semantics independently testable, and lets future loaders
@@ -39,13 +46,75 @@ export function mergeModeFor(relPath: string): MergeMode {
   const p = relPath.split(path.sep).join('/')
 
   // Claude Code's native CLAUDE.md walk-up concatenates; mirror that.
-  if (p === '.claude/CLAUDE.md') return 'append'
+  // The runtime contract is the Coro-only half of the same rules, so a
+  // tenant extends it the same way.
+  if (p === '.claude/CLAUDE.md' || p === '.claude/coro/RUNTIME.md') return 'append'
 
   // Memory is cumulative knowledge — append rather than overwrite so that
   // base templates are extended (not replaced) by tenant + repo entries.
-  if (p === 'memory' || p.startsWith('memory/')) return 'append'
+  if (p === '.claude/memory' || p.startsWith('.claude/memory/')) return 'append'
 
   return 'replace'
+}
+
+// ── Standalone blocks ─────────────────────────────────────────────────────────
+//
+// The layer is a native Claude Code tree, so some text in it is written for
+// a developer running it *without* Coro: how to substitute tools that only
+// exist inside the runner, how to sequence a workflow by hand. That text is
+// fenced with a start and an end HTML comment, each alone on its line. The
+// runner removes every fenced block when it materialises a job's
+// intelligence, so a Coro agent never reads it.
+//
+// The markers are anchored to the start of a line on purpose: prose that
+// merely mentions them (a guide explaining the convention, for example) must
+// not be able to swallow the text between two mentions.
+
+const STANDALONE_BLOCK_RE
+  = /^[ \t]*<!-- standalone:start -->[ \t]*\r?\n[\s\S]*?^[ \t]*<!-- standalone:end -->[ \t]*(?:\r?\n)*/gm
+
+/**
+ * Remove every standalone block from a markdown document, together with the
+ * blank lines that follow it, so the text on either side reads as it did
+ * before the block existed. A start marker with no end marker is left alone.
+ */
+export function stripStandaloneBlocks(md: string): string {
+  if (!md.includes('standalone:start')) return md
+  return md.replace(STANDALONE_BLOCK_RE, '')
+}
+
+/**
+ * Walk a materialised intelligence directory and strip standalone blocks
+ * from every markdown file in place. Returns the number of files changed.
+ */
+export async function stripStandaloneBlocksInTree(root: string): Promise<number> {
+  let changed = 0
+
+  async function walk(dir: string): Promise<void> {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw err
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(full)
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        const before = await fs.readFile(full, 'utf8')
+        const after = stripStandaloneBlocks(before)
+        if (after !== before) {
+          await fs.writeFile(full, after)
+          changed += 1
+        }
+      }
+    }
+  }
+
+  await walk(root)
+  return changed
 }
 
 /**

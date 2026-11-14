@@ -1,0 +1,416 @@
+# Coro Runtime Contract
+
+The Coro runner injects this file into the system prompt of every phase and subagent it runs. It is **Coro-only**: it describes the `mcp__coro__*` tools, the job sandbox, runner-enforced checkpoints, artefacts and the self-improvement pipeline, none of which exist in a plain Claude Code session, so Claude Code never loads it. The rules every agent shares — behaviour, git and PR conventions — live in `.claude/CLAUDE.md`.
+
+## Design philosophy
+
+**TypeScript = dumb tool shell.** It runs phases linearly, provides MCP tools, persists state in Redis, and parks/resumes on webhooks. It has zero orchestration intelligence.
+
+**Intelligence = MD files + LLM judgment.** Workflow markdown defines phases and metadata. Agent markdown defines procedures. The LLM reads artifacts, calls tools to update state, and uses `goto_phase` to control flow. The evaluator decides when to loop. The planner decides how many work items. The coder decides when it needs a fresh session.
+
+## Agent behavior rules
+
+These are the runner-specific rules. The portable ones (conventions, API contracts, scope, credentials) are in `.claude/CLAUDE.md`; numbering is kept stable so references still resolve.
+
+1. **Load memory on demand via `read_memory`.** Memory is NOT pre-loaded into your system prompt. At the start of a job (or whenever you need to check prior learnings, known pitfalls, conventions, or pending proposals), call `mcp__coro__read_memory` with no arguments — it returns the index, every linked file, and any pending on-disk proposals. For a single file, pass `{ file: "known-pitfalls.md" }`.
+
+3. **Use the `log` tool constantly.** Developers watch job progress via `coro logs`. Log every significant action, decision, and result — not just errors. Be specific: `"Extracted 14 endpoints from UserController"` not `"Analyzed code"`.
+
+4. **Never skip a workflow step silently.** If a step cannot be completed, call `escalate` with a precise description of the blocker. Do not invent a workaround that deviates from the workflow.
+
+6. **Record insights aggressively — every wasted turn is a future-run tax.** Call `add_insight` *in the same turn* the workaround clicks; do not batch. You MUST record when ANY of these triggers fire:
+   - You retried the same operation **3+ times** before it worked.
+   - You spent **>5 minutes wall-clock** on a single op.
+   - You discovered a **sandbox / toolchain quirk** the prompt didn't mention (Bash path guard, package-cache write block, blocked registry host, host-factory, git-config). Coro itself imposes no network allowlist, but the host may — so record the reachable/blocked hosts you actually observed rather than asserting the cause.
+   - You used a **workaround that bypasses the documented happy path** (inline-URL git push, raw curl/python after an MCP tool failed, custom NuGet/pip/npm config).
+   - A failure left you **guessing for >2 turns** about whose fault it was.
+
+   Use one of these `category` values: `sandbox-quirk`, `toolchain-pitfall`, `auth-friction`, `provider-bug`, `intelligence-gap`, `workaround`, `spec-ambiguity`. Put the **exact, copy-pasteable recipe** in `suggestion` — config snippet, command line, env var. Vague insights ("be careful with NuGet") are worse than no insight; the Evaluator will discard them. Prefer letting the Evaluator review and promote via `propose_change`, but call `propose_change` yourself when the fix is clear AND urgent.
+
+   **Campaign children:** insights you record carry over automatically to sibling children dispatched after you. If `params.campaignSiblingInsights` is non-empty (or your job context has "Insights from Upstream Agents" entries with a `sourceChildName`), read them before doing anything else — they're fresher and more applicable than `.claude/memory/known-pitfalls.md`.
+
+7. **Prefer observed behavior over code analysis.** When a service's behavior is ambiguous, call `loki_query` to check actual production traffic before assuming. Code can lie; logs don't.
+
+9. **Credentials are never read from files, and git credentials are never yours to handle.** Provider credentials the runner injects as environment variables exist for direct API calls only. Git authenticates through the job's credential helper, which picks the identity from the *repository* being written to — so passing a token to git yourself does not just duplicate the helper, it can silently authenticate as the wrong account. Never ask for or log credentials.
+
+10. **Use work-item tracking tools for multi-work-item jobs.** Call `get_work_items` to check progress, `update_work_item` to update status, `set_work_items` to register the work-item list, and `request_new_session` when starting a new work item.
+
+11. **Do not manually park normal workflow checkpoints.** If a phase is marked `interactive_checkpoint: true` and the workflow docs say the runner enforces it, finish the phase normally and let the runner park for approval. Use `await_event({ eventName: "developer-input: <reason>" })` only for extra mid-phase questions, clarifications, or external waits the runner cannot infer.
+
+12. **Treat the executor runtime's internal temp task files as off-limits.** Do not poll or read provider-private paths (for example, the Claude Code executor stages output under `/private/tmp/claude-*/tasks/*.output`). When you need output from a long-running Bash command, redirect stdout/stderr to a file under the current job working directory and read that workspace file instead.
+
+## Tenant context
+
+This base layer is **company-agnostic**. The tenant overlay (a tenant repo,
+a cloud blob, or a local `tenant/` overlay dir) supplies the company-specific
+context your agents need:
+
+- Primary tech stack and any active migration story.
+- Source control provider(s) the company uses (BitBucket, GitHub, GitLab, …).
+- Observability stack (Loki + Tempo, Datadog, Splunk, …) and where to query it.
+- Deployment substrate (Kubernetes + Helm, ECS, Vercel, …).
+- Environments (staging, production, regional variants) and which one is the
+  canonical verification target.
+- Issue tracker (Jira, Linear, Shortcut, …).
+- Service accounts: which BitBucket / GitHub / GitLab identities the platform
+  posts as for coding vs. reviewing, and how human developers should interact
+  with them.
+
+If a job runs against this base layer with **no tenant overlay**, agents must
+ask the developer (via `await_event({ eventName: "developer-input: …" })`) for
+any company-specific fact they need to proceed, rather than guessing.
+
+## Service accounts (generic)
+
+The runner authenticates to whichever SCM is active for the job on behalf of
+two logical accounts:
+
+- **Coder service account** — developer-level access. Creates repos and
+  branches, commits, opens PRs, and replies to review comments.
+- **Reviewer service account** — reviewer/maintainer-level access. Posts
+  code reviews, approves PRs, and triggers merges.
+
+These accounts may be the same identity if the tenant chooses, but separating
+them produces clearer audit trails. The tenant overlay specifies the actual
+account names (and the active SCM plugin's snippet documents how the plugin
+maps them onto provider-specific identities). Human developers interact with
+these accounts exactly as they would with a human colleague — comments appear
+in PRs, review requests arrive normally.
+
+Plugin-specific authentication details (token names, scopes, OAuth flows)
+live in the plugin's own intelligence snippet — see
+`.claude/memory/snippets/<pluginId>-*.md` after job start.
+
+## MCP tools available to agents
+
+All MCP tools are prefixed with `mcp__coro__` when calling them (e.g., `mcp__coro__log`, `mcp__coro__scm_create_pr`). Prefer calling the documented tool names directly for predictable workflows; use `ToolSearch` only when the right tool is genuinely unclear.
+
+### Work-item tracking
+- `set_work_items` — Register the ordered work-item list (called by planner)
+- `update_work_item` — Update a work item's status or increment its loop count, or record its ticket (`ticketKey`)
+- `get_work_items` — Read the current work-item list with statuses
+- `request_new_session` — Clear session for fresh context (e.g., new work item)
+- `set_job_params` — Set dynamic job parameters (e.g., language, scm, tracker)
+
+### Job control
+- `goto_phase` — Override the next phase (e.g., loop back to coding, or jump over phases). If you do not call `goto_phase`, the runner auto-advances to the next phase when your turn ends. There is no separate "complete this phase" tool — simply finish your work and end your turn.
+- `await_event` — Park the job waiting for an external event. Two main uses:
+  - `await_event({ eventName: "pr:merged", prId })` for PR-driven waits.
+  - `await_event({ eventName: "developer-input: <short reason>" })` whenever you need a human to clarify, choose between options, confirm an ambiguous point, or provide information mid-phase. Use this for additional developer input, not for normal workflow checkpoints that the runner already enforces.
+- `escalate` — Escalate to human when you cannot self-resolve (not a substitute for `await_event`).
+- `log` — Append to the job log stream.
+
+### On-demand context
+- `read_memory` — Load accumulated memory (pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: full bundle. `{ file }`: a single file. The system prompt no longer carries memory by default — call this yourself.
+
+### Source control (provider-neutral; uses `params.scm` or the tenant default)
+
+Coro now ships a deliberately small generic surface. The high-frequency
+ops below work the same regardless of the active SCM plugin:
+
+- `scm_clone_repo` — Clone a repo into the current job working directory
+- `scm_get_clone_info` — Get a clean clone URL + git env for advanced git flows (auth is injected; the URL has no token)
+- `scm_create_pr` — Open a pull request from a feature branch
+- `scm_get_pr_status` — Get state and approval count of a PR
+- `scm_list_pr_comments` — List comments on a PR
+- `scm_post_pr_comment` — Post a top-level comment on a PR
+- `scm_reply_to_comment` — Reply to a specific comment thread on a PR (pass the `parentCommentId` from `scm_list_pr_comments`); falls back to the active plugin's upstream threaded-reply tool when the plugin has no native threading
+- `scm_add_pr_reviewers` — Add reviewers to an open PR; merges with the existing list. GitHub resolves human names against the repository's collaborators; Bitbucket needs usernames or uuids. Read the result: only `requested` entries were added.
+- `scm_resolve_user` — Resolve a display name / nickname / uuid / account_id to the SCM-native user identifier. Pass `repo` so names are matched against people with access to it. Use before `scm_add_pr_reviewers` when you only have a human-readable name and the provider needs an identifier. For an email, look the user up in the tracker first — Atlassian `accountId` is identical to Bitbucket `account_id`.
+- `scm_merge_pr` — Merge a PR (squash, only after approval + all comments resolved)
+
+Each tool accepts an optional `pluginId` to override the resolved default — use it when the job needs to talk to a non-default plugin (rare).
+
+The current job context may include an `scm` block describing the resolved SCM state:
+
+```json
+{ "available": true, "resolved": "github", "requested": "github", "default": "github", "installed": ["github"] }
+```
+
+If `scm.available` is `false` or `scm.resolved === "none"`, do not probe the filesystem for a repo copy and do not search the user's machine. Stop and escalate the configuration problem.
+
+**Everything else** — repo creation, PR
+approvals, PR change-detection polls, branch protection, releases,
+workflows, … — comes from the upstream MCP server attached by the
+active SCM plugin. Call those tools directly using their native names:
+`mcp__github__create_repository`, `mcp__github__add_pull_request_review_comment`,
+`mcp__github__create_release`, etc. Each plugin's intelligence snippet
+lists which native tools are exposed (curated `allowedMcpTools`) so you
+don't have to guess.
+
+For native-mode plugins without an upstream MCP (BitBucket today), the
+generic tools above are the entire surface — there is no
+`mcp__bitbucket__*` namespace.
+
+### Issue tracker (provider-neutral)
+
+The job context's `tracker` block says which tracker this job is bound to:
+
+- `source: "plugin"` — a Coro tracker plugin; use the generic tools below.
+- `source: "mcp"` — an MCP server the session already has (a claude.ai connector such as Atlassian, a Claude Code plugin, or a configured server). Call the tools listed in `tracker.tools` directly and read `tracker.notes` first; the generic tools below only point back at them.
+- `available: false` — no tracker; `tracker.reason` says why. Skip every ticket step, and do not go looking for tracker-like MCP tools yourself.
+
+**What you may write is set by the Ticket management section** of your instructions — the team's `ticketing` policy. Reading tickets is always fine; comments, status moves, and new tickets happen only where that section lists them.
+
+Generic shim — the same ops show up in nearly every workflow:
+
+- `tracker_get_issue` — Fetch an issue/ticket by external id (`PROJ-123`, `ENG-7`, `owner/repo#42`, …). Note: this does **not** include the comment thread.
+- `tracker_get_comments` — Read the comments/discussion on an issue (human guidance, clarifications, follow-up requests). Call this explicitly — comments are not part of `tracker_get_issue`.
+- `tracker_comment_issue` — Post a comment on an issue
+- `tracker_transition_issue` — Move the issue to a new status (transition names are plugin-specific)
+
+For everything more advanced (epic/issue creation, parent-child
+listings, dependency links, label/sprint management, JQL/GraphQL
+queries, …) call the active tracker plugin's upstream MCP tools
+directly: `mcp__jira__jira_create_issue`, `mcp__jira__jira_link_to_epic`,
+`mcp__linear__create_issue`, `mcp__linear__update_issue`, etc. The
+plugin's intelligence snippet lists the curated tool allowlist.
+
+### Workspace layout
+
+Coro jobs run in a **job working directory** (`working/{jobId}/`). The target
+repository is cloned into a **subdirectory** (typically `params.repoSlug` or
+`params.repoCheckoutDir`) via `scm_clone_repo` — not at the job root.
+
+- After clone, `params.repoCheckoutDir` and `params.repoCheckoutAbsDir` are set.
+- The system prompt and phase kickoff include a **Workspace layout** block with paths.
+- Run **git** and **toolchain** commands from the repo tree: `cd <repoCheckoutDir> && …` or `git -C <repoCheckoutDir>`.
+- **Build and test commands** are defined in the **`{language}-conventions`** skill for `params.language` — invoke that skill via the Skill tool before compiling or testing. Do not guess language-specific commands from this file.
+
+### Observability
+- `loki_query` — Run a LogQL query against Loki
+- `tempo_get_trace` — Fetch a full distributed trace by trace ID from Tempo
+- `tempo_search` — Search for traces matching a TraceQL query
+
+### Self-improvement
+- `add_insight` — Record a learning, workaround, or pattern for the Evaluator to review (all agents)
+- `propose_change` — Propose an improvement to agents, skills, memory, or code (typically Evaluator / PR Reviewer)
+- `list_proposals` — Check past proposals before proposing duplicates
+
+### Plugin-specific extension tools
+Each plugin can register provider-specific MCP tools (e.g. `gh_create_release`,
+`bb_pipeline_run`) that don't fit the generic `scm_*` / `tracker_*` shape.
+These are listed in the active plugin's intelligence snippets — read them on
+demand via `read_memory`.
+
+### Deprecated provider-specific tools
+The legacy `bb_*`, `gh_*`, and `jira_*` tools still work but log a deprecation
+warning on every call. They will be removed in a future release. Always prefer
+the generic `scm_*` / `tracker_*` surface above.
+
+### Artefacts
+- `post_artifact` — Record an artefact produced by your phase so developers can view it from the dashboard. Arguments: `{ kind, title, data, phase? }`. `phase` defaults to your current phase. See "Artefacts" section below for kinds and data shapes.
+- `get_artifacts` — List artefacts already posted on the job, optionally filtered by phase.
+
+## Artefacts — what to record for each phase
+
+After you produce output that is useful to a developer (plan, PR, report, test results, contract file), call `post_artifact` with a `kind` and the minimum data needed for the dashboard to render it. Artefacts are free-form JSON objects — the dashboard decides how to display each `kind`.
+
+Rules:
+- **Post artefacts as you create them**, not at the end of the phase. When the Coder finishes a work item, post the `pr-preview` artefact immediately; when the PR Reviewer opens the PR, post the `pr-link` artefact immediately so developers can see it.
+- **Paths must be relative to the working directory** (`working/{job-id}/...`). Never post absolute paths — they won't be readable by the dashboard.
+- **One artefact per output**. If you produce a plan file AND a contract file, post two separate artefacts.
+- **Pick an existing `kind` when one fits**. Only invent a new kind if nothing below matches — the dashboard falls back to a JSON viewer for unknown kinds.
+
+Common kinds:
+
+| kind | When | Data shape |
+|---|---|---|
+| `plan-md` | Planner writes a workflow plan | `{ path: "…/implementation-plan.md" }` |
+| `implementation-plan-md` | Planner writes an implementation plan for a job or work item | `{ path: "…/implementation-plan.md" }` |
+| `analysis-contract` | Analyzer writes the service contract JSON | `{ path: "…/service-contract.json" }` |
+| `pr-preview` | Coder prepares a PR (before the review phase opens it) | `{ title, description, base, sourceBranch, workItem }` |
+| `pr-link` | PR Reviewer opens a PR | `{ url, prId, repoSlug, title, pluginId? }` |
+| `review-summary` | PR Reviewer posts a review summary | `{ prId, repoSlug, verdict, summary }` |
+| `test-results` | Evaluator records build/test/acceptance verification on the merged commit | `{ path, passed, failed, skipped }` |
+| `evaluation-md` | Evaluator writes an evaluation report | `{ path: "…/evaluation.md" }` |
+| `report-md` | Any agent writes a human-readable report | `{ path: "…/report.md" }` |
+| `url` | Any external link that doesn't fit above | `{ url, label }` |
+
+Example:
+```
+post_artifact({
+  kind: "plan-md",
+  title: "Implementation plan for user-service",
+  data: { path: "user-service/implementation-plan.md" }
+})
+```
+
+## Interactive mode
+
+Phases flagged `interactive_checkpoint: true` are enforced by the runner when `job.interactive` is `true`. Finish the phase normally; the runner will park for developer approval before advancing.
+
+> The `interactive` flag is **live-mutable** — a developer can flip it on or off at any time from the dashboard or `PATCH /jobs/:jobId/interactive`. Your behaviour does not need to change: keep finishing phases normally and let the runner enforce (or not) at boundaries based on the latest value. Toggling OFF while the job is parked at a checkpoint auto-advances past that park.
+
+Use `await_event({ eventName: "developer-input: <short reason>" })` only when you need additional developer input that is not the standard workflow checkpoint, for example:
+
+- an ambiguous spec or requirement
+- a design tradeoff that needs a human choice
+- missing repo/provider/environment information
+- an external action the developer must take before you can continue
+
+The `developer-input:` prefix is recognised by the runner and parks the job with status `awaiting-developer-input`.
+
+### When to park explicitly
+
+If the workflow docs say a phase checkpoint is runner-enforced, do **not** call `await_event` just to request the normal approval for that phase. Finish the phase and let the runner park automatically.
+
+Call `await_event` explicitly only for additional mid-phase questions or for non-checkpoint waits that the runner cannot infer. Prefer `await_event` over `escalate` when a human response would let you continue; reserve `escalate` for true blockers.
+
+### Resume prompt format
+
+When the developer sends a message, you are resumed with a framed prompt starting with `[DEVELOPER RESPONSE]`. It tells you:
+
+- The phase you were paused during.
+- What you were waiting for (the reason string you passed to `await_event`).
+- The artefacts you posted that phase.
+- The developer's verbatim message.
+
+Based on the message:
+- **Approval** ("go ahead", "looks good", "continue") → finish your turn. The runner auto-advances to the next workflow phase. If you want to jump somewhere non-default, call `goto_phase` before ending.
+- **Rework** ("add X", "rename Y", "fix Z first") → do the work in the **current** phase, post any updated artefacts, then either (a) call `await_event` again if you still need re-approval, or (b) end your turn / call `goto_phase` to move on.
+- **Ambiguous** → make your best interpretation and explain in `log` what you're about to do. Do not re-park just to re-ask — the developer has already spoken.
+
+## Banned tools — do NOT use
+
+- **`TodoWrite` / `TodoRead` / `TaskCreate` / `TaskUpdate` / `TaskGet` / `TaskList`** — Do NOT use the built-in todo/task-list tools. Use `mcp__coro__log` to report progress instead. Those tools are a local scratch pad that no one monitors. Developers follow your work via `coro logs`, which reads from `mcp__coro__log`. The native `Task` / Agent tool for declared workflow subagents is still allowed.
+
+## Self-improvement rule
+
+When any agent calls `propose_change`, the Coro Runner synchronously:
+
+1. Validates the proposal (path allowlist per layer, frontmatter / heading checks per type)
+2. Routes the change to the right writable layer (tenant intelligence repo or the project's `.coro/` overlay; **never** the base layer that ships with the runner)
+3. Creates a branch `coro/proposal/<jobId>-<layer>-<slug>` cut from that layer's default branch
+4. Materialises the final file contents against that writable source clone. `_intelligence` is only a constructed read view; proposal writes must never use it as the source of truth.
+5. Commits every file in the multi-file payload as one atomic commit
+6. Pushes the branch and opens a PR via the configured git provider (GitHub / Bitbucket)
+7. Records the proposal in the state backend so the dashboard and `list_proposals` can show it
+
+**Agent knowledge improvements are always reviewed by humans before becoming canonical.** No agent can silently modify how other agents behave. Once the PR merges, the next job's intelligence resolver pulls the merged change automatically.
+
+**ONE call per `(jobId, layer)` — runtime-enforced.** Bundle every file change for a layer into one `propose_change` call. The runner rejects a second call for the same layer with a structured error citing the prior proposal's branch and PR.
+
+**Be terse when you propose.** Memory is loaded by every future job for the rest of this tenant's life — verbose entries tax every run forever. Honour the entry-length budgets:
+- **Pitfall:** ≤ 8 lines (title + symptom + root cause + recipe).
+- **Pattern:** ≤ 10 lines (title + when to use + skeleton + anti-pattern).
+- **Skill amendment:** ≤ 15 lines per added `##` section.
+
+The recipe is the most valuable part — copy-paste only, no narrative. Prefer the structured `entries[]` field on `propose_change` for memory updates: it serialises into the canonical layout and the runner mechanically enforces these caps. If a finding wants to exceed a budget, it is either two findings or already documented — split or dedupe before writing. See the `self-improvement-guide` skill for the full reference.
+
+For `memory-update`, append-only memory files are merged against the current file in the writable tenant/repo source clone so existing entries survive in the proposal PR. `.claude/memory/MEMORY.md` remains an explicit index update rather than an append-only stream.
+
+## Working directory
+
+The Coro Runner sets your current working directory (`cwd`) to `working/{job-id}/` before each phase starts. **This is your sandbox. All file operations must happen inside this directory.**
+
+This is enforced at runtime: a `PreToolUse` hook denies any `Write` or `Edit` that resolves outside your working directory. Any other path will be denied with a clear error message — use `propose_change` for changes to the intelligence layers (it ships them as a PR rather than a local write).
+
+### Two independent gates on `Bash`
+
+Two *separate* things can stop a shell command. They have different symptoms and different fixes, so identify which one you hit before theorising.
+
+**Gate 1 — Coro's Bash path guard (always present).** The same `PreToolUse` hook scans every `Bash` command **string** (not syscalls) and denies anything that references:
+
+- `~/...`, `$HOME/...`, `${HOME}/...`, `$OLDPWD/...`
+- parent traversal (`../`) **that escapes the working dir after resolution**. A `../` is fine when the resolved target still lands inside `$PWD/**` — see below.
+- absolute paths outside the allow-list (`/tmp`, `/usr`, `/bin`, `/opt`, `/etc`, `/Library`, `/System`, `/Applications`, `/var/folders`, `/private/tmp`, …)
+
+Exempt under `$HOME` so package managers can name their caches: `~/go/**`, `~/.nuget/**`, `~/.npm/**`, `~/.yarn/**`, `~/.pnpm-store/**`, `~/.cache/**`, `~/.m2/**`, `~/.gradle/**`, `~/.cargo/**`, `~/.rustup/**`, `~/.pub-cache/**`, `~/.ivy2/**`, `~/.sbt/**`, `~/.gem/**`, `~/.bundle/**`, `~/.pyenv/**`, `~/.nvm/**`, `~/.rbenv/**`, `~/.sdkman/**`, `~/.dotnet/**`, `~/.local/share/**`, `~/.local/state/**`, `~/.terraform.d/**`.
+
+A gate-1 denial is unmistakable: the tool result starts with `Blocked Bash:` and the command never ran. Note that the exemptions above only mean the guard will not stop you from *naming* those paths — they are **not** a promise that the OS will let you write there.
+
+**Gate 2 — the host sandbox (Coro does not control it).** The runner asks the executor to disable OS-level sandboxing, but the machine or the organisation running it may enforce one anyway through policy Coro cannot see or override. A typical one allows reads almost everywhere, allows writes only inside `$PWD`, and restricts outbound network to a host allowlist. You are looking at gate 2 when the command **ran** and *it* reported `operation not permitted` / `EPERM`, when a fetch fails against a host that clearly resolves, or when Bash asks for an interactive permission nobody can answer.
+
+Neither gate is a reason to declare the environment broken or to change a pinned dependency. On any gate-2 symptom, invoke the **`sandbox-recovery`** skill — writes redirect into the job directory, and a cache you cannot write to is still readable.
+
+
+Rules:
+- **Never `cd` above your working directory.** Do not navigate to parent directories, the user's home directory, or any path outside `$PWD`.
+- **Clone repos into the current directory**, not into a subdirectory like `working/{job-id}/`. You are already inside that directory. Example: `git clone "$CLONE_URL" repo-slug` creates `./repo-slug/` in your cwd.
+- **Use relative paths** for all file operations. Do not construct absolute paths unless using `$PWD` as the base.
+- **Write all output files** (plans, contracts, test results, evaluation reports) inside the current working directory.
+- This constraint exists because the Coro Runner may run inside Docker where paths outside the working directory do not exist.
+
+## Infrastructure
+
+Repositories live on whichever SCM plugin the tenant has installed (BitBucket,
+GitHub, GitLab, …). The runner exposes a single, provider-neutral surface and
+the active plugin handles the rest:
+
+- `params.scm` (job-level) and `defaults.scm` (tenant-level) decide which SCM
+  plugin runs for the job. If both are unset and exactly one SCM plugin is
+  installed, that one wins; otherwise the runner aborts the job with a clear
+  error.
+- Trackers resolve from `ticketing.tracker` (default `auto`): `params.tracker`, then the tracker plugin, then the one connected tracker MCP server. `params.tracker` may name a plugin id or `mcp:<server>`.
+- The job context's `scm` block tells you which SCM plugin actually resolved for this run. Treat it as authoritative.
+- The plugin's own intelligence snippets (loaded automatically into the
+  per-job intelligence overlay) document its tokens, identifier shapes, and
+  webhook configuration. Read them via `read_memory({ file: "snippets/<id>.md" })`
+  before constructing URLs or guessing transition names.
+
+### Cloning a repo
+Prefer the dedicated clone tool — it clones the target repo into the current
+job working directory using the active SCM plugin:
+
+```ts
+const checkout = scm_clone_repo({ repo: "<repo-slug>" })
+// checkout.repoDir: absolute path to the cloned repo
+// checkout.relativeDir: path relative to the job working directory
+// checkout.reused: true when the repo was already cloned
+```
+
+If you need the raw URL for an advanced git flow, use the clone-info tool —
+it returns a **clean** HTTPS URL (no token). Git authenticates through the
+job's credential helper, which answers per repository: normally with the live
+SCM plugin from Settings, and with the contribution account for the OSS
+contribution fork and the repository it was forked from. This is why a clean
+URL is not a limitation — the URL alone cannot express which identity a
+repository needs.
+
+```ts
+const info = scm_get_clone_info({ repo: "<repo-slug>" })
+// info.url: "https://<host>/<owner-or-workspace>/<repo>.git"
+// info.envForGit: { GIT_TERMINAL_PROMPT: "0", ... }
+```
+
+**Never use `gh` or `bb` CLI commands** — they bypass the plugin layer and
+break the moment the tenant swaps providers. Use `scm_clone_repo` for normal
+checkouts. `git push origin <branch>` is the happy path; do not paste tokens
+into remotes or reconstruct `https://user:token@…` URLs.
+
+### External references (`ExternalRef`)
+Every PR / ticket / repo / issue identity flows through a single primitive:
+
+```ts
+{ kind: 'pull_request' | 'ticket' | 'repo' | 'issue',
+  pluginId: '<scm-or-tracker-plugin>',
+  repoKey?: '<repo>',                 // REQUIRED for kind='pull_request'
+  externalId: '<n> | "PROJ-123" | "owner/repo#42"',
+  url?: '<https://…>' }
+```
+
+`pull_request` ExternalRefs **must** carry `repoKey`. PR ids are not unique
+across repositories — operating on a PR id without a repo would alias 42
+across two services.
+
+## Pull request flow
+
+Branch, commit, PR title and PR description formats are in `.claude/CLAUDE.md`. This is how the runner's phases hand a pull request along.
+
+### PR review process
+
+The PR is **not** opened on the SCM until after the coding phase ends. This gives the developer a chance to preview the change (the diff and the proposed PR) before anything lands on the provider — see "PR preview gate" below.
+
+1. Coder builds, runs tests locally, and invokes the `code-reviewer` subagent on the diff. Address every blocking finding before pushing.
+2. Coder commits, pushes the work-item branch, and posts a `pr-preview` artefact (proposed PR title + description, including `[PR-REVIEWER-AGENT]` and the subagent's verdict). The Coder does **not** call `scm_create_pr`.
+3. The runner parks for developer approval at the coding checkpoint (when the job is interactive). The developer reviews the diff in the dashboard "Changes" tab and approves or requests changes.
+4. The merge gatekeeper (`pr-reviewer.md`) opens the PR for the work item via `scm_create_pr` (using the `pr-preview` title/description), tags human reviewers, and posts the `pr-link` artefact. It does **not** re-review the diff against conventions/plan/tests — that already happened in step 1.
+5. Human reviewers comment, approve, or request changes. Blocking change requests are routed back to the Coder via `goto_phase("coding")`.
+6. At least one human approval is required before merge.
+7. The merge gatekeeper triggers the merge after human approval and CI is green.
+8. The Evaluator runs the build/test suite and acceptance criteria on the merged commit and decides whether to loop back or finish.
+
+### PR preview gate
+
+Because the PR is opened in the review phase rather than at the end of coding, the interactive checkpoint at the **coding** boundary is a genuine *pre-PR* gate: the developer sees exactly what will be proposed (live diff + proposed title/description) before any PR exists on the SCM. For autonomous (non-interactive) jobs there is no gate, but the same `pr-preview` artefact and live diff are still available in the dashboard while the job runs.

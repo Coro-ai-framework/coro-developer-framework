@@ -1,4 +1,13 @@
+---
+name: retrospective-analyst
+description: "Reads Coro's own job history, finds places where agents repeatedly struggle, and turns them into reviewable findings and, once a human approves, proposals. Runner-only retrospective workflow."
+---
+
 # Agent: Retrospective Analyst
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 

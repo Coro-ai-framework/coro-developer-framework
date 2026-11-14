@@ -84,13 +84,13 @@ describe('switchWorkflow', () => {
 
   it('switches workflow, persists history, resets sessionId, signals nextPhase', async () => {
     tmpDir = withTempIntelligence({
-      'workflows/job-fast/workflow.md': WORKFLOW_JOB_FAST,
+      '.claude/commands/coro/job-fast.md': WORKFLOW_JOB_FAST,
     })
     setIntelligenceDir(ctx, tmpDir)
 
     // Stub state with a job that has a sessionId so we can verify reset.
     const startingJob = makeMockJob({
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       phase: 'planning',
       sessionId: 'sess-old',
       params: { repoSlug: 'svc' },
@@ -106,7 +106,7 @@ describe('switchWorkflow', () => {
 
     const result = await switchWorkflow(
       {
-        workflowPath: 'workflows/job-fast/workflow.md',
+        workflowPath: '.claude/commands/coro/job-fast.md',
         paramsPatch: { lane: 'fast' },
         reason: 'planner: small change → fast lane',
       },
@@ -115,19 +115,19 @@ describe('switchWorkflow', () => {
     )
 
     expect(result.ok).toBe(true)
-    expect(result.workflowPath).toBe('workflows/job-fast/workflow.md')
+    expect(result.workflowPath).toBe('.claude/commands/coro/job-fast.md')
     expect(result.phase).toBe('fast-coding')
     expect(result.by).toBe('switch_workflow')
     expect(signals.nextPhase).toBe('fast-coding')
 
-    expect(stored.workflowPath).toBe('workflows/job-fast/workflow.md')
+    expect(stored.workflowPath).toBe('.claude/commands/coro/job-fast.md')
     expect(stored.phase).toBe('fast-coding')
     expect(stored.sessionId).toBeUndefined()
     expect(stored.params).toMatchObject({ repoSlug: 'svc', lane: 'fast' })
     expect(stored.workflowPathHistory).toHaveLength(1)
     expect(stored.workflowPathHistory?.[0]).toMatchObject({
-      from: 'workflows/job/workflow.md',
-      to: 'workflows/job-fast/workflow.md',
+      from: '.claude/commands/coro/job.md',
+      to: '.claude/commands/coro/job-fast.md',
       fromPhase: 'planning',
       toPhase: 'fast-coding',
       reason: 'planner: small change → fast lane',
@@ -141,7 +141,7 @@ describe('switchWorkflow', () => {
 
     await expect(
       switchWorkflow(
-        { workflowPath: 'workflows/does-not-exist/workflow.md', reason: 'x' },
+        { workflowPath: '.claude/commands/coro/does-not-exist.md', reason: 'x' },
         ctx,
         signals,
       ),
@@ -156,7 +156,7 @@ describe('switchWorkflow', () => {
     setIntelligenceDir(ctx, tmpDir)
 
     ctx.job = makeMockJob({
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       params: { epicAllowed: false },
     }) as Job
 
@@ -171,11 +171,11 @@ describe('switchWorkflow', () => {
 
   it('returns no-op when target equals current workflow (no signal, no history)', async () => {
     tmpDir = withTempIntelligence({
-      'workflows/job-fast/workflow.md': WORKFLOW_JOB_FAST,
+      '.claude/commands/coro/job-fast.md': WORKFLOW_JOB_FAST,
     })
     setIntelligenceDir(ctx, tmpDir)
 
-    ctx.job = makeMockJob({ workflowPath: 'workflows/job-fast/workflow.md' }) as Job
+    ctx.job = makeMockJob({ workflowPath: '.claude/commands/coro/job-fast.md' }) as Job
     let stored: Job = ctx.job
     ctx.stateBackend.updateJob = vi.fn(async (_id, patch) => {
       stored = { ...stored, ...patch } as Job
@@ -183,7 +183,7 @@ describe('switchWorkflow', () => {
     })
 
     const result = await switchWorkflow(
-      { workflowPath: 'workflows/job-fast/workflow.md', reason: 'redundant' },
+      { workflowPath: '.claude/commands/coro/job-fast.md', reason: 'redundant' },
       ctx,
       signals,
     )
@@ -196,11 +196,11 @@ describe('switchWorkflow', () => {
 
   it('honours toPhase when valid; rejects when not declared', async () => {
     tmpDir = withTempIntelligence({
-      'workflows/job-fast/workflow.md': WORKFLOW_JOB_FAST,
+      '.claude/commands/coro/job-fast.md': WORKFLOW_JOB_FAST,
     })
     setIntelligenceDir(ctx, tmpDir)
 
-    ctx.job = makeMockJob({ workflowPath: 'workflows/job/workflow.md' }) as Job
+    ctx.job = makeMockJob({ workflowPath: '.claude/commands/coro/job.md' }) as Job
     let stored: Job = ctx.job
     ctx.stateBackend.updateJob = vi.fn(async (_id, patch) => {
       stored = { ...stored, ...patch } as Job
@@ -210,7 +210,7 @@ describe('switchWorkflow', () => {
 
     const ok = await switchWorkflow(
       {
-        workflowPath: 'workflows/job-fast/workflow.md',
+        workflowPath: '.claude/commands/coro/job-fast.md',
         toPhase: 'fast-merge',
         reason: 'resume on merge',
       },
@@ -221,13 +221,13 @@ describe('switchWorkflow', () => {
     expect(signals.nextPhase).toBe('fast-merge')
 
     // Reset for invalid case.
-    ctx.job = makeMockJob({ workflowPath: 'workflows/job/workflow.md' }) as Job
+    ctx.job = makeMockJob({ workflowPath: '.claude/commands/coro/job.md' }) as Job
     stored = ctx.job
     signals = {}
     await expect(
       switchWorkflow(
         {
-          workflowPath: 'workflows/job-fast/workflow.md',
+          workflowPath: '.claude/commands/coro/job-fast.md',
           toPhase: 'nonexistent-phase',
           reason: 'bad',
         },
@@ -244,18 +244,18 @@ describe('switchWorkflow', () => {
     ).rejects.toThrow(/non-empty workflowPath/)
 
     await expect(
-      switchWorkflow({ workflowPath: 'workflows/job-fast/workflow.md', reason: '' }, ctx, signals),
+      switchWorkflow({ workflowPath: '.claude/commands/coro/job-fast.md', reason: '' }, ctx, signals),
     ).rejects.toThrow(/non-empty reason/)
   })
 
   it('preserves existing params and workItems on switch', async () => {
     tmpDir = withTempIntelligence({
-      'workflows/job-fast/workflow.md': WORKFLOW_JOB_FAST,
+      '.claude/commands/coro/job-fast.md': WORKFLOW_JOB_FAST,
     })
     setIntelligenceDir(ctx, tmpDir)
 
     const startingJob = makeMockJob({
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       params: { repoSlug: 'svc', reviewers: ['alice'], description: 'x' },
       workItems: [{ name: 'wi-1', description: 'do thing', status: 'pending', loopCount: 0 }],
     }) as Job
@@ -270,7 +270,7 @@ describe('switchWorkflow', () => {
 
     await switchWorkflow(
       {
-        workflowPath: 'workflows/job-fast/workflow.md',
+        workflowPath: '.claude/commands/coro/job-fast.md',
         paramsPatch: { lane: 'fast' },
         reason: 'lane sizing',
       },
@@ -291,17 +291,17 @@ describe('switchWorkflow', () => {
 
   it('appends to an existing workflowPathHistory rather than overwriting', async () => {
     tmpDir = withTempIntelligence({
-      'workflows/job-fast/workflow.md': WORKFLOW_JOB_FAST,
+      '.claude/commands/coro/job-fast.md': WORKFLOW_JOB_FAST,
     })
     setIntelligenceDir(ctx, tmpDir)
 
     const startingJob = makeMockJob({
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       workflowPathHistory: [
         {
           at: '2026-01-01T00:00:00Z',
-          from: 'workflows/job-deep/workflow.md',
-          to: 'workflows/job/workflow.md',
+          from: '.claude/commands/coro/job-deep.md',
+          to: '.claude/commands/coro/job.md',
           fromPhase: 'analysis',
           toPhase: 'planning',
           reason: 'evaluator: down-shift',
@@ -319,12 +319,12 @@ describe('switchWorkflow', () => {
     ctx.stateBackend.getJob = vi.fn(async () => stored)
 
     await switchWorkflow(
-      { workflowPath: 'workflows/job-fast/workflow.md', reason: 'planner: shrink' },
+      { workflowPath: '.claude/commands/coro/job-fast.md', reason: 'planner: shrink' },
       ctx,
       signals,
     )
 
     expect(stored.workflowPathHistory).toHaveLength(2)
-    expect(stored.workflowPathHistory?.[1].to).toBe('workflows/job-fast/workflow.md')
+    expect(stored.workflowPathHistory?.[1].to).toBe('.claude/commands/coro/job-fast.md')
   })
 })

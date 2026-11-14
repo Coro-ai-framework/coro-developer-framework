@@ -148,9 +148,9 @@ initial_phase: campaign-planning
 initial_status: campaign-planning
 
 phases:
-  - { name: campaign-planning, agent: agents/campaign-planner.md, model: planning, status: campaign-planning, interactive_checkpoint: true }
+  - { name: campaign-planning, agent: .claude/agents/campaign-planner.md, model: planning, status: campaign-planning, interactive_checkpoint: true }
   - { name: coordinating, agent: null, model: planning, status: awaiting-sub-runs }
-  - { name: aggregation, agent: agents/campaign-evaluator.md, model: planning, status: aggregating, interactive_checkpoint: true }
+  - { name: aggregation, agent: .claude/agents/campaign-evaluator.md, model: planning, status: aggregating, interactive_checkpoint: true }
 
 coordinator:
   enabled: true
@@ -160,7 +160,7 @@ coordinator:
   # Phase the parent is resumed into once every sub-run reaches a terminal status.
   resumePhase: aggregation
   # Workflow path for dispatched sub-runs.
-  subRunWorkflowPath: workflows/job/workflow.md
+  subRunWorkflowPath: .claude/commands/coro/job.md
   # Default seed params merged into every sub-run (e.g. epicAllowed=false).
   subRunParamsDefault:
     epicAllowed: false
@@ -233,7 +233,7 @@ GET /workflows
       "id": "job",
       "label": "job",
       "description": "Scoped change in an existing repository.",
-      "workflowPath": "workflows/job/workflow.md",
+      "workflowPath": ".claude/commands/coro/job.md",
       "phases": [{"name": "planning", "status": "planning"}, …],
       "coordinator": null,
       "createParams": {
@@ -245,10 +245,10 @@ GET /workflows
       "id": "campaign",
       "label": "campaign",
       "description": "Multi-issue feature; orchestrates sub-runs.",
-      "workflowPath": "workflows/campaign/workflow.md",
+      "workflowPath": ".claude/commands/coro/campaign.md",
       "phases": [{"name": "campaign-planning", "status": "campaign-planning"}, …],
       "coordinator": {
-        "subRunWorkflowPath": "workflows/job/workflow.md",
+        "subRunWorkflowPath": ".claude/commands/coro/job.md",
         "maxParallelSubRuns": 1,
         "failurePolicy": "halt-on-failure"
       },
@@ -290,7 +290,7 @@ aliases until the dashboard cuts over.
 
 ## 4. Acceptance criterion
 
-Adding `workflows/release/workflow.md` to a tenant overlay (with
+Adding `.claude/commands/coro/release.md` to a tenant overlay (with
 appropriate agents and skills) is a tenant or repo-layer PR. **Zero
 diff** in `packages/runner` and `packages/dashboard` source for it to:
 
@@ -394,8 +394,8 @@ the implementation surfaces.
 ## 7. User-supplied workflow invariants (sized-lane release)
 
 The base intelligence layer ships three sized job workflows
-(`workflows/job-fast/workflow.md`, `workflows/job/workflow.md`,
-`workflows/job-deep/workflow.md`) and a planner-driven lane router that
+(`.claude/commands/coro/job-fast.md`, `.claude/commands/coro/job.md`,
+`.claude/commands/coro/job-deep.md`) and a planner-driven lane router that
 calls `switch_workflow` to move between them. **None of this is
 mandatory** for user-supplied workflows. The following invariants
 guarantee that a tenant or repo overlay can ignore the lane router,
@@ -405,7 +405,7 @@ the harness fighting back.
 ### Invariant 1 — Lane decision is intelligence, not infrastructure
 
 The Planner agent's lane router (the FAST / STANDARD / DEEP /
-CAMPAIGN matrix) lives in `agents/planner.md`, not in TypeScript. A
+CAMPAIGN matrix) lives in `.claude/agents/planner.md`, not in TypeScript. A
 user workflow whose first phase uses a different planner agent — or
 whose phase set does not include any planning step — is free to skip
 lanes entirely. The runner has no concept of "lane."
@@ -416,14 +416,14 @@ The MCP tool checks that the target `workflowPath` resolves through
 the layered intelligence merge, parses as a valid workflow YAML, and
 (when `toPhase` is supplied) names a phase that exists in the target.
 There is **no** hard-coded list of "blessed" workflows. A user
-workflow may target its own files (e.g. `workflows/release-train/workflow.md`)
+workflow may target its own files (e.g. `.claude/commands/coro/release-train.md`)
 or another tenant overlay's files.
 
 ### Invariant 3 — Workflow paths are stable; merge is last-wins per path
 
 Tenant and repo overlays follow the resolver's last-wins rule for
 non-memory, non-CLAUDE.md files. A tenant that wants to override
-FAST for one repo can ship a `.coro/workflows/job-fast/workflow.md`
+FAST for one repo can ship a `.coro/.claude/commands/coro/job-fast.md`
 and the resolver will pick it up at the next phase boundary. Phase
 names, agent paths, and subagent names inside a workflow are part of
 that contract — overlays can replace them, but should preserve the
@@ -451,7 +451,7 @@ same audit trail for free.
 
 ### Invariant 6 — User workflows opt out of base behaviour by default
 
-The Planner's lane router (in the base `agents/planner.md`) checks
+The Planner's lane router (in the base `.claude/agents/planner.md`) checks
 two opt-out conditions before classifying:
 
 1. The active workflow is **not** one of the three sized base job
@@ -475,10 +475,10 @@ and that is a deliberate property of the system, not a bug.
 
 ### What this means in practice
 
-- A tenant can ship `workflows/security-audit/workflow.md` with a
+- A tenant can ship `.claude/commands/coro/security-audit.md` with a
   five-phase pipeline of its own design and the Planner's lane router
   will leave it alone (Invariant 6.1).
-- A repo can override `workflows/job-fast/workflow.md` to add a
+- A repo can override `.claude/commands/coro/job-fast.md` to add a
   required `compliance-check` phase, and every job classified FAST
   for that repo will pick it up at the next phase boundary
   (Invariants 3 + 4).
@@ -501,8 +501,8 @@ same "content, not infrastructure" stance from §7.
 
 ### Invariant 7 — DEEP analyzer / qa are content additions only
 
-`workflows/job-deep/workflow.md` rewires its `analysis` and `qa`
-phases to `agents/analyzer.md` and `agents/qa.md` respectively. No
+`.claude/commands/coro/job-deep.md` rewires its `analysis` and `qa`
+phases to `.claude/agents/analyzer.md` and `.claude/agents/qa.md` respectively. No
 new MCP tools, no new state-backend columns, no dispatcher branches.
 Tenants and repos that override `job-deep` may use those agents,
 ignore them, or replace them outright — the runner does not care.
@@ -542,15 +542,15 @@ the runner does not police the file shape.
 
 ### Invariant 10 — Campaign architecture and integration are extra phases, not extra primitives
 
-`workflows/campaign/workflow.md` now has five phases:
+`.claude/commands/coro/campaign.md` now has five phases:
 `campaign-architecture` → `campaign-planning` → `coordinating` →
 `campaign-integration` → `aggregation`. The first and fourth are
-new in v1.2 and run `agents/campaign-architect.md` and
-`agents/campaign-integrator.md`. They use only existing MCP tools
+new in v1.2 and run `.claude/agents/campaign-architect.md` and
+`.claude/agents/campaign-integrator.md`. They use only existing MCP tools
 (`post_artifact`, `add_insight`, `read_memory`, `log`,
 `campaign_status`) — there is no `campaign_architect_*` namespace.
 A user campaign workflow may keep, drop, or replace either phase by
-authoring its own `workflows/<name>/workflow.md`.
+authoring its own `.claude/commands/coro/<name>.md`.
 
 ### Invariant 11 — Halt-and-remediate stays human-mediated
 
@@ -563,3 +563,48 @@ human-triggered via the dashboard. When a human reruns a child with
 Invariant 6) detects the mismatch with the active workflow and calls
 `switch_workflow` to land on the correct sized workflow.
 
+
+---
+
+## 9. Native Claude Code layout (tenant overlay re-layout)
+
+The intelligence layer now uses the layout Claude Code reads natively, and
+the runner reads the same paths. There is no compatibility shim: a tenant
+or repo overlay written for the old layout has to move its files once.
+
+| Old path | New path |
+|---|---|
+| `agents/<name>.md` | `.claude/agents/<name>.md` (add `name` and `description` front matter) |
+| `workflows/<id>/workflow.md` | `.claude/commands/coro/<id>.md` (the workflow id is the file name) |
+| `memory/<file>.md` | `.claude/memory/<file>.md` |
+| `<plugin>/intelligence/snippets/<name>.md` (plugin-shipped) | `<plugin>/intelligence/.claude/memory/snippets/<name>.md` |
+| `.coro/agents/…`, `.coro/workflows/…`, `.coro/memory/…` | the same re-layout under `.coro/.claude/` |
+| `.claude/CLAUDE.md` (Coro tool rules mixed in) | rules true for any agent stay in `.claude/CLAUDE.md`; rules about Coro's MCP tools, sandbox and checkpoints move to `.claude/coro/RUNTIME.md` |
+
+What a workflow author needs to know:
+
+- **Path and id.** A workflow is a slash command at
+  `.claude/commands/coro/<id>.md`. `workflowPath` is that path; the id is
+  the base name. A command in that folder without a `phases:` list in its
+  front matter is an ordinary slash command, and workflow discovery skips
+  it.
+- **Agent references** in `phases[].agent` and `subagents[].agent` are
+  `.claude/agents/<name>.md`.
+- **`argument-hint`** in the front matter is read by Claude Code for the
+  command's prompt. Runner-only workflows also set
+  `disable-model-invocation: true`.
+- **Running in Claude Code.** Claude Code does not send command front
+  matter to the model, and a subagent can neither start subagents nor ask
+  the user. A workflow that should also run outside Coro therefore adds a
+  standalone block (between `<!-- standalone:start -->` and
+  `<!-- standalone:end -->`, each marker on its own line) that lists the
+  phases, the subagent for each, and the checkpoints, so the main session
+  can orchestrate. The resolver strips the block, so Coro never sees it.
+- **Merge semantics.** Last-wins per path, as before. `.claude/CLAUDE.md`,
+  `.claude/coro/RUNTIME.md` and `.claude/memory/**` append.
+- **`propose_change`.** Tenant proposals may write under
+  `.claude/agents/`, `.claude/commands/coro/`, `.claude/memory/`,
+  `.claude/skills/`, `.claude/CLAUDE.md` and `.claude/coro/RUNTIME.md`;
+  repo proposals write under `.coro/` (memory at
+  `.coro/.claude/memory/`). Agent proposals must carry `name` and
+  `description` front matter.

@@ -1504,7 +1504,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     read_memory: async (args: { file?: string }) => {
       const fs = await import('fs/promises')
       const nodePath = await import('path')
-      const memoryDir = nodePath.join(ctx.settings.paths.coroIntelligenceDir, 'memory')
+      const memoryDir = nodePath.join(ctx.settings.paths.coroIntelligenceDir, '.claude', 'memory')
 
       const readFile = async (rel: string): Promise<string | null> => {
         try {

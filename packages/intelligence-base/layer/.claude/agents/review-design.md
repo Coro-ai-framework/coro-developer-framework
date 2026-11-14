@@ -1,4 +1,14 @@
+---
+name: review-design
+description: "Read-only design lens for code review. Checks API surface, naming, structure and idiom of the change against the language conventions. Returns findings as one JSON object."
+tools: Read, Grep, Glob, Bash
+---
+
 # Design lens
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 Read-only. You do not post anything for the change.
 

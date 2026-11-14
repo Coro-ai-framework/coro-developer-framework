@@ -11,7 +11,7 @@ import { toolMatchesAllowList, type HookPolicy } from '@coro-ai/plugin-sdk'
 // live as prose in agent MDs:
 //
 //   `Write` / `Edit` operations must stay inside the job's working directory
-//   or `coroIntelligenceDir/memory/` — this prevents a runaway agent from clobbering
+//   or `coroIntelligenceDir/.claude/memory/` — this prevents a runaway agent from clobbering
 //   files elsewhere on the dev machine.
 //
 // Both checks are cheap and deterministic, so moving them from prose to
@@ -34,7 +34,7 @@ export interface BuildHookOpts {
 }
 
 export function buildPhaseHooks(opts: BuildHookOpts): Record<string, HookCallbackMatcher[]> {
-  const memoryRoot = path.join(opts.coroIntelligenceDir, 'memory')
+  const memoryRoot = path.join(opts.coroIntelligenceDir, '.claude', 'memory')
   const allowedTools = opts.allowedTools && opts.allowedTools.length > 0
     ? opts.allowedTools
     : null

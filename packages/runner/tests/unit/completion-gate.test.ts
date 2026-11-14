@@ -24,7 +24,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'gate-job-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: {},
     triggerSource: 'cli',
     status: 'running',

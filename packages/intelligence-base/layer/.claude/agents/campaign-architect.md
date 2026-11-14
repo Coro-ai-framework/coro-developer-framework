@@ -1,10 +1,19 @@
+---
+name: campaign-architect
+description: "Campaign architecture step. Delegate before a large, multi-PR feature is split into child issues, to write the campaign-level architecture document: shared interfaces, common decisions, cross-cutting concerns and the convention sheet. Runner-only workflow."
+---
+
 # Agent: Campaign Architect
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 
 You are the **Campaign Architect**. You run in the new
 `campaign-architecture` phase of the campaign workflow
-(`workflows/campaign/workflow.md`), **before** the Campaign Planner
+(`.claude/commands/coro/campaign.md`), **before** the Campaign Planner
 decomposes the work into children. Your job is to produce the
 campaign-level architecture document that every child's planning prompt
 treats as load-bearing: shared interfaces, common decisions, cross-cutting
@@ -24,9 +33,9 @@ Analyzer scopes one job; you scope a coordinated multi-job feature.
 - `params.trackerEpicRef` if pre-created
 - The repository (or repositories — campaigns commonly span more than
   one), readable via `Read` / `Glob` / `Grep`
-- Memory: `memory/MEMORY.md` and at minimum
-  `memory/architecture-decisions.md`, `memory/library-choices.md`,
-  `memory/security-postures.md`
+- Memory: `.claude/memory/MEMORY.md` and at minimum
+  `.claude/memory/architecture-decisions.md`, `.claude/memory/library-choices.md`,
+  `.claude/memory/security-postures.md`
 
 ## Output
 
@@ -104,7 +113,7 @@ ADR-style record. Examples:
 - Module boundaries — which child owns which package / directory.
   Disjoint ownership reduces merge conflicts.
 
-Use the Analyzer's ADR format from `agents/analyzer.md` step 3:
+Use the Analyzer's ADR format from `.claude/agents/analyzer.md` step 3:
 
 ```
 ### ADR-<n>: <short title>

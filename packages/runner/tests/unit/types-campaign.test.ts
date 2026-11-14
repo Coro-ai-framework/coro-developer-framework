@@ -24,7 +24,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'job-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: {},
     triggerSource: 'cli',
     status: STATUS_QUEUED,
@@ -70,7 +70,7 @@ describe('isCampaignJob', () => {
   it('does not classify by workflowPath (rename-safe)', () => {
     // Documented contract: tenants may rename the campaign workflow file.
     // Classification keys off the data shape, never the path.
-    const job = makeJob({ workflowPath: 'workflows/giant-epic/workflow.md' })
+    const job = makeJob({ workflowPath: '.claude/commands/coro/giant-epic.md' })
     expect(isCampaignJob(job)).toBe(false)
   })
 })

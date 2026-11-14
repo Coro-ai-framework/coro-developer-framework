@@ -1,4 +1,13 @@
+---
+name: oss-verifier
+description: "Out-of-band gate before a contribution pull request becomes public. Tries to disprove the coder's claim that the change fixes the finding, and checks tests and wording. Used only by the oss-contribution workflow."
+---
+
 # Agent: OSS Verifier
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 

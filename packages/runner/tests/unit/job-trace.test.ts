@@ -41,7 +41,7 @@ function ctxWithJobs(jobs: Job[], caller: Record<string, unknown> = {}): ToolCon
     job: makeMockJob({
       id: 'retro-1',
       type: JobType.Retrospective,
-      workflowPath: 'workflows/retrospective/workflow.md',
+      workflowPath: '.claude/commands/coro/retrospective.md',
       params: { jobWindow: 10 },
       ...caller,
     }) as unknown as Job,
@@ -59,7 +59,7 @@ function job(id: string, over: Record<string, unknown> = {}): Job {
     id,
     type: JobType.Job,
     status: 'complete',
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T01:00:00Z',
     params: { repoSlug: 'billing-api' },

@@ -8,9 +8,8 @@
  */
 
 import { Command } from 'commander'
+import { CAMPAIGN_WORKFLOW_PATH } from '@coro-ai/cloud-protocol'
 import { apiGet, apiPost, die } from '../http'
-
-const CAMPAIGN_WORKFLOW_PATH = 'workflows/campaign/workflow.md'
 
 interface PrMapping {
   prId: number

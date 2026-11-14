@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'fs'
+import { mkdirSync } from 'fs'
 import { Logger } from 'pino'
 import path from 'path'
 import { BitBucketClient } from '../clients/bitbucket'
@@ -21,6 +21,12 @@ import {
   type ResolvedIntelligence,
 } from '../intelligence/resolver'
 import { captureIntelligenceProvenance } from '../intelligence/provenance'
+import {
+  PROMPT_SECTION_SEPARATOR,
+  readAgentPromptSync,
+  readClaudeMdSync,
+  readRuntimeContractSync,
+} from '../intelligence/prompt-files'
 import type { TenantContext } from '../intelligence/tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
 import { buildPrExternalRef } from '../plugins/refs'
@@ -2291,11 +2297,14 @@ function buildPluginMcpToolPolicy(
  * provider-specific model coercion (e.g. Anthropic's `'opus' | 'sonnet'`
  * tier shorthand) is the executor's responsibility, not the runner's.
  *
- * `.claude/CLAUDE.md` is prepended only when the resolved executor
- * lacks native walk-up (`!capabilities.supportsClaudeMdNativeWalkUp`).
+ * The Coro runtime contract (`.claude/coro/RUNTIME.md`) is always
+ * prepended: no executor loads it natively, and it holds the tool rules a
+ * subagent needs. `.claude/CLAUDE.md` is prepended only when the resolved
+ * executor lacks native walk-up (`!capabilities.supportsClaudeMdNativeWalkUp`).
  * Anthropic's SDK loads CLAUDE.md natively via `settingSources:
  * ['project']`, so prepending would duplicate it; non-Claude executors
- * need the file injected manually for parity.
+ * need the file injected manually for parity. Agent files lose their
+ * front matter (the `name`/`description` Claude Code reads) on the way in.
  */
 export function buildExecutorSubagentSpecs(
   subagents: SubagentConfig[],
@@ -2303,31 +2312,26 @@ export function buildExecutorSubagentSpecs(
   settings: Settings,
   options: { prependClaudeMd: boolean } = { prependClaudeMd: true },
 ): ExecutorSubagentSpec[] {
-  let claudeMdContent = ''
-  if (options.prependClaudeMd) {
-    try {
-      claudeMdContent = readFileSync(
-        path.join(intelligenceDir, '.claude', 'CLAUDE.md'),
-        'utf-8',
-      )
-    } catch { /* .claude/CLAUDE.md not found — subagents will run without it */ }
-  }
+  const claudeMdContent = options.prependClaudeMd
+    ? readClaudeMdSync(intelligenceDir) ?? ''
+    : ''
+  const runtimeContract = readRuntimeContractSync(intelligenceDir) ?? ''
 
   const out: ExecutorSubagentSpec[] = []
   for (const sa of subagents) {
     let agentPrompt = `You are a helper subagent named ${sa.name}.`
     if (sa.agent) {
       try {
-        agentPrompt = readFileSync(
-          path.join(intelligenceDir, sa.agent),
-          'utf-8',
-        )
+        agentPrompt = readAgentPromptSync(intelligenceDir, sa.agent)
       } catch {
         agentPrompt = `You are the ${sa.name} subagent. Follow your instructions carefully.`
       }
     }
     if (claudeMdContent) {
-      agentPrompt = claudeMdContent + '\n\n---\n\n' + agentPrompt
+      agentPrompt = claudeMdContent + PROMPT_SECTION_SEPARATOR + agentPrompt
+    }
+    if (runtimeContract) {
+      agentPrompt = runtimeContract + PROMPT_SECTION_SEPARATOR + agentPrompt
     }
 
     // Resolve the model alias-first, literal-passthrough. The executor

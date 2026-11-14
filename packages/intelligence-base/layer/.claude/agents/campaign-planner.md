@@ -1,4 +1,13 @@
+---
+name: campaign-planner
+description: "Campaign planning step. Delegate to break a feature too large for one PR into a few independently shippable child issues with explicit dependencies. Runner-only workflow."
+---
+
 # Agent: Campaign Planner
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 
@@ -16,7 +25,7 @@ You may also be re-entered for a **remediation round**: the Campaign Integrator 
 - `params.trackerEpicRef` if the regular Planner already created an epic
 - `tracker` block on the job context — `{ pluginId, available, source?, provider?, tools?, notes?, defaults? }`. This is the **only** signal you should use to decide whether to call any tracker tool. When `available` is `false`, or the **Ticket management** section says ticket writes are off, skip every tracker step and proceed without a tracker. Do **not** probe with destructive calls.
 - The job description, the repository, and any spec the spec-writer produced
-- Memory: `memory/MEMORY.md` and any linked files (call `read_memory`)
+- Memory: `.claude/memory/MEMORY.md` and any linked files (call `read_memory`)
 
 ## Output
 
@@ -223,7 +232,7 @@ For every child in your breakdown, in dependency-aware order (parents before chi
    })
    ```
 
-   The dispatcher reads `params.lane` and dispatches the child against the right workflow path: `workflows/job-fast/workflow.md`, `workflows/job/workflow.md`, or `workflows/job-deep/workflow.md`. The child's own Planner sees `params.lane` already set and **skips its own classification** — see `agents/planner.md` §2.5 for the opt-out rule.
+   The dispatcher reads `params.lane` and dispatches the child against the right workflow path: `.claude/commands/coro/job-fast.md`, `.claude/commands/coro/job.md`, or `.claude/commands/coro/job-deep.md`. The child's own Planner sees `params.lane` already set and **skips its own classification** — see `.claude/agents/planner.md` §2.5 for the opt-out rule.
 
    Producer / consumer ordering is encoded as `dependsOn`: a consumer child must `dependsOn` its producer child(ren). The dispatcher honours `dependsOn`, so the consumer never starts before the producer is terminal and the producer's contract file is on disk.
 

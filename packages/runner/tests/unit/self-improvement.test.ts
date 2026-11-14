@@ -48,7 +48,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'job-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { repoSlug: 'my-repo' },
     triggerSource: 'cli',
     status: 'evaluation',
@@ -134,16 +134,31 @@ beforeEach(() => {
 describe('routeFile', () => {
   describe('path strategy', () => {
     it('routes .coro/ paths to the repo layer', () => {
-      expect(routeFile('.coro/agents/coder.md', 'path', undefined)).toBe('repo')
-      expect(routeFile('.coro/memory/notes.md', 'path', undefined)).toBe('repo')
+      expect(routeFile('.coro/.claude/agents/coder.md', 'path', undefined)).toBe('repo')
+      expect(routeFile('.coro/.claude/memory/notes.md', 'path', undefined)).toBe('repo')
     })
 
     it('routes everything else to the tenant layer', () => {
-      expect(routeFile('agents/coder.md', 'path', undefined)).toBe('tenant')
-      expect(routeFile('memory/known-pitfalls.md', 'path', undefined)).toBe('tenant')
-      expect(routeFile('workflows/job/workflow.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('.claude/agents/coder.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('.claude/memory/known-pitfalls.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('.claude/commands/coro/job.md', 'path', undefined)).toBe('tenant')
       expect(routeFile('.claude/CLAUDE.md', 'path', undefined)).toBe('tenant')
       expect(routeFile('.claude/skills/foo/SKILL.md', 'path', undefined)).toBe('tenant')
+    })
+
+    it('routes the runtime contract and workflow commands to the tenant layer', () => {
+      expect(routeFile('.claude/coro/RUNTIME.md', 'path', undefined)).toBe('tenant')
+      expect(routeFile('.claude/commands/coro/my-flow.md', 'path', undefined)).toBe('tenant')
+    })
+
+    it('rejects the pre-native top-level agents/, workflows/ and memory/ folders', () => {
+      expect(() => routeFile('agents/coder.md', 'path', undefined)).toThrow('not in the writable allowlist')
+      expect(() => routeFile('memory/known-pitfalls.md', 'path', undefined)).toThrow('not in the writable allowlist')
+      expect(() => routeFile('workflows/job/workflow.md', 'path', undefined)).toThrow('not in the writable allowlist')
+    })
+
+    it('rejects commands outside the coro namespace folder', () => {
+      expect(() => routeFile('.claude/commands/my-flow.md', 'path', undefined)).toThrow('not in the writable allowlist')
     })
 
     it('rejects paths outside the writable allowlist', () => {
@@ -153,7 +168,7 @@ describe('routeFile', () => {
 
     it('rejects path traversal', () => {
       expect(() => routeFile('../etc/passwd', 'path', undefined)).toThrow('must be relative')
-      expect(() => routeFile('agents/../../../etc/passwd', 'path', undefined)).toThrow('must be relative')
+      expect(() => routeFile('.claude/agents/../../../etc/passwd', 'path', undefined)).toThrow('must be relative')
     })
 
     it('rejects absolute paths', () => {
@@ -161,27 +176,27 @@ describe('routeFile', () => {
     })
 
     it('throws when explicit targetLayer disagrees with the path', () => {
-      expect(() => routeFile('agents/coder.md', 'path', 'repo')).toThrow('Layer mismatch')
-      expect(() => routeFile('.coro/agents/coder.md', 'path', 'tenant')).toThrow('Layer mismatch')
+      expect(() => routeFile('.claude/agents/coder.md', 'path', 'repo')).toThrow('Layer mismatch')
+      expect(() => routeFile('.coro/.claude/agents/coder.md', 'path', 'tenant')).toThrow('Layer mismatch')
     })
 
     it('accepts an explicit targetLayer when it agrees with the path', () => {
-      expect(routeFile('agents/coder.md', 'path', 'tenant')).toBe('tenant')
-      expect(routeFile('.coro/agents/coder.md', 'path', 'repo')).toBe('repo')
+      expect(routeFile('.claude/agents/coder.md', 'path', 'tenant')).toBe('tenant')
+      expect(routeFile('.coro/.claude/agents/coder.md', 'path', 'repo')).toBe('repo')
     })
   })
 
   describe('agent strategy', () => {
     it('requires an explicit targetLayer', () => {
-      expect(() => routeFile('agents/coder.md', 'agent', undefined)).toThrow('requires an explicit targetLayer')
+      expect(() => routeFile('.claude/agents/coder.md', 'agent', undefined)).toThrow('requires an explicit targetLayer')
     })
 
     it('still validates path/layer consistency', () => {
-      expect(() => routeFile('agents/coder.md', 'agent', 'repo')).toThrow('Layer mismatch')
+      expect(() => routeFile('.claude/agents/coder.md', 'agent', 'repo')).toThrow('Layer mismatch')
     })
 
     it('accepts a consistent explicit targetLayer', () => {
-      expect(routeFile('agents/coder.md', 'agent', 'tenant')).toBe('tenant')
+      expect(routeFile('.claude/agents/coder.md', 'agent', 'tenant')).toBe('tenant')
     })
   })
 })
@@ -203,14 +218,14 @@ describe('validateProposalFiles', () => {
 
   it('rejects empty file content', () => {
     expect(() =>
-      validateProposalFiles('memory-update', [{ path: 'memory/x.md', content: '   ' }]),
+      validateProposalFiles('memory-update', [{ path: '.claude/memory/x.md', content: '   ' }]),
     ).toThrow('empty content')
   })
 
   it('requires skill files under .claude/skills/', () => {
     expect(() =>
       validateProposalFiles('skill-create', [
-        { path: 'agents/skill.md', content: 'x' },
+        { path: '.claude/agents/skill.md', content: 'x' },
       ]),
     ).toThrow('Skill files must live under')
   })
@@ -248,23 +263,87 @@ describe('validateProposalFiles', () => {
   it('restricts claude-md-update to CLAUDE.md', () => {
     expect(() =>
       validateProposalFiles('claude-md-update', [
-        { path: 'agents/coder.md', content: '# Coder' },
+        { path: '.claude/agents/coder.md', content: '# Coder' },
       ]),
     ).toThrow('claude-md-update proposals may only touch')
   })
 
-  it('requires agent files to live under agents/', () => {
+  it('requires agent files to live under .claude/agents/', () => {
     expect(() =>
       validateProposalFiles('modify-agent', [
-        { path: 'memory/coder.md', content: '# Coder' },
+        { path: '.claude/memory/coder.md', content: '# Coder' },
       ]),
-    ).toThrow('must live under agents/')
+    ).toThrow('must live under .claude/agents/')
+  })
+
+  it('requires agent files to carry name and description frontmatter', () => {
+    expect(() =>
+      validateProposalFiles('modify-agent', [
+        { path: '.claude/agents/coder.md', content: '# Coder\n\nNo frontmatter.' },
+      ]),
+    ).toThrow('YAML frontmatter')
+
+    expect(() =>
+      validateProposalFiles('modify-agent', [
+        { path: '.claude/agents/coder.md', content: '---\ndescription: Writes code.\n---\n# Coder\n' },
+      ]),
+    ).toThrow('non-empty "name"')
+
+    expect(() =>
+      validateProposalFiles('new-agent', [
+        { path: '.claude/agents/coder.md', content: '---\nname: coder\n---\n# Coder\n' },
+      ]),
+    ).toThrow('non-empty "description"')
+
+    expect(() =>
+      validateProposalFiles('new-agent', [
+        {
+          path: '.claude/agents/coder.md',
+          content: '---\nname: coder\ndescription: Writes code.\n---\n\n# Agent: Coder\n',
+        },
+      ]),
+    ).not.toThrow()
+  })
+
+  it('rejects the pre-native agents/ folder for agent proposals', () => {
+    expect(() =>
+      validateProposalFiles('modify-agent', [
+        { path: 'agents/coder.md', content: '---\nname: coder\ndescription: x\n---\n# Coder\n' },
+      ]),
+    ).toThrow('must live under .claude/agents/')
+  })
+
+  it('requires workflow files to live under .claude/commands/coro/', () => {
+    expect(() =>
+      validateProposalFiles('new-workflow', [{ path: 'workflows/x/workflow.md', content: '# X' }]),
+    ).toThrow('must live under .claude/commands/coro/')
+    expect(() =>
+      validateProposalFiles('new-workflow', [{ path: '.claude/commands/coro/x.md', content: '# X' }]),
+    ).not.toThrow()
+  })
+
+  it('lets claude-md-update ship the runtime contract', () => {
+    expect(() =>
+      validateProposalFiles('claude-md-update', [{ path: '.claude/coro/RUNTIME.md', content: '# Contract' }]),
+    ).not.toThrow()
+  })
+
+  it('rejects memory outside .claude/memory/ and .coro/.claude/memory/', () => {
+    expect(() =>
+      validateProposalFiles('memory-update', [{ path: 'memory/x.md', content: '# X' }]),
+    ).toThrow('must live under .claude/memory/')
+    expect(() =>
+      validateProposalFiles('memory-update', [{ path: '.coro/memory/x.md', content: '# X' }]),
+    ).toThrow('must live under .claude/memory/')
+    expect(() =>
+      validateProposalFiles('memory-update', [{ path: '.coro/.claude/memory/x.md', content: '# X' }]),
+    ).not.toThrow()
   })
 
   it('requires agent files to start with a heading', () => {
     expect(() =>
       validateProposalFiles('modify-agent', [
-        { path: 'agents/coder.md', content: 'no heading' },
+        { path: '.claude/agents/coder.md', content: '---\nname: coder\ndescription: Writes code.\n---\nno heading' },
       ]),
     ).toThrow('top-level heading')
   })
@@ -282,7 +361,7 @@ describe('proposeChange', () => {
         rationale: 'We hit this twice in two days.',
         description: 'Append to known-pitfalls.md',
         files: [
-          { path: 'memory/known-pitfalls.md', content: '## Pitfall: rate limit only on Tuesdays' },
+          { path: '.claude/memory/known-pitfalls.md', content: '## Pitfall: rate limit only on Tuesdays' },
         ],
       },
       ctx,
@@ -301,7 +380,7 @@ describe('proposeChange', () => {
       branch: result.branch,
       baseRef: 'main',
       files: expect.arrayContaining([
-        expect.objectContaining({ path: 'memory/known-pitfalls.md' }),
+        expect.objectContaining({ path: '.claude/memory/known-pitfalls.md' }),
       ]),
     }))
     expect(writerMock.openProposalPr).toHaveBeenCalledWith(expect.objectContaining({
@@ -335,7 +414,7 @@ describe('proposeChange', () => {
         title: 'Project-only quirk',
         rationale: 'r',
         description: 'd',
-        files: [{ path: '.coro/memory/notes.md', content: '## quirk' }],
+        files: [{ path: '.coro/.claude/memory/notes.md', content: '## quirk' }],
       },
       ctx,
     )
@@ -350,15 +429,15 @@ describe('proposeChange', () => {
     try {
       const writerDir = path.join(root, 'writer')
       const intelligenceDir = path.join(root, '_intelligence')
-      await fs.mkdir(path.join(writerDir, 'memory'), { recursive: true })
-      await fs.mkdir(path.join(intelligenceDir, 'memory'), { recursive: true })
+      await fs.mkdir(path.join(writerDir, '.claude', 'memory'), { recursive: true })
+      await fs.mkdir(path.join(intelligenceDir, '.claude', 'memory'), { recursive: true })
       await fs.writeFile(
-        path.join(writerDir, 'memory', 'known-pitfalls.md'),
+        path.join(writerDir, '.claude', 'memory', 'known-pitfalls.md'),
         '## Existing pitfall\n- Symptom: from writer clone\n',
         'utf-8',
       )
       await fs.writeFile(
-        path.join(intelligenceDir, 'memory', 'known-pitfalls.md'),
+        path.join(intelligenceDir, '.claude', 'memory', 'known-pitfalls.md'),
         '## Constructed overlay\n- Symptom: should not be used\n',
         'utf-8',
       )
@@ -379,7 +458,7 @@ describe('proposeChange', () => {
           rationale: 'r',
           description: 'd',
           entries: [{
-            file: 'memory/known-pitfalls.md',
+            file: '.claude/memory/known-pitfalls.md',
             kind: 'pitfall',
             title: 'New pitfall',
             symptom: 'new symptom',
@@ -393,14 +472,14 @@ describe('proposeChange', () => {
       expect(writerMock.commitAndPush).toHaveBeenCalledWith(expect.objectContaining({
         files: expect.arrayContaining([
           expect.objectContaining({
-            path: 'memory/known-pitfalls.md',
+            path: '.claude/memory/known-pitfalls.md',
             content: expect.stringContaining('## Existing pitfall'),
           }),
         ]),
       }))
 
       const files = vi.mocked(writerMock.commitAndPush).mock.calls[0][0].files
-      const pitfall = files.find(file => file.path === 'memory/known-pitfalls.md')
+      const pitfall = files.find(file => file.path === '.claude/memory/known-pitfalls.md')
       expect(pitfall).toBeDefined()
       expect(pitfall!.content).toContain('## Existing pitfall')
       expect(pitfall!.content).toContain('## New pitfall')
@@ -414,9 +493,9 @@ describe('proposeChange', () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-self-improvement-'))
     try {
       const writerDir = path.join(root, 'writer')
-      await fs.mkdir(path.join(writerDir, 'memory'), { recursive: true })
+      await fs.mkdir(path.join(writerDir, '.claude', 'memory'), { recursive: true })
       await fs.writeFile(
-        path.join(writerDir, 'memory', 'MEMORY.md'),
+        path.join(writerDir, '.claude', 'memory', 'MEMORY.md'),
         '# Memory\n- Old index\n',
         'utf-8',
       )
@@ -433,13 +512,13 @@ describe('proposeChange', () => {
           title: 'Refresh index',
           rationale: 'r',
           description: 'd',
-          files: [{ path: 'memory/MEMORY.md', content: '# Memory\n- New index\n' }],
+          files: [{ path: '.claude/memory/MEMORY.md', content: '# Memory\n- New index\n' }],
         },
         makeCtx(),
       )
 
       const files = vi.mocked(writerMock.commitAndPush).mock.calls[0][0].files
-      const memoryIndex = files.find(file => file.path === 'memory/MEMORY.md')
+      const memoryIndex = files.find(file => file.path === '.claude/memory/MEMORY.md')
       expect(memoryIndex).toBeDefined()
       expect(memoryIndex!.content).toBe('# Memory\n- New index\n')
     } finally {
@@ -456,7 +535,7 @@ describe('proposeChange', () => {
           title: 't',
           rationale: 'r',
           description: 'd',
-          files: [{ path: 'memory/x.md', content: 'y' }],
+          files: [{ path: '.claude/memory/x.md', content: 'y' }],
         },
         ctx,
       ),
@@ -472,7 +551,7 @@ describe('proposeChange', () => {
           title: 't',
           rationale: 'r',
           description: 'd',
-          files: [{ path: '.coro/memory/x.md', content: 'y' }],
+          files: [{ path: '.coro/.claude/memory/x.md', content: 'y' }],
         },
         ctx,
       ),
@@ -489,8 +568,8 @@ describe('proposeChange', () => {
           rationale: 'r',
           description: 'd',
           files: [
-            { path: 'memory/tenant-note.md', content: 'a' },
-            { path: '.coro/memory/repo-note.md', content: 'b' },
+            { path: '.claude/memory/tenant-note.md', content: 'a' },
+            { path: '.coro/.claude/memory/repo-note.md', content: 'b' },
           ],
         },
         ctx,
@@ -510,7 +589,7 @@ describe('proposeChange', () => {
           title: 't',
           rationale: 'r',
           description: 'd',
-          files: [{ path: 'memory/x.md', content: 'y' }],
+          files: [{ path: '.claude/memory/x.md', content: 'y' }],
         },
         ctx,
       ),
@@ -526,7 +605,7 @@ describe('proposeChange', () => {
     const ctx = makeCtx({
       job: {
         type: JobType.Retrospective,
-        workflowPath: 'workflows/retrospective/workflow.md',
+        workflowPath: '.claude/commands/coro/retrospective.md',
         params: { repoSlug: 'my-repo', tiers: { tenant: false, upstreamIntelligence: true, upstreamCode: false } },
       },
     })
@@ -534,7 +613,7 @@ describe('proposeChange', () => {
     await expect(
       proposeChange(
         { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
-          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+          files: [{ path: '.claude/memory/known-pitfalls.md', content: '## X\n' }] },
         ctx,
       ),
     ).rejects.toThrow(/"tenant" destination disabled/)
@@ -545,7 +624,7 @@ describe('proposeChange', () => {
     const ctx = makeCtx({
       job: {
         type: JobType.Retrospective,
-        workflowPath: 'workflows/retrospective/workflow.md',
+        workflowPath: '.claude/commands/coro/retrospective.md',
         params: { repoSlug: 'my-repo', tiers: { tenant: true } },
       },
     })
@@ -553,7 +632,7 @@ describe('proposeChange', () => {
     await expect(
       proposeChange(
         { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
-          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+          files: [{ path: '.claude/memory/known-pitfalls.md', content: '## X\n' }] },
         ctx,
       ),
     ).resolves.toBeTruthy()
@@ -565,7 +644,7 @@ describe('proposeChange', () => {
     const ctx = makeCtx({
       job: {
         type: JobType.Job,
-        workflowPath: 'workflows/oss-contribution/workflow.md',
+        workflowPath: '.claude/commands/coro/oss-contribution.md',
         params: {
           repoSlug: 'my-repo',
           retrospectiveJobId: 'coro-retrospective-1',
@@ -577,7 +656,7 @@ describe('proposeChange', () => {
     await expect(
       proposeChange(
         { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
-          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+          files: [{ path: '.claude/memory/known-pitfalls.md', content: '## X\n' }] },
         ctx,
       ),
     ).rejects.toThrow(/"tenant" destination disabled/)
@@ -587,7 +666,7 @@ describe('proposeChange', () => {
     const ctx = makeCtx({
       job: {
         type: JobType.Job,
-        workflowPath: 'workflows/oss-contribution/workflow.md',
+        workflowPath: '.claude/commands/coro/oss-contribution.md',
         params: {
           repoSlug: 'my-repo',
           retrospectiveJobId: 'coro-retrospective-1',
@@ -599,7 +678,7 @@ describe('proposeChange', () => {
     await expect(
       proposeChange(
         { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
-          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+          files: [{ path: '.claude/memory/known-pitfalls.md', content: '## X\n' }] },
         ctx,
       ),
     ).resolves.toBeTruthy()
@@ -611,7 +690,7 @@ describe('proposeChange', () => {
     await expect(
       proposeChange(
         { type: 'memory-update', title: 't', rationale: 'r', description: 'd',
-          files: [{ path: 'memory/known-pitfalls.md', content: '## X\n' }] },
+          files: [{ path: '.claude/memory/known-pitfalls.md', content: '## X\n' }] },
         ctx,
       ),
     ).resolves.toBeTruthy()
@@ -625,7 +704,7 @@ describe('proposeChange', () => {
         title: 'Legacy shim',
         rationale: 'r',
         description: 'd',
-        targetFile: 'memory/legacy.md',
+        targetFile: '.claude/memory/legacy.md',
         proposedContent: '## legacy',
       },
       ctx,
@@ -633,7 +712,7 @@ describe('proposeChange', () => {
 
     expect(writerMock.commitAndPush).toHaveBeenCalledWith(expect.objectContaining({
       files: expect.arrayContaining([
-        expect.objectContaining({ path: 'memory/legacy.md', content: '## legacy\n' }),
+        expect.objectContaining({ path: '.claude/memory/legacy.md', content: '## legacy\n' }),
       ]),
     }))
   })

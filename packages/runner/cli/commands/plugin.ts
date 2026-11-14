@@ -48,7 +48,7 @@ const initCmd = new Command('init')
       die(`Plugin directory already exists: ${pluginDir}`)
     }
     fs.mkdirSync(pluginDir, { recursive: true })
-    fs.mkdirSync(path.join(pluginDir, 'intelligence', 'snippets'), { recursive: true })
+    fs.mkdirSync(path.join(pluginDir, 'intelligence', '.claude', 'memory', 'snippets'), { recursive: true })
 
     fs.writeFileSync(
       path.join(pluginDir, 'coro-plugin.json'),
@@ -117,7 +117,7 @@ const initCmd = new Command('init')
       )
     } else {
       fs.writeFileSync(
-        path.join(pluginDir, 'intelligence', 'snippets', `${id}-clone.md`),
+        path.join(pluginDir, 'intelligence', '.claude', 'memory', 'snippets', `${id}-clone.md`),
         `# ${id} clone recipe\n\n` +
         `Document how the agent should clone repos served by ${id}. ` +
         `This file is layered into every job's intelligence overlay so ` +
@@ -291,7 +291,7 @@ const MANIFEST: PluginManifest = {
     format: 'sha256=<hex>',
   },
   intelligence: {
-    snippets: [{ id: '${id}-clone', relativePath: 'snippets/${id}-clone.md' }],
+    snippets: [{ id: '${id}-clone', relativePath: '.claude/memory/snippets/${id}-clone.md' }],
   },
 }
 

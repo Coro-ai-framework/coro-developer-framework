@@ -16,6 +16,12 @@ import { resolveGuardrails } from '../guardrails/merge'
 import type { TrackerResolution } from '../trackers/binding'
 import { TICKETING_POLICY_PARAM } from '../jobs/ticketing'
 import { buildTicketingPromptBlock } from './ticketing-block'
+import {
+  CLAUDE_MD_PATH,
+  RUNTIME_CONTRACT_PATH,
+  parseAgentPrompt,
+  readRuntimeContract,
+} from '../intelligence/prompt-files'
 
 function omitKey(obj: Record<string, unknown>, key: string): Record<string, unknown> {
   if (!(key in obj)) return obj
@@ -234,14 +240,22 @@ export function computeGuardrailsPromptContext(
  * tools (`read_memory`, `list_proposals`) and native SDK skills.
  *
  * Sections included (in order):
- *   1. Workflow file      — phase list + high-level workflow prose
- *   2. Agent instructions — role-specific steps for the current phase
- *   3. Job context        — current job state as JSON, plus insights if any
+ *   1. Runtime contract   — the Coro-only half of the ambient rules: MCP
+ *                           tools, sandbox, checkpoints, banned tools
+ *                           (`.claude/coro/RUNTIME.md`)
+ *   2. Workflow file      — phase list + high-level workflow prose
+ *   3. Agent instructions — role-specific steps for the current phase,
+ *                           without the front matter Claude Code needs
+ *   4. Job context        — current job state as JSON, plus insights if any
  *
- * Static ambient content (behaviour rules, git conventions, infra context)
- * is loaded natively by the SDK via `settingSources: ['project']` from
- * `.claude/CLAUDE.md`. The intelligence repo is pulled once per job in the runner,
- * not per phase, so this function never does network I/O.
+ * The portable ambient content (behaviour rules, git conventions) stays in
+ * `.claude/CLAUDE.md`, which the SDK loads natively via
+ * `settingSources: ['project']`. The runtime contract is the part of the
+ * old CLAUDE.md that only makes sense inside the runner; it is a separate
+ * file so Claude Code is not told to call tools it does not have, and is
+ * injected here for every executor. The intelligence repo is pulled once
+ * per job in the runner, not per phase, so this function never does
+ * network I/O.
  */
 /**
  * @param intelligenceDir Per-job intelligence overlay produced by
@@ -271,6 +285,19 @@ export async function buildSystemPrompt(
 ): Promise<string> {
   const sections: string[] = []
 
+  // The runtime contract is Coro-only, so no executor loads it natively:
+  // inject it first for all of them. A missing file is a partial overlay,
+  // not a reason to fail the prompt build.
+  const runtimeContract = await readRuntimeContract(intelligenceDir)
+  if (runtimeContract) {
+    sections.push(banner('Coro Runtime Contract', RUNTIME_CONTRACT_PATH) + runtimeContract)
+  } else {
+    logger.warn(
+      { runtimeContractPath: path.join(intelligenceDir, RUNTIME_CONTRACT_PATH) },
+      'Overlay has no runtime contract to inject — agents will not see the Coro tool rules',
+    )
+  }
+
   // When the active executor cannot natively walk `.claude/CLAUDE.md`
   // up the directory tree (everything except the Anthropic SDK), inject
   // the per-job overlay's CLAUDE.md as the first system block. The
@@ -278,10 +305,10 @@ export async function buildSystemPrompt(
   // root for every tenant; if it is missing we log and continue so a
   // partial overlay never crashes the prompt build.
   if (executorCapabilities && !executorCapabilities.supportsClaudeMdNativeWalkUp) {
-    const claudeMdPath = path.join(intelligenceDir, '.claude', 'CLAUDE.md')
+    const claudeMdPath = path.join(intelligenceDir, CLAUDE_MD_PATH)
     const claudeMd = await readSafe(claudeMdPath, logger)
     if (claudeMd) {
-      sections.push(banner('Ambient Runtime Instructions', '.claude/CLAUDE.md') + claudeMd)
+      sections.push(banner('Ambient Runtime Instructions', CLAUDE_MD_PATH) + claudeMd)
     } else {
       logger.warn(
         { claudeMdPath },
@@ -305,7 +332,7 @@ export async function buildSystemPrompt(
   if (agentRelPath) {
     const agentMd = await readSafe(path.join(intelligenceDir, agentRelPath), logger)
     if (agentMd) {
-      sections.push(banner('Your Role This Phase', agentRelPath) + agentMd)
+      sections.push(banner('Your Role This Phase', agentRelPath) + parseAgentPrompt(agentMd))
     } else {
       logger.warn({ agentRelPath, phase: job.phase }, 'Agent file not found — skipping')
     }
@@ -486,7 +513,7 @@ function buildJobContext(
     // insights are *fresher and more directly applicable* than memory
     // entries because they were discovered against the same target
     // repo, sandbox, and tenant minutes earlier — agents are
-    // instructed to read them before consulting memory/known-pitfalls.
+    // instructed to read them before consulting .claude/memory/known-pitfalls.
     //
     // Rejected insights stay on the job for audit but are omitted here
     // and at campaign sibling copy — they must not steer agents or

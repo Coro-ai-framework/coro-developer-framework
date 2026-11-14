@@ -29,7 +29,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'test-job-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { serviceName: 'svc', repoSlug: 'my-repo' },
     triggerSource: 'cli',
     status: 'awaiting-pr-merge',

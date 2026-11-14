@@ -146,7 +146,7 @@ const MANIFEST: PluginManifest = {
   },
   intelligence: {
     snippets: [
-      { id: 'bitbucket-clone', relativePath: 'snippets/bitbucket-clone.md' },
+      { id: 'bitbucket-clone', relativePath: '.claude/memory/snippets/bitbucket-clone.md' },
     ],
   },
   ui: {

@@ -911,7 +911,7 @@ export interface HookPolicy {
 /**
  * Subagent specification handed to an executor. The runner builds these
  * from workflow YAML's `subagents:` block. Each entry corresponds to one
- * agent file (`agents/<name>.md`) plus runtime knobs.
+ * agent file (`.claude/agents/<name>.md`) plus runtime knobs.
  *
  * Anthropic-flavoured executors map this onto the SDK's `agents:` field;
  * non-native executors invoke them via the runner's `run_subagent` MCP

@@ -117,7 +117,7 @@ const MANIFEST: PluginManifest = {
   },
   intelligence: {
     snippets: [
-      { id: 'gitlab-clone', relativePath: 'snippets/gitlab-clone.md' },
+      { id: 'gitlab-clone', relativePath: '.claude/memory/snippets/gitlab-clone.md' },
     ],
   },
   ui: {

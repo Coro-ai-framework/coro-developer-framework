@@ -1,4 +1,13 @@
+---
+name: spec-writer
+description: "Produces the feature spec the planner acts on: scope, acceptance criteria, constraints, and the target repository's own gates. Delegate first, from a ticket, a description or an investigation write-up."
+---
+
 # Agent: Spec Writer
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 

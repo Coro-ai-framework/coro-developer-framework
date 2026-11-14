@@ -27,7 +27,7 @@ function ctx() {
     job: {
       id: 'job-1',
       phase: 'coding',
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       params: { repoSlug: 'svc' },
     } as Job,
     workingDir: '/tmp/work',

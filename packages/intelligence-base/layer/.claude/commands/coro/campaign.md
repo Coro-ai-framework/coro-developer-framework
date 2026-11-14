@@ -2,19 +2,21 @@
 display_name: Campaign
 description: Plan and coordinate a multi-job campaign across one or more repositories. Spawns child implementation jobs and aggregates their results.
 kind: campaign
+argument-hint: "<what to build, fix, or review>"
+disable-model-invocation: true
 
 initial_phase: campaign-architecture
 initial_status: campaign-architecture
 
 phases:
   - name: campaign-architecture
-    agent: agents/campaign-architect.md
+    agent: .claude/agents/campaign-architect.md
     tier: planning
     status: campaign-architecture
     interactive_checkpoint: true
 
   - name: campaign-planning
-    agent: agents/campaign-planner.md
+    agent: .claude/agents/campaign-planner.md
     tier: planning
     status: campaign-planning
     interactive_checkpoint: true
@@ -27,13 +29,13 @@ phases:
     status: awaiting-children
 
   - name: campaign-integration
-    agent: agents/campaign-integrator.md
+    agent: .claude/agents/campaign-integrator.md
     tier: planning
     status: integrating
     interactive_checkpoint: true
 
   - name: aggregation
-    agent: agents/campaign-evaluator.md
+    agent: .claude/agents/campaign-evaluator.md
     # Aggregation synthesises the whole campaign: campaign_status over N
     # children, the integration report, per-child insights, tracker epic
     # updates, and multi-file memory proposals. On large campaigns this
@@ -42,6 +44,12 @@ phases:
     status: aggregating
     interactive_checkpoint: true
 ---
+
+<!-- standalone:start -->
+## Needs the Coro runner
+
+This workflow needs the Coro runner: it coordinates several child jobs through the runner's dispatcher and campaign tools. Tell the user to start it from the Coro dashboard or the `coro` CLI, then stop. Do not try to emulate it in this session.
+<!-- standalone:end -->
 
 # Workflow: Campaign
 
@@ -55,11 +63,11 @@ an issue-list (`campaignChildren[]`), a tracker epic, and the dependency
 graph between issues.
 
 This workflow is reached automatically when the standard `planning`
-phase of `workflows/job/workflow.md` decides the work is too large for
+phase of `.claude/commands/coro/job.md` decides the work is too large for
 a single job and calls `mcp__coro__convert_to_campaign`. The runner
 switches the same job's `workflowPath` to this file and resumes here at
 `campaign-planning`. Children dispatched from a campaign always run
-`workflows/job/workflow.md` with `params.epicAllowed = false`, so they
+`.claude/commands/coro/job.md` with `params.epicAllowed = false`, so they
 cannot recursively become campaigns.
 
 ## How this workflow runs

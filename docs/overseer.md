@@ -161,7 +161,7 @@ A phase can declare its own obligations:
 ```yaml
 phases:
   - name: coding
-    agent: agents/coder.md
+    agent: .claude/agents/coder.md
     obligations:
       - The phase opened a pull request for the current work item.
       - Tests for the change were run, or the reason they were not was written down.

@@ -49,7 +49,7 @@ const jiraConfigSchema = z.object({
 export type JiraPluginConfig = z.infer<typeof jiraConfigSchema>
 
 // Curated allowlist of upstream MCP tools exposed to the agent. Mirrors
-// the agent procedures in `intelligence-base/.../agents/*.md`.
+// the agent procedures in `intelligence-base/.../.claude/agents/*.md`.
 //
 // Tool names follow the conventions of the most-deployed community
 // Jira MCP servers (`mcp-atlassian`, `@cosmix/jira-mcp`). When we
@@ -98,7 +98,7 @@ const MANIFEST: PluginManifest = {
   },
   intelligence: {
     snippets: [
-      { id: 'jira-transitions', relativePath: 'snippets/jira-transitions.md' },
+      { id: 'jira-transitions', relativePath: '.claude/memory/snippets/jira-transitions.md' },
     ],
   },
   ui: {

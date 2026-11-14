@@ -438,8 +438,8 @@ describe('commitAndPush', () => {
       branch: 'coro/proposal/test-job-1-tenant',
       baseRef: 'main',
       files: [
-        { path: 'memory/notes.md', content: 'a learning' },
-        { path: 'agents/coder.md', content: '# Coder\nUpdated' },
+        { path: '.claude/memory/notes.md', content: 'a learning' },
+        { path: '.claude/agents/coder.md', content: '# Coder\nUpdated' },
       ],
       commitMessage: 'Coro proposal: test',
       logger: makeLogger(),
@@ -447,16 +447,16 @@ describe('commitAndPush', () => {
     })
 
     // Files were written
-    expect(await fs.readFile(path.join(dir, 'memory/notes.md'), 'utf-8')).toBe('a learning')
-    expect(await fs.readFile(path.join(dir, 'agents/coder.md'), 'utf-8')).toBe('# Coder\nUpdated')
+    expect(await fs.readFile(path.join(dir, '.claude/memory/notes.md'), 'utf-8')).toBe('a learning')
+    expect(await fs.readFile(path.join(dir, '.claude/agents/coder.md'), 'utf-8')).toBe('# Coder\nUpdated')
 
     // Branch created off main
     expect(git.checkout).toHaveBeenCalledWith('main')
     expect(git.checkout).toHaveBeenCalledWith(['-b', 'coro/proposal/test-job-1-tenant'])
 
     // Staged only declared proposal paths (never `git add .`)
-    expect(git.add).toHaveBeenCalledWith('memory/notes.md')
-    expect(git.add).toHaveBeenCalledWith('agents/coder.md')
+    expect(git.add).toHaveBeenCalledWith('.claude/memory/notes.md')
+    expect(git.add).toHaveBeenCalledWith('.claude/agents/coder.md')
     expect(git.commit).toHaveBeenCalledWith('Coro proposal: test')
     expect(git.push).toHaveBeenCalledWith(
       'origin',
@@ -474,7 +474,7 @@ describe('commitAndPush', () => {
       dir,
       branch: 'coro/retro/retro-1-coder-scaffolding',
       baseRef: 'main',
-      files: [{ path: 'packages/intelligence-base/layer/agents/coder.md', content: '# Coder\n' }],
+      files: [{ path: 'packages/intelligence-base/layer/.claude/agents/coder.md', content: '# Coder\n' }],
       commitMessage: 'docs(intelligence): tighten the coder procedure',
       logger: makeLogger(),
       gitFactory: git.factory,
@@ -529,7 +529,7 @@ describe('commitAndPush', () => {
         dir,
         branch: 'coro/proposal/empty',
         baseRef: 'main',
-        files: [{ path: 'memory/notes.md', content: 'identical' }],
+        files: [{ path: '.claude/memory/notes.md', content: 'identical' }],
         commitMessage: 'noop',
         logger: makeLogger(),
         gitFactory: git.factory,
@@ -550,7 +550,7 @@ describe('commitAndPush', () => {
       dir,
       branch: 'coro/proposal/already-there',
       baseRef: 'main',
-      files: [{ path: 'memory/notes.md', content: 'fresh' }],
+      files: [{ path: '.claude/memory/notes.md', content: 'fresh' }],
       commitMessage: 'reset',
       logger: makeLogger(),
       gitFactory: git.factory,

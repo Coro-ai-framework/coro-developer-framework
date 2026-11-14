@@ -12,6 +12,7 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { ApiError, jsonRequest, requestJson } from '../../lib/http'
 import type { IntelligenceLayer } from './layer-badge'
+import { workflowPathForSlug } from '../../lib/workflow-paths'
 import PreflightPanel, { type PreflightResult } from './preflight-panel'
 
 export type ArtefactKind = 'workflow' | 'agent' | 'skill' | 'memory'
@@ -46,18 +47,19 @@ function templateFor(kind: ArtefactKind, slug: string): { path: string; content:
   switch (kind) {
     case 'workflow':
       return {
-        path: `workflows/${slug}/workflow.md`,
+        path: workflowPathForSlug(slug),
         content: `---
 display_name: ${slug}
 description: New tenant workflow.
 kind: job
+argument-hint: "<what to build, fix, or review>"
 
 initial_phase: planning
 initial_status: queued
 
 phases:
   - name: planning
-    agent: agents/planner.md
+    agent: .claude/agents/planner.md
     model: planning
     status: planning
 ---
@@ -69,8 +71,13 @@ Describe the purpose of this workflow.
       }
     case 'agent':
       return {
-        path: `agents/${slug}.md`,
-        content: `# Agent: ${slug}
+        path: `.claude/agents/${slug}.md`,
+        content: `---
+name: ${slug}
+description: One or two sentences on when to delegate to this agent.
+---
+
+# Agent: ${slug}
 
 ## Role
 
@@ -104,7 +111,7 @@ Provide the actual conventions, snippets, or domain knowledge.
       }
     case 'memory':
       return {
-        path: `memory/${slug}.md`,
+        path: `.claude/memory/${slug}.md`,
         content: `# ${slug}
 
 A short, durable insight worth remembering across jobs.

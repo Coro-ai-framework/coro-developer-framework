@@ -5,7 +5,7 @@ import { parseWorkflowConfig } from '../../src/workflow-parser'
 
 function coding(lane: string) {
   const markdown = readFileSync(
-    path.resolve(__dirname, `../../../intelligence-base/layer/workflows/${lane}/workflow.md`),
+    path.resolve(__dirname, `../../../intelligence-base/layer/.claude/commands/coro/${lane}.md`),
     'utf8',
   )
   const phase = parseWorkflowConfig(markdown).phases.find(item => item.name === 'coding')

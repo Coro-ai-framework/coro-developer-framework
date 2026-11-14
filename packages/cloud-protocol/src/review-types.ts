@@ -5,6 +5,7 @@
 // runner, the dashboard, and a headless CI marker can agree on the shape.
 
 import type { ExternalRef } from './refs'
+import { workflowPathForSlug } from './job-types'
 
 export type ReviewStatus =
   | 'queued'
@@ -220,7 +221,7 @@ export interface PrReview {
   updatedAt: string
 }
 
-export const PR_REVIEW_WORKFLOW_PATH = 'workflows/pr-review/workflow.md'
+export const PR_REVIEW_WORKFLOW_PATH = workflowPathForSlug('pr-review')
 
 /** Hidden marker on every Coro-authored comment. Self-events are filtered on it. */
 export const REVIEW_MARKER_PREFIX = '<!-- coro-review:'

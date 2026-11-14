@@ -13,11 +13,14 @@ description: >-
 
 | Location | Purpose | How loaded |
 |----------|---------|------------|
-| `.claude/CLAUDE.md` | Behavior rules, company context, git conventions, infrastructure | Always — SDK native via `settingSources: ['project']` |
+| `.claude/CLAUDE.md` | Portable behavior rules, git and PR conventions | Always — SDK native via `settingSources: ['project']` |
+| `.claude/coro/RUNTIME.md` | Coro runtime contract: MCP tools, sandbox, checkpoints, artefacts, self-improvement | Always — the runner injects it as the first system block (Claude Code never loads it) |
 | `.claude/skills/*/SKILL.md` | Domain knowledge, language conventions, guides | On-demand — agent invokes the Skill tool |
-| `memory/MEMORY.md` + linked files | Accumulated knowledge from past jobs | Always — builder injects |
-| `agents/*.md` | Phase-specific agent procedures | Per-phase — builder injects |
-| `workflows/*/workflow.md` | Workflow lifecycle definitions | Per-job-type — builder injects |
+| `.claude/memory/MEMORY.md` + linked files | Accumulated knowledge from past jobs | On-demand — agent calls `read_memory` (standalone: reads the files directly) |
+| `.claude/agents/*.md` | Phase-specific agent procedures; each file is also a Claude Code subagent (`name` + `description` frontmatter) | Per-phase — builder injects the body (frontmatter stripped) |
+| `.claude/commands/coro/*.md` | Workflow lifecycle definitions; each file is also a Claude Code slash command (`/coro:<id>`) | Per-job-type — builder injects the body (frontmatter stripped) |
+
+Blocks fenced by a `standalone:start` HTML comment and a `standalone:end` HTML comment (each on its own line) are for Claude Code sessions that run **without** the Coro runner. The resolver strips those blocks, so Coro agents never see them. Keep runner-only instructions outside the fences.
 
 ## Layered intelligence: where do changes land?
 
@@ -42,19 +45,19 @@ You can also pass `targetLayer: 'tenant' | 'repo'` explicitly; the tool validate
 
 | Goal | Use the … layer | Path |
 |------|-----------------|------|
-| Pattern that applies across all repos in your tenant | tenant | `memory/...`, `.claude/skills/...`, `agents/...`, `workflows/...` |
-| Convention specific to one project | repo | `.coro/memory/...`, `.coro/agents/...`, etc. |
+| Pattern that applies across all repos in your tenant | tenant | `.claude/memory/...`, `.claude/skills/...`, `.claude/agents/...`, `.claude/commands/coro/...` |
+| Convention specific to one project | repo | `.coro/.claude/memory/...`, `.coro/.claude/agents/...`, etc. |
 
 ## Proposal type reference
 
 | Type | Target file pattern | When to use |
 |------|---------------------|-------------|
-| `memory-update` | `memory/*.md` (tenant) or `.coro/memory/*.md` (repo) | Reusable pattern, pitfall, or workaround |
+| `memory-update` | `.claude/memory/*.md` (tenant) or `.coro/.claude/memory/*.md` (repo) | Reusable pattern, pitfall, or workaround |
 | `skill-create` | `.claude/skills/{new-name}/SKILL.md` | New domain that needs a guide |
 | `skill-update` | `.claude/skills/{name}/SKILL.md` | Gap in existing domain knowledge or convention |
-| `claude-md-update` | `.claude/CLAUDE.md` | Missing behavior rule, company context change |
-| `new-agent` / `modify-agent` | `agents/{name}.md` | Add or fix an agent procedure |
-| `new-workflow` / `modify-workflow` | `workflows/{type}/workflow.md` | Phase ordering or model selection change |
+| `claude-md-update` | `.claude/CLAUDE.md` or `.claude/coro/RUNTIME.md` | Missing behavior rule, company context change |
+| `new-agent` / `modify-agent` | `.claude/agents/{name}.md` (needs `name` and `description` frontmatter) | Add or fix an agent procedure |
+| `new-workflow` / `modify-workflow` | `.claude/commands/coro/{type}.md` | Phase ordering or model selection change |
 | `new-tool` / `modify-tool` | Multiple files (skill + tests + docs) | New or improved domain capability |
 
 ## How `propose_change` ships a change
@@ -77,7 +80,7 @@ If validation fails, the tool throws — **no commit, no push, no PR**. Fix the 
 
 ### Markdown-only payloads (hard rule)
 
-Every path in `propose_change` must end with `.md` (e.g. `memory/known-pitfalls.md`, `.coro/memory/successful-patterns.md`, `agents/coder.md`, `.claude/skills/foo/SKILL.md`). You cannot ship `build-kafka.txt`, `gocache/`, binaries, or any other file type. The evaluator often runs builds in the same repo checkout — those artefacts are ignored at commit time.
+Every path in `propose_change` must end with `.md` (e.g. `.claude/memory/known-pitfalls.md`, `.coro/.claude/memory/successful-patterns.md`, `.claude/agents/coder.md`, `.claude/skills/foo/SKILL.md`). You cannot ship `build-kafka.txt`, `gocache/`, binaries, or any other file type. The evaluator often runs builds in the same repo checkout — those artefacts are ignored at commit time.
 
 ## How to file a proposal (Evaluator and PR Reviewer)
 
@@ -87,7 +90,7 @@ Every path in `propose_change` must end with `.md` (e.g. `memory/known-pitfalls.
 
 Memory grows monotonically and is loaded by every future job. Brevity wins. The runner exposes a structured schema that **renders** entries into the canonical short-form layout and **rejects** entries that exceed the per-kind line budget.
 
-For `memory-update`, append-only memory files (`memory/*.md` and `.coro/memory/*.md`, excluding `memory/MEMORY.md`) are merged against the current file in the writable tenant/repo source clone. That means you can send a short snippet or structured `entries[]` block and the runner will preserve the existing file contents in the PR branch. `memory/MEMORY.md` is the deliberate exception: treat it as an explicitly authored index file.
+For `memory-update`, append-only memory files (`.claude/memory/*.md` and `.coro/.claude/memory/*.md`, excluding `.claude/memory/MEMORY.md`) are merged against the current file in the writable tenant/repo source clone. That means you can send a short snippet or structured `entries[]` block and the runner will preserve the existing file contents in the PR branch. `.claude/memory/MEMORY.md` is the deliberate exception: treat it as an explicitly authored index file.
 
 ```
 propose_change({
@@ -97,7 +100,7 @@ propose_change({
   description: "Adds one short pitfall.",
   entries: [
     {
-      file: "memory/known-pitfalls.md",
+      file: ".claude/memory/known-pitfalls.md",
       kind: "pitfall",
       title: "cgo build fails on macOS arm64 inside the runner sandbox",
       symptom: "go build ./... exits with `ld: framework not found CoreFoundation`",
@@ -129,7 +132,7 @@ propose_change({
   rationale: "We hit this twice in two days; reusable across repos.",
   description: "Append to known-pitfalls.md AND tighten the http-client skill.",
   files: [
-    { path: "memory/known-pitfalls.md", content: "..." },
+    { path: ".claude/memory/known-pitfalls.md", content: "..." },
     { path: ".claude/skills/http-client/SKILL.md", content: "..." }
   ]
   // targetLayer omitted — both files route to tenant via path prefix
@@ -177,7 +180,7 @@ target the same layer.
 Before composing anything:
 
 1. Call `list_proposals({ status: "pending" })` to check for in-flight PRs that already cover the same ground.
-2. Scan `memory/MEMORY.md` and the relevant memory files for the same symptom keyword.
+2. Scan `.claude/memory/MEMORY.md` and the relevant memory files for the same symptom keyword.
 
 Near-duplicates ⇒ **skip** or **append a one-line cross-reference** to the existing entry; do not author a new section.
 
@@ -232,5 +235,5 @@ You don't need to do anything special after calling `add_insight` — the curati
 - `conventions/` directory — `git.md` absorbed into `.claude/CLAUDE.md`; language conventions migrated to `.claude/skills/`.
 - Proposal types `convention-change` and `knowledge-update` — use `skill-update` instead.
 - Proposal type `source-change` — runner source changes are out-of-band; open a regular code PR.
-- The on-disk `memory/proposals/` summary — proposals live in the state backend now and surface via `list_proposals` and the dashboard.
+- The on-disk `.claude/memory/proposals/` summary — proposals live in the state backend now and surface via `list_proposals` and the dashboard.
 - The file watcher — `propose_change` opens the PR synchronously; there is no polling step.

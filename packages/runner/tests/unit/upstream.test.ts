@@ -57,7 +57,7 @@ const {
 const FINDING = {
   category: 'base-intelligence',
   title: 'Coder loops on Go test scaffolding',
-  targetPaths: ['packages/intelligence-base/layer/agents/coder.md'],
+  targetPaths: ['packages/intelligence-base/layer/.claude/agents/coder.md'],
 }
 
 const UPSTREAM_SETTINGS = {
@@ -82,7 +82,7 @@ function makeCtx(over: {
   const job = makeMockJob({
     id: 'retro-1',
     type: JobType.Retrospective,
-    workflowPath: 'workflows/retrospective/workflow.md',
+    workflowPath: '.claude/commands/coro/retrospective.md',
     params: { tiers: { tenant: true, upstreamIntelligence: true, upstreamCode: true } },
     ...over.job,
   }) as unknown as Job
@@ -409,7 +409,7 @@ describe('dispatchImprovementJob', () => {
     category: 'base-intelligence',
     issueNumber: 46,
     title: 'Spec writer skips tracker comments',
-    description: 'agents/spec-writer.md only calls tracker_get_issue; comments override the body.',
+    description: '.claude/agents/spec-writer.md only calls tracker_get_issue; comments override the body.',
   }
   const args = { items: [codeItem] }
 
@@ -420,7 +420,7 @@ describe('dispatchImprovementJob', () => {
     const input = dispatchJob.mock.calls[0][0]
     expect(input).toMatchObject({
       type: 'job',
-      workflowPath: 'workflows/oss-contribution/workflow.md',
+      workflowPath: '.claude/commands/coro/oss-contribution.md',
       triggerSource: 'internal',
     })
     // The clone target is the fork; the PR target is upstream. Swapping
@@ -605,7 +605,7 @@ describe('dispatchImprovementJob', () => {
           behaviourNow: 'now',
           behaviourWanted: 'wanted',
           evidence: 'two jobs',
-          targetPaths: ['packages/intelligence-base/layer/agents/coder.md'],
+          targetPaths: ['packages/intelligence-base/layer/.claude/agents/coder.md'],
           verified: true,
         },
       }],

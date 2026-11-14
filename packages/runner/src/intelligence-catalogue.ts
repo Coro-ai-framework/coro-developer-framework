@@ -20,6 +20,10 @@
 import fs from 'fs/promises'
 import path from 'path'
 import type { Logger } from 'pino'
+import { WORKFLOWS_DIR, workflowPathForSlug } from '@coro-ai/cloud-protocol'
+import { LAYER_FILES } from '@coro-ai/intelligence-base'
+import { stripStandaloneBlocks } from './intelligence/merge'
+import { parseWorkflowConfig } from './workflow-parser'
 import type { IntelligenceLayer, LayerRoot } from './workflow-discovery'
 
 export type ArtefactKind = 'workflow' | 'agent' | 'skill' | 'memory'
@@ -129,18 +133,23 @@ async function safeReaddir(dir: string): Promise<string[]> {
 }
 
 async function readWorkflowsForLayer(layer: IntelligenceLayer, root: string): Promise<Artefact[]> {
-  const dir = path.join(root, 'workflows')
+  const dir = path.join(root, WORKFLOWS_DIR)
   const entries = await safeReaddir(dir)
   const out: Artefact[] = []
-  for (const entry of entries) {
-    const file = path.join(dir, entry, 'workflow.md')
-    const content = await safeReadFile(file)
-    if (content === null) continue
+  for (const entry of entries.filter(name => name.endsWith('.md'))) {
+    const id = entry.replace(/\.md$/, '')
+    const raw = await safeReadFile(path.join(dir, entry))
+    if (raw === null) continue
+    // Text fenced for running the file without Coro is not what a Coro
+    // user should see summarised, and a command without phases is an
+    // ordinary slash command, not a workflow.
+    const content = stripStandaloneBlocks(raw)
+    if (parseWorkflowConfig(content) === null) continue
     out.push({
-      path: `workflows/${entry}/workflow.md`,
+      path: workflowPathForSlug(id),
       kind: 'workflow',
       displayName:
-        parseFrontMatterDisplayName(content) ?? extractFirstH1(content) ?? entry,
+        parseFrontMatterDisplayName(content) ?? extractFirstH1(content) ?? id,
       description:
         parseFrontMatterDescription(content) ?? extractFirstParagraph(content),
       layer,
@@ -151,20 +160,21 @@ async function readWorkflowsForLayer(layer: IntelligenceLayer, root: string): Pr
 }
 
 async function readAgentsForLayer(layer: IntelligenceLayer, root: string): Promise<Artefact[]> {
-  const dir = path.join(root, 'agents')
+  const dir = path.join(root, LAYER_FILES.agentsDir)
   const entries = await safeReaddir(dir)
   const out: Artefact[] = []
   for (const entry of entries) {
     if (!entry.endsWith('.md')) continue
     const file = path.join(dir, entry)
-    const content = await safeReadFile(file)
-    if (content === null) continue
+    const raw = await safeReadFile(file)
+    if (raw === null) continue
+    const content = stripStandaloneBlocks(raw)
     const id = entry.replace(/\.md$/, '')
     out.push({
-      path: `agents/${entry}`,
+      path: `${LAYER_FILES.agentsDir}/${entry}`,
       kind: 'agent',
       displayName: extractFirstH1(content) ?? id,
-      description: extractFirstParagraph(content),
+      description: parseFrontMatterDescription(content) ?? extractFirstParagraph(content),
       layer,
       source: root,
     })
@@ -195,7 +205,7 @@ async function readSkillsForLayer(layer: IntelligenceLayer, root: string): Promi
 }
 
 async function readMemoryForLayer(layer: IntelligenceLayer, root: string): Promise<Artefact[]> {
-  const dir = path.join(root, 'memory')
+  const dir = path.join(root, LAYER_FILES.memoryDir)
   const entries = await safeReaddir(dir)
   const out: Artefact[] = []
   for (const entry of entries) {
@@ -204,7 +214,7 @@ async function readMemoryForLayer(layer: IntelligenceLayer, root: string): Promi
     const content = await safeReadFile(file)
     if (content === null) continue
     out.push({
-      path: `memory/${entry}`,
+      path: `${LAYER_FILES.memoryDir}/${entry}`,
       kind: 'memory',
       displayName: extractFirstH1(content) ?? entry.replace(/\.md$/, ''),
       description: extractFirstParagraph(content),

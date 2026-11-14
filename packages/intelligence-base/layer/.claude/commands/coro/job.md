@@ -2,70 +2,71 @@
 display_name: Implementation Job
 description: The default lane for almost every job — scoped feature work, bug fixes, refactors, reversible schema changes, dependency updates that need a plan. Coro writes a brief spec, plans, codes, reviews, and ships a PR. Pick this unless the work is either *tiny* (one-file/doc tweak → fast lane) or *genuinely high-stakes* (new public API, security/auth, irreversible migration → deep lane).
 kind: job
+argument-hint: "<what to build, fix, or review>"
 
 initial_phase: spec-writing
 initial_status: queued
 
 phases:
   - name: spec-writing
-    agent: agents/spec-writer.md
+    agent: .claude/agents/spec-writer.md
     tier: coding
     status: spec-writing
     interactive_checkpoint: true
 
   - name: planning
-    agent: agents/planner.md
+    agent: .claude/agents/planner.md
     tier: planning
     status: planning
     interactive_checkpoint: true
 
   - name: coding
-    agent: agents/coder.md
+    agent: .claude/agents/coder.md
     tier: coding
     status: coding
     interactive_checkpoint: true
     subagents:
       - name: code-reviewer
-        agent: agents/code-reviewer.md
+        agent: .claude/agents/code-reviewer.md
         tier: mini
         tools: [Read, Glob, Grep, Bash, mcp__coro__code_review_lenses, mcp__coro__scm_get_pr_comments, mcp__coro__scm_post_pr_comment, mcp__coro__log]
     # Review lenses the code-reviewer runs on the local diff through
     # `code_review_lenses`, before any pull request exists.
     lenses:
       - name: correctness
-        agent: agents/review-correctness.md
+        agent: .claude/agents/review-correctness.md
         tier: review-deep
         when: [code]
         tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
       - name: security
-        agent: agents/review-security.md
+        agent: .claude/agents/review-security.md
         tier: review-deep
         when: [code, deps, infra, auth]
         tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
       - name: tests
-        agent: agents/review-tests.md
+        agent: .claude/agents/review-tests.md
         tier: review-fast
         when: [code, tests]
         tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
       - name: design
-        agent: agents/review-design.md
+        agent: .claude/agents/review-design.md
         tier: review-fast
         when: [code]
         tools: [Read, Grep, Glob, Skill, mcp__coro__read_memory]
       - name: verifier
-        agent: agents/review-verifier.md
+        agent: .claude/agents/review-verifier.md
         tier: review-deep
         when: [always]
         tools: [Read, Grep, Glob]
 
   - name: review
-    agent: agents/pr-reviewer.md
+    agent: .claude/agents/pr-reviewer.md
     tier: mini
     status: reviewing
     interactive_checkpoint: true
 
   - name: evaluation
-    agent: agents/evaluator.md
+    agent: .claude/agents/evaluator.md
     tier: planning
     status: evaluating
     interactive_checkpoint: true
@@ -78,6 +79,31 @@ overrides:
   jira:
     initial_phase: spec-writing
 ---
+
+<!-- standalone:start -->
+## Run this workflow in Claude Code
+
+You are the orchestrator. A Claude Code subagent cannot start other subagents or ask the user a question, so you sequence the phases below yourself, delegate each one to the named subagent with the Task tool, and relay any questions a subagent returns to the user. Follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+
+Request: $ARGUMENTS
+
+Setup:
+
+1. Pick a short `<run-slug>` for this request and create `.coro-work/<run-slug>/`. Every spec, plan and report goes there.
+2. The current repository is the checkout. Do not clone anything.
+3. Give each subagent the request text, the work directory path, and the paths of the files earlier phases wrote. Subagents start with no memory of this conversation.
+4. A **checkpoint** means: summarise what the phase produced, list the files it wrote, ask the user to approve or to request changes, and wait. If they request changes, re-run the same subagent with their feedback.
+
+Run the phases in this order:
+
+1. **spec-writing**: delegate to `spec-writer`. It writes `.coro-work/<run-slug>/feature-spec.md`. Checkpoint.
+2. **planning**: delegate to `planner` with the spec path. It writes the implementation plan and the work-item list (`.coro-work/<run-slug>/implementation-plan.md`, `work-items.json`). If it recommends the fast or deep lane, say so and ask the user whether to switch to `/coro:job-fast` or `/coro:job-deep`. Checkpoint.
+3. **For each work item, in order:**
+   1. **coding**: delegate to `coder` for that one work item. It implements, builds and tests on a work-item branch and writes the PR title and description to `.coro-work/<run-slug>/pr-preview-<n>.md`. Tell it not to push and not to open a pull request.
+   2. **code review**: the coder cannot call `code-reviewer` itself, so you do. Run `code-reviewer` on the diff, naming the base branch in its task. It asks for the review lenses: run `review-correctness`, `review-security`, `review-tests` and `review-design` in parallel on the diff, run `review-verifier` on what they found, and call `code-reviewer` again with the verified findings so it can write its verdict. Hand every blocking finding back to `coder` to fix, and repeat until none are left. Then checkpoint: this is the pre-PR gate, so show the diff and the proposed pull request.
+   3. **review**: with the user's consent only, push the branch and open the pull request (`git`, then `gh` or a connected SCM server), then delegate to `pr-reviewer` to coordinate review comments and merge. Route change requests back to `coder`. Never merge without the user's explicit approval. Checkpoint.
+4. **evaluation**: once every work item is complete, delegate to `evaluator` with the plan and spec paths. If it reports that a fix is needed, go back to step 3 for the work item whose contract is broken, then run `evaluator` again. Checkpoint with its verdict and any proposed memory updates; apply those only after the user approves.
+<!-- standalone:end -->
 
 # Workflow: Generic Implementation Job
 
@@ -144,7 +170,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 ### Phase 0: Spec Writing
 
-**Agent:** Spec Writer (`agents/spec-writer.md`)
+**Agent:** Spec Writer (`.claude/agents/spec-writer.md`)
 
 1. Gather scope from every source present: the ticket via `tracker_get_issue({ key: params.trackerRef.externalId })` (or the bound MCP tracker's `tracker.tools.getIssue`) on tracker-triggered jobs, `params.description`, and `{planContextDir}/findings.md` when `params.planContextDir` is set (the write-up from the plan-mode investigation this run came from).
 2. Pick a mode. If those sources together settle the repo, a concrete change, criteria-shaped conditions, and the open questions, scope is **established** → `verify` mode: do not re-derive or restate it. If any of that is missing — a one-line description, a thin ticket, an investigation that stalled — → `derive` mode, the full spec-writing pass. The agent file owns the test; judge the material, not whether a findings file happens to exist.
@@ -157,7 +183,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 ### Phase 1: Planning
 
-**Agent:** Planner (`agents/planner.md`)
+**Agent:** Planner (`.claude/agents/planner.md`)
 **Skills:** Agent invokes `feature-planning` for domain heuristics that translate a prose change request into a sequenced implementation plan
 
 1. Read the job spec (or CLI description). When `params.planContextDir` is set, read `{planContextDir}/findings.md` before the spec — it is the plan-mode investigation this run came from.
@@ -171,8 +197,8 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 ### Phase 2: Coding
 
-**Agent:** Coder (`agents/coder.md`)
-**Subagent:** `code-reviewer` (`agents/code-reviewer.md`) — invoked by the coder before opening the PR
+**Agent:** Coder (`.claude/agents/coder.md`)
+**Subagent:** `code-reviewer` (`.claude/agents/code-reviewer.md`) — invoked by the coder before opening the PR
 **Skills:** Agent invokes the relevant language conventions skill for the target language
 
 1. Call `get_work_items` to find the current work item
@@ -189,7 +215,7 @@ The convention/plan/test-coverage review happens **once**, inside the coding pha
 
 ### Phase 3: Review (merge gatekeeper, per work item)
 
-**Agent:** PR Reviewer (`agents/pr-reviewer.md`)
+**Agent:** PR Reviewer (`.claude/agents/pr-reviewer.md`)
 
 This phase does **not** re-review the diff — that already happened in coding via the `code-reviewer` subagent. The agent here opens the PR and acts as a merge gatekeeper:
 
@@ -204,7 +230,7 @@ This phase does **not** re-review the diff — that already happened in coding v
 
 ### Phase 4: Evaluation (final, end-of-job)
 
-**Agent:** Evaluator (`agents/evaluator.md`)
+**Agent:** Evaluator (`.claude/agents/evaluator.md`)
 **Skills:** Agent invokes `feature-testing` for acceptance verification heuristics
 
 Runs **once** after the per-work-item coding → review loop has driven every work item to `complete`. Verifies the fully merged base branch against the entire plan — not a single work item.

@@ -1,4 +1,13 @@
+---
+name: oss-contributor
+description: "Opens the cross-repository pull request that offers a verified fix to an upstream project, links it back to the originating issue, then stops. Last phase of the oss-contribution workflow."
+---
+
 # Agent: OSS Contributor
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 

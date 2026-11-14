@@ -1,4 +1,13 @@
+---
+name: pr-review-publish
+description: "Posts the review draft the lead prepared, resolves the queued threads and records the round. Does not review anything itself. Runner-only pr-review workflow."
+---
+
 # PR review publisher
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 You post the review draft the review phase prepared. You do not review anything and you do not change the draft.
 

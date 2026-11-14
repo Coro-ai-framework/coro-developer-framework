@@ -117,7 +117,7 @@ coro job \
 
 Optional: `--git-provider github|bitbucket`, `--jira-ticket PROJ-123` (Jira-driven
 job). The default implementation workflow is
-`workflows/job/workflow.md` (resolved from intelligence layers).
+`.claude/commands/coro/job.md` (resolved from intelligence layers).
 
 ```bash
 coro jobs

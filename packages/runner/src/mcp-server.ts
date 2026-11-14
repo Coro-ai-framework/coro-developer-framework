@@ -643,7 +643,7 @@ export function createCoroMcpServer(
           })).optional()
             .describe('Section-level patches applied against the writer clone. Prefer this over shipping a rewritten file.'),
           entries: z.array(z.object({
-            file: z.string().describe('Memory file the entry lands in (memory/* or .coro/memory/*).'),
+            file: z.string().describe('Memory file the entry lands in (.claude/memory/* or .coro/.claude/memory/*).'),
             kind: z.enum(['pitfall', 'pattern']),
             title: z.string().describe('One-line ## heading.'),
             symptom: z.string().optional().describe('Pitfall: one-line symptom.'),
@@ -694,7 +694,7 @@ export function createCoroMcpServer(
         'switch_workflow',
         'Switch the active job to a different workflow lane in place. Use when the planner / evaluator detects the current lane is mis-sized (e.g. promote a tiny task to job-fast, or escalate to job-deep). Path-based admission: target workflow must exist in any layer (base, tenant, repo). Refused if target equals the campaign workflow and params.epicAllowed=false.',
         {
-          workflowPath: z.string().describe('Workflow markdown path relative to the intelligence root (e.g. "workflows/job-fast/workflow.md").'),
+          workflowPath: z.string().describe('Workflow markdown path relative to the intelligence root (e.g. ".claude/commands/coro/job-fast.md").'),
           paramsPatch: z.record(z.string(), z.unknown()).optional().describe('Shallow merge into job.params (e.g. seed lane-specific options). Other fields are preserved.'),
           reason: z.string().describe('Short audit message — surfaces in the run log and in workflowPathHistory.'),
           toPhase: z.string().optional().describe('Optional explicit start phase on the new workflow. Must be declared by it; otherwise the workflow\'s initial_phase is used.'),
@@ -759,8 +759,8 @@ export function createCoroMcpServer(
 
       tool(
         'read_memory',
-        'Load accumulated memory (known pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: returns the memory index + every linked file + pending proposals. Pass `file` (relative to memory/) to fetch a single file. Call this when you start a job OR when you need to check prior learnings before making decisions — the system prompt no longer carries memory by default.',
-        { file: z.string().optional().describe('Optional path relative to memory/, e.g. "known-pitfalls.md"') },
+        'Load accumulated memory (known pitfalls, patterns, conventions) plus any pending self-improvement proposals. No args: returns the memory index + every linked file + pending proposals. Pass `file` (relative to .claude/memory/) to fetch a single file. Call this when you start a job OR when you need to check prior learnings before making decisions — the system prompt no longer carries memory by default.',
+        { file: z.string().optional().describe('Optional path relative to .claude/memory/, e.g. "known-pitfalls.md"') },
         h.read_memory,
         { annotations: { readOnlyHint: true } },
       ),

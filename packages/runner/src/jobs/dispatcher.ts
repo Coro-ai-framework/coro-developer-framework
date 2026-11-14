@@ -12,6 +12,7 @@ import {
   Job,
   JobInput,
   STATUS_AWAITING_CHILDREN,
+  workflowPathForSlug,
   STATUS_AWAITING_DEVELOPER_INPUT,
   STATUS_CANCELLED,
   STATUS_CODING,
@@ -53,7 +54,7 @@ import { createDecisionLayer } from '../decision/layer'
 
 const CAMPAIGN_COORDINATING_PHASE = 'coordinating'
 const CAMPAIGN_AGGREGATION_PHASE = 'aggregation'
-const CHILD_WORKFLOW_PATH = 'workflows/job/workflow.md'
+const CHILD_WORKFLOW_PATH = workflowPathForSlug('job')
 
 /**
  * Maximum number of campaign children dispatched concurrently for a single

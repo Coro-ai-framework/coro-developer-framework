@@ -2,7 +2,10 @@
 //
 // Asset package: ships the company-agnostic markdown intelligence (agents,
 // workflows, skills, .claude/CLAUDE.md skeleton, memory templates) that
-// every Coro install starts from.
+// every Coro install starts from. The layout is Claude Code's native one
+// (`.claude/agents`, `.claude/commands`, `.claude/skills`, `.claude/memory`),
+// so copying `layer/.claude` + `layer/AGENTS.md` into any repository works in
+// Claude Code without the Coro runner.
 //
 // Consumers (the runner, the dashboard, the CLI) call `getBaseLayerRoot()`
 // to discover the absolute on-disk path of the layer. The runner can then
@@ -30,12 +33,19 @@ export const BASE_LAYER_VERSION = '0.1.0'
  * to validate overlays and to drive layer diffing in the dashboard.
  */
 export const LAYER_FILES = {
+  /** Portable behaviour rules. Claude Code loads it natively. */
   claudeMd: '.claude/CLAUDE.md',
+  /** Coro-only runtime contract (MCP tools, sandbox, checkpoints). Injected by the runner. */
+  runtimeMd: '.claude/coro/RUNTIME.md',
   skillsDir: '.claude/skills',
-  agentsDir: 'agents',
-  workflowsDir: 'workflows',
-  memoryDir: 'memory',
-  memoryIndex: 'memory/MEMORY.md',
+  /** Claude Code subagents — one `<name>.md` per role, with `name`/`description` frontmatter. */
+  agentsDir: '.claude/agents',
+  /** Workflows are Claude Code slash commands: `.claude/commands/coro/<slug>.md`. */
+  workflowsDir: '.claude/commands/coro',
+  memoryDir: '.claude/memory',
+  memoryIndex: '.claude/memory/MEMORY.md',
+  /** Generic pointer file for tools that read AGENTS.md (GitHub Copilot, …). */
+  agentsMd: 'AGENTS.md',
 } as const
 
 export type LayerFileKey = keyof typeof LAYER_FILES

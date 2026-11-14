@@ -81,7 +81,7 @@ params.campaignDecisionsRef = "<path under campaignContextDir>"
 params.campaignContracts = ["order-created-event"]   // ids the producer owns
 ```
 
-The producer child's Coder, in step 1 of `agents/coder.md`:
+The producer child's Coder, in step 1 of `.claude/agents/coder.md`:
 
 1. Read the contracts index under `params.campaignContextDir` for each id in `params.campaignContracts`.
 2. Treat the recorded shape as the canonical contract — the
@@ -143,7 +143,7 @@ the producer as the source of truth and re-plan; flag the drift via
 
 ## Campaign Integrator verifies cross-child contracts
 
-The Campaign Integrator, in step 5 of `agents/campaign-integrator.md`:
+The Campaign Integrator, in step 5 of `.claude/agents/campaign-integrator.md`:
 
 1. Read `_index.json` and every per-child contract file.
 2. For each contract:

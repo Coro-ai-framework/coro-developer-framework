@@ -39,7 +39,7 @@ import { isEpicAllowed } from '../jobs/helpers'
 import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 
 export interface SwitchWorkflowArgs {
-  /** Workflow markdown path, relative to the intelligence root (e.g. `workflows/job-fast/workflow.md`). */
+  /** Workflow markdown path, relative to the intelligence root (e.g. `.claude/commands/coro/job-fast.md`). */
   workflowPath: string
   /** Optional shallow merge into `job.params`. */
   paramsPatch?: Record<string, unknown>
@@ -115,7 +115,7 @@ export async function switchWorkflow(
     throw new Error(
       `switch_workflow refused: workflow '${target}' was not found in any layer. ` +
         `Searched [${searchRoots.join(', ')}]. ` +
-        `Confirm the path is relative to the intelligence root (e.g. "workflows/job/workflow.md").`,
+        `Confirm the path is relative to the intelligence root (e.g. ".claude/commands/coro/job.md").`,
     )
   }
 

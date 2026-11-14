@@ -1,3 +1,4 @@
+import { workflowPathForSlug } from '@coro-ai/cloud-protocol'
 import type { IntakeTrackerPrompt } from './tracker'
 
 export interface IntakeMessage {
@@ -283,12 +284,12 @@ Proposing a pull-request review — when the developer asks you to review a pull
 - A <review> block is not a <run> block and does not replace <readiness>; still end the turn with <readiness>.
 
 Workflow selection — pick the lightest lane that fits, in this order:
-1. Default to "workflows/job/workflow.md" (Implementation Job). This covers almost everything: scoped feature work, bug fixes, refactors, reversible schema changes (adding nullable columns, dropping FKs, renaming a column with backfill), small additions to existing services.
-2. Use "workflows/job-fast/workflow.md" only for one-shot tiny changes — a doc/comment fix, a config tweak, a single-file change with no design choices, a dependency version bump.
-3. Use "workflows/job-deep/workflow.md" only when the work *genuinely* needs an architecture step before coding: a brand-new public API surface, an auth/security change, an irreversible or downtime-risking data migration, a contract change that spans multiple services.
-When uncertain, prefer the standard "workflows/job/workflow.md" — the planner phase inside it can still escalate if the work turns out larger than expected.
+1. Default to "${workflowPathForSlug('job')}" (Implementation Job). This covers almost everything: scoped feature work, bug fixes, refactors, reversible schema changes (adding nullable columns, dropping FKs, renaming a column with backfill), small additions to existing services.
+2. Use "${workflowPathForSlug('job-fast')}" only for one-shot tiny changes — a doc/comment fix, a config tweak, a single-file change with no design choices, a dependency version bump.
+3. Use "${workflowPathForSlug('job-deep')}" only when the work *genuinely* needs an architecture step before coding: a brand-new public API surface, an auth/security change, an irreversible or downtime-risking data migration, a contract change that spans multiple services.
+When uncertain, prefer the standard "${workflowPathForSlug('job')}" — the planner phase inside it can still escalate if the work turns out larger than expected.
 
-Large, multi-part, or epic-sized work — work that spans several services or repos, plausibly produces more than a handful of PRs, or has clear dependency layers (shared lib → consumers, schema → API → UI): STILL select "workflows/job/workflow.md". Do NOT try to force it into the fast or deep lane, and NEVER ask the developer to break the epic into smaller tasks. Coro handles oversized work automatically — the planner phase triages scope and, when the work is too big for a single PR, promotes the run in place into a coordinated *campaign* that decomposes it into dependent child issues and ships them in the right order. So when you spot epic-sized work, briefly reassure the developer that Coro will break it into a coordinated campaign during planning, then capture the FULL scope in the "description" — every sub-part, constraint, and dependency ordering — so the planner has enough to decompose it well.
+Large, multi-part, or epic-sized work — work that spans several services or repos, plausibly produces more than a handful of PRs, or has clear dependency layers (shared lib → consumers, schema → API → UI): STILL select "${workflowPathForSlug('job')}". Do NOT try to force it into the fast or deep lane, and NEVER ask the developer to break the epic into smaller tasks. Coro handles oversized work automatically — the planner phase triages scope and, when the work is too big for a single PR, promotes the run in place into a coordinated *campaign* that decomposes it into dependent child issues and ships them in the right order. So when you spot epic-sized work, briefly reassure the developer that Coro will break it into a coordinated campaign during planning, then capture the FULL scope in the "description" — every sub-part, constraint, and dependency ordering — so the planner has enough to decompose it well.
 
 Context for this session:
 - Available workflows: ${workflowsJson}
@@ -302,7 +303,7 @@ Run schema (emit EXACTLY this shape inside the <run> tags):
   "serviceName": "short human label",
   "description": "everything the autonomous agent needs: what to change, where, acceptance criteria, constraints, edge cases, and the decisions reached in this conversation. If a tracker ticket was involved, restate the parts that matter here — the description is what the agent works from.",
   "reviewers": ["alice", "bob"],
-  "workflowPath": "workflows/job/workflow.md",${ticketFields.schema}
+  "workflowPath": "${workflowPathForSlug('job')}",${ticketFields.schema}
   "interactive": true
 }
 </run>${ticketFields.guidance}`

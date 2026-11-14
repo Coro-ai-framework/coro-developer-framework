@@ -39,7 +39,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'job-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: {},
     triggerSource: 'cli',
     status: STATUS_QUEUED,
@@ -128,7 +128,7 @@ describe('Dispatcher.dispatch — plan context', () => {
     const backend = makeBackend({ investigation })
     const job = await dispatcher(backend).dispatch({
       type: 'job',
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       triggerSource: 'cli',
       params: { investigationId: investigation.id, repo: 'org/svc' },
     })
@@ -156,7 +156,7 @@ describe('Dispatcher.dispatch — plan context', () => {
     const backend = makeBackend({})
     const job = await dispatcher(backend).dispatch({
       type: 'job',
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       triggerSource: 'cli',
       params: { repo: 'org/svc' },
     })
@@ -171,7 +171,7 @@ describe('Dispatcher.dispatch — plan context', () => {
     const backend = makeBackend({ investigationThrows: true })
     const job = await dispatcher(backend).dispatch({
       type: 'job',
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       triggerSource: 'cli',
       params: { investigationId: 'inv-dispatch-1' },
     })
@@ -185,7 +185,7 @@ describe('Dispatcher.dispatch — plan context', () => {
     const backend = makeBackend({ investigation })
     const job = await dispatcher(backend).dispatch({
       type: 'job',
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       triggerSource: 'cli',
       params: { investigationId: investigation.id, repo: 'org/svc' },
     })
@@ -207,7 +207,7 @@ describe('Dispatcher.dispatch — plan context', () => {
     backend.upsertInvestigation.mockRejectedValueOnce(new Error('disk full'))
     const job = await dispatcher(backend).dispatch({
       type: 'job',
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       triggerSource: 'cli',
       params: { investigationId: investigation.id, repo: 'org/svc' },
     })

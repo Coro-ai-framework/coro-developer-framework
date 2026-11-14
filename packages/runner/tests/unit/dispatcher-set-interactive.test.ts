@@ -17,7 +17,7 @@ function baseJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'job-toggle',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { repoSlug: 'svc', serviceName: 'svc' },
     triggerSource: 'cli',
     status: 'coding',

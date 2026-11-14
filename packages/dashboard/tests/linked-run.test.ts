@@ -6,7 +6,7 @@ import type { Job } from '../src/types'
 function job(partial: Partial<Job> & { id: string }): Job {
   return {
     type: 'job',
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: {},
     triggerSource: 'cli',
     status: 'coding',
@@ -49,7 +49,7 @@ describe('runDraftFromJob', () => {
     const draft = runDraftFromJob(job({
       id: 'job-1',
       interactive: false,
-      workflowPath: 'workflows/job-deep/workflow.md',
+      workflowPath: '.claude/commands/coro/job-deep.md',
       params: {
         repo: 'org/dashboard-api-go',
         serviceName: 'dashboard-api-go',
@@ -62,7 +62,7 @@ describe('runDraftFromJob', () => {
       serviceName: 'dashboard-api-go',
       description: 'Wire Keycloak auth through the PE gateway.',
       reviewers: 'alice, bob',
-      workflowPath: 'workflows/job-deep/workflow.md',
+      workflowPath: '.claude/commands/coro/job-deep.md',
       interactive: false,
     })
   })

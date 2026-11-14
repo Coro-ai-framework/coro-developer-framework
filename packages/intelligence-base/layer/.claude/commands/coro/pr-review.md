@@ -2,6 +2,8 @@
 display_name: PR review
 description: Review a pull request Coro was asked to review. One round is one job. The review record outlives the job. Coro never merges the pull request.
 kind: internal
+argument-hint: "<what to build, fix, or review>"
+disable-model-invocation: true
 
 initial_phase: review
 initial_status: reviewing
@@ -14,7 +16,7 @@ overrides:
 
 phases:
   - name: review
-    agent: agents/pr-review-lead.md
+    agent: .claude/agents/pr-review-lead.md
     tier: review-lead
     status: reviewing
     interactive_checkpoint: true
@@ -29,44 +31,44 @@ phases:
       - mcp__coro__read_memory
     lenses:
       - name: correctness
-        agent: agents/review-correctness.md
+        agent: .claude/agents/review-correctness.md
         tier: review-deep
         when: [code, config, infra, deps, migrations]
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file]
       - name: security
-        agent: agents/review-security.md
+        agent: .claude/agents/review-security.md
         tier: review-deep
         when: [code, deps, infra, auth]
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file]
       - name: tests
-        agent: agents/review-tests.md
+        agent: .claude/agents/review-tests.md
         tier: review-fast
         when: [code, tests]
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file]
       - name: design
-        agent: agents/review-design.md
+        agent: .claude/agents/review-design.md
         tier: review-fast
         when: [code]
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file]
       - name: architecture
-        agent: agents/review-architecture.md
+        agent: .claude/agents/review-architecture.md
         tier: review-deep
         when: [contracts, migrations, infra, deps, new-module, cross-module, config]
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file, mcp__coro__review_reference_*, mcp__coro__read_memory]
         mcp_servers: ["@architecture"]
         max_turns: 30
       - name: history
-        agent: agents/review-history.md
+        agent: .claude/agents/review-history.md
         tier: review-deep
         when: [code, contracts, config, migrations, infra]
         tools: [Read, Grep, Glob, Skill, mcp__coro__review_read_file, mcp__coro__review_related_work]
       - name: verifier
-        agent: agents/review-verifier.md
+        agent: .claude/agents/review-verifier.md
         tier: review-deep
         when: [always]
         tools: [Read, Grep, Glob, mcp__coro__review_read_file, mcp__coro__review_related_work]
   - name: publish
-    agent: agents/pr-review-publish.md
+    agent: .claude/agents/pr-review-publish.md
     tier: review-fast
     status: publishing
     terminal: true
@@ -75,7 +77,7 @@ phases:
       - mcp__coro__escalate
       - mcp__coro__log
   - name: converse
-    agent: agents/pr-review-converse.md
+    agent: .claude/agents/pr-review-converse.md
     tier: review-fast
     status: conversing
     terminal: true
@@ -86,7 +88,7 @@ phases:
       - mcp__coro__goto_phase
       - mcp__coro__log
   - name: learn
-    agent: agents/pr-review-learn.md
+    agent: .claude/agents/pr-review-learn.md
     tier: review-fast
     status: learning
     terminal: true
@@ -95,6 +97,12 @@ phases:
       - mcp__coro__review_finish
       - mcp__coro__add_insight
 ---
+
+<!-- standalone:start -->
+## Needs the Coro runner
+
+This workflow needs the Coro runner: it reads the review ledger and posts through the runner's `review_*` tools. Tell the user to start it from the Coro dashboard or the `coro` CLI, then stop. Do not try to emulate it in this session.
+<!-- standalone:end -->
 
 # Workflow: PR review
 

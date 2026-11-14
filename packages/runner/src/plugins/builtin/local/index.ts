@@ -61,7 +61,7 @@ const MANIFEST: PluginManifest = {
   },
   intelligence: {
     snippets: [
-      { id: 'local-delivery', relativePath: 'snippets/local-delivery.md' },
+      { id: 'local-delivery', relativePath: '.claude/memory/snippets/local-delivery.md' },
     ],
   },
   ui: {

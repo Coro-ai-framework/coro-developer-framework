@@ -50,7 +50,7 @@ import { intakeTurnActive } from '../intake/session-store'
 import { listPendingIntakePermissions } from '../intake/permissions'
 import { WorklistService } from './worklist'
 import { toJobListView } from './job-list-view'
-import { JobType, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
+import { JobType, WORKFLOWS_DIR, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { REVIEW_MARKER_PREFIX, STATUS_AWAITING_DEVELOPER_INPUT, reviewMarker, type PrReview, type ReviewVerdict } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
 import {
@@ -75,7 +75,7 @@ import { discoverWorkflows } from '../workflow-discovery'
 import { loadWorkflowConfigFromRoots } from '../workflow-parser'
 import { buildIntelligenceCatalogue } from '../intelligence-catalogue'
 import { inferKind, validateArtefact } from '../intelligence-validator'
-import { getBaseLayerRoot } from '@coro-ai/intelligence-base'
+import { LAYER_FILES, getBaseLayerRoot } from '@coro-ai/intelligence-base'
 import { resolveGuardrails } from '../guardrails'
 
 export interface RunnerServerOptions {
@@ -615,9 +615,15 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // a Source view and a Diff view without a second round-trip.
   //
   // Path traversal is rejected up front: only relative paths under one of
-  // the four well-known artefact roots (workflows/, agents/, .claude/skills/,
-  // memory/) are accepted, and any path containing `..` is rejected.
-  const ALLOWED_PREFIXES = ['workflows/', 'agents/', '.claude/skills/', 'memory/']
+  // the four well-known artefact roots (.claude/commands/coro/,
+  // .claude/agents/, .claude/skills/, .claude/memory/) are accepted, and any
+  // path containing `..` is rejected.
+  const ALLOWED_PREFIXES = [
+    `${WORKFLOWS_DIR}/`,
+    `${LAYER_FILES.agentsDir}/`,
+    `${LAYER_FILES.skillsDir}/`,
+    `${LAYER_FILES.memoryDir}/`,
+  ]
 
   type ValidatedTarget =
     | { ok: true; layer: 'base' | 'tenant' | 'repo'; pathParam: string; root: string }
@@ -776,7 +782,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     const kind = inferKind(pathParam)
     if (!kind) {
       res.status(400).json({
-        error: 'path must start with one of: workflows/, agents/, .claude/skills/, memory/',
+        error: `path must start with one of: ${ALLOWED_PREFIXES.join(', ')}`,
       })
       return
     }
@@ -823,12 +829,13 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
 
   // ── Workflows ───────────────────────────────────────────────────────────
   //
-  // Enumerate every workflow.md the runner can dispatch against,
-  // walking the layered intelligence stack (tenant overlay first,
-  // then the base layer that ships with @coro-ai/intelligence-base).
-  // The dashboard's new-run page uses this to populate its workflow
-  // picker, so dropping a new `workflows/<my-flow>/workflow.md` into
-  // the tenant overlay surfaces it without any code change.
+  // Enumerate every workflow (a `.claude/commands/coro/<id>.md` with
+  // phases) the runner can dispatch against, walking the layered
+  // intelligence stack (tenant overlay first, then the base layer that
+  // ships with @coro-ai/intelligence-base). The dashboard's new-run page
+  // uses this to populate its workflow picker, so dropping a new
+  // `.claude/commands/coro/<my-flow>.md` into the tenant overlay surfaces
+  // it without any code change.
   //
   // Optional `?kind=job|campaign|internal` filters the result. Without
   // a filter every discovered workflow is returned — the dashboard

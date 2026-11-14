@@ -1,4 +1,13 @@
+---
+name: pr-reviewer
+description: "Pull request opener and merge gatekeeper for the current work item. Opens the PR from the coder's pushed branch and preview, coordinates with human reviewers, routes change requests back to the coder and merges once approved."
+---
+
 # Agent: PR Reviewer (merge gatekeeper)
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 

@@ -16,7 +16,7 @@ function makeParentJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'campaign-parent',
     type: 'job',
-    workflowPath: 'workflows/campaign/workflow.md',
+    workflowPath: '.claude/commands/coro/campaign.md',
     params: { repoSlug: 'my-service' },
     triggerSource: 'cli',
     status: 'awaiting-children',

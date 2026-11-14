@@ -9,7 +9,7 @@ import {
 } from '../src/lib/intake-run'
 import { toIntakeMessages } from '../src/lib/intake-stream'
 
-const WORKFLOW = 'workflows/job/workflow.md'
+const WORKFLOW = '.claude/commands/coro/job.md'
 
 function runBlock(extra: Record<string, unknown>): string {
   return `<run>${JSON.stringify({

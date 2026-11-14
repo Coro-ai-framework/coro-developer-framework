@@ -21,12 +21,12 @@ Three workflow classes exist today, all running on the same `Job`
 record type (the dashboard surfaces them uniformly as **Runs**):
 
 - **Implementation jobs** for scoped changes in an existing repository
-  (`workflows/job/workflow.md`).
+  (`.claude/commands/coro/job.md`).
 - **Campaigns** for multi-issue features that decompose into several
   dependent implementation jobs
-  (`workflows/campaign/workflow.md`). A campaign is a normal `Job` whose
+  (`.claude/commands/coro/campaign.md`). A campaign is a normal `Job` whose
   `workflowPath` points at the campaign workflow; it dispatches each
-  child issue as another `Job` running `workflows/job/workflow.md`.
+  child issue as another `Job` running `.claude/commands/coro/job.md`.
   In dashboard terminology these dispatched children are called
   **sub-runs**.
 - **Self-update jobs** for improving the agent intelligence stack itself
@@ -143,11 +143,17 @@ merged result to `<workingDir>/<jobId>/_intelligence/`:
 | Path                                                            | Mode                               | Why                                                                  |
 | --------------------------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------- |
 | `.claude/CLAUDE.md`                                             | **append** with provenance banners | Mirrors Claude Code's native CLAUDE.md walk-up. Tenants extend, never overwrite. |
-| `memory/**/*.md`                                                | **append** with provenance banners | Memory is cumulative knowledge — additions never erase prior entries. |
-| Everything else (`agents/`, `workflows/`, `.claude/skills/`, `.claude/settings.json`, …) | **last-wins** replace              | Predictable per-path override; tenants and repos can fully redefine an agent or workflow. |
+| `.claude/coro/RUNTIME.md`                                       | **append** with provenance banners | The Coro-only runtime contract is cumulative: tenants add rules, never replace the base contract. |
+| `.claude/memory/**/*.md`                                        | **append** with provenance banners | Memory is cumulative knowledge — additions never erase prior entries. |
+| Everything else (`.claude/agents/`, `.claude/commands/coro/`, `.claude/skills/`, `.claude/settings.json`, …) | **last-wins** replace              | Predictable per-path override; tenants and repos can fully redefine an agent or workflow. |
 
 Append banners look like `<!-- ─── coro layer: tenant:team-abc ─── -->`
 so the model can see provenance when reading the merged file.
+
+After every layer is applied, the resolver also removes **standalone
+blocks** from every markdown file in the materialised tree. These are
+the passages fenced for use outside Coro (see §4.5), so a Coro prompt
+never contains them.
 
 ### 4.3 Resolver lifecycle
 
@@ -168,9 +174,42 @@ builder, subagent loader, filesystem hooks) at the resolved path.
 Coro intentionally does **not** touch the target repo's `.claude/`
 directory. That contract belongs to Claude Code's native walk-up, which
 the SDK runs at its `cwd` (the cloned repo). This is the "hybrid
-Claude-native" model: Coro owns `agents/`, `workflows/`, `memory/`, and
-`.claude/skills/`; Claude Code owns project-level `.claude/CLAUDE.md`
-discovery.
+Claude-native" model: Coro owns its own intelligence tree (agents,
+workflow commands, memory, skills and the runtime contract, all under
+`.claude/` in the materialised overlay); Claude Code owns project-level
+`.claude/CLAUDE.md` discovery in the target repo.
+
+### 4.5 Native Claude Code layout
+
+Every layer uses the layout Claude Code reads natively, so the base layer
+can be copied into any repository and used without the runner:
+
+```text
+.claude/
+├── CLAUDE.md             portable rules (+ one fenced standalone block)
+├── coro/RUNTIME.md       Coro-only runtime contract (MCP tools, sandbox, checkpoints)
+├── agents/<name>.md      subagents; `name` + `description` front matter
+├── commands/coro/<id>.md workflows as slash commands; the id is the file name
+├── skills/<name>/SKILL.md
+└── memory/*.md           memory (plugin snippets in memory/snippets/)
+AGENTS.md                 pointer for Copilot and other AGENTS.md readers
+```
+
+How Coro keeps behaving as before on top of that:
+
+- The runtime contract is not in `CLAUDE.md`, so Claude Code is never
+  told to call tools it does not have. The prompt builder, SDK subagent
+  specs, `run_subagent` and `projectContext: 'load'` lenses inject it
+  first for every executor.
+- Text meant only for Claude Code sits between
+  `<!-- standalone:start -->` and `<!-- standalone:end -->` (each marker
+  alone on its line) and is stripped by the resolver.
+- The SDK's working directory gets a real `.claude/` that links only
+  `CLAUDE.md`, `skills` and `settings.json`. Agents, commands and memory
+  stay hidden so they do not become ambient subagents or slash commands.
+
+The repo overlay mirrors the tree under `.coro/` (for example
+`.coro/.claude/agents/planner.md`).
 
 ---
 
@@ -208,10 +247,10 @@ workflowPath: string          // relative to the resolved intelligence dir
 
 | Trigger source                                                   | JobType       | workflowPath                          |
 | ---------------------------------------------------------------- | ------------- | ------------------------------------- |
-| `coro job` (CLI or dashboard)                                    | `job`         | `workflows/job/workflow.md`           |
-| Jira ticket assigned to the agent                                | `job`         | `workflows/job/workflow.md`           |
-| Planner promotes a job in place via `convert_to_campaign`        | `job`         | `workflows/campaign/workflow.md`      |
-| Sub-run dispatched by a campaign coordinator                     | `job`         | `workflows/job/workflow.md`           |
+| `coro job` (CLI or dashboard)                                    | `job`         | `.claude/commands/coro/job.md`           |
+| Jira ticket assigned to the agent                                | `job`         | `.claude/commands/coro/job.md`           |
+| Planner promotes a job in place via `convert_to_campaign`        | `job`         | `.claude/commands/coro/campaign.md`      |
+| Sub-run dispatched by a campaign coordinator                     | `job`         | `.claude/commands/coro/job.md`           |
 | Internal proposal flow (`propose_change`)                        | `self-update` | inline (no workflow file)             |
 
 ### 6.2 Workflow definitions
@@ -236,18 +275,18 @@ initial_status: queued
 
 phases:
   - name: planning
-    agent: agents/planner.md
+    agent: .claude/agents/planner.md
     model: planning
     status: planning
     interactive_checkpoint: true
 
   - name: coding
-    agent: agents/coder.md
+    agent: .claude/agents/coder.md
     model: coding
     status: coding
     subagents:
       - name: code-reviewer
-        agent: agents/code-reviewer.md
+        agent: .claude/agents/code-reviewer.md
         model: coding
         tools: [Read, Glob, Grep, mcp__coro__bb_post_pr_comment]
 
@@ -281,14 +320,14 @@ A **campaign** is a workflow variant on the same `Job` primitive, used
 when a feature is too large for one PR and decomposes into several
 self-contained tracker issues. The data model never grows a second
 table — a campaign is just a `Job` whose `workflowPath` is
-`workflows/campaign/workflow.md`. Sub-runs (the dispatched child Jobs)
-are normal Runs that execute `workflows/job/workflow.md`, linked to
+`.claude/commands/coro/campaign.md`. Sub-runs (the dispatched child Jobs)
+are normal Runs that execute `.claude/commands/coro/job.md`, linked to
 their parent via `parentJobId` and registered on the parent's child
 list.
 
 ```text
                      ┌─────────────────────────┐
-                     │ Run (job/workflow.md)   │
+                     │ Run (coro/job.md)       │
                      └────────────┬────────────┘
                                   │ planner triages "campaign"
                                   ▼
@@ -297,7 +336,7 @@ list.
         └──────────────────────┬───────────────────────────┘
                                ▼
                 ┌─────────────────────────────────┐
-                │ Run (campaign/workflow.md)      │
+                │ Run (coro/campaign.md)          │
                 │  · campaign-planning            │
                 │  · coordinating (parked)        │
                 │  · aggregation                  │
@@ -374,11 +413,11 @@ provides:
 
 | Phase          | Agent                                                            |
 | -------------- | ---------------------------------------------------------------- |
-| `spec-writing` | `agents/spec-writer.md`                                          |
-| `planning`     | `agents/planner.md`                                              |
-| `coding`       | `agents/coder.md` + `agents/code-reviewer.md` (as subagent)      |
-| `review`       | `agents/pr-reviewer.md` (merge gatekeeper)                       |
-| `evaluation`   | `agents/evaluator.md` (also performs build/test/acceptance verification) |
+| `spec-writing` | `.claude/agents/spec-writer.md`                                          |
+| `planning`     | `.claude/agents/planner.md`                                              |
+| `coding`       | `.claude/agents/coder.md` + `.claude/agents/code-reviewer.md` (as subagent)      |
+| `review`       | `.claude/agents/pr-reviewer.md` (merge gatekeeper)                       |
+| `evaluation`   | `.claude/agents/evaluator.md` (also performs build/test/acceptance verification) |
 
 Agents are **generic procedures**. They become specialised by invoking
 skills on demand — the same coder agent works for Go, .NET, and other
@@ -398,7 +437,7 @@ when needed. This keeps per-phase prompts small.
 
 ### 7.4 Memory
 
-The `memory/` directory stores durable lessons learned: known pitfalls,
+The `.claude/memory/` directory stores durable lessons learned: known pitfalls,
 successful patterns, recurring PR feedback, language mapping notes.
 
 Agents load memory on demand through the `read_memory` MCP tool. The
@@ -413,15 +452,17 @@ The prompt builder
 (`packages/runner/src/prompt/builder.ts`) assembles a
 **phase-scoped** system prompt from the per-job intelligence overlay:
 
-1. the workflow markdown referenced by `workflowPath` (front matter
+1. the Coro runtime contract (`.claude/coro/RUNTIME.md`), for every executor
+2. the workflow markdown referenced by `workflowPath` (front matter
    stripped)
-2. the agent markdown for the current phase
-3. structured current-job context (state JSON, accumulated insights)
+3. the agent markdown for the current phase (front matter stripped)
+4. structured current-job context (state JSON, accumulated insights)
 
-The SDK separately loads `.claude/CLAUDE.md` and exposes `.claude/skills/`
-to the agent at runtime. Memory is fetched by the agent via `read_memory`
-when needed. The result is a small, focused prompt that does not
-hard-wire knowledge into TypeScript.
+The Anthropic SDK separately loads the portable `.claude/CLAUDE.md` and
+exposes `.claude/skills/` to the agent at runtime; executors that cannot
+walk `CLAUDE.md` get it injected after the runtime contract. Memory is
+fetched by the agent via `read_memory` when needed. The result is a small,
+focused prompt that does not hard-wire knowledge into TypeScript.
 
 ---
 
@@ -617,9 +658,9 @@ next phase boundary.
 
 The self-improvement pipeline covers three layers of intelligence:
 
-- **Memory** (`memory/*.md`) — high volatility, grows with every job.
+- **Memory** (`.claude/memory/*.md`) — high volatility, grows with every job.
 - **Skills** (`.claude/skills/*/SKILL.md`) — medium volatility.
-- **Agent instructions** (`agents/*.md`) — lower volatility.
+- **Agent instructions** (`.claude/agents/*.md`) — lower volatility.
 
 ---
 
@@ -650,7 +691,7 @@ Key rules:
 | Run               | The user-facing label for a Job. Every Job is a Run regardless of its workflow.          |
 | Sub-run           | A Run dispatched as a dependent of another Run. Today this means a campaign child.       |
 | Parent Run        | The Run that hosts one or more sub-runs.                                                 |
-| Campaign          | A workflow variant for multi-issue features. Implemented as a Run with `workflowPath = workflows/campaign/workflow.md`. |
+| Campaign          | A workflow variant for multi-issue features. Implemented as a Run with `workflowPath = .claude/commands/coro/campaign.md`. |
 | Work item         | A tracked slice of work inside a single Run, produced by the planner.                    |
 | Workflow          | A markdown document defining ordered phases and agent assignments.                       |
 | `workflowPath`    | Path (relative to the resolved intelligence dir) to the workflow markdown for a Run.     |

@@ -1,4 +1,14 @@
+---
+name: review-security
+description: "Read-only security lens for code review. Finds vulnerabilities a change introduces: injection, authentication and authorization gaps, secrets, unsafe dependencies and infrastructure. Returns findings as one JSON object."
+tools: Read, Grep, Glob, Bash
+---
+
 # Security lens
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 Read-only. You do not post to the pull request or the change under review.
 

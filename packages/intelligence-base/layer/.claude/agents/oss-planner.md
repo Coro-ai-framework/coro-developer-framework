@@ -1,4 +1,13 @@
+---
+name: oss-planner
+description: "Plans a single upstream contribution pull request from approved retrospective findings. No campaign, lane switch or spec-writing. Used only by the oss-contribution workflow."
+---
+
 # Agent: OSS Planner
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 

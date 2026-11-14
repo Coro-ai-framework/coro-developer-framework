@@ -2,17 +2,25 @@
 display_name: Memory Curator
 description: Internal workflow that grooms the tenant memory bundle. Not user-launchable.
 kind: internal
+argument-hint: "<what to build, fix, or review>"
+disable-model-invocation: true
 
 initial_phase: curating
 initial_status: queued
 
 phases:
   - name: curating
-    agent: agents/memory-curator.md
+    agent: .claude/agents/memory-curator.md
     tier: coding
     status: curating
     interactive_checkpoint: true
 ---
+
+<!-- standalone:start -->
+## Needs the Coro runner
+
+This workflow needs the Coro runner: it overwrites the memory bundle through the runner's proposal pipeline. Tell the user to start it from the Coro dashboard or the `coro` CLI, then stop. Do not try to emulate it in this session.
+<!-- standalone:end -->
 
 # Workflow: Memory Curator
 
@@ -28,7 +36,7 @@ or when periodic audits find a critical mass of duplicates.
 
 The curator does **not** add new findings. Adding new entries is the
 evaluator's job, governed by the per-entry length budgets in
-[`agents/evaluator.md`](../../agents/evaluator.md). The curator's job
+[`.claude/agents/evaluator.md`](../../agents/evaluator.md). The curator's job
 is **subtractive**: merge duplicates, trim verbose entries to the
 budget, drop stale entries, and re-emit the affected files in canonical
 short-form layout.
@@ -78,7 +86,7 @@ takes effect.
   findings; that path is the standard implementation workflow's
   evaluator phase.
 - The curator must respect the per-entry length budgets defined in
-  [`agents/evaluator.md`](../../agents/evaluator.md) §8. Anything that
+  [`.claude/agents/evaluator.md`](../../agents/evaluator.md) §8. Anything that
   would land outside the budgets is a bug in the curator's logic, not
   the budget.
 - `MEMORY.md`'s index must be regenerated when entries are merged or

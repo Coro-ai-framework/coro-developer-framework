@@ -13,14 +13,16 @@ vi.mock('fs/promises')
 
 const mockFs = vi.mocked(fs)
 const INTELLIGENCE_DIR = '/data/coro-intelligence'
-const WORKFLOW_PATH = '/data/coro-intelligence/workflows/job/workflow.md'
-const PLANNER_AGENT_PATH = '/data/coro-intelligence/agents/planner.md'
+const WORKFLOW_PATH = '/data/coro-intelligence/.claude/commands/coro/job.md'
+const PLANNER_AGENT_PATH = '/data/coro-intelligence/.claude/agents/planner.md'
+const RUNTIME_PATH = '/data/coro-intelligence/.claude/coro/RUNTIME.md'
+const CLAUDE_MD_PATH = '/data/coro-intelligence/.claude/CLAUDE.md'
 
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'test-job-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { serviceName: 'my-svc', repoSlug: 'my-svc', reviewers: ['alice'] },
     triggerSource: 'cli',
     status: 'planning',
@@ -79,7 +81,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
 
     it('includes workflow content with front matter stripped', async () => {
-      const workflow = '---\ninitial_phase: planning\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Job Workflow\n\nThis is the workflow.'
+      const workflow = '---\ninitial_phase: planning\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n---\n\n# Job Workflow\n\nThis is the workflow.'
       setupFs({
         [WORKFLOW_PATH]: workflow,
         [PLANNER_AGENT_PATH]: '# Planner Agent\n\nPlan things.',
@@ -92,7 +94,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
 
     it('includes agent instructions for the current phase', async () => {
-      const workflow = '---\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Workflow'
+      const workflow = '---\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n---\n\n# Workflow'
       setupFs({
         [WORKFLOW_PATH]: workflow,
         [PLANNER_AGENT_PATH]: '# Planner\n\nStep 1: Order the work items.',
@@ -102,6 +104,76 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       expect(prompt).toContain('# Planner')
       expect(prompt).toContain('Step 1: Order the work items.')
       expect(prompt).toContain('Your Role This Phase')
+    })
+
+    it('strips the Claude Code front matter from the agent instructions', async () => {
+      const workflow = '---\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n---\n\n# Workflow'
+      setupFs({
+        [WORKFLOW_PATH]: workflow,
+        [PLANNER_AGENT_PATH]:
+          '---\nname: planner\ndescription: Plans the work.\ntools: Read, Grep\n---\n\n# Agent: Planner\n\nStep 1: Order the work items.',
+      })
+
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
+      expect(prompt).toContain('# Agent: Planner')
+      expect(prompt).toContain('Step 1: Order the work items.')
+      expect(prompt).not.toContain('description: Plans the work.')
+      expect(prompt).not.toContain('tools: Read, Grep')
+    })
+
+    it('puts the Coro runtime contract first, before the workflow and agent', async () => {
+      const workflow = '---\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n---\n\n# Workflow'
+      setupFs({
+        [RUNTIME_PATH]: '# Coro runtime contract\n\nCall `mcp__coro__set_job_params`.',
+        [WORKFLOW_PATH]: workflow,
+        [PLANNER_AGENT_PATH]: '# Planner\n\nStep 1.',
+      })
+
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
+      expect(prompt.startsWith('# Coro Runtime Contract')).toBe(true)
+      expect(prompt).toContain('Call `mcp__coro__set_job_params`.')
+      expect(prompt.indexOf('Coro runtime contract')).toBeLessThan(prompt.indexOf('# Current Workflow'))
+      expect(prompt.indexOf('# Current Workflow')).toBeLessThan(prompt.indexOf('Your Role This Phase'))
+    })
+
+    it('injects the runtime contract for native executors but not the portable CLAUDE.md', async () => {
+      setupFs({
+        [RUNTIME_PATH]: '# Runtime contract body',
+        [CLAUDE_MD_PATH]: '# Portable rules body',
+        [WORKFLOW_PATH]: '# Workflow',
+      })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(), INTELLIGENCE_DIR, noopLogger,
+        undefined, undefined, undefined, { supportsClaudeMdNativeWalkUp: true },
+      )
+      expect(prompt).toContain('# Runtime contract body')
+      expect(prompt).not.toContain('# Portable rules body')
+    })
+
+    it('adds the portable CLAUDE.md after the runtime contract for non-native executors', async () => {
+      setupFs({
+        [RUNTIME_PATH]: '# Runtime contract body',
+        [CLAUDE_MD_PATH]: '# Portable rules body',
+        [WORKFLOW_PATH]: '# Workflow',
+      })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(), INTELLIGENCE_DIR, noopLogger,
+        undefined, undefined, undefined, { supportsClaudeMdNativeWalkUp: false },
+      )
+      expect(prompt).toContain('# Runtime contract body')
+      expect(prompt).toContain('# Portable rules body')
+      expect(prompt.indexOf('# Runtime contract body')).toBeLessThan(prompt.indexOf('# Portable rules body'))
+      expect(prompt.indexOf('# Portable rules body')).toBeLessThan(prompt.indexOf('# Current Workflow'))
+    })
+
+    it('still builds a prompt when the overlay has no runtime contract', async () => {
+      setupFs({ [WORKFLOW_PATH]: '# Workflow' })
+
+      const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
+      expect(prompt).not.toContain('Coro Runtime Contract')
+      expect(prompt).toContain('# Current Workflow')
     })
 
     it('omits the host-sandbox block when the executor reports none', async () => {
@@ -141,8 +213,8 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     it('does not inject memory (now on-demand via the read_memory MCP tool)', async () => {
       setupFs({
         [WORKFLOW_PATH]: '',
-        '/data/coro-intelligence/memory/MEMORY.md': '# Memory — should NOT appear',
-        '/data/coro-intelligence/memory/known-pitfalls.md': 'Do not use X.',
+        '/data/coro-intelligence/.claude/memory/MEMORY.md': '# Memory — should NOT appear',
+        '/data/coro-intelligence/.claude/memory/known-pitfalls.md': 'Do not use X.',
       })
 
       const prompt = await buildSystemPrompt(makeJob(), INTELLIGENCE_DIR, noopLogger)
@@ -163,7 +235,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
     it('always includes job context as the last section', async () => {
       setupFs({
-        [WORKFLOW_PATH]: '---\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Job Workflow',
+        [WORKFLOW_PATH]: '---\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n---\n\n# Job Workflow',
         [PLANNER_AGENT_PATH]: '# Planner Agent',
       })
 
@@ -440,7 +512,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
     })
 
     it('continues when agent file is missing', async () => {
-      const workflow = '---\nphases:\n  - name: planning\n    agent: agents/missing.md\n    model: planning\n---\n\n# Workflow'
+      const workflow = '---\nphases:\n  - name: planning\n    agent: .claude/agents/missing.md\n    model: planning\n---\n\n# Workflow'
       setupFs({
         [WORKFLOW_PATH]: workflow,
       })
@@ -472,7 +544,7 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
 
   describe('section ordering', () => {
     it('places sections in correct order: workflow, agent, job', async () => {
-      const workflow = '---\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n---\n\n# Workflow Content'
+      const workflow = '---\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n---\n\n# Workflow Content'
       setupFs({
         [WORKFLOW_PATH]: workflow,
         [PLANNER_AGENT_PATH]: '# Planner Agent',

@@ -14,7 +14,7 @@ The companion skill to the campaign-planner agent. The agent file describes the 
 
 ## When a campaign is the right shape
 
-The triage step in `agents/planner.md` already gates the campaign promotion. By the time you read this skill the decision has been made; your only remaining choice is **how** to break the work down. If, while drafting the breakdown, you realize the work actually does fit in a single job after all, abort the campaign:
+The triage step in `.claude/agents/planner.md` already gates the campaign promotion. By the time you read this skill the decision has been made; your only remaining choice is **how** to break the work down. If, while drafting the breakdown, you realize the work actually does fit in a single job after all, abort the campaign:
 
 - Don't call `campaign_finalize`.
 - Call `escalate` with the reason ("triage was wrong; this is a single task"). A human will close the campaign and rerun as a regular job.

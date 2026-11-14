@@ -2,21 +2,29 @@
 display_name: Retrospective
 description: Cross-job self-analysis. Mines this install's own job history for systemic agent struggles and ships the findings as intelligence improvements. Dashboard-triggered.
 kind: internal
+argument-hint: "<what to build, fix, or review>"
+disable-model-invocation: true
 
 initial_phase: analysis
 initial_status: analyzing
 
 phases:
   - name: analysis
-    agent: agents/retrospective-analyst.md
+    agent: .claude/agents/retrospective-analyst.md
     tier: planning
     status: analyzing
     interactive_checkpoint: true
   - name: shipping
-    agent: agents/retrospective-analyst.md
+    agent: .claude/agents/retrospective-analyst.md
     tier: planning
     status: shipping
 ---
+
+<!-- standalone:start -->
+## Needs the Coro runner
+
+This workflow needs the Coro runner: it reads the install's job history through the runner's `list_jobs` tools. Tell the user to start it from the Coro dashboard or the `coro` CLI, then stop. Do not try to emulate it in this session.
+<!-- standalone:end -->
 
 # Workflow: Retrospective
 
@@ -100,7 +108,7 @@ markdown and runner code live in the same repository, so
 `dispatch_improvement_job` can carry several approved findings in one
 call, each with a structured briefing. The child planner keeps them in
 one PR when they are one story.
-`workflows/oss-contribution/workflow.md` plans, codes, verifies
+`.claude/commands/coro/oss-contribution.md` plans, codes, verifies
 (out-of-band test/wording gate), then opens the pull request upstream.
 
 ## Output

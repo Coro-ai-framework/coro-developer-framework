@@ -29,7 +29,7 @@ function conversation(id: string, extra: Partial<WorkConversation> = {}): WorkCo
 
 function run(id: string, extra: Partial<WorkRun> = {}): WorkRun {
   return {
-    kind: 'run', id, type: 'job', workflowPath: 'workflows/job/workflow.md', title: id, repo: 'org/svc',
+    kind: 'run', id, type: 'job', workflowPath: '.claude/commands/coro/job.md', title: id, repo: 'org/svc',
     status: 'complete', phase: 'evaluation', currentWorkItem: null, interactive: false, costUsd: 0,
     createdAt: '2026-06-01T09:00:00.000Z', updatedAt: '2026-06-01T09:00:00.000Z',
     group: 'recent', attention: null, ...extra,

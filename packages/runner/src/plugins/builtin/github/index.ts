@@ -74,7 +74,7 @@ export type GitHubPluginConfig = z.infer<typeof ghConfigSchema>
 // default. The upstream `@modelcontextprotocol/server-github` ships
 // ~70 tools; surfacing all of them at the prompt is expensive and
 // distracting. The list mirrors the agent procedures in
-// `packages/intelligence-base/layer/agents/*.md`.
+// `packages/intelligence-base/layer/.claude/agents/*.md`.
 //
 // Operators that need additional tools can override this list
 // per-tenant by editing `~/.coro/config.json`'s
@@ -137,7 +137,7 @@ const MANIFEST: PluginManifest = {
   },
   intelligence: {
     snippets: [
-      { id: 'github-clone', relativePath: 'snippets/github-clone.md' },
+      { id: 'github-clone', relativePath: '.claude/memory/snippets/github-clone.md' },
     ],
   },
   ui: {

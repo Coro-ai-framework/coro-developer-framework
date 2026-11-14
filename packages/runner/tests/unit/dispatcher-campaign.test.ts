@@ -49,7 +49,7 @@ function makeCampaignJob(
   return {
     id: 'campaign-1',
     type: JobType.Job,
-    workflowPath: 'workflows/campaign/workflow.md',
+    workflowPath: '.claude/commands/coro/campaign.md',
     params: { repoSlug: 'svc' },
     triggerSource: 'cli',
     status: STATUS_QUEUED,
@@ -98,7 +98,7 @@ function makeBackend(jobs: Job[]): StubBackend {
       const job: Job = {
         id,
         type: input.type === 'self-update' ? JobType.SelfUpdate : JobType.Job,
-        workflowPath: input.workflowPath ?? 'workflows/job/workflow.md',
+        workflowPath: input.workflowPath ?? '.claude/commands/coro/job.md',
         params: input.params,
         triggerSource: input.triggerSource ?? 'internal',
         status: STATUS_QUEUED,

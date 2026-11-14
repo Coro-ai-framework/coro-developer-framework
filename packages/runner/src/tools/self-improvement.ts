@@ -24,6 +24,9 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
+import { WORKFLOWS_DIR } from '@coro-ai/cloud-protocol'
+import { LAYER_FILES } from '@coro-ai/intelligence-base'
+
 import type { ToolContext } from './types'
 import {
   defaultWriterCacheRoot,
@@ -49,8 +52,8 @@ import {
 
 /**
  * Structured memory-entry schema — preferred over hand-composing markdown
- * when proposing additions to `memory/known-pitfalls.md` or
- * `memory/successful-patterns.md`. The runner serialises each entry into
+ * when proposing additions to `.claude/memory/known-pitfalls.md` or
+ * `.claude/memory/successful-patterns.md`. The runner serialises each entry into
  * the canonical short-form layout, enforces hard length budgets, and
  * appends to the existing file content.
  *
@@ -60,7 +63,7 @@ import {
 export interface MemoryEntryInput {
   /**
    * Which memory file this entry belongs to. Must be inside the
-   * tenant `memory/` (or the repo `.coro/memory/`) tree. The runner
+   * tenant `.claude/memory/` (or the repo `.coro/.claude/memory/`) tree. The runner
    * groups entries by file and appends each group atomically.
    */
   file: string
@@ -167,12 +170,24 @@ const REPO_PREFIX = '.coro/'
  * file-write primitive.
  */
 const TENANT_WRITABLE_PREFIXES = [
-  'agents/',
-  'workflows/',
-  'memory/',
-  '.claude/CLAUDE.md',
-  '.claude/skills/',
+  `${LAYER_FILES.agentsDir}/`,
+  `${WORKFLOWS_DIR}/`,
+  `${LAYER_FILES.memoryDir}/`,
+  LAYER_FILES.claudeMd,
+  LAYER_FILES.runtimeMd,
+  `${LAYER_FILES.skillsDir}/`,
 ] as const
+
+/** Where memory lives in each writable layer. The repo overlay mirrors the layer's layout. */
+const TENANT_MEMORY_PREFIX = `${LAYER_FILES.memoryDir}/`
+const REPO_MEMORY_PREFIX = `${REPO_PREFIX}${LAYER_FILES.memoryDir}/`
+
+function isMemoryProposalPath(filePath: string): boolean {
+  return filePath.startsWith(TENANT_MEMORY_PREFIX) || filePath.startsWith(REPO_MEMORY_PREFIX)
+}
+
+const MEMORY_PATH_RULE
+  = `must live under ${TENANT_MEMORY_PREFIX} (tenant) or ${REPO_MEMORY_PREFIX} (repo)`
 
 const REPO_WRITABLE_PREFIXES = [
   '.coro/',
@@ -339,10 +354,8 @@ function applyMemoryEntries(
   const inlinePaths = new Set(files.map(f => f.path))
   const grouped = new Map<string, string[]>()
   for (const entry of entries) {
-    if (!entry.file.startsWith('memory/') && !entry.file.startsWith('.coro/memory/')) {
-      throw new Error(
-        `Memory entry for "${entry.file}" must live under memory/ (tenant) or .coro/memory/ (repo).`,
-      )
+    if (!isMemoryProposalPath(entry.file)) {
+      throw new Error(`Memory entry for "${entry.file}" ${MEMORY_PATH_RULE}.`)
     }
     const rendered = renderEntry(entry)
     const bucket = grouped.get(entry.file) ?? []
@@ -366,6 +379,30 @@ function applyMemoryEntries(
 // rather than re-implementing a markdown linter.
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n/
+
+/** `.claude/CLAUDE.md` (portable rules) or `.claude/coro/RUNTIME.md` (runner-only contract), at any depth. */
+function isClaudeMdPath(filePath: string): boolean {
+  return filePath.endsWith(LAYER_FILES.claudeMd)
+    || filePath.endsWith(LAYER_FILES.runtimeMd)
+    || filePath.endsWith('CLAUDE.md')
+}
+
+/** Skills and agents are discovered by Claude Code through front matter carrying `name` and `description`. */
+function assertNameAndDescription(file: ProposalFile, label: 'Skill' | 'Agent'): void {
+  const m = FRONTMATTER_RE.exec(file.content)
+  if (!m) {
+    throw new Error(
+      `${label} file "${file.path}" must start with YAML frontmatter (--- name: ... description: ... ---).`,
+    )
+  }
+  const fm = m[1]
+  if (!/^\s*name\s*:\s*\S+/m.test(fm)) {
+    throw new Error(`${label} file "${file.path}" frontmatter is missing a non-empty "name".`)
+  }
+  if (!/^\s*description\s*:\s*\S+/m.test(fm)) {
+    throw new Error(`${label} file "${file.path}" frontmatter is missing a non-empty "description".`)
+  }
+}
 
 /** Every shipped proposal path must be markdown — never logs, caches, binaries. */
 export function assertProposalPathsAreMarkdown(files: ProposalFile[]): void {
@@ -409,21 +446,7 @@ export function validateProposalFiles(
           )
         }
         // SKILL.md must have YAML frontmatter with `name` and `description`.
-        if (f.path.endsWith('SKILL.md')) {
-          const m = FRONTMATTER_RE.exec(f.content)
-          if (!m) {
-            throw new Error(
-              `Skill file "${f.path}" must start with YAML frontmatter (--- name: ... description: ... ---).`,
-            )
-          }
-          const fm = m[1]
-          if (!/^\s*name\s*:\s*\S+/m.test(fm)) {
-            throw new Error(`Skill file "${f.path}" frontmatter is missing a non-empty "name".`)
-          }
-          if (!/^\s*description\s*:\s*\S+/m.test(fm)) {
-            throw new Error(`Skill file "${f.path}" frontmatter is missing a non-empty "description".`)
-          }
-        }
+        if (f.path.endsWith('SKILL.md')) assertNameAndDescription(f, 'Skill')
       }
       // Skill amendments must respect the per-section line budget.
       // skill-create skips this — a brand-new skill may be larger.
@@ -436,10 +459,10 @@ export function validateProposalFiles(
     }
 
     case 'claude-md-update': {
-      const violator = files.find(f => !f.path.endsWith('.claude/CLAUDE.md') && !f.path.endsWith('CLAUDE.md'))
+      const violator = files.find(f => !isClaudeMdPath(f.path))
       if (violator) {
         throw new Error(
-          `claude-md-update proposals may only touch .claude/CLAUDE.md, but "${violator.path}" does not match.`,
+          `claude-md-update proposals may only touch ${LAYER_FILES.claudeMd} or ${LAYER_FILES.runtimeMd}, but "${violator.path}" does not match.`,
         )
       }
       break
@@ -448,9 +471,12 @@ export function validateProposalFiles(
     case 'new-agent':
     case 'modify-agent': {
       for (const f of files) {
-        if (!f.path.startsWith('agents/') || !f.path.endsWith('.md')) {
-          throw new Error(`Agent file "${f.path}" must live under agents/ and end with .md.`)
+        if (!f.path.startsWith(`${LAYER_FILES.agentsDir}/`) || !f.path.endsWith('.md')) {
+          throw new Error(`Agent file "${f.path}" must live under ${LAYER_FILES.agentsDir}/ and end with .md.`)
         }
+        // An agent is a Claude Code subagent: without `name` and
+        // `description` it is never discovered.
+        assertNameAndDescription(f, 'Agent')
         if (!/^#\s+/m.test(f.content)) {
           throw new Error(`Agent file "${f.path}" should start with a top-level heading.`)
         }
@@ -461,8 +487,8 @@ export function validateProposalFiles(
     case 'new-workflow':
     case 'modify-workflow': {
       for (const f of files) {
-        if (!f.path.startsWith('workflows/')) {
-          throw new Error(`Workflow file "${f.path}" must live under workflows/.`)
+        if (!f.path.startsWith(`${WORKFLOWS_DIR}/`) || !f.path.endsWith('.md')) {
+          throw new Error(`Workflow file "${f.path}" must live under ${WORKFLOWS_DIR}/ and end with .md.`)
         }
       }
       break
@@ -470,8 +496,8 @@ export function validateProposalFiles(
 
     case 'memory-update': {
       for (const f of files) {
-        if (!f.path.startsWith('memory/') && !f.path.startsWith('.coro/memory/')) {
-          throw new Error(`Memory file "${f.path}" must live under memory/ (tenant) or .coro/memory/ (repo).`)
+        if (!isMemoryProposalPath(f.path)) {
+          throw new Error(`Memory file "${f.path}" ${MEMORY_PATH_RULE}.`)
         }
         if (!f.path.endsWith('.md')) {
           throw new Error(`Memory file "${f.path}" must end with .md.`)
@@ -918,8 +944,7 @@ function escapeRegExp(value: string): string {
 
 function isAppendOnlyMemoryPath(filePath: string): boolean {
   const normalised = filePath.replace(/^\.\//, '')
-  const isMemoryPath = normalised.startsWith('memory/') || normalised.startsWith('.coro/memory/')
-  if (!isMemoryPath) return false
+  if (!isMemoryProposalPath(normalised)) return false
   return !normalised.endsWith('/MEMORY.md')
 }
 

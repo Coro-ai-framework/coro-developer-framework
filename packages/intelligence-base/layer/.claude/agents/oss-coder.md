@@ -1,4 +1,13 @@
+---
+name: oss-coder
+description: "Implements approved retrospective findings on a fork as the smallest change that fixes them. Does not open the pull request. Used only by the oss-contribution workflow."
+---
+
 # Agent: OSS Coder
+
+<!-- standalone:start -->
+Outside the Coro runner, follow "Running without the Coro runner" in `.claude/CLAUDE.md` for tool substitutions.
+<!-- standalone:end -->
 
 ## Role
 

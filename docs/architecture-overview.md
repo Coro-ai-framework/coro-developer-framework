@@ -98,10 +98,11 @@ Within each layer:
 | Path                            | What it is                                              | How it changes                          |
 | ------------------------------- | ------------------------------------------------------- | --------------------------------------- |
 | `.claude/CLAUDE.md`             | Always-loaded behaviour rules, conventions, context     | Humans edit; layers **append**          |
-| `agents/`                       | Step-by-step procedures for each role                   | Agents can `propose_change`             |
-| `workflows/`                    | Phase sequences, agent assignments, model selection     | Humans edit; layers replace             |
+| `.claude/coro/RUNTIME.md`       | Coro-only runtime contract (MCP tools, sandbox, checkpoints) | Humans edit; layers **append**     |
+| `.claude/agents/`               | Step-by-step procedures for each role (Claude Code subagents) | Agents can `propose_change`        |
+| `.claude/commands/coro/`        | Phase sequences, agent assignments, model selection (slash commands) | Humans edit; layers replace |
 | `.claude/skills/`               | On-demand domain knowledge and language conventions     | Agents can `propose_change`             |
-| `memory/`                       | Lessons learned from past jobs                          | Grows automatically; reviewed via PR    |
+| `.claude/memory/`               | Lessons learned from past jobs                          | Grows automatically; reviewed via PR    |
 
 Agents are **generic** — the same coder agent handles Go, .NET, and
 TypeScript. It becomes specialised by invoking the relevant skills on

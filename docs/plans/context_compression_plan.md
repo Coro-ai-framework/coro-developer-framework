@@ -36,7 +36,7 @@ There is **no** code that summarizes, prunes, or compacts the live conversation 
 | Lean system prompt | [`packages/runner/src/prompt/builder.ts`](packages/runner/src/prompt/builder.ts) | Workflow + agent + job JSON only; memory/skills via MCP |
 | On-demand memory/skills | [`packages/intelligence-base/layer/.claude/CLAUDE.md`](packages/intelligence-base/layer/.claude/CLAUDE.md) | Agents call `read_memory` / `Skill` instead of pre-loading |
 | Memory line budgets | [`packages/runner/src/tools/self-improvement.ts`](packages/runner/src/tools/self-improvement.ts) | Caps proposal size at write time |
-| Memory curator workflow | `workflows/memory-curator/` | Offline grooming, not live transcript |
+| Memory curator workflow | `.claude/commands/coro/memory-curator.md` | Offline grooming, not live transcript |
 | `request_new_session` | [`packages/runner/src/mcp-handlers.ts`](packages/runner/src/mcp-handlers.ts) | Clears `sessionId` — blunt reset |
 | Session resume (default) | [`packages/runner/src/jobs/runner.ts`](packages/runner/src/jobs/runner.ts) ~705–726 | **Accumulates** Claude Code transcript across phases |
 | Subagent isolation | [`packages/runner/src/tools/run-subagent.ts`](packages/runner/src/tools/run-subagent.ts) | Fresh thread, `maxTurns: 16` |

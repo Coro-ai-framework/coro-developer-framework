@@ -20,8 +20,8 @@ beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'coro-creation-'))
   tenantRoot = path.join(tmp, 'tenant')
   baseRoot = path.join(tmp, 'base')
-  await fs.mkdir(path.join(tenantRoot, 'workflows', 'job'), { recursive: true })
-  await fs.mkdir(path.join(baseRoot, 'workflows', 'job'), { recursive: true })
+  await fs.mkdir(path.join(tenantRoot, '.claude', 'commands', 'coro'), { recursive: true })
+  await fs.mkdir(path.join(baseRoot, '.claude', 'commands', 'coro'), { recursive: true })
 })
 
 afterEach(async () => {
@@ -33,32 +33,32 @@ afterEach(async () => {
 describe('buildJobRecord (workflow resolution)', () => {
   it('uses the tenant overlay when it has the workflow', async () => {
     await fs.writeFile(
-      path.join(tenantRoot, 'workflows', 'job', 'workflow.md'),
-      `---\ninitial_phase: planning\ninitial_status: queued\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n    status: planning\n---\n`,
+      path.join(tenantRoot, '.claude', 'commands', 'coro', 'job.md'),
+      `---\ninitial_phase: planning\ninitial_status: queued\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n    status: planning\n---\n`,
     )
 
     const job = await buildJobRecord(
       { type: 'job', triggerSource: 'cli', params: { serviceName: 'svc' } },
       JobType.Job,
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
     )
 
     expect(job.phase).toBe('planning')
     expect(job.status).toBe('planning')
-    expect(job.workflowPath).toBe('workflows/job/workflow.md')
+    expect(job.workflowPath).toBe('.claude/commands/coro/job.md')
   })
 
   it('falls back to the base layer when the tenant overlay is empty', async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
-      `---\ninitial_phase: planning\ninitial_status: queued\nphases:\n  - name: planning\n    agent: agents/planner.md\n    model: planning\n    status: planning\n---\n`,
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
+      `---\ninitial_phase: planning\ninitial_status: queued\nphases:\n  - name: planning\n    agent: .claude/agents/planner.md\n    model: planning\n    status: planning\n---\n`,
     )
 
     const job = await buildJobRecord(
       { type: 'job', triggerSource: 'cli', params: { serviceName: 'svc' } },
       JobType.Job,
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
     )
 
@@ -85,8 +85,8 @@ describe('buildJobRecord (workflow resolution)', () => {
     expect(job.status).toBe('analyzing')
     expect(job.interactive).toBe(true)
     expect(job.workflowPhases).toEqual([
-      { name: 'analysis', status: 'analyzing', agent: 'agents/retrospective-analyst.md', interactiveCheckpoint: true },
-      { name: 'shipping', status: 'shipping', agent: 'agents/retrospective-analyst.md' },
+      { name: 'analysis', status: 'analyzing', agent: '.claude/agents/retrospective-analyst.md', interactiveCheckpoint: true },
+      { name: 'shipping', status: 'shipping', agent: '.claude/agents/retrospective-analyst.md' },
     ])
   })
 
@@ -95,7 +95,7 @@ describe('buildJobRecord (workflow resolution)', () => {
       buildJobRecord(
         { type: 'job', triggerSource: 'cli', params: {} },
         JobType.Job,
-        'workflows/job/workflow.md',
+        '.claude/commands/coro/job.md',
         { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
       ),
     ).rejects.toBeInstanceOf(WorkflowResolutionError)
@@ -103,7 +103,7 @@ describe('buildJobRecord (workflow resolution)', () => {
 
   it("throws when initial_phase doesn't appear in the phase list", async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       `---\ninitial_phase: nonexistent\nphases:\n  - name: planning\n    model: planning\n    status: planning\n---\n`,
     )
 
@@ -111,7 +111,7 @@ describe('buildJobRecord (workflow resolution)', () => {
       buildJobRecord(
         { type: 'job', triggerSource: 'cli', params: {} },
         JobType.Job,
-        'workflows/job/workflow.md',
+        '.claude/commands/coro/job.md',
         { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
       ),
     ).rejects.toThrow(/initial_phase='nonexistent'/)
@@ -136,7 +136,7 @@ describe('buildJobRecord (workflow resolution)', () => {
   // (slower) campaign-evaluator → propose_change → memory PR cycle.
   it('seeds insights from input.initialInsights when supplied', async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       `---\ninitial_phase: planning\nphases:\n  - name: planning\n    model: planning\n    status: planning\n---\n`,
     )
 
@@ -157,7 +157,7 @@ describe('buildJobRecord (workflow resolution)', () => {
         ],
       },
       JobType.Job,
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
     )
 
@@ -168,7 +168,7 @@ describe('buildJobRecord (workflow resolution)', () => {
 
   it('drops rejected entries from input.initialInsights when seeding a child job', async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       `---\ninitial_phase: planning\nphases:\n  - name: planning\n    model: planning\n    status: planning\n---\n`,
     )
 
@@ -195,7 +195,7 @@ describe('buildJobRecord (workflow resolution)', () => {
         ],
       },
       JobType.Job,
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
     )
 
@@ -205,14 +205,14 @@ describe('buildJobRecord (workflow resolution)', () => {
 
   it('defaults insights to [] when initialInsights is omitted', async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       `---\ninitial_phase: planning\nphases:\n  - name: planning\n    model: planning\n    status: planning\n---\n`,
     )
 
     const job = await buildJobRecord(
       { type: 'job', triggerSource: 'cli', params: {} },
       JobType.Job,
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
     )
 
@@ -221,7 +221,7 @@ describe('buildJobRecord (workflow resolution)', () => {
 
   it('honours trigger-source overrides (e.g. jira → spec-writing)', async () => {
     await fs.writeFile(
-      path.join(baseRoot, 'workflows', 'job', 'workflow.md'),
+      path.join(baseRoot, '.claude', 'commands', 'coro', 'job.md'),
       `---\ninitial_phase: planning\nphases:\n  - name: spec-writing\n    model: planning\n    status: spec-writing\n  - name: planning\n    model: planning\n    status: planning\noverrides:\n  jira:\n    initial_phase: spec-writing\n---\n`,
     )
 
@@ -232,7 +232,7 @@ describe('buildJobRecord (workflow resolution)', () => {
         params: { serviceName: 'svc', jiraTicketId: 'PROJ-1' },
       },
       JobType.Job,
-      'workflows/job/workflow.md',
+      '.claude/commands/coro/job.md',
       { coroIntelligenceDir: tenantRoot, baseLayerDir: baseRoot, logger: noopLogger },
     )
 

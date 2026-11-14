@@ -4,6 +4,8 @@
 // its own authority. Merge order: defaults < tenant < user (or CI) < repo.
 // The repo layer can only tighten.
 
+import { PR_REVIEW_WORKFLOW_PATH } from '@coro-ai/cloud-protocol'
+
 export type ReviewAutonomy = 'draft' | 'comment' | 'full'
 export type ReviewApproval = 'never' | 'recommend' | 'auto'
 export type ReviewSeverity = 'blocker' | 'major' | 'minor' | 'nit'
@@ -105,7 +107,7 @@ export const REVIEW_POLICY_DEFAULTS: ReviewPolicy = {
   maxLensInputTokens: 120_000,
   learnOnClose: 'deterministic',
   allowCodeExecution: false,
-  workflowPath: 'workflows/pr-review/workflow.md',
+  workflowPath: PR_REVIEW_WORKFLOW_PATH,
   mcpRoles: {},
   references: [],
   contractCheckers: [],

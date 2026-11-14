@@ -29,7 +29,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'job-plugin-1',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { repoSlug: 'svc' },
     triggerSource: 'cli',
     status: STATUS_AWAITING_PR_MERGE,

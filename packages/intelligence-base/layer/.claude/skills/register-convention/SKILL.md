@@ -169,6 +169,6 @@ lives in is append-only. Rules:
   Coder calls `post_artifact({ kind: "register", title: "Register",
   data: { path: "register.json" } })` (do this after the first non-trivial
   append).
-- Tenants may extend this convention via their overlay (`memory/snippets/`)
+- Tenants may extend this convention via their overlay (`.claude/memory/snippets/`)
   with org-specific fields, but **never** rename or repurpose the four
   canonical sections — the reviewer and evaluator read those positionally.

@@ -32,7 +32,7 @@ function makeJob(over: Partial<Job> = {}): Job {
   return {
     id: 'job-ov',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { description: 'Add rate limiting' },
     triggerSource: 'cli',
     status: 'running',

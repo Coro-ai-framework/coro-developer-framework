@@ -46,7 +46,7 @@ function ctxWithHistory(jobs: Job[], callerOverrides: Record<string, unknown> = 
     job: makeMockJob({
       id: 'retro-1',
       type: JobType.Retrospective,
-      workflowPath: 'workflows/retrospective/workflow.md',
+      workflowPath: '.claude/commands/coro/retrospective.md',
       params: {},
       ...callerOverrides,
     }) as unknown as Job,

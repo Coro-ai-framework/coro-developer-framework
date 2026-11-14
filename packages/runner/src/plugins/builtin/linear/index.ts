@@ -74,7 +74,7 @@ const MANIFEST: PluginManifest = {
   // this plugin until the feature lands.
   intelligence: {
     snippets: [
-      { id: 'linear-keys', relativePath: 'snippets/linear-keys.md' },
+      { id: 'linear-keys', relativePath: '.claude/memory/snippets/linear-keys.md' },
     ],
   },
   ui: {

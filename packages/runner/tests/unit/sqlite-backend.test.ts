@@ -42,7 +42,7 @@ describe('SqliteStateBackend', () => {
       })
 
       expect(job.type).toBe(JobType.Job)
-      expect(job.workflowPath).toBe('workflows/job/workflow.md')
+      expect(job.workflowPath).toBe('.claude/commands/coro/job.md')
       expect(job.phase).toBe('spec-writing')
       expect(job.id).toContain('svc-a-job-')
 
@@ -61,7 +61,7 @@ describe('SqliteStateBackend', () => {
       })
 
       expect(job.type).toBe(JobType.Job)
-      expect(job.workflowPath).toBe('workflows/job/workflow.md')
+      expect(job.workflowPath).toBe('.claude/commands/coro/job.md')
     })
 
     it('creates self-update jobs with the centralized workflow', async () => {
@@ -71,7 +71,7 @@ describe('SqliteStateBackend', () => {
       })
 
       expect(job.type).toBe(JobType.SelfUpdate)
-      expect(job.workflowPath).toBe('workflows/self-update/workflow.md')
+      expect(job.workflowPath).toBe('.claude/commands/coro/self-update.md')
       expect(job.phase).toBe('tracking')
     })
 
@@ -167,26 +167,26 @@ describe('SqliteStateBackend', () => {
       // `convert_to_campaign`, which atomically flips workflowPath +
       // phase + status — leaving jobs whose persisted phase
       // (`campaign-planning`) didn't match their persisted workflowPath
-      // (`workflows/job/workflow.md`), tripping the runner's startup
+      // (`.claude/commands/coro/job.md`), tripping the runner's startup
       // guard on the next resume.
       const job = await backend.createJob({
         type: 'job',
         params: { serviceName: 'svc' },
       })
-      expect(job.workflowPath).toBe('workflows/job/workflow.md')
+      expect(job.workflowPath).toBe('.claude/commands/coro/job.md')
 
       const updated = await backend.updateJob(job.id, {
-        workflowPath: 'workflows/campaign/workflow.md',
+        workflowPath: '.claude/commands/coro/campaign.md',
         phase: 'campaign-planning',
         status: 'campaign-planning',
       })
 
-      expect(updated.workflowPath).toBe('workflows/campaign/workflow.md')
+      expect(updated.workflowPath).toBe('.claude/commands/coro/campaign.md')
       expect(updated.phase).toBe('campaign-planning')
       expect(updated.status).toBe('campaign-planning')
 
       const reloaded = await backend.getJob(job.id)
-      expect(reloaded?.workflowPath).toBe('workflows/campaign/workflow.md')
+      expect(reloaded?.workflowPath).toBe('.claude/commands/coro/campaign.md')
       expect(reloaded?.phase).toBe('campaign-planning')
     })
 
@@ -372,7 +372,7 @@ describe('SqliteStateBackend', () => {
       rationale: 'Testing',
       description: 'A test',
       status: 'pending' as const,
-      files: [{ path: 'memory/test.md', content: '# Test' }],
+      files: [{ path: '.claude/memory/test.md', content: '# Test' }],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }

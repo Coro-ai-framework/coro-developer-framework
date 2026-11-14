@@ -1,22 +1,25 @@
 // ── Workflow Discovery ────────────────────────────────────────────────────────
 //
-// Walks the layered intelligence stack to enumerate every `workflow.md`
-// file the runner can dispatch against. The result drives the dashboard's
-// workflow picker on the new-job page so tenants who add a custom
-// workflow under `workflows/<my-flow>/workflow.md` see it appear without
-// any code change.
+// Walks the layered intelligence stack to enumerate every workflow the
+// runner can dispatch against. A workflow is a Claude Code slash command
+// at `.claude/commands/coro/<id>.md` whose front matter declares phases;
+// other commands in that folder are left alone. The result drives the
+// dashboard's workflow picker on the new-job page so tenants who add a
+// custom workflow there see it appear without any code change.
 //
 // Discovery is deliberately separate from `workflow-parser.ts` (which
 // extracts the **execution** config: phases, agents, models). Here we only
 // care about the metadata needed to *display* and *select* a workflow.
 // Front-matter fields read here are all optional; we fall back to the
-// directory name and the first H1 heading so existing workflow files
-// keep working.
+// file name and the first H1 heading so a bare workflow file keeps
+// working.
 
 import fs from 'fs/promises'
 import path from 'path'
 import yaml from 'js-yaml'
 import type { Logger } from 'pino'
+import { WORKFLOWS_DIR, workflowPathForSlug } from '@coro-ai/cloud-protocol'
+import { stripStandaloneBlocks } from './intelligence/merge'
 import { parseWorkflowConfig } from './workflow-parser'
 
 export type WorkflowKind = 'job' | 'campaign' | 'internal'
@@ -39,7 +42,7 @@ export interface WorkflowPhaseSummary {
   name: string
   /** Status string the runner advertises while in this phase. */
   status: string
-  /** Agent file the phase runs (e.g. `agents/coder.md`), if any. */
+  /** Agent file the phase runs (e.g. `.claude/agents/coder.md`), if any. */
   agent: string | null
   /**
    * Optional explicit model selector — alias key in `settings.llm.aliases`
@@ -63,9 +66,9 @@ export interface WorkflowPhaseSummary {
 }
 
 export interface DiscoveredWorkflow {
-  /** Stable id derived from the directory name (e.g. `job`, `campaign`). */
+  /** Stable id derived from the file name (e.g. `job`, `campaign`). */
   id: string
-  /** Path relative to its layer root, e.g. `workflows/job/workflow.md`. */
+  /** Path relative to its layer root, e.g. `.claude/commands/coro/job.md`. */
   workflowPath: string
   /** Human-friendly display name. */
   name: string
@@ -151,7 +154,7 @@ function normaliseKind(value: unknown): WorkflowKind {
 }
 
 async function readWorkflowsFromRoot(layer: IntelligenceLayer, root: string): Promise<DiscoveredWorkflow[]> {
-  const workflowsDir = path.join(root, 'workflows')
+  const workflowsDir = path.join(root, WORKFLOWS_DIR)
   let entries: string[]
   try {
     entries = await fs.readdir(workflowsDir)
@@ -160,14 +163,18 @@ async function readWorkflowsFromRoot(layer: IntelligenceLayer, root: string): Pr
   }
 
   const results: DiscoveredWorkflow[] = []
-  for (const entry of entries) {
-    const file = path.join(workflowsDir, entry, 'workflow.md')
+  for (const entry of entries.filter(name => name.endsWith('.md')).sort()) {
+    const id = entry.replace(/\.md$/, '')
     let content: string
     try {
-      content = await fs.readFile(file, 'utf-8')
+      // Drop the text written for running the file without Coro, so the
+      // description fallback below never quotes it.
+      content = stripStandaloneBlocks(await fs.readFile(path.join(workflowsDir, entry), 'utf-8'))
     } catch {
       continue
     }
+    // A command without phases is an ordinary slash command, not a workflow.
+    if (parseWorkflowConfig(content) === null) continue
     const fm = parseFrontMatter(content)
     const headingName = extractFirstH1(content)
     const fmName = typeof fm.display_name === 'string' ? fm.display_name.trim() : ''
@@ -195,9 +202,9 @@ async function readWorkflowsFromRoot(layer: IntelligenceLayer, root: string): Pr
     const initialPhase = config?.initialPhase ?? phases[0]?.name ?? ''
 
     results.push({
-      id: entry,
-      workflowPath: `workflows/${entry}/workflow.md`,
-      name: fmName || headingName || entry,
+      id,
+      workflowPath: workflowPathForSlug(id),
+      name: fmName || headingName || id,
       description: fmDesc || extractFirstParagraph(content),
       kind: normaliseKind(fm.kind),
       source: root,

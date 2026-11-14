@@ -15,6 +15,7 @@ import type {
   RetrospectiveTiers,
 } from '../types'
 import type { Tone } from './status'
+import { workflowSlugFromPath } from './workflow-paths'
 
 export const RETROSPECTIVE_PATH = '/retrospectives'
 export const RETROSPECTIVE_WORKFLOW_SLUG = 'retrospective'
@@ -92,7 +93,7 @@ export function availableTiers(tiers: RetrospectiveTiers, upstreamConfigured: bo
  *
  * The shipping phase acts per finding, so a bare "approved" leaves it
  * guessing which of five findings the developer meant. This composes the
- * decision into the shape `agents/retrospective-analyst.md` is written
+ * decision into the shape `.claude/agents/retrospective-analyst.md` is written
  * against: ids on an `Approved findings:` line, ids on a `Skipped findings:`
  * line, nothing else that could read as a finding id.
  *
@@ -216,7 +217,7 @@ export function enabledTierLabels(tiers: RetrospectiveTiers): string[] {
 
 /** Detected from the workflow path, so it also matches overlaid workflows. */
 export function isRetrospectiveJob(job: Pick<Job, 'workflowPath'>): boolean {
-  return job.workflowPath.includes(`workflows/${RETROSPECTIVE_WORKFLOW_SLUG}/`)
+  return workflowSlugFromPath(job.workflowPath) === RETROSPECTIVE_WORKFLOW_SLUG
 }
 
 /** Outcomes indexed by the finding they resolve. */

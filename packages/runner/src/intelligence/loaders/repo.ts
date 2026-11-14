@@ -2,7 +2,10 @@
 //
 // Repo-level intelligence lives at `<repoCheckout>/.coro/`. It is the
 // per-target-repo extension surface for Coro-specific content
-// (workflows, agents, memory, MCP-server declarations).
+// (workflows, agents, memory, MCP-server declarations). It mirrors the
+// base layer's layout, so a repo's workflows live at
+// `.coro/.claude/commands/coro/`, agents at `.coro/.claude/agents/` and
+// memory at `.coro/.claude/memory/`.
 //
 // IMPORTANT — what this loader does NOT touch:
 //

@@ -2,37 +2,45 @@
 display_name: Open-Source Contribution
 description: Implement approved retrospective findings in a repository this install does not own, and open the pull request upstream from a fork. Dispatched by a retrospective; not meant to be started by hand.
 kind: job
+argument-hint: "<what to build, fix, or review>"
+disable-model-invocation: true
 
 initial_phase: planning
 initial_status: queued
 
 phases:
   - name: planning
-    agent: agents/oss-planner.md
+    agent: .claude/agents/oss-planner.md
     tier: planning
     status: planning
 
   - name: coding
-    agent: agents/oss-coder.md
+    agent: .claude/agents/oss-coder.md
     tier: coding
     status: coding
     interactive_checkpoint: true
     subagents:
       - name: code-reviewer
-        agent: agents/code-reviewer.md
+        agent: .claude/agents/code-reviewer.md
         tier: mini
         tools: [Read, Glob, Grep, Bash, mcp__coro__log]
 
   - name: verification
-    agent: agents/oss-verifier.md
+    agent: .claude/agents/oss-verifier.md
     tier: mini
     status: reviewing
 
   - name: contribution
-    agent: agents/oss-contributor.md
+    agent: .claude/agents/oss-contributor.md
     tier: planning
     status: reviewing
 ---
+
+<!-- standalone:start -->
+## Needs the Coro runner
+
+This workflow needs the Coro runner: it works on a fork and opens the upstream pull request through the runner's contribution credentials. Tell the user to start it from the Coro dashboard or the `coro` CLI, then stop. Do not try to emulate it in this session.
+<!-- standalone:end -->
 
 # Workflow: Open-Source Contribution
 
@@ -123,7 +131,7 @@ that owes it nothing. That constrains the work more than any internal job:
 
 ### Phase 1: Planning
 
-**Agent:** OSS Planner (`agents/oss-planner.md`)
+**Agent:** OSS Planner (`.claude/agents/oss-planner.md`)
 
 Follow that agent's procedure. Do not run campaign triage or lane
 switching.
@@ -132,7 +140,7 @@ switching.
 
 ### Phase 2: Coding
 
-**Agent:** OSS Coder (`agents/oss-coder.md`)
+**Agent:** OSS Coder (`.claude/agents/oss-coder.md`)
 **Subagent:** `code-reviewer` — invoked before handing off
 
 Follow that agent's procedure. The interactive checkpoint here is the
@@ -146,7 +154,7 @@ message on. Anything that must reach a developer belongs in an artefact.
 
 ### Phase 3: Verification
 
-**Agent:** OSS Verifier (`agents/oss-verifier.md`)
+**Agent:** OSS Verifier (`.claude/agents/oss-verifier.md`)
 
 Out-of-band gate. For `runner-code`, the named test must fail on the base
 SHA and pass on the branch. For `base-intelligence`, the neighbouring
@@ -157,7 +165,7 @@ not remain live. Fail closed: `escalate` rather than opening a PR.
 
 ### Phase 4: Contribution
 
-**Agent:** OSS Contributor (`agents/oss-contributor.md`)
+**Agent:** OSS Contributor (`.claude/agents/oss-contributor.md`)
 
 Opens the cross-repository pull request, links the issue, and ends the
 job. See the agent file for the exact call and the failure handling.

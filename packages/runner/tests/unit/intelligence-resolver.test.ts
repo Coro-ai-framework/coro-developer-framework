@@ -35,15 +35,15 @@ afterEach(async () => {
 async function writeBaseLayer(layerDir: string): Promise<void> {
   await fs.mkdir(path.join(layerDir, '.claude'), { recursive: true })
   await fs.mkdir(path.join(layerDir, '.claude', 'skills', 'foo'), { recursive: true })
-  await fs.mkdir(path.join(layerDir, 'agents'), { recursive: true })
-  await fs.mkdir(path.join(layerDir, 'workflows', 'job'), { recursive: true })
-  await fs.mkdir(path.join(layerDir, 'memory'), { recursive: true })
+  await fs.mkdir(path.join(layerDir, '.claude', 'agents'), { recursive: true })
+  await fs.mkdir(path.join(layerDir, '.claude', 'commands', 'coro'), { recursive: true })
+  await fs.mkdir(path.join(layerDir, '.claude', 'memory'), { recursive: true })
 
   await fs.writeFile(path.join(layerDir, '.claude', 'CLAUDE.md'), '# Coro Agent Runtime Instructions\n')
   await fs.writeFile(path.join(layerDir, '.claude', 'skills', 'foo', 'SKILL.md'), '# Foo skill\n')
-  await fs.writeFile(path.join(layerDir, 'agents', 'planner.md'), '# Planner\n')
-  await fs.writeFile(path.join(layerDir, 'workflows', 'job', 'workflow.md'), '---\nphases: []\n---\n')
-  await fs.writeFile(path.join(layerDir, 'memory', 'MEMORY.md'), '# Memory index\n')
+  await fs.writeFile(path.join(layerDir, '.claude', 'agents', 'planner.md'), '# Planner\n')
+  await fs.writeFile(path.join(layerDir, '.claude', 'commands', 'coro', 'job.md'), '---\nphases: []\n---\n')
+  await fs.writeFile(path.join(layerDir, '.claude', 'memory', 'MEMORY.md'), '# Memory index\n')
 }
 
 describe('resolveJobIntelligence — base layer', () => {
@@ -81,7 +81,7 @@ describe('resolveJobIntelligence — base layer', () => {
     expect(skill).toContain('Foo skill')
 
     const workflow = await fs.readFile(
-      path.join(result.intelligenceDir, 'workflows', 'job', 'workflow.md'),
+      path.join(result.intelligenceDir, '.claude', 'commands', 'coro', 'job.md'),
       'utf8',
     )
     expect(workflow).toContain('phases:')
@@ -128,7 +128,7 @@ describe('resolveJobIntelligence — base layer', () => {
     const baseLayerDir = path.join(workspaceRoot, 'base-layer')
     await writeBaseLayer(baseLayerDir)
     await fs.writeFile(path.join(baseLayerDir, '.DS_Store'), 'mac noise')
-    await fs.writeFile(path.join(baseLayerDir, 'agents', '.DS_Store'), 'mac noise')
+    await fs.writeFile(path.join(baseLayerDir, '.claude', 'agents', '.DS_Store'), 'mac noise')
 
     const result = await resolveJobIntelligence({
       baseLayerDir,
@@ -139,7 +139,7 @@ describe('resolveJobIntelligence — base layer', () => {
     })
 
     await expect(fs.access(path.join(result.intelligenceDir, '.DS_Store'))).rejects.toThrow()
-    await expect(fs.access(path.join(result.intelligenceDir, 'agents', '.DS_Store'))).rejects.toThrow()
+    await expect(fs.access(path.join(result.intelligenceDir, '.claude', 'agents', '.DS_Store'))).rejects.toThrow()
   })
 
   it('rejects when jobId is empty', async () => {
@@ -174,10 +174,10 @@ describe('resolveJobIntelligence — tenant overlay (localDir)', () => {
 
     // Tenant overrides the planner agent and adds a new file.
     const tenantDir = path.join(workspaceRoot, 'tenant-overlay')
-    await fs.mkdir(path.join(tenantDir, 'agents'), { recursive: true })
-    await fs.writeFile(path.join(tenantDir, 'agents', 'planner.md'), '# Tenant planner\n')
-    await fs.mkdir(path.join(tenantDir, 'workflows', 'tenant-only'), { recursive: true })
-    await fs.writeFile(path.join(tenantDir, 'workflows', 'tenant-only', 'workflow.md'), '---\nphases: [a]\n---\n')
+    await fs.mkdir(path.join(tenantDir, '.claude', 'agents'), { recursive: true })
+    await fs.writeFile(path.join(tenantDir, '.claude', 'agents', 'planner.md'), '# Tenant planner\n')
+    await fs.mkdir(path.join(tenantDir, '.claude', 'commands', 'coro'), { recursive: true })
+    await fs.writeFile(path.join(tenantDir, '.claude', 'commands', 'coro', 'tenant-only.md'), '---\nphases: [a]\n---\n')
 
     const tenant: TenantContext = {
       ...synthesizeSoloTenant(),
@@ -197,14 +197,14 @@ describe('resolveJobIntelligence — tenant overlay (localDir)', () => {
     expect(result.layers[1]?.source).toBe(tenantDir)
 
     const planner = await fs.readFile(
-      path.join(result.intelligenceDir, 'agents', 'planner.md'),
+      path.join(result.intelligenceDir, '.claude', 'agents', 'planner.md'),
       'utf8',
     )
     expect(planner).toContain('Tenant planner')
     expect(planner).not.toContain('# Planner') // base content fully replaced
 
     const tenantOnly = await fs.readFile(
-      path.join(result.intelligenceDir, 'workflows', 'tenant-only', 'workflow.md'),
+      path.join(result.intelligenceDir, '.claude', 'commands', 'coro', 'tenant-only.md'),
       'utf8',
     )
     expect(tenantOnly).toContain('phases: [a]')
@@ -217,8 +217,8 @@ describe('resolveJobIntelligence — tenant overlay (localDir)', () => {
     const tenantDir = path.join(workspaceRoot, 'tenant-overlay')
     await fs.mkdir(path.join(tenantDir, '.claude'), { recursive: true })
     await fs.writeFile(path.join(tenantDir, '.claude', 'CLAUDE.md'), '# Tenant additions\n\ntenant-specific guidance.')
-    await fs.mkdir(path.join(tenantDir, 'memory'), { recursive: true })
-    await fs.writeFile(path.join(tenantDir, 'memory', 'MEMORY.md'), '# Tenant memory entry\n')
+    await fs.mkdir(path.join(tenantDir, '.claude', 'memory'), { recursive: true })
+    await fs.writeFile(path.join(tenantDir, '.claude', 'memory', 'MEMORY.md'), '# Tenant memory entry\n')
 
     const tenant: TenantContext = {
       ...synthesizeSoloTenant(),
@@ -243,7 +243,7 @@ describe('resolveJobIntelligence — tenant overlay (localDir)', () => {
       claudeMd.indexOf('Tenant additions'),
     )
 
-    const memoryMd = await fs.readFile(path.join(result.intelligenceDir, 'memory', 'MEMORY.md'), 'utf8')
+    const memoryMd = await fs.readFile(path.join(result.intelligenceDir, '.claude', 'memory', 'MEMORY.md'), 'utf8')
     expect(memoryMd).toContain('Memory index')
     expect(memoryMd).toContain('Tenant memory entry')
   })
@@ -307,15 +307,114 @@ describe('resolveJobIntelligence — tenant overlay (localDir)', () => {
   })
 })
 
+describe('resolveJobIntelligence — Claude Code standalone blocks', () => {
+  const START = '<!-- standalone:start -->'
+  const END = '<!-- standalone:end -->'
+
+  async function resolveWithTenant(jobId: string, tenantDir: string | null, baseLayerDir: string) {
+    const tenant: TenantContext =
+      tenantDir === null
+        ? synthesizeSoloTenant()
+        : { ...synthesizeSoloTenant(), overlay: { kind: 'localDir', path: tenantDir } }
+    return resolveJobIntelligence({
+      baseLayerDir,
+      tenantContext: tenant,
+      jobId,
+      workingRoot: path.join(workspaceRoot, 'working'),
+      logger: noopLogger,
+    })
+  }
+
+  it('removes standalone blocks from every markdown file of the base layer', async () => {
+    const baseLayerDir = path.join(workspaceRoot, 'base-layer')
+    await writeBaseLayer(baseLayerDir)
+    await fs.writeFile(
+      path.join(baseLayerDir, '.claude', 'CLAUDE.md'),
+      `# Rules\n\nAlways follow these.\n\n${START}\n## Running without the Coro runner\n\nUse Bash.\n${END}\n`,
+    )
+    await fs.writeFile(
+      path.join(baseLayerDir, '.claude', 'agents', 'planner.md'),
+      `---\nname: planner\ndescription: Plans.\n---\n\n# Agent: Planner\n\n${START}\nOutside the runner, see CLAUDE.md.\n${END}\n\n## Role\n`,
+    )
+
+    const result = await resolveWithTenant('job-standalone-base', null, baseLayerDir)
+
+    const claudeMd = await fs.readFile(path.join(result.intelligenceDir, '.claude', 'CLAUDE.md'), 'utf8')
+    expect(claudeMd).toContain('Always follow these.')
+    expect(claudeMd).not.toContain('standalone')
+    expect(claudeMd).not.toContain('Running without the Coro runner')
+
+    const planner = await fs.readFile(
+      path.join(result.intelligenceDir, '.claude', 'agents', 'planner.md'),
+      'utf8',
+    )
+    expect(planner).toContain('## Role')
+    expect(planner).not.toContain('standalone')
+    expect(planner).not.toContain('Outside the runner')
+  })
+
+  it('strips blocks that arrive from a tenant overlay as well', async () => {
+    const baseLayerDir = path.join(workspaceRoot, 'base-layer')
+    await writeBaseLayer(baseLayerDir)
+    const tenantDir = path.join(workspaceRoot, 'tenant-overlay')
+    await fs.mkdir(path.join(tenantDir, '.claude', 'agents'), { recursive: true })
+    await fs.writeFile(
+      path.join(tenantDir, '.claude', 'agents', 'planner.md'),
+      `# Tenant planner\n\n${START}\nclaude-code only\n${END}\n\nKept.\n`,
+    )
+
+    const result = await resolveWithTenant('job-standalone-tenant', tenantDir, baseLayerDir)
+
+    const planner = await fs.readFile(
+      path.join(result.intelligenceDir, '.claude', 'agents', 'planner.md'),
+      'utf8',
+    )
+    expect(planner).toContain('Kept.')
+    expect(planner).not.toContain('claude-code only')
+    expect(planner).not.toContain('standalone')
+  })
+
+  it('does not touch the source layer on disk', async () => {
+    const baseLayerDir = path.join(workspaceRoot, 'base-layer')
+    await writeBaseLayer(baseLayerDir)
+    const source = `# Rules\n\n${START}\nstandalone text\n${END}\n`
+    await fs.writeFile(path.join(baseLayerDir, '.claude', 'CLAUDE.md'), source)
+
+    await resolveWithTenant('job-standalone-source', null, baseLayerDir)
+
+    expect(await fs.readFile(path.join(baseLayerDir, '.claude', 'CLAUDE.md'), 'utf8')).toBe(source)
+  })
+
+  it('appends the tenant runtime contract after the base one', async () => {
+    const baseLayerDir = path.join(workspaceRoot, 'base-layer')
+    await writeBaseLayer(baseLayerDir)
+    await fs.mkdir(path.join(baseLayerDir, '.claude', 'coro'), { recursive: true })
+    await fs.writeFile(path.join(baseLayerDir, '.claude', 'coro', 'RUNTIME.md'), '# Base runtime contract\n')
+    const tenantDir = path.join(workspaceRoot, 'tenant-overlay')
+    await fs.mkdir(path.join(tenantDir, '.claude', 'coro'), { recursive: true })
+    await fs.writeFile(path.join(tenantDir, '.claude', 'coro', 'RUNTIME.md'), '# Tenant runtime addition\n')
+
+    const result = await resolveWithTenant('job-runtime', tenantDir, baseLayerDir)
+
+    const runtime = await fs.readFile(
+      path.join(result.intelligenceDir, '.claude', 'coro', 'RUNTIME.md'),
+      'utf8',
+    )
+    expect(runtime).toContain('Base runtime contract')
+    expect(runtime).toContain('Tenant runtime addition')
+    expect(runtime.indexOf('Base runtime contract')).toBeLessThan(runtime.indexOf('Tenant runtime addition'))
+  })
+})
+
 describe('resolveJobIntelligence — repo overlay (.coro/)', () => {
   it('stacks repo .coro/ as the topmost layer when present', async () => {
     const baseLayerDir = path.join(workspaceRoot, 'base-layer')
     await writeBaseLayer(baseLayerDir)
 
     const repoCheckoutDir = path.join(workspaceRoot, 'repo')
-    await fs.mkdir(path.join(repoCheckoutDir, '.coro', 'agents'), { recursive: true })
+    await fs.mkdir(path.join(repoCheckoutDir, '.coro', '.claude', 'agents'), { recursive: true })
     await fs.writeFile(
-      path.join(repoCheckoutDir, '.coro', 'agents', 'planner.md'),
+      path.join(repoCheckoutDir, '.coro', '.claude', 'agents', 'planner.md'),
       '# Repo-pinned planner\n',
     )
 
@@ -330,7 +429,7 @@ describe('resolveJobIntelligence — repo overlay (.coro/)', () => {
 
     expect(result.layers.map(l => l.name)).toEqual(['base', 'repo'])
     const planner = await fs.readFile(
-      path.join(result.intelligenceDir, 'agents', 'planner.md'),
+      path.join(result.intelligenceDir, '.claude', 'agents', 'planner.md'),
       'utf8',
     )
     expect(planner).toContain('Repo-pinned planner')
@@ -391,13 +490,13 @@ describe('resolveJobIntelligence — repo overlay (.coro/)', () => {
     await writeBaseLayer(baseLayerDir)
 
     const tenantDir = path.join(workspaceRoot, 'tenant')
-    await fs.mkdir(path.join(tenantDir, 'agents'), { recursive: true })
-    await fs.writeFile(path.join(tenantDir, 'agents', 'planner.md'), '# Tenant planner\n')
+    await fs.mkdir(path.join(tenantDir, '.claude', 'agents'), { recursive: true })
+    await fs.writeFile(path.join(tenantDir, '.claude', 'agents', 'planner.md'), '# Tenant planner\n')
 
     const repoCheckoutDir = path.join(workspaceRoot, 'repo')
-    await fs.mkdir(path.join(repoCheckoutDir, '.coro', 'agents'), { recursive: true })
+    await fs.mkdir(path.join(repoCheckoutDir, '.coro', '.claude', 'agents'), { recursive: true })
     await fs.writeFile(
-      path.join(repoCheckoutDir, '.coro', 'agents', 'planner.md'),
+      path.join(repoCheckoutDir, '.coro', '.claude', 'agents', 'planner.md'),
       '# Repo planner (final)\n',
     )
 
@@ -422,7 +521,7 @@ describe('resolveJobIntelligence — repo overlay (.coro/)', () => {
     ])
 
     const planner = await fs.readFile(
-      path.join(result.intelligenceDir, 'agents', 'planner.md'),
+      path.join(result.intelligenceDir, '.claude', 'agents', 'planner.md'),
       'utf8',
     )
     expect(planner).toContain('Repo planner (final)')

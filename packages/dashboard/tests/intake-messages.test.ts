@@ -47,7 +47,7 @@ describe('toIntakeMessages', () => {
               serviceName: 'api',
               description: 'Make decode handle the empty payload case without throwing.',
               reviewers: 'alice, bob',
-              workflowPath: 'workflows/job/workflow.md',
+              workflowPath: '.claude/commands/coro/job.md',
               interactive: true,
             },
             state: 'draft',

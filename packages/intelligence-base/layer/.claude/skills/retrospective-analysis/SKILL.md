@@ -198,7 +198,7 @@ this?**
 
 | Category | Fix lives in | Typical finding |
 |---|---|---|
-| `tenant-intelligence` | this install's `memory/`, `.coro/` | A fact true of *this company*: an internal registry needs a flag, a service has a quirk, a reviewer alias. |
+| `tenant-intelligence` | this install's `.claude/memory/`, `.coro/` | A fact true of *this company*: an internal registry needs a flag, a service has a quirk, a reviewer alias. |
 | `base-intelligence` | agent, workflow, or skill markdown in the base layer | A generic procedure gap: an agent's instructions do not cover a situation any install would hit. |
 | `runner-code` | runner TypeScript | Behaviour no markdown can fix: a tool errors, a state transition is wrong, a capability is missing. |
 

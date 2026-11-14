@@ -9,8 +9,12 @@
 //   3. repo    — `<repoCheckout>/.coro/`                   (per target repo)
 //
 // Merge semantics (see `merge.ts`):
-//   - `replace` (last-wins) for  agents/, workflows/, .claude/skills/, etc.
-//   - `append`  (with banners) for  .claude/CLAUDE.md  and  memory/**/*.md
+//   - `replace` (last-wins) for  .claude/agents/, .claude/commands/coro/,
+//     .claude/skills/, etc.
+//   - `append`  (with banners) for  .claude/CLAUDE.md, .claude/coro/RUNTIME.md
+//     and  .claude/memory/**
+//   - after the last layer, blocks fenced as standalone (text for a developer
+//     running the layer without Coro) are stripped from every markdown file
 //
 // What the resolver intentionally does NOT do:
 //   - touch `<repoCheckout>/.claude/`. That lives at the SDK's `cwd` and
@@ -31,7 +35,7 @@ import {
   loadLocalDirOverlay,
   loadRepoOverlay,
 } from './loaders'
-import { applyLayer } from './merge'
+import { applyLayer, stripStandaloneBlocksInTree } from './merge'
 import type { TenantContext } from './tenant-context'
 import type { PluginRegistry } from '../plugins/registry'
 
@@ -165,9 +169,10 @@ export async function resolveJobIntelligence(
   // Layer 2b — plugin contributions (optional).
   //
   // Each loaded plugin can ship a `intelligence/` directory with the
-  // same shape as base/tenant (`.claude/skills/<id>/`, `snippets/`,
-  // optionally `agents/` overrides). We apply them after the tenant
-  // overlay so a tenant can still override plugin-shipped snippets,
+  // same shape as base/tenant (`.claude/skills/<id>/`,
+  // `.claude/memory/snippets/`, optionally `.claude/agents/` overrides).
+  // We apply them after the tenant overlay so a tenant can still override
+  // plugin-shipped snippets,
   // and before the repo overlay so a repo's `.coro/` always wins.
   if (plugins) {
     for (const runtime of plugins.all()) {
@@ -205,9 +210,15 @@ export async function resolveJobIntelligence(
     }
   }
 
+  // Final pass — drop the text written for running the layer without Coro.
+  // Done after every layer so a tenant or repo overlay can carry its own
+  // standalone blocks and they never reach a prompt either.
+  const standaloneFilesStripped = await stripStandaloneBlocksInTree(intelligenceDir)
+
   logger.info(
     {
       jobId,
+      standaloneFilesStripped,
       tenantId: tenantContext.tenantId,
       tenantMode: tenantContext.mode,
       intelligenceDir,

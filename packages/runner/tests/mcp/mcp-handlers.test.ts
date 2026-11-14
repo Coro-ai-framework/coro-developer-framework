@@ -896,13 +896,13 @@ describe('createMcpToolHandlers — propose_change / list_proposals', () => {
         title: 'Add note',
         rationale: 'because',
         description: 'details',
-        files: [{ path: 'memory/x.md', content: '# X' }],
+        files: [{ path: '.claude/memory/x.md', content: '# X' }],
       }),
     ) as Record<string, unknown>
 
     expect(data['targetLayer']).toBe('tenant')
     expect(data['prUrl']).toBe('https://github.com/acme/intel/pull/99')
-    expect(data['filesShipped']).toEqual(['memory/x.md'])
+    expect(data['filesShipped']).toEqual(['.claude/memory/x.md'])
     expect(ctx.stateBackend.createProposal).toHaveBeenCalled()
   })
 
@@ -914,7 +914,7 @@ describe('createMcpToolHandlers — propose_change / list_proposals', () => {
       rationale: 'r',
       description: 'd',
       // Wrong path for a skill — should fail validation before any git happens
-      files: [{ path: 'agents/not-a-skill.md', content: 'x' }],
+      files: [{ path: '.claude/agents/not-a-skill.md', content: 'x' }],
     })
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect(result.content[0].text).toContain('Skill files must live under')
@@ -935,7 +935,7 @@ describe('createMcpToolHandlers — propose_change / list_proposals', () => {
       title: 'First',
       rationale: 'r',
       description: 'd',
-      files: [{ path: 'memory/a.md', content: '# A' }],
+      files: [{ path: '.claude/memory/a.md', content: '# A' }],
     })
     const data = parseJson(await h.list_proposals({})) as Record<string, unknown>
     expect(data['count']).toBe(1)

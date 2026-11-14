@@ -16,7 +16,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'ws-job',
     type: JobType.Job,
-    workflowPath: 'workflows/job/workflow.md',
+    workflowPath: '.claude/commands/coro/job.md',
     params: { repoSlug: 'svc' },
     triggerSource: 'cli',
     status: 'running',

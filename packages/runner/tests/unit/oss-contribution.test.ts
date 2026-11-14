@@ -31,7 +31,7 @@ const INTEL: OssContributionFinding = {
   issueNumber: 46,
   issueUrl: 'https://github.com/o/r/issues/46',
   title: 'Spec writer skips tracker comments',
-  description: 'agents/spec-writer.md only calls tracker_get_issue.',
+  description: '.claude/agents/spec-writer.md only calls tracker_get_issue.',
 }
 
 describe('buildOssContributionJobInput', () => {
@@ -47,7 +47,7 @@ describe('buildOssContributionJobInput', () => {
 
     expect(input).toMatchObject({
       type: 'job',
-      workflowPath: 'workflows/oss-contribution/workflow.md',
+      workflowPath: '.claude/commands/coro/oss-contribution.md',
       triggerSource: 'internal',
     })
     expect(input.params).toMatchObject({
@@ -151,7 +151,7 @@ describe('contribution helpers', () => {
   })
 
   it('matches the workflow path even when the job is otherwise empty', () => {
-    expect(isOssContributionJob({ workflowPath: 'workflows/oss-contribution/workflow.md' })).toBe(true)
-    expect(isOssContributionJob({ workflowPath: 'workflows/job/workflow.md' })).toBe(false)
+    expect(isOssContributionJob({ workflowPath: '.claude/commands/coro/oss-contribution.md' })).toBe(true)
+    expect(isOssContributionJob({ workflowPath: '.claude/commands/coro/job.md' })).toBe(false)
   })
 })

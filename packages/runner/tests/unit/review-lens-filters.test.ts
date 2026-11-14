@@ -407,12 +407,12 @@ describe('lens funnel statistics', () => {
 })
 
 describe('pr-review workflow', () => {
-  const markdown = readFileSync(path.resolve(__dirname, '../../../intelligence-base/layer/workflows/pr-review/workflow.md'), 'utf8')
+  const markdown = readFileSync(path.resolve(__dirname, '../../../intelligence-base/layer/.claude/commands/coro/pr-review.md'), 'utf8')
   const review = parseWorkflowConfig(markdown).phases.find(item => item.name === 'review')!
 
   it('declares the history lens with the drill-down tool, and gives it to the verifier', () => {
     const history = review.lenses?.find(lens => lens.name === 'history')
-    expect(history?.agent).toBe('agents/review-history.md')
+    expect(history?.agent).toBe('.claude/agents/review-history.md')
     expect(history?.tools).toContain('mcp__coro__review_related_work')
     expect(review.lenses?.find(lens => lens.name === 'verifier')?.tools).toContain('mcp__coro__review_related_work')
   })

@@ -25,6 +25,7 @@ import {
   STATUS_COMPLETE,
   STATUS_ESCALATED,
   STATUS_FAILED,
+  workflowPathForSlug,
   type CampaignChildStatus,
   type Job,
   type JobInput,
@@ -202,8 +203,8 @@ export function inputToJobType(input: JobInput): JobType {
 
 export function defaultWorkflowPath(type: JobType): string {
   switch (type) {
-    case JobType.Job:           return 'workflows/job/workflow.md'
-    case JobType.SelfUpdate:    return 'workflows/self-update/workflow.md'
+    case JobType.Job:           return workflowPathForSlug('job')
+    case JobType.SelfUpdate:    return workflowPathForSlug('self-update')
     case JobType.Retrospective: return RETROSPECTIVE_WORKFLOW_PATH
     case JobType.PrReview:      return PR_REVIEW_WORKFLOW_PATH
   }

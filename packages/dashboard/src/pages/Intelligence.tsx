@@ -42,6 +42,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import WorkflowDetailsDialog from '../components/workflow/workflow-details-dialog'
 import { ApiError, requestJson } from '../lib/http'
+import { workflowSlugFromPath } from '../lib/workflow-paths'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -226,8 +227,8 @@ export default function Intelligence() {
   }, [catalogue])
 
   function openWorkflowDetails(artefact: Artefact) {
-    // Workflow id == folder name (workflows/<id>/workflow.md)
-    const id = artefact.path.split('/')[1]
+    // Workflow id == file name (.claude/commands/coro/<id>.md)
+    const id = workflowSlugFromPath(artefact.path)
     const option = workflowOptions.find(w => w.id === id || w.workflowPath === artefact.path)
     if (!option) return
     setActiveWorkflow(option)

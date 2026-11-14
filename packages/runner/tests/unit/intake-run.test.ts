@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseRun, parseReviewersList } from '../../../dashboard/src/lib/intake-run'
 
-const KNOWN = ['workflows/job/workflow.md', 'workflows/job-fast/workflow.md']
+const KNOWN = ['.claude/commands/coro/job.md', '.claude/commands/coro/job-fast.md']
 
 describe('parseRun', () => {
   it('extracts and validates a well-formed run', () => {
@@ -12,7 +12,7 @@ describe('parseRun', () => {
   "serviceName": "My Service",
   "description": "Add rate limiting to the users endpoint with clear acceptance criteria.",
   "reviewers": ["alice", "bob"],
-  "workflowPath": "workflows/job/workflow.md",
+  "workflowPath": ".claude/commands/coro/job.md",
   "interactive": true
 }
 </run>`
@@ -23,18 +23,18 @@ describe('parseRun', () => {
       serviceName: 'My Service',
       description: 'Add rate limiting to the users endpoint with clear acceptance criteria.',
       reviewers: 'alice, bob',
-      workflowPath: 'workflows/job/workflow.md',
+      workflowPath: '.claude/commands/coro/job.md',
       interactive: true,
     })
   })
 
   it('returns null when workflow path is unknown', () => {
-    const message = `<run>{"repo":"org/x","description":"A long enough description here.","workflowPath":"workflows/unknown/workflow.md"}</run>`
+    const message = `<run>{"repo":"org/x","description":"A long enough description here.","workflowPath":".claude/commands/coro/unknown.md"}</run>`
     expect(parseRun(message, KNOWN)).toBeNull()
   })
 
   it('returns null when description is too short', () => {
-    const message = `<run>{"repo":"org/x","description":"short","workflowPath":"workflows/job/workflow.md"}</run>`
+    const message = `<run>{"repo":"org/x","description":"short","workflowPath":".claude/commands/coro/job.md"}</run>`
     expect(parseRun(message, KNOWN)).toBeNull()
   })
 
@@ -49,7 +49,7 @@ describe('parseRun', () => {
   })
 
   it('defaults interactive to true when omitted', () => {
-    const message = `<run>{"repo":"org/x","description":"A long enough description here for the planner.","workflowPath":"workflows/job/workflow.md"}</run>`
+    const message = `<run>{"repo":"org/x","description":"A long enough description here for the planner.","workflowPath":".claude/commands/coro/job.md"}</run>`
     expect(parseRun(message, KNOWN)?.interactive).toBe(true)
   })
 })
