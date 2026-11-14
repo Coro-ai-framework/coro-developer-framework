@@ -33,6 +33,26 @@ Assume a typical host sandbox allows **reads almost everywhere**, allows
 **writes only inside `$PWD`**, and restricts **outbound network to an
 allowlist** that usually includes your SCM host but not public package mirrors.
 
+## 1b. The path that failed is not your checkout
+
+Before redirecting any cache, read the path that returned `EPERM`. If it is
+not under the job directory — typically it is `params.repo`, an absolute path
+such as `/Users/someone/code/my-service` — it is not a checkout the runner made
+for you. With the local SCM, `repo` is the developer's own working copy: a job
+can read it and never write to it. No cache redirect, un-chained `git -C` or
+second attempt changes that.
+
+Clone first, then redo what failed:
+
+1. `scm_clone_repo({ repo: params.repo })`, and read `checkout.repoDir`.
+2. Run the failed command again inside that directory — create the branch, make
+   the edit, run the build.
+
+The clone's `origin` is the original repository, so `scm_create_pr` still
+delivers the branch there. Escalate only if `scm_clone_repo` itself fails. Do
+not copy the repository by hand or edit files in the original: work done
+outside the clone cannot be pushed.
+
 ## 2. Move every toolchain write inside the job directory
 
 The job root (`$JOB`) is writable. Redirect caches there rather than fighting
@@ -94,7 +114,9 @@ A host policy may exempt specific commands (`git` is a common one). The
 exemption matches the command it is given, so `cd repo && git checkout …` can
 be sandboxed while a bare `git -C repo checkout …` is not. If a normally
 exempt command fails with `EPERM`, retry it once in its own un-chained form
-using the tool's own directory flag before concluding it is blocked.
+using the tool's own directory flag before concluding it is blocked. This is
+for a checkout inside the job directory; if the repository path is outside it,
+the retry cannot help — clone it (section 1b).
 
 For a push specifically, if `git push origin <branch>` is stopped by an
 unanswerable host permission prompt, `operation not permitted`, `EPERM`, or a

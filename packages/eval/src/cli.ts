@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Command, InvalidArgumentError } from 'commander'
+import { serveDashboard } from './dashboard'
 import { isolatedEnv, cachePaths } from './sandbox'
 import { killAllRunnersSync, stopAllRunners } from './runner-process'
 import {
@@ -178,6 +179,21 @@ export function buildProgram(): Command {
       console.log('')
       console.log(renderReport(result.info, result.summary))
       console.log(`\nResults: ${store.runDir(result.runId)}`)
+    })
+
+  // ── dashboard ──────────────────────────────────────────────────────────────
+  program
+    .command('dashboard')
+    .description('Serve a small local dashboard for runs and test results')
+    .option('--results-dir <dir>', 'where results are kept', RESULTS_DIR)
+    .option('--host <host>', 'interface to bind', '127.0.0.1')
+    .option('--port <n>', 'port to bind', positiveInt, 4310)
+    .action(async (opts: { resultsDir: string; host: string; port: number }) => {
+      await serveDashboard({
+        resultsDir: path.resolve(opts.resultsDir),
+        host: opts.host,
+        port: opts.port,
+      })
     })
 
   // ── report ─────────────────────────────────────────────────────────────────

@@ -81,6 +81,8 @@ const checkout = mcp__coro__scm_clone_repo({ repo: params.repoSlug })
 // checkout.reused: true when the repo was already cloned
 ```
 
+**Clone before you touch the repository**, even when `params.repo` is an absolute path that already exists on disk. With the local SCM that path is the developer's own working copy: a job can read it but cannot write to it, so `git checkout -b` or an edit there fails with `operation not permitted`. The only copy you may change is the clone under the job working directory. Skip this step only when the **Workspace layout** block already shows a `Repo:` line.
+
 This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct paths like `working/{job-id}/` yourself — the runner already placed you there. **Do not** fall back to `gh` or `bb` CLI commands; both bypass the plugin layer and break the moment a tenant swaps providers. Use `mcp__coro__scm_get_clone_info` only when you need the raw clone URL for a low-level git operation — it has no token; `git push origin` is enough.
 
 ### 4. Create the work-item branch

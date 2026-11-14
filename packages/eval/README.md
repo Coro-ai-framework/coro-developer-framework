@@ -24,6 +24,7 @@ pnpm eval run                    # baseline scenario, every task, 3 attempts eac
 pnpm eval report                 # the latest run
 pnpm eval compare <runA> <runB>  # paired comparison, B minus A
 pnpm eval history                # solve rate over time (or --task <id> --metric cost)
+pnpm eval dashboard              # browse runs and individual test results at localhost:4310
 ```
 
 `pnpm eval` runs inside `packages/eval`, so a relative path given to a flag
@@ -66,6 +67,14 @@ For every `task x attempt`:
    `results/index.jsonl`, and the runner and scratch directory are removed.
 
 Attempts run `parallel` at a time, each with its own runner process.
+
+### Dashboard
+
+`pnpm eval dashboard` starts a read-only local web view over the same plain
+result files used by the report commands. It shows run-level solve rate, cost
+and timing, then lets you open an attempt to inspect hidden/existing test
+results, checks, scope, timeline and the delivered diff. Use `--port`, `--host`
+or `--results-dir` to override the defaults.
 
 ### Outcomes
 

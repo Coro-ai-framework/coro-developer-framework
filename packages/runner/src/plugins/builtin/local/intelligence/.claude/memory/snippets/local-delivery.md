@@ -15,6 +15,10 @@ the deliverable**.
 `scm_get_clone_info` returns that path as the clone URL, so `scm_clone_repo`
 produces a normal clone whose `origin` is the user's repository.
 
+That path is the user's own working copy. Jobs can read it but cannot write to
+it, so always `scm_clone_repo` first and do every branch, edit and build in the
+clone. Never `cd` into the original to work.
+
 ## Opening a pull request
 
 `scm_create_pr` does two things:
