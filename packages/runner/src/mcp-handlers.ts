@@ -331,6 +331,17 @@ async function persistRepoCheckoutParams(
   ctx.job = updated
 }
 
+/**
+ * Directory name under the job working dir for a clone of `repo`.
+ * Slugs stay as-is (`owner/repo` → nested). Absolute local-SCM paths use
+ * basename so the checkout is writable under the job root.
+ */
+export function checkoutRelativeDir(repo: string): string {
+  if (!path.isAbsolute(repo)) return repo
+  const base = path.basename(repo)
+  return base || 'repo'
+}
+
 export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
   const text = mcpText
   const error = mcpError
@@ -738,7 +749,11 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     }
 
     const jobWorkingDir = path.join(ctx.settings.paths.workingDir, ctx.job.id)
-    const repoDir = path.join(jobWorkingDir, repo)
+    // Absolute local-SCM paths are the source tree. Clone into basename under
+    // the job dir — never nest the full absolute path, and never treat the
+    // source itself as the checkout (path.join used to do both on POSIX).
+    const relativeDir = checkoutRelativeDir(repo)
+    const repoDir = path.join(jobWorkingDir, relativeDir)
 
     await fs.mkdir(jobWorkingDir, { recursive: true })
 
@@ -752,12 +767,12 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
       } else {
         await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
         await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
-        await persistRepoCheckoutParams(ctx, repo, repoDir)
+        await persistRepoCheckoutParams(ctx, relativeDir, repoDir)
         return text({
           pluginId: r.scm.manifest.id,
           repo,
           repoDir,
-          relativeDir: repo,
+          relativeDir,
           reused: true,
         })
       }
@@ -857,13 +872,13 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     await installRepoGitAuth(repoDir, { matchesRemote: url => r.scm.matchesRemote(url) })
     await ctx.stateBackend.mapRepoToJob(repo, ctx.job.id)
     await ctx.stateBackend.appendLog(ctx.job.id, `[repo-cloned] ${repo} -> ${repoDir}`)
-    await persistRepoCheckoutParams(ctx, repo, repoDir)
+    await persistRepoCheckoutParams(ctx, relativeDir, repoDir)
 
     return text({
       pluginId: r.scm.manifest.id,
       repo,
       repoDir,
-      relativeDir: repo,
+      relativeDir,
       reused: false,
     })
   }

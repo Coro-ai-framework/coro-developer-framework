@@ -110,6 +110,19 @@ export function buildPhaseHooks(opts: BuildHookOpts): Record<string, HookCallbac
       }
     }
 
+    // The SDK runs subagents in the background by default. Coro procedures
+    // act on the subagent's report (the coder's code-reviewer verdict), so a
+    // backgrounded call hands the agent an empty result and it ends up
+    // parking the job to "wait" for it. Keep every subagent in the foreground.
+    if ((toolName === 'Agent' || toolName === 'Task') && toolInput['run_in_background'] !== false) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          updatedInput: { ...toolInput, run_in_background: false },
+        },
+      }
+    }
+
     return {}
   }
 

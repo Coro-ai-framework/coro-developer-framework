@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs/promises'
 import { simpleGit } from 'simple-git'
-import { createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
+import { checkoutRelativeDir, createMcpToolHandlers, mcpText, mcpError } from '../../src/mcp-handlers'
 import { installRepoGitAuth } from '../../src/clients/git-auth'
 import { JobType, STATUS_ESCALATED } from '@coro-ai/cloud-protocol'
 import type { ToolContext } from '../../src/tools/types'
@@ -433,6 +433,40 @@ describe('createMcpToolHandlers — scm_clone_repo', () => {
       '[repo-clone] failed svc: killed',
     )
     expect(built.ctx.stateBackend.mapRepoToJob).not.toHaveBeenCalled()
+  })
+
+  it('clones an absolute local path into basename under the job working directory', async () => {
+    const absRepo = '/Users/dev/code/my-service'
+    const built = makeMockToolContextWithSpies()
+    built.scmSpies['bitbucket'].cloneInfo.mockReturnValue({
+      url: absRepo,
+      envForGit: {},
+    })
+    const clone = vi.fn().mockResolvedValue(undefined)
+    const env = vi.fn().mockReturnValue({ clone })
+    simpleGitMock.mockReturnValue({ env } as never)
+
+    const h = createMcpToolHandlers(built.ctx, {})
+    const data = parseJson(await h.scm_clone_repo({ repo: absRepo })) as Record<string, unknown>
+
+    expect(checkoutRelativeDir(absRepo)).toBe('my-service')
+    expect(clone).toHaveBeenCalledWith(
+      absRepo,
+      '/tmp/work-mcp/job-mcp-test/my-service',
+      expect.any(Array),
+    )
+    expect(built.ctx.stateBackend.updateJob).toHaveBeenCalledWith(
+      'job-mcp-test',
+      expect.objectContaining({
+        params: expect.objectContaining({
+          repoCheckoutDir: 'my-service',
+          repoCheckoutAbsDir: '/tmp/work-mcp/job-mcp-test/my-service',
+        }),
+      }),
+    )
+    expect(data['repoDir']).toBe('/tmp/work-mcp/job-mcp-test/my-service')
+    expect(data['relativeDir']).toBe('my-service')
+    expect(data['reused']).toBe(false)
   })
 
   it('retries without blob filter when the remote does not support partial clone', async () => {

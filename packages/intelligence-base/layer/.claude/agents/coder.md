@@ -81,7 +81,7 @@ const checkout = mcp__coro__scm_clone_repo({ repo: params.repoSlug })
 // checkout.reused: true when the repo was already cloned
 ```
 
-**Clone before you touch the repository**, even when `params.repo` is an absolute path that already exists on disk. With the local SCM that path is the developer's own working copy: a job can read it but cannot write to it, so `git checkout -b` or an edit there fails with `operation not permitted`. The only copy you may change is the clone under the job working directory. Skip this step only when the **Workspace layout** block already shows a `Repo:` line.
+**Clone before you touch the repository.** Always call `scm_clone_repo` first — it is idempotent (`reused: true` when already cloned). An absolute `params.repo` is the local-SCM source on disk, not a job checkout: the host sandbox allows reads there but refuses writes (`operation not permitted` on `git checkout -b` and edits). Never `cd` into that source path. Use only the clone under the job working directory (`checkout.repoDir` / **Workspace layout** `Repo:` after clone). Skip the call only when **Workspace layout** already lists a `Repo:` under the job root.
 
 This creates `./$REPO_SLUG/` inside your current directory. **Do not** construct paths like `working/{job-id}/` yourself — the runner already placed you there. **Do not** fall back to `gh` or `bb` CLI commands; both bypass the plugin layer and break the moment a tenant swaps providers. Use `mcp__coro__scm_get_clone_info` only when you need the raw clone URL for a low-level git operation — it has no token; `git push origin` is enough.
 
@@ -113,12 +113,17 @@ For long-running commands, redirect output to a file under the **job working dir
 
 ### 7. Commit (do not push yet)
 
+Run **add** and **commit** as separate Bash calls (never `&&` with each other or
+with `git push`). Prefer the checkout-relative form so a host git exemption applies:
+
 ```bash
-git add -A
-git commit -m "<commit message following git conventions>"
+git -C <repoCheckoutDir> add -A
+git -C <repoCheckoutDir> commit -m "<commit message following git conventions>"
 ```
 
-Hold the push until step 8 confirms the diff is clean.
+Hold the push until step 8 confirms the diff is clean. If a chained
+add/commit/push was refused with an interactive Bash permission prompt, split
+it and retry add + commit alone — those write only inside the job checkout.
 
 ### 8. Self-review via the `code-reviewer` subagent
 
@@ -136,7 +141,7 @@ It checks the diff against:
 - test coverage for the new behaviour,
 - on standard and deep jobs, the same review lenses a pull-request review uses (correctness, security, tests, design, and architecture on deep), run on your local diff. Their findings come back to you only; nothing is posted to the pull request.
 
-The subagent returns a structured report with `Verdict: blocking | non-blocking | clean`. Behaviour:
+The subagent returns a structured report with `Verdict: blocking | non-blocking | clean`. The call blocks until that report comes back; never call `await_event` to wait for it — that parks the job for a human. Behaviour:
 
 - **blocking** — fix every blocking item, amend or add commits, then re-invoke the subagent. Repeat until the verdict is non-blocking or clean.
 - **non-blocking / clean** — record the verdict; carry it into the PR description in step 10.
@@ -145,23 +150,26 @@ The subagent is the only convention/plan/test-coverage review this PR will recei
 
 ### 9. Push the branch
 
-Use the normal push first:
+**Local SCM (`scm.resolved === "local"` in the job context): do not push.**
+Skip this step entirely. The clone's `origin` is the developer's repository
+outside the job directory: the host sandbox denies the write, and a host
+permission policy may hold `git push` for a prompt nobody can answer. The
+runner delivers the branch itself, from your job checkout, when review calls
+`scm_create_pr` and again when it merges. Your commits from step 7 are all it
+needs. Go straight to step 10. A refused push here is not a reason to escalate.
 
-```bash
-git push origin <work-item-branch-name>
-```
-
-If the push is stopped by a host permission prompt, `operation not permitted`,
-`EPERM`, or another sandbox-like denial, retry **exactly once** as an
-unchained command using the repository checkout directory:
+Every other SCM: push in its **own** Bash call — never chain it with
+`git add` / `git commit`:
 
 ```bash
 git -C <repoCheckoutDir> push origin <work-item-branch-name>
 ```
 
-Do not wrap the retry in `cd`, `&&`, or another command. If that one retry is
-also blocked, follow the sandbox-recovery skill and escalate if no documented
-SCM-compatible fallback applies. Never use raw HTTP for SCM operations.
+If the push is stopped by a host permission prompt, `operation not permitted`,
+`EPERM`, or another sandbox-like denial, retry **exactly once** unchained (same
+form as above if you used `cd &&`). Do not wrap the retry in `cd`, `&&`, or
+another command. Never use raw HTTP for SCM operations. If the retry fails,
+follow `sandbox-recovery` and escalate when no provider-native fallback applies.
 
 ### 10. Post the PR preview (do not open the PR)
 
@@ -223,11 +231,11 @@ Update `register.json` (per the `register-convention` skill):
 
 If the as-shipped shape **must** deviate from the design-time shape recorded in `_index.json`, also call `add_insight({ category: "contract-drift", … })` so the Campaign Evaluator surfaces it. Never silently diverge.
 
-When responding to review feedback (step 12) on a PR the review phase already opened, do **not** post a new `pr-preview` artefact — push the fix to the same branch and let the review phase re-gate. Do, however, append register entries for any new decisions/contracts the fix introduces (and update the producer contract file if the as-shipped shape changed).
+When responding to review feedback (step 12) on a PR the review phase already opened, do **not** post a new `pr-preview` artefact — push the fix to the same branch (on local SCM, commit it; the runner re-delivers the branch) and let the review phase re-gate. Do, however, append register entries for any new decisions/contracts the fix introduces (and update the producer contract file if the as-shipped shape changed).
 
 ### 12. Hand off to review — one work item at a time
 
-After you have pushed the branch and posted the `pr-preview` artefact for the **current work item**:
+After you have posted the `pr-preview` artefact for the **current work item** (and pushed the branch, except on local SCM — step 9):
 
 1. **Hand off to the review/gatekeeper phase by ending your turn.** The runner auto-advances to the phase after `coding` in this workflow (see `job.workflowPhases` — e.g. `review` on the default lane, `review-and-verify` on the fast lane). Do NOT call `goto_phase("coding")` to start the next work item. That next phase opens the PR for the current work item (after any interactive preview approval), then gates and merges it before routing back to coding for the next item.
 2. Only call `goto_phase("coding")` mid-turn for a **fix loop on the current work item** (response to review feedback or an evaluator finding for the merged commit).

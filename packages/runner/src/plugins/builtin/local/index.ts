@@ -45,6 +45,8 @@ type LocalPrRecord = {
   state: 'open' | 'merged' | 'declined' | 'superseded'
   approvalCount: number
   comments: ScmPrComment[]
+  /** Job checkout the branch is delivered from; re-pushed at merge. */
+  sourceCheckoutDir?: string
 }
 
 const MANIFEST: PluginManifest = {
@@ -205,9 +207,19 @@ class LocalScmPlugin implements ScmPluginRuntime {
     // like it succeeded.
     assertGitRepo(repoKey)
 
-    await this.publishBranch(args)
+    await this.publishBranch(repoKey, args.sourceBranch, args.sourceCheckoutDir)
 
     const records = readStore(repoKey)
+    // Idempotent like the hosted providers: re-opening after a fix loop
+    // re-delivers the branch (above) and returns the PR already open on it.
+    const existing = records.find(r => r.state === 'open' && r.sourceBranch === args.sourceBranch)
+    if (existing) {
+      if (args.sourceCheckoutDir && existing.sourceCheckoutDir !== args.sourceCheckoutDir) {
+        existing.sourceCheckoutDir = args.sourceCheckoutDir
+        writeStore(repoKey, records)
+      }
+      return { kind: 'pull_request', pluginId: this.manifest.id, repoKey, externalId: existing.id }
+    }
     const id = String(records.length + 1)
     records.push({
       id,
@@ -217,6 +229,7 @@ class LocalScmPlugin implements ScmPluginRuntime {
       state: 'open',
       approvalCount: 0,
       comments: [],
+      ...(args.sourceCheckoutDir ? { sourceCheckoutDir: args.sourceCheckoutDir } : {}),
     })
     writeStore(repoKey, records)
     return {
@@ -234,13 +247,17 @@ class LocalScmPlugin implements ScmPluginRuntime {
    * in a throwaway clone under the working directory and the user never sees
    * it. Pushing a *new* branch into a non-bare repo is safe; pushing the
    * branch that repo currently has checked out is not, and git refuses it —
-   * which is why the agent's `coro/*` branch is the only thing sent.
+   * which is why the agent's work-item branch is the only thing sent.
+   *
+   * The push runs here, in the runner, rather than from the agent's shell:
+   * the user's repository is outside the job directory, so a host sandbox
+   * denies the write, and a host permission policy may gate `git push`
+   * behind a prompt nobody can answer in a headless phase.
    */
-  private async publishBranch(args: ScmCreatePrArgs): Promise<void> {
-    const checkout = args.sourceCheckoutDir
+  private async publishBranch(repoSlug: string, branch: string, checkout: string | undefined): Promise<void> {
     if (!checkout) {
       throw new Error(
-        `local scm: cannot deliver branch "${args.sourceBranch}" — no job checkout is known. ` +
+        `local scm: cannot deliver branch "${branch}" — no job checkout is known. ` +
         'Clone the repository with `scm_clone_repo` before opening a pull request.',
       )
     }
@@ -250,18 +267,18 @@ class LocalScmPlugin implements ScmPluginRuntime {
     try {
       await execFileAsync(
         'git',
-        ['-C', checkout, 'push', 'origin', `${args.sourceBranch}:refs/heads/${args.sourceBranch}`],
+        ['-C', checkout, 'push', 'origin', `${branch}:refs/heads/${branch}`],
         { timeout: GIT_TIMEOUT_MS, encoding: 'utf-8' },
       )
       this.logger?.info(
-        { repo: args.repoSlug, branch: args.sourceBranch },
+        { repo: repoSlug, branch },
         'local scm: pushed branch into the target repository',
       )
     } catch (err) {
       const detail = (err as { stderr?: string })?.stderr?.trim()
         || (err instanceof Error ? err.message : String(err))
       throw new Error(
-        `local scm: failed to push branch "${args.sourceBranch}" into ${args.repoSlug}: ${detail}`,
+        `local scm: failed to push branch "${branch}" into ${repoSlug}: ${detail}`,
       )
     }
   }
@@ -344,8 +361,17 @@ class LocalScmPlugin implements ScmPluginRuntime {
    * Intentionally does not merge anything in the user's repository: Coro must
    * not rewrite a branch someone may have checked out, and the local flow's
    * contract is that the human does the merge.
+   *
+   * It does re-deliver the PR branch first. The coder cannot push for local
+   * SCM, so commits from a review → coding fix loop exist only in the job
+   * checkout until this push sends them to the branch the human will merge.
    */
   async mergePr(ref: ExternalRef): Promise<void> {
+    const repoKey = String(ref.repoKey ?? '')
+    const record = readStore(repoKey).find(r => r.id === ref.externalId)
+    if (record?.state === 'open' && record.sourceCheckoutDir && fs.existsSync(record.sourceCheckoutDir)) {
+      await this.publishBranch(repoKey, record.sourceBranch, record.sourceCheckoutDir)
+    }
     updateRecord(ref, record => {
       record.state = 'merged'
     })

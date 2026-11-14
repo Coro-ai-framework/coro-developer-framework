@@ -71,10 +71,30 @@ Attempts run `parallel` at a time, each with its own runner process.
 ### Dashboard
 
 `pnpm eval dashboard` starts a read-only local web view over the same plain
-result files used by the report commands. It shows run-level solve rate, cost
-and timing, then lets you open an attempt to inspect hidden/existing test
-results, checks, scope, timeline and the delivered diff. Use `--port`, `--host`
-or `--results-dir` to override the defaults.
+result files used by the report commands:
+
+- Search runs by label, ID, lane or scenario hash. Refresh manually or enable
+  15-second auto-refresh while viewing an ongoing run.
+- See graded/planned progress, solve rate, pass@k, pass^k, cost per solved
+  attempt and advisory judge scores. Rates describe **graded attempts only**;
+  reliability and comparisons are provisional while a run is unfinished.
+  Unfinished can also mean interrupted, not necessarily still running.
+- Expand scenario/reproducibility details for models, overlays, overrides,
+  concurrency and both checkout revisions (including dirty markers).
+- Choose a baseline (A) to compare the current run (B) using the CLI's paired,
+  noise-aware calculation. Deltas are B minus A; unmatched tasks and different
+  scenarios are called out. The URL preserves the selected comparison.
+- Filter attempts by task, solved result or outcome; sort by cost, time or
+  rework. Click a task to narrow its attempts, or open an attempt directly.
+- Inspect hidden/existing tests and checks, delivery branches, scope/reference
+  size, judge issues, timeline, phase costs/models, tokens, tool failures and
+  rate-limit retries. Older results without detailed metrics remain readable.
+- Preview and download recorded logs, raw JSON and the delivered diff.
+  Previews show at most the last 64 KiB; downloads include the entire file.
+
+Use `--port`, `--host` or `--results-dir` to override the defaults. The
+unauthenticated server accepts loopback hosts only and never starts, cancels
+or changes evaluation runs.
 
 ### Outcomes
 

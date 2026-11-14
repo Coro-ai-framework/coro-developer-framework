@@ -169,11 +169,12 @@ plugin's intelligence snippet lists the curated tool allowlist.
 ### Workspace layout
 
 Coro jobs run in a **job working directory** (`working/{jobId}/`). The target
-repository is cloned into a **subdirectory** (typically `params.repoSlug` or
-`params.repoCheckoutDir`) via `scm_clone_repo` — not at the job root.
+repository is cloned into a **subdirectory** via `scm_clone_repo` — not at the
+job root. Call that tool before any git or toolchain work; it is idempotent.
 
-- After clone, `params.repoCheckoutDir` and `params.repoCheckoutAbsDir` are set.
-- The system prompt and phase kickoff include a **Workspace layout** block with paths.
+- Until a clone succeeds, **Workspace layout** says no checkout is registered yet.
+- After clone, `params.repoCheckoutDir` and `params.repoCheckoutAbsDir` are set and the layout block lists them.
+- An absolute `params.repo` (local SCM) is the source tree on disk — never the writable checkout.
 - Run **git** and **toolchain** commands from the repo tree: `cd <repoCheckoutDir> && …` or `git -C <repoCheckoutDir>`.
 - **Build and test commands** are defined in the **`{language}-conventions`** skill for `params.language` — invoke that skill via the Skill tool before compiling or testing. Do not guess language-specific commands from this file.
 

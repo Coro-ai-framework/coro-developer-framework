@@ -1,8 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Server } from 'node:http'
+import { Script, runInNewContext } from 'node:vm'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { startDashboard } from '../src/dashboard'
+import { DASHBOARD_HTML } from '../src/dashboard-page'
+import { compareRuns } from '../src/report'
 import { resolveScenario } from '../src/scenario'
 import { ResultStore, type IndexRecord, type RunInfo } from '../src/store'
 import { tmpDir, write } from './helpers/tmp'
@@ -152,6 +155,66 @@ describe('eval dashboard', () => {
     expect(attempt.diff).toContain('diff --git')
   })
 
+  it('exposes detailed metrics and only existing allowlisted artifacts', async () => {
+    const dir = store.attemptDir(store.readIndex()[0]!.runId, 'ts-slugify', 1)
+    write(dir, 'metrics.json', JSON.stringify({ toolFailures: 2, phases: [{ phase: 'coding', costUsd: 1.25 }] }))
+    write(dir, 'private.txt', 'not an artifact')
+    const response = await fetch(`${url}/api/runs/2026-11-14T15-02-32_baseline/attempts/ts-slugify/1`)
+    const attempt = await response.json() as { metrics: { toolFailures: number }; artifacts: Array<{ name: string; bytes: number }> }
+    expect(attempt.metrics.toolFailures).toBe(2)
+    expect(attempt.artifacts).toContainEqual({ name: 'diff.patch', bytes: Buffer.byteLength('diff --git a/src/a.ts b/src/a.ts\n') })
+    expect(attempt.artifacts.map(item => item.name)).not.toContain('private.txt')
+  })
+
+  it('compares shared tasks using the same math as the CLI', async () => {
+    const original = store.readIndex()[0]!
+    const info = store.readRun(original.runId)
+    const runId = '2026-11-14T16-02-32_candidate'
+    store.writeRun({ ...info, runId, label: 'candidate', scenarioHash: 'different' })
+    const candidate = { ...original, runId, solved: false, costUsd: 2.5 }
+    store.appendIndex(candidate)
+    store.appendIndex({ ...candidate, taskId: 'candidate-only' })
+    const response = await fetch(`${url}/api/compare?a=${original.runId}&b=${runId}`)
+    const result = await response.json() as { comparison: ReturnType<typeof compareRuns> }
+    expect(result.comparison).toEqual(compareRuns([original], [candidate, { ...candidate, taskId: 'candidate-only' }]))
+    expect(result.comparison.overall.metrics[0]).toMatchObject({ delta: -1, verdict: 'unknown' })
+    expect((await fetch(`${url}/api/compare?a=missing&b=${runId}`)).status).toBe(404)
+  })
+
+  it('bounds log previews but downloads the complete artifact', async () => {
+    const dir = store.attemptDir(store.readIndex()[0]!.runId, 'ts-slugify', 1)
+    const log = 'start\n' + 'x'.repeat(100_000) + '\nlast failure'
+    write(dir, 'runner.log', log)
+    const endpoint = `${url}/api/runs/2026-11-14T15-02-32_baseline/attempts/ts-slugify/1/artifacts/runner.log`
+    const preview = await (await fetch(endpoint)).json() as { text: string; bytes: number; truncated: boolean }
+    expect(preview.truncated).toBe(true)
+    expect(preview.bytes).toBe(Buffer.byteLength(log))
+    expect(preview.text).toHaveLength(64 * 1024)
+    expect(preview.text.endsWith('\nlast failure')).toBe(true)
+    const response = await fetch(`${endpoint}?download=1`)
+    expect(response.headers.get('content-disposition')).toBe('attachment; filename="runner.log"')
+    expect(await response.text()).toBe(log)
+    expect((await fetch(endpoint.replace('runner.log', 'private.txt'))).status).toBe(404)
+  })
+
+  it('reports malformed artifacts rather than silently hiding diagnostics', async () => {
+    const dir = store.attemptDir(store.readIndex()[0]!.runId, 'ts-slugify', 1)
+    write(dir, 'metrics.json', '{broken')
+    const response = await fetch(`${url}/api/runs/2026-11-14T15-02-32_baseline/attempts/ts-slugify/1`)
+    expect(response.status).toBe(500)
+    expect(await response.json()).toHaveProperty('error')
+    fs.unlinkSync(path.join(dir, 'metrics.json'))
+  })
+
+  it('refuses artifact symlinks outside the attempt directory', async () => {
+    const dir = store.attemptDir(store.readIndex()[0]!.runId, 'ts-slugify', 1)
+    const outside = write(tmpDir(), 'job.log', 'outside log')
+    fs.symlinkSync(outside, path.join(dir, 'job.log'))
+    const response = await fetch(`${url}/api/runs/2026-11-14T15-02-32_baseline/attempts/ts-slugify/1/artifacts/job.log`)
+    expect(response.status).toBe(404)
+    expect(await response.text()).not.toContain('outside log')
+  })
+
   it('does not use unmatched URL segments as file paths', async () => {
     fs.writeFileSync(path.join(root, 'secret.json'), '{"secret":true}')
     const response = await fetch(
@@ -159,6 +222,42 @@ describe('eval dashboard', () => {
     )
     expect(response.status).toBe(404)
     expect(await response.text()).not.toContain('"secret":true')
+  })
+
+  describe('dashboard client', () => {
+    const script = DASHBOARD_HTML.match(/<script>([\s\S]*?)<\/script>/)![1]!
+
+    it('ships syntactically valid inline JavaScript', () => {
+      expect(() => new Script(script)).not.toThrow()
+    })
+
+    it('combines attempt filters, sorts numerically, and escapes task names', () => {
+      const rows = { innerHTML: '', querySelectorAll: () => [] }
+      const counter = { textContent: '' }
+      const node = { addEventListener: () => {} }
+      const context = {
+        document: { querySelector: (selector: string) => selector === '#attempt-rows' ? rows : selector === '#attempt-count' ? counter : node },
+        addEventListener: () => {},
+        setInterval: () => {},
+      }
+      runInNewContext(script.replace(/\n    boot\(\);/, ''), context)
+      runInNewContext(`
+        state.run = { attempts: [
+          { taskId: '<task>', attempt: 1, solved: false, outcome: 'timeout', costUsd: 2 },
+          { taskId: '<task>', attempt: 2, solved: false, outcome: 'timeout', costUsd: 10 },
+          { taskId: '<task>', attempt: 3, solved: true, outcome: 'complete', costUsd: 20 },
+          { taskId: 'other', attempt: 1, solved: false, outcome: 'timeout', costUsd: 30 }
+        ] };
+        state.filters = { query: '<task>', result: 'failed', outcome: 'timeout', sort: 'costUsd' };
+        renderAttempts();
+      `, context)
+      expect(counter.textContent).toBe('2 / 4 attempts')
+      expect(rows.innerHTML).not.toContain('<task>')
+      expect(rows.innerHTML.indexOf('#2')).toBeLessThan(rows.innerHTML.indexOf('#1'))
+      expect(rows.innerHTML).not.toContain('#3')
+      runInNewContext("state.filters.query = 'missing'; renderAttempts();", context)
+      expect(rows.innerHTML).toContain('No matching graded attempts.')
+    })
   })
 
   it('does not trust traversal paths stored in a corrupt index', async () => {

@@ -157,7 +157,7 @@ Log the mode you chose and the reason before moving on.
 
 ### 3. Clone the repo and extract its contract
 
-Both modes. Clone with `scm_clone_repo({ repo: params.repo })` unless the **Workspace layout** block already lists a `Repo:` checkout (an earlier phase cloned it). An absolute path in `params.repo` is the source, not a checkout: clone it so the later phases work in the clone and never in the original. Then find what would reject the change. This is the part of the spec no earlier phase could have produced: plan mode reads repositories through the SCM API and cannot execute anything, so a hook or a linter is invisible to it.
+Both modes. Always call `scm_clone_repo({ repo: params.repo })` first — it is idempotent (`reused: true` when the checkout already exists under the job root). Skip the call only when the **Workspace layout** block already lists a `Repo:` path under the job root (an earlier phase cloned it). An absolute path in `params.repo` is the local-SCM source, not a checkout: reading or writing there fails under the host sandbox. Work only in the clone the tool returns (`repoDir` / `relativeDir`). Then find what would reject the change. This is the part of the spec no earlier phase could have produced: plan mode reads repositories through the SCM API and cannot execute anything, so a hook or a linter is invisible to it.
 
 Where to look:
 - `CONTRIBUTING.md`, `AGENTS.md`, `CLAUDE.md`, `.editorconfig`, `docs/` style guides

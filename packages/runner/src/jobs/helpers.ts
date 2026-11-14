@@ -287,5 +287,9 @@ export function deriveRepoCheckoutDir(job: Job, workingRoot: string): string | u
     : typeof params?.['repo'] === 'string' ? params['repo']
     : undefined
   if (typeof rel !== 'string' || rel.length === 0) return undefined
-  return path.join(workingRoot, job.id, rel)
+  // Absolute `params.repo` is the local-SCM source tree, not a checkout under
+  // the job. Guess the basename the clone tool will use until it persists
+  // `repoCheckoutAbsDir`.
+  const underJob = path.isAbsolute(rel) ? path.basename(rel) || 'repo' : rel
+  return path.join(workingRoot, job.id, underJob)
 }

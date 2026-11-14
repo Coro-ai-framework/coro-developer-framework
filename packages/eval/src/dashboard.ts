@@ -3,7 +3,8 @@ import http, { type Server } from 'node:http'
 import path from 'node:path'
 import { DASHBOARD_HTML } from './dashboard-page'
 import type { Grade } from './grade'
-import { summarize } from './report'
+import type { Metrics } from './metrics'
+import { compareRuns, summarize } from './report'
 import { ResultStore, RESULTS_DIR, type IndexRecord } from './store'
 import type { AttemptMeta, Timeline } from './types'
 
@@ -24,12 +25,22 @@ interface RunView {
   attempts: IndexRecord[]
 }
 
-function readOptional<T>(file: string): T | undefined {
-  if (!fs.existsSync(file)) return undefined
+function readOptional<T>(file: string): T {
+  return JSON.parse(fs.readFileSync(file, 'utf-8')) as T
+}
+
+const ARTIFACT_NAMES = ['attempt.json', 'grade.json', 'metrics.json', 'timeline.json', 'job.json', 'diff.patch', 'job.log', 'runner.log', 'grade.log', 'judge.json'] as const
+const PREVIEW_BYTES = 64 * 1024
+
+function preview(file: string): { text: string; bytes: number; truncated: boolean } {
+  const fd = fs.openSync(file, 'r')
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf-8')) as T
-  } catch {
-    return undefined
+    const bytes = fs.fstatSync(fd).size
+    const buffer = Buffer.alloc(Math.min(bytes, PREVIEW_BYTES))
+    fs.readSync(fd, buffer, 0, buffer.length, Math.max(0, bytes - buffer.length))
+    return { text: buffer.toString('utf-8'), bytes, truncated: bytes > PREVIEW_BYTES }
+  } finally {
+    fs.closeSync(fd)
   }
 }
 
@@ -97,13 +108,21 @@ function attemptView(store: ResultStore, runId: string, taskId: string, attempt:
   const meta = artifactPath(dir, 'attempt.json')
   const grade = artifactPath(dir, 'grade.json')
   const timeline = artifactPath(dir, 'timeline.json')
+  const metrics = artifactPath(dir, 'metrics.json')
   const diff = artifactPath(dir, 'diff.patch')
+  const diffPreview = diff ? preview(diff) : undefined
   return {
     record,
     meta: meta ? readOptional<AttemptMeta>(meta) : undefined,
     grade: grade ? readOptional<Grade>(grade) : undefined,
     timeline: timeline ? readOptional<Timeline>(timeline) : undefined,
-    diff: diff ? fs.readFileSync(diff, 'utf-8') : '',
+    metrics: metrics ? readOptional<Metrics>(metrics) : undefined,
+    diff: diffPreview?.text ?? '',
+    diffTruncated: diffPreview?.truncated ?? false,
+    artifacts: ARTIFACT_NAMES.flatMap(name => {
+      const file = artifactPath(dir, name)
+      return file ? [{ name, bytes: fs.statSync(file).size }] : []
+    }),
   }
 }
 
@@ -161,6 +180,38 @@ function route(store: ResultStore, request: http.IncomingMessage, response: http
 
     if (parts.length === 3 && parts[0] === 'api' && parts[1] === 'runs') {
       sendJson(response, 200, loadRun(store, parts[2]!))
+      return
+    }
+
+    if (parts.length === 2 && parts[0] === 'api' && parts[1] === 'compare') {
+      const a = loadRun(store, url.searchParams.get('a') ?? '')
+      const b = loadRun(store, url.searchParams.get('b') ?? '')
+      sendJson(response, 200, { a: a.info, b: b.info, comparison: compareRuns(a.attempts, b.attempts) })
+      return
+    }
+
+    if (parts.length === 8 && parts[0] === 'api' && parts[1] === 'runs' &&
+      parts[3] === 'attempts' && parts[6] === 'artifacts') {
+      const run = loadRun(store, parts[2]!)
+      const attempt = Number(parts[5])
+      const record = run.attempts.find(item => item.taskId === parts[4] && item.attempt === attempt)
+      const name = ARTIFACT_NAMES.find(item => item === parts[7])
+      if (!record || !name) throw new DashboardNotFound('Artifact was not found')
+      const file = artifactPath(attemptArtifactsDir(store, parts[2]!, record.taskId, record.attempt), name)
+      if (!file) throw new DashboardNotFound('Artifact was not found')
+      if (url.searchParams.get('download') !== '1') {
+        sendJson(response, 200, preview(file))
+      } else {
+        response.writeHead(200, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${name}"`,
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'no-store',
+        })
+        const stream = fs.createReadStream(file)
+        stream.on('error', error => response.destroy(error))
+        stream.pipe(response)
+      }
       return
     }
 

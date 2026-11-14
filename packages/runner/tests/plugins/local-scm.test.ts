@@ -170,6 +170,22 @@ describe('local SCM plugin', () => {
     expect((await plugin.getPrStatus(ref)).state).toBe('merged')
   })
 
+  it('re-delivers fix-loop commits when the same branch is opened again or merged', async () => {
+    const ref = await openPr()
+
+    // Review → coding fix loop: the coder only commits; it cannot push.
+    fs.writeFileSync(path.join(checkout, 'feature.txt'), 'fixed\n')
+    git(checkout, 'commit', '-am', 'address review')
+    const reopened = await openPr()
+    expect(reopened.externalId).toBe(ref.externalId)
+    expect(git(originRepo, 'rev-parse', 'coro/add-feature')).toBe(git(checkout, 'rev-parse', 'HEAD'))
+
+    fs.writeFileSync(path.join(checkout, 'feature.txt'), 'fixed again\n')
+    git(checkout, 'commit', '-am', 'address second review')
+    await plugin.mergePr!(ref)
+    expect(git(originRepo, 'rev-parse', 'coro/add-feature')).toBe(git(checkout, 'rev-parse', 'HEAD'))
+  })
+
   it('keeps the pull-request store inside the coro directory', async () => {
     await openPr()
 

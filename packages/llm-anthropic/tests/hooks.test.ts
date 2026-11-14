@@ -231,3 +231,19 @@ describe('MCP PreToolUse gate', () => {
     expect(isAllowed(allowed)).toBe(true)
   })
 })
+
+describe('Subagent PreToolUse hook', () => {
+  it('keeps Agent calls in the foreground so the phase gets the report back', async () => {
+    const hook = makeHook()
+    const input = { subagent_type: 'code-reviewer', description: 'Review', prompt: 'Review the diff' }
+    const result = await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: input } as unknown as Parameters<HookCallback>[0],
+      'tool-use-id',
+      { signal: new AbortController().signal },
+    ) as HookJSONOutput
+    expect(result.hookSpecificOutput).toEqual({
+      hookEventName: 'PreToolUse',
+      updatedInput: { ...input, run_in_background: false },
+    })
+  })
+})

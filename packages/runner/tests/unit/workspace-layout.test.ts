@@ -52,6 +52,44 @@ describe('resolveJobWorkspaceLayout', () => {
     expect(layout.repoCheckoutAbsDir).toBe('/work/ws-job/my-repo')
   })
 
+  it('does not advertise a Repo from params.repoSlug before clone', () => {
+    const layout = resolveJobWorkspaceLayout(
+      makeJob({ params: { repoSlug: 'svc' } }),
+      '/work/ws-job',
+    )
+    expect(layout.repoCheckoutDir).toBeUndefined()
+    expect(layout.repoCheckoutAbsDir).toBeUndefined()
+    const block = buildWorkspaceLayoutPromptBlock(layout)
+    expect(block).toContain('Call `scm_clone_repo` first')
+    expect(block).not.toContain('Repo:')
+  })
+
+  it('does not advertise an absolute local-SCM params.repo as the checkout', () => {
+    const layout = resolveJobWorkspaceLayout(
+      makeJob({
+        params: { repo: '/Users/dev/code/my-service', repoSlug: '/Users/dev/code/my-service' },
+      }),
+      '/work/ws-job',
+    )
+    expect(layout.repoCheckoutDir).toBeUndefined()
+    expect(layout.repoCheckoutAbsDir).toBeUndefined()
+    expect(buildWorkspaceLayoutPromptBlock(layout)).toContain('Call `scm_clone_repo` first')
+  })
+
+  it('ignores a persisted checkout whose abs path is outside the job root', () => {
+    const layout = resolveJobWorkspaceLayout(
+      makeJob({
+        params: {
+          repoCheckoutDir: '/Users/dev/code/my-service',
+          repoCheckoutAbsDir: '/Users/dev/code/my-service',
+        },
+      }),
+      '/work/ws-job',
+    )
+    expect(layout.repoCheckoutDir).toBeUndefined()
+    expect(layout.repoCheckoutAbsDir).toBeUndefined()
+  })
+
   it('surfaces campaignContextDir when set on campaign children', () => {
     const layout = resolveJobWorkspaceLayout(
       makeJob({ params: { repoSlug: 'svc', campaignContextDir: 'campaign' } }),
@@ -133,9 +171,18 @@ describe('resolvePrimaryRepoCheckout', () => {
 })
 
 describe('buildWorkspaceLayoutPromptBlock', () => {
-  it('is language-agnostic', () => {
+  it('is language-agnostic once a checkout is registered', () => {
     const block = buildWorkspaceLayoutPromptBlock(
-      resolveJobWorkspaceLayout(makeJob(), '/work/ws-job'),
+      resolveJobWorkspaceLayout(
+        makeJob({
+          params: {
+            repoSlug: 'svc',
+            repoCheckoutDir: 'svc',
+            repoCheckoutAbsDir: '/work/ws-job/svc',
+          },
+        }),
+        '/work/ws-job',
+      ),
     )
     expect(block).toContain('## Workspace layout')
     expect(block).toContain('/work/ws-job/svc')

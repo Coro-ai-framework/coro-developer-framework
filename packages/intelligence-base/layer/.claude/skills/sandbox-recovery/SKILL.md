@@ -23,7 +23,7 @@ This skill is the recovery path. Work it in order before escalating.
 | Tool result starts with `Blocked Bash:` | Coro path guard | The command never ran. Rewrite the path. |
 | The command ran and *it* printed `operation not permitted` / `EPERM` | Host sandbox | The path is legal to name but not to write. |
 | A fetch fails for a host that resolves and is up | Host sandbox | There is a network allowlist. |
-| Bash asks for interactive permission | Host sandbox | The unsandboxed-retry escape hatch; nobody can answer it. Do not retry. |
+| Bash asks for interactive permission | Host sandbox | Nobody can answer the prompt. Do **not** re-issue the same command. If it was chained (`cd && …`, `git add && git commit && git push`), split it and retry each step once unchained (section 5) before concluding it is blocked. |
 
 Coro's `$HOME` package-cache exemptions mean the guard will not stop you from
 *naming* `~/go/**`, `~/.nuget/**`, and friends. That is not a promise the OS
@@ -112,13 +112,27 @@ GOPRIVATE='<scm-host>/<org>/*' GONOSUMDB='<scm-host>/<org>/*'
 
 A host policy may exempt specific commands (`git` is a common one). The
 exemption matches the command it is given, so `cd repo && git checkout …` can
-be sandboxed while a bare `git -C repo checkout …` is not. If a normally
-exempt command fails with `EPERM`, retry it once in its own un-chained form
-using the tool's own directory flag before concluding it is blocked. This is
-for a checkout inside the job directory; if the repository path is outside it,
-the retry cannot help — clone it (section 1b).
+be sandboxed (or hit an interactive permission prompt) while a bare
+`git -C repo checkout …` is not. If a normally exempt command fails with
+`EPERM` **or** an interactive Bash permission prompt, and the call was chained,
+split it and retry each step once in its own un-chained form using the tool's
+own directory flag before concluding it is blocked. This is for a checkout
+inside the job directory; if the repository path is outside it, the retry
+cannot help — clone it (section 1b).
 
-For a push specifically, if `git push origin <branch>` is stopped by an
+Example: `git add … && git commit … && git push …` refused with a permission
+prompt → retry as three separate calls:
+
+```bash
+git -C <repoCheckoutDir> add -A
+git -C <repoCheckoutDir> commit -m "…"
+git -C <repoCheckoutDir> push origin <branch>
+```
+
+Add/commit only touch the job checkout and usually succeed once unchained. Do
+not escalate solely because the chained form was refused.
+
+For a push specifically, if `git push origin <branch>` (alone) is stopped by an
 unanswerable host permission prompt, `operation not permitted`, `EPERM`, or a
 similar sandbox-like denial, try exactly one un-chained retry:
 
@@ -127,8 +141,14 @@ git -C <repoCheckoutDir> push origin <branch>
 ```
 
 Do not wrap this retry in `cd`, `&&`, or a command wrapper intended to bypass
-policy. If it fails, continue to escalation or a documented provider-native
-fallback; do not retry it repeatedly.
+policy. Do not retry it repeatedly.
+
+If the retry fails and origin is an absolute path outside the job directory
+(local SCM), you should not have been pushing: on local SCM the runner
+delivers the branch in `scm_create_pr`, so leave the commit in the job
+checkout, post `pr-preview`, and hand off to review. Do **not** escalate on a
+local-SCM push denial. For hosted SCMs (GitHub, Bitbucket, …), continue to
+escalation or another documented provider-native fallback.
 
 ## 6. If still blocked
 

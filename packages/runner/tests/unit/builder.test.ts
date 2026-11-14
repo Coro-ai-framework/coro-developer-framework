@@ -646,15 +646,14 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
       )
 
       expect(prompt).toContain('## Workspace layout')
-      expect(prompt).toContain('/work/job-1/my-svc')
-      expect(prompt).toContain('{language}-conventions')
+      expect(prompt).toContain('Call `scm_clone_repo` first')
       expect(prompt).not.toMatch(/\bgo build\b/)
 
       const ctx = parseJobContext(prompt)
       expect(ctx['workspace']).toEqual({
         jobWorkingDir: '/work/job-1',
-        repoCheckoutDir: 'my-svc',
-        repoCheckoutAbsDir: '/work/job-1/my-svc',
+        repoCheckoutDir: null,
+        repoCheckoutAbsDir: null,
       })
     })
 

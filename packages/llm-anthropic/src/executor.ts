@@ -919,6 +919,10 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         // turn 1 with status "pending". Coro's mcp__coro__* tools must
         // be present from the first turn, so restore the 0.2 wait.
         MCP_CONNECTION_NONBLOCKING: '0',
+        // Phases are headless and act on subagent reports, so a subagent (or
+        // Bash job) left running after the turn ends has nobody to hand its
+        // result to. The PreToolUse hook also pins `run_in_background: false`.
+        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
         BB_WORKSPACE: this.settings.bitbucket.workspace,
         BB_CODER_APP_PASSWORD: this.settings.bitbucket.coderAccount.appPassword,
         BB_BASE_URL: 'https://bitbucket.org',

@@ -19,20 +19,49 @@ export interface JobWorkspaceLayout {
 
 export function resolveJobWorkspaceLayout(job: Job, jobWorkingDir: string): JobWorkspaceLayout {
   const params = job.params as Record<string, unknown>
-  const rel =
-    typeof params['repoCheckoutDir'] === 'string' ? params['repoCheckoutDir']
-    : typeof params['repoSlug'] === 'string' ? params['repoSlug']
-    : typeof params['repo'] === 'string' ? params['repo']
-    : undefined
-
-  const abs =
-    typeof params['repoCheckoutAbsDir'] === 'string' ? params['repoCheckoutAbsDir']
-    : rel ? path.join(jobWorkingDir, rel) : undefined
+  // Only advertise a checkout the runner has registered (`scm_clone_repo`
+  // persists both keys). Guessing from `params.repo` / `params.repoSlug`
+  // before clone made agents skip cloning — and for local SCM, absolute
+  // `params.repo` is the developer's read-only working copy, not a job checkout.
+  const { repoCheckoutDir, repoCheckoutAbsDir } = registeredCheckout(params, jobWorkingDir)
 
   const campaignContextDir = paramString(params, 'campaignContextDir')
   const planContextDir = paramString(params, 'planContextDir')
 
-  return { jobWorkingDir, repoCheckoutDir: rel, repoCheckoutAbsDir: abs, campaignContextDir, planContextDir }
+  return { jobWorkingDir, repoCheckoutDir, repoCheckoutAbsDir, campaignContextDir, planContextDir }
+}
+
+/**
+ * Paths persisted after a successful `scm_clone_repo`. Absolute
+ * `params.repo` / slug guesses are intentionally ignored here.
+ */
+function registeredCheckout(
+  params: Record<string, unknown>,
+  jobWorkingDir: string,
+): { repoCheckoutDir?: string; repoCheckoutAbsDir?: string } {
+  const persistedRel = paramString(params, 'repoCheckoutDir')
+  const persistedAbs = paramString(params, 'repoCheckoutAbsDir')
+  if (!persistedAbs && !persistedRel) return {}
+
+  const jobRoot = path.resolve(jobWorkingDir)
+  const absCandidate = persistedAbs
+    ? path.resolve(persistedAbs)
+    : persistedRel && !path.isAbsolute(persistedRel)
+      ? path.resolve(jobWorkingDir, persistedRel)
+      : undefined
+  if (!absCandidate) return {}
+
+  const underJob =
+    absCandidate === jobRoot || absCandidate.startsWith(jobRoot + path.sep)
+  if (!underJob) return {}
+
+  const rel =
+    persistedRel && !path.isAbsolute(persistedRel)
+      ? persistedRel
+      : path.relative(jobRoot, absCandidate)
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return {}
+
+  return { repoCheckoutDir: rel, repoCheckoutAbsDir: absCandidate }
 }
 
 function paramString(params: Record<string, unknown>, key: string): string | undefined {
