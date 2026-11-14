@@ -1,0 +1,32 @@
+id: ts-fix-pagination
+size: small
+language: typescript
+expect: pr
+timeoutMinutes: 30
+description: |
+  Support has sent us three pagination complaints from the product list. All
+  three come from `paginate` in `src/paginate.ts`:
+
+  1. When the number of items is an exact multiple of the page size (10 items,
+     5 to a page), the list offers a third page that is empty, and "Next" stays
+     enabled on the real last page.
+  2. With no items at all, `totalPages` is 1. It should be 0, and `hasNext` and
+     `hasPrev` should both be false.
+  3. A page size of 0, which a bad config produced last week, gives `NaN`
+     totals. `paginate` should throw a `RangeError` when `pageSize` is not a
+     positive whole number, and likewise when `page` is not a positive whole
+     number.
+
+  Asking for a page past the end is fine and should keep working: it returns an
+  empty `items` array with `hasNext: false`.
+
+  Fix `paginate` and add regression tests for each of the three.
+grade:
+  setup: npm ci --no-audit --no-fund
+  hiddenTests: npx vitest run hidden/
+  existingTests: npx vitest run tests/
+  checks:
+    - npx tsc --noEmit
+  scope:
+    - src/**
+    - tests/**

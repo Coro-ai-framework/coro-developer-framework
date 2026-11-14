@@ -1,0 +1,65 @@
+diff --git a/src/paginate.ts b/src/paginate.ts
+index 8df2b73..a3158dd 100644
+--- a/src/paginate.ts
++++ b/src/paginate.ts
+@@ -10,10 +10,19 @@ export interface Page<T> {
+   hasPrev: boolean
+ }
+ 
++function assertPositiveInteger(name: string, value: number): void {
++  if (!Number.isInteger(value) || value < 1) {
++    throw new RangeError(`${name} must be a positive whole number, got ${value}`)
++  }
++}
++
+ /** Return page `page` (1-based) of `items`, `pageSize` items to a page. */
+ export function paginate<T>(items: readonly T[], page: number, pageSize: number): Page<T> {
++  assertPositiveInteger('page', page)
++  assertPositiveInteger('pageSize', pageSize)
++
+   const totalItems = items.length
+-  const totalPages = Math.floor(totalItems / pageSize) + 1
++  const totalPages = Math.ceil(totalItems / pageSize)
+   const start = (page - 1) * pageSize
+ 
+   return {
+diff --git a/tests/paginate.test.ts b/tests/paginate.test.ts
+index 7d3b963..82a0afa 100644
+--- a/tests/paginate.test.ts
++++ b/tests/paginate.test.ts
+@@ -26,6 +26,35 @@ describe('paginate', () => {
+     expect(page.pageSize).toBe(4)
+     expect(page.items).toEqual([5, 6, 7, 8])
+   })
++
++  it('does not report an empty extra page for an exact multiple', () => {
++    const ten = items.slice(0, 10)
++    expect(paginate(ten, 1, 5).totalPages).toBe(2)
++    expect(paginate(ten, 2, 5).hasNext).toBe(false)
++  })
++
++  it('has no pages for an empty list', () => {
++    const page = paginate([], 1, 5)
++    expect(page.totalPages).toBe(0)
++    expect(page.hasNext).toBe(false)
++    expect(page.hasPrev).toBe(false)
++  })
++
++  it('throws a RangeError for a page size that is not a positive whole number', () => {
++    expect(() => paginate(items, 1, 0)).toThrow(RangeError)
++    expect(() => paginate(items, 1, 2.5)).toThrow(RangeError)
++  })
++
++  it('throws a RangeError for a page that is not a positive whole number', () => {
++    expect(() => paginate(items, 0, 5)).toThrow(RangeError)
++    expect(() => paginate(items, 1.5, 5)).toThrow(RangeError)
++  })
++
++  it('returns an empty page past the end', () => {
++    const page = paginate(items, 9, 5)
++    expect(page.items).toEqual([])
++    expect(page.hasNext).toBe(false)
++  })
+ })
+ 
+ describe('describePage', () => {

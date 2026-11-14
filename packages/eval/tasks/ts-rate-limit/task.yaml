@@ -1,0 +1,44 @@
+id: ts-rate-limit
+size: medium
+language: typescript
+expect: pr
+timeoutMinutes: 60
+description: |
+  The catalogue API needs per-client rate limiting before the partner launch.
+  Add it to `createApp` in `src/app.ts`.
+
+  `createApp` takes a new optional setting, `rateLimit: { limit: number; windowMs: number }`.
+  When it is omitted nothing changes: no limiting and no extra headers.
+
+  **Who is a client.** The value of the `x-api-key` request header if there is
+  one; otherwise the first address in `x-forwarded-for` (a comma-separated list,
+  so trim the whitespace around it); otherwise every request without either
+  header counts as one shared client. Header names are case-insensitive.
+
+  **The window.** Each client has a fixed window that starts at its first
+  counted request. Within `windowMs` of that start it may make `limit` requests;
+  the next one gets `429`. Once `windowMs` has elapsed (`now() - windowStart >= windowMs`)
+  the next request starts a fresh window. Rejected requests are not counted.
+
+  **What is counted.** Every request except `GET /health`, which is never limited
+  and never counted. That includes requests that end in a 404.
+
+  **Headers.** Every counted response, including the 429, carries
+  `x-ratelimit-limit` (the limit) and `x-ratelimit-remaining` (requests left in
+  the window after this one, never below 0), both as strings.
+
+  **The 429.** Status 429, body `{ error: 'rate_limited' }`, the usual JSON
+  content type, and a `retry-after` header holding the whole seconds left in the
+  window, rounded up and never less than 1.
+
+  Use the `now` function `createApp` already takes for time, so tests can drive
+  the clock. Add tests.
+grade:
+  setup: npm ci --no-audit --no-fund
+  hiddenTests: npx vitest run hidden/
+  existingTests: npx vitest run tests/
+  checks:
+    - npx tsc --noEmit
+  scope:
+    - src/**
+    - tests/**

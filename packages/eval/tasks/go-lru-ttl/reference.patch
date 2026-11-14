@@ -1,0 +1,313 @@
+diff --git a/lru.go b/lru.go
+index 69425ac..44ab088 100644
+--- a/lru.go
++++ b/lru.go
+@@ -1,71 +1,164 @@
+ // Package cache holds the small in-process caches the services share.
+ package cache
+ 
+-import "container/list"
++import (
++	"container/list"
++	"sync"
++	"time"
++)
+ 
+ type entry struct {
+ 	key   string
+ 	value any
++	// expiresAt is the zero time for an entry that never expires.
++	expiresAt time.Time
++}
++
++func (e *entry) expired(now time.Time) bool {
++	return !e.expiresAt.IsZero() && !now.Before(e.expiresAt)
++}
++
++// Option configures an LRU.
++type Option func(*LRU)
++
++// WithTTL sets the time to live of entries stored with Put. A ttl of zero or
++// less means entries do not expire.
++func WithTTL(ttl time.Duration) Option {
++	return func(c *LRU) { c.ttl = ttl }
++}
++
++// WithClock sets where the cache reads the current time. It exists so tests
++// can control time; the default is time.Now.
++func WithClock(now func() time.Time) Option {
++	return func(c *LRU) {
++		if now != nil {
++			c.now = now
++		}
++	}
+ }
+ 
+ // LRU is a fixed-capacity cache that evicts the least recently used entry
+-// when it is full.
++// when it is full. Entries can expire. It is safe for concurrent use.
+ type LRU struct {
++	mu       sync.Mutex
+ 	capacity int
++	ttl      time.Duration
++	now      func() time.Time
+ 	order    *list.List // front is the most recently used
+ 	items    map[string]*list.Element
+ }
+ 
+ // NewLRU returns an empty cache that holds at most capacity entries.
+ // It panics if capacity is less than 1.
+-func NewLRU(capacity int) *LRU {
++func NewLRU(capacity int, opts ...Option) *LRU {
+ 	if capacity < 1 {
+ 		panic("cache: capacity must be at least 1")
+ 	}
+-	return &LRU{
++	c := &LRU{
+ 		capacity: capacity,
++		now:      time.Now,
+ 		order:    list.New(),
+ 		items:    make(map[string]*list.Element, capacity),
+ 	}
++	for _, opt := range opts {
++		opt(c)
++	}
++	return c
+ }
+ 
+ // Get returns the value stored under key and marks it as most recently used.
++// An expired entry is removed and reported as missing.
+ func (c *LRU) Get(key string) (any, bool) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++
+ 	el, ok := c.items[key]
+ 	if !ok {
+ 		return nil, false
+ 	}
++	e := el.Value.(*entry)
++	if e.expired(c.now()) {
++		c.removeElement(el)
++		return nil, false
++	}
+ 	c.order.MoveToFront(el)
+-	return el.Value.(*entry).value, true
++	return e.value, true
+ }
+ 
+-// Put stores value under key, replacing any existing value and marking the
+-// entry as most recently used. If the cache is full the least recently used
+-// entry is evicted.
++// Put stores value under key with the cache's default time to live.
+ func (c *LRU) Put(key string, value any) {
++	c.put(key, value, c.ttl)
++}
++
++// PutWithTTL stores value under key with its own time to live. A ttl of zero
++// or less means the entry does not expire.
++func (c *LRU) PutWithTTL(key string, value any, ttl time.Duration) {
++	c.put(key, value, ttl)
++}
++
++func (c *LRU) put(key string, value any, ttl time.Duration) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++
++	now := c.now()
++	var expiresAt time.Time
++	if ttl > 0 {
++		expiresAt = now.Add(ttl)
++	}
++
+ 	if el, ok := c.items[key]; ok {
+-		el.Value.(*entry).value = value
++		e := el.Value.(*entry)
++		e.value = value
++		e.expiresAt = expiresAt
+ 		c.order.MoveToFront(el)
+ 		return
+ 	}
++	if c.order.Len() >= c.capacity {
++		c.makeRoom(now)
++	}
++	c.items[key] = c.order.PushFront(&entry{key: key, value: value, expiresAt: expiresAt})
++}
++
++// makeRoom drops every expired entry and, if the cache is still full,
++// evicts the least recently used one. The caller holds c.mu.
++func (c *LRU) makeRoom(now time.Time) {
++	c.purgeExpired(now)
+ 	if c.order.Len() >= c.capacity {
+ 		c.removeElement(c.order.Back())
+ 	}
+-	c.items[key] = c.order.PushFront(&entry{key: key, value: value})
+ }
+ 
+-// Delete removes key and reports whether it was present.
++// purgeExpired removes every expired entry. The caller holds c.mu.
++func (c *LRU) purgeExpired(now time.Time) {
++	for el := c.order.Front(); el != nil; {
++		next := el.Next()
++		if el.Value.(*entry).expired(now) {
++			c.removeElement(el)
++		}
++		el = next
++	}
++}
++
++// Delete removes key and reports whether a live entry was removed.
+ func (c *LRU) Delete(key string) bool {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++
+ 	el, ok := c.items[key]
+ 	if !ok {
+ 		return false
+ 	}
++	live := !el.Value.(*entry).expired(c.now())
+ 	c.removeElement(el)
+-	return true
++	return live
+ }
+ 
+-// Len returns the number of entries in the cache.
++// Len returns the number of live entries in the cache.
+ func (c *LRU) Len() int {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++
++	c.purgeExpired(c.now())
+ 	return c.order.Len()
+ }
+ 
+diff --git a/lru_test.go b/lru_test.go
+index bea2e9e..e77ef69 100644
+--- a/lru_test.go
++++ b/lru_test.go
+@@ -1,6 +1,10 @@
+ package cache
+ 
+-import "testing"
++import (
++	"sync"
++	"testing"
++	"time"
++)
+ 
+ func TestGetMissing(t *testing.T) {
+ 	c := NewLRU(2)
+@@ -69,3 +73,114 @@ func TestNewLRURejectsBadCapacity(t *testing.T) {
+ 	}()
+ 	NewLRU(0)
+ }
++
++type testClock struct {
++	mu  sync.Mutex
++	now time.Time
++}
++
++func (c *testClock) Now() time.Time {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.now
++}
++
++func (c *testClock) Advance(d time.Duration) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.now = c.now.Add(d)
++}
++
++func newTestClock() *testClock {
++	return &testClock{now: time.Unix(1_700_000_000, 0)}
++}
++
++func TestEntryExpiresAtPutTimePlusTTL(t *testing.T) {
++	clock := newTestClock()
++	c := NewLRU(4, WithTTL(time.Minute), WithClock(clock.Now))
++	c.Put("a", 1)
++
++	clock.Advance(59 * time.Second)
++	if _, ok := c.Get("a"); !ok {
++		t.Fatal("expected a hit just before the TTL")
++	}
++	clock.Advance(time.Second)
++	if _, ok := c.Get("a"); ok {
++		t.Fatal("expected a miss once the TTL has elapsed")
++	}
++}
++
++func TestGetDoesNotExtendTheTTL(t *testing.T) {
++	clock := newTestClock()
++	c := NewLRU(4, WithTTL(time.Minute), WithClock(clock.Now))
++	c.Put("a", 1)
++	clock.Advance(30 * time.Second)
++	c.Get("a")
++	clock.Advance(30 * time.Second)
++	if _, ok := c.Get("a"); ok {
++		t.Fatal("Get must not extend an entry's life")
++	}
++}
++
++func TestPutWithTTLOverridesTheDefault(t *testing.T) {
++	clock := newTestClock()
++	c := NewLRU(4, WithTTL(time.Minute), WithClock(clock.Now))
++	c.PutWithTTL("short", 1, 10*time.Second)
++	c.PutWithTTL("forever", 2, 0)
++	clock.Advance(time.Hour)
++	if _, ok := c.Get("short"); ok {
++		t.Fatal("expected short to have expired")
++	}
++	if _, ok := c.Get("forever"); !ok {
++		t.Fatal("a zero TTL means the entry never expires")
++	}
++}
++
++func TestLenAndDeleteIgnoreExpiredEntries(t *testing.T) {
++	clock := newTestClock()
++	c := NewLRU(4, WithClock(clock.Now))
++	c.PutWithTTL("a", 1, time.Second)
++	c.Put("b", 2)
++	clock.Advance(time.Second)
++	if got := c.Len(); got != 1 {
++		t.Fatalf("Len() = %d; want 1", got)
++	}
++	if c.Delete("a") {
++		t.Fatal("Delete(a) = true for an expired entry")
++	}
++}
++
++func TestEvictionDropsExpiredBeforeLeastRecentlyUsed(t *testing.T) {
++	clock := newTestClock()
++	c := NewLRU(2, WithClock(clock.Now))
++	c.PutWithTTL("a", 1, 10*time.Second)
++	c.Put("b", 2)
++	c.Get("a")
++	clock.Advance(11 * time.Second)
++	c.Put("c", 3)
++	if _, ok := c.Get("b"); !ok {
++		t.Fatal("b is live and must not be evicted while an expired entry could go")
++	}
++	if _, ok := c.Get("c"); !ok {
++		t.Fatal("expected c to be present")
++	}
++}
++
++func TestConcurrentUse(t *testing.T) {
++	c := NewLRU(16, WithTTL(time.Second))
++	var wg sync.WaitGroup
++	for g := 0; g < 4; g++ {
++		wg.Add(1)
++		go func(g int) {
++			defer wg.Done()
++			for i := 0; i < 500; i++ {
++				key := string(rune('a' + (g+i)%26))
++				c.Put(key, i)
++				c.Get(key)
++				c.Len()
++				c.Delete(key)
++			}
++		}(g)
++	}
++	wg.Wait()
++}

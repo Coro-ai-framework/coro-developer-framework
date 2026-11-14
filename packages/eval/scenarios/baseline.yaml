@@ -1,0 +1,41 @@
+# The default scenario. Every key here can be overridden at run time:
+#
+#   pnpm eval run --scenario baseline --set lane=fast --set models.coding=<model> --repeat 5
+#
+# Unknown keys are an error, so a typo in --set fails instead of running the baseline.
+
+# Coro checkout to run. Relative to packages/eval; the default is this repo's
+# root. It must already be built (`pnpm build`). Point it at a git worktree of
+# another branch to compare two versions of Coro.
+coroPath: ../..
+
+# standard | fast | deep  ->  .claude/commands/coro/job.md | job-fast.md | job-deep.md
+lane: standard
+
+# Model per tier, written into the runner's llm.aliases (for `<tier>` and
+# `tier:<tier>`). Empty means the runner's own defaults.
+#   models: { planning: claude-opus-5-5, coding: claude-sonnet-5-5 }
+models: {}
+
+# A localDir tenant overlay, to A/B a change to agents/skills/memory markdown.
+tenantOverlayDir: null
+
+# The pre-PR code-review lenses inside the coding phase (config: codeReview.lenses).
+codeReviewLenses: true
+
+# Attempts per task, and attempts in flight at once. Each attempt runs its own
+# runner process on its own port with its own HOME.
+repeat: 3
+parallel: 2
+
+# The LLM judge. Pick a model that is not the one doing the coding. `samples`
+# above 1 medians the scores and keeps only issues a majority of passes agree on.
+judge:
+  enabled: true
+  provider: anthropic
+  model: claude-opus-5-5
+  samples: 1
+
+# The simulated human reviewer. 0 approves as soon as the job parks on its PR.
+reviewer:
+  approveAfterSeconds: 0

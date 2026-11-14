@@ -1,0 +1,235 @@
+diff --git a/src/app.ts b/src/app.ts
+index 41fda13..ec1bfd3 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,9 +1,12 @@
+ import { json } from './http'
++import { clientKey, createRateLimiter, type RateLimitOptions } from './rate-limit'
+ import type { Request, Response } from './types'
+ 
+ export interface AppOptions {
+   /** Current time in milliseconds. Defaults to `Date.now`; tests pass their own. */
+   now?: () => number
++  /** Per-client rate limiting. Off when omitted. */
++  rateLimit?: RateLimitOptions
+ }
+ 
+ export interface App {
+@@ -19,23 +22,42 @@ const ITEMS = [
+ export function createApp(options: AppOptions = {}): App {
+   const now = options.now ?? Date.now
+   const startedAt = now()
++  const limiter = options.rateLimit ? createRateLimiter({ ...options.rateLimit, now }) : undefined
++
++  function route(request: Request): Response {
++    const method = request.method.toUpperCase()
++
++    if (method === 'GET' && request.path === '/items') {
++      return json(200, { items: ITEMS })
++    }
++    const match = method === 'GET' ? /^\/items\/([^/]+)$/.exec(request.path) : null
++    if (match) {
++      const item = ITEMS.find(candidate => candidate.id === match[1])
++      return item ? json(200, item) : json(404, { error: 'not_found' })
++    }
++    return json(404, { error: 'not_found' })
++  }
+ 
+   return {
+     handle(request) {
+       const method = request.method.toUpperCase()
+ 
++      // Health checks come from the load balancer every few seconds: never limited, never counted.
+       if (method === 'GET' && request.path === '/health') {
+         return json(200, { status: 'ok', uptimeMs: now() - startedAt })
+       }
+-      if (method === 'GET' && request.path === '/items') {
+-        return json(200, { items: ITEMS })
++      if (!limiter) return route(request)
++
++      const decision = limiter.check(clientKey(request))
++      const rateHeaders = {
++        'x-ratelimit-limit': String(decision.limit),
++        'x-ratelimit-remaining': String(decision.remaining),
+       }
+-      const match = method === 'GET' ? /^\/items\/([^/]+)$/.exec(request.path) : null
+-      if (match) {
+-        const item = ITEMS.find(candidate => candidate.id === match[1])
+-        return item ? json(200, item) : json(404, { error: 'not_found' })
++      if (!decision.allowed) {
++        return json(429, { error: 'rate_limited' }, { ...rateHeaders, 'retry-after': String(decision.retryAfterSeconds) })
+       }
+-      return json(404, { error: 'not_found' })
++      const response = route(request)
++      return { ...response, headers: { ...response.headers, ...rateHeaders } }
+     },
+   }
+ }
+diff --git a/src/index.ts b/src/index.ts
+index dce8838..d834156 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,3 +1,4 @@
+ export { createApp } from './app'
+ export type { App, AppOptions } from './app'
++export type { RateLimitOptions } from './rate-limit'
+ export type { Request, Response } from './types'
+diff --git a/src/rate-limit.ts b/src/rate-limit.ts
+new file mode 100644
+index 0000000..10ee98a
+--- /dev/null
++++ b/src/rate-limit.ts
+@@ -0,0 +1,75 @@
++import { header } from './http'
++import type { Request } from './types'
++
++export interface RateLimitOptions {
++  /** Requests a client may make per window. */
++  limit: number
++  /** Length of a window, in milliseconds. */
++  windowMs: number
++}
++
++export interface RateLimitDecision {
++  allowed: boolean
++  limit: number
++  /** Requests left in the window after this one, never below 0. */
++  remaining: number
++  /** Whole seconds until the window ends, rounded up and at least 1. Only meaningful when rejected. */
++  retryAfterSeconds: number
++}
++
++export interface RateLimiter {
++  /** Count a request from `key` and say whether it may go ahead. */
++  check(key: string): RateLimitDecision
++}
++
++interface Window {
++  start: number
++  count: number
++}
++
++/** Past this many tracked clients, expired windows are swept so memory cannot grow without bound. */
++const SWEEP_THRESHOLD = 10_000
++
++export function createRateLimiter(options: RateLimitOptions & { now: () => number }): RateLimiter {
++  const { limit, windowMs, now } = options
++  if (!Number.isInteger(limit) || limit < 1) throw new RangeError(`rateLimit.limit must be a positive whole number, got ${limit}`)
++  if (!Number.isFinite(windowMs) || windowMs <= 0) throw new RangeError(`rateLimit.windowMs must be positive, got ${windowMs}`)
++
++  const windows = new Map<string, Window>()
++
++  function sweep(time: number): void {
++    for (const [key, window] of windows) {
++      if (time - window.start >= windowMs) windows.delete(key)
++    }
++  }
++
++  return {
++    check(key) {
++      const time = now()
++      if (windows.size > SWEEP_THRESHOLD) sweep(time)
++
++      let window = windows.get(key)
++      if (!window || time - window.start >= windowMs) {
++        window = { start: time, count: 0 }
++        windows.set(key, window)
++      }
++
++      if (window.count >= limit) {
++        const msLeft = window.start + windowMs - time
++        return { allowed: false, limit, remaining: 0, retryAfterSeconds: Math.max(1, Math.ceil(msLeft / 1000)) }
++      }
++
++      window.count += 1
++      return { allowed: true, limit, remaining: limit - window.count, retryAfterSeconds: 0 }
++    },
++  }
++}
++
++/** Who a request belongs to: its API key, else the first forwarded address, else one shared bucket. */
++export function clientKey(request: Request): string {
++  const apiKey = header(request.headers, 'x-api-key')?.trim()
++  if (apiKey) return `key:${apiKey}`
++  const forwarded = header(request.headers, 'x-forwarded-for')?.split(',')[0]?.trim()
++  if (forwarded) return `ip:${forwarded}`
++  return 'anonymous'
++}
+diff --git a/tests/rate-limit.test.ts b/tests/rate-limit.test.ts
+new file mode 100644
+index 0000000..0defaa9
+--- /dev/null
++++ b/tests/rate-limit.test.ts
+@@ -0,0 +1,72 @@
++import { describe, expect, it } from 'vitest'
++import { createApp } from '../src/index'
++import type { App } from '../src/index'
++
++function setup(limit: number, windowMs: number): { app: App; clock: { t: number } } {
++  const clock = { t: 1_000 }
++  return { app: createApp({ now: () => clock.t, rateLimit: { limit, windowMs } }), clock }
++}
++
++const get = (app: App, path = '/items', headers?: Record<string, string>) => app.handle({ method: 'GET', path, headers })
++
++describe('rate limiting', () => {
++  it('is off unless configured', () => {
++    const app = createApp()
++    for (let i = 0; i < 20; i++) expect(get(app).status).toBe(200)
++    expect(get(app).headers['x-ratelimit-limit']).toBeUndefined()
++  })
++
++  it('answers 429 once the limit is used up and reports what is left', () => {
++    const { app } = setup(2, 10_000)
++    expect(get(app).headers['x-ratelimit-remaining']).toBe('1')
++    expect(get(app).headers['x-ratelimit-remaining']).toBe('0')
++    const limited = get(app)
++    expect(limited.status).toBe(429)
++    expect(limited.body).toEqual({ error: 'rate_limited' })
++    expect(limited.headers['x-ratelimit-limit']).toBe('2')
++  })
++
++  it('tells the client when to retry, rounded up to whole seconds', () => {
++    const { app, clock } = setup(1, 10_000)
++    get(app)
++    clock.t = 3_500
++    expect(get(app).headers['retry-after']).toBe('8')
++    clock.t = 10_999
++    expect(get(app).headers['retry-after']).toBe('1')
++  })
++
++  it('starts a new window once windowMs has elapsed', () => {
++    const { app, clock } = setup(1, 10_000)
++    get(app)
++    clock.t = 11_000
++    expect(get(app).status).toBe(200)
++  })
++
++  it('keeps clients apart: api key first, then the first forwarded address, then anonymous', () => {
++    const { app } = setup(1, 60_000)
++    expect(get(app, '/items', { 'X-API-Key': 'a', 'x-forwarded-for': '1.1.1.1' }).status).toBe(200)
++    expect(get(app, '/items', { 'x-api-key': 'a', 'x-forwarded-for': '2.2.2.2' }).status).toBe(429)
++    expect(get(app, '/items', { 'x-forwarded-for': ' 3.3.3.3 , 4.4.4.4' }).status).toBe(200)
++    expect(get(app, '/items', { 'x-forwarded-for': '3.3.3.3' }).status).toBe(429)
++    expect(get(app).status).toBe(200)
++    expect(get(app).status).toBe(429)
++  })
++
++  it('never limits or counts /health', () => {
++    const { app } = setup(1, 60_000)
++    for (let i = 0; i < 3; i++) expect(get(app, '/health').status).toBe(200)
++    expect(get(app).status).toBe(200)
++    expect(get(app, '/health').status).toBe(200)
++  })
++
++  it('counts requests that end in a 404', () => {
++    const { app } = setup(1, 60_000)
++    expect(get(app, '/nope').status).toBe(404)
++    expect(get(app).status).toBe(429)
++  })
++
++  it('rejects settings that cannot work', () => {
++    expect(() => createApp({ rateLimit: { limit: 0, windowMs: 1000 } })).toThrow(RangeError)
++    expect(() => createApp({ rateLimit: { limit: 5, windowMs: 0 } })).toThrow(RangeError)
++  })
++})

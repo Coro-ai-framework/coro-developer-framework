@@ -727,5 +727,6 @@ coro/                                    ← workspace root
     ├── llm-anthropic/                   ← @coro-ai/llm-anthropic — built-in Anthropic phase executor plugin
     │   └── src/                         ← executor.ts (wraps @anthropic-ai/claude-agent-sdk), auth.ts, index.ts
     ├── plugin-gitlab/                   ← @coro-ai/plugin-gitlab — example external SCM plugin
+    ├── eval/                            ← @coro-ai/eval (private) — outside evaluation harness; drives a built runner over HTTP, nothing here depends on it
     └── desktop-electron/                ← @coro-ai/desktop-electron — Electron shell that bundles runner + dashboard
 ```

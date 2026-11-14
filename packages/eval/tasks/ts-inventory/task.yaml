@@ -1,0 +1,98 @@
+id: ts-inventory
+size: large
+language: typescript
+expect: pr
+timeoutMinutes: 120
+description: |
+  The warehouse team needs three things from `Inventory` before the next
+  release. They are one ticket because they touch the same ledger, but they can
+  be built and reviewed one after another. Everything public stays exported from
+  `src/index.ts`.
+
+  ## 1. Reservations
+
+  Orders must be able to hold stock while they are being picked.
+
+      reserve(orderId: string, lines: Array<{ sku: string; quantity: number }>): void
+      release(orderId: string): void
+      commit(orderId: string): void
+      available(sku: string): number
+
+  - `available(sku)` is `stock(sku)` minus the units held by active reservations.
+  - `reserve` is all-or-nothing. Lines with the same SKU are added together. If
+    any SKU has fewer units available than requested, throw a new
+    `InsufficientStockError` (it extends `InventoryError`) whose `shortages`
+    property is an array of `{ sku, requested, available }`, one entry per short
+    SKU in the order the SKUs first appear in `lines`, and hold nothing.
+  - `reserve` throws a plain `InventoryError` (not an `InsufficientStockError`)
+    for: no lines, a quantity that is not a positive whole number, or an
+    `orderId` that already has an active reservation. These are checked before
+    any stock is looked at.
+  - `release` gives the held units back; `stock` does not change. `commit`
+    removes the held units from stock for good. Either one ends the
+    reservation. Both throw `InventoryError` for an order with no active
+    reservation, including one already released or committed.
+  - `remove` must not take reserved units: it throws `InventoryError` when the
+    quantity is more than `available(sku)`.
+
+  ## 2. Reorder alerts
+
+      setReorderPoint(sku: string, point: number): void
+      onLowStock(handler: (event: LowStockEvent) => void): () => void
+      interface LowStockEvent { sku: string; available: number; reorderPoint: number }
+
+  - `setReorderPoint` throws `InventoryError` if `point` is not a non-negative
+    whole number, or if the SKU has never been added.
+  - A SKU with no reorder point never alerts.
+  - When a change takes `available(sku)` from above the SKU's reorder point to
+    at or below it, every registered handler is called once with the event, in
+    the order they were registered, after the change is complete. Only
+    `remove` and `reserve` can lower availability. `add` and `release` raise it,
+    and `commit` leaves it unchanged, so none of those alert.
+  - It alerts on the crossing only. Further drops while already at or below the
+    point do nothing. If availability rises back above the point and drops
+    again, it alerts again.
+  - Setting a reorder point never alerts by itself. The next change is compared
+    with the point as it is then.
+  - A `reserve` that covers several SKUs alerts after all of them are updated,
+    in the order the SKUs first appear in `lines`, and handlers see the final
+    `available` figure.
+  - `onLowStock` returns a function that unsubscribes the handler. A handler
+    that throws must not stop the others from running or undo the stock change.
+
+  ## 3. CSV export and import
+
+      exportCsv(): string
+      static fromCsv(text: string): Inventory
+      class CsvError extends InventoryError { line: number }
+
+  - `exportCsv` starts with the header `sku,quantity,reorderPoint`, then one
+    row per SKU in `skus()` order. Lines end with `\n` and the text ends with a
+    final `\n`. `quantity` is `stock(sku)` (reserved units included: it is what
+    is on the shelf). `reorderPoint` is empty when none is set. A field that
+    contains a comma or a double quote is wrapped in double quotes, with any
+    inner double quote doubled. If a SKU contains a line break, `exportCsv`
+    throws `InventoryError`.
+  - `Inventory.fromCsv` builds a new inventory from the same format. It accepts
+    `\n` or `\r\n` line endings and ignores one empty final line. Quoted fields
+    follow the rule above and never span lines. A quantity of 0 is valid here.
+    The new inventory has no reservations.
+  - Anything else throws `CsvError` with `line` set to the 1-based line of the
+    problem (the header is line 1): a header that is not exactly
+    `sku,quantity,reorderPoint` (including empty text); a row without exactly
+    three fields (an empty line in the middle counts); an empty SKU; a quantity
+    or reorder point that is not plain digits (a reorder point may be empty); a
+    SKU that appeared earlier (the line of the repeat); a quote in the wrong
+    place or one that is never closed.
+  - Exporting and importing again gives the same text.
+
+  Add tests for all three parts.
+grade:
+  setup: npm ci --no-audit --no-fund
+  hiddenTests: npx vitest run hidden/
+  existingTests: npx vitest run tests/
+  checks:
+    - npx tsc --noEmit
+  scope:
+    - src/**
+    - tests/**

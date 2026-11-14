@@ -1,0 +1,48 @@
+id: go-lru-ttl
+size: medium
+language: go
+expect: pr
+timeoutMinutes: 60
+description: |
+  The session service wants entries in `LRU` (package `cache`) to expire, and
+  it also shares one cache between goroutines. Add both to `lru.go` without
+  breaking any existing caller: `NewLRU(capacity)` must keep compiling and
+  behaving as it does now.
+
+  **Options.** `NewLRU(capacity int, opts ...Option) *LRU`, where `Option` is a
+  function type, with two options:
+
+  - `WithTTL(d time.Duration)`: the default time to live for entries stored
+    with `Put`.
+  - `WithClock(now func() time.Time)`: where the cache reads the time, so
+    tests can control it. Defaults to `time.Now`.
+
+  **Expiry.**
+
+  - An entry stored at time `t` with time-to-live `d` is expired from `t+d`
+    on (expired when `now >= t+d`).
+  - A time-to-live of zero or less means the entry never expires, whether it
+    came from `WithTTL` or from `PutWithTTL`. With no `WithTTL`, nothing expires.
+  - `PutWithTTL(key string, value any, ttl time.Duration)` stores an entry with
+    its own time to live instead of the default.
+  - `Put` and `PutWithTTL` on an existing key replace the value and the expiry,
+    and mark the entry most recently used. `Get` does not extend an entry's
+    life, although it still marks it most recently used.
+  - An expired entry is gone: `Get` misses, `Len` does not count it, and
+    `Delete` reports `false` for it.
+  - When the cache is full and a new key arrives, expired entries are dropped
+    first; only if it is still full is the least recently used entry evicted.
+
+  **Concurrency.** Every method must be safe to call from multiple goroutines.
+
+  Add tests, including ones that use `WithClock`, to `lru_test.go`.
+grade:
+  hiddenTests: go test -v ./hidden/
+  existingTests: go test -v .
+  hiddenDir: hidden
+  checks:
+    - go vet ./...
+  scope:
+    - "*.go"
+    - go.mod
+    - README.md

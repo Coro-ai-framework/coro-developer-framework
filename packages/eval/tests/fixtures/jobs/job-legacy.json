@@ -1,0 +1,15 @@
+{
+  "id": "job-1600000000000",
+  "type": "job",
+  "workflowPath": ".claude/commands/coro/job.md",
+  "params": {},
+  "triggerSource": "cli",
+  "status": "failed",
+  "phase": "coding",
+  "currentWorkItem": null,
+  "interactive": false,
+  "phaseUsage": [
+    { "phase": "planning", "costUsd": 0.25, "durationMs": 30000, "inputTokens": 100, "outputTokens": 50, "model": "m" },
+    { "phase": "coding", "costUsd": 0.75, "durationMs": 90000, "inputTokens": 300, "outputTokens": 200, "cacheReadInputTokens": 10, "model": "m" }
+  ]
+}

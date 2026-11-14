@@ -1,0 +1,13 @@
+id: mini-task
+size: small
+language: javascript
+description: |
+  `add` in `src/math.js` returns the difference instead of the sum. Fix it.
+  [fake:solve]
+timeoutMinutes: 5
+grade:
+  hiddenTests: node --test hidden/*.test.js
+  existingTests: node --test tests/*.test.js
+  scope:
+    - src/**
+    - tests/**

@@ -16,6 +16,7 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
     "test:runner": "pnpm --filter @coro-ai/runner test",
+    "eval": "pnpm --filter @coro-ai/eval run eval",
     "verify:npm-pack": "node scripts/verify-npm-pack.mjs",
     "start": "pnpm --filter @coro-ai/runner start",
     "dev": "pnpm --filter @coro-ai/runner dev",

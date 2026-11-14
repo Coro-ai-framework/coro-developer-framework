@@ -19,3 +19,9 @@ packages/runner/*_result.log
 packages/runner/coverage/
 .npm-pack-verify/
 packages/runner/.npm-publish/
+
+# Eval harness output: per-run results and the shared npm/go caches
+packages/eval/results/
+packages/eval/.cache/
+# ...but not its fake runner, which has to sit at packages/runner/dist/cli/ to be found
+!packages/eval/tests/fixtures/fake-coro/packages/runner/dist/

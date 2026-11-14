@@ -1,0 +1,33 @@
+id: ts-slugify
+size: small
+language: typescript
+expect: pr
+timeoutMinutes: 30
+description: |
+  We need URL slugs for article titles. Add a `slugify` function to
+  `src/strings.ts` and export it from `src/index.ts`.
+
+      slugify(input: string, options?: { separator?: string; maxLength?: number }): string
+
+  Behaviour:
+
+  - The result is lower-case.
+  - Accented Latin letters become their base letter, so `Crème Brûlée`
+    becomes `creme-brulee`.
+  - Every run of characters that are not ASCII letters or digits becomes a
+    single separator. The result never starts or ends with the separator.
+  - `separator` defaults to `-`.
+  - `maxLength`, when given, is the longest the result may be. If cutting at
+    that length leaves the result ending in a separator, remove it.
+  - Input with no letters or digits gives an empty string.
+
+  Add tests next to the existing ones in `tests/strings.test.ts`.
+grade:
+  setup: npm ci --no-audit --no-fund
+  hiddenTests: npx vitest run hidden/
+  existingTests: npx vitest run tests/
+  checks:
+    - npx tsc --noEmit
+  scope:
+    - src/**
+    - tests/**

@@ -1,0 +1,500 @@
+diff --git a/src/csv.ts b/src/csv.ts
+new file mode 100644
+index 0000000..18c246c
+--- /dev/null
++++ b/src/csv.ts
+@@ -0,0 +1,61 @@
++export const CSV_HEADER = 'sku,quantity,reorderPoint'
++
++/** Wrap a field in double quotes, doubling any inside, when it contains a comma or a quote. */
++export function formatField(value: string): string {
++  return /[",]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
++}
++
++/**
++ * Split one line into fields. A quoted field starts with `"`, writes a
++ * literal quote as `""`, and must be followed by a comma or the end of the
++ * line. A quote anywhere else is an error; the message says which.
++ */
++export function splitLine(line: string): string[] {
++  const fields: string[] = []
++  let i = 0
++  for (;;) {
++    if (line[i] === '"') {
++      let value = ''
++      i += 1
++      for (;;) {
++        if (i >= line.length) throw new Error('quoted field is never closed')
++        const ch = line[i]!
++        if (ch === '"') {
++          if (line[i + 1] === '"') {
++            value += '"'
++            i += 2
++            continue
++          }
++          i += 1
++          break
++        }
++        value += ch
++        i += 1
++      }
++      if (i < line.length && line[i] !== ',') throw new Error('unexpected text after a closing quote')
++      fields.push(value)
++    } else {
++      let end = line.indexOf(',', i)
++      if (end === -1) end = line.length
++      const value = line.slice(i, end)
++      if (value.includes('"')) throw new Error('a quote in the middle of an unquoted field')
++      fields.push(value)
++      i = end
++    }
++    if (i >= line.length) return fields
++    i += 1 // the comma
++    if (i >= line.length) {
++      fields.push('') // a trailing comma leaves an empty last field
++      return fields
++    }
++  }
++}
++
++const DIGITS = /^\d+$/
++
++/** Parse plain digits into a safe whole number, or return undefined. */
++export function parseCount(text: string): number | undefined {
++  if (!DIGITS.test(text)) return undefined
++  const value = Number(text)
++  return Number.isSafeInteger(value) ? value : undefined
++}
+diff --git a/src/errors.ts b/src/errors.ts
+index 800221c..296021d 100644
+--- a/src/errors.ts
++++ b/src/errors.ts
+@@ -4,3 +4,32 @@ export class InventoryError extends Error {
+     this.name = 'InventoryError'
+   }
+ }
++
++export interface Shortage {
++  sku: string
++  requested: number
++  available: number
++}
++
++/** A reservation asked for more than is available. Nothing was held. */
++export class InsufficientStockError extends InventoryError {
++  constructor(readonly shortages: Shortage[]) {
++    super(
++      `insufficient stock: ${shortages
++        .map(s => `${s.sku} (requested ${s.requested}, available ${s.available})`)
++        .join(', ')}`,
++    )
++    this.name = 'InsufficientStockError'
++  }
++}
++
++/** The CSV given to `Inventory.fromCsv` is not valid. `line` is 1-based; the header is line 1. */
++export class CsvError extends InventoryError {
++  constructor(
++    message: string,
++    readonly line: number,
++  ) {
++    super(`line ${line}: ${message}`)
++    this.name = 'CsvError'
++  }
++}
+diff --git a/src/index.ts b/src/index.ts
+index 7474bf5..e038795 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,2 +1,4 @@
+-export { InventoryError } from './errors'
++export { CsvError, InsufficientStockError, InventoryError } from './errors'
++export type { Shortage } from './errors'
+ export { Inventory } from './inventory'
++export type { LowStockEvent, LowStockHandler, ReservationLine } from './inventory'
+diff --git a/src/inventory.ts b/src/inventory.ts
+index 33ea5d7..926b067 100644
+--- a/src/inventory.ts
++++ b/src/inventory.ts
+@@ -1,4 +1,5 @@
+-import { InventoryError } from './errors'
++import { CSV_HEADER, formatField, parseCount, splitLine } from './csv'
++import { CsvError, InsufficientStockError, InventoryError, type Shortage } from './errors'
+ 
+ function assertQuantity(quantity: number): void {
+   if (!Number.isInteger(quantity) || quantity < 1) {
+@@ -6,9 +7,28 @@ function assertQuantity(quantity: number): void {
+   }
+ }
+ 
++export interface ReservationLine {
++  sku: string
++  quantity: number
++}
++
++export interface LowStockEvent {
++  sku: string
++  /** Units available after the change that crossed the reorder point. */
++  available: number
++  reorderPoint: number
++}
++
++export type LowStockHandler = (event: LowStockEvent) => void
++
+ /** Stock levels for a warehouse, kept in memory. */
+ export class Inventory {
+   private readonly stockBySku = new Map<string, number>()
++  /** Active reservations: order id -> units held per SKU. */
++  private readonly reservations = new Map<string, Map<string, number>>()
++  private readonly reservedBySku = new Map<string, number>()
++  private readonly reorderPoints = new Map<string, number>()
++  private readonly lowStockHandlers: Array<{ handler: LowStockHandler }> = []
+ 
+   /** Add `quantity` units of `sku`, listing the SKU if it is new. */
+   add(sku: string, quantity: number): void {
+@@ -16,23 +36,167 @@ export class Inventory {
+     this.stockBySku.set(sku, this.stock(sku) + quantity)
+   }
+ 
+-  /** Take `quantity` units of `sku` out of stock. The SKU stays listed, at 0 if need be. */
++  /** Take `quantity` units of `sku` out of stock. Reserved units cannot be taken. */
+   remove(sku: string, quantity: number): void {
+     assertQuantity(quantity)
+-    const current = this.stock(sku)
+-    if (quantity > current) {
+-      throw new InventoryError(`cannot remove ${quantity} of ${sku}: only ${current} in stock`)
++    const before = this.available(sku)
++    if (quantity > before) {
++      throw new InventoryError(`cannot remove ${quantity} of ${sku}: only ${before} available`)
+     }
+-    this.stockBySku.set(sku, current - quantity)
++    this.stockBySku.set(sku, this.stock(sku) - quantity)
++    this.notifyLowStock([[sku, before]])
+   }
+ 
+-  /** Units on the shelf; 0 for a SKU that was never added. */
++  /** Units on the shelf, reserved or not; 0 for a SKU that was never added. */
+   stock(sku: string): number {
+     return this.stockBySku.get(sku) ?? 0
+   }
+ 
++  /** Units on the shelf that no active reservation is holding. */
++  available(sku: string): number {
++    return this.stock(sku) - (this.reservedBySku.get(sku) ?? 0)
++  }
++
+   /** Every SKU that has ever been added, sorted. */
+   skus(): string[] {
+     return [...this.stockBySku.keys()].sort()
+   }
++
++  // ── Reservations ───────────────────────────────────────────────────────────
++
++  /** Hold stock for an order. All lines are held, or none are. */
++  reserve(orderId: string, lines: readonly ReservationLine[]): void {
++    if (lines.length === 0) throw new InventoryError('an order needs at least one line')
++    for (const line of lines) assertQuantity(line.quantity)
++    if (this.reservations.has(orderId)) throw new InventoryError(`order ${orderId} already has a reservation`)
++
++    const wanted = new Map<string, number>()
++    for (const { sku, quantity } of lines) wanted.set(sku, (wanted.get(sku) ?? 0) + quantity)
++
++    const shortages: Shortage[] = []
++    for (const [sku, requested] of wanted) {
++      const available = this.available(sku)
++      if (requested > available) shortages.push({ sku, requested, available })
++    }
++    if (shortages.length > 0) throw new InsufficientStockError(shortages)
++
++    const before: Array<[string, number]> = [...wanted.keys()].map(sku => [sku, this.available(sku)])
++    this.reservations.set(orderId, wanted)
++    for (const [sku, quantity] of wanted) this.adjustReserved(sku, quantity)
++    this.notifyLowStock(before)
++  }
++
++  /** Give an order's held units back. */
++  release(orderId: string): void {
++    for (const [sku, quantity] of this.takeReservation(orderId)) this.adjustReserved(sku, -quantity)
++  }
++
++  /** Turn an order's held units into a permanent removal from stock. */
++  commit(orderId: string): void {
++    for (const [sku, quantity] of this.takeReservation(orderId)) {
++      this.adjustReserved(sku, -quantity)
++      this.stockBySku.set(sku, this.stock(sku) - quantity)
++    }
++  }
++
++  private takeReservation(orderId: string): Map<string, number> {
++    const held = this.reservations.get(orderId)
++    if (!held) throw new InventoryError(`order ${orderId} has no active reservation`)
++    this.reservations.delete(orderId)
++    return held
++  }
++
++  private adjustReserved(sku: string, delta: number): void {
++    const next = (this.reservedBySku.get(sku) ?? 0) + delta
++    if (next === 0) this.reservedBySku.delete(sku)
++    else this.reservedBySku.set(sku, next)
++  }
++
++  // ── Reorder alerts ─────────────────────────────────────────────────────────
++
++  /** Alert when `sku`'s availability falls to `point` or below. */
++  setReorderPoint(sku: string, point: number): void {
++    if (!Number.isInteger(point) || point < 0) {
++      throw new InventoryError(`reorder point must be a non-negative whole number, got ${point}`)
++    }
++    if (!this.stockBySku.has(sku)) throw new InventoryError(`unknown SKU ${sku}`)
++    this.reorderPoints.set(sku, point)
++  }
++
++  /** Be told when a SKU's availability drops to its reorder point. Returns an unsubscribe function. */
++  onLowStock(handler: LowStockHandler): () => void {
++    const entry = { handler }
++    this.lowStockHandlers.push(entry)
++    return () => {
++      const index = this.lowStockHandlers.indexOf(entry)
++      if (index >= 0) this.lowStockHandlers.splice(index, 1)
++    }
++  }
++
++  /** `before` is each affected SKU's availability before the change, in the order to report them. */
++  private notifyLowStock(before: ReadonlyArray<readonly [string, number]>): void {
++    const events: LowStockEvent[] = []
++    for (const [sku, availableBefore] of before) {
++      const reorderPoint = this.reorderPoints.get(sku)
++      const available = this.available(sku)
++      if (reorderPoint !== undefined && availableBefore > reorderPoint && available <= reorderPoint) {
++        events.push({ sku, available, reorderPoint })
++      }
++    }
++    for (const event of events) {
++      for (const { handler } of [...this.lowStockHandlers]) {
++        try {
++          handler({ ...event })
++        } catch {
++          // One handler's failure is not the others' problem, and the stock change stands.
++        }
++      }
++    }
++  }
++
++  // ── CSV ────────────────────────────────────────────────────────────────────
++
++  /** One row per SKU: `sku,quantity,reorderPoint`. */
++  exportCsv(): string {
++    const rows = [CSV_HEADER]
++    for (const sku of this.skus()) {
++      if (/[\r\n]/.test(sku)) throw new InventoryError(`SKU ${JSON.stringify(sku)} contains a line break`)
++      const point = this.reorderPoints.get(sku)
++      rows.push([formatField(sku), String(this.stock(sku)), point === undefined ? '' : String(point)].join(','))
++    }
++    return `${rows.join('\n')}\n`
++  }
++
++  /** Build an inventory from `exportCsv` output. */
++  static fromCsv(text: string): Inventory {
++    const lines = text.split(/\r?\n/)
++    if (lines[lines.length - 1] === '') lines.pop()
++    if (lines[0] !== CSV_HEADER) throw new CsvError(`the header must be exactly "${CSV_HEADER}"`, 1)
++
++    const inventory = new Inventory()
++    for (let index = 1; index < lines.length; index++) {
++      const line = index + 1
++      let fields: string[]
++      try {
++        fields = splitLine(lines[index]!)
++      } catch (error) {
++        throw new CsvError(error instanceof Error ? error.message : String(error), line)
++      }
++      if (fields.length !== 3) throw new CsvError(`expected 3 fields, found ${fields.length}`, line)
++
++      const [sku, quantityText, pointText] = fields as [string, string, string]
++      if (sku === '') throw new CsvError('the SKU is empty', line)
++      if (inventory.stockBySku.has(sku)) throw new CsvError(`SKU ${sku} appears more than once`, line)
++      const quantity = parseCount(quantityText)
++      if (quantity === undefined) throw new CsvError(`quantity "${quantityText}" is not a whole number`, line)
++      const point = pointText === '' ? undefined : parseCount(pointText)
++      if (pointText !== '' && point === undefined) {
++        throw new CsvError(`reorder point "${pointText}" is not a whole number`, line)
++      }
++
++      inventory.stockBySku.set(sku, quantity)
++      if (point !== undefined) inventory.reorderPoints.set(sku, point)
++    }
++    return inventory
++  }
+ }
+diff --git a/tests/inventory.test.ts b/tests/inventory.test.ts
+index a7857a6..3fc45f9 100644
+--- a/tests/inventory.test.ts
++++ b/tests/inventory.test.ts
+@@ -1,5 +1,6 @@
+ import { describe, expect, it } from 'vitest'
+-import { Inventory, InventoryError } from '../src/index'
++import { CsvError, InsufficientStockError, Inventory, InventoryError } from '../src/index'
++import type { LowStockEvent } from '../src/index'
+ 
+ describe('Inventory', () => {
+   it('starts empty', () => {
+@@ -41,3 +42,159 @@ describe('Inventory', () => {
+     expect(() => inventory.remove('A', 0)).toThrow(InventoryError)
+   })
+ })
++
++describe('reservations', () => {
++  it('holds stock without changing it, and release gives it back', () => {
++    const inventory = new Inventory()
++    inventory.add('A', 10)
++    inventory.reserve('o1', [{ sku: 'A', quantity: 4 }])
++    expect(inventory.stock('A')).toBe(10)
++    expect(inventory.available('A')).toBe(6)
++    inventory.release('o1')
++    expect(inventory.available('A')).toBe(10)
++  })
++
++  it('commit removes the held units from stock', () => {
++    const inventory = new Inventory()
++    inventory.add('A', 10)
++    inventory.reserve('o1', [{ sku: 'A', quantity: 4 }])
++    inventory.commit('o1')
++    expect(inventory.stock('A')).toBe(6)
++    expect(inventory.available('A')).toBe(6)
++    expect(() => inventory.commit('o1')).toThrow(InventoryError)
++  })
++
++  it('holds nothing when any line is short, and says which', () => {
++    const inventory = new Inventory()
++    inventory.add('A', 5)
++    inventory.add('B', 1)
++    try {
++      inventory.reserve('o1', [
++        { sku: 'A', quantity: 2 },
++        { sku: 'B', quantity: 3 },
++      ])
++      expect.unreachable()
++    } catch (error) {
++      expect(error).toBeInstanceOf(InsufficientStockError)
++      expect((error as InsufficientStockError).shortages).toEqual([{ sku: 'B', requested: 3, available: 1 }])
++    }
++    expect(inventory.available('A')).toBe(5)
++  })
++
++  it('rejects an empty order, a bad quantity and a repeated order id', () => {
++    const inventory = new Inventory()
++    inventory.add('A', 5)
++    inventory.reserve('o1', [{ sku: 'A', quantity: 1 }])
++    expect(() => inventory.reserve('o2', [])).toThrow(InventoryError)
++    expect(() => inventory.reserve('o2', [{ sku: 'A', quantity: 0 }])).toThrow(InventoryError)
++    expect(() => inventory.reserve('o1', [{ sku: 'A', quantity: 1 }])).toThrow(InventoryError)
++  })
++
++  it('keeps remove away from reserved units', () => {
++    const inventory = new Inventory()
++    inventory.add('A', 10)
++    inventory.reserve('o1', [{ sku: 'A', quantity: 8 }])
++    expect(() => inventory.remove('A', 3)).toThrow(InventoryError)
++    inventory.remove('A', 2)
++    expect(inventory.stock('A')).toBe(8)
++  })
++})
++
++describe('reorder alerts', () => {
++  function setup(): { inventory: Inventory; events: LowStockEvent[] } {
++    const inventory = new Inventory()
++    inventory.add('A', 10)
++    inventory.setReorderPoint('A', 5)
++    const events: LowStockEvent[] = []
++    inventory.onLowStock(event => events.push(event))
++    return { inventory, events }
++  }
++
++  it('alerts when availability crosses down to the point, and only then', () => {
++    const { inventory, events } = setup()
++    inventory.remove('A', 4)
++    expect(events).toEqual([])
++    inventory.remove('A', 1)
++    inventory.remove('A', 1)
++    expect(events).toEqual([{ sku: 'A', available: 5, reorderPoint: 5 }])
++  })
++
++  it('alerts again after availability recovers above the point', () => {
++    const { inventory, events } = setup()
++    inventory.reserve('o1', [{ sku: 'A', quantity: 6 }])
++    inventory.release('o1')
++    inventory.reserve('o2', [{ sku: 'A', quantity: 6 }])
++    expect(events).toHaveLength(2)
++  })
++
++  it('does not alert on commit, add, or for a SKU without a point', () => {
++    const { inventory, events } = setup()
++    inventory.add('B', 3)
++    inventory.remove('B', 3)
++    inventory.reserve('o1', [{ sku: 'A', quantity: 2 }])
++    inventory.commit('o1')
++    inventory.add('A', 1)
++    expect(events).toEqual([])
++  })
++
++  it('stops calling an unsubscribed handler and survives one that throws', () => {
++    const { inventory, events } = setup()
++    inventory.onLowStock(() => {
++      throw new Error('boom')
++    })
++    const late: string[] = []
++    const stop = inventory.onLowStock(() => late.push('called'))
++    stop()
++    inventory.remove('A', 6)
++    expect(events).toHaveLength(1)
++    expect(late).toEqual([])
++    expect(inventory.stock('A')).toBe(4)
++  })
++
++  it('validates the reorder point and the SKU', () => {
++    const inventory = new Inventory()
++    inventory.add('A', 1)
++    expect(() => inventory.setReorderPoint('A', -1)).toThrow(InventoryError)
++    expect(() => inventory.setReorderPoint('nope', 1)).toThrow(InventoryError)
++  })
++})
++
++describe('CSV', () => {
++  it('exports and imports the same text', () => {
++    const inventory = new Inventory()
++    inventory.add('B', 2)
++    inventory.add('A', 5)
++    inventory.add('bolt, "m6"', 1)
++    inventory.setReorderPoint('A', 3)
++    const text = inventory.exportCsv()
++    expect(text).toBe('sku,quantity,reorderPoint\nA,5,3\nB,2,\n"bolt, ""m6""",1,\n')
++    expect(Inventory.fromCsv(text).exportCsv()).toBe(text)
++  })
++
++  it('accepts Windows line endings', () => {
++    expect(Inventory.fromCsv('sku,quantity,reorderPoint\r\nA,1,\r\n').stock('A')).toBe(1)
++  })
++
++  it('reports the line of a problem', () => {
++    const lineOf = (text: string): number => {
++      try {
++        Inventory.fromCsv(text)
++      } catch (error) {
++        expect(error).toBeInstanceOf(CsvError)
++        return (error as CsvError).line
++      }
++      throw new Error('expected a CsvError')
++    }
++    expect(lineOf('')).toBe(1)
++    expect(lineOf('sku,quantity,reorderPoint\nA,1\n')).toBe(2)
++    expect(lineOf('sku,quantity,reorderPoint\nA,-1,\n')).toBe(2)
++    expect(lineOf('sku,quantity,reorderPoint\nA,1,\nA,2,\n')).toBe(3)
++    expect(lineOf('sku,quantity,reorderPoint\n"A,1,\n')).toBe(2)
++  })
++
++  it('refuses to export a SKU with a line break', () => {
++    const inventory = new Inventory()
++    inventory.add('two\nlines', 1)
++    expect(() => inventory.exportCsv()).toThrow(InventoryError)
++  })
++})

@@ -1,0 +1,12 @@
+diff --git a/src/math.js b/src/math.js
+--- a/src/math.js
++++ b/src/math.js
+@@ -1,7 +1,7 @@
+ 'use strict'
+ 
+ /** Add two numbers. */
+-exports.add = (a, b) => a - b
++exports.add = (a, b) => a + b
+ 
+ /** Multiply two numbers. */
+ exports.mul = (a, b) => a * b

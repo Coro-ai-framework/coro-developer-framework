@@ -1,0 +1,86 @@
+diff --git a/src/index.ts b/src/index.ts
+index f611274..1c30786 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1 +1,2 @@
+-export { capitalize, truncate } from './strings'
++export { capitalize, slugify, truncate } from './strings'
++export type { SlugifyOptions } from './strings'
+diff --git a/src/strings.ts b/src/strings.ts
+index 51404d9..0d4e0f1 100644
+--- a/src/strings.ts
++++ b/src/strings.ts
+@@ -14,3 +14,31 @@ export function truncate(text: string, max: number): string {
+   if (max === 1) return '…'
+   return `${text.slice(0, max - 1)}…`
+ }
++
++export interface SlugifyOptions {
++  /** Placed between words. Defaults to `-`. */
++  separator?: string
++  /** The longest the result may be. */
++  maxLength?: number
++}
++
++/**
++ * Turn text into a URL-safe slug: lower-case ASCII letters and digits, with
++ * every other run of characters replaced by a single separator.
++ */
++export function slugify(input: string, options: SlugifyOptions = {}): string {
++  const separator = options.separator ?? '-'
++  const words = input
++    .normalize('NFD')
++    .replace(/[\u0300-\u036f]/g, '')
++    .toLowerCase()
++    .split(/[^a-z0-9]+/)
++    .filter(word => word.length > 0)
++
++  let slug = words.join(separator)
++  if (options.maxLength !== undefined) {
++    slug = slug.slice(0, Math.max(0, options.maxLength))
++    while (separator.length > 0 && slug.endsWith(separator)) slug = slug.slice(0, -separator.length)
++  }
++  return slug
++}
+diff --git a/tests/strings.test.ts b/tests/strings.test.ts
+index ee62dcc..4ad7024 100644
+--- a/tests/strings.test.ts
++++ b/tests/strings.test.ts
+@@ -1,5 +1,5 @@
+ import { describe, expect, it } from 'vitest'
+-import { capitalize, truncate } from '../src/index'
++import { capitalize, slugify, truncate } from '../src/index'
+ 
+ describe('capitalize', () => {
+   it('upper-cases the first character', () => {
+@@ -28,3 +28,30 @@ describe('truncate', () => {
+     expect(truncate('hello', 0)).toBe('')
+   })
+ })
++
++describe('slugify', () => {
++  it('lower-cases and joins words with a dash', () => {
++    expect(slugify('Hello World')).toBe('hello-world')
++  })
++
++  it('removes accents', () => {
++    expect(slugify('Crème Brûlée')).toBe('creme-brulee')
++  })
++
++  it('collapses punctuation and whitespace and trims the ends', () => {
++    expect(slugify('  Hello,   World!!  ')).toBe('hello-world')
++  })
++
++  it('supports a custom separator', () => {
++    expect(slugify('Hello World', { separator: '_' })).toBe('hello_world')
++  })
++
++  it('cuts to maxLength without leaving a trailing separator', () => {
++    expect(slugify('hello world', { maxLength: 6 })).toBe('hello')
++    expect(slugify('hello wonderful world', { maxLength: 9 })).toBe('hello-won')
++  })
++
++  it('returns an empty string when nothing is left', () => {
++    expect(slugify('!!!')).toBe('')
++  })
++})
