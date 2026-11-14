@@ -202,8 +202,10 @@ jobs:
             echo "::error::Repository secret NPM_TOKEN is required to publish."
             exit 1
           fi
-          echo "npm whoami: $(npm whoami)"
-          npm access list packages @coro-ai || true
+          if ! npm whoami; then
+            echo "::error::NPM_TOKEN could not authenticate with npm. Check the token and its expiration."
+            exit 1
+          fi
 
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.dry_run == false

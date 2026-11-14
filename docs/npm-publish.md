@@ -46,19 +46,25 @@ because `upload-artifact@v4` does not upload paths ignored by `.gitignore`
 
 ## Prerequisites
 
-1. **npm org** — Use the [`@coro-ai`](https://www.npmjs.com/settings/coro-ai/packages) organization on npmjs.com. The publish token must belong to a user with **Read and write** on that org.
-2. **GitHub secret** — `NPM_TOKEN` (automation or granular token with publish on `@coro-ai/*`).
-3. **Provenance** — Workflows enable npm trusted publishing (`id-token: write`). Configure trusted publishers for this repo on npm as well.
+1. **npm org** — Use the [`@coro-ai`](https://www.npmjs.com/settings/coro-ai/packages) organization on npmjs.com. The token owner must have publish access to the packages.
+2. **GitHub secret** — `NPM_TOKEN` must be a valid granular token with **Read and write (publish and stage)** access to the packages or scope. Enable bypass 2FA for publishing if required by the account or packages.
+3. **Provenance** — The workflow enables signed provenance (`id-token: write`); this does not authenticate the npm token.
 
 ### Troubleshooting `E404` on publish
 
-npm returns **404** (not 401) when the token cannot create packages under the scope:
+npm can return **404** on publish when authentication or package permissions are
+wrong, even for an existing package:
 
 ```text
 npm error 404 Not Found - PUT https://registry.npmjs.org/@coro-ai%2fplugin-sdk
 ```
 
-Ensure the org is **`coro-ai`** (scope `@coro-ai`), not `coro`. A token for `@coro-ai` will not publish packages still named `@coro/*`.
+Check the **Verify npm credentials** step first. If `npm whoami` returns 401,
+replace the expired, revoked, or otherwise invalid `NPM_TOKEN` GitHub secret.
+If authentication succeeds, check the token's package permissions and its
+owner's access to the `@coro-ai` packages. Organization-management permissions
+alone do not grant package publishing access. A signed provenance statement
+does not mean the package was successfully published.
 
 ## CI
 
