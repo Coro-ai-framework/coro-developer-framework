@@ -1,10 +1,13 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import {
   CheckCircle2,
   ChevronDown,
   Hand,
   Loader2,
+  MessageSquareText,
+  PanelRightClose,
+  PanelRightOpen,
   PauseCircle,
   TriangleAlert,
 } from 'lucide-react'
@@ -26,6 +29,7 @@ import {
   type RunIndicator,
 } from '../../../lib/status'
 import { deriveWorkflowPhases } from '../../../lib/workflow-phases'
+import { conversationHref, parseInspector, runWaitingReason } from '../../../lib/worklist'
 import { usePlanSession } from '../../../providers/plan-session'
 import { cn } from '../../../lib/utils'
 
@@ -91,7 +95,12 @@ interface ActiveRunCardProps {
  */
 export default function ActiveRunCard({ run, jobId }: ActiveRunCardProps) {
   const session = usePlanSession()
+  const location = useLocation()
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const inspector = parseInspector(location.search)
+  const open = inspector?.kind === 'run' && inspector.id === jobId
+  const openHref = conversationHref(session.sessionId, { kind: 'run', id: jobId })
+  const closeHref = conversationHref(session.sessionId)
 
   const seed = session.jobs.find(candidate => candidate.id === jobId) ?? null
   const { job: fetched } = useJob(jobId, JOB_POLL_MS)
@@ -100,9 +109,21 @@ export default function ActiveRunCard({ run, jobId }: ActiveRunCardProps) {
   const live = job ? !isTerminalStatus(job.status) : false
   const { lines } = useJobStream(jobId, live, { tail: ACTIVITY_TAIL })
 
-  const viewRun = (
+  // Opens the run beside this conversation; on a narrow screen the pane
+  // takes over and its back button returns here.
+  const viewRun = open ? (
+    <Button asChild size="lg" variant="secondary" className="w-full">
+      <Link to={closeHref}>
+        <PanelRightClose />
+        Close run panel
+      </Link>
+    </Button>
+  ) : (
     <Button asChild size="lg" className="w-full">
-      <Link to={`/jobs/${jobId}`}>{PAGE_TITLES.viewRun}</Link>
+      <Link to={openHref}>
+        <PanelRightOpen />
+        {PAGE_TITLES.openRun}
+      </Link>
     </Button>
   )
 
@@ -126,6 +147,7 @@ export default function ActiveRunCard({ run, jobId }: ActiveRunCardProps) {
     b.createdAt.localeCompare(a.createdAt),
   )
   const activity = lastAgentActivity(lines) ?? activityFallback(job)
+  const waiting = runWaitingReason(job)
   const workflowName =
     session.workflows.find(w => w.workflowPath === run.workflowPath)?.name ?? run.workflowPath
 
@@ -135,7 +157,12 @@ export default function ActiveRunCard({ run, jobId }: ActiveRunCardProps) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="truncate text-sm font-semibold text-fg">{deriveJobTitle(job)}</span>
+            <Link
+              to={open ? closeHref : openHref}
+              className="truncate text-sm font-semibold text-fg underline-offset-4 hover:text-accent-300 hover:underline"
+            >
+              {deriveJobTitle(job)}
+            </Link>
             <StatusBadge meta={getJobDisplayStatus(job)} />
           </div>
           <div className="mt-0.5 truncate text-[12px] text-fg-subtle">
@@ -162,6 +189,33 @@ export default function ActiveRunCard({ run, jobId }: ActiveRunCardProps) {
           {activity.text}
         </span>
       </div>
+
+      {waiting ? (
+        <div className="space-y-2.5 rounded-xl border border-warning-500/25 bg-warning-500/8 px-3 py-2.5">
+          <div className="flex items-start gap-2">
+            <Hand className="mt-0.5 size-3.5 shrink-0 text-warning-400" aria-hidden />
+            <div className="min-w-0 text-[12.5px] leading-5">
+              <div className="font-medium text-warning-300">{waiting.title}</div>
+              {waiting.detail ? <p className="line-clamp-3 text-fg-muted">{waiting.detail}</p> : null}
+            </div>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={session.busy}
+            title={session.busy ? 'Coro is still answering in this conversation.' : undefined}
+            onClick={() =>
+              void session.send(
+                `Run ${jobId} is waiting for me. Read its status and recent log, then tell me what it needs and what you recommend.`,
+              )
+            }
+          >
+            <MessageSquareText />
+            Ask Coro what it needs
+          </Button>
+        </div>
+      ) : null}
 
       {/* 5 — out to the run */}
       {viewRun}

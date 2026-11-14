@@ -98,10 +98,12 @@ const SPECS: Record<string, RunControlSpec> = {
   },
   set_run_mode: {
     title: 'Change how a run asks for approval',
-    mutating: false,
+    // Going autonomous waives every checkpoint still ahead, so it is a
+    // decision the developer makes call by call.
+    mutating: true,
     description:
       'Switch a run this conversation started between interactive (pauses at each checkpoint for the developer) ' +
-      'and autonomous (runs through).',
+      'and autonomous (runs through). Not while the run is stopped — answer it with answer_run instead.',
     properties: { jobId: JOB_ID, interactive: { type: 'boolean', description: 'true for interactive, false for autonomous.' } },
     required: ['jobId', 'interactive'],
   },
@@ -257,6 +259,14 @@ export async function executeRunControl(
     }
     case 'set_run_mode': {
       if (typeof args.interactive !== 'boolean') throw new Error('set_run_mode requires interactive: true or false.')
+      // Going autonomous on a run parked at a checkpoint releases it into the
+      // next phase. That is an approval, and approvals go through answer_run.
+      if (isStopped(job)) {
+        throw new Error(
+          `Run ${jobId} is stopped (${job.status}). Changing its mode now could release it; ` +
+          'answer it with answer_run, with the developer\'s agreement, and change the mode afterwards.',
+        )
+      }
       const updated = await runControl.setJobInteractive(jobId, args.interactive)
       result = { interactive: updated.interactive }
       break

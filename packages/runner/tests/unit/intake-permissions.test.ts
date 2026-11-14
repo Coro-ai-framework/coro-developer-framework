@@ -99,7 +99,7 @@ describe('run control', () => {
   })
 
   it('treats calls that resume or stop a run as mutating', () => {
-    for (const name of ['answer_run', 'resume_run', 'cancel_run']) {
+    for (const name of ['answer_run', 'resume_run', 'cancel_run', 'set_run_mode']) {
       expect(gated(classifyIntakeTool(name, { jobId: 'job-7', reason: 'r', message: 'm' }, ctx)).risk).toBe('mutating')
     }
     expect(gated(classifyIntakeTool('pause_run', { jobId: 'job-7' }, ctx)).risk).toBe('normal')

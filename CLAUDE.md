@@ -144,6 +144,22 @@ Each capability is Off, Ask, or Allow for that conversation. Ask pauses the tool
 
 The issue tracker is the one exception to per-capability modes, and it goes both ways (`intake/tracker.ts`). Plan mode resolves the tracker the same way a job does. When `ticketing.read.planMode` is on, the bound MCP tracker's read tools are pre-approved, and its configured server is attached even if that server's access is Off. A developer who turns the server Off in this conversation still wins, and deny rules still apply. Every tracker write tool is refused outright: the bound tracker's, and every other tracker-shaped server's. Ticket updates belong to the dispatched job, which applies the ticketing policy. Plan mode can only shape them through the run's `trackerRef` and `ticketing` fields.
 
+### Plan mode and the runs it started
+
+A conversation stays the place the developer talks about the runs it dispatched. The dispatcher records each one on the investigation (`dispatchedJobIds`, plus `dispatchedJobId` for the latest), and every turn frames their ids in a `<dispatched-run>` block — ids only, because a replay executor persists what it was sent and live status there would pile up as contradictory snapshots.
+
+`intake/run-control.ts` gives the main plan agent `read_run_log` (any run, read-only) and six actions on runs whose `params.investigationId` is this conversation: `message_run` steers a run that is working; `answer_run` replies to one that is stopped (any `awaiting-*` park, a developer pause, escalated, failed) and so resumes it; `pause_run`, `resume_run`, `cancel_run`, `set_run_mode`. They sit under the `runs` capability (default Ask). `answer_run`, `resume_run`, `cancel_run` and `set_run_mode` are `mutating`, so even Allow asks for each call, once — going autonomous waives the checkpoints still ahead, and on a parked run `Dispatcher.setJobInteractive` would release the checkpoint, so `set_run_mode` also refuses a stopped run. The split between steering and answering is not cosmetic: `Dispatcher.sendMessage` resumes any parked job, so a normal-risk tool must not be able to reach one. With no permission broker the tools fail closed, and they are never in `lookupTools`, so subagents cannot act on runs. Every action is logged on the run as `[control] Plan conversation <id>: <tool>`, and messages carry a relay prefix.
+
+Plan mode can also propose a pull-request review with a `<review>` block. The dashboard renders it as a card; the developer starts it. A started review's id is persisted on the investigation (`reviewIds`) so the work list nests it.
+
+## Dashboard: one workspace
+
+The dashboard has no Plans / Runs / Reviews screens. The sidebar is the work list (`GET /worklist`, `runner/worklist.ts`): every conversation, run and review, grouped **Needs you / Working / Waiting / Recent**. The runner decides each item's group and attention once, so the list, the header count, the window title and the desktop badge cannot disagree. Runs nest under the conversation that started them (campaign children under their parent first, since they inherit `investigationId`); review rounds (`pr-review` jobs) are never rows — their state folds into the review.
+
+The sidebar polls every few seconds, and the records behind it are large (a plan transcript is hundreds of kilobytes; a job carries insights and artefacts). `WorklistService` therefore caches a projection per record keyed by `updatedAt` and, through the optional `StateBackend.listRecordVersions()`, re-reads only rows that changed; responses are revalidated with an ETag. `GET /jobs?view=summary` serves lists without the fields only a job's page reads.
+
+`/plans/:id` is a conversation; `?run=` or `?review=` opens that run or review in a third pane beside it, using the same `RunView` / `ReviewView` the full pages use. Those views lay out with container queries (`@container`, `@lg:` …) rather than viewport breakpoints, because inside the pane the window is wide but the view is not. The URL is the only state for which conversation is open and what is beside it.
+
 ## Job types and workflow routing
 
 Every job carries a `type` and a `workflowPath`. The runner uses these — not hardcoded logic — to decide which workflow and which agents to run. This is how new workflows drop in without changing the infrastructure.

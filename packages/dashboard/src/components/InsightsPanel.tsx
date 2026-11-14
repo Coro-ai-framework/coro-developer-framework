@@ -171,7 +171,7 @@ export default function InsightsPanel({ jobId, insights: seedInsights, onChanged
 
   return (
     <Card>
-      <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
+      <CardHeader className="gap-3 border-b border-line pb-4 @lg:flex-row @lg:items-center @lg:justify-between">
         <div>
           <CardTitle className="flex items-center gap-2">
             <Lightbulb className="size-4 text-amber-500" aria-hidden="true" />

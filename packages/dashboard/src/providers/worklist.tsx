@@ -7,7 +7,7 @@ const POLL_MS = 3_000
 
 interface WorklistContextValue {
   worklist: Worklist
-  /** True until the first answer arrives. */
+  /** True until the first successful answer. A failed first poll keeps it true, so nothing treats "unreachable" as "empty". */
   loading: boolean
   error: string | null
   /** Fetch now, e.g. right after this tab started or changed something. */
@@ -42,11 +42,11 @@ export function WorklistProvider({ children }: { children: ReactNode }) {
         setWorklist(JSON.parse(body) as Worklist)
       }
       setError(null)
+      setLoading(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load work')
     } finally {
       inflight.current = false
-      setLoading(false)
       if (queued.current) {
         queued.current = false
         void fetchNow()

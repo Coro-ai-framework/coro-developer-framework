@@ -387,8 +387,12 @@ export function reviewControl(id: string, action: ReviewControl): Promise<PrRevi
   return requestJson<PrReview>(`${REVIEWS_PATH}/${encodeURIComponent(id)}/${action}`, { method: 'POST' })
 }
 
-export function startReview(prUrl: string): Promise<PrReview> {
-  return requestJson<PrReview>(REVIEWS_PATH, jsonRequest({ prUrl }, { method: 'POST' }))
+/** `investigationId` links the review to the plan-mode conversation that proposed it. */
+export function startReview(prUrl: string, investigationId?: string): Promise<PrReview> {
+  return requestJson<PrReview>(
+    REVIEWS_PATH,
+    jsonRequest({ prUrl, ...(investigationId ? { investigationId } : {}) }, { method: 'POST' }),
+  )
 }
 
 export function deleteReview(id: string): Promise<void> {

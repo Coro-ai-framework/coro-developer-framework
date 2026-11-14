@@ -49,6 +49,7 @@ import { registerIntakeRoutes } from '../intake/routes'
 import { intakeTurnActive } from '../intake/session-store'
 import { listPendingIntakePermissions } from '../intake/permissions'
 import { WorklistService } from './worklist'
+import { toJobListView } from './job-list-view'
 import { JobType, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { REVIEW_MARKER_PREFIX, STATUS_AWAITING_DEVELOPER_INPUT, reviewMarker, type PrReview, type ReviewVerdict } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
@@ -1434,7 +1435,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         return
       }
       const jobs = await stateBackend.listJobs()
-      res.json(jobs)
+      res.set('Cache-Control', 'no-cache')
+      res.json(req.query.view === 'summary' ? jobs.map(toJobListView) : jobs)
     } catch (err) {
       res.status(500).json({ error: (err as Error).message })
     }
@@ -1634,6 +1636,19 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       source: 'manual',
     })
     if (!review) throw new ReviewHttpError(400, 'Could not start a review for that pull request.')
+    // Started from a plan-mode review card: link it to that conversation here,
+    // so the link survives the developer switching away before the dashboard
+    // could record it. Never creates a conversation that does not exist.
+    const investigationId = typeof req.body?.investigationId === 'string' ? req.body.investigationId.trim() : ''
+    if (investigationId) {
+      try {
+        if (await stateBackend.getInvestigation(investigationId)) {
+          await stateBackend.upsertInvestigation({ id: investigationId, reviewIds: [review.id] })
+        }
+      } catch (err) {
+        logger.warn({ err, investigationId, reviewId: review.id }, 'Could not link the review to its conversation')
+      }
+    }
     res.status(201).json(await reviewWithSchedule(review))
   }))
 

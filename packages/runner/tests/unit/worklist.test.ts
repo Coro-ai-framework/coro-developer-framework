@@ -278,3 +278,21 @@ describe('WorklistService', () => {
     expect(backend.listRecordVersions).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('toJobListView', () => {
+  it('drops the heavy fields and keeps what lists read', async () => {
+    const { toJobListView } = await import('../../src/runner/job-list-view')
+    const full = job({
+      id: 'heavy',
+      insights: [{ phase: 'coding', category: 'x', summary: 's', detail: 'd' }],
+      artifacts: [{ id: 'a', phase: 'coding', kind: 'k', title: 't', data: {}, createdBy: 'c', createdAt: '' }],
+      params: { serviceName: 'svc', investigationId: 'c1' },
+      tokenUsage: { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: 2 },
+    } as Partial<Job> & { id: string })
+    const slim = toJobListView(full)
+    expect(slim.insights).toEqual([])
+    expect(slim.artifacts).toEqual([])
+    expect(slim.params).toEqual(full.params)
+    expect(slim.tokenUsage?.totalCostUsd).toBe(2)
+  })
+})

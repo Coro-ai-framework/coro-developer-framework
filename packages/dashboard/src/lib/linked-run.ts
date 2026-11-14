@@ -2,6 +2,7 @@ import type { ActivityItem } from '../components/activity/types'
 import type { Job } from '../types'
 import type { RunDraft } from './intake-run'
 import { getInvestigationId, getJobRepo, getReviewers, getServiceName } from './jobs'
+import { isTerminalStatus } from './status'
 
 export interface LinkedRunCardData {
   run: RunDraft
@@ -91,4 +92,16 @@ export function ensureDispatchedRunCard(items: ActivityItem[], job: Job): Activi
       },
     },
   ]
+}
+
+/** True while a run this conversation dispatched is still going, so the composer can say it can steer it. */
+export function conversationHasLiveRun(items: ActivityItem[], jobs: Pick<Job, 'id' | 'status'>[]): boolean {
+  const statusById = new Map(jobs.map(job => [job.id, job.status]))
+  return items.some(item => {
+    if (!isRunCard(item)) return false
+    const data = cardData(item)
+    if (data.state !== 'dispatched' || !data.jobId) return false
+    const status = statusById.get(data.jobId)
+    return status !== undefined && !isTerminalStatus(status)
+  })
 }

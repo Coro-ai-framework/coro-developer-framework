@@ -20,6 +20,7 @@ const ROWS: Array<{ key: IntakeBuiltinCapability; label: string }> = [
   { key: 'filesWrite', label: 'Write scratch files' },
   { key: 'shell', label: 'Shell' },
   { key: 'web', label: 'Web' },
+  { key: 'runs', label: 'Control runs' },
 ]
 
 export default function ToolAccessMenu() {

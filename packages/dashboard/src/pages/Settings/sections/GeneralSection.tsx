@@ -1,8 +1,11 @@
+import { useState } from 'react'
 import { Switch } from '../../../components/ui/switch'
 import { SegmentedControl } from '../../../components/ui/segmented-control'
 import SettingsSection from '../../../components/settings/SettingsSection'
 import { useSettings } from '../SettingsContext'
 import { jsonRequest, requestJson } from '../../../lib/http'
+import { useLocalStorage } from '../../../hooks/use-local-storage'
+import { ensureNotificationPermission, notificationsBlocked, NOTIFICATIONS_STORAGE_KEY } from '../../../lib/notifications'
 
 const ACCESS_MODES = [
   { value: 'off', label: 'Off' },
@@ -15,6 +18,7 @@ const DEFAULT_ROWS = [
   { key: 'filesWrite', label: 'Write scratch files', fallback: 'ask' },
   { key: 'shell', label: 'Shell', fallback: 'ask' },
   { key: 'web', label: 'Web', fallback: 'ask' },
+  { key: 'runs', label: 'Control runs it started', fallback: 'ask' },
   { key: 'mcp', label: 'Other MCP servers', fallback: 'off' },
 ] as const
 
@@ -42,7 +46,7 @@ export default function GeneralSection() {
           <div>
             <div className="text-sm font-medium text-fg">Enable coach mode</div>
             <p className="mt-0.5 text-xs text-fg-muted">
-              New runs default to Interactive mode and show extra guidance on the Plans page.
+              New runs default to Interactive mode and plan mode shows extra guidance.
             </p>
           </div>
           <Switch
@@ -52,6 +56,8 @@ export default function GeneralSection() {
           />
         </label>
       </SettingsSection>
+
+      <NotificationsSetting />
 
       <SettingsSection
         title="Plan mode"
@@ -148,3 +154,44 @@ export default function GeneralSection() {
     </div>
   )
 }
+
+function NotificationsSetting() {
+  const [enabled, setEnabled] = useLocalStorage(NOTIFICATIONS_STORAGE_KEY, true)
+  const [blocked, setBlocked] = useState(notificationsBlocked)
+  const desktop = typeof window !== 'undefined' && Boolean(window.coroDesktop)
+
+  async function toggle(next: boolean) {
+    if (next) {
+      const granted = await ensureNotificationPermission()
+      setBlocked(!granted)
+      if (!granted) return
+    }
+    setEnabled(next)
+  }
+
+  return (
+    <SettingsSection
+      title="Notifications"
+      description="Coro tells you when something needs you while you are looking elsewhere."
+    >
+      <label className="flex items-center justify-between gap-4 rounded-xl border border-line bg-overlay/30 p-4">
+        <div>
+          <div className="text-sm font-medium text-fg">Notify me when something needs me</div>
+          <p className="mt-0.5 text-xs text-fg-muted">
+            A run waiting for an answer, a review draft to approve, a plan-mode permission prompt, or a plan-mode reply.
+            {desktop ? ' The dock badge always shows the count.' : ''}
+          </p>
+          {blocked && !desktop ? (
+            <p className="mt-1 text-xs text-warning-300">Your browser is blocking notifications for this site. Allow them in the site settings.</p>
+          ) : null}
+        </div>
+        <Switch
+          checked={enabled && !blocked}
+          onCheckedChange={checked => void toggle(checked)}
+          ariaLabel="Notifications"
+        />
+      </label>
+    </SettingsSection>
+  )
+}
+

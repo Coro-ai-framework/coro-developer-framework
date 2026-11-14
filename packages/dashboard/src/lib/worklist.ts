@@ -235,8 +235,14 @@ export function filterThreads(threads: WorkThread[], kind: KindFilter, query: st
   return threads.map(visit).filter((t): t is WorkThread => t !== null)
 }
 
-export function countThreads(threads: WorkThread[]): number {
-  return threads.reduce((sum, t) => sum + 1 + countThreads(t.children), 0)
+/**
+ * What a group header counts: the items that are in that group themselves,
+ * not the parents shown around them for context. A thread always counts once.
+ */
+export function countInGroup(threads: WorkThread[], group: WorkGroup): number {
+  const own = (t: WorkThread): number =>
+    (t.item.group === group ? 1 : 0) + t.children.reduce((sum, child) => sum + own(child), 0)
+  return threads.reduce((sum, t) => sum + Math.max(1, own(t)), 0)
 }
 
 // ── Navigation ───────────────────────────────────────────────────────────────
@@ -386,4 +392,46 @@ function firstLine(text: string): string {
 
 export function isRetrospectiveRun(item: WorklistItem): boolean {
   return item.kind === 'run' && getWorkflowSlug(item.workflowPath) === 'retrospective'
+}
+
+/** "now", "4m", "3h", "2d", "5w" — row timestamps have no room for "2 minutes ago". */
+export function compactAge(iso: string, now: number): string {
+  const ms = now - Date.parse(iso)
+  if (!Number.isFinite(ms) || ms < 45_000) return 'now'
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) return `${Math.max(1, minutes)}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.round(hours / 24)
+  if (days < 14) return `${days}d`
+  return `${Math.round(days / 7)}w`
+}
+
+const PAUSED_EVENT = 'developer-input: paused by developer'
+
+/**
+ * Why a run is waiting on the developer, or null when it is not. The same
+ * states the runner groups under "Needs you"; a developer's own pause is not
+ * a question for them.
+ */
+export function runWaitingReason(
+  job: { status: string; awaitingEvent?: string | null; escalationMessage?: string | null },
+): { title: string; detail: string | null } | null {
+  switch (job.status) {
+    case 'awaiting-developer-input': {
+      if (job.awaitingEvent === PAUSED_EVENT) return null
+      const reason = job.awaitingEvent?.startsWith('developer-input:')
+        ? job.awaitingEvent.slice('developer-input:'.length).trim()
+        : ''
+      return { title: 'Waiting for your answer', detail: reason || null }
+    }
+    case 'awaiting-plan-approval':
+      return { title: 'Plan waiting for your approval', detail: null }
+    case 'escalated':
+      return { title: 'Escalated', detail: job.escalationMessage?.trim() || null }
+    case 'failed':
+      return { title: 'Failed', detail: job.escalationMessage?.trim() || null }
+    default:
+      return null
+  }
 }

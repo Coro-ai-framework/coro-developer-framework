@@ -28,30 +28,24 @@ export const PAGE_TITLES = {
   runsList: 'Runs',
   runsListDescription: `Every ${RUN_NOUN.singularLower} on this runner. Filter by workflow or status.`,
   newRun: `New ${RUN_NOUN.singularLower}`,
-  plans: 'Plans',
-  recents: 'Recents',
-  recentsDescription: 'Conversations on this runner.',
   backToRuns: `Back to ${RUN_NOUN.pluralLower}`,
-  newConversation: 'New conversation',
   generateRun: 'Generate run',
   runGenerated: 'Run generated',
-  viewRun: 'View run',
+  openRun: 'Open run',
   startRun: 'Start run',
 } as const
 
-// Switching away from a working conversation used to warn, because the turn
-// was discarded. It is not: the turn runs on, the Recents row reads "Working",
-// and returning re-attaches to the live transcript. Only starting fresh still
-// asks, and only when there is something to leave behind.
+// Switching away from a working conversation never discards the turn: it
+// runs on, its work-list row reads "Working", and returning re-attaches to
+// the live transcript.
 export const CONVERSATION_COPY = {
-  newConfirm: 'Start a new conversation? This one stays in Recents.',
   /** The Stop control disconnects; it cannot recall a turn already sent. */
   stopHint: 'Stop watching this turn. Coro may still finish it in the background.',
   /** Shown when a reload finds the runner still working and there is no local stream to detach. */
   stillInvestigating: 'Still investigating…',
 } as const
 
-/** Composer home — Plans. */
+/** A new plan-mode conversation. */
 export const HOME_PATH = '/'
 /** Canonical job inventory. */
 export const RUNS_LIST_PATH = '/jobs'

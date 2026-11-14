@@ -16,41 +16,31 @@ import { parseFindings, looksLikeFindingsReport, currentFindingsMarkdown } from 
 import {
   asActivityItems,
   deleteInvestigation,
-  dropInvestigationSummary,
   getInvestigation,
   getToolAccess,
   investigationHasProgress,
   investigationTitleFromItems,
-  investigationToResume,
-  INVESTIGATION_LIST_PAGE_SIZE,
-  listInvestigations,
-  mergeInvestigationSummaries,
   putInvestigation,
   putToolAccess,
   respondToPermission,
-  toInvestigationSummary,
   type IntakePermissionRequest,
   type InvestigationStatus,
-  type InvestigationSummary,
   type ToolAccessPatch,
   type ToolAccessView,
 } from '../lib/intake-investigation'
 import { parseReadiness, type Readiness } from '../lib/intake-readiness'
 import { recoverIntakeReply } from '../lib/recover-intake-reply'
 import { parseRun } from '../lib/intake-run'
+import { withReviewCard } from '../lib/intake-review'
 import { runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
-import {
-  clearNewRunDraftStorage,
-  clearOrphanedIntakeKeys,
-  loadNewRunDraft,
-  mintSessionId,
-} from '../lib/new-run-draft'
+import { mintSessionId } from '../lib/new-run-draft'
 import { deriveRunHistoryHints } from '../lib/run-history'
 import { ApiError, requestJson } from '../lib/http'
 import { ensureDispatchedRunCard, jobForInvestigation } from '../lib/linked-run'
 import type { ConfigResponse } from '../pages/Settings/SettingsContext'
 import type { Job } from '../types'
 import type { WorkflowOption } from '../workflows'
+import { useRefreshWorklist } from './worklist'
 
 /**
  * What the "Generate run" control sends. Plan mode investigates until the
@@ -69,6 +59,30 @@ let bootSessionId: string | null = null
 function initialSessionId(): string {
   if (!bootSessionId) bootSessionId = mintSessionId()
   return bootSessionId
+}
+
+/**
+ * Ids minted in this tab for a conversation that does not exist yet. Opening
+ * one starts it blank instead of asking the runner for a row it cannot have.
+ */
+const freshConversationIds = new Set<string>()
+
+/** A new conversation id. Navigate to it to start a blank conversation. */
+export function mintConversationId(): string {
+  const id = mintSessionId()
+  freshConversationIds.add(id)
+  return id
+}
+
+/** Review ids the conversation's review cards started; persisted so the work list can nest them. */
+function reviewIdsFromItems(items: ActivityItem[]): string[] {
+  const ids: string[] = []
+  for (const item of items) {
+    if (item.kind !== 'card' || item.card.type !== 'review') continue
+    const reviewId = (item.card.data as { reviewId?: unknown }).reviewId
+    if (typeof reviewId === 'string' && reviewId && !ids.includes(reviewId)) ids.push(reviewId)
+  }
+  return ids
 }
 
 interface PlanSessionState {
@@ -92,13 +106,8 @@ export interface PlanSessionApi extends PlanSessionState {
   cancel: () => void
   /** Stop reaches a stream this page opened. A reloaded in-flight turn has no local fetch to detach. */
   canStop: boolean
-  startNewConversation: (opts?: {
-    status?: InvestigationStatus
-    dispatchedJobId?: string
-  }) => Promise<void>
   openInvestigation: (id: string) => Promise<void>
   removeInvestigation: (id: string) => Promise<void>
-  loadMoreInvestigations: () => Promise<void>
   setModelChoice: (next: { provider: string; model: string }) => void
   updateCard: (itemId: string, data: unknown) => void
   markCardDispatched: (itemId: string, jobId: string) => void
@@ -120,15 +129,8 @@ export interface PlanSessionApi extends PlanSessionState {
   hydrated: boolean
   /** True while a conversation switch is fetching. */
   switching: boolean
-  /**
-   * Conversations with a turn in flight — including ones the developer has
-   * switched away from, since those turns keep running.
-   */
-  runningIds: string[]
-  investigations: InvestigationSummary[]
-  investigationsTotal: number
-  investigationsLoading: boolean
-  investigationsLoadingMore: boolean
+  /** The conversation the URL asked for could not be loaded. */
+  openError: { id: string; message: string } | null
 }
 
 /**
@@ -152,6 +154,17 @@ interface LiveTurn {
 
 const PlanSessionContext = createContext<PlanSessionApi | null>(null)
 
+/**
+ * The session's stable actions. The full session value changes on every
+ * streamed token; surfaces that only need to act (the work list) read this
+ * instead so a streaming turn does not re-render them.
+ */
+export interface PlanSessionActions {
+  removeInvestigation: (id: string) => Promise<void>
+}
+
+const PlanSessionActionsContext = createContext<PlanSessionActions | null>(null)
+
 export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const [sessionId, setSessionId] = useState(initialSessionId)
   const [items, setItems] = useState<ActivityItem[]>([])
@@ -170,14 +183,12 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const [scmConnected, setScmConnected] = useState(true)
   const [hydrated, setHydrated] = useState(false)
   const [switching, setSwitching] = useState(false)
-  const [runningIds, setRunningIds] = useState<string[]>([])
-  const [investigations, setInvestigations] = useState<InvestigationSummary[]>([])
-  const [investigationsTotal, setInvestigationsTotal] = useState(0)
-  const [investigationsLoading, setInvestigationsLoading] = useState(true)
-  const [investigationsLoadingMore, setInvestigationsLoadingMore] = useState(false)
+  /** The latest run each known conversation dispatched, as the runner recorded it. */
+  const [dispatchedByConversation, setDispatchedByConversation] = useState<Record<string, string>>({})
   const [canStop, setCanStop] = useState(false)
   const [awaitingServerTurn, setAwaitingServerTurn] = useState(false)
   const [toolAccess, setToolAccess] = useState<ToolAccessView | null>(null)
+  const [openError, setOpenError] = useState<{ id: string; message: string } | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const busyRef = useRef(false)
@@ -190,7 +201,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const turnCountRef = useRef(turnCount)
   const tokensRef = useRef(totalTokens)
   const contextUsedRef = useRef(contextUsed)
-  const investigationsRef = useRef(investigations)
+  const dispatchedByConversationRef = useRef(dispatchedByConversation)
   const persistChainRef = useRef(Promise.resolve())
   const skipNextPersistRef = useRef(false)
   const deletedIdsRef = useRef(new Set<string>())
@@ -204,6 +215,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
    * that started it. See `send`.
    */
   const turnGenerationRef = useRef(0)
+  /** The conversation a switch is loading, while the GET is in flight. */
+  const switchingToRef = useRef<string | null>(null)
   workflowsRef.current = workflows
   jobsRef.current = jobs
   modelChoiceRef.current = modelChoice
@@ -213,7 +226,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   turnCountRef.current = turnCount
   tokensRef.current = totalTokens
   contextUsedRef.current = contextUsed
-  investigationsRef.current = investigations
+  dispatchedByConversationRef.current = dispatchedByConversation
+  const refreshWorklist = useRefreshWorklist()
 
   const commitItems = useCallback((updater: (prev: ActivityItem[]) => ActivityItem[]) => {
     const next = updater(itemsRef.current)
@@ -222,21 +236,26 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     return next
   }, [])
 
+  /**
+   * Tracks conversations with a turn in flight, including ones the developer
+   * switched away from. The work list shows the same thing from the runner;
+   * nudging it here makes a turn starting or ending show up immediately.
+   */
   const markRunning = useCallback((id: string, running: boolean) => {
+    const was = runningIdsRef.current.has(id)
+    if (was === running) return
     const next = new Set(runningIdsRef.current)
     if (running) next.add(id)
     else next.delete(id)
     runningIdsRef.current = next
-    setRunningIds([...next])
-  }, [])
+    refreshWorklist()
+  }, [refreshWorklist])
 
-  const rememberSummary = useCallback((summary: InvestigationSummary) => {
-    if (deletedIdsRef.current.has(summary.id)) return
-    const existed = investigationsRef.current.some(row => row.id === summary.id)
-    const next = mergeInvestigationSummaries(investigationsRef.current, summary)
-    investigationsRef.current = next
-    setInvestigations(next)
-    if (!existed) setInvestigationsTotal(total => total + 1)
+  const rememberDispatched = useCallback((id: string, dispatchedJobId: string | null | undefined) => {
+    if (!dispatchedJobId || dispatchedByConversationRef.current[id] === dispatchedJobId) return
+    const next = { ...dispatchedByConversationRef.current, [id]: dispatchedJobId }
+    dispatchedByConversationRef.current = next
+    setDispatchedByConversation(next)
   }, [])
 
   const persistNow = useCallback(async (opts: {
@@ -262,6 +281,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         tokens: opts.tokens,
         contextUsed: opts.contextUsed,
         title: investigationTitleFromItems(opts.items),
+        reviewIds: reviewIdsFromItems(opts.items),
         // Autosave omits status so a follow-up question cannot downgrade a
         // dispatched investigation back to active. First insert still
         // becomes active via mergeInvestigation's default.
@@ -272,14 +292,17 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         await deleteInvestigation(opts.id).catch(() => undefined)
         return
       }
-      if (result.session) rememberSummary(toInvestigationSummary(result.session))
+      if (result.session) {
+        rememberDispatched(opts.id, result.session.dispatchedJobId)
+        refreshWorklist()
+      }
     } catch (err) {
       // Autosave must not block chatting; the next turn retries. Dispatch
       // used to treat a swallowed 413 as success and then navigate away,
       // which is how a started run vanished from the conversation.
       console.warn('Failed to persist investigation snapshot', err)
     }
-  }, [rememberSummary])
+  }, [refreshWorklist, rememberDispatched])
 
   const enqueueSnapshot = useCallback((snapshot: Parameters<typeof persistNow>[0]) => {
     persistChainRef.current = persistChainRef.current.then(() => persistNow(snapshot)).catch(() => undefined)
@@ -294,7 +317,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     const linked = jobForInvestigation(
       jobsRef.current,
       sessionId,
-      opts?.dispatchedJobId ?? investigationsRef.current.find(row => row.id === sessionId)?.dispatchedJobId,
+      opts?.dispatchedJobId ?? dispatchedByConversationRef.current[sessionId],
     )
     const dispatchedJobId = opts?.dispatchedJobId ?? linked?.id
     return enqueueSnapshot({
@@ -332,10 +355,13 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     readiness: Readiness | null
     modelChoice?: { provider: string; model: string }
     pendingPermissions?: IntakePermissionRequest[]
+    dispatchedJobId?: string | null
   }) => {
     skipNextPersistRef.current = true
     turnGenerationRef.current += 1
     setSwitching(false)
+    rememberDispatched(record.id, record.dispatchedJobId)
+    switchingToRef.current = null
     // Mid-turn, the live transcript is ahead of the stored one — the row was
     // written when the conversation was parked and the turn has been running
     // since. Re-attach to it so the feed picks up where the agent actually is.
@@ -375,16 +401,17 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setPartialText(live?.partialText ?? '')
     setPartialThinking(live?.partialThinking ?? '')
     setError(null)
-  }, [markRunning])
+  }, [markRunning, rememberDispatched])
 
-  const mintEmpty = useCallback(() => {
+  const mintEmpty = useCallback((id?: string) => {
     turnGenerationRef.current += 1
     setSwitching(false)
     // Forget the in-flight controller without aborting it. The turn belongs
     // to the conversation being parked and finishes into it; killing the
     // fetch here is what used to throw away a reply already paid for.
     abortRef.current = null
-    const next = mintSessionId()
+    switchingToRef.current = null
+    const next = id ?? mintSessionId()
     sessionIdRef.current = next
     itemsRef.current = []
     bootSessionId = next
@@ -405,10 +432,6 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    clearOrphanedIntakeKeys()
-  }, [])
-
-  useEffect(() => {
     void requestJson<ConfigResponse>('/config').then(data => {
       const tier =
         data.config?.llm?.aliases?.['tier:planning'] ?? data.config?.llm?.aliases?.['planning']
@@ -419,60 +442,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  // Which conversation is open is decided by the URL (`/plans/:id`), so there
+  // is nothing to restore here; the provider is ready as soon as it mounts.
   useEffect(() => {
-    let cancelled = false
-    const generationAtStart = turnGenerationRef.current
-    async function hydrateFromServer() {
-      setInvestigationsLoading(true)
-      try {
-        const draft = loadNewRunDraft()
-        let list = await listInvestigations({ limit: INVESTIGATION_LIST_PAGE_SIZE, offset: 0 })
-        if (cancelled) return
-        if (draft && investigationHasProgress(draft.items) && list.total === 0) {
-          await putInvestigation(draft.sessionId, {
-            items: draft.items,
-            readiness: draft.readiness,
-            findings: currentFindingsMarkdown(draft.items),
-            modelChoice: draft.modelChoice,
-            turnCount: draft.turnCount,
-            tokens: draft.totalTokens,
-            contextUsed: draft.contextUsed,
-            title: investigationTitleFromItems(draft.items),
-            status: 'active',
-          })
-          list = await listInvestigations({ limit: INVESTIGATION_LIST_PAGE_SIZE, offset: 0 })
-        }
-        clearNewRunDraftStorage()
-        if (cancelled) return
-        setInvestigations(list.sessions)
-        investigationsRef.current = list.sessions
-        setInvestigationsTotal(list.total)
-        const resume = investigationToResume(list.sessions)
-        if (resume) {
-          const full = await getInvestigation(resume.id)
-          if (cancelled) return
-          // New conversation / an in-flight first turn already owns the pane.
-          // Applying the last Recents row here is what made "New conversation"
-          // open on leftover tool chips.
-          if (turnGenerationRef.current !== generationAtStart) return
-          if (busyRef.current) return
-          if (investigationHasProgress(itemsRef.current)) return
-          applyRecord(full)
-        }
-      } catch {
-        clearNewRunDraftStorage()
-      } finally {
-        if (!cancelled) {
-          setInvestigationsLoading(false)
-          setHydrated(true)
-        }
-      }
-    }
-    void hydrateFromServer()
-    return () => {
-      cancelled = true
-    }
-  }, [applyRecord])
+    setHydrated(true)
+  }, [])
 
   // A refresh drops the browser stream. The runner keeps the turn, and GET
   // reports `streaming` until it records. Poll that, then fold the reply in.
@@ -527,14 +501,14 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     const linked = jobForInvestigation(
       jobs,
       sessionId,
-      investigations.find(row => row.id === sessionId)?.dispatchedJobId,
+      dispatchedByConversation[sessionId],
     )
     if (!linked) return
     const current = itemsRef.current
     const next = ensureDispatchedRunCard(current, linked)
     if (next === current) return
     commitItems(() => next)
-  }, [commitItems, hydrated, investigations, jobs, sessionId, switching])
+  }, [commitItems, dispatchedByConversation, hydrated, jobs, sessionId, switching])
 
   const respond = useCallback(async (
     requestId: string,
@@ -581,55 +555,58 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setCanStop(false)
   }, [respond])
 
-  const startNewConversation = useCallback(async (opts?: {
-    status?: InvestigationStatus
-    dispatchedJobId?: string
-  }) => {
-    // mintEmpty swaps the session id, which is what stops the in-flight turn
-    // writing here; the bump additionally invalidates any switch or hydrate
-    // still resolving, so neither can drop a conversation onto the blank one.
-    turnGenerationRef.current += 1
-    const pending = enqueuePersist(opts)
-    mintEmpty()
-    await pending
-  }, [enqueuePersist, mintEmpty])
-
   const openInvestigation = useCallback(async (id: string) => {
-    if (id === sessionIdRef.current) return
+    if (id === sessionIdRef.current) {
+      setOpenError(null)
+      // Back to the conversation already on screen while a switch away was
+      // still loading: drop that switch, or its record lands under this URL.
+      if (switchingToRef.current !== null) {
+        switchingToRef.current = null
+        turnGenerationRef.current += 1
+        setSwitching(false)
+      }
+      return
+    }
+    if (id === switchingToRef.current) return
     turnGenerationRef.current += 1
     abortRef.current = null
     const generation = turnGenerationRef.current
-    setSwitching(true)
+    setOpenError(null)
     if (investigationHasProgress(itemsRef.current)) enqueuePersist()
+    if (freshConversationIds.has(id)) {
+      freshConversationIds.delete(id)
+      mintEmpty(id)
+      return
+    }
+    setSwitching(true)
+    switchingToRef.current = id
     // Drain queued writes first — one of them may be a turn that just
     // finished in another conversation, and this GET could otherwise read the
     // row it is about to replace.
     await persistChainRef.current
     try {
       const full = await getInvestigation(id)
-      // A later switch — another row, or New conversation — won while this
-      // GET was in flight. Applying now would drag the developer back into
-      // a conversation they already left.
+      // A later switch won while this GET was in flight. Applying now would
+      // drag the developer back into a conversation they already left.
       if (turnGenerationRef.current !== generation) return
       applyRecord(full)
     } catch (err) {
       if (turnGenerationRef.current !== generation) return
-      // The switch did not happen. Say so in the conversation still on
-      // screen rather than leaving the click looking like a no-op.
-      const message = err instanceof Error ? err.message : String(err)
-      commitItems(prev => [
-        ...prev,
-        {
-          kind: 'notice',
-          id: nextId('notice'),
-          tone: 'error',
-          text: `Could not open that conversation — ${message}`,
-        },
-      ])
+      if (err instanceof ApiError && err.status === 404) {
+        // An id nobody has written to yet: a link to a new conversation.
+        mintEmpty(id)
+        return
+      }
+      // Never fall back to a blank conversation under this id: the first
+      // autosave would overwrite the row that failed to load.
+      setOpenError({ id, message: err instanceof Error ? err.message : String(err) })
     } finally {
-      if (turnGenerationRef.current === generation) setSwitching(false)
+      if (turnGenerationRef.current === generation) {
+        switchingToRef.current = null
+        setSwitching(false)
+      }
     }
-  }, [applyRecord, commitItems, enqueuePersist])
+  }, [applyRecord, enqueuePersist, mintEmpty])
 
   const removeInvestigation = useCallback(async (id: string) => {
     deletedIdsRef.current.add(id)
@@ -648,44 +625,9 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       deletedIdsRef.current.delete(id)
       throw err
     }
-    const remaining = dropInvestigationSummary(investigationsRef.current, id)
-    investigationsRef.current = remaining
-    setInvestigations(remaining)
-    setInvestigationsTotal(total => Math.max(0, total - 1))
     if (isCurrent) mintEmpty()
-    if (remaining.length >= INVESTIGATION_LIST_PAGE_SIZE) return
-    try {
-      const page = await listInvestigations({
-        limit: INVESTIGATION_LIST_PAGE_SIZE,
-        offset: remaining.length,
-      })
-      const seen = new Set(remaining.map(row => row.id))
-      const next = [...remaining, ...page.sessions.filter(row => !seen.has(row.id))]
-      investigationsRef.current = next
-      setInvestigations(next)
-      setInvestigationsTotal(page.total)
-    } catch {
-      // The row is already gone from the rail.
-    }
-  }, [markRunning, mintEmpty])
-
-  const loadMoreInvestigations = useCallback(async () => {
-    if (investigationsRef.current.length >= investigationsTotal) return
-    setInvestigationsLoadingMore(true)
-    try {
-      const page = await listInvestigations({
-        limit: INVESTIGATION_LIST_PAGE_SIZE,
-        offset: investigationsRef.current.length,
-      })
-      const seen = new Set(investigationsRef.current.map(row => row.id))
-      const next = [...investigationsRef.current, ...page.sessions.filter(row => !seen.has(row.id))]
-      investigationsRef.current = next
-      setInvestigations(next)
-      setInvestigationsTotal(page.total)
-    } finally {
-      setInvestigationsLoadingMore(false)
-    }
-  }, [investigationsTotal])
+    refreshWorklist()
+  }, [markRunning, mintEmpty, refreshWorklist])
 
   const appendNotice = useCallback(
     (notice: { tone: 'info' | 'warning' | 'error'; text: string; action?: { label: string; to: string } }) => {
@@ -969,7 +911,11 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       }
 
       const stillVisible = onScreen()
-      const finalItems = finalize(stillVisible ? itemsRef.current : live.items)
+      const finalItems = withReviewCard(
+        finalize(stillVisible ? itemsRef.current : live.items),
+        committed,
+        nextId('card'),
+      )
       live.items = finalItems
       liveTurnsRef.current.delete(sessionAtStart)
 
@@ -1050,10 +996,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       send,
       cancel,
       canStop,
-      startNewConversation,
       openInvestigation,
       removeInvestigation,
-      loadMoreInvestigations,
       setModelChoice,
       updateCard,
       markCardDispatched,
@@ -1071,11 +1015,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       hasProgress,
       hydrated,
       switching,
-      runningIds,
-      investigations,
-      investigationsTotal,
-      investigationsLoading,
-      investigationsLoadingMore,
+      openError,
     }),
     [
       sessionId,
@@ -1093,10 +1033,8 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       send,
       cancel,
       canStop,
-      startNewConversation,
       openInvestigation,
       removeInvestigation,
-      loadMoreInvestigations,
       updateCard,
       markCardDispatched,
       persistSnapshot,
@@ -1110,15 +1048,17 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       hasProgress,
       hydrated,
       switching,
-      runningIds,
-      investigations,
-      investigationsTotal,
-      investigationsLoading,
-      investigationsLoadingMore,
+      openError,
     ],
   )
 
-  return <PlanSessionContext.Provider value={value}>{children}</PlanSessionContext.Provider>
+  const actions = useMemo<PlanSessionActions>(() => ({ removeInvestigation }), [removeInvestigation])
+
+  return (
+    <PlanSessionActionsContext.Provider value={actions}>
+      <PlanSessionContext.Provider value={value}>{children}</PlanSessionContext.Provider>
+    </PlanSessionActionsContext.Provider>
+  )
 }
 
 export function usePlanSession(): PlanSessionApi {
@@ -1126,5 +1066,11 @@ export function usePlanSession(): PlanSessionApi {
   if (!context) {
     throw new Error('usePlanSession must be used inside PlanSessionProvider')
   }
+  return context
+}
+
+export function usePlanSessionActions(): PlanSessionActions {
+  const context = useContext(PlanSessionActionsContext)
+  if (!context) throw new Error('usePlanSessionActions must be used inside PlanSessionProvider')
   return context
 }

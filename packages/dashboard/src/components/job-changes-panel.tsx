@@ -363,7 +363,7 @@ function CurrentWorkSection({
       </div>
 
       <Card>
-        <CardHeader className="gap-3 border-b border-line pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <CardHeader className="gap-3 border-b border-line pb-4 @lg:flex-row @lg:items-center @lg:justify-between">
           <CardDescription className="m-0">
             <DiffSummaryLine diff={diff} />
           </CardDescription>

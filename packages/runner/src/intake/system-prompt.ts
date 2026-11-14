@@ -151,7 +151,7 @@ Workspace tools (your scratch directory is ${access.scratchDir} — it is empty 
 - Write scratch files (${access.nativeFiles ? 'Write / Edit' : 'file_write / file_edit'}): ${modeLine(access.modes.filesWrite)}
 - Shell (${access.nativeFiles ? 'Bash' : 'shell'}): ${modeLine(access.modes.shell)}
 - Web (${access.nativeWeb ? 'WebFetch / WebSearch' : 'web_fetch'}): ${modeLine(access.modes.web)}
-${options.runControlEnabled ? `- Control runs this conversation started (message_run, answer_run, pause_run, resume_run, cancel_run, set_run_mode): ${modeLine(access.modes.runs)}. Answering, resuming and cancelling are approved one call at a time.
+${options.runControlEnabled ? `- Control runs this conversation started (message_run, answer_run, pause_run, resume_run, cancel_run, set_run_mode): ${modeLine(access.modes.runs)}. Answering, resuming, cancelling and changing a run's mode are approved one call at a time.
 ` : ''}${access.mcpOnRequest.length ? `- MCP servers available on request (not attached yet): ${access.mcpOnRequest.join(', ')}\n` : ''}How approvals work:
 - A call that needs approval pauses until the developer answers. Make each call worth a click: one clear command, not a chain of guesses.
 - If a call is declined, read the reason, do not retry the same call, and adapt.

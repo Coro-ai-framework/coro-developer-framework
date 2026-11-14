@@ -84,6 +84,16 @@ describe('executeRunControl', () => {
     expect(runControl.cancelJob).not.toHaveBeenCalled()
     await expect(executeRunControl('set_run_mode', { jobId: 'job-1', interactive: true }, deps)).resolves.toEqual({ interactive: true })
   })
+
+  it('will not change the mode of a parked run, since going autonomous releases its checkpoint', async () => {
+    const { runControl, deps } = harness(job({
+      status: 'awaiting-developer-input',
+      awaitingEvent: 'developer-input: approval after planning',
+      awaitingNextPhase: 'coding',
+    }))
+    await expect(executeRunControl('set_run_mode', { jobId: 'job-1', interactive: false }, deps)).rejects.toThrow('answer_run')
+    expect(runControl.setJobInteractive).not.toHaveBeenCalled()
+  })
 })
 
 describe('run-control tool gating', () => {

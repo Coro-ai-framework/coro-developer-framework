@@ -2,13 +2,12 @@ import type { ActivityItem } from '../components/activity/types'
 import type { Readiness } from './intake-readiness'
 import { ApiError, jsonRequest, requestJson } from './http'
 
-export const INVESTIGATION_LIST_PAGE_SIZE = 5
 export const INVESTIGATION_TITLE_MAX = 40
 
 export type InvestigationStatus = 'active' | 'dispatched' | 'closed'
 
 export type ToolAccessMode = 'off' | 'ask' | 'allow'
-export type IntakeBuiltinCapability = 'files' | 'filesWrite' | 'shell' | 'web'
+export type IntakeBuiltinCapability = 'files' | 'filesWrite' | 'shell' | 'web' | 'runs'
 export type IntakeCapability = IntakeBuiltinCapability | `mcp:${string}`
 export type IntakePermissionDecision = 'once' | 'conversation' | 'always' | 'deny'
 export type IntakePermissionRisk = 'normal' | 'mutating' | 'outside-scratch'
@@ -93,12 +92,6 @@ export interface InvestigationRecord {
   updatedAt: string
 }
 
-export interface InvestigationListResult {
-  sessions: InvestigationSummary[]
-  total: number
-  limit: number
-  offset: number
-}
 
 export interface InvestigationPutBody {
   items: ActivityItem[]
@@ -111,6 +104,7 @@ export interface InvestigationPutBody {
   title: string
   status?: InvestigationStatus
   dispatchedJobId?: string | null
+  reviewIds?: string[]
 }
 
 export function truncateInvestigationTitle(
@@ -147,52 +141,9 @@ export function asActivityItems(value: unknown): ActivityItem[] {
   return Array.isArray(value) ? (value as ActivityItem[]) : []
 }
 
-/**
- * Upsert a summary without promoting it unless `updatedAt` actually moved
- * it. Replacing in place (then sorting) keeps click-to-open from jumping
- * the row to the top.
- */
-export function mergeInvestigationSummaries(
-  list: InvestigationSummary[],
-  summary: InvestigationSummary,
-): InvestigationSummary[] {
-  const index = list.findIndex(item => item.id === summary.id)
-  const next = index >= 0 ? list.slice() : [summary, ...list]
-  if (index >= 0) next[index] = summary
-  return next.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-}
 
-export function dropInvestigationSummary(
-  list: InvestigationSummary[],
-  id: string,
-): InvestigationSummary[] {
-  return list.filter(item => item.id !== id)
-}
 
-/**
- * Recents is newest-first. Resume that conversation — including one that
- * already dispatched a run — rather than skipping to the latest `active`
- * row and leaving the developer in a blank chat. Closed rows stay in the
- * rail but are not auto-opened.
- */
-export function investigationToResume(
-  sessions: InvestigationSummary[],
-): InvestigationSummary | undefined {
-  return sessions.find(row => row.status !== 'closed')
-}
 
-export async function listInvestigations(options?: {
-  limit?: number
-  offset?: number
-}): Promise<InvestigationListResult> {
-  const limit = options?.limit ?? INVESTIGATION_LIST_PAGE_SIZE
-  const offset = options?.offset ?? 0
-  const params = new URLSearchParams({
-    limit: String(limit),
-    offset: String(offset),
-  })
-  return requestJson<InvestigationListResult>(`/intake/sessions?${params.toString()}`)
-}
 
 export async function getInvestigation(id: string): Promise<InvestigationRecord> {
   return requestJson<InvestigationRecord>(`/intake/sessions/${encodeURIComponent(id)}`)
@@ -236,14 +187,3 @@ export async function deleteInvestigation(id: string): Promise<void> {
   }
 }
 
-export function toInvestigationSummary(record: InvestigationRecord): InvestigationSummary {
-  return {
-    id: record.id,
-    title: record.title,
-    status: record.status,
-    readiness: record.readiness,
-    turnCount: record.turnCount,
-    ...(record.dispatchedJobId ? { dispatchedJobId: record.dispatchedJobId } : {}),
-    updatedAt: record.updatedAt,
-  }
-}

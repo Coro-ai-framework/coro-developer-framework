@@ -1,6 +1,6 @@
 import path from 'node:path'
 
-import { app, BrowserWindow, dialog, shell, type MessageBoxOptions } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Notification, shell, type MessageBoxOptions } from 'electron'
 import { autoUpdater, type UpdateDownloadedEvent } from 'electron-updater'
 
 import { RunnerSidecar, resolveLocalResourcesRoot } from './runner-sidecar'
@@ -50,6 +50,36 @@ app.whenReady()
     dialog.showErrorBox('Coro desktop failed to start', message)
     void quitApplication()
   })
+
+// The dashboard reports how many items need the developer and asks for an
+// OS notification when one arrives while the window is in the background.
+ipcMain.on('coro:attention-count', (_event, count: unknown) => {
+  if (typeof count !== 'number' || !Number.isFinite(count)) return
+  app.setBadgeCount(Math.max(0, Math.floor(count)))
+})
+
+const liveNotifications = new Set<Notification>()
+
+ipcMain.on('coro:notify', (_event, payload: unknown) => {
+  if (!Notification.isSupported() || !payload || typeof payload !== 'object') return
+  const { title, body, path: route } = payload as Record<string, unknown>
+  if (typeof title !== 'string' || typeof body !== 'string' || typeof route !== 'string' || !route.startsWith('/')) return
+  const notification = new Notification({ title: title.slice(0, 120), body: body.slice(0, 300) })
+  // Held until it is dismissed: a collected wrapper never delivers its click.
+  liveNotifications.add(notification)
+  const release = () => liveNotifications.delete(notification)
+  notification.on('close', release)
+  notification.on('failed', release)
+  notification.on('click', () => {
+    release()
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    mainWindow.webContents.send('coro:navigate', route)
+  })
+  notification.show()
+})
 
 app.on('activate', () => {
   if (!mainWindow && sidecar?.dashboardUrl() && sidecar.dashboardOrigin()) {

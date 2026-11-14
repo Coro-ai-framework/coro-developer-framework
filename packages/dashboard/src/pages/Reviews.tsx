@@ -32,7 +32,6 @@ import {
   awaitsDecision,
   isActiveReview,
   needsAttention,
-  runHref,
   openFindings,
   prNumberLabel,
   reviewStatusMeta,
@@ -341,7 +340,7 @@ function ReviewRow({ review, onUpdated, onDeleted, onNotice }: ReviewRowProps) {
         <div className="flex items-center justify-end gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
           {review.awaitingApproval ? (
             <Button variant="secondary" size="sm" className="mr-1 h-8" asChild>
-              <Link to={runHref(review.awaitingApproval.jobId)}>Review draft</Link>
+              <Link to={href}>Review draft</Link>
             </Button>
           ) : null}
           {review.pr.url ? (

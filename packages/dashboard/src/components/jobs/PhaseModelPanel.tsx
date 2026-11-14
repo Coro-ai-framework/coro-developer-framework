@@ -142,7 +142,7 @@ export default function PhaseModelPanel({ job, phase, onMutated, className }: Ph
           else setEditing(true)
         }}
         className={cn(
-          'inline-flex h-8 w-full max-w-full items-center gap-2 rounded-xl border border-line bg-canvas/50 px-2.5 text-left transition-colors hover:border-line-strong hover:bg-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 sm:w-auto',
+          'inline-flex h-8 w-full max-w-full items-center gap-2 rounded-xl border border-line bg-canvas/50 px-2.5 text-left transition-colors hover:border-line-strong hover:bg-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 @lg:w-auto',
           className,
         )}
       >
@@ -158,7 +158,7 @@ export default function PhaseModelPanel({ job, phase, onMutated, className }: Ph
         ) : displaySource === 'last-used' ? (
           <span className="shrink-0 text-[10px] uppercase tracking-wide text-fg-subtle">last run</span>
         ) : null}
-        <span className="ml-auto shrink-0 text-[11px] font-medium text-accent-300 sm:ml-1">Change</span>
+        <span className="ml-auto shrink-0 text-[11px] font-medium text-accent-300 @lg:ml-1">Change</span>
       </button>
 
       {editing ? (

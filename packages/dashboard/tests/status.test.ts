@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { HOME_PATH } from '../src/lib/run-labels'
 import {
-  getConversationDisplayStatus,
   getJobDisplayStatus,
   getReadinessMeta,
   getRunIndicator,
   getStatusMeta,
-  getTabStatus,
   PAUSED_AWAITING_EVENT,
 } from '../src/lib/status'
 
@@ -39,39 +37,8 @@ describe('display status', () => {
     expect(getReadinessMeta('no-run-needed').label).toBe('No run needed')
   })
 
-  it('prefers the live job over a dispatched conversation badge', () => {
-    const row = { status: 'dispatched', readiness: { state: 'ready' }, dispatchedJobId: 'job-1' }
-    expect(getConversationDisplayStatus(row).label).toBe('Working')
-    expect(getConversationDisplayStatus(row, { status: 'coding' }).label).toBe('Coding')
-    expect(getConversationDisplayStatus(row, {
-      status: 'awaiting-developer-input',
-    }).label).toBe('Needs you')
-  })
 
-  it('shows a streaming conversation as working, over the job and readiness badges', () => {
-    const row = { status: 'dispatched', readiness: { state: 'ready' }, dispatchedJobId: 'job-1' }
-    expect(getConversationDisplayStatus(row, { status: 'coding' }, { running: true }).label)
-      .toBe('Working')
-    expect(getConversationDisplayStatus(
-      { status: 'active', readiness: { state: 'investigating' } },
-      null,
-      { running: true },
-    ).label).toBe('Working')
-    expect(getConversationDisplayStatus(
-      { status: 'active', readiness: { state: 'investigating' } },
-      null,
-      { running: false },
-    ).label).toBe('Investigating')
-  })
 
-  it('keeps tab labels identical to the job badge', () => {
-    expect(getTabStatus({ status: 'coding' }).label).toBe(getJobDisplayStatus({ status: 'coding' }).label)
-    expect(getTabStatus({
-      status: 'awaiting-developer-input',
-      awaitingEvent: PAUSED_AWAITING_EVENT,
-    }).pulse).toBe(false)
-    expect(getTabStatus({ status: 'awaiting-developer-input' }).attention).toBe(true)
-  })
 })
 
 describe('run indicator', () => {

@@ -9,6 +9,7 @@ import {
   Sparkles,
   Terminal,
   Ticket,
+  Workflow,
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
@@ -37,8 +38,20 @@ function mcpServerId(toolName: string): string | undefined {
  * instead of opening a new chip. `externalId` is only for unknown third-party
  * MCP servers — known kinds (ticket read, file read) share a deck.
  */
+/** Plan-mode tools that read or act on a run the conversation started. */
+export const RUN_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'read_run_log',
+  'message_run',
+  'answer_run',
+  'pause_run',
+  'resume_run',
+  'cancel_run',
+  'set_run_mode',
+])
+
 export function groupForTool(toolName: string): { group: ActivityGroup; externalId?: string } {
   const leaf = toolLeafName(toolName)
+  if (RUN_TOOL_NAMES.has(leaf)) return { group: 'run-control' }
   switch (leaf) {
     case 'tracker_get_issue':
     case 'tracker_get_comments':
@@ -191,6 +204,11 @@ export const GROUP_META: Record<
     icon: Boxes,
     rollup: n => `${n} lookup${n === 1 ? '' : 's'}`,
     fallbackRunning: 'Looking something up',
+  },
+  'run-control': {
+    icon: Workflow,
+    rollup: n => `${n} run action${n === 1 ? '' : 's'}`,
+    fallbackRunning: 'Working with a run',
   },
   working: {
     icon: Wrench,

@@ -105,6 +105,20 @@ export function runningLabelFor(name: string, input: unknown): string {
       const path = readField(input, 'path') ?? readField(input, 'file_path')
       return path ? `Writing ${clip(path)}` : 'Writing a file'
     }
+    case 'read_run_log':
+      return "Reading the run's log"
+    case 'message_run':
+      return 'Sending guidance to the run'
+    case 'answer_run':
+      return 'Answering the run'
+    case 'pause_run':
+      return 'Pausing the run'
+    case 'resume_run':
+      return 'Resuming the run'
+    case 'cancel_run':
+      return 'Cancelling the run'
+    case 'set_run_mode':
+      return "Changing the run's approval mode"
     case 'request_tool_access': {
       const capability = readField(input, 'capability')
       return capability ? `Asking to enable ${clip(capability)}` : 'Asking to enable a tool'

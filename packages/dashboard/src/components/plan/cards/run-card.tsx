@@ -25,6 +25,8 @@ import { findSimilarRuns } from '../../../lib/run-history'
 import { usePlanSession } from '../../../providers/plan-session'
 import { PAGE_TITLES } from '../../../lib/run-labels'
 import { durationBandFor } from '../../../workflows'
+import { conversationHref } from '../../../lib/worklist'
+import { useRefreshWorklist } from '../../../providers/worklist'
 import ActiveRunCard from './active-run-card'
 
 export interface RunCardData {
@@ -50,6 +52,7 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
   const { run, state } = data
   const session = usePlanSession()
   const navigate = useNavigate()
+  const refreshWorklist = useRefreshWorklist()
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -100,12 +103,13 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
       }
       const result = await requestJson<{ jobId: string }>('/jobs', jsonRequest(body, { method: 'POST' }))
       session.markCardDispatched(itemId, result.jobId)
+      refreshWorklist()
       // Stay on this investigation. Minting a blank chat here was dropping
       // the run card (the only copy lived in React) when the dispatched PUT
       // lost the race, and Plans then rehydrated the same conversation as
       // if no run existed.
       await session.persistSnapshot({ status: 'dispatched', dispatchedJobId: result.jobId })
-      navigate(`/jobs/${result.jobId}`)
+      navigate(conversationHref(session.sessionId, { kind: 'run', id: result.jobId }))
     } catch (err) {
       if (
         err instanceof ApiError &&
@@ -289,7 +293,7 @@ function DraftRunCard({ data, itemId }: CardRenderProps<RunCardData>) {
             {similar.map(job => (
               <li key={job.id}>
                 <Link
-                  to={`/jobs/${job.id}`}
+                  to={conversationHref(session.sessionId, { kind: 'run', id: job.id })}
                   className="block rounded-lg border border-line bg-overlay/40 px-3 py-2 text-[12.5px] hover:border-line-strong"
                 >
                   <span className="font-medium text-fg">

@@ -616,7 +616,7 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 @2xl:grid-cols-4">
           <MetricCell
             label="Progress"
             value={`${completedChildren}/${inScopeChildren}`}
@@ -741,7 +741,7 @@ export default function CampaignView({ job, onMutated }: CampaignViewProps) {
           </table>
         </div>
 
-        <div className="grid gap-3 border-t border-line pt-4 text-sm sm:grid-cols-4">
+        <div className="grid gap-3 border-t border-line pt-4 text-sm @lg:grid-cols-4">
           <Stat label="Tokens in / out" value={`${formatTokens(usage.inputTokens)} / ${formatTokens(usage.outputTokens)}`} />
           <Stat label="Cache read" value={formatTokens(usage.cacheReadInputTokens)} />
           <Stat label="Latest update" value={formatRelativeTime(job.updatedAt)} />

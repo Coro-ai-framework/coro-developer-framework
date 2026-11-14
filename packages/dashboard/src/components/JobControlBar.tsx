@@ -97,7 +97,7 @@ export default function JobControlBar({
       <div
         className={cn(
           'flex flex-wrap items-center gap-2 rounded-2xl border border-line bg-overlay/40 px-3 py-1.5',
-          'sm:gap-3 sm:px-4',
+          '@lg:gap-3 @lg:px-4',
         )}
       >
         <ControlGroupLabel label="Controls" />
@@ -177,14 +177,14 @@ export default function JobControlBar({
 
 function ControlGroupLabel({ label }: { label: string }) {
   return (
-    <span className="hidden text-[11px] font-medium uppercase tracking-[0.16em] text-fg-subtle sm:inline">
+    <span className="hidden text-[11px] font-medium uppercase tracking-[0.16em] text-fg-subtle @lg:inline">
       {label}
     </span>
   )
 }
 
 function Divider() {
-  return <span className="hidden h-6 w-px bg-line sm:block" aria-hidden />
+  return <span className="hidden h-6 w-px bg-line @lg:block" aria-hidden />
 }
 
 interface ResumeControlProps {

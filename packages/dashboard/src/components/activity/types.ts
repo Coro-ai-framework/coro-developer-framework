@@ -21,6 +21,7 @@ export type ActivityGroup =
   | 'repo-search'
   | 'thinking'
   | 'external' // BYO MCP servers — carries `externalId`
+  | 'run-control' // plan mode reading or acting on runs it started
   | 'working' // unknown / fallback
 
 /** One thing the agent did. Maps 1:1 to a tool_start…tool_end pair for intake. */

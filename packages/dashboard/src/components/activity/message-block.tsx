@@ -1,11 +1,11 @@
-// Plan mode's structured payloads (`<run>`, `<readiness>`, `<findings>`) are
-// addressed to the dashboard, not the developer: the run and findings become
-// cards and readiness drives the composer. Strip all three from the visible
-// bubble.
-const PAYLOAD_TAG_REGEX = /<(run|readiness|findings)>[\s\S]*?<\/\1>/gi
+// Plan mode's structured payloads (`<run>`, `<review>`, `<readiness>`,
+// `<findings>`) are addressed to the dashboard, not the developer: runs,
+// reviews and findings become cards and readiness drives the composer. Strip
+// them all from the visible bubble.
+const PAYLOAD_TAG_REGEX = /<(run|review|readiness|findings)>[\s\S]*?<\/\1>/gi
 /** A payload block still arriving token by token — hide it as it lands. */
-const PARTIAL_PAYLOAD_REGEX = /<(run|readiness|findings)>[\s\S]*$/i
-const OPENING_TAGS = ['<run>', '<readiness>', '<findings>']
+const PARTIAL_PAYLOAD_REGEX = /<(run|review|readiness|findings)>[\s\S]*$/i
+const OPENING_TAGS = ['<run>', '<review>', '<readiness>', '<findings>']
 const RUN_READY_MESSAGES = [
   "Run's ready — give it a look below and start it when you're happy.",
   'Drafted the run for you. Check it below and tweak anything before starting.',
@@ -42,7 +42,9 @@ export function displayContent(role: 'user' | 'assistant', content: string): str
   // Nothing but payload. A run block earns a line pointing at the card; a
   // findings card is the write-up itself, so a findings-only turn stays
   // silent; a readiness-only turn has genuinely nothing to say.
-  if (!/<run>/i.test(content)) return ''
+  if (!/<run>/i.test(content)) {
+    return /<review>/i.test(content) ? "Proposed a review below. Start it when you're ready." : ''
+  }
   const idx = Math.abs(hashString(content)) % RUN_READY_MESSAGES.length
   return RUN_READY_MESSAGES[idx]
 }

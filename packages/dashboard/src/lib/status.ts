@@ -176,52 +176,8 @@ export function getReadinessMeta(state?: string | null): StatusMeta {
   return READINESS_META.investigating
 }
 
-/**
- * Recents-rail status. A turn in flight wins — it is the only transient state
- * here, and a conversation the developer switched away from has no other way
- * to say it is still working. Then a linked live job; otherwise this is still
- * a conversation (investigating / ready to start / closed).
- */
-export function getConversationDisplayStatus(
-  row: {
-    status: string
-    readiness?: { state: string } | null
-    dispatchedJobId?: string | null
-  },
-  job?: StatusSource | null,
-  opts?: { running?: boolean },
-): StatusMeta {
-  if (opts?.running) return CONVERSATION_WORKING_META
-  if (job) return getJobDisplayStatus(job)
-  if (row.status === 'dispatched') return getStatusMeta('dispatched')
-  if (row.status === 'closed') return CLOSED_META
-  return getReadinessMeta(row.readiness?.state)
-}
 
-export interface TabStatusSignal {
-  label: string
-  tone: Tone
-  pulse: boolean
-  attention: boolean
-}
 
-/** Compact signal for an open-run tab. Same labels as StatusBadge. */
-export function getTabStatus(job: StatusSource): TabStatusSignal {
-  const meta = getJobDisplayStatus(job)
-  const paused = isPausedStatus(job.status, job.awaitingEvent)
-  const attention =
-    paused
-    || job.status === 'awaiting-developer-input'
-    || job.status === 'awaiting-plan-approval'
-    || job.status === 'escalated'
-  const calm = paused || job.status === 'awaiting-rate-limit'
-  return {
-    label: meta.label,
-    tone: meta.tone,
-    pulse: !calm && ((meta.pulse ?? false) || attention),
-    attention,
-  }
-}
 
 /**
  * Pause is only meaningful while the job is actively running. Stopped

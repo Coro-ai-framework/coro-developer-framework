@@ -28,6 +28,7 @@ export function useReviews(pollIntervalMs = 5000) {
   return { reviews, loading, error, refetch, setReviews }
 }
 
+/** One review. `pollIntervalMs: 0` fetches once; call `refetch` when something says it changed. */
 export function useReview(id: string | undefined, pollIntervalMs = 4000) {
   const [review, setReview] = useState<PrReview | null>(null)
   const [loading, setLoading] = useState(true)
@@ -51,7 +52,10 @@ export function useReview(id: string | undefined, pollIntervalMs = 4000) {
 
   useEffect(() => {
     void refetch()
-    const interval = setInterval(() => void refetch(), pollIntervalMs)
+    if (!pollIntervalMs) return
+    const interval = setInterval(() => {
+      if (!document.hidden) void refetch()
+    }, pollIntervalMs)
     return () => clearInterval(interval)
   }, [refetch, pollIntervalMs])
 

@@ -25,6 +25,7 @@ import {
 } from '../../lib/intake-readiness'
 import { usePlanSession } from '../../providers/plan-session'
 import GenerateRunButton, { conversationHasRun } from './generate-run-button'
+import { conversationHasLiveRun } from '../../lib/linked-run'
 import OpenQuestionsPanel from './open-questions-panel'
 import ToolAccessMenu from './tool-access-menu'
 
@@ -159,6 +160,7 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
   const questionsKey = questions.map(q => q.question).join('\n')
   useEffect(() => setAnswers({}), [questionsKey])
 
+  const liveRun = useMemo(() => conversationHasLiveRun(session.items, session.jobs), [session.items, session.jobs])
   const hasAnswers = showQuestions && questions.some(q => isAnswered(answers[q.id]))
   const canSend = !disabled && (input.trim().length > 0 || hasAnswers)
 
@@ -210,10 +212,12 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
           canSubmit={canSend}
           placeholder={
             showQuestions
-              ? 'Add context, or dig further… (sent with your answers)'
-              : session.hasProgress
-                ? 'Answer, or dig further… (Shift+Enter for a new line)'
-                : 'Describe what you want Coro to do… (Shift+Enter for a new line)'
+              ? 'Add context, or dig further…'
+              : liveRun
+                ? 'Ask about the run, or tell Coro how to steer it…'
+                : session.hasProgress
+                  ? 'Answer, or dig further…'
+                  : 'Describe what you want Coro to do…'
           }
           disabled={disabled}
           autoFocus={!session.hasProgress}
@@ -222,7 +226,7 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
           <ArrowUp />
         </Button>
       </form>
-      <div className="mt-2 flex items-center justify-between gap-2">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
         <div className="flex items-center gap-3">
           <PlanModeModelSelect
             value={session.modelChoice}
@@ -236,7 +240,7 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
         </div>
         <div className="flex items-center gap-2.5">
           <ContextMeter used={session.contextUsed} window={contextWindow} />
-          <span className="text-[11px] text-fg-subtle">
+          <span className="hidden text-[11px] text-fg-subtle @lg/conversation:inline">
             {session.turnCount} turns · {session.totalTokens.toLocaleString()} tokens
           </span>
           {session.busy && session.canStop ? (

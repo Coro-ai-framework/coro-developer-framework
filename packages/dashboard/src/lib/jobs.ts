@@ -34,11 +34,6 @@ export function getRunDetailPath(job: Pick<Job, 'id'>): string {
   return `/jobs/${job.id}`
 }
 
-/** True for `/jobs/:jobId`, false for the Runs list and the legacy `/jobs/new` alias. */
-export function isRunDetailPath(path: string): boolean {
-  const match = path.match(/^\/jobs\/([^/]+)$/)
-  return Boolean(match?.[1] && match[1] !== 'new')
-}
 
 export function deriveJobTitle(job: Pick<Job, 'id' | 'params'>): string {
   const serviceName = typeof job.params['serviceName'] === 'string' ? job.params['serviceName'] : null

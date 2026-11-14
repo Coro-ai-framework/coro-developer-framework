@@ -3,6 +3,7 @@ import { displayContent } from '../components/activity/message-block'
 import { looksLikeFindingsReport, parseFindings } from './intake-findings'
 import { parseReadiness, type Readiness } from './intake-readiness'
 import { parseRun } from './intake-run'
+import { withReviewCard } from './intake-review'
 
 /**
  * A reload mid-investigation hydrates the last snapshot. That snapshot can
@@ -25,6 +26,7 @@ export function recoverIntakeReply(
   }
   next = ensureFindingsCard(next, assistant)
   next = ensureRunCard(next, assistant, knownWorkflowPaths, readiness)
+  next = withReviewCard(next, assistant, `recovered-review-${next.length}`)
   return { items: next, readiness }
 }
 

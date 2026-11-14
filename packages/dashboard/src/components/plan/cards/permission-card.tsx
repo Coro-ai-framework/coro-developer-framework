@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, Globe, Plug, Terminal } from 'lucide-react'
+import { FileText, Globe, Plug, Terminal, Workflow } from 'lucide-react'
 import type { CardRenderProps } from '../../activity/cards/types'
 import type { PermissionCardData } from '../../activity/adapters/intake'
 import { Button } from '../../ui/button'
@@ -11,6 +11,7 @@ import type { IntakePermissionRequest } from '../../../lib/intake-investigation'
 export type { PermissionCardData }
 
 function iconFor(request: IntakePermissionRequest) {
+  if (request.capability === 'runs') return Workflow
   if (request.capability === 'shell' || request.toolName === 'Bash' || request.toolName === 'shell') return Terminal
   if (request.capability === 'web') return Globe
   if (request.capability.startsWith('mcp:')) return Plug

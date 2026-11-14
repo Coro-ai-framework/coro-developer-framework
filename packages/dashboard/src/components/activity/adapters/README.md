@@ -28,7 +28,9 @@ emitted `tool_end` (common for BYO MCP tools) does not leave a spinner up.
 Token text and thinking stay on the plan-session provider, which commits them
 into `message` / `thought` items in chronological order around the tools, and
 promotes an investigation write-up into a `findings` card (tagged `<findings>`
-or a headed markdown fallback). Run cards are still emitted from `<run>`.
+or a headed markdown fallback). Run cards come from `<run>` and review cards
+from `<review>` (`lib/intake-review.ts`). Plan mode's run tools (`read_run_log`,
+`message_run`, `answer_run`, …) stack into one `run-control` deck.
 
 ## `job-log.ts` (not built yet)
 
@@ -46,4 +48,5 @@ Would consume `LogLine` from `src/hooks/useJobStream.ts` and map
 The gap to close first is that job logs are **strings, not structured events**
 — `tool_use` lines are matched with `/^→ (\S+)(.*)/` — so the adapter will be
 lossier than the intake one until the runner emits structured events on that
-stream. Do not treat that as a blocker for plan-mode-only Plans.
+stream. Runs and reviews are shown with their own views in the workspace inspector
+until then; this adapter is not a blocker for that.

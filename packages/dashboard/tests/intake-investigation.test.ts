@@ -3,10 +3,7 @@ import type { ActivityItem } from '../src/components/activity/types'
 import {
   investigationHasProgress,
   investigationTitleFromItems,
-  mergeInvestigationSummaries,
-  dropInvestigationSummary,
   truncateInvestigationTitle,
-  investigationToResume,
 } from '../src/lib/intake-investigation'
 
 describe('investigationTitleFromItems', () => {
@@ -54,64 +51,5 @@ describe('investigationTitleFromItems', () => {
         }],
       },
     ])).toBe(false)
-  })
-
-  it('promotes a summary only when its updatedAt is newer', () => {
-    const merged = mergeInvestigationSummaries(
-      [
-        { id: 'a', title: 'A', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
-        { id: 'b', title: 'B', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-02T00:00:00.000Z' },
-      ],
-      { id: 'a', title: 'A2', status: 'active', readiness: null, turnCount: 2, updatedAt: '2026-01-03T00:00:00.000Z' },
-    )
-    expect(merged.map(row => row.id)).toEqual(['a', 'b'])
-    expect(merged[0]?.title).toBe('A2')
-  })
-
-  it('does not jump a row to the top on a same-timestamp update', () => {
-    const merged = mergeInvestigationSummaries(
-      [
-        { id: 'a', title: 'A', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
-        { id: 'b', title: 'B', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-02T00:00:00.000Z' },
-      ],
-      { id: 'a', title: 'A viewed', status: 'active', readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
-    )
-    expect(merged.map(row => row.id)).toEqual(['b', 'a'])
-    expect(merged[1]?.title).toBe('A viewed')
-  })
-
-  it('drops a summary from the rail list', () => {
-    const list = [
-      { id: 'a', title: 'A', status: 'active' as const, readiness: null, turnCount: 1, updatedAt: '2026-01-01T00:00:00.000Z' },
-      { id: 'b', title: 'B', status: 'active' as const, readiness: null, turnCount: 1, updatedAt: '2026-01-02T00:00:00.000Z' },
-    ]
-    expect(dropInvestigationSummary(list, 'a').map(row => row.id)).toEqual(['b'])
-    expect(dropInvestigationSummary(list, 'missing')).toEqual(list)
-  })
-
-  it('resumes the newest conversation even when it already dispatched a run', () => {
-    const dispatched = {
-      id: 'disp',
-      title: 'kyc',
-      status: 'dispatched' as const,
-      readiness: null,
-      turnCount: 4,
-      dispatchedJobId: 'job-1',
-      updatedAt: '2026-01-03T00:00:00.000Z',
-    }
-    const active = {
-      id: 'act',
-      title: 'older',
-      status: 'active' as const,
-      readiness: null,
-      turnCount: 1,
-      updatedAt: '2026-01-02T00:00:00.000Z',
-    }
-    expect(investigationToResume([dispatched, active])?.id).toBe('disp')
-    expect(investigationToResume([
-      { ...dispatched, status: 'closed', updatedAt: '2026-01-04T00:00:00.000Z' },
-      active,
-    ])?.id).toBe('act')
-    expect(investigationToResume([])).toBeUndefined()
   })
 })

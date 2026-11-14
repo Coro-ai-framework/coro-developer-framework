@@ -15,6 +15,11 @@ function cardToAssistantContent(card: { type: string; data: unknown }): string |
     if (!markdown?.trim()) return null
     return `<findings>\n${markdown}\n</findings>`
   }
+  if (card.type === 'review') {
+    const data = card.data as { prUrl?: string; note?: string } | undefined
+    if (!data?.prUrl) return null
+    return `<review>\n${JSON.stringify({ prUrl: data.prUrl, note: data.note ?? '' })}\n</review>`
+  }
   if (card.type === 'run') {
     const run = (card.data as { run?: RunDraft } | undefined)?.run
     if (!run) return null

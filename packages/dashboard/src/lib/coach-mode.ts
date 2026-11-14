@@ -18,6 +18,7 @@ export interface IntakeConfig {
       filesWrite?: 'off' | 'ask' | 'allow'
       shell?: 'off' | 'ask' | 'allow'
       web?: 'off' | 'ask' | 'allow'
+      runs?: 'off' | 'ask' | 'allow'
       mcp?: 'off' | 'ask' | 'allow'
     }
     allow?: string[]

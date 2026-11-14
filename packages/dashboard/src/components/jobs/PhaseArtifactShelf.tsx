@@ -64,7 +64,7 @@ export default function PhaseArtifactShelf({ jobId, artifacts }: PhaseArtifactSh
                 <span className="min-w-0 flex-1 truncate text-[13px] text-fg" title={artifact.title}>
                   {artifact.title}
                 </span>
-                <span className="hidden shrink-0 font-mono text-[10px] text-fg-subtle sm:inline">
+                <span className="hidden shrink-0 font-mono text-[10px] text-fg-subtle @lg:inline">
                   {artifact.phase}
                 </span>
                 <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-fg-subtle">
