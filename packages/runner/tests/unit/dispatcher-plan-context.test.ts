@@ -194,6 +194,7 @@ describe('Dispatcher.dispatch — plan context', () => {
       id: investigation.id,
       status: 'dispatched',
       dispatchedJobId: job.id,
+      dispatchedJobIds: [job.id],
     })
     const stored = await backend.getInvestigation(investigation.id)
     expect(stored?.status).toBe('dispatched')

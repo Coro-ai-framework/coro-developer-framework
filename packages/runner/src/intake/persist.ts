@@ -45,6 +45,7 @@ export interface IntakeSnapshotBody {
   title?: string
   status?: InvestigationStatus
   dispatchedJobId?: string | null
+  reviewIds?: string[]
 }
 
 /**
@@ -71,6 +72,7 @@ export async function persistIntakeSnapshot(
     ...(body.title !== undefined ? { title: body.title } : {}),
     ...(body.status !== undefined ? { status: body.status } : {}),
     ...(body.dispatchedJobId !== undefined ? { dispatchedJobId: body.dispatchedJobId ?? null } : {}),
+    ...(body.reviewIds?.length ? { reviewIds: body.reviewIds } : {}),
   }
   if (live) {
     patch.turns = live.turns

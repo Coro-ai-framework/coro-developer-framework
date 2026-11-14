@@ -22,7 +22,7 @@ import {
 } from '@coro-ai/cloud-protocol'
 import { defaultWorkflowPath, inputToJobType } from '../jobs/helpers'
 import { buildJobRecord, resolveWorkflowPath } from '../jobs/creation'
-import type { StateBackend } from './backend'
+import type { RecordVersion, RecordVersions, StateBackend } from './backend'
 import type { ExternalRef } from '@coro-ai/cloud-protocol'
 import { repoKeyForStorage } from '../plugins/refs'
 import {
@@ -510,6 +510,14 @@ export class SqliteStateBackend implements StateBackend {
       limit,
       offset,
     }
+  }
+
+  async listRecordVersions(): Promise<RecordVersions> {
+    const jobs = this.db.prepare('SELECT id, updated_at AS updatedAt FROM jobs')
+      .all() as RecordVersion[]
+    const investigations = this.db.prepare('SELECT id, updated_at AS updatedAt FROM investigations')
+      .all() as RecordVersion[]
+    return { jobs, investigations }
   }
 
   async deleteInvestigation(id: string): Promise<void> {

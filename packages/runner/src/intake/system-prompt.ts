@@ -27,8 +27,10 @@ export interface IntakePromptOptions {
   tracker?: IntakeTrackerPrompt
   planModeMcpServerIds?: string[]
   subagentsEnabled?: boolean
+  /** The run-control tools are offered this turn. */
+  runControlEnabled?: boolean
   access?: {
-    modes: Record<'files' | 'filesWrite' | 'shell' | 'web', 'off' | 'ask' | 'allow'>
+    modes: Record<'files' | 'filesWrite' | 'shell' | 'web' | 'runs', 'off' | 'ask' | 'allow'>
     nativeFiles: boolean
     nativeWeb: boolean
     scratchDir: string
@@ -124,6 +126,7 @@ ${planModeMcpIds.map(id => `- ${id}: use when the user asks about service owners
 - read_past_job_artifact: read one artefact by id from that catalog. If truncated is true, call again with offset = nextOffset until you have what you need.
 - list_past_job_files: list one directory in that job's working directory (the checkout and written plans/reports). Omit path for the root, then descend — same pattern as scm_list_files.
 - read_past_job_file: read one file from that working directory after listing (or from an artefact path). Page with offset/nextOffset.
+- read_run_log: the newest lines of a run's live log — what its agent is doing right now. Use it when status and artefacts do not explain what a running or stuck run is doing.
 `
     : ''
 
@@ -148,7 +151,8 @@ Workspace tools (your scratch directory is ${access.scratchDir} — it is empty 
 - Write scratch files (${access.nativeFiles ? 'Write / Edit' : 'file_write / file_edit'}): ${modeLine(access.modes.filesWrite)}
 - Shell (${access.nativeFiles ? 'Bash' : 'shell'}): ${modeLine(access.modes.shell)}
 - Web (${access.nativeWeb ? 'WebFetch / WebSearch' : 'web_fetch'}): ${modeLine(access.modes.web)}
-${access.mcpOnRequest.length ? `- MCP servers available on request (not attached yet): ${access.mcpOnRequest.join(', ')}\n` : ''}How approvals work:
+${options.runControlEnabled ? `- Control runs this conversation started (message_run, answer_run, pause_run, resume_run, cancel_run, set_run_mode): ${modeLine(access.modes.runs)}. Answering, resuming and cancelling are approved one call at a time.
+` : ''}${access.mcpOnRequest.length ? `- MCP servers available on request (not attached yet): ${access.mcpOnRequest.join(', ')}\n` : ''}How approvals work:
 - A call that needs approval pauses until the developer answers. Make each call worth a click: one clear command, not a chain of guesses.
 - If a call is declined, read the reason, do not retry the same call, and adapt.
 - If a capability is off and you genuinely need it, call request_tool_access with the capability and a one-line reason. Do not ask in prose.
@@ -269,6 +273,15 @@ Emitting the run:
 - The <run> block is the structured payload — the dashboard hides it from chat and renders it as an editable card. When you emit it, do NOT also recap it in prose; the block is the message.
 - The "description" is the only thing the autonomous agent will ever see. It must carry the investigation's conclusions: what to change and where, the acceptance criteria, the constraints and edge cases you established, the decisions the developer made, and anything the ticket said. Write it for someone who was not in this conversation.
 
+Proposing a pull-request review — when the developer asks you to review a pull request, or agrees that one should be reviewed, emit:
+<review>
+{"prUrl": "https://github.com/org/repo/pull/123", "note": "One line: what to look at and why."}
+</review>
+- The dashboard hides the block and renders a card with a "Start review" button. You never start a review yourself; Coro's reviewer runs it and posts nothing without the developer's settings allowing it.
+- Use a pull-request URL the developer gave you, or one you read from a run's artefacts or a ticket. Never guess a pull request number.
+- One block per pull request. Do not repeat a block for a pull request that already has a review card in this conversation.
+- A <review> block is not a <run> block and does not replace <readiness>; still end the turn with <readiness>.
+
 Workflow selection — pick the lightest lane that fits, in this order:
 1. Default to "workflows/job/workflow.md" (Implementation Job). This covers almost everything: scoped feature work, bug fixes, refactors, reversible schema changes (adding nullable columns, dropping FKs, renaming a column with backfill), small additions to existing services.
 2. Use "workflows/job-fast/workflow.md" only for one-shot tiny changes — a doc/comment fix, a config tweak, a single-file change with no design choices, a dependency version bump.
@@ -313,7 +326,7 @@ How to report (this is your final message, returned verbatim to the other agent)
 - Concise markdown. Lead with the direct answer, then the supporting evidence.
 - Cite every file path, symbol, ticket key, or job id you relied on.
 - End with what you could not determine, if anything.
-- Never emit <run>, <findings>, or <readiness> blocks — those belong to the other agent.`
+- Never emit <run>, <review>, <findings>, or <readiness> blocks — those belong to the other agent.`
 }
 
 /**
@@ -326,26 +339,45 @@ How to report (this is your final message, returned verbatim to the other agent)
  * but the developer's current question exists nowhere else, so a resume
  * executor reads the last user message and a replay executor sends the lot.
  *
- * Carries the job id and nothing volatile, which makes the block identical
+ * Carries job ids and nothing volatile, which makes the block identical
  * on every turn. That matters because a replay executor persists what it
  * was sent: live status here would pile up as contradictory snapshots with
  * no way for the model to tell which one is current. `get_past_job` is the
  * live source.
  */
-export function renderDispatchedRunBlock(jobId: string): string {
+export function renderDispatchedRunBlock(jobIds: readonly string[], runControlEnabled = false): string {
+  const latest = jobIds[jobIds.length - 1]!
+  const runs = jobIds.length === 1
+    ? `This conversation already dispatched run \`${latest}\` — the run you scoped, and the
+one the developer is most likely asking about.`
+    : `This conversation dispatched these runs, oldest first:
+${jobIds.map(id => `- \`${id}\``).join('\n')}
+The last one is the most recent, and the one the developer most likely means.`
+  const control = runControlEnabled
+    ? `
+- You can act on these runs. message_run steers a run that is working. answer_run replies to a
+  run that is stopped — waiting on a question or checkpoint, parked, paused, escalated or failed —
+  and resumes it. pause_run, resume_run, cancel_run and set_run_mode do what they say.
+- Read before you act: get_past_job, and read_run_log when the status alone does not explain it.
+- Act only when the developer asked for it or agreed to it in this conversation. Never answer a
+  run's question, approve its checkpoint, resume or cancel it on your own judgement.
+- Each call asks the developer for approval and shows them the exact text. Make it once, with the
+  message you intend to send. If it is declined, say so and stop; do not retry.
+- After acting, say in one sentence what you did and to which run. Do not poll; check once if the
+  developer asks what happened.`
+    : ''
   return `<dispatched-run>
-This conversation already dispatched run \`${jobId}\` — the run you scoped, and the
-one the developer is most likely asking about.
-- You already have its id. Call get_past_job on it directly; do not list first.
+${runs}
+- You already have the ids. Call get_past_job on one directly; do not list first.
 - Then read_past_job_artifact / list_past_job_files / read_past_job_file, so you
   answer from what its agents produced rather than what you expected them to.
-- It may still be running. Status, phase, and artefacts move between turns — read
+- A run may still be going. Status, phase, and artefacts move between turns — read
   them again instead of reusing an earlier turn's answer.
 - Relate what you find back to the investigation you wrote. You are the only
-  surface that can say whether the run did what it was scoped to do.
+  surface that can say whether a run did what it was scoped to do.${control}
 - Do not emit a <run> block unless the developer asks for a follow-up run.
 - Still end every turn with <readiness>; use "ready" with no open questions while
-  you are only answering questions about this run.
+  you are only answering questions about these runs.
 </dispatched-run>`
 }
 

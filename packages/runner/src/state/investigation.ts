@@ -63,6 +63,8 @@ export function toInvestigationSummary(record: Investigation): InvestigationSumm
     readiness: record.readiness,
     turnCount: record.turnCount,
     ...(record.dispatchedJobId ? { dispatchedJobId: record.dispatchedJobId } : {}),
+    ...(record.reviewIds?.length ? { reviewIds: record.reviewIds } : {}),
+    createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   }
 }
@@ -91,6 +93,7 @@ function resolveStatus(
  * Merge a patch onto an existing row. Stream turns must not wipe the UI
  * transcript, and a dashboard PUT must not wipe runner turns / resume state.
  * `null` on `executorSession` / `executorId` / `dispatchedJobId` clears.
+ * `reviewIds` and `dispatchedJobIds` only ever grow.
  */
 export function mergeInvestigation(
   existing: Investigation | null,
@@ -117,6 +120,16 @@ export function mergeInvestigation(
     dispatchedJobId = patch.dispatchedJobId ?? undefined
   }
 
+  // A link to a started review is never dropped by a later snapshot that
+  // happens not to carry it.
+  const reviewIds = [...new Set([...(existing?.reviewIds ?? []), ...(patch.reviewIds ?? [])])]
+  const dispatchedJobIds = [...new Set([
+    ...(existing?.dispatchedJobIds ?? []),
+    ...(existing?.dispatchedJobId ? [existing.dispatchedJobId] : []),
+    ...(patch.dispatchedJobIds ?? []),
+    ...(patch.dispatchedJobId ? [patch.dispatchedJobId] : []),
+  ])]
+
   const readiness = hasOwn(patch, 'readiness')
     ? (patch.readiness ?? null)
     : (existing?.readiness ?? null)
@@ -140,6 +153,8 @@ export function mergeInvestigation(
     tokens: patch.tokens ?? existing?.tokens ?? 0,
     contextUsed: patch.contextUsed ?? existing?.contextUsed ?? 0,
     ...(dispatchedJobId ? { dispatchedJobId } : {}),
+    ...(dispatchedJobIds.length ? { dispatchedJobIds } : {}),
+    ...(reviewIds.length ? { reviewIds } : {}),
     ...((patch.toolAccess ?? existing?.toolAccess)
       ? { toolAccess: patch.toolAccess ?? existing!.toolAccess }
       : {}),
@@ -161,6 +176,8 @@ function investigationUnchanged(existing: Investigation, next: Investigation): b
     && existing.tokens === next.tokens
     && existing.contextUsed === next.contextUsed
     && (existing.dispatchedJobId ?? null) === (next.dispatchedJobId ?? null)
+    && (existing.reviewIds ?? []).join(',') === (next.reviewIds ?? []).join(',')
+    && (existing.dispatchedJobIds ?? []).join(',') === (next.dispatchedJobIds ?? []).join(',')
     && (existing.findings ?? null) === (next.findings ?? null)
     && JSON.stringify(existing.items) === JSON.stringify(next.items)
     && JSON.stringify(existing.turns) === JSON.stringify(next.turns)

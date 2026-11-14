@@ -39,7 +39,8 @@ import {
   type IntakeContext,
   type IntakeMessage,
 } from './system-prompt'
-import { resolveDispatchedRunId } from './past-jobs'
+import { resolveDispatchedRunIds } from './past-jobs'
+import { buildRunControlTools, buildRunReadTools, type RunControl } from './run-control'
 import {
   buildIntakeMessages,
   endIntakeTurn,
@@ -79,6 +80,8 @@ export interface RunIntakeOptions {
   logger?: Logger
   /** When set, successful turns are upserted to the investigations table. */
   stateBackend?: StateBackend
+  /** Lets the main agent act on runs this conversation started. Never passed to subagents. */
+  runControl?: RunControl
 }
 
 function resolveIntakeAssignment(options: RunIntakeOptions): { model: string; provider?: string } {
@@ -329,8 +332,14 @@ async function* executeIntakeTurn(
     ? buildWorkspaceChatTools({ includeFiles: !nativeFiles, includeWeb: !nativeWeb })
     : []
   const lookupTools = toolsOn
-    ? [...buildIntakeTools(options.registry, { stateBackend: options.stateBackend }), ...accessTools]
+    ? [
+        ...buildIntakeTools(options.registry, { stateBackend: options.stateBackend }),
+        ...(options.stateBackend ? buildRunReadTools() : []),
+        ...accessTools,
+      ]
     : []
+  // Kept out of `lookupTools`: that list is what subagents get.
+  const controlTools = toolsOn && options.runControl && options.stateBackend ? buildRunControlTools() : []
   const checkoutAvailable = lookupTools.some(t => t.name === 'scm_checkout')
   const broker = toolsOn
     ? createIntakePermissionBroker({
@@ -378,6 +387,7 @@ async function* executeIntakeTurn(
       : undefined
   const tools = [
     ...lookupTools,
+    ...controlTools,
     ...(toolsOn ? [REQUEST_TOOL_ACCESS_TOOL] : []),
     ...(subagents ? [DELEGATE_INVESTIGATION_TOOL] : []),
   ]
@@ -412,6 +422,7 @@ async function* executeIntakeTurn(
       : {}),
     planModeMcpServerIds: planModeMcpServerIds.filter(id => id !== trackerServerId),
     subagentsEnabled: Boolean(subagents),
+    runControlEnabled: controlTools.length > 0,
     ...(accessAtStart
       ? {
           access: {
@@ -433,10 +444,10 @@ async function* executeIntakeTurn(
   // condition that could drift from it. Like plan-mode findings on the job
   // side, it is an enhancement: a missing row or a backend hiccup must not
   // cost the developer their turn.
-  let dispatchedRunId: string | null = null
+  let dispatchedRunIds: string[] = []
   if (pastJobsEnabled && options.stateBackend) {
     try {
-      dispatchedRunId = await resolveDispatchedRunId(options.sessionId, {
+      dispatchedRunIds = await resolveDispatchedRunIds(options.sessionId, {
         stateBackend: options.stateBackend,
       })
     } catch (err) {
@@ -449,8 +460,8 @@ async function* executeIntakeTurn(
   // out of the transcript.
   const conversation = buildIntakeMessages(
     session,
-    dispatchedRunId
-      ? `${renderDispatchedRunBlock(dispatchedRunId)}\n\n${userMessage}`
+    dispatchedRunIds.length > 0
+      ? `${renderDispatchedRunBlock(dispatchedRunIds, controlTools.length > 0)}\n\n${userMessage}`
       : userMessage,
   )
   const emptyMcp = createSdkMcpServer({ name: 'coro', tools: [] })
@@ -493,6 +504,8 @@ async function* executeIntakeTurn(
                 stateBackend: options.stateBackend,
                 workingDir: cwd,
                 scratchDir: workRoot,
+                sessionId: options.sessionId,
+                ...(controlTools.length > 0 && options.runControl ? { runControl: options.runControl } : {}),
                 ...(subagents ? { subagents } : {}),
                 ...(workspace ? { workspace } : {}),
                 ...(broker

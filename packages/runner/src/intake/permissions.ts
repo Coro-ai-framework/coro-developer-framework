@@ -17,6 +17,7 @@ import {
   validateLocalConfig,
   type LocalConfig,
 } from '../config/local-config'
+import { describeRunControl } from './run-control'
 
 export const INTAKE_PERMISSION_TIMEOUT_MS = 10 * 60_000
 
@@ -25,13 +26,14 @@ export const DEFAULT_TOOL_ACCESS = {
   filesWrite: 'ask',
   shell: 'ask',
   web: 'ask',
+  runs: 'ask',
 } as const satisfies Record<IntakeBuiltinCapability, ToolAccessMode>
 
 export const DEFAULT_MCP_MODE: ToolAccessMode = 'off'
 
 export const CLAUDE_AI_SERVER_ID = 'claude_ai'
 
-const BUILTINS: readonly IntakeBuiltinCapability[] = ['files', 'filesWrite', 'shell', 'web']
+const BUILTINS: readonly IntakeBuiltinCapability[] = ['files', 'filesWrite', 'shell', 'web', 'runs']
 
 export interface IntakePermissionConfig {
   defaults: {
@@ -39,6 +41,7 @@ export interface IntakePermissionConfig {
     filesWrite?: ToolAccessMode
     shell?: ToolAccessMode
     web?: ToolAccessMode
+    runs?: ToolAccessMode
     mcp?: ToolAccessMode
   }
   allow: string[]
@@ -117,7 +120,7 @@ export type ToolClass =
       title: string
       subject: string
       risk: IntakePermissionRisk
-      ruleName: 'Shell' | 'Web' | 'Files' | 'mcp'
+      ruleName: 'Shell' | 'Web' | 'Files' | 'Runs' | 'mcp'
       ruleSubject: string
     }
 
@@ -238,6 +241,19 @@ export function classifyIntakeTool(
     }
   }
 
+  const runControl = describeRunControl(toolName, input)
+  if (runControl) {
+    return {
+      kind: 'gated',
+      capability: 'runs',
+      title: runControl.title,
+      subject: runControl.subject,
+      risk: runControl.mutating ? 'mutating' : 'normal',
+      ruleName: 'Runs',
+      ruleSubject: toolName,
+    }
+  }
+
   const mcp = parseMcpToolName(toolName)
   if (mcp) {
     if (!ctx.attachedMcpIds.has(mcp.serverId)) {
@@ -286,7 +302,7 @@ export function classifyShellRisk(command: string): 'normal' | 'mutating' {
 }
 
 export interface ParsedRule {
-  name: 'Shell' | 'Web' | 'Files' | 'mcp'
+  name: 'Shell' | 'Web' | 'Files' | 'Runs' | 'mcp'
   spec: string | null
   raw: string
 }
@@ -294,9 +310,9 @@ export interface ParsedRule {
 export function parseRule(raw: string): ParsedRule | null {
   const trimmed = raw.trim()
   if (trimmed.startsWith('mcp__')) return { name: 'mcp', spec: trimmed, raw: trimmed }
-  const named = /^(Shell|Web|Files)\((.+)\)$/.exec(trimmed)
+  const named = /^(Shell|Web|Files|Runs)\((.+)\)$/.exec(trimmed)
   if (named) return { name: named[1] as ParsedRule['name'], spec: named[2]!, raw: trimmed }
-  const bare = /^(Shell|Web|Files)$/.exec(trimmed)
+  const bare = /^(Shell|Web|Files|Runs)$/.exec(trimmed)
   if (bare) return { name: bare[1] as ParsedRule['name'], spec: null, raw: trimmed }
   return null
 }
@@ -305,6 +321,7 @@ export function ruleMatches(rule: ParsedRule, cls: Extract<ToolClass, { kind: 'g
   if (rule.name !== cls.ruleName) return false
   if (rule.name === 'Shell' && cls.risk === 'mutating') return false
   if (rule.name === 'Files' && cls.risk === 'outside-scratch') return false
+  if (rule.name === 'Runs') return rule.spec === null || rule.spec === cls.ruleSubject
   if (rule.name === 'Shell') {
     const segments = splitSegments(cls.ruleSubject).map(s => stripAssignments(s).replace(/\s+/g, ' ').trim()).filter(Boolean)
     if (segments.length === 0) return rule.spec === null
@@ -347,6 +364,7 @@ export function suggestRule(cls: Extract<ToolClass, { kind: 'gated' }>): string 
     return cls.ruleSubject === 'search' ? 'Web(search)' : `Web(domain:${cls.ruleSubject})`
   }
   if (cls.ruleName === 'Files') return cls.ruleSubject === 'write' ? 'Files(write)' : 'Files(read)'
+  if (cls.ruleName === 'Runs') return `Runs(${cls.ruleSubject})`
   return cls.ruleSubject
 }
 
@@ -641,6 +659,7 @@ function capabilityLabel(capability: IntakeCapability): string {
     case 'filesWrite': return 'Write scratch files'
     case 'shell': return 'Shell'
     case 'web': return 'Web'
+    case 'runs': return 'Control runs'
     default: return `MCP server ${capability.slice('mcp:'.length)}`
   }
 }

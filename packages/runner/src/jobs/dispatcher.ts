@@ -164,6 +164,7 @@ export class Dispatcher {
         id: investigationId,
         status: 'dispatched',
         dispatchedJobId: job.id,
+        dispatchedJobIds: [job.id],
       })
     } catch (err) {
       this.ctx.logger.warn(

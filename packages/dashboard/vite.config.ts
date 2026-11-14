@@ -26,6 +26,8 @@ export default defineConfig({
       '/config': apiProxy,
       '/retrospectives': apiProxy,
       '/intake': apiProxy,
+      '/reviews': apiProxy,
+      '/worklist': apiProxy,
     },
   },
 })

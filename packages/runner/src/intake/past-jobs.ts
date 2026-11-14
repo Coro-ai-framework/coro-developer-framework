@@ -68,7 +68,18 @@ export interface PastJobSummary {
   repo: string
   workflowPath: string
   createdAt: string
+  updatedAt: string
   durationMs: number
+  currentWorkItem: string | null
+  /** Pauses at each checkpoint for the developer when true. */
+  interactive: boolean
+  /** Why a parked run is waiting, e.g. `developer-input: …` or `pr:approved`. */
+  awaitingEvent?: string
+  /** Set when the run waits at a checkpoint before entering this phase. */
+  awaitingNextPhase?: string
+  escalationMessage?: string
+  /** The conversation that dispatched this run, when one did. */
+  investigationId?: string
   description: string
   workItems: Array<{ name: string; status: string }>
   insights: Array<{ category: string; summary: string }>
@@ -251,24 +262,27 @@ export async function readPastJobFile(
 }
 
 /**
- * The run this investigation dispatched, if any. The plan-mode session id
- * *is* the investigation id, so no dashboard-supplied job id is involved —
- * `dispatchedJobId` on the durable record is the authority.
+ * Every run this investigation dispatched, oldest first. The plan-mode
+ * session id *is* the investigation id, so no dashboard-supplied job id is
+ * involved — the dispatcher records each run on the durable record.
  *
- * Only the id is returned on purpose. Status and phase belong to
+ * Only ids are returned on purpose. Status and phase belong to
  * `get_past_job`: this value is framed into the prompt every turn, and a
  * replay executor persists what it was sent, so volatile state here would
  * accumulate as contradictory snapshots across a conversation.
  */
-export async function resolveDispatchedRunId(
+export async function resolveDispatchedRunIds(
   investigationId: string,
   deps: { stateBackend: Pick<StateBackend, 'getInvestigation'> },
-): Promise<string | null> {
+): Promise<string[]> {
   const id = investigationId.trim()
-  if (!id) return null
+  if (!id) return []
   const investigation = await deps.stateBackend.getInvestigation(id)
-  const jobId = investigation?.dispatchedJobId?.trim()
-  return jobId ? jobId : null
+  if (!investigation) return []
+  const ids = [...(investigation.dispatchedJobIds ?? [])]
+  const latest = investigation.dispatchedJobId?.trim()
+  if (latest && !ids.includes(latest)) ids.push(latest)
+  return ids
 }
 
 async function loadJob(
@@ -345,7 +359,14 @@ function detailSummary(job: Job): PastJobSummary {
     repo: jobRepo(job),
     workflowPath: job.workflowPath,
     createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
     durationMs: elapsedMs(job.createdAt, job.updatedAt),
+    currentWorkItem: job.currentWorkItem ?? null,
+    interactive: Boolean(job.interactive),
+    ...(job.awaitingEvent ? { awaitingEvent: job.awaitingEvent } : {}),
+    ...(job.awaitingNextPhase ? { awaitingNextPhase: job.awaitingNextPhase } : {}),
+    ...(job.escalationMessage ? { escalationMessage: truncateChars(job.escalationMessage, 2_000).text } : {}),
+    ...(jobParamString(job, 'investigationId') ? { investigationId: jobParamString(job, 'investigationId') } : {}),
     description: truncateChars(jobParamString(job, 'description'), PAST_JOB_DETAIL_DESCRIPTION_MAX_CHARS).text,
     workItems: (job.workItems ?? []).map(item => ({ name: item.name, status: item.status })),
     insights,

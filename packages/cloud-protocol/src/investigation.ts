@@ -69,7 +69,12 @@ export interface Investigation {
   turnCount: number
   tokens: number
   contextUsed: number
+  /** The most recent run this conversation dispatched. */
   dispatchedJobId?: string | null
+  /** Every run this conversation dispatched, oldest first. Only ever grows. */
+  dispatchedJobIds?: string[]
+  /** Pull-request reviews started from this conversation's review cards. */
+  reviewIds?: string[]
   /**
    * Per-conversation tool permission overrides (plan mode). Absent fields
    * fall back to install defaults in `intake.permissions`.
@@ -81,7 +86,8 @@ export interface Investigation {
 
 export type ToolAccessMode = 'off' | 'ask' | 'allow'
 
-export type IntakeBuiltinCapability = 'files' | 'filesWrite' | 'shell' | 'web'
+/** `runs` lets plan mode act on runs its own conversation started. */
+export type IntakeBuiltinCapability = 'files' | 'filesWrite' | 'shell' | 'web' | 'runs'
 
 /** `mcp:<serverId>`; claude.ai account connectors use `mcp:claude_ai`. */
 export type IntakeCapability = IntakeBuiltinCapability | `mcp:${string}`
@@ -129,6 +135,8 @@ export interface InvestigationSummary {
   readiness: InvestigationReadiness | null
   turnCount: number
   dispatchedJobId?: string | null
+  reviewIds?: string[]
+  createdAt: string
   updatedAt: string
 }
 

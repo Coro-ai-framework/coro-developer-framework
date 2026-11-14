@@ -121,4 +121,25 @@ export interface StateBackend {
   getInvestigation(id: string): Promise<Investigation | null>
   listInvestigations(query: InvestigationListQuery): Promise<InvestigationListResult>
   deleteInvestigation(id: string): Promise<void>
+
+  // ── Change detection ───────────────────────────────────────────────────────
+
+  /**
+   * `(id, updatedAt)` for every job and investigation, without reading the
+   * records. The dashboard work list polls every few seconds; with this it
+   * re-reads only rows that changed instead of parsing every job and every
+   * plan-mode transcript on each poll. Optional — a backend that cannot
+   * answer more cheaply than a full list omits it.
+   */
+  listRecordVersions?(): Promise<RecordVersions>
+}
+
+export interface RecordVersion {
+  id: string
+  updatedAt: string
+}
+
+export interface RecordVersions {
+  jobs: RecordVersion[]
+  investigations: RecordVersion[]
 }

@@ -789,6 +789,49 @@ describe('plan-mode subagents', () => {
     expect(getIntakeSession('session-subagents').contextTokens).toBe(28)
   })
 
+  it('gives run control to the main agent only, never to subagents', async () => {
+    let mainTools: string[] = []
+    let subagentTools: string[] = []
+    const registry = trackerRegistry(async (req) => {
+      if (req.systemPrompt?.includes('research subagent')) {
+        subagentTools = (req.tools ?? []).map(t => t.name)
+        return { output: 'done', usage, toolCalls: [] }
+      }
+      mainTools = (req.tools ?? []).map(t => t.name)
+      await req.runTool!('delegate_investigation', { tasks: ['look up PROJ-1'] })
+      return { output: 'Delegated.', usage, toolCalls: [] }
+    })
+    const stateBackend = {
+      getInvestigation: async () => null,
+      upsertInvestigation: async (patch: InvestigationPatch) => ({ id: patch.id }) as Investigation,
+    } as unknown as StateBackend
+    const runControl = {
+      sendMessage: async () => undefined,
+      pauseJob: async () => ({}) as never,
+      resumeJob: async () => undefined,
+      cancelJob: async () => ({}) as never,
+      setJobInteractive: async () => ({}) as never,
+    }
+
+    for await (const _event of runIntakeStream({
+      sessionId: 'session-run-control-tools',
+      message: 'Steer it',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+      stateBackend,
+      runControl,
+    })) {
+      // drain
+    }
+
+    expect(mainTools).toEqual(expect.arrayContaining(['message_run', 'answer_run', 'cancel_run', 'read_run_log']))
+    expect(subagentTools).toContain('read_run_log')
+    expect(subagentTools.filter(name => ['message_run', 'answer_run', 'pause_run', 'resume_run', 'cancel_run', 'set_run_mode'].includes(name)))
+      .toEqual([])
+  })
+
   it('omits delegate_investigation when subagents are disabled', async () => {
     let tools: Array<{ name: string }> | undefined
     let systemPrompt = ''

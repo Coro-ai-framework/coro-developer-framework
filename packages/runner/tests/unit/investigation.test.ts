@@ -62,6 +62,14 @@ describe('mergeInvestigation', () => {
     expect(merged.executorId).toBeUndefined()
   })
 
+  it('never drops a review link when a later write omits it', () => {
+    const existing = base({ reviewIds: ['rev-1'] })
+    const kept = mergeInvestigation(existing, { id: 'inv-1', tokens: 90 }, '2026-01-01T01:00:00.000Z')
+    expect(kept.reviewIds).toEqual(['rev-1'])
+    const grown = mergeInvestigation(existing, { id: 'inv-1', reviewIds: ['rev-2', 'rev-1'] }, '2026-01-01T01:00:00.000Z')
+    expect(grown.reviewIds).toEqual(['rev-1', 'rev-2'])
+  })
+
   it('keeps findings when a stream turn omits them', () => {
     const existing = base({ findings: '## Decode path\nThe handler is stateless.' })
     const merged = mergeInvestigation(existing, {

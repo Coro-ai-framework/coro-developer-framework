@@ -88,6 +88,34 @@ describe('permission rules', () => {
   })
 })
 
+describe('run control', () => {
+  const ctx = { workRoot: '/scratch', attachedMcpIds: new Set<string>() }
+
+  it('gates steering under the runs capability and shows the run and the message', () => {
+    const cls = gated(classifyIntakeTool('message_run', { jobId: 'job-7', message: 'add a test for X' }, ctx))
+    expect(cls).toMatchObject({ capability: 'runs', risk: 'normal', ruleName: 'Runs' })
+    expect(cls.subject).toBe('job-7: add a test for X')
+    expect(suggestRule(cls)).toBe('Runs(message_run)')
+  })
+
+  it('treats calls that resume or stop a run as mutating', () => {
+    for (const name of ['answer_run', 'resume_run', 'cancel_run']) {
+      expect(gated(classifyIntakeTool(name, { jobId: 'job-7', reason: 'r', message: 'm' }, ctx)).risk).toBe('mutating')
+    }
+    expect(gated(classifyIntakeTool('pause_run', { jobId: 'job-7' }, ctx)).risk).toBe('normal')
+  })
+
+  it('matches a Runs rule by tool, and a bare deny rule covers every run tool', () => {
+    const steer = gated(classifyIntakeTool('message_run', { jobId: 'j', message: 'm' }, ctx))
+    const pause = gated(classifyIntakeTool('pause_run', { jobId: 'j' }, ctx))
+    const cancel = gated(classifyIntakeTool('cancel_run', { jobId: 'j', reason: 'r' }, ctx))
+    expect(ruleMatches(parseRule('Runs(message_run)')!, steer)).toBe(true)
+    expect(ruleMatches(parseRule('Runs(message_run)')!, pause)).toBe(false)
+    expect(ruleMatches(parseRule('Runs')!, cancel)).toBe(true)
+    expect(suggestRule(cancel)).toBeUndefined()
+  })
+})
+
 describe('resolveToolAccess', () => {
   it('prefers the session, then config, then defaults, and opts planMode servers into allow', () => {
     const resolved = resolveToolAccess(
@@ -144,6 +172,26 @@ describe('permission broker', () => {
     expect(resolveIntakePermission('s1', requestId!, { decision: 'once', rule: 'not a rule' })).toMatchObject({ ok: false, status: 400 })
     expect(resolveIntakePermission('s1', requestId!, { decision: 'once' }).ok).toBe(true)
     await expect(pending).resolves.toEqual({ allow: true })
+  })
+
+  it('asks for every cancel even when run control is set to allow', async () => {
+    const { broker: gate, events, current } = broker()
+    current.capabilities = { ...current.capabilities, runs: 'allow' }
+    await expect(gate.gate('pause_run', { jobId: 'j' })).resolves.toEqual({ allow: true })
+    const pending = gate.gate('cancel_run', { jobId: 'j', reason: 'wrong repo' })
+    await vi.waitFor(() => expect(events.some(e => e.type === 'permission_request')).toBe(true))
+    const request = (events.find(e => e.type === 'permission_request') as { request: { requestId: string; allowedDecisions: string[] } }).request
+    expect(request.allowedDecisions).toEqual(['once', 'deny'])
+    resolveIntakePermission('s1', request.requestId, { decision: 'once' })
+    await expect(pending).resolves.toEqual({ allow: true })
+  })
+
+  it('refuses run control that is off and points at request_tool_access', async () => {
+    const { broker: gate, current } = broker()
+    current.capabilities = { ...current.capabilities, runs: 'off' }
+    const decision = await gate.gate('message_run', { jobId: 'j', message: 'm' })
+    expect(decision.allow).toBe(false)
+    expect(decision.reason).toContain('request_tool_access')
   })
 
   it('records a conversation rule and skips the next identical call', async () => {

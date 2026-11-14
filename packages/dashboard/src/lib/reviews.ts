@@ -1,6 +1,6 @@
 import { formatPreciseCurrency } from './format'
 import { jsonRequest, requestJson } from './http'
-import type { Tone } from './status'
+import type { StatusMeta, Tone } from './status'
 
 export type ReviewStatus =
   | 'queued'
@@ -214,30 +214,69 @@ export interface ReviewStatusMeta {
   detail?: string
 }
 
+export interface ReviewStatusInput {
+  status: string
+  pauseReason?: string
+  awaitingApproval: boolean
+  hasPendingVerdict: boolean
+  prState: 'open' | 'merged' | 'declined'
+}
+
+/** One label vocabulary for a review, shared by the review pages, cards and the work list. */
+export function reviewStatusLabel(input: ReviewStatusInput): StatusMeta {
+  switch (input.status) {
+    case 'queued':
+      return { label: 'Queued', category: 'running', tone: 'accent' }
+    case 'running':
+      return input.awaitingApproval
+        ? { label: 'Needs approval', category: 'waiting', tone: 'warning', pulse: true }
+        : { label: 'Reviewing', category: 'running', tone: 'accent', pulse: true }
+    case 'idle':
+      return input.hasPendingVerdict
+        ? { label: 'Needs verdict', category: 'waiting', tone: 'warning', pulse: true }
+        : { label: 'Watching', category: 'idle', tone: 'success' }
+    case 'awaiting-verdict':
+      return { label: 'Needs verdict', category: 'waiting', tone: 'warning', pulse: true }
+    case 'paused':
+      return { label: 'Paused', category: 'waiting', tone: 'warning' }
+    case 'skipped':
+      return { label: 'Skipped', category: 'terminal', tone: 'neutral' }
+    case 'failed':
+      return { label: 'Failed', category: 'terminal', tone: 'danger' }
+    default:
+      return { label: input.prState === 'merged' ? 'Merged' : 'Closed', category: 'terminal', tone: 'neutral' }
+  }
+}
+
 export function reviewStatusMeta(review: PrReview): ReviewStatusMeta {
+  const { label, tone, pulse } = reviewStatusLabel({
+    status: review.status,
+    pauseReason: review.pauseReason,
+    awaitingApproval: Boolean(review.awaitingApproval),
+    hasPendingVerdict: Boolean(review.pendingVerdict),
+    prState: review.pr.state,
+  })
+  const base = { label, tone, ...(pulse ? { pulse } : {}) }
   switch (review.status) {
     case 'queued':
-      return { label: 'Queued', tone: 'accent', detail: review.nextRoundAt ? `Starts ${formatUntil(review.nextRoundAt)}` : 'Starting soon' }
+      return { ...base, detail: review.nextRoundAt ? `Starts ${formatUntil(review.nextRoundAt)}` : 'Starting soon' }
     case 'running':
-      if (review.awaitingApproval) return { label: 'Needs approval', tone: 'warning', pulse: true, detail: 'Draft ready to post' }
-      return { label: 'Reviewing', tone: 'accent', pulse: true, detail: roundKindLabel(latestRound(review)?.kind) }
+      return { ...base, detail: review.awaitingApproval ? 'Draft ready to post' : roundKindLabel(latestRound(review)?.kind) }
     case 'idle':
-      return { label: 'Watching', tone: 'success', detail: review.rounds.length ? 'Up to date' : 'Waiting for a round' }
+      return { ...base, detail: review.rounds.length ? 'Up to date' : 'Waiting for a round' }
     case 'awaiting-verdict':
       return {
-        label: 'Needs verdict',
-        tone: 'warning',
-        pulse: true,
+        ...base,
         detail: review.pendingVerdict ? `Recommends ${VERDICT_LABEL[review.pendingVerdict.verdict].toLowerCase()}` : undefined,
       }
     case 'paused':
-      return { label: 'Paused', tone: 'warning', detail: review.pauseReason ? PAUSE_REASON[review.pauseReason] : undefined }
+      return { ...base, detail: review.pauseReason ? PAUSE_REASON[review.pauseReason] : undefined }
     case 'skipped':
-      return { label: 'Skipped', tone: 'neutral', detail: 'Coro leaves this PR alone' }
+      return { ...base, detail: 'Coro leaves this PR alone' }
     case 'failed':
-      return { label: 'Failed', tone: 'danger', detail: review.lastError ? 'See the error' : undefined }
-    case 'done':
-      return { label: review.pr.state === 'merged' ? 'Merged' : 'Closed', tone: 'neutral', detail: 'No more rounds' }
+      return { ...base, detail: review.lastError ? 'See the error' : undefined }
+    default:
+      return { ...base, detail: 'No more rounds' }
   }
 }
 

@@ -6,6 +6,7 @@ import type { RunnerContext } from '../jobs/runner'
 import { formatSseFrame } from '../runner/sse'
 import { clampInvestigationListQuery } from '../state/investigation'
 import { runIntakeStream } from './handler'
+import type { RunControl } from './run-control'
 import { persistIntakeSnapshot, persistLiveIntakeSession } from './persist'
 import {
   deleteIntakeSession,
@@ -34,9 +35,11 @@ export function registerIntakeRoutes(
     logger: Logger
     plugins?: PluginRegistry
     runnerCtx?: RunnerContext
+    /** Lets plan mode act on the runs a conversation started. */
+    runControl?: RunControl
   },
 ): void {
-  const { stateBackend, logger, plugins, runnerCtx } = opts
+  const { stateBackend, logger, plugins, runnerCtx, runControl } = opts
 
   app.post('/intake/stream', async (req: Request, res: Response) => {
     if (!plugins || !runnerCtx) {
@@ -131,6 +134,7 @@ export function registerIntakeRoutes(
         settings: runnerCtx.settings,
         signal: abortController.signal,
         logger,
+        ...(runControl ? { runControl } : {}),
         stateBackend,
       })) {
         if (event.type === 'token') {
@@ -304,8 +308,8 @@ export function registerIntakeRoutes(
       res.status(400).json({ error: 'deny must be an array of permission rules' })
       return
     }
-    if (capabilities !== undefined && !isModePatch(capabilities, ['files', 'filesWrite', 'shell', 'web'])) {
-      res.status(400).json({ error: 'capabilities must map files, filesWrite, shell, or web to off, ask, allow, or null' })
+    if (capabilities !== undefined && !isModePatch(capabilities, ['files', 'filesWrite', 'shell', 'web', 'runs'])) {
+      res.status(400).json({ error: 'capabilities must map files, filesWrite, shell, web, or runs to off, ask, allow, or null' })
       return
     }
     if (mcp !== undefined && !isModeRecord(mcp)) {
@@ -364,6 +368,7 @@ export function registerIntakeRoutes(
         ...(body['dispatchedJobId'] === null || typeof body['dispatchedJobId'] === 'string'
           ? { dispatchedJobId: body['dispatchedJobId'] as string | null }
           : {}),
+        ...(isStringArray(body['reviewIds']) ? { reviewIds: body['reviewIds'] } : {}),
       })
       res.json(result)
     } catch (err) {
@@ -436,4 +441,8 @@ function isModelChoice(value: unknown): value is { provider: string; model: stri
   if (!value || typeof value !== 'object') return false
   const rec = value as Record<string, unknown>
   return typeof rec['provider'] === 'string' && typeof rec['model'] === 'string'
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string' && item.trim().length > 0)
 }

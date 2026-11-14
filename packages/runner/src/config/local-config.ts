@@ -273,6 +273,7 @@ const intakeConfigSchema = z.object({
       filesWrite: toolAccessModeSchema.optional(),
       shell: toolAccessModeSchema.optional(),
       web: toolAccessModeSchema.optional(),
+      runs: toolAccessModeSchema.optional(),
       mcp: toolAccessModeSchema.optional(),
     }).optional(),
     allow: z.array(z.string()).optional(),

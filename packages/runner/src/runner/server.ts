@@ -46,6 +46,9 @@ import { detectEditors, openInEditor, revealFolder } from './open-editor'
 import { assertJobPluginRequirements, PluginPreflightError } from '../jobs/plugin-preflight'
 import { incrementCoachModeRunCount } from '../config/coach-mode'
 import { registerIntakeRoutes } from '../intake/routes'
+import { intakeTurnActive } from '../intake/session-store'
+import { listPendingIntakePermissions } from '../intake/permissions'
+import { WorklistService } from './worklist'
 import { JobType, type Job, type CampaignChild, type Insight, type InsightLayer, type InsightStatus } from '@coro-ai/cloud-protocol'
 import { REVIEW_MARKER_PREFIX, STATUS_AWAITING_DEVELOPER_INPUT, reviewMarker, type PrReview, type ReviewVerdict } from '@coro-ai/cloud-protocol'
 import { isStoppedStatus } from '../jobs/helpers'
@@ -1351,7 +1354,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
-  registerIntakeRoutes(app, { stateBackend, logger, plugins, runnerCtx })
+  registerIntakeRoutes(app, { stateBackend, logger, plugins, runnerCtx, runControl: dispatcher })
 
   // ── Job CRUD ────────────────────────────────────────────────────────────
 
@@ -1397,6 +1400,24 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       return job
     }
   }
+
+  const worklist = new WorklistService(stateBackend, {
+    streaming: intakeTurnActive,
+    pendingPermissions: id => listPendingIntakePermissions(id).length,
+  })
+
+  // The dashboard sidebar polls this. `no-cache` makes the browser revalidate
+  // with the ETag Express derives from the body, so an unchanged list costs a
+  // 304 rather than a payload.
+  app.get('/worklist', async (_req: Request, res: Response) => {
+    try {
+      res.set('Cache-Control', 'no-cache')
+      res.json(await worklist.get())
+    } catch (err) {
+      logger.error({ err }, 'GET /worklist failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
 
   app.get('/jobs', async (req: Request, res: Response) => {
     try {
@@ -3108,7 +3129,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
                   delete current.defaults
                 } else if (incomingDefaults && typeof incomingDefaults === 'object') {
                   const defaults = { ...(current.defaults ?? {}) }
-                  for (const key of ['files', 'filesWrite', 'shell', 'web', 'mcp'] as const) {
+                  for (const key of ['files', 'filesWrite', 'shell', 'web', 'runs', 'mcp'] as const) {
                     if (!Object.prototype.hasOwnProperty.call(incomingDefaults, key)) continue
                     const value = incomingDefaults[key]
                     if (value === null || value === undefined) delete defaults[key]

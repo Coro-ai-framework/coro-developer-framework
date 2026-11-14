@@ -27,6 +27,13 @@ import {
   readPastJobArtifact,
   readPastJobFile,
 } from './past-jobs'
+import {
+  executeRunControl,
+  READ_RUN_LOG_TOOL_NAME,
+  readRunLog,
+  RUN_CONTROL_TOOL_NAMES,
+  type RunControl,
+} from './run-control'
 
 export const INTAKE_MAX_FILE_BYTES = 64 * 1024
 export const INTAKE_MAX_SEARCH_RESULTS = 20
@@ -102,7 +109,7 @@ export const REQUEST_TOOL_ACCESS_TOOL: ChatTool = {
   name: REQUEST_TOOL_ACCESS_TOOL_NAME,
   description:
     'Ask the developer to enable a capability that is currently off for this conversation: ' +
-    '"files", "filesWrite", "shell", "web", or "mcp:<serverId>". Give a one-line reason naming ' +
+    '"files", "filesWrite", "shell", "web", "runs", or "mcp:<serverId>". Give a one-line reason naming ' +
     'what you will do with it. Blocks until they answer.',
   inputSchema: {
     type: 'object',
@@ -148,6 +155,10 @@ export interface IntakeToolDeps {
   /** Approves workspace tools before they run. Native tools are gated inside the executor. */
   gate?: (name: string, input: unknown) => Promise<{ allow: boolean; reason?: string }>
   requestCapability?: IntakePermissionBroker['requestCapability']
+  /** Present for the main plan agent only. Subagents never act on runs. */
+  runControl?: RunControl
+  /** The conversation this turn belongs to; run control is limited to its runs. */
+  sessionId?: string
 }
 
 export function buildIntakeTools(
@@ -541,6 +552,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, signal: AbortSignal): P
  * executor's `onToolEnd` callback — the dispatcher itself stays a
  * thin plumbing layer with no UX concerns.
  */
+const RUN_CONTROL_SUMMARY: Record<string, string> = {
+  message_run: 'Messaged',
+  answer_run: 'Answered and resumed',
+  pause_run: 'Paused',
+  resume_run: 'Resumed',
+  cancel_run: 'Cancelled',
+  set_run_mode: 'Changed approval mode of',
+}
+
 export function summarizeToolCall(name: string, input: unknown, output: unknown): string {
   if (name === 'tracker_get_issue') {
     const key = readField(input, 'key')
@@ -600,6 +620,18 @@ export function summarizeToolCall(name: string, input: unknown, output: unknown)
   if (name === 'read_past_job_file') {
     const filePath = readField(input, 'path')
     return filePath ? `Read job file ${filePath}` : 'Read job file'
+  }
+  if (name === READ_RUN_LOG_TOOL_NAME) {
+    const lines = output && typeof output === 'object' && 'lines' in output
+      ? (output as { lines: unknown }).lines
+      : null
+    const count = Array.isArray(lines) ? lines.length : 0
+    return `Read ${count} log line${count === 1 ? '' : 's'}`
+  }
+  if (RUN_CONTROL_TOOL_NAMES.has(name)) {
+    const id = readField(input, 'jobId')
+    const verb = RUN_CONTROL_SUMMARY[name] ?? 'Updated run'
+    return id ? `${verb} ${id}` : verb
   }
   if (name === 'shell' || name === 'Bash') {
     const command = readField(input, 'command')
@@ -716,7 +748,12 @@ export function createIntakeRunTool(
 ): (name: string, input: unknown) => Promise<unknown> {
   return async (name: string, input: unknown) => {
     const args = parseArgs(input)
-    if (WORKSPACE_TOOL_NAMES.has(name) && deps.gate) {
+    // Acting on a run must never happen unasked; with no broker there is no
+    // one to ask, so fail closed rather than run ungated.
+    if (RUN_CONTROL_TOOL_NAMES.has(name) && !deps.gate) {
+      throw new Error(`${name} is unavailable: approvals are not active for this turn.`)
+    }
+    if ((WORKSPACE_TOOL_NAMES.has(name) || RUN_CONTROL_TOOL_NAMES.has(name)) && deps.gate) {
       const decision = await deps.gate(name, args)
       if (!decision.allow) throw new Error(decision.reason ?? `Blocked ${name}.`)
     }
@@ -895,6 +932,25 @@ async function dispatchIntakeTool(
           ...(deps.workingDir ? { workingDir: deps.workingDir } : {}),
         },
       )
+    }
+    case READ_RUN_LOG_TOOL_NAME: {
+      if (!deps.stateBackend) throw new Error('read_run_log requires job history (state backend unavailable)')
+      return readRunLog(args, deps.stateBackend)
+    }
+    case 'message_run':
+    case 'answer_run':
+    case 'pause_run':
+    case 'resume_run':
+    case 'cancel_run':
+    case 'set_run_mode': {
+      if (!deps.runControl || !deps.stateBackend || !deps.sessionId) {
+        throw new Error(`${name} is not available in this plan-mode turn.`)
+      }
+      return executeRunControl(name, args, {
+        runControl: deps.runControl,
+        stateBackend: deps.stateBackend,
+        sessionId: deps.sessionId,
+      })
     }
     case DELEGATE_INVESTIGATION_TOOL_NAME: {
       if (!deps.subagents) throw new Error('delegate_investigation is not available in this plan-mode turn.')
