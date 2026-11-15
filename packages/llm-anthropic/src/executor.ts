@@ -89,6 +89,7 @@ import {
 } from './models'
 import type { PhaseErrorClass } from '@coro-ai/plugin-sdk'
 import { isStaleSessionResumeError } from './session-errors'
+import { promptCacheTtlEnv } from './prompt-cache'
 
 /** Mutable mirror of NormalizedTokenUsage — used as the executor's running cumulative tally. */
 interface NormalizedTokensMutable {
@@ -923,6 +924,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
         // Bash job) left running after the turn ends has nobody to hand its
         // result to. The PreToolUse hook also pins `run_in_background: false`.
         CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+        // The Bash path guard (hooks.ts) resolves `..`/`$PWD` against the job
+        // working dir, so each Bash call must start there; otherwise a
+        // persisted `cd` makes the guard block legitimate paths.
+        CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1',
+        ...promptCacheTtlEnv(process.env),
         BB_WORKSPACE: this.settings.bitbucket.workspace,
         BB_CODER_APP_PASSWORD: this.settings.bitbucket.coderAccount.appPassword,
         BB_BASE_URL: 'https://bitbucket.org',
