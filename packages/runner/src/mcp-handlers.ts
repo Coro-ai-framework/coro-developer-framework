@@ -1096,6 +1096,7 @@ export function createMcpToolHandlers(ctx: ToolContext, signals: PhaseSignals) {
     request_new_session: async ({ reason }: { reason: string }) => {
       await ctx.stateBackend.updateJob(ctx.job.id, { sessionId: undefined })
       ctx.job = await ctx.stateBackend.getJob(ctx.job.id) as Job
+      signals.newSessionRequested = true
       await ctx.stateBackend.appendLog(ctx.job.id, `[session-reset] ${reason}`)
       return text({ newSession: true, reason })
     },

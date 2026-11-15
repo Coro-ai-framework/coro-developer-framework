@@ -146,4 +146,9 @@ export interface PhaseSignals {
    * job parks again instead of advancing.
    */
   checkpointReopened?: string
+  /**
+   * Set by `request_new_session`. The runner must not persist this run's
+   * session afterwards, or the reset would be undone.
+   */
+  newSessionRequested?: boolean
 }

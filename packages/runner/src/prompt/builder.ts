@@ -344,6 +344,9 @@ export async function buildSystemPrompt(
     )
   }
 
+  const delivery = buildLocalScmDeliveryPromptBlock(scmInfo)
+  if (delivery) sections.push(delivery)
+
   if (sandbox) {
     sections.push(buildSandboxPromptBlock(sandbox))
   }
@@ -354,6 +357,30 @@ export async function buildSystemPrompt(
   sections.push(buildJobContext(job, trackerInfo, scmInfo, guardrailsInfo, jobWorkingDir))
 
   return sections.join('\n\n---\n\n')
+}
+
+// ── Local SCM delivery ────────────────────────────────────────────────────────
+
+/**
+ * The local SCM pushes branches from the runner process, so an agent push is
+ * never needed. Agents still tried, because most of their instructions say
+ * "push the branch", and a host policy refuses that push in a way that reads
+ * like a skipped workflow step — so they escalated finished work.
+ */
+function buildLocalScmDeliveryPromptBlock(scmInfo?: ScmPromptContext): string {
+  if (scmInfo?.resolved !== 'local') return ''
+  return [
+    banner('Branch delivery (local SCM)', 'scm.resolved = local').trimEnd(),
+    '',
+    'Do not run `git push` in any form on this job. Commit on your work-item branch in the',
+    'job checkout, post the `pr-preview` artefact, and end your turn. The runner pushes the',
+    'branch itself when the review phase calls `scm_create_pr`, and again on `scm_merge_pr`,',
+    'so fix-loop commits reach the user the same way.',
+    '',
+    'Wherever your instructions say to push the branch, this replaces that step. A refused or',
+    'failed push is expected here and is not a blocker: do not escalate over it and do not',
+    'look for another way to push.',
+  ].join('\n')
 }
 
 // ── Host sandbox ──────────────────────────────────────────────────────────────

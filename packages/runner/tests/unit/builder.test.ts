@@ -629,6 +629,23 @@ describe('buildSystemPrompt (lean, on-demand context model)', () => {
         installed: ['github'],
         default: 'github',
       })
+      expect(prompt).not.toContain('Branch delivery (local SCM)')
+    })
+
+    it('tells agents not to push when the job uses the local SCM', async () => {
+      setupFs({ [WORKFLOW_PATH]: '' })
+
+      const prompt = await buildSystemPrompt(
+        makeJob(),
+        INTELLIGENCE_DIR,
+        noopLogger,
+        { provider: 'none', available: false },
+        { available: true, resolved: 'local', installed: ['local'] },
+      )
+
+      expect(prompt).toContain('# Branch delivery (local SCM)')
+      expect(prompt).toContain('Do not run `git push` in any form')
+      expect(prompt).toContain('do not escalate over it')
     })
 
     it('includes workspace layout when jobWorkingDir is supplied', async () => {

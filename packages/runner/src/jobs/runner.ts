@@ -1328,7 +1328,10 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
         toolCtx.job = liveJob
       }
 
-      if (sessionId) {
+      if (signals.newSessionRequested) {
+        liveJob = await syncJob(stateBackend, liveJob, { sessionId: undefined })
+        toolCtx.job = liveJob
+      } else if (sessionId) {
         liveJob = await syncJob(stateBackend, liveJob, { sessionId })
         toolCtx.job = liveJob
       }
@@ -1701,10 +1704,19 @@ export async function runJob(job: Job, ctx: RunnerContext, options?: RunJobOptio
       toolCtx.job = liveJob
       if (shouldStopLoop) break
 
+      // A phase that ends its turn hands off through artefacts, job state and
+      // insights, so the next phase starts a fresh session instead of
+      // re-caching and re-reading this one's transcript every turn. A
+      // goto_phase loop-back keeps it: a fix brief may live only there.
+      const freshSessionOnAdvance = !signals.nextPhase
+        && process.env.CORO_RESUME_SESSION_ACROSS_PHASES !== '1'
+        && process.env.CORO_RESUME_SESSION_ACROSS_PHASES !== 'true'
+
       liveJob = await syncJob(stateBackend, liveJob, {
         phase: nextPhase,
         awaitingNextPhase: undefined,
         approvedAdvanceFromPhase: checkpointApproved ? undefined : liveJob.approvedAdvanceFromPhase,
+        ...(freshSessionOnAdvance ? { sessionId: undefined } : {}),
       })
       toolCtx.job = liveJob
 
@@ -1993,6 +2005,7 @@ function resetSignals(s: PhaseSignals): void {
   s.escalationReason = undefined
   s.checkpointWaived = undefined
   s.checkpointReopened = undefined
+  s.newSessionRequested = undefined
 }
 
 function isDeveloperApprovalRequest(eventName: string): boolean {

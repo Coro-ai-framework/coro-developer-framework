@@ -625,10 +625,12 @@ describe('createMcpToolHandlers — work-item tracking', () => {
   })
 
   it('request_new_session clears sessionId and logs reason', async () => {
-    const h = createMcpToolHandlers(ctx, {})
+    const signals: import('../../src/tools/types').PhaseSignals = {}
+    const h = createMcpToolHandlers(ctx, signals)
     const data = parseJson(await h.request_new_session({ reason: 'Starting next work item' })) as Record<string, unknown>
 
     expect(data['newSession']).toBe(true)
+    expect(signals.newSessionRequested).toBe(true)
     expect(ctx.stateBackend.updateJob).toHaveBeenCalledWith('job-mcp-test', { sessionId: undefined })
     expect(ctx.stateBackend.appendLog).toHaveBeenCalledWith('job-mcp-test', '[session-reset] Starting next work item')
   })

@@ -29,6 +29,7 @@ import type {
   PhaseExecutorRuntime,
 } from '../../src/plugins/types'
 import type { PhaseSignals, ToolContext } from '../../src/tools/types'
+import { createMcpToolHandlers } from '../../src/mcp-handlers'
 
 vi.mock('../../src/prompt/builder', () => ({
   buildSystemPrompt: vi.fn().mockResolvedValue('# Mock system prompt for runner tests'),
@@ -1323,7 +1324,7 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
   })
 
-  it('uses phase kickoff prompt (fresh on phase 1, continuation on phase 2)', async () => {
+  it('starts the next phase in a fresh session when a phase ends its turn', async () => {
     const prompts: string[] = []
     const resumes: Array<string | undefined> = []
     let n = 0
@@ -1340,13 +1341,81 @@ describe('runJob (mocked Agent SDK query)', () => {
     )
 
     expect(prompts).toHaveLength(2)
-    expect(resumes).toEqual([undefined, 'sess-1'])
-    // Phase 1 has no sessionId yet — fresh kickoff.
+    expect(resumes).toEqual([undefined, undefined])
     expect(prompts[0]).toContain('Begin phase')
     expect(prompts[0]).toContain('alpha')
-    // Phase 2 resumes the session and uses the continuation kickoff.
+    expect(prompts[1]).toContain('Begin phase')
+    expect(prompts[1]).toContain('beta')
+    expect(stateBackend.current.sessionId).toBe('sess-2')
+  })
+
+  it('keeps the session across a goto_phase handoff', async () => {
+    const prompts: string[] = []
+    const resumes: Array<string | undefined> = []
+    let n = 0
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (req, h) {
+        n += 1
+        prompts.push(req.userPrompt)
+        resumes.push(req.sessionState?.sessionId)
+        if (n === 1) h.signals.nextPhase = 'beta'
+        yield* yieldEmptyPhase(`sess-${n}`)
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
+
+    expect(resumes).toEqual([undefined, 'sess-1'])
     expect(prompts[1]).toContain('now in phase')
     expect(prompts[1]).toContain('beta')
+  })
+
+  it('request_new_session makes the next run start fresh even through goto_phase', async () => {
+    const prompts: string[] = []
+    const resumes: Array<string | undefined> = []
+    let n = 0
+    await runWithStubExecutor(
+      makeJob({ phase: 'alpha' }),
+      ctx,
+      async function* (req, h) {
+        n += 1
+        prompts.push(req.userPrompt)
+        resumes.push(req.sessionState?.sessionId)
+        if (n === 1) {
+          await createMcpToolHandlers(h.toolCtx, h.signals).request_new_session({ reason: 'next work item' })
+          h.signals.nextPhase = 'beta'
+        }
+        yield* yieldEmptyPhase(`sess-${n}`)
+      },
+      { workflowConfigOverride: workflowTwoPhase },
+    )
+
+    expect(resumes).toEqual([undefined, undefined])
+    expect(prompts[1]).toContain('Begin phase')
+    expect(stateBackend.current.sessionId).toBe('sess-2')
+  })
+
+  it('resumes across phases when CORO_RESUME_SESSION_ACROSS_PHASES=1', async () => {
+    vi.stubEnv('CORO_RESUME_SESSION_ACROSS_PHASES', '1')
+    try {
+      const resumes: Array<string | undefined> = []
+      let n = 0
+      await runWithStubExecutor(
+        makeJob({ phase: 'alpha' }),
+        ctx,
+        async function* (req) {
+          n += 1
+          resumes.push(req.sessionState?.sessionId)
+          yield* yieldEmptyPhase(`sess-${n}`)
+        },
+        { workflowConfigOverride: workflowTwoPhase },
+      )
+
+      expect(resumes).toEqual([undefined, 'sess-1'])
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('re-registers dynamic MCP servers on resumed queries', async () => {
