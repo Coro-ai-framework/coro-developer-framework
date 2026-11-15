@@ -276,7 +276,7 @@ function getBashPathDenialReason(command: string, workingDir: string, memoryRoot
     // against the effective cwd (workingDir, adjusted for leading `cd`).
     // Allow if the resolved path lands inside workingDir or memoryRoot;
     // block otherwise.
-    const relResolved = resolveRelativeToCwd(candidate, effectiveCwd, workingDir)
+    const relResolved = resolveRelativeToCwd(candidate, effectiveCwd)
     if (relResolved) {
       if (isInside(relResolved, workingDir) || isInside(relResolved, memoryRoot)) continue
       return bashPathReason(command, candidate, `path ${relResolved}`, workingDir, memoryRoot)
@@ -460,13 +460,12 @@ function extractLeadingCdTarget(command: string): string | null {
  * absolute resolved path, or null if the token is not a relative
  * reference.
  */
-function resolveRelativeToCwd(token: string, effectiveCwd: string, workingDir: string): string | null {
-  // `$PWD` is the per-call shell cwd which, absent a leading `cd`, is
-  // always workingDir. Honour it explicitly so the resolution lines up
-  // with whatever the shell would actually do.
-  if (token === '$PWD' || token === '${PWD}') return workingDir
-  if (token.startsWith('$PWD/')) return path.resolve(workingDir, token.slice('$PWD/'.length))
-  if (token.startsWith('${PWD}/')) return path.resolve(workingDir, token.slice('${PWD}/'.length))
+function resolveRelativeToCwd(token: string, effectiveCwd: string): string | null {
+  // `$PWD` is the shell's cwd at expansion time: workingDir, or the target
+  // of a leading `cd`, the same cwd `./` and `../` resolve against.
+  if (token === '$PWD' || token === '${PWD}') return effectiveCwd
+  if (token.startsWith('$PWD/')) return path.resolve(effectiveCwd, token.slice('$PWD/'.length))
+  if (token.startsWith('${PWD}/')) return path.resolve(effectiveCwd, token.slice('${PWD}/'.length))
 
   if (
     token === '.' || token === '..' ||

@@ -193,6 +193,13 @@ describe('Bash PreToolUse hook', () => {
     const out = await runBash(hook, 'cat $PWD/main.go')
     expect(isAllowed(out)).toBe(true)
   })
+
+  it('resolves $PWD against a leading cd', async () => {
+    const inside = await runBash(hook, 'cd repo-clone && export GOCACHE=$PWD/../.gocache; go test ./...')
+    expect(isAllowed(inside)).toBe(true)
+    const outside = await runBash(hook, 'cd repo-clone && cat $PWD/../../secret.txt')
+    expect(isAllowed(outside)).toBe(false)
+  })
 })
 
 describe('MCP PreToolUse gate', () => {
