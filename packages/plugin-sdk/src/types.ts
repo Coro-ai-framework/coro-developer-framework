@@ -133,7 +133,7 @@ export interface PluginOAuthStatus {
   userCode?: string
   /** Present on success. */
   account?: { label: string }
-  /** Human-readable detail for `error`, or context for `idle`. */
+  /** Human-readable detail for `error`, or context for `idle` and `pending`. */
   message?: string
   /**
    * Machine-readable reason, so the dashboard never has to pattern-match
@@ -298,13 +298,16 @@ export interface PluginHttpApp {
  * plugin persisting its own config slot under
  * `plugins.installed[pluginId].config`. The runner deep-merges the
  * patch into the existing slot so concurrent updates from different
- * plugins don't clobber each other.
+ * plugins don't clobber each other. When the slot changes, the runner
+ * re-initialises its plugins with the new config; the returned promise
+ * settles once that is done, so a route can await it before reporting
+ * success.
  */
 export interface PluginHttpRoutesContext {
   app: PluginHttpApp
   logger: Logger
   saveLocalConfig: (patch: Record<string, unknown>) => void
-  savePluginConfig: (pluginId: string, configPatch: Record<string, unknown>) => void
+  savePluginConfig: (pluginId: string, configPatch: Record<string, unknown>) => void | Promise<void>
   redactSecret: (value: string | undefined | null) => string
 }
 

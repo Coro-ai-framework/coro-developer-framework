@@ -130,14 +130,61 @@ export async function validateGithubToken(
   }
 }
 
+/** What the user needs to finish a device-flow sign-in in their browser. */
+export interface GhDevicePrompt {
+  userCode: string
+  verificationUri: string
+}
+
 export interface GhWebLogin {
+  /**
+   * Resolves once `gh` has printed the one-time code, or null if it exits
+   * first. Never rejects.
+   */
+  prompt: Promise<GhDevicePrompt | null>
   done: Promise<void>
   /** Terminate the `gh` process. Safe to call after it has already exited. */
   cancel: () => void
 }
 
+const DEFAULT_DEVICE_URL = 'https://github.com/login/device'
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\x1b\[[0-9;]*m/g
+
+/**
+ * Pull the one-time code and verification URL out of `gh auth login --web`
+ * output. Without a terminal `gh` never opens a browser itself; it only
+ * prints these two lines, e.g.:
+ *
+ *     ! One-time code (ABCD-1234) copied to clipboard
+ *     Open this URL to continue in your web browser: https://github.com/login/device
+ *
+ * Older builds print "First copy your one-time code: ABCD-1234" instead.
+ */
+export function parseGhDevicePrompt(output: string): GhDevicePrompt | null {
+  const text = output.replace(ANSI_ESCAPE, '')
+  const userCode = text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/)?.[1]
+  if (!userCode) return null
+  const verificationUri = text.match(/https?:\/\/[^\s"'<>]+\/login\/device/)?.[0]
+  return { userCode, verificationUri: verificationUri ?? DEFAULT_DEVICE_URL }
+}
+
+/** Last non-empty line of `gh` output that isn't the prompt itself, for error messages. */
+function lastLine(output: string): string {
+  const lines = output
+    .replace(ANSI_ESCAPE, '')
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l && !/one-time code|\/login\/device/i.test(l))
+  return lines[lines.length - 1] ?? ''
+}
+
 /**
  * Start `gh auth login --web` and wait for the user to finish in the browser.
+ *
+ * `gh` runs without a terminal here, so it neither opens the browser nor
+ * shows the one-time code anywhere the user can see; `prompt` hands both to
+ * the caller, whose job it is to put them in front of the user.
  *
  * Returns a cancel handle rather than a bare promise: a promise race cannot
  * stop a child process, so timing out without this leaves `gh` running
@@ -146,6 +193,11 @@ export interface GhWebLogin {
 export function runGhWebLogin(): GhWebLogin {
   let child: ChildProcess | null = null
   let settled = false
+  let output = ''
+  let resolvePrompt: (prompt: GhDevicePrompt | null) => void = () => {}
+  const prompt = new Promise<GhDevicePrompt | null>(resolve => {
+    resolvePrompt = resolve
+  })
 
   const done = new Promise<void>((resolve, reject) => {
     child = spawn(
@@ -163,21 +215,39 @@ export function runGhWebLogin(): GhWebLogin {
       ],
       {
         env: { ...process.env, GH_PROMPT_DISABLED: '1' },
-        stdio: 'ignore',
+        stdio: ['ignore', 'pipe', 'pipe'],
       },
     )
+    const onOutput = (chunk: Buffer | string) => {
+      // The prompt arrives in the first few lines; cap what we keep so a
+      // chatty `gh` cannot grow this for the full five-minute window.
+      if (output.length < 16_384) output += chunk.toString()
+      const parsed = parseGhDevicePrompt(output)
+      if (parsed) resolvePrompt(parsed)
+    }
+    child.stdout?.on('data', onOutput)
+    child.stderr?.on('data', onOutput)
     child.on('error', err => {
       settled = true
+      resolvePrompt(null)
       reject(err)
     })
     child.on('exit', code => {
       settled = true
-      if (code === 0) resolve()
-      else reject(new Error(`GitHub CLI sign-in did not complete (exit ${code ?? 'unknown'}).`))
+      resolvePrompt(null)
+      if (code === 0) {
+        resolve()
+        return
+      }
+      const detail = lastLine(output)
+      reject(new Error(
+        `GitHub CLI sign-in did not complete (exit ${code ?? 'unknown'})${detail ? `: ${detail}` : '.'}`,
+      ))
     })
   })
 
   return {
+    prompt,
     done,
     cancel: () => {
       if (settled || !child) return
@@ -190,23 +260,25 @@ export function runGhWebLogin(): GhWebLogin {
   }
 }
 
-export async function waitForGhWebLogin(timeoutMs = GH_LOGIN_TIMEOUT_MS): Promise<void> {
+/**
+ * Start a browser sign-in bounded by `timeoutMs`. `prompt` is available as
+ * soon as `gh` prints it; `done` settles when the user finishes, `gh`
+ * fails, or the timeout kills it.
+ */
+export function startGhWebLogin(timeoutMs = GH_LOGIN_TIMEOUT_MS): GhWebLogin {
   const login = runGhWebLogin()
   let timer: NodeJS.Timeout | undefined
-  try {
-    await Promise.race([
-      login.done,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          login.cancel()
-          reject(new Error('GitHub sign-in timed out. Try again.'))
-        }, timeoutMs)
-      }),
-    ])
-  } finally {
+  const done = new Promise<void>((resolve, reject) => {
+    timer = setTimeout(() => {
+      login.cancel()
+      reject(new Error('GitHub sign-in timed out. Try again.'))
+    }, timeoutMs)
+    login.done.then(resolve, reject)
+  }).finally(() => {
     if (timer) clearTimeout(timer)
-    // Nothing is waiting on `done` after a timeout; swallow its rejection so
-    // the kill doesn't surface as an unhandled rejection.
-    login.done.catch(() => {})
-  }
+  })
+  // Nothing is waiting on the inner `done` after a timeout; swallow its
+  // rejection so the kill doesn't surface as an unhandled rejection.
+  login.done.catch(() => {})
+  return { prompt: login.prompt, done, cancel: login.cancel }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { KeyRound } from 'lucide-react'
+import { Check, Copy, KeyRound } from 'lucide-react'
 import { Button } from '../ui/button'
 import Field from '../forms/field'
 import SecretInput from '../settings/SecretInput'
@@ -353,6 +353,29 @@ function FormAuthMethod({
   )
 }
 
+function CopyCodeButton({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 2000)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      className="h-7 px-2"
+      onClick={() => {
+        void navigator.clipboard?.writeText(code).then(() => setCopied(true), () => {})
+      }}
+    >
+      {copied ? <Check /> : <Copy />}
+      {copied ? 'Copied' : 'Copy code'}
+    </Button>
+  )
+}
+
 function OAuthAuthMethod({
   method,
   draftConfig,
@@ -566,23 +589,31 @@ function OAuthAuthMethod({
           />
         </Field>
       ) : null}
-      {oauth.state === 'pending' && oauth.userCode ? (
+      {oauth.state === 'pending' && (oauth.userCode || oauth.message) ? (
         <SettingsNotice tone="accent">
-          Enter code{' '}
-          <span className="font-mono font-semibold text-fg">{oauth.userCode}</span> at{' '}
-          {oauth.authorizeUrl ? (
-            <a
-              href={oauth.authorizeUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent-300 underline underline-offset-2"
-            >
-              {oauth.authorizeUrl}
-            </a>
-          ) : (
-            'the verification page'
-          )}
-          .
+          {oauth.userCode ? (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>
+                Enter code{' '}
+                <span className="font-mono font-semibold text-fg">{oauth.userCode}</span> at{' '}
+                {oauth.authorizeUrl ? (
+                  <a
+                    href={oauth.authorizeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent-300 underline underline-offset-2"
+                  >
+                    {oauth.authorizeUrl}
+                  </a>
+                ) : (
+                  'the verification page'
+                )}
+                .
+              </span>
+              <CopyCodeButton code={oauth.userCode} />
+            </div>
+          ) : null}
+          {oauth.message ? <p className={oauth.userCode ? 'mt-1' : undefined}>{oauth.message}</p> : null}
         </SettingsNotice>
       ) : null}
       {displayError ? (

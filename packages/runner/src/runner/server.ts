@@ -38,6 +38,7 @@ import { z } from 'zod'
 import { createJobInput, type CreateJobRequest } from '../jobs/creation'
 import { ensureReviewEngine, getReviewRuntime, syncReviewEngine } from '../reviews/engine'
 import { parsePrUrl } from '../reviews/id'
+import { describePrReadError } from '../reviews/pr-read-error'
 import type { ScmPluginRuntime } from '../plugins/types'
 import { resolvePrimaryRepoCheckout } from '../jobs/workspace-layout'
 import { computeJobDiff, emptyJobDiff, resolveDiffBase } from '../jobs/job-diff'
@@ -407,10 +408,11 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     const existing = loadLocalConfig() ?? ({} as LocalConfig)
     saveLocalConfig({ ...existing, ...patch } as LocalConfig)
   }
+  /** Returns whether the plugin's config actually changed. */
   const pluginSavePluginConfig = (
     pluginId: string,
     configPatch: Record<string, unknown>,
-  ): void => {
+  ): boolean => {
     const existing = loadLocalConfig() ?? ({} as LocalConfig)
     const existingPlugins = existing.plugins ?? { installed: {} }
     const existingInstalled = existingPlugins.installed ?? {}
@@ -421,6 +423,8 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
       enabled: existingEntry.enabled ?? true,
       config: { ...existingConfig, ...configPatch },
     }
+    const changed =
+      !existingInstalled[pluginId] || JSON.stringify(nextEntry.config) !== JSON.stringify(existingConfig)
     // Auto-elect this plugin as the default LLM provider when it is an
     // executor and the user has not yet picked one. Mirrors the
     // first-run wizard so claude-login produces a usable default in
@@ -439,6 +443,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         installed: { ...existingInstalled, [pluginId]: nextEntry },
       },
     } as LocalConfig)
+    return changed
   }
 
   // ── Hot reload of in-memory runner state ────────────────────────────────
@@ -455,7 +460,13 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
         app,
         logger,
         saveLocalConfig: pluginSaveLocalConfig,
-        savePluginConfig: pluginSavePluginConfig,
+        savePluginConfig: async (pluginId, configPatch) => {
+          // A plugin's own sign-in route (e.g. GitHub's browser sign-in)
+          // rotates credentials here. Without a reload the running plugin
+          // keeps its old client, so the new account only takes effect after
+          // a restart.
+          if (pluginSavePluginConfig(pluginId, configPatch)) await reloadInMemoryState()
+        },
         redactSecret,
       })
     } catch (err) {
@@ -1632,7 +1643,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
           baseSha: details.baseSha,
         }
       } catch (err) {
-        throw new ReviewHttpError(400, `Could not read ${ref.url}: ${(err as Error).message}`)
+        throw new ReviewHttpError(400, describePrReadError(err, ref, scm.manifest.displayName ?? ref.pluginId))
       }
     }
     const review = await runtime.coordinator.ingest({

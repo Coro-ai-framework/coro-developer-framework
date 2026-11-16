@@ -1,10 +1,29 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { AddressInfo } from 'node:net'
 import pino from 'pino'
+
+const configStore = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }))
+const reloadRunnerState = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ updated: [], added: [], failed: [] }),
+)
+
+vi.mock('../../src/config/local-config', async importActual => ({
+  ...(await importActual<typeof import('../../src/config/local-config')>()),
+  loadLocalConfig: () => configStore.current,
+  saveLocalConfig: (next: Record<string, unknown>) => {
+    configStore.current = next
+  },
+}))
+vi.mock('../../src/runner/config-reload', async importActual => ({
+  ...(await importActual<typeof import('../../src/runner/config-reload')>()),
+  reloadRunnerState,
+}))
+
 import { createRunnerServer } from '../../src/runner/server'
 import type { PluginRegistry } from '../../src/plugins/registry'
 import type { PluginRuntime } from '../../src/plugins/types'
-import type { PluginManifest } from '@coro-ai/plugin-sdk'
+import type { RunnerContext } from '../../src/jobs/runner'
+import type { PluginHttpRoutesContext, PluginManifest } from '@coro-ai/plugin-sdk'
 
 // The /system/reveal handler reads ~/.coro/config.json on construction-
 // adjacent paths; we don't hit that endpoint here. Other routes also
@@ -39,6 +58,7 @@ function makeRegistry(
   return {
     all: () => plugins,
     allSetupOnly: () => setupOnly,
+    byId: (id: string) => [...plugins, ...setupOnly].find(p => p.manifest.id === id),
   } as unknown as PluginRegistry
 }
 
@@ -62,12 +82,14 @@ describe('createRunnerServer plugin HTTP route registration', () => {
   async function startWithPlugins(
     plugins: PluginRuntime[],
     setupOnly: PluginRuntime[] = [],
+    extra: { runnerCtx?: RunnerContext } = {},
   ) {
     // createRunnerServer already calls server.listen(port) internally;
     // we wait for the `listening` event before reading the bound port.
     const server = createRunnerServer({
       ...baseOpts,
       plugins: makeRegistry(plugins, setupOnly),
+      ...extra,
     })
     if (!server.listening) {
       await new Promise<void>(resolve => server.once('listening', () => resolve()))
@@ -135,5 +157,31 @@ describe('createRunnerServer plugin HTTP route registration', () => {
     )
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ state: 'idle' })
+  })
+
+  // A plugin's own sign-in route rotates its credentials through
+  // savePluginConfig. Without a reload the running plugin kept the old
+  // client, so "Sign in with GitHub" showed the new account while reviews
+  // still read pull requests as the old one until a restart.
+  it('reloads plugins when a route changes its saved config, and only then', async () => {
+    configStore.current = {
+      plugins: { installed: { 'signin-plugin': { enabled: true, config: { owner: 'old', token: 't1' } } } },
+    }
+    reloadRunnerState.mockClear()
+    let routeCtx!: PluginHttpRoutesContext
+    const plugin = makePlugin('signin-plugin', ctx => {
+      routeCtx = ctx
+    })
+    const runnerCtx = { plugins: makeRegistry([plugin]) } as unknown as RunnerContext
+    await startWithPlugins([plugin], [], { runnerCtx })
+
+    await routeCtx.savePluginConfig('signin-plugin', { owner: 'old', token: 't1' })
+    expect(reloadRunnerState).not.toHaveBeenCalled()
+
+    await routeCtx.savePluginConfig('signin-plugin', { owner: 'new', token: 't2' })
+    expect(reloadRunnerState).toHaveBeenCalledTimes(1)
+    expect(configStore.current).toMatchObject({
+      plugins: { installed: { 'signin-plugin': { config: { owner: 'new', token: 't2' } } } },
+    })
   })
 })

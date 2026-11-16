@@ -8,19 +8,36 @@ import type { Request, Response } from 'express'
 import type { PluginHttpRoutesContext, PluginOAuthStatus } from '@coro-ai/plugin-sdk'
 import {
   ghCommandExists,
+  startGhWebLogin,
   tryGhAuthToken,
   validateGithubToken,
-  waitForGhWebLogin,
+  type GhDevicePrompt,
 } from './gh-session'
 
 type FlowState =
   | { state: 'idle' }
-  | { state: 'pending' }
+  | { state: 'pending'; prompt?: GhDevicePrompt }
   | { state: 'success'; account?: { label: string } }
   | { state: 'error'; message: string }
 
 const flows = new Map<string, FlowState>()
 const loginPromises = new Map<string, Promise<void>>()
+
+/**
+ * How long `start` holds its response for `gh` to print the one-time code.
+ * The dashboard opens the verification page from that response, and browsers
+ * only allow that shortly after the click, so it is kept well inside that
+ * window. A slower `gh` still reaches the user through the status poll.
+ */
+const PROMPT_WAIT_MS = 4_000
+
+/**
+ * Device flow authorises whoever is signed in to the browser, which is the
+ * mistake this sign-in exists to get out of: a personal account answering for
+ * a work one.
+ */
+const ACCOUNT_HINT =
+  'GitHub connects the account signed in to that browser. To use a different account, switch accounts on github.com before you enter the code.'
 
 /**
  * How long a confirmed session is trusted before the next status poll
@@ -44,6 +61,41 @@ function flowFor(pluginId: string): FlowState {
   return flows.get(pluginId) ?? { state: 'idle' }
 }
 
+function pendingStatus(flow: Extract<FlowState, { state: 'pending' }>): PluginOAuthStatus {
+  return {
+    state: 'pending',
+    ...(flow.prompt
+      ? { userCode: flow.prompt.userCode, authorizeUrl: flow.prompt.verificationUri }
+      : {}),
+    message: ACCOUNT_HINT,
+  }
+}
+
+function statusOf(flow: FlowState): PluginOAuthStatus {
+  switch (flow.state) {
+    case 'pending':
+      return pendingStatus(flow)
+    case 'success':
+      return { state: 'success', ...(flow.account ? { account: flow.account } : {}) }
+    case 'error':
+      return { state: 'error', message: flow.message }
+    default:
+      return { state: 'idle' }
+  }
+}
+
+function withinMs<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined
+  return Promise.race([
+    promise,
+    new Promise<null>(resolve => {
+      timer = setTimeout(() => resolve(null), ms)
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
 const GH_INSTALL_HINT =
   'Install the GitHub CLI (https://cli.github.com) to sign in with your browser, or switch to a personal access token.'
 
@@ -60,7 +112,7 @@ async function persistGhSession(
   if (!token) return null
   const account = await validateGithubToken(globalThis.fetch, token)
   if (!account) return null
-  ctx.savePluginConfig(pluginId, {
+  await ctx.savePluginConfig(pluginId, {
     [ownerConfigKey]: account.login,
     token,
   })
@@ -121,13 +173,10 @@ export function registerGitHubOAuthRoutes(
       return
     }
     if (flow.state === 'pending') {
-      const login = await persistGhSession(ctx, pluginId, ownerConfigKey)
-      if (login) {
-        flows.set(pluginId, { state: 'success', account: { label: login } })
-        res.json({ state: 'success', account: { label: login } } satisfies PluginOAuthStatus)
-        return
-      }
-      res.json({ state: 'pending' } satisfies PluginOAuthStatus)
+      // Success is decided by the login itself finishing, not by peeking at
+      // `gh`: when `gh` is already signed in to another account, that peek
+      // would "succeed" with it before the user has entered the code.
+      res.json(pendingStatus(flow))
       return
     }
     if (flow.state === 'error') {
@@ -137,13 +186,19 @@ export function registerGitHubOAuthRoutes(
     res.json(await idleStatus(ctx, pluginId, ownerConfigKey))
   }) as never)
 
-  app.post(`${base}/start`, (async (_req: Request, res: Response) => {
+  app.post(`${base}/start`, (async (req: Request, res: Response) => {
     try {
-      const existing = await persistGhSession(ctx, pluginId, ownerConfigKey)
-      if (existing) {
-        flows.set(pluginId, { state: 'success', account: { label: existing } })
-        res.json({ state: 'success', account: { label: existing } } satisfies PluginOAuthStatus)
-        return
+      // `force` is the dashboard's Reconnect: the user is asking for a
+      // different account, so reusing the current `gh` session would hand
+      // back the very account they are trying to replace.
+      const force = (req.body as { force?: unknown } | undefined)?.force === true
+      if (!force) {
+        const existing = await persistGhSession(ctx, pluginId, ownerConfigKey)
+        if (existing) {
+          flows.set(pluginId, { state: 'success', account: { label: existing } })
+          res.json({ state: 'success', account: { label: existing } } satisfies PluginOAuthStatus)
+          return
+        }
       }
 
       const ghInstalled = await ghCommandExists()
@@ -160,18 +215,27 @@ export function registerGitHubOAuthRoutes(
         return
       }
 
-      flows.set(pluginId, { state: 'pending' })
-      res.json({ state: 'pending' } satisfies PluginOAuthStatus)
+      const inFlight = flowFor(pluginId)
+      if (loginPromises.has(pluginId) && inFlight.state === 'pending') {
+        res.json(pendingStatus(inFlight))
+        return
+      }
 
-      if (loginPromises.has(pluginId)) return
+      flows.set(pluginId, { state: 'pending' })
+      const login = startGhWebLogin()
+      void login.prompt.then(prompt => {
+        if (prompt && flowFor(pluginId).state === 'pending') {
+          flows.set(pluginId, { state: 'pending', prompt })
+        }
+      })
       const loginPromise = (async () => {
         try {
-          await waitForGhWebLogin()
-          const login = await persistGhSession(ctx, pluginId, ownerConfigKey)
-          if (!login) {
+          await login.done
+          const account = await persistGhSession(ctx, pluginId, ownerConfigKey)
+          if (!account) {
             throw new Error('GitHub sign-in finished but no token was found. Try again.')
           }
-          flows.set(pluginId, { state: 'success', account: { label: login } })
+          flows.set(pluginId, { state: 'success', account: { label: account } })
         } catch (err) {
           logger.warn({ err, pluginId }, 'github gh web login failed')
           flows.set(pluginId, {
@@ -183,6 +247,9 @@ export function registerGitHubOAuthRoutes(
         }
       })()
       loginPromises.set(pluginId, loginPromise)
+
+      await withinMs(login.prompt, PROMPT_WAIT_MS)
+      res.json(statusOf(flowFor(pluginId)))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       flows.set(pluginId, { state: 'error', message })
