@@ -30,7 +30,7 @@ import {
 } from '../lib/intake-investigation'
 import { parseReadiness, type Readiness } from '../lib/intake-readiness'
 import { recoverIntakeReply } from '../lib/recover-intake-reply'
-import { parseRun } from '../lib/intake-run'
+import { inspectRun } from '../lib/intake-run'
 import { withReviewCard } from '../lib/intake-review'
 import { runIntakeStream, toIntakeMessages } from '../lib/intake-stream'
 import { mintSessionId } from '../lib/new-run-draft'
@@ -869,11 +869,25 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
         }
 
         if (!committed) return next
-        const parsed = parseRun(
+        const inspected = inspectRun(
           committed,
           workflowsRef.current.map(w => w.workflowPath),
         )
-        if (!parsed) return next
+        if (!inspected) return next
+        if (!inspected.ok) {
+          // The reply already tells the developer to look below for the run,
+          // so a rejected block must say so rather than leave nothing there.
+          return [
+            ...next,
+            {
+              kind: 'notice',
+              id: nextId('notice'),
+              tone: 'warning',
+              text: `Couldn't show the run: ${inspected.reason}. Ask again, or use "Generate run".`,
+            },
+          ]
+        }
+        const parsed = inspected.run
 
         // The whole point of the investigation is that a run arrives when the
         // work is understood. An unrequested run emitted mid-investigation is

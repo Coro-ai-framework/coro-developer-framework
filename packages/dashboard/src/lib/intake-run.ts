@@ -1,3 +1,5 @@
+import { resolveKnownWorkflowPath } from './workflow-paths'
+
 export interface RunDraft {
   repo: string
   serviceName: string
@@ -98,7 +100,20 @@ export function runTicketParams(run: Pick<RunDraft, 'trackerRef' | 'ticketing'>)
   }
 }
 
+export type RunParseResult =
+  | { ok: true; run: RunDraft }
+  | { ok: false; reason: string }
+
 export function parseRun(assistantMessage: string, knownWorkflowPaths: string[]): RunDraft | null {
+  const result = inspectRun(assistantMessage, knownWorkflowPaths)
+  return result?.ok ? result.run : null
+}
+
+/**
+ * Like {@link parseRun}, but says why a `<run>` block was rejected. Null when
+ * the message has no run block at all.
+ */
+export function inspectRun(assistantMessage: string, knownWorkflowPaths: string[]): RunParseResult | null {
   const match = assistantMessage.match(/<run>\s*([\s\S]*?)\s*<\/run>/i)
   if (!match?.[1]) return null
 
@@ -106,20 +121,29 @@ export function parseRun(assistantMessage: string, knownWorkflowPaths: string[])
   try {
     parsed = JSON.parse(match[1].trim())
   } catch {
-    return null
+    return { ok: false, reason: 'the run block is not valid JSON' }
   }
 
-  if (!parsed || typeof parsed !== 'object') return null
+  if (!parsed || typeof parsed !== 'object') return { ok: false, reason: 'the run block is not a JSON object' }
   const obj = parsed as Record<string, unknown>
 
   const repo = typeof obj.repo === 'string' ? obj.repo.trim() : ''
   const serviceName = typeof obj.serviceName === 'string' ? obj.serviceName.trim() : ''
   const description = typeof obj.description === 'string' ? obj.description.trim() : ''
-  const workflowPath = typeof obj.workflowPath === 'string' ? obj.workflowPath.trim() : ''
+  const rawWorkflowPath = typeof obj.workflowPath === 'string' ? obj.workflowPath.trim() : ''
   const interactive = obj.interactive !== false
 
-  if (!repo || description.length < 20) return null
-  if (!knownWorkflowPaths.includes(workflowPath)) return null
+  if (!repo) return { ok: false, reason: 'it names no repository' }
+  if (description.length < 20) return { ok: false, reason: 'its description is too short' }
+  const workflowPath = resolveKnownWorkflowPath(rawWorkflowPath, knownWorkflowPaths)
+  if (!workflowPath) {
+    return {
+      ok: false,
+      reason: rawWorkflowPath
+        ? `workflow "${rawWorkflowPath}" is not one this runner knows`
+        : 'it names no workflow',
+    }
+  }
 
   let reviewers = ''
   if (Array.isArray(obj.reviewers)) {
@@ -134,13 +158,16 @@ export function parseRun(assistantMessage: string, knownWorkflowPaths: string[])
   const ticketing = parseTicketing(obj.ticketing)
 
   return {
-    repo,
-    serviceName: serviceName || repo.split('/').pop() || repo,
-    description,
-    reviewers,
-    workflowPath,
-    interactive,
-    ...(trackerRef ? { trackerRef } : {}),
-    ...(ticketing ? { ticketing } : {}),
+    ok: true,
+    run: {
+      repo,
+      serviceName: serviceName || repo.split('/').pop() || repo,
+      description,
+      reviewers,
+      workflowPath,
+      interactive,
+      ...(trackerRef ? { trackerRef } : {}),
+      ...(ticketing ? { ticketing } : {}),
+    },
   }
 }

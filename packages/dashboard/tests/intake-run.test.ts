@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createsSourceTicket,
+  inspectRun,
   parseRun,
   runTicketParams,
   ticketUpdatesOf,
@@ -46,6 +47,24 @@ describe('parseRun ticket fields', () => {
     expect(run).not.toHaveProperty('trackerRef')
     expect(run).not.toHaveProperty('ticketing')
     expect(parseRun(runBlock({ ticketing: ['x'] }), [WORKFLOW])).not.toHaveProperty('ticketing')
+  })
+})
+
+// Plan-mode conversations started before workflows moved to
+// `.claude/commands/coro/` resume a model session whose system prompt still
+// names `workflows/<id>/workflow.md`. Rejecting that silently left the reply
+// saying "check the run below" with nothing below it.
+describe('parseRun workflow paths', () => {
+  it('maps a pre-move workflow path to the current one', () => {
+    expect(parseRun(runBlock({ workflowPath: 'workflows/job/workflow.md' }), [WORKFLOW])?.workflowPath)
+      .toBe(WORKFLOW)
+  })
+
+  it('still rejects a legacy path whose workflow does not exist, and says why', () => {
+    expect(inspectRun(runBlock({ workflowPath: 'workflows/gone/workflow.md' }), [WORKFLOW])).toEqual({
+      ok: false,
+      reason: 'workflow "workflows/gone/workflow.md" is not one this runner knows',
+    })
   })
 })
 

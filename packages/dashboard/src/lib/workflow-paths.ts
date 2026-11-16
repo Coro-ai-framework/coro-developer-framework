@@ -21,3 +21,20 @@ export function workflowSlugFromPath(workflowPath: string): string {
   const last = segments[segments.length - 1] ?? ''
   return last.replace(/\.md$/i, '') || 'workflow'
 }
+
+const LEGACY_WORKFLOW_PATH = /^workflows\/([^/]+)\/workflow\.md$/i
+
+/**
+ * The known workflow a path names, or null. Accepts the pre-move layout
+ * (`workflows/<id>/workflow.md`): a plan-mode conversation started before
+ * workflows moved resumes the same model session, whose system prompt still
+ * teaches the old path, so its runs keep naming it.
+ */
+export function resolveKnownWorkflowPath(workflowPath: string, knownWorkflowPaths: string[]): string | null {
+  const trimmed = workflowPath.trim()
+  if (knownWorkflowPaths.includes(trimmed)) return trimmed
+  const legacy = trimmed.match(LEGACY_WORKFLOW_PATH)?.[1]
+  if (!legacy) return null
+  const current = workflowPathForSlug(legacy)
+  return knownWorkflowPaths.includes(current) ? current : null
+}
