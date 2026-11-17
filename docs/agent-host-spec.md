@@ -227,7 +227,13 @@ Investigative intake path for the dashboard's plan-mode conversation. Implemente
 - **Budgets:** None on turns or session tokens. Every turn is
   developer-initiated, so there is no autonomous loop to bound; the only
   unattended spend is the per-turn tool loop above. The `done` frame reports
-  `contextTokens` / `sessionTokens` / `turns` for display, never enforcement.
+  `contextTokens` / `contextWindow` / `sessionTokens` / `turns` for display,
+  never enforcement. `contextTokens` is what the executor measured after its
+  final model call (`ChatResult.contextTokens`: full prompt including cached
+  tokens, plus output), not the turn's summed usage — a tool-heavy turn bills
+  every round, and Anthropic reports cached prompt tokens outside
+  `inputTokens`. `contextWindow` comes from the executor's `listModels()`, so
+  the meter has a denominator even when the picker is on the tier default.
 - **Abort behaviour:** Plan-mode streams do **not** wire `AbortSignal` to
   `req.on('close')` — Express 4 on Node 20 fires `close` immediately after
   `express.json()` finishes, which previously aborted every LLM call.
