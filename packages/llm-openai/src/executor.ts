@@ -385,7 +385,11 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           cacheCreationInputTokens: usage.cacheCreationInputTokens + turnUsage.cacheCreationInputTokens,
         }
         const totalCostUsd = calculateOpenAiCostUsd(req.model, usage)
-        yield { type: 'usage', tokens: { ...usage, totalCostUsd } }
+        yield {
+          type: 'usage',
+          tokens: { ...usage, totalCostUsd },
+          contextTokens: openAiCallContextTokens(turnUsage),
+        }
 
         if (toolCalls.length === 0) {
           stopReason = response.incomplete_details?.reason ?? response.status ?? 'end_turn'
@@ -546,9 +550,11 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     const output = extractOutputText(response)
     if (output) req.onText?.(output)
     history.push({ role: 'assistant', content: output })
+    const usage = normalizeUsage(response.usage)
     return {
       output,
-      usage: normalizeUsage(response.usage),
+      usage,
+      contextTokens: openAiCallContextTokens(usage),
       toolCalls: [],
       sessionState: {
         conversationHistory: mergeConversationHistory(req.sessionState?.conversationHistory, history),
@@ -563,6 +569,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
     const maxRounds = req.maxToolRounds ?? 5
     const toolCalls: ChatToolCallRecord[] = []
     let usage = emptyNormalizedUsage()
+    let contextTokens: number | undefined
     let output = ''
 
     let bridge: McpFunctionBridge | null = null
@@ -640,6 +647,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
           cacheReadInputTokens: usage.cacheReadInputTokens + turnUsage.cacheReadInputTokens,
           cacheCreationInputTokens: usage.cacheCreationInputTokens + turnUsage.cacheCreationInputTokens,
         }
+        contextTokens = openAiCallContextTokens(turnUsage)
 
         const functionCalls = extractFunctionCalls(outputItems)
         history.push({
@@ -728,6 +736,7 @@ export class OpenAiExecutor implements PhaseExecutorRuntime<OpenAiAuthConfig> {
       return {
         output: output.trim(),
         usage,
+        ...(contextTokens !== undefined ? { contextTokens } : {}),
         toolCalls,
         sessionState: {
           conversationHistory: mergeConversationHistory(
@@ -898,6 +907,15 @@ function normalizeUsage(usage: OpenAiResponseUsage | undefined): NormalizedToken
     cacheReadInputTokens: Number(usage?.input_tokens_details?.cached_tokens ?? 0),
     cacheCreationInputTokens: 0,
   }
+}
+
+/**
+ * Context occupied after one Responses API call. OpenAI's `input_tokens`
+ * already includes `cached_tokens`, so adding the cache bucket would
+ * double-count it.
+ */
+function openAiCallContextTokens(usage: NormalizedTokenUsage): number {
+  return usage.inputTokens + usage.outputTokens
 }
 
 function safeJson(json: string): unknown {

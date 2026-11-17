@@ -1,4 +1,4 @@
-import type { ChatRequest, ChatResult } from '@coro-ai/plugin-sdk'
+import type { ChatRequest, ChatResult, ExecutorModelDescriptor, PhaseExecutorRuntime } from '@coro-ai/plugin-sdk'
 import { createSdkMcpServer, emptyNormalizedUsage, RateLimitExceededError } from '@coro-ai/plugin-sdk'
 import type { PhaseExecutionRequest } from '@coro-ai/plugin-sdk'
 import type { Logger } from 'pino'
@@ -84,7 +84,11 @@ export interface RunIntakeOptions {
   runControl?: RunControl
 }
 
-function resolveIntakeAssignment(options: RunIntakeOptions): { model: string; provider?: string } {
+function resolveIntakeAssignment(options: {
+  model?: string
+  provider?: string
+  settings: Settings
+}): { model: string; provider?: string } {
   const explicitModel = options.model?.trim()
   if (explicitModel) {
     return {
@@ -93,6 +97,42 @@ function resolveIntakeAssignment(options: RunIntakeOptions): { model: string; pr
     }
   }
   return { model: selectModel({ tier: 'planning' }, options.settings) }
+}
+
+/** Context window of `model` from the executor's own catalogue, if it lists one. */
+function catalogueContextWindow(executor: PhaseExecutorRuntime, model: string): number | undefined {
+  let models: ReadonlyArray<ExecutorModelDescriptor>
+  try {
+    models = executor.listModels?.() ?? []
+  } catch {
+    return undefined
+  }
+  // Same matching rule as `supportsFromCatalogue`: exact id or a dated snapshot of one.
+  const match = models.find(m => m.id === model) ?? models.find(m => model.startsWith(`${m.id}-`))
+  return match?.contextTokens
+}
+
+/**
+ * Context window of the model a plan-mode turn runs on. With no explicit
+ * pick the runner falls back to the planning-tier alias, which the
+ * dashboard cannot resolve on its own — so the meter's denominator has to
+ * come from here. `undefined` when the executor does not catalogue the model.
+ */
+export function resolveIntakeContextWindow(
+  registry: PluginRegistry,
+  settings: Settings,
+  choice?: { provider?: string; model?: string },
+): number | undefined {
+  const assignment = resolveIntakeAssignment({ ...choice, settings })
+  try {
+    const executor = registry.resolveExecutor({
+      model: assignment.model,
+      ...(assignment.provider ? { provider: assignment.provider } : {}),
+    })
+    return catalogueContextWindow(executor, assignment.model)
+  } catch {
+    return undefined
+  }
 }
 
 function intakeToolsEnabled(settings: Settings): boolean {
@@ -287,6 +327,7 @@ async function* executeIntakeTurn(
   const liveSession = getIntakeSession(options.sessionId)
   const workRoot = ensureIntakeWorkRoot(options.sessionId)
   const model = assignment.model
+  const contextWindow = catalogueContextWindow(executor, model)
   const cwd = resolveWorkingDir(null)
   const intelligenceDir = resolveIntelligenceDir(null)
   const events = createIntakeEventQueue()
@@ -574,6 +615,7 @@ async function* executeIntakeTurn(
         assistant: trimmed,
         evidence,
         usage: result.usage,
+        ...(result.contextTokens !== undefined ? { contextTokens: result.contextTokens } : {}),
         extraBilledTokens: subagentTokens,
       })
       persistIntakeExecutorSession(options.sessionId, result.sessionState)
@@ -595,6 +637,7 @@ async function* executeIntakeTurn(
           totalTokens: tokens + subagentTokens,
         },
         contextTokens: updated.contextTokens,
+        ...(contextWindow ? { contextWindow } : {}),
         sessionTokens: updated.tokens,
         turns: updated.turns.length,
       }
@@ -638,6 +681,7 @@ async function* executeIntakeTurn(
           totalTokens: tokens,
         },
         contextTokens: updated.contextTokens,
+        ...(contextWindow ? { contextWindow } : {}),
         sessionTokens: updated.tokens,
         turns: updated.turns.length,
       }
@@ -659,8 +703,8 @@ async function* executeIntakeTurn(
       signal: options.signal,
     }
 
-    let inputTokens = 0
-    let outputTokens = 0
+    let usage = emptyNormalizedUsage()
+    let contextTokens: number | undefined
     let assistantText = ''
 
     for await (const event of executor.executePhase(req)) {
@@ -670,17 +714,19 @@ async function* executeIntakeTurn(
       } else if (event.type === 'thinking' && event.content) {
         yield { type: 'thinking', text: event.content }
       } else if (event.type === 'usage') {
-        inputTokens = event.tokens.inputTokens
-        outputTokens = event.tokens.outputTokens
+        usage = event.tokens
+        if (event.contextTokens !== undefined) contextTokens = event.contextTokens
       }
     }
 
+    const { inputTokens, outputTokens } = usage
     const totalTokens = inputTokens + outputTokens
     const updated = recordIntakeTurn(options.sessionId, {
       user: userMessage,
       assistant: assistantText.trim(),
       evidence: [],
-      usage: { inputTokens, outputTokens },
+      usage,
+      ...(contextTokens !== undefined ? { contextTokens } : {}),
     })
     await persistTurn(options)
 
@@ -688,6 +734,7 @@ async function* executeIntakeTurn(
       type: 'done',
       usage: { inputTokens, outputTokens, totalTokens },
       contextTokens: updated.contextTokens,
+      ...(contextWindow ? { contextWindow } : {}),
       sessionTokens: updated.tokens,
       turns: updated.turns.length,
     }

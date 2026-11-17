@@ -461,9 +461,11 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     const output = extractAnthropicText(data.content ?? [])
     if (output) req.onText?.(output)
 
+    const usage = normalizeAnthropicUsage(data.usage)
     return {
       output,
-      usage: normalizeAnthropicUsage(data.usage),
+      usage,
+      contextTokens: anthropicCallContextTokens(usage),
       toolCalls: [],
     }
   }
@@ -477,6 +479,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     const runTool = req.runTool!
     const toolCalls: ChatToolCallRecord[] = []
     let usage = emptyNormalizedUsage()
+    let contextTokens: number | undefined
 
     type AnthropicMessage = { role: 'user' | 'assistant'; content: unknown }
     const messages: AnthropicMessage[] = req.messages.map(m => ({
@@ -503,7 +506,9 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       if (req.systemPrompt) body.system = req.systemPrompt
 
       const data = await this.postAnthropicMessages(headers, body, req)
-      usage = addUsage(usage, normalizeAnthropicUsage(data.usage))
+      const roundUsage = normalizeAnthropicUsage(data.usage)
+      usage = addUsage(usage, roundUsage)
+      contextTokens = anthropicCallContextTokens(roundUsage)
 
       const content = data.content ?? []
       const stopReason = data.stop_reason ?? 'end_turn'
@@ -565,7 +570,12 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
       messages.push({ role: 'user', content: toolResults })
     }
 
-    return { output: output.trim(), usage, toolCalls }
+    return {
+      output: output.trim(),
+      usage,
+      ...(contextTokens !== undefined ? { contextTokens } : {}),
+      toolCalls,
+    }
   }
 
   private async postAnthropicMessages(
@@ -1009,6 +1019,10 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
     let phaseTurns = 0
     let resultModelUsage: Record<string, NormalizedTokensMutable> | undefined
     let totalCostUsd: number | undefined
+    // Size of the main session's context after its latest model call.
+    // Subagent messages (non-null parent_tool_use_id) run in their own
+    // context and must not overwrite it.
+    let contextTokens: number | undefined
 
     const queryStream = query({
       prompt: pushable.iterable,
@@ -1300,7 +1314,16 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             cumulative.cacheReadInputTokens += Number(turnUsage['cache_read_input_tokens'] ?? 0)
             cumulative.cacheCreationInputTokens += Number(turnUsage['cache_creation_input_tokens'] ?? 0)
             phaseTurns++
-            yield { type: 'usage', tokens: { ...cumulative } }
+            if (message['parent_tool_use_id'] == null) {
+              contextTokens = anthropicCallContextTokens(
+                normalizeAnthropicUsage(turnUsage as Parameters<typeof normalizeAnthropicUsage>[0]),
+              )
+            }
+            yield {
+              type: 'usage',
+              tokens: { ...cumulative },
+              ...(contextTokens !== undefined ? { contextTokens } : {}),
+            }
           }
           continue
         }
@@ -1446,6 +1469,7 @@ export class AnthropicExecutor implements PhaseExecutorRuntime {
             type: 'usage',
             tokens: { ...cumulative, ...(totalCostUsd !== undefined ? { totalCostUsd } : {}) },
             ...(resultModelUsage ? { modelUsage: resultModelUsage } : {}),
+            ...(contextTokens !== undefined ? { contextTokens } : {}),
           }
 
           // Restore pre-steering-fix phase completion: close when the buffer
@@ -1738,6 +1762,15 @@ function normalizeAnthropicUsage(usage?: {
     cacheReadInputTokens: Number(usage?.cache_read_input_tokens ?? 0),
     cacheCreationInputTokens: Number(usage?.cache_creation_input_tokens ?? 0),
   }
+}
+
+/**
+ * Context occupied after one Messages API call. Anthropic reports
+ * `input_tokens` net of the cached prefix, so the prompt size is the sum
+ * of all three input buckets.
+ */
+export function anthropicCallContextTokens(usage: NormalizedTokenUsage): number {
+  return usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens + usage.outputTokens
 }
 
 function extractAnthropicText(

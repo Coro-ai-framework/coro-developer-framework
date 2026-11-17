@@ -83,6 +83,11 @@ export interface InvestigationRecord {
   turnCount: number
   tokens: number
   contextUsed: number
+  /**
+   * Context window of the conversation's model, resolved by the runner on
+   * read (covers the planning-tier default the picker cannot resolve).
+   */
+  contextWindow?: number
   dispatchedJobId?: string | null
   /** True while the runner is still inside this conversation's turn. */
   streaming?: boolean

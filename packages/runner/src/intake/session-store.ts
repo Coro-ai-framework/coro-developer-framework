@@ -317,7 +317,18 @@ export function recordIntakeTurn(
     user: string
     assistant: string
     evidence: IntakeEvidence[]
-    usage: { inputTokens: number; outputTokens: number }
+    usage: {
+      inputTokens: number
+      outputTokens: number
+      cacheReadInputTokens?: number
+      cacheCreationInputTokens?: number
+    }
+    /**
+     * Context size the executor measured after its final model call
+     * (`ChatResult.contextTokens`). Preferred over anything derived from
+     * `usage`, which is summed across every tool round of the turn.
+     */
+    contextTokens?: number
     /** Tokens billed this turn outside the parent's context (plan-mode subagents). */
     extraBilledTokens?: number
   },
@@ -329,9 +340,27 @@ export function recordIntakeTurn(
     evidence: turn.evidence,
   })
   session.tokens += turn.usage.inputTokens + turn.usage.outputTokens + (turn.extraBilledTokens ?? 0)
-  session.contextTokens = turn.usage.inputTokens + turn.usage.outputTokens
+  session.contextTokens = turn.contextTokens ?? estimateContextTokens(turn.usage)
   session.updatedAt = Date.now()
   return session
+}
+
+/**
+ * Fallback for executors that do not report `contextTokens`. Follows the
+ * SDK's usage convention (cache buckets are disjoint from `inputTokens`) —
+ * leaving them out is what pinned the meter near 0% on prompt-cached
+ * sessions. Exact for a single model call; over-counts a multi-round turn.
+ */
+function estimateContextTokens(usage: {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens?: number
+  cacheCreationInputTokens?: number
+}): number {
+  return usage.inputTokens
+    + (usage.cacheReadInputTokens ?? 0)
+    + (usage.cacheCreationInputTokens ?? 0)
+    + usage.outputTokens
 }
 
 function clamp(text: string, max: number): string {

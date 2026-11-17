@@ -8,6 +8,8 @@ export interface IntakeStreamEvent {
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
   /** Tokens resident in the model's context after this turn. */
   contextTokens?: number
+  /** Context window of the model that ran this turn, when its executor catalogues it. */
+  contextWindow?: number
   /** Cumulative billed tokens across the whole session. */
   sessionTokens?: number
   /** Completed turns in this session, including this one. */

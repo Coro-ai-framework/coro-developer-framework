@@ -22,6 +22,8 @@ export type IntakeEvent =
       type: 'done'
       usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
       contextTokens?: number
+      /** Context window of the model that ran the turn, when the runner knows it. */
+      contextWindow?: number
       sessionTokens?: number
       turns?: number
     }

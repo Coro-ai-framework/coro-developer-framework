@@ -254,6 +254,7 @@ async function runChatPhase(
     cacheCreationInputTokens: 0,
   }
   let sessionId = resumeSessionId
+  let contextTokens: number | undefined
 
   for await (const event of executor.executePhase(phaseReq)) {
     if (event.type === 'session_start' && event.sessionId) {
@@ -267,6 +268,7 @@ async function runChatPhase(
       req.onThinking?.(event.content)
     } else if (event.type === 'usage') {
       usage = event.tokens
+      if (event.contextTokens !== undefined) contextTokens = event.contextTokens
     } else if (event.type === 'tool_call') {
       // In-process coro MCP tools already fire onToolStart from the wrapper
       // in buildChatMcpServer (canonical name `scm_list_files`). The SDK also
@@ -290,6 +292,7 @@ async function runChatPhase(
   return {
     output: textParts.join('').trim(),
     usage,
+    ...(contextTokens !== undefined ? { contextTokens } : {}),
     toolCalls,
     ...(sessionId ? { sessionState: { sessionId } } : {}),
   }

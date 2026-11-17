@@ -172,6 +172,27 @@ describe('recordIntakeTurn', () => {
     expect(session.tokens).toBe(21)
     expect(session.contextTokens).toBe(14)
   })
+
+  it('takes the executor-measured context over anything summed from usage', () => {
+    const session = recordIntakeTurn('s', {
+      user: 'q',
+      assistant: 'a',
+      evidence: [],
+      usage: { inputTokens: 30, outputTokens: 900, cacheReadInputTokens: 120_000, cacheCreationInputTokens: 5_000 },
+      contextTokens: 46_000,
+    })
+    expect(session.contextTokens).toBe(46_000)
+  })
+
+  it('counts cached prompt tokens when the executor does not measure context', () => {
+    const session = recordIntakeTurn('s', {
+      user: 'q',
+      assistant: 'a',
+      evidence: [],
+      usage: { inputTokens: 30, outputTokens: 900, cacheReadInputTokens: 40_000, cacheCreationInputTokens: 2_000 },
+    })
+    expect(session.contextTokens).toBe(42_930)
+  })
 })
 
 describe('hydrateIntakeSession', () => {

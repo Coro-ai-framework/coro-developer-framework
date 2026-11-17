@@ -96,6 +96,12 @@ interface PlanSessionState {
   turnCount: number
   totalTokens: number
   contextUsed: number
+  /**
+   * Context window of the model that last ran, as the runner resolved it.
+   * The composer prefers the picker's model and falls back to this, which
+   * covers the planning-tier default the picker cannot resolve itself.
+   */
+  contextWindow: number | undefined
   readiness: Readiness | null
   modelChoice: { provider: string; model: string }
 }
@@ -148,6 +154,7 @@ interface LiveTurn {
   /** Billed tokens this turn has reported so far. */
   tokens: number
   contextUsed: number
+  contextWindow: number | undefined
   /** Kept so Stop still reaches the turn after a switch away and back. */
   controller: AbortController
 }
@@ -176,6 +183,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const [turnCount, setTurnCount] = useState(0)
   const [totalTokens, setTotalTokens] = useState(0)
   const [contextUsed, setContextUsed] = useState(0)
+  const [contextWindow, setContextWindow] = useState<number | undefined>(undefined)
   const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [modelChoice, setModelChoice] = useState({ provider: '', model: '' })
   const [workflows, setWorkflows] = useState<WorkflowOption[]>([])
@@ -201,6 +209,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   const turnCountRef = useRef(turnCount)
   const tokensRef = useRef(totalTokens)
   const contextUsedRef = useRef(contextUsed)
+  const contextWindowRef = useRef(contextWindow)
   const dispatchedByConversationRef = useRef(dispatchedByConversation)
   const persistChainRef = useRef(Promise.resolve())
   const skipNextPersistRef = useRef(false)
@@ -226,6 +235,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
   turnCountRef.current = turnCount
   tokensRef.current = totalTokens
   contextUsedRef.current = contextUsed
+  contextWindowRef.current = contextWindow
   dispatchedByConversationRef.current = dispatchedByConversation
   const refreshWorklist = useRefreshWorklist()
 
@@ -352,6 +362,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     turnCount: number
     tokens: number
     contextUsed: number
+    contextWindow?: number
     readiness: Readiness | null
     modelChoice?: { provider: string; model: string }
     pendingPermissions?: IntakePermissionRequest[]
@@ -390,6 +401,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setTurnCount(record.turnCount)
     setTotalTokens(record.tokens + (live?.tokens ?? 0))
     setContextUsed(live ? live.contextUsed : record.contextUsed)
+    setContextWindow(live?.contextWindow ?? record.contextWindow)
     setReadiness(recovered?.readiness ?? record.readiness)
     if (record.modelChoice?.model) setModelChoice(record.modelChoice)
     abortRef.current = live?.controller ?? null
@@ -428,6 +440,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
     setTurnCount(0)
     setTotalTokens(0)
     setContextUsed(0)
+    setContextWindow(undefined)
     setReadiness(null)
   }, [])
 
@@ -691,6 +704,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       partialThinking: '',
       tokens: 0,
       contextUsed: contextUsedRef.current,
+      contextWindow: contextWindowRef.current,
       controller,
     }
     liveTurnsRef.current.set(sessionAtStart, live)
@@ -778,6 +792,10 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
             if (event.contextTokens != null) {
               live.contextUsed = event.contextTokens
               if (onScreen()) setContextUsed(event.contextTokens)
+            }
+            if (event.contextWindow != null) {
+              live.contextWindow = event.contextWindow
+              if (onScreen()) setContextWindow(event.contextWindow)
             }
           } else if (event.type === 'error') {
             if (event.reason === 'turn-in-progress') {
@@ -1005,6 +1023,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       turnCount,
       totalTokens,
       contextUsed,
+      contextWindow,
       readiness,
       modelChoice,
       send,
@@ -1042,6 +1061,7 @@ export function PlanSessionProvider({ children }: { children: ReactNode }) {
       turnCount,
       totalTokens,
       contextUsed,
+      contextWindow,
       readiness,
       modelChoice,
       send,

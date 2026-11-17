@@ -5,7 +5,7 @@ import type { PluginRegistry } from '../plugins/registry'
 import type { RunnerContext } from '../jobs/runner'
 import { formatSseFrame } from '../runner/sse'
 import { clampInvestigationListQuery } from '../state/investigation'
-import { runIntakeStream } from './handler'
+import { resolveIntakeContextWindow, runIntakeStream } from './handler'
 import type { RunControl } from './run-control'
 import { persistIntakeSnapshot, persistLiveIntakeSession } from './persist'
 import {
@@ -163,6 +163,7 @@ export function registerIntakeRoutes(
             type: 'done',
             usage: event.usage,
             ...(event.contextTokens != null ? { contextTokens: event.contextTokens } : {}),
+            ...(event.contextWindow != null ? { contextWindow: event.contextWindow } : {}),
             ...(event.sessionTokens != null ? { sessionTokens: event.sessionTokens } : {}),
             ...(event.turns != null ? { turns: event.turns } : {}),
           }))
@@ -235,8 +236,12 @@ export function registerIntakeRoutes(
       })
       ensureIntakeWorkRoot(record.id)
       const live = peekIntakeSession(record.id)
+      const contextWindow = plugins && runnerCtx
+        ? resolveIntakeContextWindow(plugins, runnerCtx.settings, record.modelChoice)
+        : undefined
       res.json({
         ...record,
+        ...(contextWindow ? { contextWindow } : {}),
         streaming: intakeTurnActive(record.id),
         toolAccess: live?.toolAccess ?? record.toolAccess ?? null,
         pendingPermissions: listPendingIntakePermissions(record.id),

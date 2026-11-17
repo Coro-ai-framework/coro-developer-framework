@@ -1166,6 +1166,13 @@ export type PhaseExecutorEvent =
       tokens: NormalizedTokenUsage
       /** Per-model breakdown when the executor multiplexes (aggregators). */
       modelUsage?: Record<string, NormalizedTokenUsage>
+      /**
+       * Tokens resident in the main session's context after the most recent
+       * model call: that call's full prompt (uncached + cache read + cache
+       * write) plus its output. Unlike `tokens`, this is a point-in-time
+       * size rather than a running total; subagent calls are excluded.
+       */
+      contextTokens?: number
     }
   | {
       type: 'done'
@@ -1427,6 +1434,14 @@ export interface ChatResult {
   output: string
   /** Normalized token usage; cost is owned by the runner's accounting. */
   usage: NormalizedTokenUsage
+  /**
+   * Tokens resident in the conversation's context after this turn: the
+   * final model call's full prompt (uncached + cache read + cache write)
+   * plus its output. `usage` cannot stand in for it — it sums every tool
+   * round, and providers disagree on whether cached tokens count as input.
+   * Omit when unknown; the runner then estimates from `usage`.
+   */
+  contextTokens?: number
   /** Tool calls executed during this chat turn (empty when no tools). */
   toolCalls: ReadonlyArray<ChatToolCallRecord>
   /**

@@ -186,6 +186,37 @@ describe('AnthropicExecutor.chat routing', () => {
 
     expect(result.output).toBe('Brief ready.')
   })
+
+  it('reports context from the last top-level call, cache included and subagents excluded', async () => {
+    const assistant = (usage: Record<string, number>, parent: string | null = null) => () => ({
+      value: {
+        type: 'assistant',
+        parent_tool_use_id: parent,
+        message: { content: [{ type: 'text', text: 'Brief ready.' }], usage },
+      },
+      done: false,
+    })
+    querySteps = [
+      successQuerySteps()[0]!,
+      assistant({ input_tokens: 5, cache_creation_input_tokens: 40_000, output_tokens: 300 }),
+      assistant({ input_tokens: 7, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 2_000, output_tokens: 500 }),
+      assistant({ input_tokens: 90_000, output_tokens: 1_000 }, 'toolu_subagent'),
+      successQuerySteps()[2]!,
+    ]
+    const ex = createAnthropicExecutor({
+      settings: makeSettings(),
+      auth: { method: 'claudeLogin' } as ClaudeAuthConfig,
+      logger: silentLogger,
+    })
+
+    const result = await ex.chat({
+      messages: [{ role: 'user', content: 'Trace the login flow' }],
+      model: 'claude-opus-5',
+      signal: new AbortController().signal,
+    })
+
+    expect(result.contextTokens).toBe(7 + 40_000 + 2_000 + 500)
+  })
 })
 
 describe('chatViaAgentSdk live callbacks', () => {

@@ -109,7 +109,11 @@ function ContextMeter({ used, window }: { used: number; window?: number }) {
   if (!window) {
     return <span className="text-[11px] text-fg-subtle">{formatTokens(used)} context</span>
   }
-  const pct = Math.min(100, Math.round((used / window) * 100))
+  const ratio = (used / window) * 100
+  const pct = Math.min(100, Math.round(ratio))
+  // A 1M-token window makes a real investigation read as "0%" for a long
+  // time; say "<1%" rather than claim the context is empty.
+  const label = ratio > 0 && pct === 0 ? '<1%' : `${pct}%`
   return (
     <span
       className="flex items-center gap-1.5 text-[11px] text-fg-subtle"
@@ -124,7 +128,7 @@ function ContextMeter({ used, window }: { used: number; window?: number }) {
           style={{ width: `${Math.max(2, pct)}%` }}
         />
       </span>
-      {pct}% context
+      {label} context
     </span>
   )
 }
@@ -150,8 +154,10 @@ export default function PlanComposer({ blocked = false }: { blocked?: boolean })
   const disabled = blocked || session.busy || session.noLlm
 
   const contextWindow = useMemo(
-    () => findModel(modelsByProvider, session.modelChoice.provider, session.modelChoice.model)?.contextTokens,
-    [modelsByProvider, session.modelChoice],
+    () =>
+      findModel(modelsByProvider, session.modelChoice.provider, session.modelChoice.model)?.contextTokens
+      ?? session.contextWindow,
+    [modelsByProvider, session.modelChoice, session.contextWindow],
   )
 
   const questions = useMemo(() => readinessQuestions(session.readiness), [session.readiness])

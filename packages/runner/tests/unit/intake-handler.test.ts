@@ -228,6 +228,37 @@ describe('runIntakeStream', () => {
     })
   })
 
+  it('reports the executor-measured context and the model’s catalogued window', async () => {
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        listModels: () => [{ id: 'claude-opus-5', displayName: 'Opus', contextTokens: 1_000_000 }],
+        chat: async () => ({
+          output: 'cached answer',
+          usage: { inputTokens: 12, outputTokens: 800, cacheReadInputTokens: 90_000, cacheCreationInputTokens: 3_000 },
+          contextTokens: 47_000,
+          toolCalls: [],
+        }),
+      }),
+    } as unknown as PluginRegistry
+
+    const events = []
+    for await (const event of runIntakeStream({
+      sessionId: 'session-context',
+      message: 'Hello',
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+      model: 'claude-opus-5-20261101',
+      provider: 'anthropic',
+    })) {
+      events.push(event)
+    }
+
+    expect(events.at(-1)).toMatchObject({ type: 'done', contextTokens: 47_000, contextWindow: 1_000_000 })
+  })
+
   it('keeps native file tools off the runner list and can surface a permission prompt', async () => {
     let toolNames: string[] = []
     const registry = {
