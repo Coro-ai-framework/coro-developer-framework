@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import { Link } from 'react-router-dom'
-import { ClipboardList, GitPullRequest, Microscope, Workflow, X, type LucideIcon } from 'lucide-react'
+import { ClipboardList, GitPullRequest, Microscope, Pin, Workflow, X, type LucideIcon } from 'lucide-react'
 import {
   compactAge,
   isRetrospectiveRun,
@@ -50,17 +50,21 @@ export interface WorkRowProps {
   now: number
   onNavigate?: () => void
   onRemoveConversation?: (id: string, title: string) => void
+  pinnedKeys?: ReadonlySet<string>
+  onTogglePin?: (key: string) => void
+  nested?: boolean
 }
 
-function WorkRowImpl({ thread, ancestors, activeKey, unreadKeys, now, onNavigate, onRemoveConversation }: WorkRowProps) {
+function WorkRowImpl({ thread, ancestors, activeKey, unreadKeys, now, onNavigate, onRemoveConversation, pinnedKeys, onTogglePin, nested = false }: WorkRowProps) {
   const { item } = thread
+  ancestors = thread.navigationAncestors ?? ancestors
   const key = itemKey(item)
+  const pinned = pinnedKeys?.has(key) ?? false
   const active = key === activeKey
   const unread = unreadKeys.has(key)
   const meta = itemStatusMeta(item)
   const detail = itemDetail(item)
   const Glyph = glyphFor(item)
-  const nested = ancestors.length > 0
   const removable = item.kind === 'conversation' && Boolean(onRemoveConversation)
   const childAncestors = [...ancestors, item]
 
@@ -74,6 +78,10 @@ function WorkRowImpl({ thread, ancestors, activeKey, unreadKeys, now, onNavigate
           className={cn(
             'relative flex items-start gap-2.5 rounded-lg px-2 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
             active ? 'bg-accent-500/10' : 'hover:bg-overlay/60',
+            removable && onTogglePin
+              ? 'group-hover/row:pr-12 group-focus-within/row:pr-12 [@media(hover:none)]:pr-12'
+              : (removable || onTogglePin) && 'group-hover/row:pr-7 group-focus-within/row:pr-7 [@media(hover:none)]:pr-7',
+            pinned && (removable ? 'pr-12' : 'pr-7'),
           )}
         >
           {active ? <span className="absolute left-0 top-2.5 h-4 w-0.5 rounded-full bg-accent-400" aria-hidden /> : null}
@@ -102,7 +110,8 @@ function WorkRowImpl({ thread, ancestors, activeKey, unreadKeys, now, onNavigate
               <span
                 className={cn(
                   'shrink-0 text-[10.5px] tabular-nums text-fg-subtle',
-                  removable && 'group-hover/row:invisible group-focus-within/row:invisible',
+                  (removable || onTogglePin) && 'group-hover/row:invisible group-focus-within/row:invisible [@media(hover:none)]:invisible',
+                  pinned && 'invisible',
                 )}
               >
                 {compactAge(item.updatedAt, now)}
@@ -119,6 +128,20 @@ function WorkRowImpl({ thread, ancestors, activeKey, unreadKeys, now, onNavigate
             </span>
           </span>
         </Link>
+        {onTogglePin ? <button
+          type="button"
+          onClick={() => onTogglePin(key)}
+          className={cn(
+            'absolute top-1.5 rounded-md p-1 text-fg-subtle transition-opacity hover:bg-overlay hover:text-fg focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100',
+            removable ? 'right-7' : 'right-1.5',
+            pinned ? 'opacity-100 text-fg-muted' : 'opacity-0',
+          )}
+          aria-label={`${pinned ? 'Unpin' : 'Pin'} ${item.title}`}
+          aria-pressed={pinned}
+          title={pinned ? 'Unpin' : 'Pin'}
+        >
+          <Pin className="size-3" aria-hidden />
+        </button> : null}
         {removable ? (
           <button
             type="button"
@@ -127,7 +150,7 @@ function WorkRowImpl({ thread, ancestors, activeKey, unreadKeys, now, onNavigate
               event.stopPropagation()
               onRemoveConversation?.(item.id, item.title)
             }}
-            className="absolute right-1.5 top-1.5 rounded-md p-1 text-fg-subtle opacity-0 transition-opacity hover:bg-overlay hover:text-fg focus-visible:opacity-100 group-hover/row:opacity-100"
+            className="absolute right-1.5 top-1.5 rounded-md p-1 text-fg-subtle opacity-0 transition-opacity hover:bg-overlay hover:text-fg focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100"
             aria-label={`Remove ${item.title}`}
             title="Remove conversation"
           >
@@ -147,6 +170,9 @@ function WorkRowImpl({ thread, ancestors, activeKey, unreadKeys, now, onNavigate
               now={now}
               onNavigate={onNavigate}
               onRemoveConversation={onRemoveConversation}
+              pinnedKeys={pinnedKeys}
+              onTogglePin={onTogglePin}
+              nested
             />
           ))}
         </ul>

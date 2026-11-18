@@ -114,6 +114,8 @@ const GROUP_RANK: Record<WorkGroup, number> = { 'needs-you': 0, working: 1, wait
 export interface WorkThread {
   item: WorklistItem
   children: WorkThread[]
+  /** Original navigation context when a pinned ancestor was moved out of the tree. */
+  navigationAncestors?: WorklistItem[]
   /** Most urgent group of the item and everything under it. */
   group: WorkGroup
   /** Newest `updatedAt` in the thread, for ordering. */
@@ -210,6 +212,25 @@ export function groupThreads(threads: WorkThread[]): Record<WorkGroup, WorkThrea
   const grouped: Record<WorkGroup, WorkThread[]> = { 'needs-you': [], working: [], waiting: [], recent: [] }
   for (const t of threads) grouped[t.group].push(t)
   return grouped
+}
+
+/** Move pinned items individually, retaining the original navigation context for their descendants. */
+export function partitionPinnedThreads(
+  threads: WorkThread[],
+  pinnedKeys: ReadonlySet<string>,
+): { pinned: WorkThread[]; remaining: WorkThread[] } {
+  const pinned: WorkThread[] = []
+  const visit = (t: WorkThread, ancestors: WorklistItem[]): WorkThread[] => {
+    const children = t.children.flatMap(child => visit(child, [...ancestors, t.item]))
+    if (pinnedKeys.has(itemKey(t.item))) {
+      pinned.push({ ...thread(t.item, []), navigationAncestors: ancestors })
+      return children
+    }
+    return [{ ...thread(t.item, children), navigationAncestors: ancestors }]
+  }
+  const remaining = threads.flatMap(t => visit(t, []))
+  const byUpdated = (a: WorkThread, b: WorkThread) => b.updatedAt.localeCompare(a.updatedAt)
+  return { pinned: pinned.sort(byUpdated), remaining: remaining.sort(byUpdated) }
 }
 
 export type KindFilter = 'all' | 'conversation' | 'run' | 'review'

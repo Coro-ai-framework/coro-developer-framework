@@ -9,6 +9,7 @@ import {
   groupThreads,
   itemDetail,
   itemHref,
+  partitionPinnedThreads,
   parseInspector,
   runWaitingReason,
   withInspector,
@@ -105,6 +106,46 @@ describe('filterThreads', () => {
     expect(filterThreads(threads, 'run', '').flatMap(t => [t.item.id, ...t.children.map(c => c.item.id)]).sort())
       .toEqual(['other', 'plan-x', 'svc-run'])
     expect(filterThreads(threads, 'review', '')).toEqual([])
+  })
+})
+
+describe('partitionPinnedThreads', () => {
+  const threads = buildThreads(list({
+    conversations: [conversation('plan', { reviewIds: ['review'] })],
+    runs: [
+      run('parent', { investigationId: 'plan' }),
+      run('child', { investigationId: 'plan', campaignParentId: 'parent', group: 'needs-you' }),
+    ],
+    reviews: [review('review')],
+  }))
+
+  it('moves nested pins individually and preserves their navigation context and remaining groups', () => {
+    const { pinned, remaining } = partitionPinnedThreads(threads, new Set(['run:parent', 'review:review']))
+    expect(pinned.map(t => t.item.id).sort()).toEqual(['parent', 'review'])
+    expect(pinned.every(t => t.children.length === 0)).toBe(true)
+    const pinnedRun = pinned.find(t => t.item.id === 'parent')!
+    expect(itemHref(pinnedRun.item, pinnedRun.navigationAncestors!)).toBe('/plans/plan?run=parent')
+    const child = remaining[0]!.children[0]!
+    expect(child.item.id).toBe('child')
+    expect(itemHref(child.item, child.navigationAncestors!)).toBe('/plans/plan?run=child')
+    expect(groupThreads(remaining)['needs-you'][0]!.item.id).toBe('plan')
+  })
+
+  it('moves a pinned conversation without hiding its unpinned children and restores the original tree on unpin', () => {
+    const { pinned, remaining } = partitionPinnedThreads(threads, new Set(['conversation:plan', 'run:child']))
+    expect(pinned.map(t => t.item.id).sort()).toEqual(['child', 'plan'])
+    expect(remaining.map(t => t.item.id).sort()).toEqual(['parent', 'review'])
+    expect(groupThreads(remaining).recent.map(t => t.item.id)).toEqual(['parent'])
+    expect(itemHref(remaining[0]!.item, remaining[0]!.navigationAncestors!)).toMatch(/^\/plans\/plan\?/)
+    const restored = partitionPinnedThreads(threads, new Set())
+    expect(restored.pinned).toEqual([])
+    expect(restored.remaining[0]!.children.map(t => t.item.id)).toEqual(threads[0]!.children.map(t => t.item.id))
+  })
+
+  it('respects the current search and kind filter', () => {
+    const { pinned, remaining } = partitionPinnedThreads(threads, new Set(['run:child', 'review:review']))
+    expect(filterThreads(pinned, 'review', 'review').map(t => t.item.id)).toEqual(['review'])
+    expect(filterThreads(remaining, 'review', 'review')).toEqual([])
   })
 })
 

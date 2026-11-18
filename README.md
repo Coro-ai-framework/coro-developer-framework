@@ -46,6 +46,8 @@ Describe the change in the conversation that opens on launch, then **Start run**
 
 The sidebar is your work list: every conversation, run and pull-request review on this runner, grouped by what needs you, what is working, and what is waiting. Runs and reviews a conversation started sit under it. **All runs** and **All reviews** at the bottom of the list open the full tables.
 
+Pin any item to keep it in **Pinned** at the top; unpin it to return it to the work list. Pins are saved in this browser and follow the sidebar's search and filters.
+
 ---
 
 ## Other ways to run Coro

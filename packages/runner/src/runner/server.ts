@@ -1428,10 +1428,12 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
   // The dashboard sidebar polls this. `no-cache` makes the browser revalidate
   // with the ETag Express derives from the body, so an unchanged list costs a
   // 304 rather than a payload.
-  app.get('/worklist', async (_req: Request, res: Response) => {
+  app.get('/worklist', async (req: Request, res: Response) => {
     try {
       res.set('Cache-Control', 'no-cache')
-      res.json(await worklist.get())
+      const values = req.query.pinned
+      const pinned = typeof values === 'string' ? [values] : Array.isArray(values) ? values.filter((value): value is string => typeof value === 'string') : []
+      res.json(await worklist.get(new Set(pinned)))
     } catch (err) {
       logger.error({ err }, 'GET /worklist failed')
       res.status(500).json({ error: (err as Error).message })

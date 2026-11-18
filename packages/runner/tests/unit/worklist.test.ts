@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   PAUSED_AWAITING_EVENT,
+  WORKLIST_RECENT_CONVERSATIONS,
+  WORKLIST_RECENT_REVIEWS,
   WORKLIST_RECENT_RUNS,
   WORKLIST_STALE_CONVERSATION_MS,
   type Investigation,
@@ -151,6 +153,26 @@ describe('groupReview', () => {
 })
 
 describe('assembleWorklist', () => {
+  it('keeps pinned items beyond each recent cap without affecting the normal cap', () => {
+    const rv = (id: string, updatedAt: string): WorkReview => ({
+      kind: 'review', id, title: id, prLabel: '', prUrl: '', scm: 'github', prState: 'merged', status: 'done',
+      openFindings: { blocker: 0, major: 0, minor: 0, nit: 0 }, rounds: 1,
+      createdAt: updatedAt, updatedAt, group: 'recent', attention: null,
+    })
+    const old = '2025-01-01T00:00:00.000Z'
+    const recent = '2026-01-01T00:00:00.000Z'
+    const input = {
+      conversations: [conversation({ id: 'old', updatedAt: old }), ...Array.from({ length: WORKLIST_RECENT_CONVERSATIONS }, (_, i) => conversation({ id: `c${i}`, updatedAt: recent }))],
+      runs: [run({ id: 'old', updatedAt: old }), ...Array.from({ length: WORKLIST_RECENT_RUNS }, (_, i) => run({ id: `r${i}`, updatedAt: recent }))],
+      reviews: [rv('old', old), ...Array.from({ length: WORKLIST_RECENT_REVIEWS }, (_, i) => rv(`v${i}`, recent))],
+    }
+    const result = assembleWorklist(input, new Set(['conversation:old', 'run:old', 'review:old']))
+    expect(result.conversations).toHaveLength(WORKLIST_RECENT_CONVERSATIONS + 1)
+    expect(result.runs).toHaveLength(WORKLIST_RECENT_RUNS + 1)
+    expect(result.reviews).toHaveLength(WORKLIST_RECENT_REVIEWS + 1)
+    expect(assembleWorklist(input).runs.some(item => item.id === 'old')).toBe(false)
+  })
+
   it('keeps a finished child of a kept conversation past the recent cap', () => {
     const many = Array.from({ length: WORKLIST_RECENT_RUNS + 5 }, (_, i) =>
       run({ id: `r${i}`, updatedAt: `2026-06-01T11:${String(i).padStart(2, '0')}:00.000Z` }))
@@ -275,6 +297,18 @@ describe('WorklistService', () => {
     const { backend } = fakeBackend({ jobs: [job({ id: 'a' })], investigations: [] })
     const service = new WorklistService(backend as unknown as StateBackend, live, () => NOW)
     await Promise.all([service.get(), service.get(), service.get()])
+    expect(backend.listRecordVersions).toHaveBeenCalledTimes(1)
+  })
+
+  it('applies each caller’s pins independently to a shared cached build', async () => {
+    const jobs = Array.from({ length: WORKLIST_RECENT_RUNS }, (_, i) => job({ id: `r${i}`, status: 'complete' }))
+    jobs.push(job({ id: 'old', status: 'complete', updatedAt: '2025-01-01T00:00:00.000Z' }))
+    const { backend } = fakeBackend({ jobs, investigations: [] })
+    const service = new WorklistService(backend as unknown as StateBackend, live, () => NOW)
+    const [normal, pinned] = await Promise.all([service.get(), service.get(new Set(['run:old']))])
+    expect(normal.runs.some(item => item.id === 'old')).toBe(false)
+    expect(pinned.runs.some(item => item.id === 'old')).toBe(true)
+    expect((await service.get()).runs.some(item => item.id === 'old')).toBe(false)
     expect(backend.listRecordVersions).toHaveBeenCalledTimes(1)
   })
 })

@@ -35,6 +35,7 @@ import {
   filterThreads,
   groupThreads,
   itemKey,
+  partitionPinnedThreads,
   reviewPagePath,
   WORK_GROUP_LABEL,
   WORK_GROUPS,
@@ -190,6 +191,8 @@ export function WorkList({ onNavigate, autoFocusSearch, searchRef }: WorkListPro
     {},
   )
   const [showAllRecent, setShowAllRecent] = useState(false)
+  const [pinnedKeys, setPinnedKeys] = useLocalStorage<string[]>('coro.worklist.pinned', [])
+  const pins = useMemo(() => new Set(pinnedKeys), [pinnedKeys])
 
   const activeKey = activeItemKey(location.pathname, location.search)
   const conversationMatch = /^\/plans\/([^/]+)/.exec(location.pathname)
@@ -204,10 +207,12 @@ export function WorkList({ onNavigate, autoFocusSearch, searchRef }: WorkListPro
   const unread = useUnread(worklist, visibleKeys, loading)
 
   const threads = useMemo(() => buildThreads(worklist), [worklist])
-  const filtered = useMemo(() => filterThreads(threads, kind, query), [threads, kind, query])
-  const grouped = useMemo(() => groupThreads(filtered), [filtered])
+  const partitioned = useMemo(() => partitionPinnedThreads(threads, pins), [threads, pins])
+  const pinned = useMemo(() => filterThreads(partitioned.pinned, kind, query), [partitioned.pinned, kind, query])
+  const remaining = useMemo(() => filterThreads(partitioned.remaining, kind, query), [partitioned.remaining, kind, query])
+  const grouped = useMemo(() => groupThreads(remaining), [remaining])
   const empty = !loading && threads.length === 0
-  const filteredEmpty = !empty && filtered.length === 0
+  const filteredEmpty = !empty && pinned.length === 0 && remaining.length === 0
 
   const removeConversation = useCallback(
     async (id: string, title: string) => {
@@ -226,6 +231,10 @@ export function WorkList({ onNavigate, autoFocusSearch, searchRef }: WorkListPro
 
   const toggleGroup = (group: WorkGroup) =>
     setCollapsedGroups(previous => ({ ...previous, [group]: !previous[group] }))
+
+  const togglePin = useCallback((key: string) => {
+    setPinnedKeys(previous => previous.includes(key) ? previous.filter(value => value !== key) : [...previous, key])
+  }, [setPinnedKeys])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -293,6 +302,28 @@ export function WorkList({ onNavigate, autoFocusSearch, searchRef }: WorkListPro
         ) : null}
         {filteredEmpty ? <p className="px-2 pt-3 text-[12.5px] text-fg-muted">Nothing matches.</p> : null}
 
+        {pinned.length > 0 ? (
+          <section className="pt-2" aria-label="Pinned">
+            <div className="px-2 py-1 text-[10.5px] font-medium uppercase tracking-[0.18em] text-fg-subtle">
+              Pinned
+            </div>
+            <ul className="mt-0.5 space-y-0.5">
+              {pinned.map(t => (
+                <WorkRow
+                  key={itemKey(t.item)}
+                  thread={t}
+                  ancestors={NO_ANCESTORS}
+                  activeKey={activeKey}
+                  unreadKeys={unread}
+                  now={now}
+                  onNavigate={onNavigate}
+                  pinnedKeys={pins}
+                  onTogglePin={togglePin}
+                />
+              ))}
+            </ul>
+          </section>
+        ) : null}
         {WORK_GROUPS.map(group => {
           const items = grouped[group]
           if (items.length === 0) return null
@@ -314,6 +345,8 @@ export function WorkList({ onNavigate, autoFocusSearch, searchRef }: WorkListPro
                         now={now}
                         onNavigate={onNavigate}
                         onRemoveConversation={onRemoveConversation}
+                        pinnedKeys={pins}
+                        onTogglePin={togglePin}
                       />
                     ))}
                   </ul>
@@ -343,6 +376,16 @@ export function WorkList({ onNavigate, autoFocusSearch, searchRef }: WorkListPro
             </section>
           )
         })}
+        {grouped.recent.length === 0 && pinned.some(t => t.group === 'recent') ? (
+          <div className="flex justify-end gap-3 px-2 pt-2 text-[11.5px]">
+            <Link to={RUNS_LIST_PATH} onClick={onNavigate} className="text-fg-subtle transition-colors hover:text-accent-300">
+              All runs
+            </Link>
+            <Link to={REVIEWS_PATH} onClick={onNavigate} className="text-fg-subtle transition-colors hover:text-accent-300">
+              All reviews
+            </Link>
+          </div>
+        ) : null}
       </div>
     </div>
   )

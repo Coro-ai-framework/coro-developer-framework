@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { requestText } from '../lib/http'
 import { EMPTY_WORKLIST, type Worklist } from '../lib/worklist'
+import { useLocalStorage } from '../hooks/use-local-storage'
 
 /** Fast enough that a run parking on a question shows up while you are still looking. */
 const POLL_MS = 3_000
@@ -22,6 +23,9 @@ const WorklistContext = createContext<WorklistContextValue | null>(null)
  * 304, and an unchanged body never re-renders the tree.
  */
 export function WorklistProvider({ children }: { children: ReactNode }) {
+  const [pinnedKeys] = useLocalStorage<string[]>('coro.worklist.pinned', [])
+  const pinnedRef = useRef(pinnedKeys)
+  pinnedRef.current = pinnedKeys
   const [worklist, setWorklist] = useState<Worklist>(EMPTY_WORKLIST)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -36,7 +40,10 @@ export function WorklistProvider({ children }: { children: ReactNode }) {
     }
     inflight.current = true
     try {
-      const body = await requestText('/worklist')
+      const params = new URLSearchParams()
+      for (const key of pinnedRef.current) params.append('pinned', key)
+      const query = params.toString()
+      const body = await requestText(`/worklist${query ? `?${query}` : ''}`)
       if (body !== lastBody.current) {
         lastBody.current = body
         setWorklist(JSON.parse(body) as Worklist)
@@ -55,7 +62,6 @@ export function WorklistProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    void fetchNow()
     const timer = window.setInterval(() => {
       if (!document.hidden) void fetchNow()
     }, POLL_MS)
@@ -70,6 +76,10 @@ export function WorklistProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('focus', onVisible)
     }
   }, [fetchNow])
+
+  useEffect(() => {
+    void fetchNow()
+  }, [fetchNow, pinnedKeys])
 
   const refresh = useCallback(() => {
     void fetchNow()

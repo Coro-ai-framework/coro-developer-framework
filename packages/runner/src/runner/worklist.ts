@@ -252,7 +252,7 @@ export function assembleWorklist(input: {
   conversations: WorkConversation[]
   runs: WorkRun[]
   reviews: WorkReview[]
-}): Worklist {
+}, pinnedKeys: ReadonlySet<string> = new Set()): Worklist {
   const runsById = new Map(input.runs.map(run => [run.id, run]))
   const conversationsById = new Map(input.conversations.map(c => [c.id, c]))
   const reviewsById = new Map(input.reviews.map(r => [r.id, r]))
@@ -260,6 +260,15 @@ export function assembleWorklist(input: {
   const keptConversations = keepRecent(input.conversations, WORKLIST_RECENT_CONVERSATIONS)
   const keptRuns = keepRecent(input.runs, WORKLIST_RECENT_RUNS)
   const keptReviews = keepRecent(input.reviews, WORKLIST_RECENT_REVIEWS)
+  for (const conversation of input.conversations) {
+    if (pinnedKeys.has(`conversation:${conversation.id}`)) keptConversations.add(conversation.id)
+  }
+  for (const run of input.runs) {
+    if (pinnedKeys.has(`run:${run.id}`)) keptRuns.add(run.id)
+  }
+  for (const review of input.reviews) {
+    if (pinnedKeys.has(`review:${review.id}`)) keptReviews.add(review.id)
+  }
 
   // Upward: a kept run keeps its parent run and its conversation.
   const pending = [...keptRuns]
@@ -326,6 +335,8 @@ interface CachedConversation {
   base: ConversationBase
 }
 
+type WorklistInput = Parameters<typeof assembleWorklist>[0]
+
 /** Re-read a row this recent even when its version looks unchanged; two writes can share a millisecond. */
 const FRESH_WRITE_WINDOW_MS = 10_000
 /** Above this many changed rows a single list is cheaper than one read per row. */
@@ -336,8 +347,8 @@ const RESULT_TTL_MS = 750
 export class WorklistService {
   private readonly jobs = new Map<string, CachedJob>()
   private readonly conversations = new Map<string, CachedConversation>()
-  private inflight: Promise<Worklist> | null = null
-  private last: { at: number; value: Worklist } | null = null
+  private inflight: Promise<WorklistInput> | null = null
+  private last: { at: number; value: WorklistInput } | null = null
 
   constructor(
     private readonly stateBackend: StateBackend,
@@ -345,10 +356,10 @@ export class WorklistService {
     private readonly clock: () => number = Date.now,
   ) {}
 
-  async get(): Promise<Worklist> {
+  async get(pinnedKeys: ReadonlySet<string> = new Set()): Promise<Worklist> {
     const now = this.clock()
-    if (this.last && now - this.last.at < RESULT_TTL_MS) return this.last.value
-    if (this.inflight) return this.inflight
+    if (this.last && now - this.last.at < RESULT_TTL_MS) return assembleWorklist(this.last.value, pinnedKeys)
+    if (this.inflight) return assembleWorklist(await this.inflight, pinnedKeys)
     this.inflight = this.build()
       .then(value => {
         this.last = { at: this.clock(), value }
@@ -357,10 +368,10 @@ export class WorklistService {
       .finally(() => {
         this.inflight = null
       })
-    return this.inflight
+    return assembleWorklist(await this.inflight, pinnedKeys)
   }
 
-  private async build(): Promise<Worklist> {
+  private async build(): Promise<WorklistInput> {
     const now = this.clock()
     const versions = this.stateBackend.listRecordVersions
       ? await this.stateBackend.listRecordVersions()
@@ -387,11 +398,11 @@ export class WorklistService {
         now,
       ),
     )
-    return assembleWorklist({
+    return {
       conversations,
       runs,
       reviews: reviews.map(review => projectReview(review, awaitingApprovalJobId(review, jobStatus))),
-    })
+    }
   }
 
   private stale(cachedAt: string | undefined, version: RecordVersion, now: number): boolean {
