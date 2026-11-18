@@ -16,6 +16,7 @@ import {
   ensureIntakeWorkRoot,
   hydrateIntakeSession,
   intakeTurnActive,
+  listIntakeWorkRoots,
   peekIntakeSession,
   updateIntakeToolAccess,
 } from './session-store'
@@ -402,7 +403,7 @@ export function registerIntakeRoutes(
       return
     }
     const resolved = resolveOpenablePath(raw.trim(), [
-      peekIntakeSession(sessionId)?.workRoot,
+      ...listIntakeWorkRoots(),
       os.homedir(),
       resolveWorkingDir(loadLocalConfig()),
     ])
@@ -411,8 +412,8 @@ export function registerIntakeRoutes(
       return
     }
     try {
-      const opened = await openLocalPath(resolved.path)
-      res.json({ ok: true, opened, path: resolved.path })
+      const { opened, app } = await openLocalPath(resolved.path)
+      res.json({ ok: true, opened, app, path: resolved.path })
     } catch (err) {
       logger.warn({ err, sessionId }, 'POST /intake/sessions/:id/open failed')
       res.status(500).json({ error: (err as Error).message })

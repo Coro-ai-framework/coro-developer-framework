@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
@@ -264,15 +264,32 @@ export function seedIntakeSession(
   return reconcileIntakeSession(sessionId, messages)
 }
 
+const WORK_ROOT_PREFIX = 'coro-plan-'
+
 /** Stable cwd so Claude Code can persist/resume one session per conversation. */
 export function ensureIntakeWorkRoot(sessionId: string): string {
   const session = getIntakeSession(sessionId)
   if (session.workRoot) return session.workRoot
-  const root = mkdtempSync(join(tmpdir(), 'coro-plan-'))
+  const root = mkdtempSync(join(tmpdir(), WORK_ROOT_PREFIX))
   mkdirSync(join(root, '_intelligence'), { recursive: true })
   session.workRoot = root
   session.updatedAt = Date.now()
   return root
+}
+
+/**
+ * Every plan-mode scratch directory on disk. A conversation's directory is
+ * only held in memory, so after a runner restart the one its messages name
+ * is no longer `session.workRoot`.
+ */
+export function listIntakeWorkRoots(): string[] {
+  try {
+    return readdirSync(tmpdir())
+      .filter(name => name.startsWith(WORK_ROOT_PREFIX))
+      .map(name => join(tmpdir(), name))
+  } catch {
+    return []
+  }
 }
 
 /**

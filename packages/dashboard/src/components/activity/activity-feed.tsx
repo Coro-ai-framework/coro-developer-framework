@@ -23,8 +23,8 @@ interface ActivityFeedProps {
   cardRenderers: CardRendererMap
   /** Rendered when items is empty. */
   emptyState?: ReactNode
-  /** Makes local paths in assistant messages clickable. */
-  onOpenPath?: (path: string) => Promise<void>
+  /** Makes local paths in assistant messages clickable; resolves to the app the path opened in. */
+  onOpenPath?: (path: string) => Promise<string>
   className?: string
 }
 

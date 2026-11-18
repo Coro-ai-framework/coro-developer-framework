@@ -8,6 +8,7 @@ import { createRunnerServer } from '../../src/runner/server'
 import { SqliteStateBackend } from '../../src/state/sqlite-backend'
 import {
   getIntakeSession,
+  listIntakeWorkRoots,
   peekIntakeSession,
   recordIntakeTurn,
   resetIntakeSessionsForTests,
@@ -257,5 +258,15 @@ describe('intake session HTTP', () => {
     closeFns.push(() => new Promise<void>(resolve => hybrid.close(() => resolve())))
     const hybridBase = `http://127.0.0.1:${(hybrid.address() as AddressInfo).port}`
     expect((await open(hybridBase, { path: os.homedir() })).status).toBe(403)
+  })
+
+  it('still recognises a scratch directory the runner made before it restarted', () => {
+    const orphan = fs.mkdtempSync(path.join(os.tmpdir(), 'coro-plan-'))
+    try {
+      resetIntakeSessionsForTests()
+      expect(listIntakeWorkRoots()).toContain(orphan)
+    } finally {
+      fs.rmSync(orphan, { recursive: true, force: true })
+    }
   })
 })

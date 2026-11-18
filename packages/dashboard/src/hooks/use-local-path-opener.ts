@@ -7,7 +7,7 @@ let localRunner: Promise<boolean> | null = null
  * Opens a path a conversation mentioned on this computer. Undefined unless the
  * runner is in local mode — only then does it share the developer's desktop.
  */
-export function useLocalPathOpener(sessionId: string | undefined): ((path: string) => Promise<void>) | undefined {
+export function useLocalPathOpener(sessionId: string | undefined): ((path: string) => Promise<string>) | undefined {
   const [local, setLocal] = useState(false)
 
   useEffect(() => {

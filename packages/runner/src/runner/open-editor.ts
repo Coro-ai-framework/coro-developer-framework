@@ -166,7 +166,7 @@ export function resolveOpenablePath(raw: string, roots: Array<string | undefined
   })
   return inside
     ? { ok: true, path: target }
-    : { ok: false, status: 403, error: 'Coro only opens paths in this conversation’s scratch directory, your home folder, or its working directory' }
+    : { ok: false, status: 403, error: 'Coro only opens paths in plan-mode scratch directories, your home folder, or its working directory' }
 }
 
 export interface LocalOpenCommand {
@@ -196,12 +196,13 @@ export function planLocalOpen(
   return { cmd: 'xdg-open', args: [path.dirname(target)], opened: 'reveal' }
 }
 
-export async function openLocalPath(target: string): Promise<LocalOpenCommand['opened']> {
+export async function openLocalPath(target: string): Promise<{ opened: LocalOpenCommand['opened']; app: string }> {
   const stat = await fs.stat(target)
   const editor = stat.isDirectory() ? undefined : (await detectEditors())[0]
   const plan = planLocalOpen(target, stat.isDirectory(), process.platform, editor)
   launchDetached(plan.cmd, plan.args)
-  return plan.opened
+  const fileManager = process.platform === 'darwin' ? 'Finder' : process.platform === 'win32' ? 'Explorer' : 'your file manager'
+  return { opened: plan.opened, app: plan.opened === 'editor' && editor ? editor.name : fileManager }
 }
 
 /** Reveal `dir` in the OS file manager (Finder / Explorer / xdg-open). */

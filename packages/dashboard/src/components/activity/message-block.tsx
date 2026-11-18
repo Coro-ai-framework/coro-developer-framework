@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { splitLocalPaths } from '../../lib/local-paths'
 import { cn } from '../../lib/utils'
 
@@ -53,33 +53,50 @@ export function displayContent(role: 'user' | 'assistant', content: string): str
   return RUN_READY_MESSAGES[idx]
 }
 
-function LocalPath({ path, onOpen }: { path: string; onOpen: (path: string) => Promise<void> }) {
-  const [error, setError] = useState<string | null>(null)
+function LocalPath({ path, onOpen }: { path: string; onOpen: (path: string) => Promise<string> }) {
+  const [note, setNote] = useState<{ error: boolean; text: string } | null>(null)
+
+  useEffect(() => {
+    if (!note) return
+    const timer = window.setTimeout(() => setNote(null), note.error ? 6_000 : 2_500)
+    return () => window.clearTimeout(timer)
+  }, [note])
+
   const open = () => {
-    setError(null)
-    onOpen(path).catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not open this path'))
+    setNote(null)
+    onOpen(path).then(
+      app => setNote({ error: false, text: `Opened in ${app}` }),
+      (err: unknown) => setNote({ error: true, text: err instanceof Error ? err.message : 'Could not open this path' }),
+    )
   }
   return (
-    <span
-      role="button"
-      tabIndex={0}
-      onClick={open}
-      onKeyDown={event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          open()
-        }
-      }}
-      title={error ?? 'Open on this computer'}
-      className={cn(
-        'cursor-pointer break-all rounded-sm underline decoration-dotted underline-offset-[3px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
-        error
-          ? 'text-danger-400 decoration-danger-400/50'
-          : 'text-accent-300 decoration-accent-400/40 hover:decoration-accent-300',
-      )}
-    >
-      {path}
-    </span>
+    <>
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={open}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            open()
+          }
+        }}
+        title="Open on this computer"
+        className={cn(
+          'cursor-pointer break-all rounded-sm underline decoration-dotted underline-offset-[3px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
+          note?.error
+            ? 'text-danger-400 decoration-danger-400/50'
+            : 'text-accent-300 decoration-accent-400/40 hover:decoration-accent-300',
+        )}
+      >
+        {path}
+      </span>
+      {note ? (
+        <span role="status" className={cn('ml-1.5 text-[11.5px]', note.error ? 'text-danger-400' : 'text-fg-subtle')}>
+          {note.text}
+        </span>
+      ) : null}
+    </>
   )
 }
 
@@ -92,8 +109,8 @@ export default function MessageBlock({
   role: 'user' | 'assistant'
   text: string
   streaming?: boolean
-  /** When set, local paths in assistant messages become clickable. */
-  onOpenPath?: (path: string) => Promise<void>
+  /** When set, local paths in assistant messages become clickable; resolves to the app the path opened in. */
+  onOpenPath?: (path: string) => Promise<string>
 }) {
   const displayed = displayContent(role, text)
   const segments = role === 'assistant' && onOpenPath ? splitLocalPaths(displayed) : null
