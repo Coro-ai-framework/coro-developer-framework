@@ -1,3 +1,7 @@
+import { useState } from 'react'
+import { splitLocalPaths } from '../../lib/local-paths'
+import { cn } from '../../lib/utils'
+
 // Plan mode's structured payloads (`<run>`, `<review>`, `<readiness>`,
 // `<findings>`) are addressed to the dashboard, not the developer: runs,
 // reviews and findings become cards and readiness drives the composer. Strip
@@ -49,16 +53,50 @@ export function displayContent(role: 'user' | 'assistant', content: string): str
   return RUN_READY_MESSAGES[idx]
 }
 
+function LocalPath({ path, onOpen }: { path: string; onOpen: (path: string) => Promise<void> }) {
+  const [error, setError] = useState<string | null>(null)
+  const open = () => {
+    setError(null)
+    onOpen(path).catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not open this path'))
+  }
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          open()
+        }
+      }}
+      title={error ?? 'Open on this computer'}
+      className={cn(
+        'cursor-pointer break-all rounded-sm underline decoration-dotted underline-offset-[3px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
+        error
+          ? 'text-danger-400 decoration-danger-400/50'
+          : 'text-accent-300 decoration-accent-400/40 hover:decoration-accent-300',
+      )}
+    >
+      {path}
+    </span>
+  )
+}
+
 export default function MessageBlock({
   role,
   text,
   streaming = false,
+  onOpenPath,
 }: {
   role: 'user' | 'assistant'
   text: string
   streaming?: boolean
+  /** When set, local paths in assistant messages become clickable. */
+  onOpenPath?: (path: string) => Promise<void>
 }) {
   const displayed = displayContent(role, text)
+  const segments = role === 'assistant' && onOpenPath ? splitLocalPaths(displayed) : null
   return (
     <div
       className={
@@ -67,7 +105,11 @@ export default function MessageBlock({
           : 'whitespace-pre-wrap text-[13.5px] leading-[1.7] text-fg'
       }
     >
-      {displayed}
+      {segments && onOpenPath
+        ? segments.map((segment, index) =>
+            segment.path ? <LocalPath key={index} path={segment.path} onOpen={onOpenPath} /> : segment.text,
+          )
+        : displayed}
       {streaming ? (
         <span
           className="ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[0.15em] bg-accent-400 animate-pulse-dot"

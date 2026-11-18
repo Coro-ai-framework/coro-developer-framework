@@ -15,6 +15,7 @@ import { getReadinessMeta, toneDotClasses } from '../lib/status'
 import { parseInspector, withInspector } from '../lib/worklist'
 import { cn } from '../lib/utils'
 import { useJobs } from '../hooks/useJobs'
+import { useLocalPathOpener } from '../hooks/use-local-path-opener'
 import { usePlanSession } from '../providers/plan-session'
 import {
   FALLBACK_JOB_WORKFLOW,
@@ -129,6 +130,7 @@ export default function Workspace() {
 
   const loadingConversation = !session.hydrated || session.switching || (conversationId !== session.sessionId && !session.openError)
   const failed = session.openError && session.openError.id === conversationId ? session.openError : null
+  const openPath = useLocalPathOpener(session.sessionId)
 
   return (
     <div className="flex h-full min-w-0 flex-1">
@@ -170,6 +172,7 @@ export default function Workspace() {
               partialThinking={session.hasProgress ? session.partialThinking : ''}
               busy={session.hasProgress && session.busy}
               cardRenderers={PLAN_CARD_RENDERERS}
+              onOpenPath={openPath}
               emptyState={
                 <div className="space-y-6">
                   <p className="text-[13.5px] leading-[1.7] text-fg">{GREETING}</p>

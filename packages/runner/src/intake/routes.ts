@@ -1,5 +1,8 @@
 import type { Express, Request, Response } from 'express'
+import os from 'node:os'
 import type { Logger } from 'pino'
+import { loadLocalConfig, resolveWorkingDir } from '../config/local-config'
+import { openLocalPath, resolveOpenablePath } from '../runner/open-editor'
 import type { StateBackend } from '../state/backend'
 import type { PluginRegistry } from '../plugins/registry'
 import type { RunnerContext } from '../jobs/runner'
@@ -37,6 +40,7 @@ export function registerIntakeRoutes(
     runnerCtx?: RunnerContext
     /** Lets plan mode act on the runs a conversation started. */
     runControl?: RunControl
+    mode?: 'hybrid' | 'local'
   },
 ): void {
   const { stateBackend, logger, plugins, runnerCtx, runControl } = opts
@@ -378,6 +382,39 @@ export function registerIntakeRoutes(
       res.json(result)
     } catch (err) {
       logger.error({ err, sessionId }, 'PUT /intake/sessions/:id failed')
+      res.status(500).json({ error: (err as Error).message })
+    }
+  })
+
+  /**
+   * Opens a path plan mode mentioned, on the developer's desktop. Local mode
+   * only, where the runner shares that desktop.
+   */
+  app.post('/intake/sessions/:sessionId/open', async (req: Request, res: Response) => {
+    if (opts.mode !== 'local') {
+      res.status(403).json({ error: 'Opening local paths is only available in local mode' })
+      return
+    }
+    const sessionId = String(req.params['sessionId'] ?? '').trim()
+    const raw = (req.body as Record<string, unknown> | undefined)?.['path']
+    if (!sessionId || typeof raw !== 'string' || !raw.trim()) {
+      res.status(400).json({ error: 'sessionId and path are required' })
+      return
+    }
+    const resolved = resolveOpenablePath(raw.trim(), [
+      peekIntakeSession(sessionId)?.workRoot,
+      os.homedir(),
+      resolveWorkingDir(loadLocalConfig()),
+    ])
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ error: resolved.error })
+      return
+    }
+    try {
+      const opened = await openLocalPath(resolved.path)
+      res.json({ ok: true, opened, path: resolved.path })
+    } catch (err) {
+      logger.warn({ err, sessionId }, 'POST /intake/sessions/:id/open failed')
       res.status(500).json({ error: (err as Error).message })
     }
   })

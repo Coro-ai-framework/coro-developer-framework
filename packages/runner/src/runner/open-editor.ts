@@ -5,12 +5,14 @@
 // (and a desktop session) with the developer: the runner can then both detect
 // which editor CLIs are installed and launch one against the job's checkout.
 //
-// Security: callers never pass a filesystem path here that came from the
-// network. The HTTP layer resolves the directory itself (from the jobId, with
+// Security: `openInEditor` and `revealFolder` never receive a filesystem path
+// that came from the network. The HTTP layer resolves the directory itself (from the jobId, with
 // the same path-traversal guards as the diff endpoint) and only the *editor id*
 // is client-supplied — and that is matched against this fixed allowlist.
+// `resolveOpenablePath` below guards the one exception.
 
 import { execFile, spawn } from 'node:child_process'
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -134,6 +136,72 @@ export async function openInEditor(editorId: string | undefined, dir: string): P
     throw new Error(`Editor "${editor.id}" has no launch method`)
   }
   return editor
+}
+
+// ── Paths mentioned in plan mode ─────────────────────────────────────────────
+//
+// Here the path *is* client-supplied (the developer clicked it in a chat
+// message), so it must resolve, after symlinks, to an existing location
+// under one of the caller's roots, and is never handed to the OS default
+// handler — that would launch an `.app`, `.command` or `.exe` the agent wrote.
+
+export type OpenablePath = { ok: true; path: string } | { ok: false; status: number; error: string }
+
+function realpathOrNull(p: string): string | null {
+  try {
+    return fsSync.realpathSync(p)
+  } catch {
+    return null
+  }
+}
+
+export function resolveOpenablePath(raw: string, roots: Array<string | undefined>): OpenablePath {
+  const expanded = raw === '~' || raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(1)) : raw
+  if (!path.isAbsolute(expanded)) return { ok: false, status: 400, error: 'Path must be absolute' }
+  const target = realpathOrNull(path.resolve(expanded))
+  if (!target) return { ok: false, status: 404, error: 'That path no longer exists' }
+  const inside = roots.some(root => {
+    const real = root ? realpathOrNull(root) : null
+    return real !== null && (target === real || target.startsWith(real + path.sep))
+  })
+  return inside
+    ? { ok: true, path: target }
+    : { ok: false, status: 403, error: 'Coro only opens paths in this conversation’s scratch directory, your home folder, or its working directory' }
+}
+
+export interface LocalOpenCommand {
+  cmd: string
+  args: string[]
+  opened: 'folder' | 'editor' | 'reveal'
+}
+
+/** A folder opens in the file manager; a file in the editor, else selected in the file manager. */
+export function planLocalOpen(
+  target: string,
+  isDirectory: boolean,
+  platform: NodeJS.Platform,
+  editor: DetectedEditor | undefined,
+): LocalOpenCommand {
+  if (isDirectory) {
+    // A macOS bundle (`Foo.app`) is a directory that `open` would launch.
+    if (platform === 'darwin' && path.extname(target)) return { cmd: 'open', args: ['-R', target], opened: 'reveal' }
+    if (platform === 'darwin') return { cmd: 'open', args: [target], opened: 'folder' }
+    if (platform === 'win32') return { cmd: 'explorer', args: [target], opened: 'folder' }
+    return { cmd: 'xdg-open', args: [target], opened: 'folder' }
+  }
+  if (editor?.cli) return { cmd: editor.cli, args: [target], opened: 'editor' }
+  if (editor?.macApp && platform === 'darwin') return { cmd: 'open', args: ['-a', editor.macApp, target], opened: 'editor' }
+  if (platform === 'darwin') return { cmd: 'open', args: ['-R', target], opened: 'reveal' }
+  if (platform === 'win32') return { cmd: 'explorer', args: [`/select,${target}`], opened: 'reveal' }
+  return { cmd: 'xdg-open', args: [path.dirname(target)], opened: 'reveal' }
+}
+
+export async function openLocalPath(target: string): Promise<LocalOpenCommand['opened']> {
+  const stat = await fs.stat(target)
+  const editor = stat.isDirectory() ? undefined : (await detectEditors())[0]
+  const plan = planLocalOpen(target, stat.isDirectory(), process.platform, editor)
+  launchDetached(plan.cmd, plan.args)
+  return plan.opened
 }
 
 /** Reveal `dir` in the OS file manager (Finder / Explorer / xdg-open). */

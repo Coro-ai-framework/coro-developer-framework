@@ -23,6 +23,8 @@ interface ActivityFeedProps {
   cardRenderers: CardRendererMap
   /** Rendered when items is empty. */
   emptyState?: ReactNode
+  /** Makes local paths in assistant messages clickable. */
+  onOpenPath?: (path: string) => Promise<void>
   className?: string
 }
 
@@ -58,6 +60,7 @@ export default function ActivityFeed({
   busy = false,
   cardRenderers,
   emptyState,
+  onOpenPath,
   className,
 }: ActivityFeedProps) {
   const stick = useStickToBottom<HTMLDivElement>([items, partialText, partialThinking, busy])
@@ -71,7 +74,7 @@ export default function ActivityFeed({
           {empty ? emptyState : null}
           {items.map(item => {
             if (item.kind === 'message') {
-              return <MessageBlock key={item.id} role={item.role} text={item.text} />
+              return <MessageBlock key={item.id} role={item.role} text={item.text} onOpenPath={onOpenPath} />
             }
             if (item.kind === 'thought') {
               return <ThoughtBlock key={item.id} text={item.text} />
@@ -85,7 +88,7 @@ export default function ActivityFeed({
             return <NoticeBlock key={item.id} item={item} />
           })}
           {partialThinking ? <ThoughtBlock text={partialThinking} streaming /> : null}
-          {partialText ? <MessageBlock role="assistant" text={partialText} streaming /> : null}
+          {partialText ? <MessageBlock role="assistant" text={partialText} streaming onOpenPath={onOpenPath} /> : null}
           {showThinking ? (
             <div className="flex items-center gap-2 font-mono text-[10px] leading-[1.5] text-fg-subtle">
               <Loader2 className="size-3 animate-spin" />

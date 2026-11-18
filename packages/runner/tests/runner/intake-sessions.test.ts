@@ -240,4 +240,22 @@ describe('intake session HTTP', () => {
     await expect(pending).resolves.toEqual({ allow: true })
     broker.dispose('done')
   })
+
+  it('opens only paths it can vouch for, and never outside local mode', async () => {
+    const base = await start()
+    const open = (url: string, body: unknown) =>
+      fetch(`${url}/intake/sessions/s1/open`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    expect((await open(base, { path: '/' })).status).toBe(403)
+    expect((await open(base, {})).status).toBe(400)
+
+    const hybrid = createRunnerServer({ port: 0, dispatcher: {} as never, stateBackend: backend, logger: silentLogger, mode: 'hybrid' })
+    if (!hybrid.listening) await new Promise<void>(resolve => hybrid.once('listening', () => resolve()))
+    closeFns.push(() => new Promise<void>(resolve => hybrid.close(() => resolve())))
+    const hybridBase = `http://127.0.0.1:${(hybrid.address() as AddressInfo).port}`
+    expect((await open(hybridBase, { path: os.homedir() })).status).toBe(403)
+  })
 })

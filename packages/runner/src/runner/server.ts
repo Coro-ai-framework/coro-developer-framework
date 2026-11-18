@@ -1373,7 +1373,7 @@ export function createRunnerServer(opts: RunnerServerOptions): http.Server {
     }
   })
 
-  registerIntakeRoutes(app, { stateBackend, logger, plugins, runnerCtx, runControl: dispatcher })
+  registerIntakeRoutes(app, { stateBackend, logger, plugins, runnerCtx, runControl: dispatcher, mode })
 
   // ── Job CRUD ────────────────────────────────────────────────────────────
 

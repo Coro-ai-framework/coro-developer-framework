@@ -33,3 +33,8 @@ export async function openJobWorkspace(
 ): Promise<OpenWorkspaceResult> {
   return requestJson<OpenWorkspaceResult>(`/jobs/${jobId}/open`, jsonRequest(body, { method: 'POST' }))
 }
+
+/** Opens a path a plan-mode conversation mentioned: folders in the file manager, files in the editor. */
+export async function openConversationPath(sessionId: string, path: string): Promise<void> {
+  await requestJson(`/intake/sessions/${encodeURIComponent(sessionId)}/open`, jsonRequest({ path }, { method: 'POST' }))
+}
