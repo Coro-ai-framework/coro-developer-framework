@@ -588,6 +588,60 @@ describe('runIntakeStream', () => {
     expect(seen[1]?.cwd).toBe(seen[0]?.cwd)
   })
 
+  it('resumes a conversation the cache evicted from its saved record, not the browser transcript', async () => {
+    const saved = {
+      id: 'session-evicted',
+      turns: [{
+        user: 'check the services',
+        assistant: 'Both are healthy.',
+        evidence: [{ name: 'get_past_job', args: '{"jobId":"job-1"}', result: 'status: complete' }],
+      }],
+      tokens: 500,
+      contextUsed: 300,
+      executorSession: { sessionId: 'claude-overnight' },
+      executorId: 'anthropic',
+    } as unknown as Investigation
+    const backend = {
+      getInvestigation: async (id: string) => (id === saved.id ? saved : null),
+      upsertInvestigation: async (patch: InvestigationPatch) => ({ id: patch.id } as Investigation),
+    } as unknown as StateBackend
+    let seen: { sessionState?: unknown; messages: Array<{ content: string }> } | undefined
+    const registry = {
+      all: () => [],
+      resolveExecutor: () => ({
+        manifest: { id: 'anthropic' },
+        chat: async (req: NonNullable<typeof seen>) => {
+          seen = req
+          return {
+            output: 'Continuing.',
+            usage: { inputTokens: 2, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            toolCalls: [],
+          }
+        },
+      }),
+    } as unknown as PluginRegistry
+
+    for await (const _event of runIntakeStream({
+      sessionId: saved.id,
+      message: 'check them once again',
+      seedMessages: [
+        { role: 'user', content: 'check the services' },
+        { role: 'assistant', content: 'Both are healthy.' },
+      ],
+      context: { recentRepos: [], recentReviewers: [], availableWorkflows: [] },
+      registry,
+      settings,
+      signal: new AbortController().signal,
+      stateBackend: backend,
+    })) {
+      // drain
+    }
+
+    expect(seen?.sessionState).toEqual({ sessionId: 'claude-overnight' })
+    expect(seen?.messages[1]?.content).toContain('<evidence>')
+    expect(getIntakeSession(saved.id).turns[0]?.evidence).toHaveLength(1)
+  })
+
   it('keeps the conversation after a rate-limit and tells the developer to send again', async () => {
     let turn = 0
     const seen: Array<unknown> = []

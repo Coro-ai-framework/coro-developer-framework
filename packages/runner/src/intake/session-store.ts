@@ -1,8 +1,11 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'fs'
+import { createHash } from 'crypto'
+import { mkdirSync, readdirSync, rmSync, statSync } from 'fs'
+import { rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
 import type { InvestigationToolAccess } from '@coro-ai/cloud-protocol'
+import { defaultConfigDir } from '../config/local-config'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Server-side plan-mode conversation state.
@@ -25,7 +28,10 @@ import type { InvestigationToolAccess } from '@coro-ai/cloud-protocol'
 //
 // This Map is the hot cache for the live LLM session (workRoot, resume
 // blob). The durable copy lives on StateBackend (`investigations`).
-// GET /intake/sessions/:id hydrates this Map from that row.
+// GET /intake/sessions/:id, and a message for a conversation the cache no
+// longer holds, hydrate this Map from that row. Eviction (idle TTL, runner
+// restart) only drops the cache: the scratch directory under
+// `~/.coro/plan/<id>` lives until the conversation is deleted.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Idle lifetime of a session before the sweeper drops it. */
@@ -71,7 +77,7 @@ export interface IntakeSession {
   executorSession?: ExecutorSessionState
   /** Plugin id that wrote {@link executorSession}, e.g. `anthropic`. */
   executorId?: string
-  /** Stable cwd for Claude Code persist/resume. Removed when the session dies. */
+  /** Stable cwd for Claude Code persist/resume. Removed when the conversation is deleted. */
   workRoot?: string
   /** Per-conversation tool permission overrides. */
   toolAccess?: InvestigationToolAccess
@@ -104,20 +110,28 @@ export function isIntakeSessionDiscarded(sessionId: string): boolean {
   return discarded.has(sessionId)
 }
 
-function removeWorkRoot(session: IntakeSession): void {
-  if (!session.workRoot) return
+function removeDir(dir: string | undefined): void {
+  if (!dir) return
   try {
-    rmSync(session.workRoot, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true })
   } catch {
-    // Best-effort: a leftover tmp dir is not worth failing close/reset.
+    // Best-effort: a leftover scratch dir is not worth failing close/reset.
   }
+}
+
+function removeWorkRoot(session: IntakeSession): void {
+  removeDir(session.workRoot)
   session.workRoot = undefined
 }
 
+/**
+ * Evicts idle sessions from the hot cache only. The durable row keeps the
+ * resume blob and the scratch directory stays on disk, so the next message
+ * picks the conversation up where it left off.
+ */
 function sweep(now: number): void {
   for (const [id, session] of sessions) {
     if (now - session.updatedAt <= INTAKE_SESSION_TTL_MS) continue
-    removeWorkRoot(session)
     sessions.delete(id)
   }
   for (const [id, deletedAt] of discarded) {
@@ -147,6 +161,8 @@ export function getIntakeSession(sessionId: string): IntakeSession {
 export function deleteIntakeSession(sessionId: string): boolean {
   const existing = sessions.get(sessionId)
   if (existing) removeWorkRoot(existing)
+  // The conversation may have been swept from the cache; its directory is still on disk.
+  removeDir(intakeWorkRootPath(sessionId))
   discarded.set(sessionId, Date.now())
   return sessions.delete(sessionId)
 }
@@ -159,7 +175,7 @@ export function peekIntakeSession(sessionId: string): IntakeSession | undefined 
 
 /**
  * Restore LLM cache from a durable investigation. Keeps an existing
- * `workRoot` so a Claude resume that is still warm is not discarded.
+ * `workRoot` so a live session's directory is not swapped mid-conversation.
  */
 export function hydrateIntakeSession(record: {
   id: string
@@ -264,31 +280,97 @@ export function seedIntakeSession(
   return reconcileIntakeSession(sessionId, messages)
 }
 
-const WORK_ROOT_PREFIX = 'coro-plan-'
+/** Prefix of the per-process temp directories plan mode used before {@link intakeScratchRoot}. */
+const LEGACY_WORK_ROOT_PREFIX = 'coro-plan-'
+
+/** How long a legacy temp directory is kept for manual recovery before it is pruned. */
+export const LEGACY_INTAKE_WORK_ROOT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+/** Parent of every conversation's scratch directory: `~/.coro/plan`. */
+export function intakeScratchRoot(): string {
+  return join(defaultConfigDir(), 'plan')
+}
+
+const SAFE_SESSION_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+
+/**
+ * One directory per conversation, derived from its id so it survives cache
+ * eviction and runner restarts. Ids come from the request body, so anything
+ * that is not a plain token is hashed rather than joined into the path.
+ */
+export function intakeWorkRootPath(sessionId: string): string {
+  const segment = SAFE_SESSION_SEGMENT.test(sessionId)
+    ? sessionId
+    : `id-${createHash('sha256').update(sessionId).digest('hex').slice(0, 32)}`
+  return join(intakeScratchRoot(), segment)
+}
 
 /** Stable cwd so Claude Code can persist/resume one session per conversation. */
 export function ensureIntakeWorkRoot(sessionId: string): string {
   const session = getIntakeSession(sessionId)
   if (session.workRoot) return session.workRoot
-  const root = mkdtempSync(join(tmpdir(), WORK_ROOT_PREFIX))
+  const root = intakeWorkRootPath(sessionId)
   mkdirSync(join(root, '_intelligence'), { recursive: true })
   session.workRoot = root
   session.updatedAt = Date.now()
   return root
 }
 
-/**
- * Every plan-mode scratch directory on disk. A conversation's directory is
- * only held in memory, so after a runner restart the one its messages name
- * is no longer `session.workRoot`.
- */
-export function listIntakeWorkRoots(): string[] {
+function legacyIntakeWorkRoots(): string[] {
   try {
     return readdirSync(tmpdir())
-      .filter(name => name.startsWith(WORK_ROOT_PREFIX))
+      .filter(name => name.startsWith(LEGACY_WORK_ROOT_PREFIX))
       .map(name => join(tmpdir(), name))
   } catch {
     return []
+  }
+}
+
+/**
+ * Every place plan-mode scratch files can live: the scratch root, plus the
+ * temp directories older runners created, which earlier messages still name.
+ */
+export function listIntakeWorkRoots(): string[] {
+  return [intakeScratchRoot(), ...legacyIntakeWorkRoots()]
+}
+
+/**
+ * Removes legacy temp scratch directories nothing has touched for
+ * `maxAgeMs`. Nothing creates them any more, and each restart used to
+ * orphan one per open conversation. Recent ones are kept so their files can
+ * still be recovered by hand. Returns how many were removed.
+ */
+export async function pruneLegacyIntakeWorkRoots(
+  maxAgeMs = LEGACY_INTAKE_WORK_ROOT_MAX_AGE_MS,
+  now = Date.now(),
+): Promise<number> {
+  let removed = 0
+  for (const dir of legacyIntakeWorkRoots()) {
+    if (now - lastTouchedMs(dir) <= maxAgeMs) continue
+    try {
+      await rm(dir, { recursive: true, force: true })
+      removed++
+    } catch {
+      // Best-effort; the next start tries again.
+    }
+  }
+  return removed
+}
+
+/** Newest mtime of the directory and its immediate entries; nested writes do not touch the parent. */
+function lastTouchedMs(dir: string): number {
+  try {
+    let newest = statSync(dir).mtimeMs
+    for (const name of readdirSync(dir)) {
+      try {
+        newest = Math.max(newest, statSync(join(dir, name)).mtimeMs)
+      } catch {
+        // Entry vanished while scanning.
+      }
+    }
+    return newest
+  } catch {
+    return Number.POSITIVE_INFINITY
   }
 }
 

@@ -214,16 +214,21 @@ Investigative intake path for the dashboard's plan-mode conversation. Implemente
   runner holds a dual-shape resume blob from `chat()` — the same
   `ExecutorSessionState` jobs use:
   - Claude Code: persist `sessionId` + a stable work root and resume the
-    subprocess session on the next turn (new user message only).
+    subprocess session on the next turn (new user message only). The work
+    root is `~/.coro/plan/<conversationId>`, so scratch files survive cache
+    eviction and runner restarts; it is removed only when the conversation
+    is deleted.
   - OpenAI and other replay executors: persist `conversationHistory`
     (native tool calls included) and replay it.
   `messages` (with clamped `<evidence>` tool results) is the fallback
-  after a restart, a provider switch, or a stale Claude resume. The live
-  Map is a hot cache (swept after `INTAKE_SESSION_TTL_MS` idle); the
-  durable copy is an `investigations` row on `StateBackend` (SQLite
-  locally, Postgres in hybrid). `GET /intake/sessions/:id` rehydrates the
-  cache. `transcript` on `POST /intake/stream` remains a restart fallback,
-  not the store. Empty chats (no user message) are never inserted.
+  after a provider switch or a stale Claude resume. The live Map is a hot
+  cache (swept after `INTAKE_SESSION_TTL_MS` idle); the durable copy is an
+  `investigations` row on `StateBackend` (SQLite locally, Postgres in
+  hybrid). `GET /intake/sessions/:id` rehydrates the cache, and so does
+  `POST /intake/stream` for a conversation the cache no longer holds — before
+  it reconciles the browser's `transcript`, which then only fills in turns
+  the runner never recorded. Empty chats (no user message) are never
+  inserted.
 - **Budgets:** None on turns or session tokens. Every turn is
   developer-initiated, so there is no autonomous loop to bound; the only
   unattended spend is the per-turn tool loop above. The `done` frame reports

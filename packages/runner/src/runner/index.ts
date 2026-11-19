@@ -90,6 +90,7 @@ import { wireCloudJobDispatch } from './hybrid-dispatcher'
 import { createRunnerServer } from './server'
 import { createRunnerCore, seedExecutorEnvCredentials } from './core'
 import { ensureReviewEngine } from '../reviews/engine'
+import { pruneLegacyIntakeWorkRoots } from '../intake/session-store'
 
 export interface RunnerOptions {
   configPath?: string
@@ -295,6 +296,12 @@ export async function startRunner(options: RunnerOptions = {}): Promise<void> {
   logger.info('  Coro Runner  v0.1.0')
   logger.info(`  Mode: ${mode}`)
   logger.info('─────────────────────────────────────────')
+
+  void pruneLegacyIntakeWorkRoots()
+    .then(removed => {
+      if (removed > 0) logger.info({ removed }, 'Removed stale plan-mode temp directories')
+    })
+    .catch(err => logger.warn({ err }, 'Could not prune stale plan-mode temp directories'))
 
   switch (mode) {
     case 'hybrid': {

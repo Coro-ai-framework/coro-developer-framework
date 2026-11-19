@@ -10,11 +10,10 @@ import { formatSseFrame } from '../runner/sse'
 import { clampInvestigationListQuery } from '../state/investigation'
 import { resolveIntakeContextWindow, runIntakeStream } from './handler'
 import type { RunControl } from './run-control'
-import { persistIntakeSnapshot, persistLiveIntakeSession } from './persist'
+import { hydrateIntakeSessionFromRecord, persistIntakeSnapshot, persistLiveIntakeSession } from './persist'
 import {
   deleteIntakeSession,
   ensureIntakeWorkRoot,
-  hydrateIntakeSession,
   intakeTurnActive,
   listIntakeWorkRoots,
   peekIntakeSession,
@@ -29,7 +28,6 @@ import {
 } from './permissions'
 import { listUserMcpServerCatalog } from '../jobs/runner'
 import type { IntakeBuiltinCapability, IntakePermissionDecision, ToolAccessMode } from '@coro-ai/cloud-protocol'
-import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
 import type { InvestigationReadiness, InvestigationStatus } from '@coro-ai/cloud-protocol'
 
 export function registerIntakeRoutes(
@@ -228,17 +226,7 @@ export function registerIntakeRoutes(
         res.status(404).json({ error: 'Investigation not found' })
         return
       }
-      hydrateIntakeSession({
-        id: record.id,
-        turns: record.turns,
-        tokens: record.tokens,
-        contextTokens: record.contextUsed,
-        ...(record.executorSession
-          ? { executorSession: record.executorSession as ExecutorSessionState }
-          : {}),
-        ...(record.executorId ? { executorId: record.executorId } : {}),
-        ...(record.toolAccess ? { toolAccess: record.toolAccess } : {}),
-      })
+      hydrateIntakeSessionFromRecord(record)
       ensureIntakeWorkRoot(record.id)
       const live = peekIntakeSession(record.id)
       const contextWindow = plugins && runnerCtx

@@ -1,7 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import {
   INTAKE_EVIDENCE_MAX_RESULT_CHARS,
+  INTAKE_SESSION_TTL_MS,
   bindIntakeExecutor,
+  ensureIntakeWorkRoot,
+  intakeScratchRoot,
+  pruneLegacyIntakeWorkRoots,
   buildIntakeMessages,
   deleteIntakeSession,
   getIntakeSession,
@@ -209,5 +216,70 @@ describe('hydrateIntakeSession', () => {
     expect(session?.turns).toEqual([{ user: 'hello', assistant: 'hi', evidence: [] }])
     expect(session?.tokens).toBe(20)
     expect(session?.executorId).toBe('anthropic')
+  })
+})
+
+describe('scratch directory', () => {
+  let home: string
+  let savedHome: string | undefined
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'coro-scratch-home-'))
+    savedHome = process.env['HOME']
+    process.env['HOME'] = home
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    resetIntakeSessionsForTests()
+    if (savedHome !== undefined) process.env['HOME'] = savedHome
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  function evictIdleSessions(): void {
+    vi.useFakeTimers({ now: Date.now() + INTAKE_SESSION_TTL_MS + 1 })
+  }
+
+  it('outlives cache eviction, so the next turn finds its earlier files', () => {
+    const root = ensureIntakeWorkRoot('conv-1')
+    fs.writeFileSync(path.join(root, 'probe.sh'), 'echo ok')
+
+    evictIdleSessions()
+    expect(peekIntakeSession('conv-1')).toBeUndefined()
+
+    expect(ensureIntakeWorkRoot('conv-1')).toBe(root)
+    expect(fs.readFileSync(path.join(root, 'probe.sh'), 'utf8')).toBe('echo ok')
+    expect(root.startsWith(path.join(home, '.coro', 'plan') + path.sep)).toBe(true)
+  })
+
+  it('keeps an id that is not a plain token inside the scratch root', () => {
+    const root = ensureIntakeWorkRoot('../../escape')
+    expect(path.dirname(root)).toBe(intakeScratchRoot())
+  })
+
+  it('is removed with the conversation, even after the cache dropped it', () => {
+    const root = ensureIntakeWorkRoot('conv-2')
+    evictIdleSessions()
+    deleteIntakeSession('conv-2')
+    expect(fs.existsSync(root)).toBe(false)
+  })
+})
+
+describe('pruneLegacyIntakeWorkRoots', () => {
+  it('removes only legacy temp directories untouched for longer than the grace period', async () => {
+    const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'coro-plan-prune-stale-'))
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'coro-plan-prune-fresh-'))
+    const longAgo = new Date('2001-01-01T00:00:00Z')
+    fs.utimesSync(stale, longAgo, longAgo)
+    try {
+      // A cut-off in 2002 so no real legacy directory on this machine qualifies.
+      const now = Date.now()
+      await pruneLegacyIntakeWorkRoots(now - Date.parse('2002-01-01T00:00:00Z'), now)
+      expect(fs.existsSync(stale)).toBe(false)
+      expect(fs.existsSync(fresh)).toBe(true)
+    } finally {
+      fs.rmSync(stale, { recursive: true, force: true })
+      fs.rmSync(fresh, { recursive: true, force: true })
+    }
   })
 })

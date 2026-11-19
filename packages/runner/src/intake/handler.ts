@@ -56,7 +56,7 @@ import {
   updateIntakeToolAccess,
   type IntakeEvidence,
 } from './session-store'
-import { persistLiveIntakeSession } from './persist'
+import { persistLiveIntakeSession, restoreIntakeSession } from './persist'
 
 export { resetIntakeSessionsForTests }
 export type { IntakeStreamEvent } from './stream-events'
@@ -280,6 +280,19 @@ async function* executeIntakeTurn(
   const baseLogger = options.logger ?? pino({ level: 'silent' })
   const log = baseLogger.child({ component: 'intake-handler', sessionId: options.sessionId })
   const toolsOn = intakeToolsEnabled(options.settings)
+
+  // The browser transcript is prose only. Reload the durable row first so
+  // the turn resumes the executor session and keeps its tool evidence; the
+  // transcript then only fills in turns the runner never recorded.
+  if (options.stateBackend) {
+    try {
+      if (await restoreIntakeSession(options.stateBackend, options.sessionId)) {
+        log?.info('intake: restored conversation from its saved record')
+      }
+    } catch (err) {
+      log?.warn({ err }, 'intake: could not restore the saved conversation; using the browser transcript')
+    }
+  }
 
   const session = options.seedMessages?.length
     ? reconcileIntakeSession(options.sessionId, options.seedMessages)

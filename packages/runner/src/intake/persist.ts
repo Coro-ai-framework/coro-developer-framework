@@ -4,13 +4,49 @@ import type {
   InvestigationPatch,
   InvestigationStatus,
 } from '@coro-ai/cloud-protocol'
+import type { ExecutorSessionState } from '@coro-ai/plugin-sdk'
 import type { StateBackend } from '../state/backend'
 import {
   investigationIsPersistable,
   mergeInvestigation,
   titleFromTurns,
 } from '../state/investigation'
-import { isIntakeSessionDiscarded, peekIntakeSession } from './session-store'
+import {
+  hydrateIntakeSession,
+  isIntakeSessionDiscarded,
+  peekIntakeSession,
+  type IntakeSession,
+} from './session-store'
+
+/** Loads a durable investigation row into the hot cache. */
+export function hydrateIntakeSessionFromRecord(record: Investigation): IntakeSession {
+  return hydrateIntakeSession({
+    id: record.id,
+    turns: record.turns,
+    tokens: record.tokens,
+    contextTokens: record.contextUsed,
+    ...(record.executorSession
+      ? { executorSession: record.executorSession as ExecutorSessionState }
+      : {}),
+    ...(record.executorId ? { executorId: record.executorId } : {}),
+    ...(record.toolAccess ? { toolAccess: record.toolAccess } : {}),
+  })
+}
+
+/**
+ * Brings a conversation the cache no longer holds (idle eviction, runner
+ * restart) back from its durable row, so the next turn resumes the
+ * executor session and keeps the recorded tool evidence. Without this the
+ * turn was rebuilt from the browser's prose-only transcript and the model
+ * started over. Returns true when it hydrated.
+ */
+export async function restoreIntakeSession(backend: StateBackend, sessionId: string): Promise<boolean> {
+  if (peekIntakeSession(sessionId) || isIntakeSessionDiscarded(sessionId)) return false
+  const record = await backend.getInvestigation(sessionId)
+  if (!record || peekIntakeSession(sessionId)) return false
+  hydrateIntakeSessionFromRecord(record)
+  return true
+}
 
 export async function persistLiveIntakeSession(
   backend: StateBackend,
