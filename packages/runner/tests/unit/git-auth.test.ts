@@ -384,6 +384,27 @@ describe('installRepoGitAuth / prepareJobGitAuth', () => {
     expect(git(repo, 'config', '--local', '--get', 'credential.useHttpPath')).toBe('true')
   })
 
+  it('pins the HTTPS remote against a global insteadOf rewrite to SSH', async () => {
+    const repo = initRepo()
+    const url = 'https://github.com/acme/svc.git'
+    git(repo, 'remote', 'add', 'origin', url)
+    const globalConfig = path.join(repo, 'hostile.gitconfig')
+    for (const key of ['insteadOf', 'pushInsteadOf']) {
+      execFileSync('git', ['config', '--file', globalConfig, `url.git@github-alias:acme/.${key}`, 'https://github.com/acme/'])
+    }
+    const shellGit = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: globalConfig },
+    }).trim()
+    expect(shellGit('remote', 'get-url', '--push', 'origin')).toBe('git@github-alias:acme/svc.git')
+
+    await installRepoGitAuth(repo, { matchesRemote: () => true, helperCommand: '!true' })
+    await installRepoGitAuth(repo, { matchesRemote: () => true, helperCommand: '!true' })
+
+    expect(shellGit('remote', 'get-url', 'origin')).toBe(url)
+    expect(shellGit('remote', 'get-url', '--push', 'origin')).toBe(url)
+  })
+
   it('does not rewrite a remote the plugin does not claim', async () => {
     const repo = initRepo()
     git(repo, 'remote', 'add', 'origin', 'https://user:tok@other.example/acme/svc.git')

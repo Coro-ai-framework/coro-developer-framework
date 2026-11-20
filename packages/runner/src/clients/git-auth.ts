@@ -296,7 +296,8 @@ export interface InstallRepoGitAuthOptions {
 
 /**
  * Rewrite HTTPS remotes that belong to an installed SCM plugin so they
- * carry no userinfo, then install the repo-local credential helper
+ * carry no userinfo and cannot be redirected by global `insteadOf`
+ * rules, then install the repo-local credential helper
  * (empty helper first, so osxkeychain is not consulted) with
  * `credential.useHttpPath` on so the helper is told which repository it is
  * answering for.
@@ -313,6 +314,7 @@ export async function installRepoGitAuth(
     if (clean !== url) {
       await gitOutput(repoDir, ['remote', 'set-url', remote, clean])
     }
+    if (/^https?:\/\//i.test(clean)) await pinRemoteUrl(repoDir, clean)
   }
 
   const helper = opts.helperCommand ?? gitCredentialHelperCommand()
@@ -322,6 +324,21 @@ export async function installRepoGitAuth(
   // Off by default in git, which means the helper is asked for a host and
   // never for a repository — so a per-repository identity cannot be honoured.
   await gitOutput(repoDir, ['config', '--local', 'credential.useHttpPath', 'true'])
+}
+
+/**
+ * Map the remote URL onto itself so the agent's shell git keeps it.
+ * The runner's own git spawns ignore global config, but the agent's
+ * `git push` reads the developer's `~/.gitconfig`. A rule like
+ * `url."git@github-alias:org/".insteadOf = https://github.com/org/`
+ * sends the push over SSH, and the host sandbox blocks SSH, so the push
+ * fails. Git uses the longest matching `insteadOf` prefix. The full
+ * URL is longer than any prefix rule, so this repo-local rule wins.
+ */
+async function pinRemoteUrl(repoDir: string, url: string): Promise<void> {
+  for (const key of ['insteadOf', 'pushInsteadOf']) {
+    await gitOutput(repoDir, ['config', '--local', '--replace-all', `url.${url}.${key}`, url])
+  }
 }
 
 export async function prepareJobGitAuth(
