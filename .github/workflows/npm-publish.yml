@@ -32,7 +32,7 @@ jobs:
     outputs:
       publish_version: ${{ steps.resolve_version.outputs.publish_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Resolve release version
         id: resolve_version
@@ -122,7 +122,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v4
         with:
@@ -154,7 +154,7 @@ jobs:
     env:
       NPM_CONFIG_PROVENANCE: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Resolve release version
         run: echo "PUBLISH_VERSION=${{ needs.prepare.outputs.publish_version }}" >> "$GITHUB_ENV"
